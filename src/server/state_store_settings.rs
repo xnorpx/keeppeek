@@ -100,7 +100,7 @@ pub(super) fn put(
             profile,
         },
     );
-    store_section(&mut root, namespace, &section);
+    store_section(&mut root, namespace, &section)?;
     write_table(config_path, &root)?;
     let entry = section
         .entries
@@ -131,7 +131,7 @@ pub(super) fn delete(
     }
     let revision = section.bump_revision()?;
     section.entries.remove(key);
-    store_section(&mut root, namespace, &section);
+    store_section(&mut root, namespace, &section)?;
     write_table(config_path, &root)?;
     Ok(revision)
 }
@@ -205,9 +205,15 @@ struct Section {
 
 impl Section {
     fn bump_revision(&mut self) -> Result<u64, Error> {
-        self.revision = self.revision.checked_add(1).ok_or_else(|| {
+        let next = self.revision.checked_add(1).ok_or_else(|| {
             Error::Storage("state-store settings revision overflows u64".to_owned())
         })?;
+        if next > i64::MAX as u64 {
+            return Err(Error::Storage(
+                "state-store settings revision exceeds the persisted range".to_owned(),
+            ));
+        }
+        self.revision = next;
         Ok(self.revision)
     }
 }
@@ -228,29 +234,18 @@ fn write_table(path: &Path, root: &toml::Table) -> Result<(), Error> {
 }
 
 fn load_section(root: &toml::Table, namespace: &str) -> Result<Section, Error> {
-    let Some(section) = root
-        .get(ADAPTER_SECTION)
-        .and_then(|value| value.as_table())
-        .and_then(|adapters| adapters.get(namespace))
-    else {
+    let Some(adapters) = root.get(ADAPTER_SECTION) else {
+        return Ok(Section::default());
+    };
+    let adapters = adapters
+        .as_table()
+        .ok_or_else(|| Error::Storage("state-store settings section is corrupt".to_owned()))?;
+    let Some(section) = adapters.get(namespace) else {
         return Ok(Section::default());
     };
     let table = section
         .as_table()
         .ok_or_else(|| Error::Storage("state-store settings section is corrupt".to_owned()))?;
-    let revision = table
-        .get("revision")
-        .map(|value| {
-            value
-                .as_integer()
-                .filter(|revision| *revision >= 0)
-                .map(|revision| revision as u64)
-                .ok_or_else(|| {
-                    Error::Storage("state-store settings revision is corrupt".to_owned())
-                })
-        })
-        .transpose()?
-        .unwrap_or(0);
     let mut entries = BTreeMap::new();
     if let Some(tables) = table.get("entries") {
         let tables = tables
@@ -258,6 +253,26 @@ fn load_section(root: &toml::Table, namespace: &str) -> Result<Section, Error> {
             .ok_or_else(|| Error::Storage("state-store settings entries are corrupt".to_owned()))?;
         for (key, value) in tables {
             entries.insert(key.clone(), load_entry(key, value)?);
+        }
+    }
+    let revision = match table.get("revision") {
+        None if entries.is_empty() => 0,
+        None => {
+            return Err(Error::Storage(
+                "state-store settings revision is missing".to_owned(),
+            ));
+        }
+        Some(value) => value
+            .as_integer()
+            .filter(|revision| *revision >= 0)
+            .map(|revision| revision as u64)
+            .ok_or_else(|| Error::Storage("state-store settings revision is corrupt".to_owned()))?,
+    };
+    for (key, entry) in &entries {
+        if entry.revision == 0 || entry.revision > revision {
+            return Err(Error::Storage(format!(
+                "state-store settings entry {key} revision is inconsistent"
+            )));
         }
     }
     Ok(Section { revision, entries })
@@ -308,13 +323,19 @@ fn load_entry(key: &str, value: &toml::Value) -> Result<SectionEntry, Error> {
     })
 }
 
-fn store_section(root: &mut toml::Table, namespace: &str, section: &Section) {
+fn persisted_integer(value: u64) -> Result<i64, Error> {
+    i64::try_from(value).map_err(|_| {
+        Error::Storage("state-store settings integer exceeds the persisted range".to_owned())
+    })
+}
+
+fn store_section(root: &mut toml::Table, namespace: &str, section: &Section) -> Result<(), Error> {
     let mut entries = toml::Table::new();
     for (key, entry) in &section.entries {
         let mut table = toml::Table::new();
         table.insert(
             "revision".to_owned(),
-            toml::Value::Integer(i64::try_from(entry.revision).unwrap_or(i64::MAX)),
+            toml::Value::Integer(persisted_integer(entry.revision)?),
         );
         table.insert(
             "schema".to_owned(),
@@ -326,7 +347,7 @@ fn store_section(root: &mut toml::Table, namespace: &str, section: &Section) {
         );
         table.insert(
             "updated_ms".to_owned(),
-            toml::Value::Integer(i64::try_from(entry.updated_ms).unwrap_or(i64::MAX)),
+            toml::Value::Integer(persisted_integer(entry.updated_ms)?),
         );
         table.insert(
             "display_name".to_owned(),
@@ -341,15 +362,20 @@ fn store_section(root: &mut toml::Table, namespace: &str, section: &Section) {
     let mut table = toml::Table::new();
     table.insert(
         "revision".to_owned(),
-        toml::Value::Integer(i64::try_from(section.revision).unwrap_or(i64::MAX)),
+        toml::Value::Integer(persisted_integer(section.revision)?),
     );
     table.insert("entries".to_owned(), toml::Value::Table(entries));
-    let adapters = root
+    let Some(adapters) = root
         .entry(ADAPTER_SECTION.to_owned())
-        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
-    if let Some(adapters) = adapters.as_table_mut() {
-        adapters.insert(namespace.to_owned(), toml::Value::Table(table));
-    }
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+    else {
+        return Err(Error::Storage(
+            "state-store settings section cannot hold the namespace".to_owned(),
+        ));
+    };
+    adapters.insert(namespace.to_owned(), toml::Value::Table(table));
+    Ok(())
 }
 
 fn stored_entry(namespace: &str, key: &str, entry: &SectionEntry) -> StoredEntry {
@@ -477,6 +503,167 @@ mod tests {
     #[test]
     fn settings_section_is_reserved_from_camera_parsing() {
         assert!(crate::config::is_reserved_section("state_store"));
+    }
+
+    fn rewrite_config(fixture: &Fixture, mutate: impl FnOnce(&mut toml::Table)) {
+        let mut root: toml::Table = std::fs::read_to_string(fixture.config_path())
+            .expect("config must be readable")
+            .parse()
+            .expect("config must parse");
+        mutate(&mut root);
+        std::fs::write(
+            fixture.config_path(),
+            toml::to_string_pretty(&root).expect("config must serialize"),
+        )
+        .expect("config must be writable");
+    }
+
+    fn adapter_table(root: &mut toml::Table) -> &mut toml::Table {
+        root.get_mut(ADAPTER_SECTION)
+            .and_then(|value| value.as_table_mut())
+            .and_then(|adapters| adapters.get_mut(SETTINGS_TEST_NAMESPACE))
+            .and_then(|value| value.as_table_mut())
+            .expect("adapter section must exist")
+    }
+
+    #[test]
+    fn settings_scalar_root_fails_without_touching_file() {
+        let fixture = Fixture::new();
+        let seed = std::fs::read_to_string(fixture.config_path()).expect("config must exist");
+        std::fs::write(fixture.config_path(), format!("state_store = 42\n{seed}"))
+            .expect("scalar root must be seeded");
+        let before = fixture.file_bytes();
+        let put_error = fixture
+            .put("alerts/front-door", "Front door", true, None, NOW_MS)
+            .expect_err("scalar root must fail");
+        assert!(
+            matches!(put_error, Error::Storage(_)),
+            "unexpected error: {put_error:?}"
+        );
+        assert_eq!(
+            fixture.file_bytes(),
+            before,
+            "failed write must leave the file untouched"
+        );
+        let get_error = fixture
+            .get("alerts/front-door")
+            .expect_err("scalar root must not read as absent");
+        assert!(
+            matches!(get_error, Error::Storage(_)),
+            "unexpected error: {get_error:?}"
+        );
+    }
+
+    #[test]
+    fn settings_inconsistent_counters_are_rejected() {
+        for mutate in [
+            |table: &mut toml::Table| {
+                table.remove("revision");
+            },
+            |table: &mut toml::Table| {
+                table.insert("revision".to_owned(), toml::Value::Integer(0));
+            },
+            |table: &mut toml::Table| {
+                let entries = table
+                    .get_mut("entries")
+                    .and_then(|value| value.as_table_mut())
+                    .expect("entries must exist");
+                let entry = entries
+                    .get_mut("alerts/front-door")
+                    .and_then(|value| value.as_table_mut())
+                    .expect("entry must exist");
+                entry.insert("revision".to_owned(), toml::Value::Integer(99));
+            },
+        ] {
+            let fixture = Fixture::new();
+            fixture
+                .put("alerts/front-door", "Front door", true, None, NOW_MS)
+                .expect("seed write must succeed");
+            rewrite_config(&fixture, |root| mutate(adapter_table(root)));
+            let before = fixture.file_bytes();
+            let get_error = fixture
+                .get("alerts/front-door")
+                .expect_err("inconsistent counter must fail");
+            assert!(
+                matches!(get_error, Error::Storage(_)),
+                "unexpected error: {get_error:?}"
+            );
+            let put_error = fixture
+                .put("alerts/front-door", "Front door", true, Some(1), NOW_MS)
+                .expect_err("CAS against inconsistent state must fail");
+            assert!(
+                matches!(put_error, Error::Storage(_)),
+                "unexpected error: {put_error:?}"
+            );
+            assert_eq!(
+                fixture.file_bytes(),
+                before,
+                "rejected state must leave the file unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_mutations_reload_with_exact_revision() {
+        let fixture = Fixture::new();
+        let first = fixture
+            .put("alerts/front-door", "Front door", true, None, NOW_MS)
+            .expect("put must succeed");
+        let second = fixture
+            .put("alerts/back-door", "Back door", false, None, NOW_MS)
+            .expect("put must succeed");
+        let deleted = delete(
+            &fixture.lock,
+            &fixture.config_path(),
+            SETTINGS_TEST_NAMESPACE,
+            "alerts/back-door",
+            None,
+            "local-administrator",
+            true,
+        )
+        .expect("delete must succeed");
+        let root: toml::Table = std::fs::read_to_string(fixture.config_path())
+            .expect("config must be readable")
+            .parse()
+            .expect("config must parse");
+        let section =
+            load_section(&root, SETTINGS_TEST_NAMESPACE).expect("section must reload cleanly");
+        assert_eq!(section.revision, deleted);
+        assert_eq!(
+            section
+                .entries
+                .get("alerts/front-door")
+                .map(|entry| entry.revision),
+            Some(first.revision)
+        );
+        assert_eq!(
+            section.entries.get("alerts/back-door"),
+            None,
+            "deleted entry must stay deleted after reload"
+        );
+        assert_eq!(second.revision + 1, deleted);
+    }
+
+    #[test]
+    fn settings_persisted_range_overflow_is_rejected() {
+        let mut section = Section {
+            revision: i64::MAX as u64,
+            entries: BTreeMap::new(),
+        };
+        assert!(
+            section.bump_revision().is_err(),
+            "bump past the persisted range must fail"
+        );
+        assert_eq!(section.revision, i64::MAX as u64);
+        let overflow = Section {
+            revision: i64::MAX as u64 + 1,
+            entries: BTreeMap::new(),
+        };
+        assert!(
+            store_section(&mut toml::Table::new(), SETTINGS_TEST_NAMESPACE, &overflow).is_err(),
+            "storing beyond the persisted range must fail"
+        );
+        assert!(persisted_integer(u64::MAX).is_err());
     }
 
     #[test]
