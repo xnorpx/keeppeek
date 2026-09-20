@@ -115,6 +115,7 @@ export class ControlClientStateStore {
 	readonly #maxWatches: number;
 	readonly #defaultMaxEntries: number;
 	#nextWatchNumber = 1;
+	#pendingWatches = 0;
 	#disposed = false;
 
 	constructor(
@@ -199,33 +200,41 @@ export class ControlClientStateStore {
 	async watch(namespace: string, options: StateStoreWatchOptions = {}): Promise<StateStoreWatch> {
 		this.throwIfDisposed();
 		if (namespace.length === 0) throw new Error('State store watch requires a namespace.');
-		if (this.#watches.size >= this.#maxWatches) {
+		if (this.#watches.size + this.#pendingWatches >= this.#maxWatches) {
 			throw new Error('State store watch limit reached.');
 		}
 		const keyPrefix = options.keyPrefix ?? '';
 		const maxEntries = options.maxEntries ?? this.#defaultMaxEntries;
 		if (maxEntries <= 0) throw new Error('State store watch requires a positive entry limit.');
 		const watchId = this.allocateWatchId();
-		const snapshot = await this.requestSnapshot(namespace, keyPrefix, watchId, maxEntries);
-		if (this.#disposed) throw new Error('State store client is disposed.');
-		const record: WatchRecord = {
-			watchId,
-			namespace,
-			keyPrefix,
-			maxEntries,
-			listener: options.listener,
-			entries: new Map(),
-			snapshotRevision: 0n,
-			appliedSequence: 0n,
-			status: 'active',
-			generation: 0,
-			lastError: null,
-			handle: undefined
-		};
-		const handle = trackedHandle(record, () => this.closeRecord(record));
-		installSnapshot(record, snapshot);
-		this.#watches.set(watchId, handle);
-		return handle;
+		this.#pendingWatches += 1;
+		try {
+			const snapshot = await this.requestSnapshot(namespace, keyPrefix, watchId, maxEntries);
+			if (this.#disposed) throw new Error('State store client is disposed.');
+			const record: WatchRecord = {
+				watchId,
+				namespace,
+				keyPrefix,
+				maxEntries,
+				listener: options.listener,
+				entries: new Map(),
+				snapshotRevision: 0n,
+				appliedSequence: 0n,
+				status: 'active',
+				generation: 0,
+				lastError: null,
+				handle: undefined
+			};
+			const handle = trackedHandle(record, () => this.closeRecord(record));
+			installSnapshot(record, snapshot);
+			this.#watches.set(watchId, handle);
+			return handle;
+		} catch (error) {
+			if (!this.#disposed) await this.bestEffortUnwatch(watchId);
+			throw error;
+		} finally {
+			this.#pendingWatches -= 1;
+		}
 	}
 
 	async handleWatchUpdate(update: StateStoreWatchUpdate): Promise<void> {
@@ -241,6 +250,15 @@ export class ControlClientStateStore {
 		}
 		if (update.watchSequence <= record.appliedSequence) return;
 		if (update.watchSequence !== record.appliedSequence + 1n) {
+			await this.rewatch(record, { unwatchFirst: true });
+			return;
+		}
+		if (
+			update.kind === StateStoreUpdateKind.PUT &&
+			update.entry !== undefined &&
+			!record.entries.has(update.key) &&
+			record.entries.size >= record.maxEntries
+		) {
 			await this.rewatch(record, { unwatchFirst: true });
 			return;
 		}
@@ -362,11 +380,15 @@ export class ControlClientStateStore {
 					record.maxEntries
 				);
 			} catch (error) {
+				if (!this.#disposed) await this.bestEffortUnwatch(watchId);
 				if (this.isStale(record, generation)) return;
 				record.lastError = error;
 				continue;
 			}
-			if (this.isStale(record, generation)) return;
+			if (this.isStale(record, generation)) {
+				if (!this.#disposed) await this.bestEffortUnwatch(watchId);
+				return;
+			}
 			const handle = handleOf(record);
 			if (this.#watches.get(previousWatchId) === handle) {
 				this.#watches.delete(previousWatchId);

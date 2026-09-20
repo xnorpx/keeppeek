@@ -131,6 +131,22 @@ class FakeTransport {
 			})
 			.map(ackSequenceOf);
 	}
+
+	unwatchedIds(): string[] {
+		return this.sent
+			.filter((command) => {
+				try {
+					return storeAction(command).case === 'unwatch';
+				} catch {
+					return false;
+				}
+			})
+			.map((command) => {
+				const action = storeAction(command);
+				if (action.case !== 'unwatch') throw new Error('Expected an unwatch command.');
+				return action.value.watchId;
+			});
+	}
 }
 
 function entryMap(watch: StateStoreWatch): Map<string, bigint> {
@@ -472,6 +488,140 @@ describe('ControlClientStateStore', () => {
 		expect(transport.sent).toHaveLength(1);
 		expect(draft.expectedRevision).toBe(draftRevision);
 		expect(draft.value).toEqual({ desired: true, key: 'intent/a' });
+	});
+
+	it('rejects a second concurrent watch while the first snapshot is pending', async () => {
+		const gate = deferred<Result>();
+		const requestedIds: string[] = [];
+		const transport = new FakeTransport((action) => {
+			if (action.case === 'watch') {
+				requestedIds.push(action.value.watchId);
+				return gate.promise.then(() => snapshotResult(action.value.watchId, []));
+			}
+			return unwatchResult(action.case === 'unwatch' ? action.value.watchId : 'unused');
+		});
+		const client = new ControlClientStateStore((command) => transport.send(command), {
+			maxWatches: 1
+		});
+
+		const first = client.watch(namespace);
+		await expect(client.watch(namespace)).rejects.toThrow('State store watch limit reached.');
+		expect(requestedIds).toHaveLength(1);
+
+		gate.resolve(snapshotResult(requestedIds[0]!, []));
+		const watch = await first;
+		expect(watch.status).toBe('active');
+		expect(client.watchCount).toBe(1);
+
+		await watch.close();
+		const replacement = await client.watch(namespace);
+		expect(replacement.status).toBe('active');
+		expect(client.watchCount).toBe(1);
+	});
+
+	it('recovers without acknowledging a live PUT that exceeds the entry limit', async () => {
+		const transport = new FakeTransport((action) => {
+			if (action.case === 'watch')
+				return snapshotResult(action.value.watchId, [testEntry('intent/a', 10n)]);
+			if (action.case === 'watchAck')
+				return ackResult(action.value.watchId, action.value.appliedSequence);
+			return unwatchResult(action.case === 'unwatch' ? action.value.watchId : 'unused');
+		});
+		const client = new ControlClientStateStore((command) => transport.send(command));
+		const watch = await client.watch(namespace, { maxEntries: 1 });
+		const previousWatchId = watch.watchId;
+
+		await client.handleWatchUpdate(
+			testUpdate(watch.watchId, 'intent/b', StateStoreUpdateKind.PUT, 1n, {
+				entry: testEntry('intent/b', 11n)
+			})
+		);
+
+		expect(watch.watchId).not.toBe(previousWatchId);
+		expect(watch.status).toBe('active');
+		expect(entryMap(watch)).toEqual(new Map([['intent/a', 10n]]));
+		expect(transport.acks()).toEqual([]);
+		expect(transport.unwatchedIds()).toEqual([previousWatchId]);
+	});
+
+	it('applies a live PUT that replaces an existing key at the entry limit', async () => {
+		const transport = new FakeTransport((action) => {
+			if (action.case === 'watch')
+				return snapshotResult(action.value.watchId, [testEntry('intent/a', 10n)]);
+			if (action.case === 'watchAck')
+				return ackResult(action.value.watchId, action.value.appliedSequence);
+			return unwatchResult(action.case === 'unwatch' ? action.value.watchId : 'unused');
+		});
+		const client = new ControlClientStateStore((command) => transport.send(command));
+		const watch = await client.watch(namespace, { maxEntries: 1 });
+
+		await client.handleWatchUpdate(
+			testUpdate(watch.watchId, 'intent/a', StateStoreUpdateKind.PUT, 1n, {
+				entry: testEntry('intent/a', 11n)
+			})
+		);
+
+		expect(entryMap(watch)).toEqual(new Map([['intent/a', 11n]]));
+		expect(watch.status).toBe('active');
+		expect(transport.acks()).toEqual([1n]);
+		expect(transport.unwatchedIds()).toEqual([]);
+	});
+
+	it('unwatches the server registration when the snapshot exceeds the entry limit', async () => {
+		const requestedIds: string[] = [];
+		const transport = new FakeTransport((action) => {
+			if (action.case === 'watch') {
+				requestedIds.push(action.value.watchId);
+				return snapshotResult(action.value.watchId, [
+					testEntry('intent/a', 10n),
+					testEntry('intent/b', 10n)
+				]);
+			}
+			return unwatchResult(action.case === 'unwatch' ? action.value.watchId : 'unused');
+		});
+		const client = new ControlClientStateStore((command) => transport.send(command));
+
+		await expect(client.watch(namespace, { maxEntries: 1 })).rejects.toThrow(
+			'State snapshot exceeds the watch entry limit.'
+		);
+		expect(requestedIds).toHaveLength(1);
+		expect(transport.unwatchedIds()).toEqual(requestedIds);
+		expect(client.watchCount).toBe(0);
+	});
+
+	it('unwatches the pending rewatch registration when the watch closes mid-flight', async () => {
+		const gate = deferred<Result>();
+		const requestedIds: string[] = [];
+		const transport = new FakeTransport((action) => {
+			if (action.case === 'watch') {
+				requestedIds.push(action.value.watchId);
+				if (requestedIds.length > 1) return gate.promise;
+				return snapshotResult(action.value.watchId, [testEntry('intent/a', 10n)]);
+			}
+			if (action.case === 'watchAck')
+				return ackResult(action.value.watchId, action.value.appliedSequence);
+			return unwatchResult(action.case === 'unwatch' ? action.value.watchId : 'unused');
+		});
+		const client = new ControlClientStateStore((command) => transport.send(command));
+		const watch = await client.watch(namespace);
+
+		const rewatch = client.handleWatchUpdate(
+			testUpdate(watch.watchId, 'intent/a', StateStoreUpdateKind.PUT, 2n, {
+				entry: testEntry('intent/a', 11n)
+			})
+		);
+		await flush();
+		expect(requestedIds).toHaveLength(2);
+
+		await watch.close();
+		gate.resolve(snapshotResult(requestedIds[1]!, [testEntry('intent/a', 12n)]));
+		await rewatch;
+		await flush();
+
+		expect(client.watchCount).toBe(0);
+		expect(transport.unwatchedIds()).toEqual(expect.arrayContaining(requestedIds));
+		expect(transport.unwatchedIds()).toContain(requestedIds[1]);
+		expect(watch.get('intent/a')?.revision).toBe(10n);
 	});
 
 	it('reads and deletes single keys through typed responses', async () => {
