@@ -132,6 +132,9 @@ fn put(
     if request.namespace != NAMESPACE {
         return Err(invalid("MQTT integration namespace is invalid"));
     }
+    if request.ttl.is_some() {
+        return Err(invalid("MQTT integration state does not expire"));
+    }
     let value = request
         .value
         .ok_or_else(|| invalid("MQTT state value is required"))?;
@@ -499,5 +502,27 @@ mod tests {
         shutdown.cancel();
         runtime.join();
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn put_rejects_ttl_before_touching_runtime() {
+        let state = ServerState::empty();
+        let error = put(
+            &state,
+            proto::PutState {
+                namespace: NAMESPACE.to_owned(),
+                key: CONFIGURATION_KEY.to_owned(),
+                schema: CONFIGURATION_SCHEMA.to_owned(),
+                value: None,
+                expected_revision: None,
+                ttl: Some(prost_types::Duration {
+                    seconds: 60,
+                    nanos: 0,
+                }),
+            },
+        )
+        .expect_err("MQTT state must not accept a TTL");
+        assert_eq!(error.code, proto::ErrorCode::InvalidRequest);
+        assert_eq!(error._http_status, 400);
     }
 }

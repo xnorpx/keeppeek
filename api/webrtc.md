@@ -434,11 +434,13 @@ retry without overwriting another writer's state.
 State values are bounded structured documents. `schema` is a nonempty versioned identifier, such
 as `keeppeek.media-intent.v1`; KeepPeek validates document size, permitted schemas, and namespace
 policy before storing it. Clients must treat documents as untrusted data even when they recognize
-the schema. An optional nonzero `ttl_ms` requests expiry subject to server limits. KeepPeek clamps
-a requested TTL above the namespace maximum and returns the accepted `expires_at_ms` in the
-resulting entry. A TTL below the namespace minimum is rejected with
-`STATE_STORE_ERROR_CODE_TTL_INVALID`. On expiry, KeepPeek removes the entry and emits a watch
-update with kind `EXPIRE`; expiration is not a successful refresh or ownership transfer.
+the schema. An optional nonzero `ttl` requests expiry subject to server limits. A TTL below one
+second is rejected with `STATE_STORE_ERROR_CODE_TTL_INVALID`; a TTL above 24 hours is clamped to
+24 hours, and the entry carries the accepted `expires_at`. Expiry is inclusive: an entry whose
+deadline equals the current time already reads as not found. On expiry, KeepPeek removes the entry
+and emits a watch update with kind `EXPIRE`; expiration is not a successful refresh or ownership
+transfer. Restart purges overdue leases before serving and advances affected namespace revisions.
+MQTT integration state and settings-backed entries are live configuration and reject any TTL.
 
 `WatchState` atomically registers a watch and captures its initial snapshot. The command response
 contains every matching entry exactly as they existed at `snapshot_revision`; subsequent
