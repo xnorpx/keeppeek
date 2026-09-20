@@ -76,6 +76,10 @@ settings-backed entries are live configuration rather than leases and reject any
 `StateStoreResult.watch` response contains the complete initial snapshot exactly as it existed at
 `snapshot_revision`. Later updates follow that snapshot as `StateStoreWatchUpdate` notifications on
 the reliable ordered control channel, each carrying a per-watch `watch_sequence` starting at 1.
+Settings-backed namespaces follow the same lifecycle: the snapshot is captured while holding the
+configuration lock so no committed mutation can slip between the snapshot and the registration,
+and only file-committed puts and deletes fan out to watchers. Settings entries never expire, so
+their watches carry no `EXPIRE` updates.
 
 ```mermaid
 sequenceDiagram

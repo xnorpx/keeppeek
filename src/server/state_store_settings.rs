@@ -218,7 +218,7 @@ impl Section {
     }
 }
 
-fn lock_config(lock: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, Error> {
+pub(super) fn lock_config(lock: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, Error> {
     lock.lock()
         .map_err(|_| Error::Storage("state-store settings lock is unavailable".to_owned()))
 }
@@ -378,6 +378,30 @@ fn store_section(root: &mut toml::Table, namespace: &str, section: &Section) -> 
     Ok(())
 }
 
+pub(super) fn snapshot(
+    config_path: &Path,
+    namespace: &str,
+    key_prefix: &str,
+    owner_id: &str,
+    reader_admin: bool,
+) -> Result<(u64, Vec<StoredEntry>), Error> {
+    let layout = validate_namespace(namespace)?;
+    authorize_read(&layout, owner_id, reader_admin)?;
+    if !key_prefix.is_empty() {
+        super::state_store::validate_key_prefix(key_prefix)?;
+    }
+    let root = load_table(config_path)?;
+    let section = load_section(&root, namespace)?;
+    let mut entries: Vec<StoredEntry> = section
+        .entries
+        .iter()
+        .filter(|(key, _)| key.starts_with(key_prefix))
+        .map(|(key, entry)| stored_entry(namespace, key, entry))
+        .collect();
+    entries.sort_by(|left, right| left.key.cmp(&right.key));
+    Ok((section.revision, entries))
+}
+
 fn stored_entry(namespace: &str, key: &str, entry: &SectionEntry) -> StoredEntry {
     StoredEntry {
         namespace: namespace.to_owned(),
@@ -499,6 +523,275 @@ mod tests {
     }
 
     const NOW_MS: u64 = 1_787_000_000_000;
+
+    fn dispatch_state(fixture: &Fixture) -> ServerState {
+        let mut state = ServerState::empty();
+        state.camera_config_path = Some(fixture.config_path());
+        state
+    }
+
+    fn admin_session(state: &ServerState, session: crate::webrtc::SessionId) {
+        use crate::access::{ClientClassification, ClientClassificationReason};
+        use std::time::Instant;
+        state
+            .api_session_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                session,
+                crate::server::ApiSessionRecord {
+                    principal: ApiPrincipal::local(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+                    classification: ClientClassification {
+                        peer_address: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                        effective_address: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                        local: true,
+                        reason: ClientClassificationReason::DirectLocal,
+                    },
+                    created_at_ms: 0,
+                    last_activity_at_ms: 0,
+                    absolute_expires_at_ms: i64::MAX,
+                    last_activity: Instant::now(),
+                },
+            );
+    }
+
+    fn local_principal() -> ApiPrincipal {
+        ApiPrincipal::local(IpAddr::V4(Ipv4Addr::LOCALHOST))
+    }
+
+    fn watch_command(watch_id: &str) -> proto::StateStoreCommand {
+        proto::StateStoreCommand {
+            action: Some(state_store_command::Action::Watch(proto::WatchState {
+                namespace: SETTINGS_TEST_NAMESPACE.to_owned(),
+                key_prefix: String::new(),
+                watch_id: watch_id.to_owned(),
+            })),
+        }
+    }
+
+    fn put_command(key: &str, expected_revision: Option<u64>) -> proto::StateStoreCommand {
+        proto::StateStoreCommand {
+            action: Some(state_store_command::Action::Put(proto::PutState {
+                namespace: SETTINGS_TEST_NAMESPACE.to_owned(),
+                key: key.to_owned(),
+                schema: SETTINGS_TEST_SCHEMA.to_owned(),
+                value: Some(profile_struct("Wall panel", true)),
+                expected_revision,
+                ttl: None,
+            })),
+        }
+    }
+
+    fn ack_command(watch_id: &str, applied_sequence: u64) -> proto::StateStoreCommand {
+        proto::StateStoreCommand {
+            action: Some(state_store_command::Action::WatchAck(
+                proto::WatchStateAck {
+                    watch_id: watch_id.to_owned(),
+                    applied_sequence,
+                },
+            )),
+        }
+    }
+
+    fn dispatch_watch(
+        state: &ServerState,
+        session: crate::webrtc::SessionId,
+        watch_id: &str,
+    ) -> proto::StateWatchSnapshot {
+        let control_ok::Result::StateStoreResult(result) = super::super::state_store::dispatch(
+            state,
+            session,
+            &local_principal(),
+            watch_command(watch_id),
+        )
+        .expect("adapter watch must succeed") else {
+            panic!("adapter watch must return a StateStoreResult");
+        };
+        let Some(state_store_result::Result::Watch(snapshot)) = result.result else {
+            panic!("adapter watch must return a snapshot");
+        };
+        snapshot
+    }
+
+    fn dispatch_ack(
+        state: &ServerState,
+        session: crate::webrtc::SessionId,
+        watch_id: &str,
+        applied_sequence: u64,
+    ) -> u64 {
+        let control_ok::Result::StateStoreResult(result) = super::super::state_store::dispatch(
+            state,
+            session,
+            &local_principal(),
+            ack_command(watch_id, applied_sequence),
+        )
+        .expect("adapter ack must succeed") else {
+            panic!("adapter ack must return a StateStoreResult");
+        };
+        let Some(state_store_result::Result::WatchAck(ack)) = result.result else {
+            panic!("adapter ack must return an acknowledgement");
+        };
+        ack.applied_sequence
+    }
+
+    #[test]
+    fn adapter_watch_streams_committed_puts_and_cancels() {
+        use crate::webrtc::SessionId;
+        let fixture = Fixture::new();
+        let state = dispatch_state(&fixture);
+        let session = SessionId::from_u64(5101);
+        admin_session(&state, session);
+        fixture
+            .put("wall", "Wall panel", true, None, NOW_MS)
+            .expect("fixture put must succeed");
+        let snapshot = dispatch_watch(&state, session, "w");
+        assert_eq!(snapshot.snapshot_revision, 1);
+        assert_eq!(snapshot.entries.len(), 1);
+        super::super::state_store::dispatch(
+            &state,
+            session,
+            &local_principal(),
+            put_command("door", None),
+        )
+        .expect("adapter put must succeed");
+        assert_eq!(dispatch_ack(&state, session, "w", 1), 1);
+        let control_ok::Result::StateStoreResult(result) = super::super::state_store::dispatch(
+            &state,
+            session,
+            &local_principal(),
+            proto::StateStoreCommand {
+                action: Some(state_store_command::Action::Unwatch(proto::UnwatchState {
+                    watch_id: "w".to_owned(),
+                })),
+            },
+        )
+        .expect("adapter unwatch must succeed") else {
+            panic!("adapter unwatch must return a StateStoreResult");
+        };
+        assert!(matches!(
+            result.result,
+            Some(state_store_result::Result::Unwatched(_))
+        ));
+        assert!(!state.state_store_watches.owns_watch(session, "w"));
+        super::super::state_store::dispatch(
+            &state,
+            session,
+            &local_principal(),
+            ack_command("w", 1),
+        )
+        .expect_err("ack after cancel must fail");
+    }
+
+    #[test]
+    fn adapter_failed_put_publishes_nothing() {
+        use crate::webrtc::SessionId;
+        let fixture = Fixture::new();
+        let state = dispatch_state(&fixture);
+        let session = SessionId::from_u64(5102);
+        admin_session(&state, session);
+        dispatch_watch(&state, session, "w");
+        super::super::state_store::dispatch(
+            &state,
+            session,
+            &local_principal(),
+            put_command("wall", Some(99)),
+        )
+        .expect_err("guarded put on a missing key must fail");
+        super::super::state_store::dispatch(
+            &state,
+            session,
+            &local_principal(),
+            ack_command("w", 1),
+        )
+        .expect_err("no update means nothing to acknowledge");
+    }
+
+    #[test]
+    fn adapter_watch_survives_restart_with_revision() {
+        use crate::webrtc::SessionId;
+        let fixture = Fixture::new();
+        let before = {
+            let state = dispatch_state(&fixture);
+            let session = SessionId::from_u64(5103);
+            admin_session(&state, session);
+            fixture
+                .put("wall", "Wall panel", true, None, NOW_MS)
+                .expect("fixture put must succeed");
+            dispatch_watch(&state, session, "w")
+        };
+        let restarted = dispatch_state(&fixture);
+        let session = SessionId::from_u64(5104);
+        admin_session(&restarted, session);
+        let after = dispatch_watch(&restarted, session, "w");
+        assert_eq!(after.snapshot_revision, before.snapshot_revision);
+        assert_eq!(after.entries.len(), before.entries.len());
+    }
+
+    #[test]
+    fn adapter_concurrent_puts_and_watches_stay_consistent() {
+        use crate::webrtc::SessionId;
+        use std::sync::Arc;
+        let fixture = Fixture::new();
+        let state = Arc::new(dispatch_state(&fixture));
+        let session = SessionId::from_u64(5105);
+        admin_session(&state, session);
+        dispatch_watch(&state, session, "w");
+        let mut handles = Vec::new();
+        for worker in 0..4 {
+            let state = Arc::clone(&state);
+            handles.push(std::thread::spawn(move || {
+                for index in 0..7 {
+                    let key = format!("wall-{worker}-{index}");
+                    super::super::state_store::dispatch(
+                        &state,
+                        session,
+                        &local_principal(),
+                        put_command(&key, None),
+                    )
+                    .expect("concurrent blind put must succeed");
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("worker must finish");
+        }
+        assert_eq!(dispatch_ack(&state, session, "w", 28), 28);
+        let snapshot = dispatch_watch(&state, session, "w2");
+        assert_eq!(snapshot.entries.len(), 28);
+        assert_eq!(snapshot.snapshot_revision, 28);
+    }
+
+    #[test]
+    fn adapter_readonly_config_rejects_put_without_publishing() {
+        use crate::webrtc::SessionId;
+        let fixture = Fixture::new();
+        let state = dispatch_state(&fixture);
+        let session = SessionId::from_u64(5106);
+        admin_session(&state, session);
+        dispatch_watch(&state, session, "w");
+        let path = fixture.config_path();
+        let writable = std::fs::metadata(&path)
+            .expect("config must exist")
+            .permissions();
+        let mut readonly = writable.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&path, readonly).expect("config must become read-only");
+        super::super::state_store::dispatch(
+            &state,
+            session,
+            &local_principal(),
+            put_command("wall", None),
+        )
+        .expect_err("put on a read-only config must fail");
+        super::super::state_store::dispatch(
+            &state,
+            session,
+            &local_principal(),
+            ack_command("w", 1),
+        )
+        .expect_err("a rejected put publishes nothing");
+        std::fs::set_permissions(&path, writable).expect("config must become writable");
+    }
 
     #[test]
     fn settings_section_is_reserved_from_camera_parsing() {
