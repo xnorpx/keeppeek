@@ -106,6 +106,8 @@ pub(crate) mod state_store;
     reason = "server dispatch wiring lands in the next slice; covered by durable tests meanwhile"
 )]
 pub(crate) mod state_store_durable;
+#[cfg(test)]
+mod state_store_integration;
 pub(crate) mod state_store_schema;
 pub(crate) mod state_store_settings;
 pub(crate) mod state_store_watch;
