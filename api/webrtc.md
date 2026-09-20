@@ -40,8 +40,11 @@ request with a fixed `ErrorCode` and optional typed error detail. In both messag
 
 `ServerCapabilities`, `ConnectionUpdate`, `Event`, `MediaDataConfiguration`,
 `PublicationControl`, and unsolicited `PublicationState`, `StoredMediaState`,
-`EventPublicationState`, `GroupState`, or `StateStoreWatchUpdate` messages are
+`EventPublicationState`, or `GroupState` messages are
 server-originated control requests with newly allocated even request IDs.
+`StateStoreWatchUpdate` and `StateStoreWatchClosed` are `Notification`
+messages instead; watch updates are acknowledged with a client-originated
+`WatchStateAck` request, described under Shared state store.
 
 ## Acknowledgements
 
@@ -53,7 +56,8 @@ Rejected operations use `Error` with their corresponding typed error detail.
 `Notification` messages such as `CameraUpdated`, `SourceSessionAdded`, `ConnectionUpdate`, and `Event` are
 fire-and-forget. The `control-channel` stream itself provides SCTP-level guaranteed delivery, ordered
 transmission, and congestion control, rendering application-level JSON-like ACKs entirely redundant. The client
-does not respond to `Notification`s.
+does not respond to `Notification`s, except that `StateStoreWatchUpdate` carries application-level
+delivery semantics and is acknowledged with `WatchStateAck` as described under Shared state store.
 
 The initial `ServerCapabilities` notification is sent when the connection is established over the `control-channel`.
 
@@ -459,9 +463,21 @@ delivered sequence is rejected as an invalid request.
 A `PUT` update contains the complete replacement entry. `DELETE` and `EXPIRE` carry namespace,
 key, and revision without an entry.
 
+Acknowledgement is also bounded by time: the server allows 30 seconds to acknowledge each update.
+The deadline runs against the oldest unacknowledged update from its transmission, and any
+acknowledgement that advances `applied_sequence` restarts the deadline for the new oldest. On
+expiry the server terminates the watch as described below.
+
 Watch delivery is bounded: the server buffers at most 32 unacknowledged updates per watch. A watch
-that exceeds its buffer, loses authorization, or fails snapshot delivery is terminated explicitly
-and stops receiving updates; the client must re-watch rather than assume continuity. `UnwatchState`
+that exceeds its buffer, exceeds its acknowledgement deadline, loses authorization, or fails
+snapshot delivery is terminated explicitly: the server sends `StateStoreWatchClosed` naming the
+watch and reason, then accepts no further updates or acknowledgements for that watch ID. A quiet
+watch is healthy only until such a signal arrives; an idle client whose authorization is revoked
+learns about it through this close, not through a gap that never comes. The close notification
+uses the same bounded outbound queue as other notifications: if it cannot be enqueued because the
+queue is full, the server closes the control channel instead, and the client treats channel
+closure as termination of all its watches. After any termination the client must re-watch rather
+than assume continuity. `UnwatchState`
 stops updates and returns `StateUnwatchResult`; it is harmless to unwatch a client-local already
 closed watch only when the server still recognizes its ID.
 `StateStoreError.current_revision` is populated only for `CONFLICT`; all other errors omit it so
