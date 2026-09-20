@@ -101,6 +101,8 @@ pub(crate) mod recording_coverage;
 mod recording_maintenance;
 mod runtime_configuration;
 pub(crate) mod state_store;
+#[cfg(test)]
+mod state_store_crash;
 #[allow(
     dead_code,
     reason = "server dispatch wiring lands in the next slice; covered by durable tests meanwhile"
