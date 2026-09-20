@@ -108,6 +108,7 @@ pub(crate) mod state_store;
 pub(crate) mod state_store_durable;
 pub(crate) mod state_store_schema;
 pub(crate) mod state_store_settings;
+pub(crate) mod state_store_watch;
 mod stored_media;
 
 pub(crate) fn migrate_peek_layout_configuration(
@@ -666,7 +667,10 @@ impl ControlRequestHandler for ServerControlHandler {
                         runtime_configuration::dispatch(&self.state, command).map(Some)
                     }
                     Some(control_request::Command::StateStoreCommand(command)) => {
-                        if peek_layouts::handles(&command) {
+                        if state_store::is_watch_lifecycle(&command) {
+                            state_store::dispatch(&self.state, session_id, &principal, command)
+                                .map(Some)
+                        } else if peek_layouts::handles(&command) {
                             peek_layouts::dispatch(&self.state, &principal, command).map(Some)
                         } else if camera_permissions::handles(&command) {
                             camera_permissions::dispatch(self, &principal, command).map(Some)
@@ -675,7 +679,8 @@ impl ControlRequestHandler for ServerControlHandler {
                         } else if self.state.state_store_generic_enabled
                             && state_store::handles(&command)
                         {
-                            state_store::dispatch(&self.state, &principal, command).map(Some)
+                            state_store::dispatch(&self.state, session_id, &principal, command)
+                                .map(Some)
                         } else {
                             mqtt_integration::dispatch(&self.state, command).map(Some)
                         }
@@ -8566,6 +8571,7 @@ pub struct ServerState {
     camera_metadata: Arc<camera_metadata::Queue>,
     configuration_plans: configuration::Registry,
     state_store: Arc<Mutex<state_store::Registry>>,
+    state_store_watches: Arc<state_store_watch::WatchRegistry>,
     state_store_generic_enabled: bool,
     cameras: Arc<RwLock<Vec<CameraEntry>>>,
     events: Option<EventStore>,
@@ -8638,6 +8644,7 @@ impl ServerState {
             camera_metadata: Arc::new(camera_metadata::Queue::default()),
             configuration_plans: configuration::Registry::default(),
             state_store: Arc::new(Mutex::new(state_store::Registry::default())),
+            state_store_watches: Arc::new(state_store_watch::WatchRegistry::default()),
             state_store_generic_enabled: false,
             cameras: Arc::new(RwLock::new(entries)),
             events: None,
@@ -9005,6 +9012,7 @@ fn close_api_session(state: &ServerState, session_id: SessionId) {
         );
     }
     event_search::close_session(state, session_id);
+    state.state_store_watches.close_session(session_id);
     state.event_publications.close_session(session_id);
     state.event_subscriptions.close_session(session_id);
     state.camera_discovery_tasks.close_session(session_id);
@@ -9565,6 +9573,7 @@ fn serve_with_state_on_listener_inner(
     while !shutdown.is_cancelled() {
         expire_api_sessions(&session_reaper_state);
         expire_event_publications(&session_reaper_state);
+        expire_state_store_watches(&session_reaper_state);
         if let Err(error) = session_reaper_state.access_manager.flush_audit(false) {
             tracing::warn!(%error, "unable to flush access audit events");
         }
@@ -9585,6 +9594,14 @@ fn serve_with_state_on_listener_inner(
     }
 
     Ok(addr)
+}
+
+fn expire_state_store_watches(state: &ServerState) {
+    state
+        .state_store_watches
+        .expire_watches(state, unix_time_ms(), |session_id, notification| {
+            state_store_watch::enqueue_notification(state, session_id, notification)
+        });
 }
 
 fn expire_event_publications(state: &ServerState) {

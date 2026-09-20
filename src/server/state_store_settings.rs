@@ -948,10 +948,13 @@ mod tests {
                 ttl: None,
             })),
         };
-        let control_ok::Result::StateStoreResult(result) =
-            super::super::state_store::dispatch(&state, &principal, command)
-                .expect("adapter put must succeed")
-        else {
+        let control_ok::Result::StateStoreResult(result) = super::super::state_store::dispatch(
+            &state,
+            crate::webrtc::SessionId::from_u64(0),
+            &principal,
+            command,
+        )
+        .expect("adapter put must succeed") else {
             panic!("adapter put must return a StateStoreResult");
         };
         let Some(state_store_result::Result::Entry(entry)) = result.result else {
