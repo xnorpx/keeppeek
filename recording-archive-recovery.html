@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e6ebbfad.js";
+            window.path_to_searchindex_js = "searchindex-598db736.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -192,6 +192,8 @@ Record the operating-system account that owns and runs the recorder.</p>
 <tbody>
 <tr><td><code>config.toml</code> and sibling <code>secrets.toml</code></td><td>Cameras, stable identities, policies, credentials, grants, dashboards, and integration settings. A configuration ZIP can preserve this pair.</td></tr>
 <tr><td>The configured recording catalog, normally <code>recordings.db</code>, and any accompanying <code>-wal</code> and <code>-shm</code> files</td><td>Recording identities, paths, indexes, event data, coverage/deletion evidence, and maintenance intent. Copy the database family consistently.</td></tr>
+<tr><td>The runtime state-store database file and any accompanying sidecars</td><td>Desired-state documents, leases, namespace and entry revisions. A separate consistent set; excluded from the configuration ZIP. Copy the family consistently.</td></tr>
+<tr><td>Settings-backed state entries</td><td>Stored in the <code>state_store</code> section of <code>config.toml</code>; already covered by the configuration ZIP. Generic runtime entries are not.</td></tr>
 <tr><td>Both medium-term and long-term recording roots</td><td>The MP4 bytes referenced by the catalog. The roots may be the same directory. Preserve relative structure and file names.</td></tr>
 <tr><td>The configured event-thumbnail directory</td><td>Event-image bytes. It may be outside the recording root.</td></tr>
 <tr><td>Hidden <code>.exports</code> under the long-term root</td><td>Export history and artifacts, if you need to retain that local history. Artifacts still have independent expiry rules.</td></tr>
@@ -215,7 +217,8 @@ journals with the copy and do not treat it as an ordinary clean recovery point.<
 <li>Stop KeepPeek through its normal service manager. Confirm the process has exited and no second
 recorder is using the same paths. Recording stops for this maintenance window.</li>
 <li>Copy the configuration directory and complete archive set while they remain stopped. Include any
-database sidecars that exist; do not manually delete them to make the copy simpler.</li>
+database sidecars that exist, for both the recording catalog and the runtime state store;
+do not manually delete them to make the copy simpler.</li>
 <li>Preserve ownership and access restrictions, record the source version and paths, and verify the
 copied files using your backup tool’s integrity checks. Keep the copy separately from the source
 disk.</li>
@@ -226,6 +229,16 @@ configuration export lock does not create an atomic snapshot of the catalog, med
 If you use storage snapshots instead of a stopped copy, establish and test a consistent capture
 procedure for every involved volume and writer. This book does not claim that an arbitrary live
 filesystem copy is recoverable.</p>
+<h2 id="restore-the-runtime-state-store-before-accepting-watches"><a class="header" href="#restore-the-runtime-state-store-before-accepting-watches">Restore the runtime state store before accepting watches</a></h2>
+<p>Restore the state-store database family together with its counters: namespace
+revisions, entry revisions, and byte counts must return as one unit before the
+server accepts new watches. Restoring entries without their counters would let
+a fresh write reuse a revision that a previous writer already consumed, which
+breaks compare-and-set ordering. After the restore, clients establish fresh
+watches and reconcile the new snapshots against current capabilities; there is
+no resume across a restore. A configuration ZIP alone does not restore generic
+runtime state: it carries only the settings-backed entries stored in
+<code>config.toml</code>.</p>
 <h2 id="rehearse-on-an-isolated-host"><a class="header" href="#rehearse-on-an-isolated-host">Rehearse on an isolated host</a></h2>
 <ol>
 <li>Keep the original backup unchanged. Restore a working copy into an isolated environment with
@@ -279,6 +292,7 @@ retry. Copying files can change their identity, so a restored checkpoint may pro
 </thead>
 <tbody>
 <tr><td>Settings returned, recordings did not</td><td>Confirm that a catalog and media archive were restored. The configuration ZIP excludes both.</td></tr>
+<tr><td>Settings returned, runtime state did not</td><td>Confirm that the state-store database family was restored with its counters. Re-establish watches with a fresh snapshot afterwards.</td></tr>
 <tr><td>Recordings appear missing after a path change</td><td>Check mount availability, service identity, effective paths, and the catalog’s original locations before changing files.</td></tr>
 <tr><td>MP4 files exist but do not appear in Keep</td><td>Inspect reconciliation. Unknown files are not automatically adopted; <strong>Rebuild index</strong> only applies to eligible existing catalog recordings.</td></tr>
 <tr><td>A cataloged recording has a valid container but a wrong index</td><td>Use the previewed <strong>Rebuild index</strong> remedy if offered. It changes indexes, not media bytes.</td></tr>
