@@ -4,8 +4,10 @@
 //! allowlists its fields and types. There is no generic secret detector:
 //! documents cannot smuggle credentials, media bytes, SDP, or logs because no
 //! approved field can represent them. Field strings are length-bounded and
-//! reject control characters, and nested parameter keys must be namespaced
-//! and free of secret markers.
+//! reject control characters. Service-specific `parameters` are rejected until
+//! registered per-service validators exist: an incomplete credential-key
+//! blacklist cannot cover explicit shapes like `vendor.api_key`, so only an
+//! absent or empty parameters object is accepted.
 
 use super::state_store::{Error, Invalid};
 use prost_types::{Struct, Value, value::Kind};
@@ -13,10 +15,7 @@ use prost_types::{Struct, Value, value::Kind};
 pub(super) const MEDIA_INTENT_SCHEMA: &str = "keeppeek.media-intent.v1";
 
 const MAX_ID_CHARS: usize = 128;
-const MAX_PARAMETER_STRING_CHARS: usize = 1_024;
 const MAX_PRIORITY: f64 = 1_000_000.0;
-const MAX_PARAMETERS_DEPTH: usize = 3;
-const SECRET_MARKERS: &[&str] = &["password", "secret", "token", "credential"];
 
 pub(super) fn validate_value(schema: &str, value: &Struct) -> Result<(), Error> {
     match schema {
@@ -61,7 +60,7 @@ fn validate_media_intent(value: &Struct) -> Result<(), Error> {
     }
     if let Some(field) = value.fields.get("parameters") {
         match field.kind.as_ref() {
-            Some(Kind::StructValue(parameters)) => validate_parameters(parameters, 0)?,
+            Some(Kind::StructValue(parameters)) if parameters.fields.is_empty() => {}
             _ => return Err(Error::Invalid(Invalid::Schema)),
         }
     }
@@ -80,33 +79,6 @@ fn validate_media_intent(value: &Struct) -> Result<(), Error> {
                 | "parameters"
         ) {
             return Err(Error::Invalid(Invalid::Schema));
-        }
-    }
-    Ok(())
-}
-
-fn validate_parameters(parameters: &Struct, depth: usize) -> Result<(), Error> {
-    if depth >= MAX_PARAMETERS_DEPTH {
-        return Err(Error::Invalid(Invalid::Schema));
-    }
-    for (key, field) in &parameters.fields {
-        if !(key.contains('.') || key.contains('/')) {
-            return Err(Error::Invalid(Invalid::Schema));
-        }
-        let folded = key.to_lowercase();
-        if SECRET_MARKERS.iter().any(|marker| folded.contains(marker)) {
-            return Err(Error::Invalid(Invalid::Schema));
-        }
-        match field.kind.as_ref() {
-            Some(Kind::StringValue(text)) => {
-                if text.chars().count() > MAX_PARAMETER_STRING_CHARS || has_control(text) {
-                    return Err(Error::Invalid(Invalid::Schema));
-                }
-            }
-            Some(Kind::BoolValue(_)) => {}
-            Some(Kind::NumberValue(number)) if number.is_finite() => {}
-            Some(Kind::StructValue(nested)) => validate_parameters(nested, depth + 1)?,
-            _ => return Err(Error::Invalid(Invalid::Schema)),
         }
     }
     Ok(())
@@ -320,57 +292,56 @@ mod tests {
             Err(Error::Invalid(Invalid::Schema))
         );
         let mut bad_priority = valid_publish();
-        bad_priority.fields.insert(
-            "priority".to_owned(),
-            Value {
-                kind: Some(Kind::NumberValue(f64::NAN)),
-            },
-        );
+        let (name, field) = number_field("priority", f64::NAN);
+        bad_priority.fields.insert(name, field);
         assert_eq!(
             validate_value(MEDIA_INTENT_SCHEMA, &bad_priority),
             Err(Error::Invalid(Invalid::Schema))
         );
-        let mut secret_parameter = valid_publish();
-        secret_parameter.fields.insert(
+        for key in [
+            "vendor.api_key",
+            "vendor.authorization",
+            "vendor.url",
+            "transcoder.profile",
+        ] {
+            let mut parameters = valid_publish();
+            parameters.fields.insert(
+                "parameters".to_owned(),
+                Value {
+                    kind: Some(Kind::StructValue(Struct {
+                        fields: BTreeMap::from([string_field(key, "x")]),
+                    })),
+                },
+            );
+            assert_eq!(
+                validate_value(MEDIA_INTENT_SCHEMA, &parameters),
+                Err(Error::Invalid(Invalid::Schema)),
+                "non-empty parameters must be rejected until service validators exist: {key}"
+            );
+        }
+        let mut empty_parameters = valid_publish();
+        empty_parameters.fields.insert(
             "parameters".to_owned(),
             Value {
                 kind: Some(Kind::StructValue(Struct {
-                    fields: BTreeMap::from([string_field("transcoder/api_token", "x")]),
+                    fields: BTreeMap::new(),
                 })),
             },
         );
         assert_eq!(
-            validate_value(MEDIA_INTENT_SCHEMA, &secret_parameter),
-            Err(Error::Invalid(Invalid::Schema))
-        );
-        let mut flat_parameter = valid_publish();
-        flat_parameter.fields.insert(
-            "parameters".to_owned(),
-            Value {
-                kind: Some(Kind::StructValue(Struct {
-                    fields: BTreeMap::from([string_field("profile", "high")]),
-                })),
-            },
-        );
-        assert_eq!(
-            validate_value(MEDIA_INTENT_SCHEMA, &flat_parameter),
-            Err(Error::Invalid(Invalid::Schema))
-        );
-        let mut good_parameters = valid_publish();
-        good_parameters.fields.insert(
-            "parameters".to_owned(),
-            Value {
-                kind: Some(Kind::StructValue(Struct {
-                    fields: BTreeMap::from([
-                        string_field("transcoder.profile", "high"),
-                        number_field("transcoder.priority", 3.0),
-                    ]),
-                })),
-            },
-        );
-        assert_eq!(
-            validate_value(MEDIA_INTENT_SCHEMA, &good_parameters),
+            validate_value(MEDIA_INTENT_SCHEMA, &empty_parameters),
             Ok(())
+        );
+        let mut unstructured_parameters = valid_publish();
+        unstructured_parameters.fields.insert(
+            "parameters".to_owned(),
+            Value {
+                kind: Some(Kind::StringValue("profile=high".to_owned())),
+            },
+        );
+        assert_eq!(
+            validate_value(MEDIA_INTENT_SCHEMA, &unstructured_parameters),
+            Err(Error::Invalid(Invalid::Schema))
         );
     }
 }
