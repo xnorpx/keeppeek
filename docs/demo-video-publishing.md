@@ -148,6 +148,12 @@ phase's final frame until speech catches up; the next phase never starts early. 
 speed up the visual phase. The artifact retains silent sources, individual WAV files, and measured
 freeze durations for auditability, while only final narrated media is published to Blob Storage.
 
+Narrated output uses 25 fps. Source cue boundaries select the first frame at or after each timestamp;
+each phase must contain at least one source frame. Speech plus its authored pause rounds up to a
+whole 40 ms frame. The muxer pads audio to that same phase duration, and captions use the resulting
+frame-aligned timeline. This prevents rounding differences from accumulating across concatenated
+phases.
+
 Use a dedicated app registration whose federated subject is the `demo-videos` GitHub environment.
 Grant that identity **Storage Blob Data Contributor** on only the `keeppeekdemos` account. The
 same identity receives **Cognitive Services OpenAI User** on only the narration account. The
