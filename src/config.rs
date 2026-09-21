@@ -103,6 +103,9 @@ pub struct Config {
     pub operational_events: OperationalEventsConfig,
 
     #[serde(default)]
+    pub privacy: PrivacyConfig,
+
+    #[serde(default)]
     pub(crate) event_forwarder: EventForwarderConfig,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,6 +113,28 @@ pub struct Config {
 
     #[serde(skip)]
     pub(crate) source: toml::Table,
+}
+
+/// Server-enforced recurring privacy policies keyed by camera identity.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct PrivacyConfig {
+    #[serde(default)]
+    pub cameras: BTreeMap<String, crate::privacy::PrivacySchedule>,
+}
+
+impl PrivacyConfig {
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.cameras.len() > 127 {
+            anyhow::bail!("privacy configuration cannot contain more than 127 cameras");
+        }
+        for (camera_id, schedule) in &self.cameras {
+            if camera_id.trim().is_empty() || camera_id.len() > 256 {
+                anyhow::bail!("privacy camera keys must contain 1 to 256 bytes");
+            }
+            schedule.validate()?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -844,6 +869,7 @@ impl Default for Config {
             battery_wake: BatteryWakeConfig::default(),
             logging: LoggingConfig::default(),
             operational_events: OperationalEventsConfig::default(),
+            privacy: PrivacyConfig::default(),
             event_forwarder: EventForwarderConfig::default(),
             isapi_callbacks: None,
             source: toml::Table::new(),
@@ -1254,6 +1280,7 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
     cfg.access.validate()?;
     cfg.direct_card.validate()?;
     cfg.operational_events.validate()?;
+    cfg.privacy.validate()?;
     cfg.event_forwarder.mqtt.validate()?;
 
     let default_recordings = config_directory
@@ -1606,6 +1633,7 @@ pub(crate) fn validate_configuration_table(path: &Path, root: &toml::Table) -> a
     config.direct_card.validate()?;
     config.battery_wake.validate()?;
     config.operational_events.validate()?;
+    config.privacy.validate()?;
     config.event_forwarder.mqtt.validate()?;
     config.storage.validate_safety_thresholds()?;
     crate::notifications::validate_configuration(path, root)?;
