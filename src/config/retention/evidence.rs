@@ -83,9 +83,9 @@ impl Settings {
         let Some(end_ms) = event.end_time_ms else {
             return Unavailable(OpenInterval);
         };
-        match Interval::new(event.start_time_ms, end_ms) {
-            Ok(interval) => Available(Evidence::new(kind, interval)),
-            Err(_) => Unavailable(InvalidInterval),
-        }
+        Interval::new(event.start_time_ms, end_ms)
+            .map_or(Unavailable(InvalidInterval), |interval| {
+                Available(Evidence::new(kind, interval))
+            })
     }
 }

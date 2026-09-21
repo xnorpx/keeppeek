@@ -19,7 +19,7 @@ impl RecordingAdmission {
             .ok_or_else(|| anyhow::anyhow!("recording source is unavailable"))?;
         // Sample time inside the admission lock so scheduling cannot reverse observations.
         #[cfg(test)]
-        let clock = clock.or(*self.control_clock.lock().unwrap());
+        let clock = clock.or_else(|| *self.control_clock.lock().unwrap());
         let now = clock.unwrap_or_else(Clock::now);
         policy.sync_permission(now);
         let result = operation(&mut policy.control, now);
