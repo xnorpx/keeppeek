@@ -12489,6 +12489,14 @@ fn delete_camera_settings(
     }
     match config::remove_camera(config_path, ip) {
         Ok(()) => {
+            if let Some(storage) = &state.recording_control {
+                // Keep an Off bound while a removed camera can still deliver frames.
+                storage.configure_camera_recording(
+                    &ip.to_string(),
+                    CameraRecordingMode::Off,
+                    Duration::ZERO,
+                );
+            }
             if let Some(runtime) = &state.camera_runtime {
                 runtime.stop_camera(ip).map_err(|_| ControlCommandError::new(proto::ErrorCode::Unavailable, 503, "camera configuration was removed but its runtime stop could not be confirmed"))?;
             }

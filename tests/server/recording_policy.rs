@@ -343,6 +343,42 @@ fn saved_offline_camera_mode_immediately_bounds_recording_admission() {
 }
 
 #[test]
+fn removed_camera_cannot_keep_recording_or_accept_enable_override() {
+    let fixture = Fixture::new();
+    let path = fixture.root.join("config.toml");
+    crate::config::write_private_file(
+        &path,
+        b"[cameras.front]\nip='192.0.2.8'\nrecording_mode='sub'\n",
+    )
+    .unwrap();
+    let state = fixture.state.clone().with_camera_config_path(path);
+    let storage = state.recording_control.as_ref().unwrap();
+    storage.configure_camera_recording(
+        "192.0.2.8",
+        crate::cameras::CameraRecordingMode::Sub,
+        Duration::from_secs(60),
+    );
+    crate::server::delete_camera_settings(&state, "192.0.2.8", "").unwrap();
+    let snapshot = storage.recording_control("192.0.2.8").unwrap();
+    assert_eq!(snapshot.mode, crate::cameras::CameraRecordingMode::Off);
+    assert!(
+        storage
+            .set_recording_override(
+                "192.0.2.8",
+                snapshot.revision,
+                crate::storage::recording_control::Override {
+                    enabled: true,
+                    source: crate::storage::recording_control::Source::Manual,
+                    actor: "operator".into(),
+                    reason: "stale camera control".into(),
+                    ttl_ms: 60_000,
+                }
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn configuration_plan_bounds_offline_recording_before_runtime_activation() {
     use proto::configuration_command::Action as ConfigAction;
     use proto::configuration_result::Result as ConfigResult;
