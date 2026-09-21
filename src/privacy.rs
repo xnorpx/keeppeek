@@ -1,8 +1,50 @@
 use chrono::{DateTime, Datelike, NaiveTime, Utc, Weekday};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const MAX_WINDOWS: usize = 64;
+
+/// A cheap, shared gate for media producers and consumers.
+#[derive(Debug, Default)]
+pub struct PrivacyGate {
+    active: AtomicBool,
+    epoch: AtomicU64,
+}
+
+impl PrivacyGate {
+    /// Creates an inactive gate.
+    pub const fn new() -> Self {
+        Self {
+            active: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
+        }
+    }
+
+    /// Activates privacy before publishing the new epoch.
+    pub fn activate(&self) -> u64 {
+        let epoch = self.epoch.fetch_add(1, Ordering::AcqRel).saturating_add(1);
+        self.active.store(true, Ordering::Release);
+        epoch
+    }
+
+    /// Deactivates privacy and advances the epoch so stale media is rejected.
+    pub fn deactivate(&self) -> u64 {
+        let epoch = self.epoch.fetch_add(1, Ordering::AcqRel).saturating_add(1);
+        self.active.store(false, Ordering::Release);
+        epoch
+    }
+
+    /// Returns whether a producer may publish media for the observed epoch.
+    pub fn allows(&self, observed_epoch: u64) -> bool {
+        !self.active.load(Ordering::Acquire) && observed_epoch == self.epoch.load(Ordering::Acquire)
+    }
+
+    /// Returns the current transition epoch.
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
+    }
+}
 
 /// A recurring local-time interval during which a camera is private.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +153,18 @@ const fn weekday_number(day: Weekday) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gate_rejects_stale_and_private_media_epochs() {
+        let gate = PrivacyGate::new();
+        let initial = gate.epoch();
+        assert!(gate.allows(initial));
+        let private_epoch = gate.activate();
+        assert!(!gate.allows(private_epoch));
+        let public_epoch = gate.deactivate();
+        assert!(!gate.allows(initial));
+        assert!(gate.allows(public_epoch));
+    }
 
     fn schedule(window: PrivacyWindow) -> PrivacySchedule {
         PrivacySchedule {
