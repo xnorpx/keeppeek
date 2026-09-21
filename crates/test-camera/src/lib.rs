@@ -398,6 +398,7 @@ impl TestCameraBuilder {
                 main,
                 sub,
                 onvif.address().port(),
+                self.channel_count,
             )?),
         };
         let web_ui = match self.protocol {
