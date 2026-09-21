@@ -14,9 +14,11 @@ pub(crate) enum AudioCodec {
 
 #[derive(Debug, Clone)]
 pub(crate) struct AudioFrame {
+    #[expect(dead_code, reason = "Consumed by the negotiated RTP audio writer")]
     pub(crate) codec: AudioCodec,
     pub(crate) sample_rate_hz: u32,
     pub(crate) channel_count: u8,
+    #[expect(dead_code, reason = "Consumed by the negotiated RTP audio writer")]
     pub(crate) timestamp: Option<Duration>,
     pub(crate) received_at: Instant,
     pub(crate) data: Bytes,
@@ -39,6 +41,7 @@ impl AudioQueue {
         }
     }
 
+    #[expect(dead_code, reason = "Consumed by the negotiated RTP audio writer")]
     pub(crate) fn pop(&mut self, now: Instant) -> Option<AudioFrame> {
         self.expire(now);
         let frame = self.frames.pop_front()?;
@@ -46,10 +49,12 @@ impl AudioQueue {
         Some(frame)
     }
 
+    #[expect(dead_code, reason = "Reported by the WebRTC audio health path")]
     pub(crate) const fn dropped_frames(&self) -> u64 {
         self.dropped_frames
     }
 
+    #[expect(dead_code, reason = "Used by the negotiated RTP audio writer")]
     pub(crate) fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
