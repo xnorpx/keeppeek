@@ -8592,6 +8592,7 @@ pub struct ServerState {
     access_key: Arc<RwLock<AccessKey>>,
     access_manager: AccessManager,
     privacy: Arc<PrivacyRegistry>,
+    privacy_epochs: Arc<Mutex<HashMap<IpAddr, u64>>>,
     access_metrics: Arc<AccessMetrics>,
     network_access: NetworkAccessPolicy,
     require_secure_remote: bool,
@@ -8676,6 +8677,7 @@ impl ServerState {
             access_key: Arc::new(RwLock::new(config.access_key)),
             access_manager,
             privacy,
+            privacy_epochs: Arc::new(Mutex::new(HashMap::new())),
             access_metrics: Arc::new(AccessMetrics::default()),
             network_access: NetworkAccessPolicy::new(
                 config.access.local_networks.clone(),
@@ -8796,6 +8798,28 @@ impl ServerState {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    fn enforce_privacy_transitions(&self) {
+        let now = chrono::Utc::now();
+        for camera in self.camera_entries() {
+            let Ok(camera_ip) = camera.info.ip.parse::<IpAddr>() else {
+                continue;
+            };
+            let Ok((active, epoch)) = self.privacy.decision(&camera.info.id, now) else {
+                self.webrtc.live().reset_camera(camera_ip);
+                continue;
+            };
+            let changed = self
+                .privacy_epochs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(camera_ip, epoch)
+                .is_none_or(|previous| previous != epoch);
+            if active && changed {
+                self.webrtc.live().reset_camera(camera_ip);
+            }
+        }
     }
 
     fn camera(&self, id: &str) -> Option<CameraEntry> {
@@ -9664,6 +9688,7 @@ fn serve_with_state_on_listener_inner(
     }
 
     while !shutdown.is_cancelled() {
+        session_reaper_state.enforce_privacy_transitions();
         expire_api_sessions(&session_reaper_state);
         expire_event_publications(&session_reaper_state);
         expire_state_store_watches(&session_reaper_state);
