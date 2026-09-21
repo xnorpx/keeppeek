@@ -107,9 +107,23 @@
 	let lastViewerCameraId = '';
 	let viewerSelectionReady = $state(initialRequestedCameraId.length > 0);
 	let cameraViewActive = $derived(view === 'viewer');
+	let broadcastTalkbackActive = $derived(livePeer.talkbackActive);
+	let broadcastTalkbackError = $derived(livePeer.talkbackError);
 	let requestedCameraId = $derived(page.url.searchParams.get('camera')?.trim() ?? '');
 	let focusQuality = $state<FocusedLivePreference>('auto');
 	let playbackPreferences = $state.raw(defaultPlaybackPreferences());
+
+	async function toggleBroadcastTalkback(): Promise<void> {
+		try {
+			if (broadcastTalkbackActive) {
+				await livePeer.stopTalkback();
+			} else {
+				await livePeer.startTalkback({ all: true });
+			}
+		} catch {
+			// The peer keeps the actionable error for the status message below.
+		}
+	}
 	let wallDraft = $state.raw<{
 		layoutId: string;
 		revision: string;
@@ -1149,6 +1163,23 @@
 			onsave={() => void saveWallPreferences()}
 			ondiscard={() => void discardWallPreferences()}
 		/>
+		<div class="absolute top-14 right-4 z-20 flex flex-col items-end gap-1.5">
+			<Button
+				variant={broadcastTalkbackActive ? 'destructive' : 'secondary'}
+				class="min-h-9 rounded-sm shadow-md"
+				disabled={livePeer.sessionId === null}
+				aria-label={broadcastTalkbackActive ? 'Stop broadcast talkback' : 'Broadcast talkback'}
+				onclick={() => void toggleBroadcastTalkback()}
+			>
+				<RadioIcon class="size-4" />
+				{broadcastTalkbackActive ? 'Stop broadcast' : 'Broadcast talkback'}
+			</Button>
+			{#if broadcastTalkbackError}
+				<p class="max-w-xs rounded-sm border border-destructive/40 bg-background/95 px-2 py-1 text-xs text-destructive" role="alert">
+					{broadcastTalkbackError}
+				</p>
+			{/if}
+		</div>
 		{#if layoutError}
 			<p
 				class="absolute top-14 left-1/2 z-30 max-w-sm -translate-x-1/2 rounded-sm border border-destructive/40 bg-background/95 px-2.5 py-1.5 text-xs text-destructive shadow-lg"
