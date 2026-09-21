@@ -237,7 +237,7 @@ Type: `CameraConfig`, section `[<namespace>.<camera-key>]`, usually `[cameras.fr
 | `backend`                       | `CameraBackend`       | Shared default or `"auto"`        | `"auto"`, `"retina"`, or `"reo-proto"`.                                                                                         |
 | `transport`                     | `CameraTransport`     | Shared default or `"tcp"`         | `"tcp"` or `"udp"`.                                                                                                             |
 | `record_generic_motion_events`  | `bool`                | Shared default or `false`         | Opt in to supported generic motion events.                                                                                      |
-| `recording_mode`                | `CameraRecordingMode` | Shared default or `"event-boost"` | `"off"`, `"sub"`, `"main"`, `"both"`, or `"event-boost"`.                                                                       |
+| `recording_mode`                | `CameraRecordingMode` | Shared default or `"event-boost"` | `"off"`, `"sub"`, `"main"`, `"both"`, or `"event-boost"`. `off` bounds temporary recording controls.                            |
 | `event_recording_duration_secs` | `u64`                 | Shared default or `60`            | Event-triggered recording duration; typed configuration operations use `1..3600` seconds.                                       |
 | `events`                        | `EventConfig`         | Defaults below                    | Camera-native event policy, independent of video backend; configured through the file.                                          |
 

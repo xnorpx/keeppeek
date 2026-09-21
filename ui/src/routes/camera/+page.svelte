@@ -4,6 +4,7 @@
 	import { onMount, tick } from 'svelte';
 	import CameraConfigurationEditor from '$lib/components/CameraConfigurationEditor.svelte';
 	import CameraOverview from '$lib/components/CameraOverview.svelte';
+	import RecordingControlPanel from '$lib/components/RecordingControlPanel.svelte';
 	import MobileCameraPage, { type MobileCameraMode } from '$lib/components/MobileCameraPage.svelte';
 	import { exactCatalogCameraMatch, firstHttpCameraCatalogSource } from '$lib/camera-wizard';
 	import { useControlClient } from '$lib/control-context';
@@ -503,6 +504,9 @@
 		{#if mobileViewport}
 			{#if mobileMode === 'settings'}
 				<div id="configuration" class="p-3">
+					{#key camera.id}
+						<RecordingControlPanel controller={controlClient} sourceId={camera.id} />
+					{/key}
 					{#if cameraSettings}
 						<CameraConfigurationEditor
 							camera={cameraSettings}
@@ -562,6 +566,9 @@
 						{previewAvailable}
 						commandTransportAvailable
 					/>
+					{#key camera.id}
+						<RecordingControlPanel controller={controlClient} sourceId={camera.id} />
+					{/key}
 					{#if editingConfiguration && cameraSettings}
 						<div id="configuration">
 							<CameraConfigurationEditor

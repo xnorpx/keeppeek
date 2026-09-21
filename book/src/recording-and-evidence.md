@@ -82,6 +82,28 @@ Choose a browser-compatible H.264 substream even when the main evidence stream i
 stores the camera's encoded media without re-encoding it, so browser support still determines which
 recordings can play directly.
 
+### Temporarily pause recording
+
+Administrators can open **Recording controls** on the camera page (under camera settings on a
+phone). The panel shows the configured and effective modes. Enter a reason and a duration from
+1 to 1440 minutes, then select **Pause recording**. **End temporary override** restores the
+configured mode within any active recording restrictions. The panel refreshes every 15 seconds;
+**Refresh recording state** requests an immediate update.
+
+Only one temporary request applies per camera. A replacement uses the last observed revision;
+if another operator changes it, refresh before retrying. Failed requests preserve your reason and
+duration. A lost response does not authorize an automatic retry or extend the pause.
+
+Temporary requests expire at the earlier of their UTC or monotonic deadline and clear when the
+server restarts. They do not change `config.toml`. Configured `off` is a hard bound. After a pause,
+recording resumes at the next eligible video keyframe. Frames already admitted before the pause
+can finish writing. This control does not delete existing footage or stop live viewing.
+
+The server must advertise `keeppeek.recording-control.v1`. This capability covers temporary
+manual/external requests; it does not promise a scheduler, Home Assistant/MQTT adapter, privacy
+schedule provider, or independent retention classes. External clients use the same administrator
+operation and bounds described in the [control protocol](https://github.com/xnorpx/keeppeek/blob/main/api/webrtc.md#temporary-recording-controls).
+
 ## Prove recording integrity
 
 Open **Recording integrity** to inspect the fleet before footage is needed. The workspace reports:

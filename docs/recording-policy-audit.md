@@ -212,20 +212,22 @@ Policy direction approved by the repository owner in the implementation session 
   remains distinct from temporary runtime overrides.
 - Preserve evidence holds and pressure safety; new policy settings default to disabled.
 
-Exact event mappings, control/API contracts, and benchmark budgets still need the reviews below.
+The owner approved the concrete event/control semantics, additive API scope, and benchmark budgets
+below with "ok please continue" in the implementation session on 2026-09-20. This approval allows
+implementation; it does not constitute passing acceptance evidence.
 Per the owner's instruction, do not open a PR until every issue step and acceptance criterion is
 complete. Keep all #168 work in one PR.
 
 The direction for D1/D3 and the configured-off/privacy bounds in D4 is approved above.
-The remaining detailed decisions below are still pending; they are not silent defaults.
+Detailed D2/D4/D7 semantics below are also approved. Export and mount decisions D5/D6 remain pending.
 The baseline audit remains tied to the inspected commit. The subsequent implementation evidence
 below is separate; it does not retroactively change a baseline classification.
 
 ### Approved implementation progress
 
 The branch now includes a bounded pure resolver and an additive `recording_retention` catalog
-table. They do not activate retention or remove media. No configuration or protocol fields have
-been added. Existing admission and cleanup behavior is unchanged.
+table. They do not activate retention or remove media. No retention configuration fields have
+been added. Later control work changes admission as described below; cleanup behavior is unchanged.
 
 On 2026-09-20, the following command passed on Windows with Rust 1.98.1, using the executable
 sources committed as `d7f209f` (resolver commit `7331173`):
@@ -257,9 +259,32 @@ reloading state before retry. The stored watermark is a caller assertion; produc
 collection, bounded reevaluation, and safe expiry execution remain to be implemented. No complete
 acceptance criterion is inferred from these primitive tests.
 
-### Proposed event and control semantics for the runtime checkpoint
+Runtime-control commits `f403d2b` and `ee6a475` add the pure state resolver and apply it at the
+same locked boundary as frame/event admission. Seven deterministic control tests, eight retention
+resolver tests, five catalog tests, and 22 engine tests passed. These include exact TTL expiry,
+clock invalidation, stale revisions, restart epochs, configured Off/privacy bounds, reconnect,
+keyframe reacquisition, EventBoost remapping, and a full writer queue.
 
-This section is a reviewable proposal, not supported configuration or an approved protocol.
+The subsequent additive API/UI slice provides `keeppeek.recording-control.v1`, administrator-only
+get/set/clear, actor attribution, input validation, source-scoped revisions, and a camera-page pause
+form. Generated TypeScript comes from the repository's Buf command. The capability does not
+claim class retention or a production privacy provider. Chromium tests cover keyboard submission,
+draft preservation, clear, capability/access loss, stale camera responses, and 320/768/1024/1440
+pixel layouts. Final-commit command evidence remains required before closure.
+
+The initial full `check.bat` run stopped after 666 passes at
+`protocol_confirmation_rejects_wrong_text_and_reports_durable_deletion` (zero deletions instead
+of one). The same executable passes that test and
+`missing_staging_directory_is_not_proof_of_completed_removal` when `TEMP` and `TMP` point to a
+dedicated NTFS directory protected with `.github/scripts/protect-test-directory.ps1`. The default
+temporary directory's inherited permissions are insufficient for native removal. This does not
+authorize weakening the removal boundary. The checkout-volume removal fixture additionally
+requires NTFS; this checkout is on ReFS. Full qualification remains outstanding.
+
+### Approved event and control semantics for the runtime checkpoint
+
+This section is the approved implementation contract. Only the control primitive and admission
+integration described above have execution evidence; retention integration remains incomplete.
 
 Event classification uses explicit administrator mappings from `TimelineEvent.source` and exact
 `TimelineEvent.kind` to motion, alert, detection, or active-object evidence. Do not infer an alert
@@ -295,33 +320,33 @@ operation. After permission resumes, admission must reacquire a video keyframe b
 dependent frames. A new instance uses a new revision epoch so an old client request cannot match
 a reset counter.
 
-Proposed additive contract scope: `api/webrtc.proto` and `api/webrtc.md`, with regenerated
+Approved additive contract scope: `api/webrtc.proto` and `api/webrtc.md`, with regenerated
 `ui/src/lib/proto/webrtc_pb.ts`; typed get/update/set-override/clear-override commands, policy and
 effective-state responses, stale-revision checks, Admin-only mutations, and a recording-policy
-capability identifier. Existing fields remain unchanged. This scope requires explicit approval
-under `AGENTS.md` before editing protected files.
+capability identifier. Existing fields remain unchanged. The approval covers only this additive
+scope under `AGENTS.md`.
 
-Proposed AC-7 budgets, pending owner approval: at most 256 rows and two seconds per batch;
+Approved AC-7 budgets: at most 256 rows and two seconds per batch;
 one-event reevaluation p95 at most 250 ms; full reevaluation p95 at most 60 seconds; additional
 peak memory at most 256 MiB; ingest p95 regression at most 5%; at most four SQL statements per
 evaluated recording plus eight per batch. Use the 127-source, 30-day main/sub fixture, warm-up,
 and at least 30 release runs. Report baseline, result, delta, query counts, peak RSS, environment,
 and raw summaries; a failing measurement cannot silently change an approved budget.
 
-| ID  | Decision needed                                                                                                                                   | Consequence / current workaround                                                                                                                                     | Accountable owner |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| D1  | Accept or reject independent class lifetimes, precise integer duration, latest-match expiry, and global/camera overrides.                         | Existing capacity limits cannot guarantee an age or the three examples. Export/download specific evidence; do not advertise class retention.                         | #168              |
-| D2  | Define normalized motion/alert/detection/active-object evidence and delayed/revised-event semantics.                                              | Event labels alone are insufficient. #96 ingestion is an input; #172 owns decodable pre-roll.                                                                        | #168              |
-| D3  | Decide file versus fragment expiry and whether policy edits can shorten committed deadlines.                                                      | Shared MP4 files can require over-retention; exact retained bytes may require separately approved compaction. No duplicate-object or exact-expiry result is claimed. | #168              |
-| D4  | Assign generic control implementation and approve configured/privacy bounds, actor/reason/expiry, conflict and restart semantics.                 | Existing config edits change mode. They are not expiring automation requests; #125 covers privacy only. No new protocol is approved.                                 | #168              |
-| D5  | Accept typed export/transcoding outcomes or approve deliberate differences for arbitrary arguments, hardware retry, and permanent export custody. | Download normal exports promptly. #127 owns timelapse; #131 owns playback adaptation, not an implied arbitrary export service.                                       | #168              |
-| D6  | Decide independent capacity/mount qualification for separated medium/long storage.                                                                | Check both mounted volumes operationally; do not infer protection of one from the other's capacity.                                                                  | #168              |
-| D7  | Approve latency, query-count, peak-memory, and ingest-impact budgets for the 127-source/30-day retention workload.                                | Existing safety/coverage benchmarks measure different paths. No retention evaluator or approved benchmark budget exists here.                                        | #168              |
+| ID  | Decision needed                                                                                                                                   | Consequence / current workaround                                                                                                                                                                      | Accountable owner |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| D1  | Accept or reject independent class lifetimes, precise integer duration, latest-match expiry, and global/camera overrides.                         | Existing capacity limits cannot guarantee an age or the three examples. Export/download specific evidence; do not advertise class retention.                                                          | #168              |
+| D2  | Define normalized motion/alert/detection/active-object evidence and delayed/revised-event semantics.                                              | Event labels alone are insufficient. #96 ingestion is an input; #172 owns decodable pre-roll.                                                                                                         | #168              |
+| D3  | Decide file versus fragment expiry and whether policy edits can shorten committed deadlines.                                                      | Shared MP4 files can require over-retention; exact retained bytes may require separately approved compaction. No duplicate-object or exact-expiry result is claimed.                                  | #168              |
+| D4  | Assign generic control implementation and approve configured/privacy bounds, actor/reason/expiry, conflict and restart semantics.                 | Existing config edits change mode. They are not expiring automation requests; #125 covers privacy only. Temporary get/set/clear protocol is approved; production privacy integration remains pending. | #168              |
+| D5  | Accept typed export/transcoding outcomes or approve deliberate differences for arbitrary arguments, hardware retry, and permanent export custody. | Download normal exports promptly. #127 owns timelapse; #131 owns playback adaptation, not an implied arbitrary export service.                                                                        | #168              |
+| D6  | Decide independent capacity/mount qualification for separated medium/long storage.                                                                | Check both mounted volumes operationally; do not infer protection of one from the other's capacity.                                                                                                   | #168              |
+| D7  | Approve latency, query-count, peak-memory, and ingest-impact budgets for the 127-source/30-day retention workload.                                | Existing safety/coverage benchmarks measure different paths. Numeric budgets are approved above; production evaluator and benchmark evidence remain pending.                                          | #168              |
 
 Required control cases for D4 are: Off + event stays Off (current P1); configured enabled + privacy
 must suppress recording (pending #125); manual/external enable cannot bypass a disabled/privacy
-bound (pending permission semantics); expired request/restart/conflicting revisions need one
-deterministic resolved state (not implemented). Configuration edits and runtime override permission
+bound (verified by pure and admission tests); expired request/restart/conflicting revisions resolve
+through the new authority. Production privacy integration remains incomplete. Configuration edits and runtime override permission
 must be distinguished before treating `off` as a hard upper bound.
 
 After D1–D3 approval, the acceptance fixtures must specify half-open UTC intervals, source/stream
@@ -331,15 +356,15 @@ is presented as passing production behavior.
 
 ## Acceptance status
 
-| Criterion | Audit result                                                                                              | Remaining closure evidence                                                                                    |
-| --------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| AC-1      | All retrieved headings mapped to 32 classified rows with baseline, symbols, evidence/owner, and workflow. | Maintainer completeness review and dated Checkpoint A decisions remain pending.                               |
-| AC-2      | Three examples are verified configuration/runtime gaps (R06–R08).                                         | Accepted semantics and executed exact interval/byte fixtures.                                                 |
-| AC-3      | Resolver, sub-day expiry, restart/reevaluation guarantees absent (R09–R12).                               | Approved implementation and boundary/migration tests.                                                         |
-| AC-4      | Keyframe EventBoost foundation passes T1/T2; pre-roll and independent event retention remain missing.     | #172 real-media decoded coverage plus delayed/revised-event evidence.                                         |
-| AC-5      | Typed configuration exists; authoritative runtime override model absent.                                  | D4, #125 integration, deterministic-clock admission/API/UI tests.                                             |
-| AC-6      | Historical owner builds and local assertions linked; limitations and Alpha owners explicit.               | Open #127/#131 evidence; #133 filesystem qualification and remaining deployment cases.                        |
-| AC-7      | Not measured or satisfied.                                                                                | D7 approved budgets and repeated release-build measurements, median/p95, query count, peak RSS, ingest delta. |
+| Criterion | Audit result                                                                                              | Remaining closure evidence                                                                          |
+| --------- | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| AC-1      | All retrieved headings mapped to 32 classified rows with baseline, symbols, evidence/owner, and workflow. | Final-build matrix review remains pending; implementation decisions are recorded above.             |
+| AC-2      | Three examples are verified configuration/runtime gaps (R06–R08).                                         | Executed exact interval/physical-byte fixtures for the approved semantics.                          |
+| AC-3      | Resolver, sub-day expiry, restart/reevaluation guarantees absent (R09–R12).                               | Production evidence ingestion, bounded reevaluation, safe expiry, and final migration tests.        |
+| AC-4      | Keyframe EventBoost foundation passes T1/T2; pre-roll and independent event retention remain missing.     | #172 real-media decoded coverage plus delayed/revised-event evidence.                               |
+| AC-5      | Temporary authority, admission, API and UI implemented; full integration is incomplete.                   | #125 integration and final-build deterministic-clock admission/API/UI qualification.                |
+| AC-6      | Historical owner builds and local assertions linked; limitations and Alpha owners explicit.               | Open #127/#131 evidence; #133 filesystem qualification and remaining deployment cases.              |
+| AC-7      | Not measured or satisfied.                                                                                | Repeated release-build results against approved D7 budgets: median/p95, queries, RSS, ingest delta. |
 
 Performance for the baseline documentation commit is N/A. Subsequent executable changes require
 AC-7 measurements; those measurements are outstanding. Keep all incomplete issue criteria unchecked.
