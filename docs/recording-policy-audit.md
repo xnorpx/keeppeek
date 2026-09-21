@@ -332,11 +332,15 @@ the final normalization run also exercised empty event IDs and canonical IPv6 id
 At `a374f3c`, the server policy suite passed all nine tests with deterministic UTC/monotonic
 boundary observations, no revival after rollback, and rejection of a revision invalidated by expiry.
 The injected clock is test-only; production admission still samples time inside its authority lock.
+The canonical protected-NTFS run at `d985c5f` passed all 2,616 Rust tests (21 skipped) in
+418.894 seconds, then stopped on two new Clippy style errors in normalization and the test clock
+fallback. Commit `7b48784` applies the required `map_or` and lazy `or_else` forms. The complete
+canonical check remains pending; the Rust pass alone does not complete the repository gates.
 
 ### Approved event and control semantics for the runtime checkpoint
 
-This section is the approved implementation contract. Only the control primitive and admission
-integration described above have execution evidence; retention integration remains incomplete.
+This section is the approved implementation contract. The primitives described above have
+execution evidence; production retention integration remains incomplete.
 
 Event classification uses explicit administrator mappings from `TimelineEvent.source` and exact
 `TimelineEvent.kind` to motion, alert, detection, or active-object evidence. Do not infer an alert
@@ -411,7 +415,7 @@ is presented as passing production behavior.
 | Criterion | Audit result                                                                                               | Remaining closure evidence                                                                          |
 | --------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | AC-1      | All retrieved headings mapped to 32 classified rows with baseline, symbols, evidence/owner, and workflow.  | Final-build matrix review remains pending; implementation decisions are recorded above.             |
-| AC-2      | Three examples are verified configuration/runtime gaps (R06–R08).                                          | Executed exact interval/physical-byte fixtures for the approved semantics.                          |
+| AC-2      | Pure-resolver examples verified; production interval/physical-byte outcomes remain unverified.             | Executed exact interval/physical-byte fixtures for the approved semantics.                          |
 | AC-3      | Pure resolver and monotonic catalog primitive verified; production expiry/reevaluation remains incomplete. | Production evidence ingestion, bounded reevaluation, safe expiry, and final migration tests.        |
 | AC-4      | Keyframe EventBoost foundation passes T1/T2; pre-roll and independent event retention remain missing.      | #172 real-media decoded coverage plus delayed/revised-event evidence.                               |
 | AC-5      | Temporary authority, admission, API and UI implemented; full integration is incomplete.                    | #125 integration and final-build deterministic-clock admission/API/UI qualification.                |
