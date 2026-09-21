@@ -50,25 +50,26 @@ Root fields must appear before a table header or they belong to that table.
 
 ## Section index
 
-| TOML section                                       | Owning type                                         | Ownership                                     |
-| -------------------------------------------------- | --------------------------------------------------- | --------------------------------------------- |
-| Root fields                                        | `Config`                                            | Operator settings                             |
-| `[access]`                                         | `AccessConfig`                                      | Administrator security policy                 |
-| `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                |
-| `[storage]`                                        | `StorageToml`                                       | Recording paths, retention, and safety        |
-| `[battery_wake]`                                   | `BatteryWakeConfig`                                 | Reolink battery-camera wake service           |
-| `[logging]`                                        | `LoggingConfig`                                     | Service log destination                       |
-| `[operational_events]`                             | `OperationalEventsConfig`                           | Health-event timing                           |
-| `[operational_events.cameras."<camera-id-or-ip>"]` | `OperationalEventOverride`                          | Per-camera timing overrides                   |
-| `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision     |
-| `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                        |
-| `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                               |
-| `[<namespace>.<camera-key>.events]`                | `EventConfig`                                       | Native camera event selection and filters     |
-| `[access_credentials]`                             | `PersistedAccessCatalog`                            | Server-managed credential records             |
-| `[peek_layouts]`                                   | `StoredRegistry`                                    | Server-managed layouts and per-user selection |
-| `[configuration_templates]`                        | `StoredTemplateDocument`                            | Server-managed camera templates               |
-| `[notifications]`                                  | `NotificationConfiguration`                         | Server-managed rule drafts and active rules   |
-| `[storage_migration]`                              | `StorageMigration`                                  | Server-managed pending storage move           |
+| TOML section                                       | Owning type                                         | Ownership                                      |
+| -------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------- |
+| Root fields                                        | `Config`                                            | Operator settings                              |
+| `[access]`                                         | `AccessConfig`                                      | Administrator security policy                  |
+| `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                 |
+| `[storage]`                                        | `StorageToml`                                       | Recording paths, retention, and safety         |
+| `[recording_retention]`                            | `retention::Settings`                               | Validated retention rules and camera overrides |
+| `[battery_wake]`                                   | `BatteryWakeConfig`                                 | Reolink battery-camera wake service            |
+| `[logging]`                                        | `LoggingConfig`                                     | Service log destination                        |
+| `[operational_events]`                             | `OperationalEventsConfig`                           | Health-event timing                            |
+| `[operational_events.cameras."<camera-id-or-ip>"]` | `OperationalEventOverride`                          | Per-camera timing overrides                    |
+| `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision      |
+| `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                         |
+| `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                                |
+| `[<namespace>.<camera-key>.events]`                | `EventConfig`                                       | Native camera event selection and filters      |
+| `[access_credentials]`                             | `PersistedAccessCatalog`                            | Server-managed credential records              |
+| `[peek_layouts]`                                   | `StoredRegistry`                                    | Server-managed layouts and per-user selection  |
+| `[configuration_templates]`                        | `StoredTemplateDocument`                            | Server-managed camera templates                |
+| `[notifications]`                                  | `NotificationConfiguration`                         | Server-managed rule drafts and active rules    |
+| `[storage_migration]`                              | `StorageMigration`                                  | Server-managed pending storage move            |
 
 `homekit` is a reserved root section, not an implemented HomeKit configuration schema. Do not use
 it as a camera namespace. Every other non-reserved root table is interpreted as a camera namespace;
@@ -316,6 +317,48 @@ must suit the actual disks and camera bitrates. A configuration ZIP preserves th
 storage paths on apply; it does not move a recording archive. See
 [storage migration](./upgrades-and-migrations.md#move-storage-deliberately) and
 [recording archive recovery](./recording-archive-recovery.md).
+
+## Recording retention rules
+
+`[recording_retention]` stores validated policy settings. The policy worker and expiration
+integration are not yet active; these settings alone do not change recording or authorize deletion.
+Existing storage safety and retention behavior remains authoritative.
+
+```toml
+[recording_retention]
+enabled = false
+rules = [
+  { id = "continuous", class = "continuous", duration_ms = 43200000, mode = "all" },
+  { id = "alerts", class = "alert", duration_ms = 86400000, mode = "all" }
+]
+event_mappings = [
+  { source = "camera", kind = "Motion", evidence = "motion" }
+]
+
+[recording_retention.cameras."192.0.2.8".rules.continuous]
+duration_ms = 0
+```
+
+The section defaults to disabled with empty rules, mappings, and camera overrides. Global
+`enabled = false` is a hard rollout bound. A camera's optional `enabled = false` disables its
+policy; `true` cannot override global disable. Missing camera values inherit the global values.
+
+Each rule requires a unique `id` (1–64 ASCII letters, digits, `.`, `_`, or `-`), `class`
+(`continuous`, `motion`, `alert`, or `detection`), integer `duration_ms` (0 through
+9,223,372,036,854,775,807), and `mode` (`all`, `motion`, or `active_objects`). There are at most
+16 global rules and 16 rule overrides per camera. Zero disables only that rule. Camera rule
+overrides use an existing global rule ID and may replace `duration_ms` and/or `mode`.
+At most 4,096 camera overrides are allowed. Camera keys must be canonical IP addresses of configured cameras. Removing a camera also removes
+its override; changing its address requires updating the override key.
+
+Each event mapping requires `source` (`camera` or `keep_peek`), an exact case-sensitive `kind`
+(1–128 UTF-8 bytes), and `evidence` (`motion`, `alert`, `detection`, or `active_object`). At most
+16 mappings are allowed, with no duplicate source/kind pair. A camera's optional `event_mappings`
+list replaces the global list; an empty list disables its mappings. A mapping classifies an event;
+it does not prove a closed event interval, complete producer evidence, or decodable pre-event
+coverage. Unknown fields and invalid rules or references reject the configuration.
+
+Source: [validated retention settings](https://github.com/xnorpx/keeppeek/blob/main/src/config/retention.rs).
 
 ## Battery wake
 

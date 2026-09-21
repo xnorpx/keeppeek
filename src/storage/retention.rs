@@ -56,7 +56,8 @@ pub enum RetentionMode {
 }
 
 /// A normalized event fact, not a detector-specific label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
     Motion,
     Alert,

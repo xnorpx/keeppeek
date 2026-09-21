@@ -17,6 +17,8 @@ use std::{
 };
 use url::Url;
 
+pub mod retention;
+
 const DEFAULT_CONFIG_NAME: &str = "config.toml";
 const DEFAULT_SECRETS_NAME: &str = "secrets.toml";
 const ACCESS_KEY_SECRET: &str = "KEEPPEEK_ACCESS_KEY";
@@ -92,6 +94,9 @@ pub struct Config {
 
     #[serde(default)]
     pub storage: StorageToml,
+
+    #[serde(default)]
+    pub recording_retention: retention::Settings,
 
     #[serde(default)]
     pub battery_wake: BatteryWakeConfig,
@@ -841,6 +846,7 @@ impl Default for Config {
             access: AccessConfig::default(),
             direct_card: DirectCardConfig::default(),
             storage: StorageToml::default(),
+            recording_retention: retention::Settings::default(),
             battery_wake: BatteryWakeConfig::default(),
             logging: LoggingConfig::default(),
             operational_events: OperationalEventsConfig::default(),
@@ -1654,6 +1660,14 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     if let Some(callbacks) = &config.isapi_callbacks {
         callbacks.validate()?;
     }
+    if root.contains_key("recording_retention") {
+        let configured = cameras_from_table(root, secrets)?
+            .into_values()
+            .flatten()
+            .map(|camera| camera.ip)
+            .collect();
+        config.recording_retention.validate(&configured)?;
+    }
     config.source = root.clone();
     Ok(config)
 }
@@ -1809,6 +1823,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
             | "configuration_templates"
             | "isapi_callbacks"
             | "camera_defaults"
+            | "recording_retention"
             | "state_store"
             | STORAGE_MIGRATION_SECTION
     )
@@ -2206,6 +2221,13 @@ pub fn remove_camera(path: &Path, camera_ip: IpAddr) -> anyhow::Result<()> {
         .and_then(toml::Value::as_table_mut)
         .ok_or_else(|| anyhow::anyhow!("camera namespace {namespace} is not a table"))?
         .remove(&name);
+    if let Some(overrides) = root
+        .get_mut("recording_retention")
+        .and_then(|value| value.get_mut("cameras"))
+        .and_then(toml::Value::as_table_mut)
+    {
+        overrides.retain(|key, _| key.parse::<IpAddr>().ok() != Some(camera_ip));
+    }
     if let Some(sources) = root
         .get_mut("isapi_callbacks")
         .and_then(|value| value.get_mut("sources"))
