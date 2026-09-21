@@ -347,6 +347,11 @@ fn apply_configuration_plan(
         .flatten()
         .map(|camera| (camera.ip.to_string(), camera))
         .collect::<HashMap<_, _>>();
+    for camera_id in &stored.target_ids {
+        if let Some(camera) = saved.get(camera_id) {
+            recording_policy::configure(state, camera);
+        }
+    }
     let mut activations = Vec::with_capacity(stored.target_ids.len());
     for camera_id in &stored.target_ids {
         let (status, detail) = match saved.get(camera_id) {
