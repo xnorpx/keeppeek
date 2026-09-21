@@ -227,9 +227,10 @@ below is separate; it does not retroactively change a baseline classification.
 
 ### Approved implementation progress
 
-The branch now includes a bounded pure resolver and an additive `recording_retention` catalog
-table. They do not activate retention or remove media. No retention configuration fields have
-been added. Later control work changes admission as described below; cleanup behavior is unchanged.
+The initial implementation added a bounded pure resolver and an additive `recording_retention`
+catalog table. They do not activate retention or remove media. Later slices add validated,
+default-disabled configuration and change recording admission as described below; cleanup
+behavior is unchanged.
 
 On 2026-09-20, the following command passed on Windows with Rust 1.98.1, using the executable
 sources committed as `d7f209f` (resolver commit `7331173`):
@@ -336,6 +337,34 @@ The canonical protected-NTFS run at `d985c5f` passed all 2,616 Rust tests (21 sk
 418.894 seconds, then stopped on two new Clippy style errors in normalization and the test clock
 fallback. Commit `7b48784` applies the required `map_or` and lazy `or_else` forms. The complete
 canonical check remains pending; the Rust pass alone does not complete the repository gates.
+
+At `83cc65c`, the protected-NTFS canonical run passed all 2,616 Rust tests (21 skipped) in
+373.219 seconds, Clippy with warnings denied, dependency checks, and formatting. UI validation
+passed 389 Bun tests and 200 of 201 Chromium tests. The remaining storage migration story left
+its radio unselected after a direct input click. Commit `3bf5ad5` clicks the visible native label
+and explicitly asserts selection before retaining the existing review/save assertions; production
+validation is unchanged. This verifies label activation, not the cause of the direct-click failure.
+On that commit, `bun run quality:check` passed, including zero Svelte errors/warnings, 389 Bun
+tests, all 201 Chromium tests, and 57 compatibility tests. The full canonical check is still required.
+
+The first `3bf5ad5` canonical run passed the same Rust/UI gates and built the release E2E binaries,
+then stopped because the Vite test server exceeded its 60-second startup timeout. No E2E case ran
+in that attempt. After standalone Vite startup succeeded under the same environment,
+`bun run test:e2e:run` passed 266 tests with two skips in 2.7 minutes, without a source change.
+The skipped WebCodecs H.265 keyframe and mixed H.264/H.265 MSE cases remain unsupported-platform
+qualification gaps; this result does not certify H.265 browser playback. A complete canonical
+rerun remains required.
+
+The subsequent uninterrupted `check.bat` run on the same `3bf5ad5d1d473456932349297ffc79f0954ca434`
+source completed with exit code 0 on Windows 11 Pro 10.0.26200. It passed 2,616 Rust tests
+(21 skipped, 426.950 seconds), Clippy with warnings denied, dependency/formatting checks,
+389 Bun tests, 201 Chromium component/story tests, 57 compatibility tests, and 266 E2E tests
+(two H.265 platform skips, 2.3 minutes). The worktree and protected temporary directory were on
+NTFS; shared Cargo artifacts were on ReFS. `TEMP` and `TMP` selected the task's NTFS directory
+protected using `.github/scripts/protect-test-directory.ps1`, and `CARGO_TARGET_DIR` selected the
+shared build directory. Run `check.bat` from that worktree's root to reproduce the gate. Subsequent
+audit-only edits do not change the qualified executable sources. This passing gate does not
+complete the missing runtime retention, dependency, or benchmark acceptance evidence below.
 
 ### Approved event and control semantics for the runtime checkpoint
 
