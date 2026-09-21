@@ -1,6 +1,6 @@
 use crate::{
     BatteryWakeEndpoint,
-    media::{EncodedFrame, VideoSource},
+    media::{Codec, EncodedFrame, VideoSource},
 };
 use anyhow::{Context, anyhow};
 use reo_proto::{
@@ -11,8 +11,8 @@ use reo_proto::{
     stream::StreamType,
     {
         BcUdpConfig, BcUdpOutput, BcUdpPacket, BcUdpTransport, COMMAND_LOGIN, COMMAND_PING,
-        COMMAND_PREVIEW_STOP, COMMAND_STREAM, COMMAND_TALK_CAPABILITIES, COMMAND_TALK_CONFIG,
-        MAX_XML_BODY, UdpDiscovery,
+        COMMAND_PREVIEW_STOP, COMMAND_STREAM, COMMAND_TALK, COMMAND_TALK_CAPABILITIES,
+        COMMAND_TALK_CONFIG, COMMAND_TALK_RESET, MAX_XML_BODY, UdpDiscovery,
     },
 };
 use std::{
@@ -55,6 +55,7 @@ impl ReoServer {
         sub: VideoSource,
         battery_wake: Option<BatteryWakeEndpoint>,
         uid: String,
+        channel_count: u8,
     ) -> anyhow::Result<Self> {
         let awake = Arc::new(AtomicBool::new(battery_wake.is_none()));
         let udp_ports = if address.port() == 0 {
@@ -84,7 +85,17 @@ impl ReoServer {
             let (stop, stopped) = mpsc::channel();
             let worker = thread::Builder::new()
                 .name("test-camera-reo".to_owned())
-                .spawn(move || serve(listener, stopped, username, password, main, sub))?;
+                .spawn(move || {
+                    serve(
+                        listener,
+                        stopped,
+                        username,
+                        password,
+                        main,
+                        sub,
+                        channel_count,
+                    )
+                })?;
             (Some(stop), Some(worker), Some(tcp_port))
         };
         Ok(Self {
@@ -490,13 +501,20 @@ fn serve(
     password: String,
     main: VideoSource,
     sub: VideoSource,
+    channel_count: u8,
 ) {
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
-                if let Err(error) =
-                    serve_connection(stream, &stop, &username, &password, &main, &sub)
-                {
+                if let Err(error) = serve_connection(
+                    stream,
+                    &stop,
+                    &username,
+                    &password,
+                    &main,
+                    &sub,
+                    channel_count,
+                ) {
                     tracing::debug!(%error, "test Baichuan client session ended");
                 }
             }
@@ -521,10 +539,12 @@ fn serve_connection(
     password: &str,
     main: &VideoSource,
     sub: &VideoSource,
+    channel_count: u8,
 ) -> anyhow::Result<()> {
     stream.set_read_timeout(Some(READ_POLL_INTERVAL))?;
     stream.set_write_timeout(Some(READ_POLL_INTERVAL))?;
     let mut camera = BaichuanCamera::new(username, password, main.clone(), sub.clone());
+    camera.channel_count = channel_count.max(1);
     let mut read_buf = [0_u8; 64 * 1024];
 
     loop {
@@ -561,6 +581,9 @@ struct BaichuanCamera {
     outbox: VecDeque<Vec<u8>>,
     main: Option<ActiveStream>,
     sub: Option<ActiveStream>,
+    channel_count: u8,
+    talk_channel: Option<u8>,
+    received_talk_frames: u32,
     main_source: VideoSource,
     sub_source: VideoSource,
 }
@@ -575,6 +598,9 @@ impl BaichuanCamera {
             outbox: VecDeque::new(),
             main: None,
             sub: None,
+            channel_count: 1,
+            talk_channel: None,
+            received_talk_frames: 0,
             main_source: main,
             sub_source: sub,
         }
@@ -610,21 +636,44 @@ impl BaichuanCamera {
                 header.encryption_offset,
                 Some(0),
             ),
-            COMMAND_STREAM if header.is_modern() && self.authenticated => {
-                self.start_stream(header)
-            }
+            COMMAND_STREAM if header.is_modern() && self.authenticated => self.start_stream(header),
             COMMAND_PREVIEW_STOP if header.is_modern() => {
                 self.main = None;
                 self.sub = None;
+                if self.talk_channel == Some(channel_id(header)) {
+                    self.talk_channel = None;
+                }
                 Ok(())
             }
-            COMMAND_TALK_CAPABILITIES if header.is_modern() => self.queue_modern_xml(
-                COMMAND_TALK_CAPABILITIES,
-                "<body><TalkAbility version=\"1.1\"><audioStreamMode>0</audioStreamMode><duplex>1</duplex><audioConfig><sampleRate>8000</sampleRate><samplePrecision>16</samplePrecision><lengthPerEncoder>320</lengthPerEncoder></audioConfig></TalkAbility></body>",
-                0,
-            ),
+            COMMAND_TALK_CAPABILITIES if header.is_modern() => {
+                self.require_talk_channel(header)?;
+                self.queue_talk_xml(
+                    COMMAND_TALK_CAPABILITIES,
+                    channel_id(header),
+                    "<body><TalkAbility version=\"1.1\"><duplexList><duplex>fullDuplex</duplex></duplexList><audioStreamModeList><audioStreamMode>speaker</audioStreamMode></audioStreamModeList><audioConfigList><audioConfig><audioType>adpcm</audioType><sampleRate>16000</sampleRate><samplePrecision>16</samplePrecision><lengthPerEncoder>640</lengthPerEncoder><soundTrack>mono</soundTrack></audioConfig></audioConfigList></TalkAbility></body>",
+                )
+            }
             COMMAND_TALK_CONFIG if header.is_modern() => {
-                self.queue_modern_xml(COMMAND_TALK_CONFIG, "<body><TalkConfig/></body>", 0)
+                let channel = channel_id(header);
+                self.require_talk_channel(header)?;
+                let channel_tag = format!("<channelId>{channel}</channelId>");
+                if !body
+                    .windows(channel_tag.len())
+                    .any(|window| window == channel_tag.as_bytes())
+                {
+                    return Err(anyhow!("talk config is missing channel identity"));
+                }
+                self.queue_talk_xml(COMMAND_TALK_CONFIG, channel, "<body><TalkConfig/></body>")
+            }
+            COMMAND_TALK if header.is_modern() => {
+                self.require_talk_channel(header)?;
+                self.received_talk_frames = self.received_talk_frames.saturating_add(1);
+                Ok(())
+            }
+            COMMAND_TALK_RESET if header.is_modern() => {
+                self.require_talk_channel(header)?;
+                self.talk_channel = None;
+                self.queue_talk_xml(COMMAND_TALK_RESET, channel_id(header), "<body/>")
             }
             message_id if header.is_modern() => {
                 self.queue_modern_xml(message_id, "<body></body>", header.encryption_offset)
@@ -675,7 +724,7 @@ impl BaichuanCamera {
         identity.model.push_str("RLC-Test");
         identity.serial.push_str("TESTCAMERA0001");
         identity.firmware.push_str("test-camera");
-        identity.channel_count = 1;
+        identity.channel_count = self.channel_count;
         let mut xml = [0_u8; MAX_XML_BODY];
         let len = auth::build_login_confirmation(1, &identity, &mut xml)?;
         encryption::bc_xor(&mut xml[..len], 0);
@@ -690,6 +739,7 @@ impl BaichuanCamera {
     }
 
     fn start_stream(&mut self, header: PacketHeader) -> anyhow::Result<()> {
+        let channel = channel_id(header);
         let stream_type = StreamType::from_wire_id(((header.encryption_offset >> 8) & 0xFF) as u8)
             .ok_or_else(|| anyhow!("unknown Baichuan stream type"))?;
         let stream = match stream_type {
@@ -699,10 +749,26 @@ impl BaichuanCamera {
             StreamType::Sub => {
                 ActiveStream::new(self.sub_source.clone(), header.encryption_offset, 256)
             }
-            StreamType::Extern => return Ok(()),
+            StreamType::Extern => {
+                if self.talk_channel.is_some() {
+                    return Err(anyhow!("talkback external stream is already open"));
+                }
+                self.talk_channel = Some(channel);
+                let body = format!(
+                    "<body><Preview version=\"1.1\"><channelId>{channel}</channelId><handle>512</handle><streamType>externStream</streamType></Preview></body>"
+                );
+                self.queue_packet(
+                    COMMAND_STREAM,
+                    body.as_bytes(),
+                    make_status(BC_CLASS_MODERN_EXT, 0),
+                    header.encryption_offset,
+                    Some(0),
+                )?;
+                return Ok(());
+            }
         };
         let body = format!(
-            "<body><Preview version=\"1.1\"><channelId>0</channelId><handle>{}</handle><streamType>{}</streamType></Preview></body>",
+            "<body><Preview version=\"1.1\"><channelId>{channel}</channelId><handle>{}</handle><streamType>{}</streamType></Preview></body>",
             stream.handle,
             stream_type.as_str(),
         );
@@ -760,6 +826,30 @@ impl BaichuanCamera {
         )
     }
 
+    fn queue_talk_xml(&mut self, message_id: u32, channel: u8, body: &str) -> anyhow::Result<()> {
+        let extension =
+            format!("<Extension version=\"1.1\"><channelId>{channel}</channelId></Extension>");
+        let mut payload = extension.as_bytes().to_vec();
+        payload.extend_from_slice(body.as_bytes());
+        self.queue_packet(
+            message_id,
+            &payload,
+            make_status(BC_CLASS_MODERN_EXT, 0),
+            u32::from(channel),
+            Some(extension.len() as u32),
+        )
+    }
+
+    fn require_talk_channel(&self, header: PacketHeader) -> anyhow::Result<()> {
+        if self.talk_channel == Some(channel_id(header)) {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "talkback command targets a channel without an open stream"
+            ))
+        }
+    }
+
     fn queue_packet(
         &mut self,
         message_id: u32,
@@ -796,6 +886,10 @@ impl BaichuanCamera {
     fn take_outbox(&mut self) -> VecDeque<Vec<u8>> {
         std::mem::take(&mut self.outbox)
     }
+}
+
+const fn channel_id(header: PacketHeader) -> u8 {
+    (header.encryption_offset & 0xff) as u8
 }
 
 struct ActiveStream {
@@ -880,4 +974,64 @@ fn video_frame(
 
 fn pad_to_eight(data: &mut Vec<u8>) {
     data.resize((data.len() + 7) & !7, 0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn camera() -> BaichuanCamera {
+        let source = VideoSource {
+            codec: Codec::H264,
+            width: 640,
+            height: 360,
+            fps: 15,
+            frame_interval: Duration::from_millis(66),
+            frames: vec![EncodedFrame {
+                data: vec![0, 0, 0, 1, 0x65],
+                is_keyframe: true,
+            }],
+        };
+        BaichuanCamera::new("test", "test", source.clone(), source)
+    }
+
+    fn header(message_id: u32, channel: u8, stream_type: u8) -> PacketHeader {
+        PacketHeader {
+            msg_id: message_id,
+            body_len: 0,
+            encryption_offset: u32::from(channel) | (u32::from(stream_type) << 8),
+            status_class: make_status(BC_CLASS_MODERN_EXT, 0),
+            extension: Some(0),
+        }
+    }
+
+    #[test]
+    fn fake_talkback_accepts_nonzero_channel_and_resets() {
+        let mut camera = camera();
+        camera.authenticated = true;
+        let channel = 3;
+        camera
+            .handle_message(header(COMMAND_STREAM, channel, 2), &[])
+            .unwrap();
+        assert_eq!(camera.talk_channel, Some(channel));
+
+        camera
+            .handle_message(header(COMMAND_TALK_CAPABILITIES, channel, 2), &[])
+            .unwrap();
+        camera
+            .handle_message(
+                header(COMMAND_TALK_CONFIG, channel, 2),
+                format!("<TalkConfig><channelId>{channel}</channelId></TalkConfig>").as_bytes(),
+            )
+            .unwrap();
+        camera
+            .handle_message(header(COMMAND_TALK, channel, 2), &[0, 0, 0, 0, 0])
+            .unwrap();
+        assert_eq!(camera.received_talk_frames, 1);
+
+        camera
+            .handle_message(header(COMMAND_TALK_RESET, channel, 2), &[])
+            .unwrap();
+        assert_eq!(camera.talk_channel, None);
+    }
 }

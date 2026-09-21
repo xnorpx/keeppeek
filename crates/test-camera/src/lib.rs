@@ -132,6 +132,7 @@ pub struct TestCameraBuilder {
     isolated_reo_ports: bool,
     realtime_start_at: Option<Duration>,
     metadata: Option<rtsp::Metadata>,
+    channel_count: u8,
 }
 
 impl TestCameraBuilder {
@@ -173,6 +174,7 @@ impl TestCameraBuilder {
             isolated_reo_ports: false,
             realtime_start_at: None,
             metadata: None,
+            channel_count: 1,
         }
     }
 
@@ -268,6 +270,12 @@ impl TestCameraBuilder {
         self
     }
 
+    /// Sets the number of logical channels advertised by a Reo-proto camera.
+    pub const fn channel_count(mut self, channel_count: u8) -> Self {
+        self.channel_count = channel_count;
+        self
+    }
+
     /// Starts the configured camera and its accompanying ONVIF façade.
     ///
     /// # Errors
@@ -333,6 +341,7 @@ impl TestCameraBuilder {
                         sub.clone(),
                         self.battery_wake,
                         self.uid.clone(),
+                        self.channel_count,
                     )?;
                     let baichuan_port = camera.tcp_port();
                     let bcudp_port = camera.primary_udp_port();
