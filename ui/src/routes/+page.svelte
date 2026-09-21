@@ -109,6 +109,7 @@
 	let cameraViewActive = $derived(view === 'viewer');
 	let broadcastTalkbackActive = $derived(livePeer.talkbackActive);
 	let broadcastTalkbackError = $derived(livePeer.talkbackError);
+	let broadcastTalkbackGroup = $state('');
 	let requestedCameraId = $derived(page.url.searchParams.get('camera')?.trim() ?? '');
 	let focusQuality = $state<FocusedLivePreference>('auto');
 	let playbackPreferences = $state.raw(defaultPlaybackPreferences());
@@ -117,6 +118,8 @@
 		try {
 			if (broadcastTalkbackActive) {
 				await livePeer.stopTalkback();
+			} else if (broadcastTalkbackGroup) {
+				await livePeer.startTalkback({ groupId: broadcastTalkbackGroup });
 			} else {
 				await livePeer.startTalkback({ all: true });
 			}
@@ -1164,6 +1167,22 @@
 			ondiscard={() => void discardWallPreferences()}
 		/>
 		<div class="absolute top-14 right-4 z-20 flex flex-col items-end gap-1.5">
+			{#if livePeer.talkbackGroups.length > 0}
+				<label class="flex items-center gap-2 rounded-sm border border-hairline bg-background/95 px-2 py-1 text-xs shadow-md">
+					<span class="text-text-muted">Target</span>
+					<select
+						class="min-h-7 max-w-40 bg-transparent font-medium outline-none"
+						aria-label="Broadcast talkback target"
+						bind:value={broadcastTalkbackGroup}
+						disabled={broadcastTalkbackActive}
+					>
+						<option value="">All cameras</option>
+						{#each livePeer.talkbackGroups as group (group.id)}
+							<option value={group.id}>{group.label}</option>
+						{/each}
+					</select>
+				</label>
+			{/if}
 			<Button
 				variant={broadcastTalkbackActive ? 'destructive' : 'secondary'}
 				class="min-h-9 rounded-sm shadow-md"

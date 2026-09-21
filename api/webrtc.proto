@@ -155,6 +155,7 @@ message CameraInfo {
   CameraDeviceCapabilities device_capabilities = 17;
   PtzCapability ptz = 18;
   PrivacyStatus privacy = 19;
+  repeated string group_ids = 20;
 }
 
 message PrivacyStatus {
@@ -210,6 +211,13 @@ message CameraDeviceCapabilities {
   bool analytics = 4;
   bool imaging = 5;
   bool two_way_audio = 6;
+  repeated CameraAudioAsset quick_replies = 7;
+  repeated CameraAudioAsset chimes = 8;
+}
+
+message CameraAudioAsset {
+  string asset_id = 1;
+  string display_name = 2;
 }
 
 message PtzCapability {
@@ -227,7 +235,19 @@ message CameraControlCommand {
     SetMotionDetection set_motion_detection = 2;
     SetCameraManufacturer set_manufacturer = 3;
     GetMotionDetection get_motion_detection = 4;
+    PlayQuickReply play_quick_reply = 5;
+    PlayChime play_chime = 6;
   }
+}
+
+message PlayQuickReply {
+  string source_id = 1;
+  string asset_id = 2;
+}
+
+message PlayChime {
+  string source_id = 1;
+  string asset_id = 2;
 }
 
 message GetMotionDetection {
@@ -2572,6 +2592,7 @@ message Ok {
     RecordingDeletionJob recording_deletion_job = 38;
     RecordingDeletionJobList recording_deletion_jobs = 39;
     RecordingReconciliationReport recording_reconciliation_report = 40;
+    CameraAudioPlaybackResult camera_audio_playback_result = 41;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -2587,6 +2608,12 @@ message MotionDetectionResult {
 message CameraManufacturerResult {
   string source_id = 1;
   optional string manufacturer = 2;
+}
+
+message CameraAudioPlaybackResult {
+  string source_id = 1;
+  string asset_id = 2;
+  string kind = 3;
 }
 
 message CameraDiscoveryResult {

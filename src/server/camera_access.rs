@@ -215,6 +215,12 @@ fn authorize_camera_control(
         Some(camera_control_command::Action::SetManufacturer(request)) => {
             require_camera(policy, &request.source_id)
         }
+        Some(camera_control_command::Action::PlayQuickReply(request)) => {
+            require_camera(policy, &request.source_id)
+        }
+        Some(camera_control_command::Action::PlayChime(request)) => {
+            require_camera(policy, &request.source_id)
+        }
         None => Ok(()),
     }
 }

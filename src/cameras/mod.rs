@@ -379,6 +379,14 @@ pub struct CameraCapabilities {
     pub analytics: bool,
     pub imaging: bool,
     pub two_way_audio: bool,
+    pub quick_replies: Vec<CameraAudioAsset>,
+    pub chimes: Vec<CameraAudioAsset>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct CameraAudioAsset {
+    pub asset_id: String,
+    pub display_name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

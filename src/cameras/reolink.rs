@@ -44,6 +44,8 @@ pub(crate) struct ReolinkDoorbellCapabilities {
     pub visitor_volume: Option<u8>,
     pub talk_and_reply_volume: Option<u8>,
     pub visitor_loudspeaker: Option<bool>,
+    pub quick_reply_assets: Vec<(String, String)>,
+    pub chime_assets: Vec<(String, String)>,
 }
 
 impl CameraBrand for Reolink {
@@ -886,6 +888,22 @@ impl ReolinkClient {
                 .and_then(|value| u8::try_from(value).ok())
         };
         let files = self.api_call("GetAudioFileList", Some(serde_json::json!({})))?;
+        let quick_reply_assets = files
+            .get("AudioFileList")
+            .and_then(|value| value.get("audioFile"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        Some((
+                            item.get("id")?.to_string().trim_matches('"').to_owned(),
+                            item.get("name")?.as_str()?.to_owned(),
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let quick_replies = files
             .get("AudioFileList")
             .and_then(|value| value.get("supportAudioPlay"))
@@ -894,12 +912,22 @@ impl ReolinkClient {
         let auto_reply = self
             .api_call("GetAutoReply", Some(serde_json::json!({})))
             .is_ok();
-        let chime = self
+        let chime_assets = self
             .api_call("GetDingDongList", Some(serde_json::json!({})))
             .ok()
             .and_then(|value| value.get("DingDongList").cloned())
             .and_then(|value| value.get("dingDong").and_then(Value::as_array).cloned())
-            .is_some_and(|items| !items.is_empty());
+            .unwrap_or_default();
+        let chime_assets = chime_assets
+            .iter()
+            .filter_map(|item| {
+                Some((
+                    item.get("id")?.as_str()?.to_owned(),
+                    item.get("name")?.as_str()?.to_owned(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        let chime = !chime_assets.is_empty();
 
         Ok(ReolinkDoorbellCapabilities {
             visitor_events,
@@ -913,6 +941,8 @@ impl ReolinkClient {
                 .get("visitorLoudspeaker")
                 .and_then(Value::as_u64)
                 .map(|value| value != 0),
+            quick_reply_assets,
+            chime_assets,
         })
     }
 
@@ -1005,6 +1035,8 @@ impl ReolinkClient {
             analytics: chn_has("aiTrack") || chn_has("ai"),
             imaging: chn_has("image"),
             two_way_audio: chn_has("talkCfg"),
+            quick_replies: Vec::new(),
+            chimes: Vec::new(),
         })
     }
 
@@ -1396,6 +1428,24 @@ impl ReolinkClient {
         Ok(())
     }
 
+    pub fn quick_reply_play(&self, channel: u32, file_id: &str) -> anyhow::Result<()> {
+        let param = serde_json::json!({
+            "channel": channel,
+            "fileId": file_id,
+        });
+        self.api_call("QuickReplyPlay", Some(param))?;
+        Ok(())
+    }
+
+    pub fn ding_dong_play(&self, chime_id: &str) -> anyhow::Result<()> {
+        let param = serde_json::json!({
+            "id": chime_id,
+            "type": "play",
+        });
+        self.api_call("DingDongOpt", Some(param))?;
+        Ok(())
+    }
+
     pub fn get_hdd_info(&self) -> anyhow::Result<Value> {
         self.api_call("GetHddInfo", None)
     }
@@ -1577,7 +1627,7 @@ impl ReolinkClient {
         let image_settings = client.get_image(0).ok();
         let ir_mode = client.get_ir_lights(0).ok();
         let presets = client.get_ptz_presets(0).unwrap_or_default();
-        let capabilities = client.get_ability(&config.username).unwrap_or_default();
+        let mut capabilities = client.get_ability(&config.username).unwrap_or_default();
         if let Ok(doorbell) = client.get_doorbell_capabilities(0, &config.username) {
             tracing::debug!(
                 visitor_events = doorbell.visitor_events,
@@ -1587,6 +1637,26 @@ impl ReolinkClient {
                 chime = doorbell.chime,
                 "Reolink doorbell capabilities"
             );
+            capabilities.quick_replies = doorbell
+                .quick_reply_assets
+                .iter()
+                .map(
+                    |(asset_id, display_name)| crate::cameras::CameraAudioAsset {
+                        asset_id: asset_id.clone(),
+                        display_name: display_name.clone(),
+                    },
+                )
+                .collect();
+            capabilities.chimes = doorbell
+                .chime_assets
+                .iter()
+                .map(
+                    |(asset_id, display_name)| crate::cameras::CameraAudioAsset {
+                        asset_id: asset_id.clone(),
+                        display_name: display_name.clone(),
+                    },
+                )
+                .collect();
         }
 
         if profiles
