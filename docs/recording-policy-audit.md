@@ -1,0 +1,245 @@
+# Recording capability audit
+
+This is the evidence and decision ledger for [#168](https://github.com/xnorpx/keeppeek/issues/168).
+It implements the bounded audit slices, not the conditional retention or control implementation.
+The issue remains open: Checkpoint A, runtime acceptance criteria, and maintainer review are pending.
+
+## Baseline and classification
+
+- Reference: [Frigate Recording](https://docs.frigate.video/configuration/record/), retrieved
+  2026-09-20. This is the live page, not a version-pinned release; no page revision was exposed.
+- KeepPeek: `0.1.0` source at
+  [`d56e145bfae56daac6e7c900bb08d725d904806a`](https://github.com/xnorpx/keeppeek/tree/d56e145bfae56daac6e7c900bb08d725d904806a).
+  All relative source and test links below refer to that baseline; this documentation-only change
+  is an equivalent executable build. This does not certify every released `0.1.0` binary.
+- Audit author: Codex, 2026-09-20. Maintainer/date and accepted policy decisions: pending.
+  That review status applies to every row below.
+- `Equivalent` means the narrowly stated outcome has an executed automated assertion and a
+  reproducible procedure below. It is not a camera/browser qualification claim.
+- `Partial` means a foundation exists, but a required outcome or its qualification is missing.
+  `Gap` means the inspected runtime/configuration cannot express the outcome.
+- `Intentional divergence` requires an existing explicit safety requirement or an approved
+  decision. An unapproved difference stays `Partial` or `Gap`.
+- Every row names one accountable issue. Where #168 is the owner, it owns the unresolved decision
+  and evidence gap; that is **not** approval to implement the feature or open another issue.
+
+## Source coverage
+
+The following inventory covers every heading on the retrieved page, including its introduction.
+Names in this table are navigation labels, not claims about KeepPeek.
+
+| Source section                                                                       | Rows                   |
+| ------------------------------------------------------------------------------------ | ---------------------- |
+| Recording introduction                                                               | R01–R05, R12, R16, R20 |
+| Common recording configurations; conservative, reduced-storage, alerts-only examples | R06–R08                |
+| Pre/post capture; interaction with retention mode; where to view footage             | R13–R15                |
+| Configuring retention; continuous/motion; object recording                           | R05, R09–R12           |
+| Recording at certain times                                                           | R17–R18                |
+| Export; custom FFmpeg arguments; CPU fallback                                        | R19–R23                |
+| Apple H.265 compatibility                                                            | R24                    |
+| Syncing media files with disk                                                        | R25–R26                |
+| Understanding usage; measurement; accounting differences                             | R27–R28                |
+| Free space and mounts; separate cache; metrics/disk mismatch                         | R16, R28–R30           |
+| Low-space deletion                                                                   | R31–R32                |
+
+## Outcome matrix
+
+Evidence IDs resolve to exact symbols, tests, and observations below. The baseline and review status
+above apply to every row. Workflows W1–W6 are reproducible qualification procedures; only the
+automated executions explicitly listed in the evidence ledger were run in this audit.
+
+| ID  | Required outcome / concrete example                                      | Class                  | Implemented behavior, evidence, and limitation                                                                                                                                                                                                            | Owner       |
+| --- | ------------------------------------------------------------------------ | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| R01 | Disable one camera: admit neither main nor sub.                          | Equivalent             | `CameraRecordingPolicy::decide` rejects both for `Off`; T1, W1. Config editing can later change the mode; this is not an immutable automation permission.                                                                                                 | [#168][168] |
+| R02 | Record main, sub, or both continuously.                                  | Equivalent             | Admission selects the configured stream(s); T1, W1. Continuity still depends on source, writer, and capacity. No age-based lifetime is promised.                                                                                                          | [#168][168] |
+| R03 | Preserve encoded H.264/H.265 in segmented MP4.                           | Partial                | `MediumTermWriter::append_one` and `finalize`; T2 inspects codec descriptions, audio timing, and catalog entries. No independent H.265 decode/browser run was performed here; container assertions alone do not complete qualification.                   | [#168][168] |
+| R04 | Locate recordings by UTC camera/time.                                    | Equivalent             | `layout::segment_path`; T3 maps `2026-02-17T14:35:09.123Z` to `front_door/2026-02-17/14/3509123.mp4`. W2. Path order differs; the outcome is time addressability.                                                                                         | [#168][168] |
+| R05 | Global recording defaults with per-camera overrides.                     | Partial                | `CameraCredentialDefaults` and config inheritance cover mode and EventBoost duration; C1. Independent retention-rule defaults/overrides do not exist.                                                                                                     | [#168][168] |
+| R06 | Conservative example: progressively retain fewer classes.                | Gap                    | C1 has storage capacities and buffer/segment durations, not continuous/motion/event lifetimes. A byte cap cannot reproduce the example. D1.                                                                                                               | [#168][168] |
+| R07 | Reduced-storage example: keep motion-selected footage.                   | Gap                    | P1 selects streams, not motion intervals. EventBoost still records during quiet periods. D1/D2.                                                                                                                                                           | [#168][168] |
+| R08 | Alerts-only example: discard unrelated footage.                          | Gap                    | Event records do not define admission or expiry classes. `Off` disables all recording; EventBoost is not alerts-only. D1/D2.                                                                                                                              | [#168][168] |
+| R09 | Independent continuous, motion, alert, and detection lifetimes.          | Gap                    | C1/P1 contain no rule-class expiry fields or resolver. Event metadata and coverage statistics do not supply one.                                                                                                                                          | [#168][168] |
+| R10 | Eligibility equivalent to all/motion/active objects.                     | Gap                    | `CameraRecordingPolicy::decide` consumes stream/keyframe/time, not segment motion/object provenance. Generic event ingestion is a dependency, not eligibility proof. D2.                                                                                  | [#168][168] |
+| R11 | Overlapping matches keep one media object to the latest deadline.        | Gap                    | Catalog IDs and event relationships exist, but no maximum-deadline retention resolver exists in P1/C1. EventBoost's one-file test T2 proves a different property. D1/D3.                                                                                  | [#168][168] |
+| R12 | Precise sub-day lifetimes; zero disables only one rule.                  | Gap                    | Seconds-valued buffering and EventBoost duration are not retention durations. No 12-hour rule or exact-expiry test exists for this policy model. D1.                                                                                                      | [#168][168] |
+| R13 | Retain decodable pre-event coverage.                                     | Gap                    | B1 is a duration-evicted frame queue downstream of admission, not event-triggered GOP replay. Do not describe it as pre-roll.                                                                                                                             | [#172][172] |
+| R14 | Configurable post-event coverage by event class/camera.                  | Partial                | EventBoost extends main selection from event arrival and returns on a sub keyframe; T1/T2. It has no independent alert/detection windows, durable event revisions, or post-event retention policy. D2/D3.                                                 | [#168][168] |
+| R15 | Browse available lead-in/tail and explain unavailable coverage.          | Partial                | [Recording integrity](recording-integrity.md) and Keep expose coverage/gaps; W3. Export's 15-second context requests existing media and does not create pre-roll. R13/R14 remain prerequisites.                                                           | [#172][172] |
+| R16 | Cache and validate before policy-selected persistence.                   | Partial                | B1 and writer admission/queue bounds exist; T4. No retention-class promotion stage exists. `short_term_secs` is not a disk-retention rule.                                                                                                                | [#168][168] |
+| R17 | Manually change recording at runtime.                                    | Partial                | Typed configuration exposes mode/effective inherited value; C1, W1. No separate override with actor, reason, expiry, precedence, and durable restart semantics. D4.                                                                                       | [#168][168] |
+| R18 | Scheduled/external control respects disabled/privacy bounds.             | Gap                    | Configuration editing, event forwarding, and rules capabilities do not establish a recording-control resolver. Privacy schedules remain open in #125; generic control ownership requires D4.                                                              | [#168][168] |
+| R19 | Export a range/event and retrieve durable job history.                   | Equivalent             | E1/T6 and historical H2 cover bounded range assembly, lifecycle, event entry, and requester-scoped history. W4. Maximum range is two minutes; incomplete coverage is explicit.                                                                            | [#113][113] |
+| R20 | Keep exported evidence beyond recording expiry.                          | Partial                | Exports are separate from automatic recording cleanup (T5), but server artifacts expire after 24 hours and metadata after 30 days/500 jobs (E1). Download and verify externally for durable custody; permanence divergence is not approved by this audit. | [#113][113] |
+| R21 | Timelapse review/export.                                                 | Gap                    | Playback-rate controls and normal MP4 remux do not generate a timelapse artifact. P2/E1; no timelapse evidence claimed.                                                                                                                                   | [#127][127] |
+| R22 | Custom export encoding/filter arguments.                                 | Gap                    | E1/P2 expose typed export options, not arbitrary FFmpeg arguments. Timestamp burn-in requires a worker; it does not establish a general export API. D5.                                                                                                   | [#168][168] |
+| R23 | Export hardware selection, software retry, quality tuning.               | Gap                    | P2 remux is not an encoder/fallback service. No custom-export GPU failure/retry fixture is identified. D5; do not infer this from playback adaptation.                                                                                                    | [#168][168] |
+| R24 | Browser-compatible playback including Apple H.265.                       | Partial                | P2 compatibility remux and UI variant ranking/fallback exist; T6/H3, W3. Remux cannot make an unsupported codec decodable; adaptive/transcoding and current Safari/device qualification remain outstanding.                                               | [#131][131] |
+| R25 | Reconcile missing catalog media and report drift.                        | Partial                | M1 provides bounded inspection/reconciliation and recovery; T7/H4, W5. Local native removal tests fail filesystem qualification; general deployment recovery is not certified. Closed issue status is not proof of full parity.                           | [#133][133] |
+| R26 | Reconciliation never silently deletes unowned evidence.                  | Intentional divergence | M1 and #168's explicit non-goal preserve unindexed media and interrupted `.active` files; T7. Consequence: orphan bytes can remain. Use bounded maintenance inspection and reviewed recovery, not unconditional orphan purge.                             | [#133][133] |
+| R27 | Distinguish catalog-attributed bytes from filesystem capacity.           | Equivalent             | S1 evaluates OS available bytes separately from KeepPeek bytes; T5, W6. Other users/files can trigger pressure even below the archive cap.                                                                                                                | [#112][112] |
+| R28 | Explain snapshots/exports/database/other space outside recording totals. | Partial                | S1 reports filesystem pressure; recording integrity reports attributed media. It is not a complete per-directory accounting tool. Compare OS capacity and known configured roots; exact cross-surface attribution needs further qualification.            | [#122][122] |
+| R29 | Diagnose an absent or incorrect storage mount.                           | Partial                | `filesystem_capacity` queries the nearest existing parent; T5. Successful capacity probing does not prove the intended external volume is mounted. W6 checks volume identity; no mount-identity guard is claimed.                                         | [#168][168] |
+| R30 | Separate cache pressure from archive pressure and stale usage.           | Partial                | B1 is memory buffering; medium/long roots can differ (C1). Archive safety does not prove independent medium-root headroom enforcement. M1 handles catalog drift; W5/W6. D6.                                                                               | [#168][168] |
+| R31 | Reclaim oldest eligible recordings and recover safely.                   | Equivalent             | T5 removes 40-byte oldest catalog media while preserving newer, exported, and unindexed files; pause/recovery assertions pass. S1 uses explicit capacity/headroom/hysteresis, not an age guarantee. W6.                                                   | [#112][112] |
+| R32 | Pressure cannot override protected evidence.                             | Intentional divergence | #168 explicitly requires the stricter #112 protection boundary. T5 preserves held media and pauses when no eligible candidate remains. Consequence: new footage can be lost; restore capacity or review holds explicitly.                                 | [#112][112] |
+
+## Authoritative implementation and capability map
+
+| ID  | Source symbols and documentation                                                                                                                                                                                                                                      | Contract/UI boundary                                                                                                                                                                                                                                                |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1  | [`CameraCredentialDefaults`, `StorageToml`](../src/config.rs), [`CameraRecordingMode`, `CameraConfig`](../src/cameras/mod.rs); [configuration reference](../book/src/configuration-reference.md)                                                                      | `keeppeek.configuration.v1`; typed editor and effective inheritance in [`server/configuration.rs`](../src/server/configuration.rs), [`CameraConfigurationEditor.svelte`](../ui/src/lib/components/CameraConfigurationEditor.svelte). No retention-class capability. |
+| P1  | [`CameraRecordingPolicy::{note_event, decide}`](../src/storage/recording_policy.rs), [`RecordingAdmission`, `StorageHandle::configure_camera_recording`](../src/storage/engine.rs)                                                                                    | Admission and configuration are distinct from a future runtime permission/override model.                                                                                                                                                                           |
+| B1  | [`ShortTermBuffer`](../src/storage/short_term.rs), [`StorageConfig`, writer queue](../src/storage/engine.rs); [storage architecture](../src/storage/README.md)                                                                                                        | Queue: 4,096 commands / 64 MiB media; short-term buffer counts bytes but evicts by duration. This is not the byte/GOP-bounded #172 design.                                                                                                                          |
+| S1  | [`StorageSafetyPolicy::evaluate`, `filesystem_capacity`](../src/storage/safety.rs), [`WriterWorker`](../src/storage/engine.rs), [`RecordingCatalogHandle`](../src/storage/catalog.rs)                                                                                 | Shared health/metrics/storage editor; no independent age-retention capability. [Storage configuration](../book/src/configuration-reference.md).                                                                                                                     |
+| E1  | [`ExportJobRecord` and export lifecycle](../src/server.rs), [evidence export lifecycle](evidence-exports.md), [operator export workflow](../book/src/recording-and-evidence.md#export-evidence)                                                                       | `keeppeek.media-export.v1`; Administrator and requester ownership still required. Capability presence does not promise permanent artifacts or transcoding.                                                                                                          |
+| P2  | [`export_fragment_ranges_with_progress`, `browser_compatible_recording`](../src/storage/playback.rs), [`recorded-playback-policy.ts`](../ui/src/lib/recorded-playback-policy.ts)                                                                                      | Stored-media codec metadata and browser decode support determine selection; [recording workflow](../book/src/recording-and-evidence.md).                                                                                                                            |
+| M1  | [`recording_reconciliation`, `apply_recording_reconciliation`](../src/storage/catalog/maintenance/reconciliation.rs), [`recover_recording_deletions`](../src/storage/catalog/maintenance/jobs/recovery.rs); [maintenance guide](../book/src/recording-maintenance.md) | `keeppeek.recording-maintenance.v1` requires catalog support and Unix/Windows; Administrator authorization and native filesystem checks still apply.                                                                                                                |
+
+Capability identifiers above are read from [`server.rs`](../src/server.rs) and the existing
+[`ServerCapabilities` contract](../api/webrtc.proto), not invented audit identifiers. The server
+advertises no dedicated retention-rule, pre-roll, timelapse, or generic recording-override capability.
+`keeppeek.rules.v1` and `keeppeek.mqtt-forwarder.v1` must not be used as substitutes. #136's completed
+editor and #96's completed event ingestion are dependencies; neither implements the missing policy.
+
+## Executed evidence
+
+On 2026-09-20, Windows x86_64, Rust/Cargo 1.98.1, debug test profile, baseline above:
+
+```text
+cargo test --locked -p keeppeek --lib storage::
+196 passed; 11 failed; 1 ignored; 0 measured; 921 filtered out
+Test execution: 14.99 seconds. Exit status: 101 (not a passing suite).
+```
+
+The initial sandboxed build could not download the existing camera database. The network-enabled
+retry built successfully. Compiler incremental-cache access warnings did not prevent execution.
+No private camera configuration or media was used. The ignored case is the existing
+`event_workflow_query_latency_measurement`, not a newly skipped test.
+
+| ID  | Named tests (all under `storage::`, suffixes shown)                                                                                                                                                                                                                                                                                                                                                                | Observed assertions                                                                                                                                                                                                         |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T1  | [`engine::tests::recording_admission_enforces_modes_and_keyframe_aligned_event_boost`](../src/storage/engine.rs)                                                                                                                                                                                                                                                                                                   | Passed. Off rejects both; Sub/Main/Both select correctly. Event waits for main keyframe at +2 s; repeated events extend selection; return waits for sub keyframe at +152 s.                                                 |
+| T2  | [`engine::tests::event_boost_round_trips_h264_h265_h264_with_audio_and_catalog`](../src/storage/engine.rs)                                                                                                                                                                                                                                                                                                         | Passed. Seven video samples with description indices `[1,1,2,2,2,1,1]`, three monotonic audio samples, seven fragments in one sub path, zero main fragments. Synthetic container/catalog evidence, not decoded-image proof. |
+| T3  | [`layout::tests::segment_path_format`, `active_segment_path_format`](../src/storage/layout.rs)                                                                                                                                                                                                                                                                                                                     | Both passed; exact UTC fixture paths asserted.                                                                                                                                                                              |
+| T4  | [`engine::tests::admission_and_enqueue_are_atomic_across_source_threads`, `full_writer_queue_drops_until_a_keyframe_can_be_enqueued`, `writer_queue_enforces_media_byte_capacity`](../src/storage/engine.rs)                                                                                                                                                                                                       | Passed; bounded admission and keyframe recovery.                                                                                                                                                                            |
+| T5  | [`engine::tests::startup_cleanup_removes_only_oldest_catalog_media_to_recovery_target`, `cleanup_pauses_recording_when_no_eligible_media_remains`, `cleanup_delete_failure_is_actionable_and_capacity_recovery_resumes_recording`](../src/storage/engine.rs); [`safety::tests::reserve_accounts_for_non_keeppeek_disk_usage`, `filesystem_capacity_queries_the_nearest_existing_parent`](../src/storage/safety.rs) | All passed. Oldest eligible removal, export/unindexed preservation, protected-media pause, and capacity recovery asserted with synthetic capacity.                                                                          |
+| T6  | [`playback::tests::export_preserves_timestamp_gap_between_indexed_recordings`, `export_preserves_mixed_codec_gop_descriptions`, `export_omits_overlapping_samples_across_recording_boundaries`, `compatibility_remux_repairs_audio_timescale_and_is_cached`](../src/storage/playback.rs)                                                                                                                           | Passed; timestamps, sample descriptions, deduplication, and compatibility container behavior. Lifecycle/UI evidence is historical H2/H3, not part of this filtered run.                                                     |
+| T7  | [`engine::tests::startup_preserves_interrupted_recording_for_explicit_reconciliation`, `startup_preserves_unowned_active_files_in_both_media_roots`](../src/storage/engine.rs); [`catalog::maintenance::reconciliation::reindex::tests::queued_reindex_rejects_replaced_media_before_catalog_commit`](../src/storage/catalog/maintenance/reconciliation/reindex/tests.rs)                                          | Passed. Recovery preserves interrupted/unowned media; reindex rejects replaced identity. Native deletion qualification below failed.                                                                                        |
+
+### Verified qualification gap: native Windows maintenance
+
+Ten cases returned `PermissionDenied: recording path is not eligible for inspection`: nine
+maintenance execution/recovery cases and the native NTFS primitive case. The checkout-archive case
+returned `Unsupported: recording removal requires NTFS persistent ACLs and metadata flushing`.
+The latter reproduces alone with:
+
+```powershell
+cargo test --locked -p keeppeek --lib storage::catalog::maintenance::jobs::execution::tests::checkout_archive_stages_and_removes_the_selected_recording -- --exact --nocapture
+```
+
+The equivalent already-built test binary was used for the isolated reproduction: one test executed,
+one failed. `Get-Volume` identified the checkout volume as ReFS and the system volume as NTFS.
+[`validate_directory`](../src/storage/long_term/inspection/removal/windows.rs) explicitly rejects
+non-NTFS storage. The ten inspection failures require separate ACL/path qualification; the generic
+error does not establish their precise cause. Do not describe all eleven as a ReFS diagnosis.
+No filesystem checks were bypassed or permissions changed. #133 owns this qualification limitation;
+re-run native maintenance on an approved NTFS test root before claiming this deployment supports it.
+
+### Historical owner evidence
+
+These are identified earlier builds, not fresh final-baseline browser or device tests. The linked
+PR bodies carry their acceptance tables; CI status was inspected on 2026-09-20.
+
+| ID / owner                        | Exact evidence                                                                                                                                                                                                                                                                           | Result and qualification limit                                                                                                                                                                 |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| H1 / #112, closed, POC            | [PR #163](https://github.com/xnorpx/keeppeek/pull/163), tested `e9a77493ab832e745e7a5e8169203a780f3148bb`; [Windows CI](https://github.com/xnorpx/keeppeek/actions/runs/32927695180/job/98053765677)                                                                                     | Success. PR documents eight threshold tests, cleanup/recovery tests, editor workflow, and a 64-segment benchmark. That workload does not satisfy #168's 127-source/30-day retention benchmark. |
+| H2 / #113, closed, MVP            | [PR #189](https://github.com/xnorpx/keeppeek/pull/189), head `638e46e60eacaae1b1715ed2b75c10eb0333429e`; [Windows CI](https://github.com/xnorpx/keeppeek/actions/runs/33229773978/job/99040400013), [UI CI](https://github.com/xnorpx/keeppeek/actions/runs/33229773978/job/99040399905) | Success. PR body also names older local `ab4274e` evidence; do not mislabel it as the final head. Current lifecycle docs retain the 24-hour artifact limit.                                    |
+| H3 / #111, closed, POC            | [PR #161](https://github.com/xnorpx/keeppeek/pull/161), tested `284d0a555ee9c0f4ecc280ac500aa86fe5f3e927`; [UI CI](https://github.com/xnorpx/keeppeek/actions/runs/32917145263/job/98023120465)                                                                                          | Success. Compatible variant selection and one visible fallback; two platform codec skips in the reported local E2E run. Not universal H.265/Safari qualification.                              |
+| H4 / #133, closed, Alpha          | [PR #233](https://github.com/xnorpx/keeppeek/pull/233), tested `47c9e7ff1774982d9f5121e23b322110a19a3e57`; [Windows CI](https://github.com/xnorpx/keeppeek/actions/runs/34282344700/job/102253479337)                                                                                    | Success. PR explicitly leaves exhaustive parent crash/scope qualification incomplete. Local audit failures above remain visible despite historical success.                                    |
+| Open implementation owners, Alpha | [#172][172] pre-roll; [#125](https://github.com/xnorpx/keeppeek/issues/125) privacy; [#127][127] timelapse; [#131][131] adaptation                                                                                                                                                       | No completion evidence claimed. Alpha membership is required, not automatic deferral.                                                                                                          |
+
+## Reproducible operator qualification
+
+Use the identified build, synthetic/non-sensitive cameras, and an isolated archive. These procedures
+are not reports of a manual run. Existing automated assertions above provide the narrow equivalence
+evidence; deployment-specific qualification must record its build, camera/codec, OS/filesystem, and
+browser versions. Never exercise low-space or deletion experiments against an evidence archive.
+
+1. **W1 — admission:** In Camera configuration, apply `off`, then `sub`, `main`, and `both` to a
+   dual-stream test camera. For each interval inspect Recording integrity and catalog coverage.
+   Off admits no new main/sub frames; the others admit only selected streams. Already queued media
+   may finalize after an edit. For EventBoost, emit a supported event and compare stream/GOP sequence
+   with T1/T2; do not expect two simultaneous event files.
+2. **W2 — time layout:** Run T3 with the exact UTC fixture. In an isolated recording root, compare
+   finalized names with the source's UTC capture time. Do not infer local-time naming from the UI.
+3. **W3 — playback:** Record a known H.264 sub and H.265 main. Open the same UTC moment in Keep on
+   each target browser, record selected variant/fallback and decoded progress, then request a gap.
+   The gap must stay explicit. No compatible retained stream means playback can remain unavailable.
+4. **W4 — export:** As Administrator, export a retained interval shorter than two minutes, revisit
+   history, and download/verify the MP4. Repeat the same request and inspect reuse, then select an
+   interval with a known gap and review partial coverage. Follow E1's independent FFmpeg decode
+   command on a host with the required tools. Download before 24-hour artifact expiry.
+5. **W5 — recovery:** Follow the [maintenance guide](../book/src/recording-maintenance.md) on copied
+   synthetic media. Preview catalog/file drift and preserve unknown files. Record filesystem
+   qualification failures rather than forcing deletion. Restart must not authorize new removal.
+6. **W6 — capacity:** Compare Recording integrity's attributed bytes with OS capacity for both
+   configured media roots. Verify the mounted device, not only its directory name. Reproduce
+   pressure using T5's injected capacities; expect oldest eligible cleanup, protected-media pause,
+   and recovery after headroom returns. Recording bytes need not equal total disk usage.
+
+Real-media follow-up must set `KEEPPEEK_RUN_SLOW_TESTS=1` before running
+`cargo test --locked -p keeppeek --test storage_pipeline -- --nocapture`; otherwise those cases can
+return without assertions. This audit did not run that suite or independent FFmpeg decoding.
+
+## Decision ledger for Checkpoint A
+
+All decisions below are pending maintainer approval. They are concrete gaps, not silent defaults.
+The audit changes no configuration, schema, API, media, or deletion behavior and can be reverted
+independently.
+
+| ID  | Decision needed                                                                                                                                   | Consequence / current workaround                                                                                                                                     | Accountable owner |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| D1  | Accept or reject independent class lifetimes, precise integer duration, latest-match expiry, and global/camera overrides.                         | Existing capacity limits cannot guarantee an age or the three examples. Export/download specific evidence; do not advertise class retention.                         | #168              |
+| D2  | Define normalized motion/alert/detection/active-object evidence and delayed/revised-event semantics.                                              | Event labels alone are insufficient. #96 ingestion is an input; #172 owns decodable pre-roll.                                                                        | #168              |
+| D3  | Decide file versus fragment expiry and whether policy edits can shorten committed deadlines.                                                      | Shared MP4 files can require over-retention; exact retained bytes may require separately approved compaction. No duplicate-object or exact-expiry result is claimed. | #168              |
+| D4  | Assign generic control implementation and approve configured/privacy bounds, actor/reason/expiry, conflict and restart semantics.                 | Existing config edits change mode. They are not expiring automation requests; #125 covers privacy only. No new protocol is approved.                                 | #168              |
+| D5  | Accept typed export/transcoding outcomes or approve deliberate differences for arbitrary arguments, hardware retry, and permanent export custody. | Download normal exports promptly. #127 owns timelapse; #131 owns playback adaptation, not an implied arbitrary export service.                                       | #168              |
+| D6  | Decide independent capacity/mount qualification for separated medium/long storage.                                                                | Check both mounted volumes operationally; do not infer protection of one from the other's capacity.                                                                  | #168              |
+| D7  | Approve latency, query-count, peak-memory, and ingest-impact budgets for the 127-source/30-day retention workload.                                | Existing safety/coverage benchmarks measure different paths. No retention evaluator or approved benchmark budget exists here.                                        | #168              |
+
+Required control cases for D4 are: Off + event stays Off (current P1); configured enabled + privacy
+must suppress recording (pending #125); manual/external enable cannot bypass a disabled/privacy
+bound (pending permission semantics); expired request/restart/conflicting revisions need one
+deterministic resolved state (not implemented). Configuration edits and runtime override permission
+must be distinguished before treating `off` as a hard upper bound.
+
+After D1–D3 approval, the acceptance fixtures must specify half-open UTC intervals, source/stream
+identity, exact retained intervals and physical bytes, zero/sub-day boundaries, overlapping events,
+late revisions, restart, clock corrections, keyframe expansion, and holds. No speculative fixture
+is presented as passing production behavior.
+
+## Acceptance status
+
+| Criterion | Audit result                                                                                              | Remaining closure evidence                                                                                    |
+| --------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| AC-1      | All retrieved headings mapped to 32 classified rows with baseline, symbols, evidence/owner, and workflow. | Maintainer completeness review and dated Checkpoint A decisions remain pending.                               |
+| AC-2      | Three examples are verified configuration/runtime gaps (R06–R08).                                         | Accepted semantics and executed exact interval/byte fixtures.                                                 |
+| AC-3      | Resolver, sub-day expiry, restart/reevaluation guarantees absent (R09–R12).                               | Approved implementation and boundary/migration tests.                                                         |
+| AC-4      | Keyframe EventBoost foundation passes T1/T2; pre-roll and independent event retention remain missing.     | #172 real-media decoded coverage plus delayed/revised-event evidence.                                         |
+| AC-5      | Typed configuration exists; authoritative runtime override model absent.                                  | D4, #125 integration, deterministic-clock admission/API/UI tests.                                             |
+| AC-6      | Historical owner builds and local assertions linked; limitations and Alpha owners explicit.               | Open #127/#131 evidence; #133 filesystem qualification and remaining deployment cases.                        |
+| AC-7      | Not measured or satisfied.                                                                                | D7 approved budgets and repeated release-build measurements, median/p95, query count, peak RSS, ingest delta. |
+
+Performance for this documentation change: N/A; executable paths and build inputs are unchanged.
+That exemption does not satisfy AC-7. Keep all incomplete issue criteria unchecked and link this PR
+with `Refs #168`, not an automatic issue-closing keyword.
+
+[96]: https://github.com/xnorpx/keeppeek/issues/96
+[112]: https://github.com/xnorpx/keeppeek/issues/112
+[113]: https://github.com/xnorpx/keeppeek/issues/113
+[122]: https://github.com/xnorpx/keeppeek/issues/122
+[127]: https://github.com/xnorpx/keeppeek/issues/127
+[131]: https://github.com/xnorpx/keeppeek/issues/131
+[133]: https://github.com/xnorpx/keeppeek/issues/133
+[168]: https://github.com/xnorpx/keeppeek/issues/168
+[172]: https://github.com/xnorpx/keeppeek/issues/172

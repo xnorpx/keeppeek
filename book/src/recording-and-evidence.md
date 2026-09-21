@@ -58,6 +58,12 @@ after checking the camera's recording policy and retained coverage.
 
 ## Choose what each camera records
 
+For a dated comparison of implemented recording outcomes, test evidence, and remaining work,
+see the [recording capability audit](https://github.com/xnorpx/keeppeek/blob/main/docs/recording-policy-audit.md).
+Recording modes choose streams; they do not provide independent continuous, motion, alert, or
+detection retention periods. EventBoost does not provide pre-event replay, and export context can
+only include footage that was already retained.
+
 Each camera has one recording policy:
 
 | Policy        | Recorded media                                                                                            |
