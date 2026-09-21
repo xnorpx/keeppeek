@@ -1,5 +1,3 @@
-use ::isapi::blocking::{Client as IsapiClient, Speaker as IsapiSpeaker, Talk as IsapiTalk};
-use ::isapi::{Credentials as IsapiCredentials, management::AudioCodec as IsapiAudioCodec};
 use crate::{
     cameras::{AudioEncoding, SessionTimestampNormalizer, VideoEncoding},
     keeppeek::{AudioMeta, KeepPeekEvent, StreamKind, VideoMeta},
@@ -14,11 +12,11 @@ use crate::{
     },
     webrtc::{
         Publisher, Source,
-        audio::{
-            AudioCodec as WebRtcAudioCodec, AudioFrame as WebRtcAudioFrame, encode_g711,
-        },
+        audio::{AudioCodec as WebRtcAudioCodec, AudioFrame as WebRtcAudioFrame, encode_g711},
     },
 };
+use ::isapi::blocking::{Client as IsapiClient, Speaker as IsapiSpeaker, Talk as IsapiTalk};
+use ::isapi::{Credentials as IsapiCredentials, management::AudioCodec as IsapiAudioCodec};
 use bytes::Bytes;
 use retina::{
     client::{

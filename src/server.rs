@@ -940,6 +940,12 @@ impl ControlRequestHandler for ServerControlHandler {
                 "camera video requires RTP or reliable data delivery",
             ));
         }
+        if request.source_session_id.is_empty() {
+            return Err(ControlHandlerError::new(
+                proto::ErrorCode::InvalidRequest,
+                "media source session is required",
+            ));
+        }
         let camera = self
             .state
             .camera_entries()
@@ -18371,7 +18377,7 @@ mod tests {
                     proto::VideoQuality::Auto,
                     "",
                 ),
-                proto::ErrorCode::InvalidRequest,
+                proto::ErrorCode::NotFound,
             ),
             (
                 media_request(

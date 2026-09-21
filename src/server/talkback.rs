@@ -4,14 +4,14 @@ use std::sync::{Arc, Mutex, PoisonError};
 const MAX_TALKBACK_TARGETS: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CameraTarget {
+pub struct CameraTarget {
     pub(crate) source_id: String,
     pub(crate) groups: Vec<String>,
     pub(crate) enabled: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Error {
+pub enum Error {
     AlreadyOwned,
     NotOwner,
     MissingTarget,
@@ -26,7 +26,7 @@ struct ActiveTalkback {
 }
 
 #[derive(Clone)]
-pub(crate) struct Registry {
+pub struct Registry {
     active: Arc<Mutex<Option<ActiveTalkback>>>,
 }
 

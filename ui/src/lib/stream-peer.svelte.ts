@@ -72,10 +72,7 @@ export type LivePeerTrack = {
 	admissionError?: string | null;
 };
 
-export type TalkbackTargetSelection =
-	| { sourceId: string }
-	| { groupId: string }
-	| { all: true };
+export type TalkbackTargetSelection = { sourceId: string } | { groupId: string } | { all: true };
 
 export type CameraAudioAssets = {
 	quickReplies: ReadonlyArray<{ id: string; label: string }>;
@@ -401,7 +398,7 @@ export class LivePeer {
 			const cameraId =
 				this.#cameraByMid[event.transceiver.mid] ?? this.#audioCameraByMid[event.transceiver.mid];
 			if (!cameraId) return;
-			if (event.track.kind === 'audio') this.attachAudioTrackEvent(cameraId, event);
+			if (event.track?.kind === 'audio') this.attachAudioTrackEvent(cameraId, event);
 			else this.attachTrackEvent(cameraId, event);
 		};
 		peer.onconnectionstatechange = () => {
@@ -551,9 +548,13 @@ export class LivePeer {
 		const source = this.#capabilities?.sourceSessions.find(
 			(item) => item.sourceSessionId === sourceSessionId
 		);
-		const variant = source?.audio?.variants.find((item) => item.variantId === 'main') ?? source?.audio?.variants[0];
+		const variant =
+			source?.audio?.variants.find((item) => item.variantId === 'main') ??
+			source?.audio?.variants[0];
 		if (!variant) return;
-		const requestedDeliveryTransport = variant.deliveryTransports.includes(DeliveryTransport.RELIABLE_DATA)
+		const requestedDeliveryTransport = variant.deliveryTransports.includes(
+			DeliveryTransport.RELIABLE_DATA
+		)
 			? DeliveryTransport.RELIABLE_DATA
 			: DeliveryTransport.RTP;
 		const result = await this.requestMedia(
@@ -575,7 +576,8 @@ export class LivePeer {
 			if (event) this.attachAudioTrackEvent(cameraId, event);
 			return;
 		}
-		if (result.value.delivery.case !== 'mediaData' || variant.codec?.name.toLowerCase() !== 'aac') return;
+		if (result.value.delivery.case !== 'mediaData' || variant.codec?.name.toLowerCase() !== 'aac')
+			return;
 		const format = variant.format?.format;
 		if (format?.case !== 'audio') return;
 		const playback = new AacAudioPlayback();
@@ -640,7 +642,9 @@ export class LivePeer {
 
 	private attachAudioTrackEvent(cameraId: string, event: RTCTrackEvent): void {
 		const mediaTrack = event.track ?? event.receiver.track;
-		const stream = mediaTrack ? new MediaStream([mediaTrack]) : (event.streams[0] ?? new MediaStream());
+		const stream = mediaTrack
+			? new MediaStream([mediaTrack])
+			: (event.streams[0] ?? new MediaStream());
 		this.replaceTrack(cameraId, { audioReceiver: event.receiver, audioStream: stream });
 	}
 
@@ -715,11 +719,11 @@ export class LivePeer {
 					.map((id) => ({ id, label: id }));
 				this.#sourceSessionByCamera = Object.fromEntries(
 					capabilities.sourceSessions
-					.filter(
-						(source) =>
-							source.sourceId.length > 0 &&
-							(source.video !== undefined || source.audio !== undefined)
-					)
+						.filter(
+							(source) =>
+								source.sourceId.length > 0 &&
+								(source.video !== undefined || source.audio !== undefined)
+						)
 						.map((source) => [source.sourceId, source.sourceSessionId])
 				);
 				for (const waiter of this.#capabilitiesWaiters) {
@@ -756,7 +760,8 @@ export class LivePeer {
 		if (!(event.data instanceof ArrayBuffer)) return;
 		try {
 			const message = fromBinary(MessageSchema, new Uint8Array(event.data));
-			if (message.message.case !== 'audio' || message.message.value.message.case !== 'frame') return;
+			if (message.message.case !== 'audio' || message.message.value.message.case !== 'frame')
+				return;
 			const frame = message.message.value.message.value;
 			this.#audioPlaybackByBinding.get(frame.streamBindingId)?.push(frame);
 		} catch (error) {
