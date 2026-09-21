@@ -1,7 +1,10 @@
 use chrono::{DateTime, Datelike, NaiveTime, Utc, Weekday};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::{
+    collections::BTreeMap,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 const MAX_WINDOWS: usize = 64;
 
@@ -10,6 +13,58 @@ const MAX_WINDOWS: usize = 64;
 pub struct PrivacyGate {
     active: AtomicBool,
     epoch: AtomicU64,
+}
+
+/// Resolves the effective schedule for each camera.
+#[derive(Debug, Clone, Default)]
+pub struct PrivacyRegistry {
+    schedules: BTreeMap<String, PrivacySchedule>,
+    gates: BTreeMap<String, std::sync::Arc<PrivacyGate>>,
+}
+
+impl PrivacyRegistry {
+    /// Builds a registry from validated configuration.
+    pub fn new(schedules: BTreeMap<String, PrivacySchedule>) -> anyhow::Result<Self> {
+        if schedules.len() > 127 {
+            anyhow::bail!("privacy registry cannot contain more than 127 cameras");
+        }
+        for (camera_id, schedule) in &schedules {
+            if camera_id.trim().is_empty() || camera_id.len() > 256 {
+                anyhow::bail!("privacy camera keys must contain 1 to 256 bytes");
+            }
+            schedule.validate()?;
+        }
+        let gates = schedules
+            .keys()
+            .map(|camera_id| (camera_id.clone(), std::sync::Arc::new(PrivacyGate::new())))
+            .collect();
+        Ok(Self { schedules, gates })
+    }
+
+    /// Returns the effective active state and transition epoch for a camera.
+    pub fn decision(&self, camera_id: &str, instant: DateTime<Utc>) -> anyhow::Result<(bool, u64)> {
+        let Some(schedule) = self.schedules.get(camera_id) else {
+            return Ok((false, 0));
+        };
+        let active = schedule.is_active(instant)?;
+        let gate = self
+            .gates
+            .get(camera_id)
+            .expect("configured privacy gate exists");
+        let epoch = if active == gate.is_active() {
+            gate.epoch()
+        } else if active {
+            gate.activate()
+        } else {
+            gate.deactivate()
+        };
+        Ok((active, epoch))
+    }
+
+    /// Returns the gate for a configured camera.
+    pub fn gate(&self, camera_id: &str) -> Option<std::sync::Arc<PrivacyGate>> {
+        self.gates.get(camera_id).cloned()
+    }
 }
 
 impl PrivacyGate {
@@ -38,6 +93,11 @@ impl PrivacyGate {
     /// Returns whether a producer may publish media for the observed epoch.
     pub fn allows(&self, observed_epoch: u64) -> bool {
         !self.active.load(Ordering::Acquire) && observed_epoch == self.epoch.load(Ordering::Acquire)
+    }
+
+    /// Returns the current privacy state.
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
     }
 
     /// Returns the current transition epoch.
@@ -164,6 +224,28 @@ mod tests {
         let public_epoch = gate.deactivate();
         assert!(!gate.allows(initial));
         assert!(gate.allows(public_epoch));
+    }
+
+    #[test]
+    fn registry_changes_epoch_only_at_a_policy_transition() {
+        let mut schedules = BTreeMap::new();
+        schedules.insert(
+            "front".to_owned(),
+            schedule(PrivacyWindow {
+                weekdays: vec![1],
+                start: "22:00".into(),
+                end: "23:00".into(),
+            }),
+        );
+        let registry = PrivacyRegistry::new(schedules).unwrap();
+        let first = registry
+            .decision("front", "2026-09-22T05:15:00Z".parse().unwrap())
+            .unwrap();
+        let second = registry
+            .decision("front", "2026-09-22T05:30:00Z".parse().unwrap())
+            .unwrap();
+        assert_eq!(first, second);
+        assert!(first.0);
     }
 
     fn schedule(window: PrivacyWindow) -> PrivacySchedule {
