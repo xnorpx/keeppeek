@@ -8663,6 +8663,12 @@ impl ServerState {
             .expect("privacy configuration must be validated before server startup");
         let privacy = Arc::new(privacy);
         webrtc.set_privacy_registry(privacy.clone());
+        for camera in &entries {
+            if let Ok(camera_ip) = camera.info.ip.parse::<IpAddr>() {
+                privacy.set_alias(camera_ip.to_string(), camera.info.id.clone());
+                webrtc.set_privacy_camera_id(camera_ip, camera.info.id.clone());
+            }
+        }
 
         Self {
             host: config.host.clone(),

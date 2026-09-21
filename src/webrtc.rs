@@ -1567,6 +1567,7 @@ struct Inner {
     camera_generations: Mutex<HashMap<IpAddr, u64>>,
     camera_preview_keyframes: Mutex<HashMap<IpAddr, CameraPreviewKeyframe>>,
     privacy: RwLock<Option<Arc<PrivacyRegistry>>>,
+    privacy_camera_ids: Mutex<HashMap<IpAddr, String>>,
     privacy_epochs: Mutex<HashMap<IpAddr, u64>>,
     sessions: SessionRegistry,
     control_handler: Arc<RwLock<Option<Weak<dyn ControlRequestHandler>>>>,
@@ -2203,6 +2204,14 @@ impl Publisher {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(privacy);
     }
 
+    pub(crate) fn set_privacy_camera_id(&self, camera_ip: IpAddr, camera_id: String) {
+        self.inner
+            .privacy_camera_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(camera_ip, camera_id);
+    }
+
     pub(crate) fn reset_camera(&self, camera_ip: IpAddr) {
         let mut generations = self
             .inner
@@ -2274,8 +2283,16 @@ impl Publisher {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         if let Some(privacy) = privacy {
+            let camera_id = self
+                .inner
+                .privacy_camera_ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&source.camera_ip)
+                .cloned()
+                .unwrap_or_else(|| source.camera_ip.to_string());
             let (active, epoch) = privacy
-                .decision_for_ip(source.camera_ip, chrono::Utc::now())
+                .decision(&camera_id, chrono::Utc::now())
                 .unwrap_or((true, u64::MAX));
             let transition = self
                 .inner
@@ -2377,6 +2394,10 @@ impl WebRtc {
 
     pub(crate) fn set_privacy_registry(&self, privacy: Arc<PrivacyRegistry>) {
         self.live.set_privacy_registry(privacy);
+    }
+
+    pub(crate) fn set_privacy_camera_id(&self, camera_ip: IpAddr, camera_id: String) {
+        self.live.set_privacy_camera_id(camera_ip, camera_id);
     }
 
     pub(crate) fn set_control_handler(&self, handler: Weak<dyn ControlRequestHandler>) {
