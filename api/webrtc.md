@@ -420,10 +420,10 @@ results remain the authority for what streams actually exist and can carry media
 
 Every `StateEntry` has a server-issued owner ID, namespace-local monotonically increasing
 revision, update timestamp, optional expiration, schema name, and structured value. Namespace
-authorization is server policy. Typical deployments reserve `system/` for KeepPeek, grant
-`service/` namespaces to approved service principals, grant `group/` namespaces to authorized
-group members, and give users or devices their own private namespaces. A client cannot choose
-the owner ID returned by the server.
+authorization is server policy. Administrators can read every namespace. Administrators can write
+`service/` and `group/` namespaces, while client writes to `system/` are rejected. Users can read
+and write their own private namespace, and administrators can read and write it as well. A client
+cannot choose the owner ID returned by the server.
 
 `PutState` replaces one complete state value. An absent `expected_revision` permits a blind write;
 an explicit zero requires the key to be absent; any other explicit value must equal the current
