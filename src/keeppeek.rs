@@ -558,6 +558,7 @@ impl KeepPeekLoop {
                 camera,
                 self.tx.clone(),
                 self.health.events.clone(),
+                self.privacy.clone().unwrap_or_default(),
                 event_shutdown,
             ) {
                 Ok(handles) => workers.event_handles.extend(handles),
@@ -630,6 +631,7 @@ impl KeepPeekLoop {
             let fallback_camera = camera.clone();
             let sent = self.tx.clone();
             let registry = self.health.events.clone();
+            let privacy = self.privacy.clone().unwrap_or_default();
             let shutdown = workers.event_shutdown.clone();
             crate::isapi::spawn_then(
                 camera,
@@ -638,7 +640,13 @@ impl KeepPeekLoop {
                 shutdown.clone(),
                 move || {
                     tracing::info!(camera_ip = %fallback_camera.config.ip, "ISAPI unsupported; switching to generic ONVIF events");
-                    match crate::camera_events::spawn(&fallback_camera, sent, registry, shutdown) {
+                    match crate::camera_events::spawn(
+                        &fallback_camera,
+                        sent,
+                        registry,
+                        privacy,
+                        shutdown,
+                    ) {
                         Ok(handles) => {
                             for handle in handles {
                                 if handle.join().is_err() {

@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, NaiveTime, Utc, Weekday};
+use chrono::{DateTime, Datelike, Duration, NaiveDateTime, NaiveTime, TimeZone, Utc, Weekday};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -8,6 +8,12 @@ use std::{
 };
 
 const MAX_WINDOWS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivacySource {
+    Default,
+    Camera,
+}
 
 /// A cheap, shared gate for media producers and consumers.
 #[derive(Debug, Default)]
@@ -19,8 +25,8 @@ pub struct PrivacyGate {
 /// Resolves the effective schedule for each camera.
 #[derive(Debug, Clone, Default)]
 pub struct PrivacyRegistry {
-    schedules: BTreeMap<String, PrivacySchedule>,
-    gates: BTreeMap<String, std::sync::Arc<PrivacyGate>>,
+    schedules: Arc<RwLock<BTreeMap<String, PrivacySchedule>>>,
+    gates: Arc<RwLock<BTreeMap<String, std::sync::Arc<PrivacyGate>>>>,
     aliases: Arc<RwLock<BTreeMap<String, String>>>,
 }
 
@@ -41,10 +47,46 @@ impl PrivacyRegistry {
             .map(|camera_id| (camera_id.clone(), std::sync::Arc::new(PrivacyGate::new())))
             .collect();
         Ok(Self {
-            schedules,
-            gates,
+            schedules: Arc::new(RwLock::new(schedules)),
+            gates: Arc::new(RwLock::new(gates)),
             aliases: Arc::new(RwLock::new(BTreeMap::new())),
         })
+    }
+
+    /// Replaces validated schedules without replacing the shared registry handle.
+    pub fn replace_schedules(
+        &self,
+        schedules: BTreeMap<String, PrivacySchedule>,
+    ) -> anyhow::Result<()> {
+        let replacement = Self::new(schedules)?;
+        let schedules = replacement
+            .schedules
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let mut current_schedules = self
+            .schedules
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut gates = self
+            .gates
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let old_gates = std::mem::take(&mut *gates);
+        *gates = schedules
+            .keys()
+            .map(|camera_id| {
+                (
+                    camera_id.clone(),
+                    old_gates
+                        .get(camera_id)
+                        .cloned()
+                        .unwrap_or_else(|| Arc::new(PrivacyGate::new())),
+                )
+            })
+            .collect();
+        *current_schedules = schedules;
+        Ok(())
     }
 
     /// Associates a transport identity with a configured camera identity.
@@ -64,13 +106,21 @@ impl PrivacyRegistry {
             .get(camera_id)
             .cloned()
             .unwrap_or_else(|| camera_id.to_owned());
-        let Some(schedule) = self.schedules.get(&configured_id) else {
+        let schedules = self
+            .schedules
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(schedule) = schedules.get(&configured_id) else {
             return Ok((false, 0));
         };
-        let active = schedule.is_active(instant)?;
+        let active = schedule.is_active_unchecked(instant)?;
+        drop(schedules);
         let gate = self
             .gates
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&configured_id)
+            .cloned()
             .expect("configured privacy gate exists");
         let epoch = if active == gate.is_active() {
             gate.epoch()
@@ -91,7 +141,27 @@ impl PrivacyRegistry {
             .get(camera_id)
             .cloned()
             .unwrap_or_else(|| camera_id.to_owned());
-        self.gates.get(&configured_id).cloned()
+        self.gates
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&configured_id)
+            .cloned()
+    }
+
+    /// Returns the configured schedule resolved through transport aliases.
+    pub fn schedule(&self, camera_id: &str) -> Option<PrivacySchedule> {
+        let configured_id = self
+            .aliases
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(camera_id)
+            .cloned()
+            .unwrap_or_else(|| camera_id.to_owned());
+        self.schedules
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&configured_id)
+            .cloned()
     }
 
     /// Resolves a camera whose configured identifier is its transport address.
@@ -157,12 +227,19 @@ pub struct PrivacyWindow {
 /// A validated recurring privacy policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrivacySchedule {
+    /// Whether the schedule can activate privacy. Disabled schedules retain their configuration.
+    #[serde(default = "default_privacy_enabled")]
+    pub enabled: bool,
     /// IANA timezone name used to interpret the weekly windows.
     pub timezone: String,
     #[serde(default)]
     pub windows: Vec<PrivacyWindow>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temporary_override: Option<PrivacyOverride>,
+}
+
+const fn default_privacy_enabled() -> bool {
+    true
 }
 
 /// A bounded, persisted administrator override of a recurring privacy policy.
@@ -219,6 +296,13 @@ impl PrivacySchedule {
     /// Returns whether `instant` is inside a privacy window.
     pub fn is_active(&self, instant: DateTime<Utc>) -> anyhow::Result<bool> {
         self.validate()?;
+        self.is_active_unchecked(instant)
+    }
+
+    fn is_active_unchecked(&self, instant: DateTime<Utc>) -> anyhow::Result<bool> {
+        if !self.enabled {
+            return Ok(false);
+        }
         if self.temporary_override.as_ref().is_some_and(|override_| {
             let Ok(accepted_at) = parse_override_time(&override_.accepted_at) else {
                 return true;
@@ -248,15 +332,90 @@ impl PrivacySchedule {
             }
             if start > end {
                 let previous_weekday = if weekday == 1 { 7 } else { weekday - 1 };
-                if window.weekdays.contains(&previous_weekday)
-                    && (local_time >= start || local_time < end)
-                {
+                if window.weekdays.contains(&previous_weekday) && local_time < end {
                     return Ok(true);
                 }
             }
         }
         Ok(false)
     }
+
+    /// Returns the next effective state transition within the next eight days.
+    pub fn next_transition(&self, instant: DateTime<Utc>) -> anyhow::Result<Option<DateTime<Utc>>> {
+        self.validate()?;
+        if !self.enabled {
+            return Ok(None);
+        }
+        let zone: Tz = self
+            .timezone
+            .parse()
+            .map_err(|_| anyhow::anyhow!("privacy schedule timezone must be a valid IANA zone"))?;
+        let local = instant.with_timezone(&zone).date_naive();
+        let mut candidates = Vec::new();
+        for offset in 0..=8 {
+            let date = local + Duration::days(offset);
+            let weekday = weekday_number(date.weekday());
+            for window in &self.windows {
+                if !window.weekdays.contains(&weekday) {
+                    continue;
+                }
+                let start = parse_time(&window.start)?;
+                let end = parse_time(&window.end)?;
+                for (time, date) in [
+                    (start, date),
+                    (
+                        end,
+                        if start > end {
+                            date + Duration::days(1)
+                        } else {
+                            date
+                        },
+                    ),
+                ] {
+                    let local_time = date.and_time(time);
+                    match zone.from_local_datetime(&local_time) {
+                        chrono::LocalResult::Single(value) => {
+                            candidates.push(value.with_timezone(&Utc));
+                        }
+                        chrono::LocalResult::Ambiguous(first, second) => {
+                            candidates.push(first.with_timezone(&Utc));
+                            candidates.push(second.with_timezone(&Utc));
+                        }
+                        chrono::LocalResult::None => {
+                            if let Some(value) = first_utc_at_or_after_local(&zone, local_time) {
+                                candidates.push(value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(override_) = &self.temporary_override {
+            candidates.push(parse_override_time(&override_.accepted_at)?);
+            candidates.push(parse_override_time(&override_.expires_at)?);
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+        let before = self.is_active_unchecked(instant)?;
+        Ok(candidates.into_iter().find(|candidate| {
+            *candidate > instant
+                && self
+                    .is_active_unchecked(*candidate + Duration::milliseconds(1))
+                    .ok()
+                    .is_some_and(|after| after != before)
+        }))
+    }
+}
+
+fn first_utc_at_or_after_local(zone: &Tz, target: NaiveDateTime) -> Option<DateTime<Utc>> {
+    let guess = DateTime::<Utc>::from_naive_utc_and_offset(target, Utc);
+    for minute in -2_880..=2_880 {
+        let candidate = guess + Duration::minutes(minute);
+        if candidate.with_timezone(zone).naive_local() >= target {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn parse_time(value: &str) -> anyhow::Result<NaiveTime> {
@@ -331,6 +490,7 @@ mod tests {
 
     fn schedule(window: PrivacyWindow) -> PrivacySchedule {
         PrivacySchedule {
+            enabled: true,
             timezone: "America/Los_Angeles".into(),
             windows: vec![window],
             temporary_override: None,
@@ -364,6 +524,11 @@ mod tests {
                 .is_active("2026-09-22T13:00:00Z".parse().unwrap())
                 .unwrap()
         );
+        assert!(
+            !policy
+                .is_active("2026-09-23T06:00:00Z".parse().unwrap())
+                .unwrap()
+        );
     }
 
     #[test]
@@ -389,6 +554,7 @@ mod tests {
     fn rejects_invalid_zone_time_and_window_count() {
         assert!(
             PrivacySchedule {
+                enabled: true,
                 timezone: "UTC-8".into(),
                 windows: vec![],
                 temporary_override: None,
@@ -414,6 +580,7 @@ mod tests {
             .collect();
         assert!(
             PrivacySchedule {
+                enabled: true,
                 timezone: "UTC".into(),
                 windows,
                 temporary_override: None,
@@ -447,5 +614,91 @@ mod tests {
                 .is_active("2026-09-21T02:00:00Z".parse().unwrap())
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn reports_next_transition_for_overnight_policy() {
+        let policy = schedule(PrivacyWindow {
+            weekdays: vec![1],
+            start: "22:00".into(),
+            end: "06:00".into(),
+        });
+        let next = policy
+            .next_transition("2026-09-21T20:00:00Z".parse().unwrap())
+            .unwrap();
+        assert_eq!(next, Some("2026-09-22T05:00:00Z".parse().unwrap()));
+    }
+
+    #[test]
+    fn skips_nonexistent_spring_forward_local_times() {
+        let policy = PrivacySchedule {
+            enabled: true,
+            timezone: "America/Los_Angeles".into(),
+            windows: vec![PrivacyWindow {
+                weekdays: vec![7],
+                start: "02:30".into(),
+                end: "03:30".into(),
+            }],
+            temporary_override: None,
+        };
+        let next = policy
+            .next_transition("2026-03-08T09:00:00Z".parse().unwrap())
+            .unwrap();
+        assert_eq!(next, Some("2026-03-08T10:00:00Z".parse().unwrap()));
+    }
+
+    #[test]
+    fn disabled_schedule_never_transitions_or_activates() {
+        let mut policy = schedule(PrivacyWindow {
+            weekdays: vec![1],
+            start: "00:00".into(),
+            end: "23:59".into(),
+        });
+        policy.enabled = false;
+        let instant = "2026-09-21T12:00:00Z".parse().unwrap();
+        assert!(!policy.is_active(instant).unwrap());
+        assert_eq!(policy.next_transition(instant).unwrap(), None);
+    }
+
+    #[test]
+    fn replacing_schedules_preserves_aliases_and_gate_epochs() {
+        let mut schedules = BTreeMap::new();
+        schedules.insert(
+            "front".to_owned(),
+            schedule(PrivacyWindow {
+                weekdays: vec![1],
+                start: "00:00".into(),
+                end: "01:00".into(),
+            }),
+        );
+        let registry = PrivacyRegistry::new(schedules).unwrap();
+        registry.set_alias("192.0.2.10".into(), "front".into());
+        let before = registry
+            .decision("192.0.2.10", "2026-09-21T07:30:00Z".parse().unwrap())
+            .unwrap();
+        registry.replace_schedules(BTreeMap::new()).unwrap();
+        assert_eq!(
+            registry.decision("192.0.2.10", Utc::now()).unwrap(),
+            (false, 0)
+        );
+        registry
+            .replace_schedules({
+                let mut replacement = BTreeMap::new();
+                replacement.insert(
+                    "front".to_owned(),
+                    schedule(PrivacyWindow {
+                        weekdays: vec![1],
+                        start: "00:00".into(),
+                        end: "01:00".into(),
+                    }),
+                );
+                replacement
+            })
+            .unwrap();
+        let after = registry
+            .decision("192.0.2.10", "2026-09-21T07:30:00Z".parse().unwrap())
+            .unwrap();
+        assert_eq!(before.0, after.0);
+        assert!(after.1 >= before.1);
     }
 }
