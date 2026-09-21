@@ -2233,6 +2233,15 @@ impl Publisher {
             .remove(&session_id);
     }
 
+    pub(crate) fn talkback_is_armed(&self, source_id: &str) -> bool {
+        self.inner
+            .talkback_routes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .any(|sources| sources.iter().any(|source| source == source_id))
+    }
+
     fn route_talkback_audio(&self, session_id: SessionId, frame: WebRtcAudioFrame) {
         let routes = self
             .inner
@@ -2258,10 +2267,6 @@ impl Publisher {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Consumed by camera talkback send loops")
-    )]
     pub(crate) fn take_talkback_audio(&self, source_id: &str) -> Option<WebRtcAudioFrame> {
         self.inner
             .talkback_audio
@@ -7276,7 +7281,7 @@ mod tests {
         publisher.route_talkback_audio(
             session_id,
             WebRtcAudioFrame {
-                codec: audio::AudioCodec::G711Alaw,
+                        codec: audio::AudioCodec::PcmS16Le,
                 sample_rate_hz: 8_000,
                 channel_count: 1,
                 timestamp: None,
