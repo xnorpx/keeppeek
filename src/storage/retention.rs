@@ -8,6 +8,37 @@ use serde::{Deserialize, Serialize};
 const RULES_MAX: usize = 16;
 const EVIDENCE_MAX: usize = 256;
 
+/// A stable policy rule identity with 1..64 ASCII letters, digits, dots, dashes, or underscores.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct RuleId(String);
+
+impl RuleId {
+    pub fn new(value: &str) -> anyhow::Result<Self> {
+        Self::try_from(value.to_owned())
+    }
+
+    pub const fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl TryFrom<String> for RuleId {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        anyhow::ensure!(
+            !value.is_empty()
+                && value.len() <= 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')),
+            "invalid retention rule ID"
+        );
+        Ok(Self(value))
+    }
+}
+
 /// A nonempty half-open UTC interval in integer milliseconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Interval {
@@ -81,15 +112,22 @@ impl Evidence {
 /// A validated rule with an exact duration; zero disables this rule only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetentionRule {
+    id: RuleId,
     class: RuleClass,
     duration_ms: i64,
     mode: RetentionMode,
 }
 
 impl RetentionRule {
-    pub fn new(class: RuleClass, duration_ms: u64, mode: RetentionMode) -> anyhow::Result<Self> {
+    pub fn new(
+        id: RuleId,
+        class: RuleClass,
+        duration_ms: u64,
+        mode: RetentionMode,
+    ) -> anyhow::Result<Self> {
         let duration_ms = i64::try_from(duration_ms)?;
         Ok(Self {
+            id,
             class,
             duration_ms,
             mode,
@@ -148,15 +186,26 @@ impl RetentionRule {
 }
 
 /// A policy result that never shortens a previously committed deadline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetentionDecision {
     /// No deadline means no positive match; it does not authorize deletion.
     pub deadline_ms: Option<i64>,
+    /// All enabled rules matching this evaluation, sorted by ID; not historical deadline provenance.
+    pub matching_rule_ids: Box<[RuleId]>,
+    pub reason: DecisionReason,
+}
+
+/// Explains whether current matches or a prior committed deadline determine this result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionReason {
+    NoMatchingRule,
+    MatchingRules,
+    PreservedCommittedDeadline,
 }
 
 impl RetentionDecision {
     /// Tests the deadline only; holds and evidence completeness are catalog concerns.
-    pub fn expired_at(self, now_ms: i64) -> bool {
+    pub fn expired_at(&self, now_ms: i64) -> bool {
         self.deadline_ms.is_some_and(|deadline| now_ms >= deadline)
     }
 }
@@ -170,12 +219,17 @@ pub struct RetentionPolicy {
 impl RetentionPolicy {
     pub fn new(rules: Vec<RetentionRule>) -> anyhow::Result<Self> {
         anyhow::ensure!(rules.len() <= RULES_MAX, "too many retention rules");
+        let mut ids = std::collections::HashSet::with_capacity(rules.len());
+        anyhow::ensure!(
+            rules.iter().all(|rule| ids.insert(&rule.id)),
+            "duplicate retention rule ID"
+        );
         Ok(Self {
             rules: rules.into_boxed_slice(),
         })
     }
 
-    /// Resolves one whole object's deadline without allocating or accessing storage.
+    /// Resolves one whole object's deadline with at most 16 matching IDs and no storage access.
     ///
     /// The caller must supply complete evidence for the same source and stream.
     /// Disabled policy rollout must bypass this resolver, not pass an empty rule list.
@@ -190,7 +244,8 @@ impl RetentionPolicy {
             evidence.len() <= EVIDENCE_MAX,
             "too much retention evidence"
         );
-        let mut deadline_ms = committed_deadline_ms;
+        let mut current_deadline = None;
+        let mut matching_rule_ids = Vec::with_capacity(self.rules.len());
         for rule in &self.rules {
             let Some(end_ms) = rule.matching_end(media, evidence) else {
                 continue;
@@ -198,8 +253,22 @@ impl RetentionPolicy {
             let candidate = end_ms
                 .checked_add(rule.duration_ms)
                 .ok_or_else(|| anyhow::anyhow!("retention deadline exceeds UTC range"))?;
-            deadline_ms = Some(deadline_ms.map_or(candidate, |prior| prior.max(candidate)));
+            current_deadline =
+                Some(current_deadline.map_or(candidate, |prior: i64| prior.max(candidate)));
+            matching_rule_ids.push(rule.id.clone());
         }
-        Ok(RetentionDecision { deadline_ms })
+        matching_rule_ids.sort_unstable();
+        let reason = if committed_deadline_ms > current_deadline {
+            DecisionReason::PreservedCommittedDeadline
+        } else if current_deadline.is_some() {
+            DecisionReason::MatchingRules
+        } else {
+            DecisionReason::NoMatchingRule
+        };
+        Ok(RetentionDecision {
+            deadline_ms: current_deadline.max(committed_deadline_ms),
+            matching_rule_ids: matching_rule_ids.into_boxed_slice(),
+            reason,
+        })
     }
 }

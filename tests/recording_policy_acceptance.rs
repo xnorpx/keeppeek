@@ -1,9 +1,60 @@
 use keeppeek::storage::retention::{
     Evidence, EvidenceKind, Interval, RetentionMode, RetentionPolicy, RetentionRule, RuleClass,
+    RuleId,
 };
 
 const DAY_MS: u64 = 86_400_000;
 const START_MS: i64 = 1_800_403_200_000;
+
+#[test]
+fn recording_policy_explains_all_matches_and_preserved_deadlines() {
+    use keeppeek::storage::retention::DecisionReason;
+    let make = |id: &str, duration| {
+        RetentionRule::new(
+            RuleId::new(id).unwrap(),
+            RuleClass::Continuous,
+            duration,
+            RetentionMode::All,
+        )
+        .unwrap()
+    };
+    let policy =
+        RetentionPolicy::new(vec![make("z", 10), make("a", 20), make("disabled", 0)]).unwrap();
+    let media = Interval::new(0, 100).unwrap();
+    for (previous, expected_deadline, reason) in [
+        (None, 120, DecisionReason::MatchingRules),
+        (Some(110), 120, DecisionReason::MatchingRules),
+        (Some(120), 120, DecisionReason::MatchingRules),
+        (Some(130), 130, DecisionReason::PreservedCommittedDeadline),
+    ] {
+        let result = policy.resolve(media, &[], previous).unwrap();
+        assert_eq!(result.deadline_ms, Some(expected_deadline));
+        assert_eq!(result.reason, reason);
+        assert_eq!(
+            result
+                .matching_rule_ids
+                .iter()
+                .map(RuleId::as_str)
+                .collect::<Vec<_>>(),
+            ["a", "z"]
+        );
+    }
+    let empty = RetentionPolicy::new(vec![]).unwrap();
+    assert_eq!(
+        empty.resolve(media, &[], None).unwrap().reason,
+        DecisionReason::NoMatchingRule
+    );
+    let preserved = empty.resolve(media, &[], Some(130)).unwrap();
+    assert_eq!(preserved.reason, DecisionReason::PreservedCommittedDeadline);
+    assert!(preserved.matching_rule_ids.is_empty());
+    assert!(RetentionPolicy::new(vec![make("same", 10), make("same", 20)]).is_err());
+    for invalid in ["", "white space", "é"] {
+        assert!(RuleId::new(invalid).is_err());
+    }
+    assert!(RuleId::new(&"a".repeat(64)).is_ok());
+    assert!(RuleId::new(&"a".repeat(65)).is_err());
+    assert!(serde_json::from_str::<RuleId>("\"white space\"").is_err());
+}
 
 fn interval(start_seconds: i64, end_seconds: i64) -> Interval {
     Interval::new(
@@ -14,7 +65,13 @@ fn interval(start_seconds: i64, end_seconds: i64) -> Interval {
 }
 
 fn rule(class: RuleClass, days: u64, mode: RetentionMode) -> RetentionRule {
-    RetentionRule::new(class, days * DAY_MS, mode).unwrap()
+    RetentionRule::new(
+        RuleId::new(&format!("{class:?}")).unwrap(),
+        class,
+        days * DAY_MS,
+        mode,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -63,7 +120,13 @@ fn recording_policy_examples_resolve_expected_deadlines() {
 fn recording_policy_sub_day_expiry_is_exclusive_and_revisions_never_shorten_it() {
     let media = interval(0, 10);
     let policy = RetentionPolicy::new(vec![
-        RetentionRule::new(RuleClass::Continuous, DAY_MS / 2, RetentionMode::All).unwrap(),
+        RetentionRule::new(
+            RuleId::new("continuous").unwrap(),
+            RuleClass::Continuous,
+            DAY_MS / 2,
+            RetentionMode::All,
+        )
+        .unwrap(),
         rule(RuleClass::Alert, 0, RetentionMode::All),
     ])
     .unwrap();
@@ -74,8 +137,11 @@ fn recording_policy_sub_day_expiry_is_exclusive_and_revisions_never_shorten_it()
     assert!(decision.expired_at(deadline));
     let revised = RetentionPolicy::new(vec![]).unwrap();
     assert_eq!(
-        revised.resolve(media, &[], Some(deadline)).unwrap(),
-        decision
+        revised
+            .resolve(media, &[], Some(deadline))
+            .unwrap()
+            .deadline_ms,
+        decision.deadline_ms
     );
 }
 
@@ -116,6 +182,10 @@ fn recording_policy_overlap_order_and_duplicate_evidence_do_not_change_expiry() 
     let reversed = RetentionPolicy::new(rules.into_iter().rev().collect()).unwrap();
     let duplicated = [evidence[1], evidence[0], evidence[1]];
     assert_eq!(
+        reversed.resolve(media, &duplicated, None).unwrap(),
+        policy.resolve(media, &evidence, None).unwrap()
+    );
+    assert_eq!(
         reversed
             .resolve(media, &duplicated, None)
             .unwrap()
@@ -136,7 +206,15 @@ fn recording_policy_overlap_order_and_duplicate_evidence_do_not_change_expiry() 
 fn recording_policy_rejects_overflow_and_unbounded_inputs_without_an_expiry_decision() {
     assert!(Interval::new(0, 0).is_err());
     assert!(Interval::new(10, 0).is_err());
-    assert!(RetentionRule::new(RuleClass::Continuous, u64::MAX, RetentionMode::All).is_err());
+    assert!(
+        RetentionRule::new(
+            RuleId::new("continuous").unwrap(),
+            RuleClass::Continuous,
+            u64::MAX,
+            RetentionMode::All
+        )
+        .is_err()
+    );
     assert!(
         RetentionPolicy::new(vec![rule(RuleClass::Continuous, 1, RetentionMode::All); 17]).is_err()
     );
@@ -212,8 +290,20 @@ fn recording_policy_zero_rules_disable_matches_but_preserve_committed_deadlines(
 #[test]
 fn recording_policy_latest_deadline_is_not_necessarily_the_longest_duration() {
     let policy = RetentionPolicy::new(vec![
-        RetentionRule::new(RuleClass::Alert, 10_000, RetentionMode::All).unwrap(),
-        RetentionRule::new(RuleClass::Detection, 1_000, RetentionMode::All).unwrap(),
+        RetentionRule::new(
+            RuleId::new("alert").unwrap(),
+            RuleClass::Alert,
+            10_000,
+            RetentionMode::All,
+        )
+        .unwrap(),
+        RetentionRule::new(
+            RuleId::new("detection").unwrap(),
+            RuleClass::Detection,
+            1_000,
+            RetentionMode::All,
+        )
+        .unwrap(),
     ])
     .unwrap();
     let evidence = [

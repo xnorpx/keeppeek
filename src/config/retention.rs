@@ -4,7 +4,7 @@
 
 use crate::storage::{
     metadata::EventSource,
-    retention::{EvidenceKind, RetentionMode, RetentionPolicy, RetentionRule, RuleClass},
+    retention::{EvidenceKind, RetentionMode, RetentionPolicy, RetentionRule, RuleClass, RuleId},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -53,7 +53,7 @@ impl TryFrom<RawSettings> for Settings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Rule {
-    id: String,
+    id: RuleId,
     class: RuleClass,
     duration_ms: u64,
     mode: RetentionMode,
@@ -63,7 +63,7 @@ struct Rule {
 #[serde(default, deny_unknown_fields)]
 struct CameraOverride {
     enabled: Option<bool>,
-    rules: BTreeMap<String, RuleOverride>,
+    rules: BTreeMap<RuleId, RuleOverride>,
     event_mappings: Option<Vec<EventMapping>>,
 }
 
@@ -102,11 +102,8 @@ impl Settings {
         anyhow::ensure!(self.rules.len() <= RULES_MAX, "too many retention rules");
         let mut ids = HashSet::new();
         for rule in &self.rules {
-            anyhow::ensure!(
-                valid_id(&rule.id) && ids.insert(rule.id.as_str()),
-                "invalid or duplicate retention rule ID"
-            );
-            RetentionRule::new(rule.class, rule.duration_ms, rule.mode)?;
+            anyhow::ensure!(ids.insert(&rule.id), "duplicate retention rule ID");
+            RetentionRule::new(rule.id.clone(), rule.class, rule.duration_ms, rule.mode)?;
         }
         validate_mappings(&self.event_mappings)?;
         for (key, camera) in &self.cameras {
@@ -123,7 +120,7 @@ impl Settings {
             );
             for (id, update) in &camera.rules {
                 anyhow::ensure!(
-                    ids.contains(id.as_str()),
+                    ids.contains(id),
                     "retention override refers to an unknown rule"
                 );
                 if let Some(duration) = update.duration_ms {
@@ -153,6 +150,7 @@ impl Settings {
             .map(|rule| {
                 let update = override_.and_then(|value| value.rules.get(&rule.id));
                 RetentionRule::new(
+                    rule.id.clone(),
                     rule.class,
                     update
                         .and_then(|value| value.duration_ms)
@@ -182,14 +180,6 @@ impl Settings {
             .find(|mapping| mapping.source == source && mapping.kind == kind)
             .map(|mapping| mapping.evidence)
     }
-}
-
-fn valid_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 64
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn validate_mappings(mappings: &[EventMapping]) -> anyhow::Result<()> {
