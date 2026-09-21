@@ -61,7 +61,7 @@ impl Drop for Fixture {
     }
 }
 
-fn update(expected_revision: Option<u64>, deadline_ms: Option<i64>) -> Update {
+const fn update(expected_revision: Option<u64>, deadline_ms: Option<i64>) -> Update {
     Update {
         expected_revision,
         policy_revision: 1,
