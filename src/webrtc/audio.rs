@@ -18,7 +18,6 @@ pub(crate) struct AudioFrame {
     pub(crate) codec: AudioCodec,
     pub(crate) sample_rate_hz: u32,
     pub(crate) channel_count: u8,
-    #[expect(dead_code, reason = "Consumed by the negotiated RTP audio writer")]
     pub(crate) timestamp: Option<Duration>,
     pub(crate) received_at: Instant,
     pub(crate) data: Bytes,

@@ -154,6 +154,7 @@ fn handle_request(request: &Request, state: &ReolinkHttpState) -> Response {
                 "id": "fake-chime-1", "volume": 3, "led": 1, "silent": 0
             }
         }),
+        "QuickReplyPlay" | "DingDongOpt" => json!({}),
         "GetOsd" => json!({ "Osd": { "osdChannel": { "name": "Fake Reo-Proto" } } }),
         "GetImage" => json!({
             "Image": { "bright": 128, "contrast": 128, "saturation": 128, "sharpen": 128 }
