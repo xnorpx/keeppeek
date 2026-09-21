@@ -16,7 +16,10 @@ use crate::{
         AudioCodec, AudioFrame, MediaFrame, RecordingFrame, RecordingStreamIdentity, StorageHandle,
         VideoCodec, VideoFrame, nal,
     },
-    webrtc::{Publisher, Source},
+    webrtc::{
+        Publisher, Source,
+        audio::{AudioCodec as WebRtcAudioCodec, AudioFrame as WebRtcAudioFrame},
+    },
 };
 use bytes::Bytes;
 use reo_proto::{
@@ -975,6 +978,30 @@ impl ReolinkLoop {
                             }
                             if let Some(fc) = frame_codec {
                                 let sample_rate = fc.default_sample_rate();
+                                let web_codec = match fc {
+                                    AudioCodec::Aac => Some(WebRtcAudioCodec::Aac),
+                                    AudioCodec::G711Alaw => Some(WebRtcAudioCodec::G711Alaw),
+                                    AudioCodec::G711Ulaw => Some(WebRtcAudioCodec::G711Ulaw),
+                                    AudioCodec::Adpcm => None,
+                                };
+                                if let Some(live) = &self.live
+                                    && let Some(web_codec) = web_codec
+                                {
+                                    live.publish_audio(
+                                        Source {
+                                            camera_ip: self.camera_ip,
+                                            stream: audio_stream,
+                                        },
+                                        WebRtcAudioFrame {
+                                            codec: web_codec,
+                                            sample_rate_hz: sample_rate,
+                                            channel_count: 1,
+                                            timestamp: None,
+                                            received_at: Instant::now(),
+                                            data: Bytes::copy_from_slice(data),
+                                        },
+                                    );
+                                }
                                 if let Some(storage) = &self.storage {
                                     let frame = MediaFrame::Audio(AudioFrame {
                                         codec: fc,

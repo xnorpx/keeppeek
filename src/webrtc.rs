@@ -28,6 +28,7 @@ use std::{
 };
 
 pub(crate) mod audio;
+use audio::{AudioFrame as WebRtcAudioFrame, AudioQueue};
 use str0m::{
     Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig,
     bwe::{Bitrate, BweKind},
@@ -1566,6 +1567,7 @@ impl SourceBitrate {
 #[derive(Default)]
 struct Inner {
     sources: Mutex<HashMap<Source, SourceState>>,
+    audio_sources: Mutex<HashMap<Source, AudioQueue>>,
     camera_generations: Mutex<HashMap<IpAddr, u64>>,
     camera_preview_keyframes: Mutex<HashMap<IpAddr, CameraPreviewKeyframe>>,
     privacy: RwLock<Option<Arc<PrivacyRegistry>>>,
@@ -2212,6 +2214,18 @@ impl Publisher {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(camera_ip, camera_id);
+
+    pub(crate) fn publish_audio(&self, source: Source, frame: WebRtcAudioFrame) {
+        if frame.sample_rate_hz == 0 || frame.channel_count == 0 || frame.data.is_empty() {
+            return;
+        }
+        self.inner
+            .audio_sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(source)
+            .or_default()
+            .push(frame, Instant::now());
     }
 
     pub(crate) fn reset_camera(&self, camera_ip: IpAddr) {
