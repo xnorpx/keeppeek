@@ -8808,14 +8808,52 @@ impl ServerState {
             };
             let Ok((active, epoch)) = self.privacy.decision(&camera.info.id, now) else {
                 self.webrtc.live().reset_camera(camera_ip);
+                let first_failure = self
+                    .privacy_epochs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(camera_ip, u64::MAX)
+                    .is_none_or(|previous| previous != u64::MAX);
+                if first_failure {
+                    record_access_audit(
+                        self,
+                        i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                        None,
+                        Some(AccessRole::Administrator),
+                        "privacy_policy_evaluation",
+                        Some(&camera.info.id),
+                        "failed_closed",
+                        ClientClassificationReason::DirectLocal,
+                    );
+                }
                 continue;
             };
-            let changed = self
+            let previous_epoch = self
                 .privacy_epochs
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(camera_ip, epoch)
-                .is_none_or(|previous| previous != epoch);
+                .insert(camera_ip, epoch);
+            let changed = previous_epoch.is_none_or(|previous| previous != epoch);
+            if changed && (previous_epoch.is_some() || active) {
+                record_access_audit(
+                    self,
+                    i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                    None,
+                    Some(AccessRole::Administrator),
+                    if active {
+                        "privacy_activated"
+                    } else {
+                        "privacy_deactivated"
+                    },
+                    Some(&camera.info.id),
+                    if active {
+                        "policy_disabled"
+                    } else {
+                        "policy_enabled"
+                    },
+                    ClientClassificationReason::DirectLocal,
+                );
+            }
             if active && changed {
                 self.webrtc.live().reset_camera(camera_ip);
             }
