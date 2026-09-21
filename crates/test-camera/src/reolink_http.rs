@@ -22,6 +22,7 @@ impl ReolinkHttpServer {
         main: VideoSource,
         sub: VideoSource,
         onvif_port: u16,
+        channel_count: u8,
     ) -> anyhow::Result<Self> {
         let state = ReolinkHttpState {
             username,
@@ -30,6 +31,7 @@ impl ReolinkHttpServer {
             main,
             sub,
             onvif_port,
+            channel_count: channel_count.max(1),
             http_port: Arc::new(Mutex::new(0)),
         };
         let handler_state = state.clone();
@@ -63,6 +65,7 @@ struct ReolinkHttpState {
     main: VideoSource,
     sub: VideoSource,
     onvif_port: u16,
+    channel_count: u8,
     http_port: Arc<Mutex<u16>>,
 }
 
@@ -162,15 +165,7 @@ fn handle_request(request: &Request, state: &ReolinkHttpState) -> Response {
                 "ptz": { "permit": 1 },
                 "alarm": { "permit": 1 },
                 "record": { "permit": 1 },
-                "abilityChn": [{
-                    "ptz": { "permit": 1 },
-                    "audioCfg": { "permit": 1 },
-                    "alarm": { "permit": 1 },
-                    "recCfg": { "permit": 1 },
-                    "ai": { "permit": 1 },
-                    "image": { "permit": 1 },
-                    "talkCfg": { "permit": 1 }
-                }]
+                "abilityChn": ability_channels(state.channel_count)
             }
         }),
         "GetMdState" => json!({
@@ -249,6 +244,22 @@ fn requested_channel(payload: &Value) -> u64 {
         .unwrap_or(0)
 }
 
+fn ability_channels(channel_count: u8) -> Vec<Value> {
+    (0..channel_count.max(1))
+        .map(|_| {
+            json!({
+                "ptz": { "permit": 1 },
+                "audioCfg": { "permit": 1 },
+                "alarm": { "permit": 1 },
+                "recCfg": { "permit": 1 },
+                "ai": { "permit": 1 },
+                "image": { "permit": 1 },
+                "talkCfg": { "permit": 1 }
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::requested_channel;
@@ -263,6 +274,12 @@ mod tests {
             3
         );
         assert_eq!(requested_channel(&json!([])), 0);
+    }
+
+    #[test]
+    fn ability_fixture_has_one_entry_per_logical_channel() {
+        assert_eq!(super::ability_channels(3).len(), 3);
+        assert_eq!(super::ability_channels(0).len(), 1);
     }
 }
 
