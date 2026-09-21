@@ -60,6 +60,7 @@ Root fields must appear before a table header or they belong to that table.
 | `[logging]`                                        | `LoggingConfig`                                     | Service log destination                       |
 | `[operational_events]`                             | `OperationalEventsConfig`                           | Health-event timing                           |
 | `[operational_events.cameras."<camera-id-or-ip>"]` | `OperationalEventOverride`                          | Per-camera timing overrides                   |
+| `[privacy.cameras."<camera-id-or-ip>"]`          | `PrivacySchedule`                                   | Server-enforced recurring media privacy       |
 | `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision     |
 | `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                        |
 | `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                               |

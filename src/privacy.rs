@@ -133,6 +133,17 @@ pub struct PrivacySchedule {
     pub timezone: String,
     #[serde(default)]
     pub windows: Vec<PrivacyWindow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporary_override: Option<PrivacyOverride>,
+}
+
+/// A bounded, persisted administrator override of a recurring privacy policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrivacyOverride {
+    pub actor: String,
+    pub reason: String,
+    pub accepted_at: String,
+    pub expires_at: String,
 }
 
 impl PrivacySchedule {
@@ -158,12 +169,39 @@ impl PrivacySchedule {
                 anyhow::bail!("privacy schedule windows cannot have equal start and end times");
             }
         }
+        if let Some(override_) = &self.temporary_override {
+            if override_.actor.trim().is_empty() || override_.actor.len() > 256 {
+                anyhow::bail!("privacy override actor must contain 1 to 256 bytes");
+            }
+            if override_.reason.trim().is_empty() || override_.reason.len() > 256 {
+                anyhow::bail!("privacy override reason must contain 1 to 256 bytes");
+            }
+            let accepted_at = parse_override_time(&override_.accepted_at)?;
+            let expires_at = parse_override_time(&override_.expires_at)?;
+            if expires_at <= accepted_at {
+                anyhow::bail!("privacy override expiry must follow acceptance");
+            }
+            if expires_at - accepted_at > chrono::Duration::hours(24) {
+                anyhow::bail!("privacy override cannot exceed 24 hours");
+            }
+        }
         Ok(())
     }
 
     /// Returns whether `instant` is inside a privacy window.
     pub fn is_active(&self, instant: DateTime<Utc>) -> anyhow::Result<bool> {
         self.validate()?;
+        if self.temporary_override.as_ref().is_some_and(|override_| {
+            let Ok(accepted_at) = parse_override_time(&override_.accepted_at) else {
+                return true;
+            };
+            let Ok(expires_at) = parse_override_time(&override_.expires_at) else {
+                return true;
+            };
+            instant >= accepted_at && instant < expires_at
+        }) {
+            return Ok(false);
+        }
         let zone: Tz = self
             .timezone
             .parse()
@@ -205,6 +243,12 @@ fn parse_time(value: &str) -> anyhow::Result<NaiveTime> {
         .map_err(|_| anyhow::anyhow!("privacy schedule minute is invalid"))?;
     NaiveTime::from_hms_opt(hour, minute, 0)
         .ok_or_else(|| anyhow::anyhow!("privacy schedule time is outside the day"))
+}
+
+fn parse_override_time(value: &str) -> anyhow::Result<DateTime<Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|time| time.with_timezone(&Utc))
+        .map_err(|_| anyhow::anyhow!("privacy override timestamps must use RFC3339"))
 }
 
 const fn weekday_number(day: Weekday) -> u8 {
@@ -261,6 +305,7 @@ mod tests {
         PrivacySchedule {
             timezone: "America/Los_Angeles".into(),
             windows: vec![window],
+            temporary_override: None,
         }
     }
 
@@ -317,7 +362,8 @@ mod tests {
         assert!(
             PrivacySchedule {
                 timezone: "UTC-8".into(),
-                windows: vec![]
+                windows: vec![],
+                temporary_override: None,
             }
             .validate()
             .is_err()
@@ -341,10 +387,37 @@ mod tests {
         assert!(
             PrivacySchedule {
                 timezone: "UTC".into(),
-                windows
+                windows,
+                temporary_override: None,
             }
             .validate()
             .is_err()
+        );
+    }
+
+    #[test]
+    fn bounded_override_is_restart_safe_and_expires() {
+        let mut policy = schedule(PrivacyWindow {
+            weekdays: vec![1],
+            start: "00:00".into(),
+            end: "23:59".into(),
+        });
+        policy.temporary_override = Some(PrivacyOverride {
+            actor: "admin".into(),
+            reason: "maintenance".into(),
+            accepted_at: "2026-09-21T01:00:00Z".into(),
+            expires_at: "2026-09-21T02:00:00Z".into(),
+        });
+        policy.timezone = "UTC".into();
+        assert!(
+            !policy
+                .is_active("2026-09-21T01:30:00Z".parse().unwrap())
+                .unwrap()
+        );
+        assert!(
+            policy
+                .is_active("2026-09-21T02:00:00Z".parse().unwrap())
+                .unwrap()
         );
     }
 }
