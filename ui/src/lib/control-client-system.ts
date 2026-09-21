@@ -32,6 +32,7 @@ import type {
 	CameraHealthState,
 	LoggingSettings,
 	ProfileSummary,
+	PrivacyStatus,
 	RecordingEvent,
 	SanitizedConfig,
 	ServerHealthResponse,
@@ -538,7 +539,31 @@ function cameraHealth(camera: ServerHealthSnapshot['cameras'][number]): CameraHe
 		lifecycle: camera.lifecycle ?? null,
 		last_error: camera.lastError ?? null,
 		configured_profiles: camera.configuredProfiles.map(healthProfile),
-		streams: camera.streams.map(streamHealth)
+		streams: camera.streams.map(streamHealth),
+		privacy: camera.privacy ? privacyStatus(camera.privacy) : undefined
+	};
+}
+
+function privacyStatus(
+	status: NonNullable<ServerHealthSnapshot['cameras'][number]['privacy']>
+): PrivacyStatus {
+	const source = status.effectiveSource;
+	return {
+		configured: status.configured,
+		active: status.active,
+		enabled: status.enabled,
+		timezone: status.timezone,
+		next_transition_at_ms:
+			status.nextTransitionAtMs === undefined ? null : Number(status.nextTransitionAtMs),
+		configured_source:
+			status.configuredSource === 2 ? 'default' : status.configuredSource === 3 ? 'camera' : 'none',
+		effective_source:
+			source === 2 ? 'default' : source === 3 ? 'camera' : source === 4 ? 'override' : 'none',
+		override_expires_at_ms:
+			status.overrideExpiresAtMs === undefined ? null : Number(status.overrideExpiresAtMs),
+		blocked_capabilities: [...status.blockedCapabilities],
+		error: status.error ?? null,
+		revision: numeric(status.revision)
 	};
 }
 

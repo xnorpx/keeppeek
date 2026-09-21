@@ -159,7 +159,8 @@ export function cameraFleetConfiguration(
 			configured_recording_mode: 'event-boost',
 			effective_recording_mode: 'event-boost',
 			configured_event_recording_duration_secs: 60,
-			effective_event_recording_duration_secs: 60
+			effective_event_recording_duration_secs: 60,
+			privacy: null
 		},
 		cameras: cameraFleet(count).map((camera, index) => ({
 			camera: {
@@ -238,6 +239,20 @@ export function cameraFleetConfiguration(
 				source: 'default',
 				runtime_applied: true,
 				warning: null
+			},
+			privacy: null,
+			privacy_status: {
+				configured: false,
+				active: false,
+				enabled: false,
+				timezone: '',
+				next_transition_at_ms: null,
+				configured_source: 'none',
+				effective_source: 'none',
+				override_expires_at_ms: null,
+				blocked_capabilities: [],
+				error: null,
+				revision: 0
 			}
 		})),
 		templates,
@@ -248,6 +263,7 @@ export function cameraFleetConfiguration(
 			maximum_plan_targets: 64,
 			maximum_import_bytes: 16_384
 		},
+		privacy_default: null,
 		domains: [
 			{
 				domain_id: 'cameras',

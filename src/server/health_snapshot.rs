@@ -23,7 +23,7 @@ pub(super) fn dispatch(
 ) -> Result<control_ok::Result, ControlCommandError> {
     match command.action {
         Some(health_command::Action::Get(_)) => Ok(control_ok::Result::HealthResult(
-            proto_health_snapshot(server_health(router_tx, state)),
+            proto_health_snapshot(state, server_health(router_tx, state)),
         )),
         None => Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
@@ -33,7 +33,10 @@ pub(super) fn dispatch(
     }
 }
 
-pub(super) fn proto_health_snapshot(health: ServerHealthResponse) -> proto::ServerHealthSnapshot {
+pub(super) fn proto_health_snapshot(
+    state: &ServerState,
+    health: ServerHealthResponse,
+) -> proto::ServerHealthSnapshot {
     proto::ServerHealthSnapshot {
         status: health.status,
         generated_at_ms: health.generated_at_ms,
@@ -46,7 +49,7 @@ pub(super) fn proto_health_snapshot(health: ServerHealthResponse) -> proto::Serv
         cameras: health
             .cameras
             .into_iter()
-            .map(proto_camera_health)
+            .map(|camera| proto_camera_health(state, camera))
             .collect(),
         issues: health
             .issues
@@ -198,7 +201,18 @@ fn proto_health_totals(totals: HealthTotals) -> proto::HealthTotalsSnapshot {
     }
 }
 
-fn proto_camera_health(camera: CameraHealth) -> proto::CameraHealthSnapshot {
+fn proto_camera_health(state: &ServerState, camera: CameraHealth) -> proto::CameraHealthSnapshot {
+    let camera_id = camera.id.clone();
+    let (active, epoch, error) = match state.privacy.decision(&camera_id, chrono::Utc::now()) {
+        Ok((active, epoch)) => (active, epoch, None),
+        Err(error) => (true, u64::MAX, Some(error.to_string())),
+    };
+    let source = state
+        .privacy_sources
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&camera_id)
+        .copied();
     proto::CameraHealthSnapshot {
         id: camera.id,
         ip: camera.ip,
@@ -229,6 +243,13 @@ fn proto_camera_health(camera: CameraHealth) -> proto::CameraHealthSnapshot {
             .collect(),
         detail: camera.detail,
         dimensions: Some(proto_camera_health_dimensions(camera.dimensions)),
+        privacy: Some(super::privacy_status(
+            state.privacy.schedule(&camera_id).as_ref(),
+            active,
+            epoch,
+            source,
+            error,
+        )),
     }
 }
 

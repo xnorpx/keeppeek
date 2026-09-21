@@ -60,8 +60,8 @@ Root fields must appear before a table header or they belong to that table.
 | `[logging]`                                        | `LoggingConfig`                                     | Service log destination                       |
 | `[operational_events]`                             | `OperationalEventsConfig`                           | Health-event timing                           |
 | `[operational_events.cameras."<camera-id-or-ip>"]` | `OperationalEventOverride`                          | Per-camera timing overrides                   |
-| `[privacy.default]`                               | `PrivacySchedule`                                   | Inherited server-enforced recurring privacy  |
-| `[privacy.cameras."<camera-id-or-ip>"]`          | `PrivacySchedule`                                   | Per-camera server-enforced recurring privacy |
+| `[privacy.default]`                                | `PrivacySchedule`                                   | Inherited server-enforced recurring privacy   |
+| `[privacy.cameras."<camera-id-or-ip>"]`            | `PrivacySchedule`                                   | Per-camera server-enforced recurring privacy  |
 | `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision     |
 | `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                        |
 | `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                               |
@@ -385,11 +385,12 @@ IP-keyed entry is accepted for migration and the runtime maps it to that camera 
 Types: `PrivacySchedule`, sections `[privacy.default]` and
 `[privacy.cameras."<camera-id-or-ip>"]`.
 
-| Field                | Type                       | Default  | Meaning |
-| -------------------- | -------------------------- | -------- | ------- |
-| `timezone`           | `String`                   | Required | IANA timezone used for recurring local windows. |
-| `windows`            | Array of `PrivacyWindow`   | Empty    | Half-open weekly privacy windows; at most 64. |
-| `temporary_override` | Optional `PrivacyOverride` | None     | Bounded persisted override that suspends matching windows. |
+| Field                | Type                       | Default  | Meaning                                                             |
+| -------------------- | -------------------------- | -------- | ------------------------------------------------------------------- |
+| `enabled`            | `bool`                     | `true`   | Retain the policy but disable its scheduled enforcement when false. |
+| `timezone`           | `String`                   | Required | IANA timezone used for recurring local windows.                     |
+| `windows`            | Array of `PrivacyWindow`   | Empty    | Half-open weekly privacy windows; at most 64.                       |
+| `temporary_override` | Optional `PrivacyOverride` | None     | Bounded persisted override that suspends matching windows.          |
 
 Each `PrivacyWindow` has `weekdays` (ISO values 1 through 7), `start`, and `end` in `HH:MM`.
 Equal endpoints are rejected; an end earlier than the start is an overnight interval. Both

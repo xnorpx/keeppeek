@@ -37,7 +37,7 @@ use crate::{
         AttemptRecord, ClearScope, Handle as NotificationHandle, HistoryEvent, HistoryGroup, Inbox,
         NotificationItem, RuleRecord, RuleStoreError, Stage, model::Rule as NotificationRule,
     },
-    privacy::PrivacyRegistry,
+    privacy::{PrivacyRegistry, PrivacySource},
     rtsp::{RtspTransport, probe_rtsp_video},
     runtime::{
         FacadeSendError, FacadeSender, RouterError, RouterMessage, RouterQuery, RouterResponse,
@@ -68,7 +68,7 @@ use rouille::{Request, Response, ResponseBody, Server, router};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::File,
     io::{Cursor, Read, Seek, SeekFrom, Write},
     net::{IpAddr, Ipv4Addr, TcpListener, ToSocketAddrs},
@@ -589,18 +589,32 @@ impl ControlRequestHandler for ServerControlHandler {
         channel: proto::DataChannelKind,
         message: proto::Message,
     ) -> Result<(), ControlHandlerError> {
-        self.authorize_api_session(
-            session_id,
-            AccessRole::Administrator,
-            "event_attachment_publish",
-        )
-        .map_err(|(error, close_session)| ControlHandlerError {
-            code: error.code,
-            message: error.message,
-            close_session,
-        })?;
-        event_publication::ingest(&self.state, session_id, channel, message)
-            .map_err(|error| ControlHandlerError::new(error.code, error.message))
+        let principal = self
+            .authorize_api_session(
+                session_id,
+                AccessRole::Administrator,
+                "event_attachment_publish",
+            )
+            .map_err(|(error, close_session)| ControlHandlerError {
+                code: error.code,
+                message: error.message,
+                close_session,
+            })?;
+        event_publication::ingest(&self.state, session_id, channel, message).map_err(|error| {
+            if is_privacy_denial(&error.message) {
+                record_access_audit(
+                    &self.state,
+                    i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                    Some(&principal.id()),
+                    Some(principal.role),
+                    "privacy_denied",
+                    None,
+                    "policy_active",
+                    self.session_classification(session_id),
+                );
+            }
+            ControlHandlerError::new(error.code, error.message)
+        })
     }
 
     fn unsubscribe_for_session(&self, session_id: SessionId, subscription_ids: &[String]) {
@@ -638,6 +652,7 @@ impl ControlRequestHandler for ServerControlHandler {
         let mut data_messages = Vec::new();
         let mut notifications = Vec::new();
         let sensitive_operation = sensitive_administrator_operation(request.command.as_ref());
+        let privacy_target = privacy_denial_target(&self.state, request.command.as_ref());
         let result = match self.authorize_request(session_id, &request) {
             Err((error, close_session)) => {
                 if close_session {
@@ -789,6 +804,26 @@ impl ControlRequestHandler for ServerControlHandler {
                         sensitive_operation,
                         None,
                         "success",
+                        self.session_classification(session_id),
+                    );
+                }
+                if let Err(error) = &result
+                    && is_privacy_denial(&error.message)
+                {
+                    record_access_audit(
+                        &self.state,
+                        i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                        Some(&principal.id()),
+                        Some(principal.role),
+                        "privacy_denied",
+                        privacy_target.as_deref(),
+                        if error.message.contains("could not be evaluated")
+                            || error.message.contains("is unavailable")
+                        {
+                            "policy_unavailable"
+                        } else {
+                            "policy_active"
+                        },
                         self.session_classification(session_id),
                     );
                 }
@@ -1014,7 +1049,28 @@ fn server_capabilities(
     let cameras = camera_entries
         .iter()
         .zip(camera_info.iter())
-        .map(|(entry, info)| proto_camera_info(info, camera_control::ptz_capability(entry)))
+        .map(|(entry, info)| {
+            let mut camera = proto_camera_info(info, camera_control::ptz_capability(entry));
+            let (active, epoch, error) =
+                match state.privacy.decision(&entry.info.id, chrono::Utc::now()) {
+                    Ok((active, epoch)) => (active, epoch, None),
+                    Err(error) => (true, u64::MAX, Some(error.to_string())),
+                };
+            let source = state
+                .privacy_sources
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&entry.info.id)
+                .copied();
+            camera.privacy = Some(privacy_status(
+                state.privacy.schedule(&entry.info.id).as_ref(),
+                active,
+                epoch,
+                source,
+                error,
+            ));
+            camera
+        })
         .collect();
     let source_sessions = camera_info
         .iter()
@@ -1233,6 +1289,114 @@ fn proto_camera_info(camera: &CameraInfo, ptz: proto::PtzCapability) -> proto::C
             two_way_audio: camera.capabilities.two_way_audio,
         }),
         ptz: Some(ptz),
+        privacy: None,
+    }
+}
+
+fn proto_privacy_schedule(schedule: &crate::privacy::PrivacySchedule) -> proto::PrivacySchedule {
+    proto::PrivacySchedule {
+        enabled: schedule.enabled,
+        timezone: schedule.timezone.clone(),
+        windows: schedule
+            .windows
+            .iter()
+            .map(|window| proto::PrivacyWindow {
+                weekdays: window.weekdays.iter().map(|day| u32::from(*day)).collect(),
+                start: window.start.clone(),
+                end: window.end.clone(),
+            })
+            .collect(),
+        temporary_override: schedule.temporary_override.as_ref().and_then(|override_| {
+            Some(proto::PrivacyOverride {
+                actor: override_.actor.clone(),
+                reason: override_.reason.clone(),
+                accepted_at_ms: chrono::DateTime::parse_from_rfc3339(&override_.accepted_at)
+                    .ok()?
+                    .timestamp_millis(),
+                expires_at_ms: chrono::DateTime::parse_from_rfc3339(&override_.expires_at)
+                    .ok()?
+                    .timestamp_millis(),
+            })
+        }),
+    }
+}
+
+fn privacy_status(
+    schedule: Option<&crate::privacy::PrivacySchedule>,
+    active: bool,
+    epoch: u64,
+    source: Option<PrivacySource>,
+    mut error: Option<String>,
+) -> proto::PrivacyStatus {
+    let Some(schedule) = schedule else {
+        return proto::PrivacyStatus {
+            configured_source: proto::PrivacyEffectiveSource::None as i32,
+            effective_source: proto::PrivacyEffectiveSource::None as i32,
+            blocked_capabilities: Vec::new(),
+            ..Default::default()
+        };
+    };
+    let effective_source = if schedule
+        .temporary_override
+        .as_ref()
+        .and_then(|override_| {
+            chrono::DateTime::parse_from_rfc3339(&override_.accepted_at)
+                .ok()
+                .zip(chrono::DateTime::parse_from_rfc3339(&override_.expires_at).ok())
+        })
+        .is_some_and(|(accepted_at, expires_at)| {
+            let now = chrono::Utc::now();
+            now >= accepted_at && now < expires_at
+        }) {
+        proto::PrivacyEffectiveSource::Override
+    } else {
+        match source {
+            Some(PrivacySource::Default) => proto::PrivacyEffectiveSource::Default,
+            Some(PrivacySource::Camera) | None => proto::PrivacyEffectiveSource::Camera,
+        }
+    };
+    let configured_source = match source {
+        Some(PrivacySource::Default) => proto::PrivacyEffectiveSource::Default,
+        Some(PrivacySource::Camera) | None => proto::PrivacyEffectiveSource::Camera,
+    };
+    let next_transition_at_ms = match schedule.next_transition(chrono::Utc::now()) {
+        Ok(next_transition) => next_transition.map(|value| value.timestamp_millis()),
+        Err(next_transition_error) => {
+            if error.is_none() {
+                error = Some(next_transition_error.to_string());
+            }
+            None
+        }
+    };
+    proto::PrivacyStatus {
+        configured: true,
+        active,
+        enabled: schedule.enabled,
+        timezone: schedule.timezone.clone(),
+        next_transition_at_ms,
+        configured_source: configured_source as i32,
+        effective_source: effective_source as i32,
+        override_expires_at_ms: schedule.temporary_override.as_ref().and_then(|override_| {
+            chrono::DateTime::parse_from_rfc3339(&override_.expires_at)
+                .ok()
+                .map(|value| value.timestamp_millis())
+        }),
+        blocked_capabilities: [
+            "live_video",
+            "live_audio",
+            "recording",
+            "snapshots",
+            "event_attachments",
+            "external_services",
+            "group_publication",
+            "ptz",
+            "talkback",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        error,
+        revision: epoch,
     }
 }
 
@@ -8592,6 +8756,7 @@ pub struct ServerState {
     access_key: Arc<RwLock<AccessKey>>,
     access_manager: AccessManager,
     privacy: Arc<PrivacyRegistry>,
+    privacy_sources: Arc<RwLock<BTreeMap<String, PrivacySource>>>,
     privacy_epochs: Arc<Mutex<HashMap<IpAddr, u64>>>,
     access_metrics: Arc<AccessMetrics>,
     network_access: NetworkAccessPolicy,
@@ -8647,6 +8812,43 @@ impl ServerState {
         self.privacy.clone()
     }
 
+    pub(crate) fn reload_privacy_from_configuration(
+        &self,
+        root: &toml::Table,
+    ) -> anyhow::Result<()> {
+        let privacy: crate::config::PrivacyConfig = root
+            .get("privacy")
+            .cloned()
+            .map(toml::Value::try_into)
+            .transpose()?
+            .unwrap_or_default();
+        let mut schedules = privacy.cameras.clone();
+        let mut sources = privacy
+            .cameras
+            .keys()
+            .map(|camera_id| (camera_id.clone(), PrivacySource::Camera))
+            .collect::<BTreeMap<_, _>>();
+        for camera in self.camera_entries() {
+            if let Some(schedule) = privacy.schedule_for(&camera.info.id, &camera.info.ip) {
+                let source = if privacy.cameras.contains_key(&camera.info.id)
+                    || privacy.cameras.contains_key(&camera.info.ip)
+                {
+                    PrivacySource::Camera
+                } else {
+                    PrivacySource::Default
+                };
+                sources.insert(camera.info.id.clone(), source);
+                schedules.insert(camera.info.id, schedule.clone());
+            }
+        }
+        self.privacy.replace_schedules(schedules)?;
+        *self
+            .privacy_sources
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = sources;
+        Ok(())
+    }
+
     pub fn new(
         config: &Config,
         camera_configs: &HashMap<String, Vec<CameraConfig>>,
@@ -8661,11 +8863,25 @@ impl ServerState {
         let access_manager = initial_access_manager(config);
         let (export_history_path, export_jobs) = restored_export_jobs(storage);
         let mut privacy_schedules = config.privacy.cameras.clone();
+        let mut privacy_sources = config
+            .privacy
+            .cameras
+            .keys()
+            .map(|camera_id| (camera_id.clone(), PrivacySource::Camera))
+            .collect::<BTreeMap<_, _>>();
         for camera in &entries {
             if let Some(schedule) = config
                 .privacy
                 .schedule_for(&camera.info.id, &camera.info.ip)
             {
+                let source = if config.privacy.cameras.contains_key(&camera.info.id)
+                    || config.privacy.cameras.contains_key(&camera.info.ip)
+                {
+                    PrivacySource::Camera
+                } else {
+                    PrivacySource::Default
+                };
+                privacy_sources.insert(camera.info.id.clone(), source);
                 privacy_schedules.insert(camera.info.id.clone(), schedule.clone());
             }
         }
@@ -8686,6 +8902,7 @@ impl ServerState {
             access_key: Arc::new(RwLock::new(config.access_key)),
             access_manager,
             privacy,
+            privacy_sources: Arc::new(RwLock::new(privacy_sources)),
             privacy_epochs: Arc::new(Mutex::new(HashMap::new())),
             access_metrics: Arc::new(AccessMetrics::default()),
             network_access: NetworkAccessPolicy::new(
@@ -9155,6 +9372,39 @@ fn access_command_error(operation: &str, error: anyhow::Error) -> ControlCommand
         409,
         format!("unable to {operation}: {error}"),
     )
+}
+
+fn is_privacy_denial(message: &str) -> bool {
+    message.contains("camera privacy is active")
+        || message.contains("camera privacy policy could not be evaluated")
+        || message.contains("camera privacy policy is unavailable")
+}
+
+fn privacy_denial_target(
+    state: &ServerState,
+    command: Option<&control_request::Command>,
+) -> Option<String> {
+    match command {
+        Some(control_request::Command::ExportCommand(command)) => match &command.action {
+            Some(proto::export_command::Action::Create(request)) => Some(request.source_id.clone()),
+            _ => None,
+        },
+        Some(control_request::Command::SubscribeMedia(command)) => state
+            .camera_entries()
+            .into_iter()
+            .find(|camera| {
+                proto_camera_source_session(&camera.info, &state.webrtc)
+                    .is_some_and(|source| source.source_session_id == command.source_session_id)
+            })
+            .map(|camera| camera.info.id),
+        Some(control_request::Command::EventPublicationCommand(command)) => match &command.action {
+            Some(event_publication_command::Action::Start(request)) => {
+                request.event.as_ref().map(|event| event.source_id.clone())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn close_api_session(state: &ServerState, session_id: SessionId) {
@@ -13914,7 +14164,7 @@ mod tests {
         assert!(metrics.contains("keeppeek_notification_delivery_failures_total 1"));
         assert!(metrics.contains("keeppeek_webrtc_multi_track_sessions 1"));
         assert!(metrics.contains("keeppeek_webrtc_multi_tracks 3"));
-        let proto = health_snapshot::proto_health_snapshot(health);
+        let proto = health_snapshot::proto_health_snapshot(&state, health);
         assert_eq!(
             proto.health_contract_version,
             CAMERA_HEALTH_CONTRACT_VERSION

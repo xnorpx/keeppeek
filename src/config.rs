@@ -1853,6 +1853,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
             | "configuration_templates"
             | "isapi_callbacks"
             | "camera_defaults"
+            | "privacy"
             | "state_store"
             | STORAGE_MIGRATION_SECTION
     )
@@ -3915,6 +3916,7 @@ mod tests {
     #[test]
     fn privacy_schedule_resolution_prefers_id_then_ip_then_default() {
         let default = crate::privacy::PrivacySchedule {
+            enabled: true,
             timezone: "UTC".into(),
             windows: vec![],
             temporary_override: None,

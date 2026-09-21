@@ -40,6 +40,9 @@ impl KeepPeekLoop {
                 (*event, Trigger::EventCreated)
             }
             KeepPeekEvent::TimelineEventImages { event, images } => {
+                if self.privacy_active(&event.camera_id) {
+                    return Ok(());
+                }
                 let event = events.commit_native_images(*event, &images)?;
                 let trigger = if event.revision == 1 {
                     Trigger::EventCreated
@@ -53,6 +56,9 @@ impl KeepPeekLoop {
                 event_id,
                 jpeg,
             } => {
+                if self.privacy_active(&camera_id) {
+                    return Ok(());
+                }
                 events.save_thumbnail(&camera_id, &event_id, &jpeg)?;
                 let event = events.event_by_id(&event_id)?.ok_or_else(|| {
                     anyhow::anyhow!("native event disappeared after thumbnail commit")
