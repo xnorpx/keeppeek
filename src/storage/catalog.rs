@@ -30,6 +30,7 @@ use std::{
 };
 
 pub mod maintenance;
+pub mod retention;
 pub mod workflow;
 
 const COMMAND_CAPACITY: usize = 256;
@@ -386,6 +387,11 @@ enum Command {
     DeletionIntent {
         request: maintenance::jobs::Request,
         reply: SyncSender<anyhow::Result<maintenance::jobs::Job>>,
+    },
+    Retention {
+        request: retention::Request,
+        deadline: std::time::Instant,
+        reply: SyncSender<anyhow::Result<Option<retention::Snapshot>>>,
     },
     UpsertRecording {
         recording: CatalogRecording,
@@ -1537,6 +1543,17 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                     request,
                 )));
             }
+            Command::Retention {
+                request,
+                deadline,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(retention::execute(
+                    &connection,
+                    request,
+                    deadline,
+                )));
+            }
             Command::UpsertRecording { recording, reply } => {
                 let _ = reply.send(pollster::block_on(upsert_recording(&connection, recording)));
             }
@@ -2397,6 +2414,11 @@ async fn set_recording_protected(
 }
 
 pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()> {
+    initialize_base_schema(connection).await?;
+    retention::initialize(connection).await
+}
+
+async fn initialize_base_schema(connection: &turso::Connection) -> anyhow::Result<()> {
     connection
         .execute_batch(
             "PRAGMA foreign_keys = ON;
