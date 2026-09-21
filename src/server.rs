@@ -37,6 +37,7 @@ use crate::{
         AttemptRecord, ClearScope, Handle as NotificationHandle, HistoryEvent, HistoryGroup, Inbox,
         NotificationItem, RuleRecord, RuleStoreError, Stage, model::Rule as NotificationRule,
     },
+    privacy::PrivacyRegistry,
     rtsp::{RtspTransport, probe_rtsp_video},
     runtime::{
         FacadeSendError, FacadeSender, RouterError, RouterMessage, RouterQuery, RouterResponse,
@@ -869,6 +870,22 @@ impl ControlRequestHandler for ServerControlHandler {
                     "media source session not found",
                 )
             })?;
+        let (privacy_active, _) = self
+            .state
+            .privacy
+            .decision(&camera.info.id, chrono::Utc::now())
+            .map_err(|_| {
+                ControlHandlerError::new(
+                    proto::ErrorCode::Unavailable,
+                    "camera privacy policy is unavailable",
+                )
+            })?;
+        if privacy_active {
+            return Err(ControlHandlerError::new(
+                proto::ErrorCode::Rejected,
+                "camera privacy is active",
+            ));
+        }
         let camera_ip = camera.info.ip.parse().map_err(|_| {
             ControlHandlerError::new(
                 proto::ErrorCode::Internal,
@@ -8556,6 +8573,7 @@ pub struct ServerState {
     port: u16,
     access_key: Arc<RwLock<AccessKey>>,
     access_manager: AccessManager,
+    privacy: Arc<PrivacyRegistry>,
     access_metrics: Arc<AccessMetrics>,
     network_access: NetworkAccessPolicy,
     require_secure_remote: bool,
@@ -8619,12 +8637,15 @@ impl ServerState {
         let sanitized_config = sanitized_config(config, storage, camera_count, &entries);
         let access_manager = initial_access_manager(config);
         let (export_history_path, export_jobs) = restored_export_jobs(storage);
+        let privacy = PrivacyRegistry::new(config.privacy.cameras.clone())
+            .expect("privacy configuration must be validated before server startup");
 
         Self {
             host: config.host.clone(),
             port: config.port,
             access_key: Arc::new(RwLock::new(config.access_key)),
             access_manager,
+            privacy: Arc::new(privacy),
             access_metrics: Arc::new(AccessMetrics::default()),
             network_access: NetworkAccessPolicy::new(
                 config.access.local_networks.clone(),
