@@ -48,6 +48,100 @@ fn assert_rejected(dispatch: &ControlDispatch, message: &str) {
     assert!(dispatch.notifications.is_empty());
 }
 
+fn recording_storage() -> (std::path::PathBuf, crate::storage::StorageEngine) {
+    use crate::storage::StorageEngine;
+    let root = std::env::temp_dir().join(format!(
+        "keeppeek-control-auth-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let engine = StorageEngine::start(StorageConfig {
+        medium_term_path: root.clone(),
+        long_term_path: root.clone(),
+        recording_catalog_path: root.join("catalog.db"),
+        event_thumbnail_path: root.join("thumbnails"),
+        minimum_free_bytes: 0,
+        warning_free_bytes: 0,
+        critical_free_bytes: 0,
+        long_term_max_bytes: 0,
+        ..StorageConfig::default()
+    });
+    (root, engine)
+}
+
+#[test]
+fn recording_controls_reject_users_and_revoked_administrators_before_mutation() {
+    let (root, engine) = recording_storage();
+    let mut state = media_test_state();
+    let storage = engine.handle();
+    storage.configure_camera_recording(
+        "camera",
+        crate::cameras::CameraRecordingMode::Sub,
+        Duration::from_secs(60),
+    );
+    state.recording_control = Some(storage.clone());
+    let original = storage.recording_control("camera").unwrap();
+    let revision = format!(
+        "{:032x}:{}",
+        original.revision.epoch, original.revision.sequence
+    );
+    for role in [AccessRole::User, AccessRole::Administrator] {
+        let issued = state
+            .access_manager
+            .create_credential(&format!("control {role:?}"), None, role, None, 1_000)
+            .unwrap();
+        let session = LiveApiSession::new(&state.webrtc);
+        bind_credential_test_session(&state, session.id, issued.access_key);
+        if role == AccessRole::Administrator {
+            invalidate_credential(&state, &issued, true);
+        }
+        let handler = test_control_handler(state.clone());
+        for action in recording_actions(&revision) {
+            let request = proto::Request {
+                request_id: 42,
+                command: Some(control_request::Command::RecordingPolicyCommand(
+                    proto::RecordingPolicyCommand {
+                        source_id: "camera".into(),
+                        action: Some(action),
+                    },
+                )),
+            };
+            let denied = session.request(&handler, request);
+            assert_rejected(
+                &denied,
+                if role == AccessRole::User {
+                    "Administrator role is required for this operation"
+                } else {
+                    "API session expired or was revoked"
+                },
+            );
+            assert_eq!(storage.recording_control("camera").unwrap(), original);
+            if role == AccessRole::Administrator {
+                break;
+            }
+        }
+    }
+    engine.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn recording_actions(revision: &str) -> [proto::recording_policy_command::Action; 3] {
+    use proto::recording_policy_command::Action;
+    [
+        Action::SetOverride(proto::SetRecordingOverride {
+            expected_revision: revision.into(),
+            enabled: false,
+            source: proto::RecordingOverrideSource::External as i32,
+            reason: "inspection".into(),
+            ttl_ms: 60_000,
+        }),
+        Action::ClearOverride(proto::ClearRecordingOverride {
+            expected_revision: revision.into(),
+        }),
+        Action::Get(proto::GetRecordingControl {}),
+    ]
+}
+
 #[test]
 fn invalidated_control_session_closes_only_after_its_rejection_is_sent() {
     for revoke in [false, true] {

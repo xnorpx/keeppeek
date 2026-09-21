@@ -99,6 +99,7 @@ mod native_events;
 mod peek_layouts;
 pub(crate) mod recording_coverage;
 mod recording_maintenance;
+mod recording_policy;
 mod runtime_configuration;
 pub(crate) mod state_store;
 #[cfg(test)]
@@ -450,6 +451,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::EventSearchCommand(_)) => "event_search",
         Some(control_request::Command::EventWorkflowCommand(_)) => "event_workflow",
         Some(control_request::Command::RecordingMaintenanceCommand(_)) => "recording_maintenance",
+        Some(control_request::Command::RecordingPolicyCommand(_)) => "recording_policy",
         Some(control_request::Command::NotificationRuleCommand(_)) => "notification_rule",
         Some(control_request::Command::ConfigurationCommand(_)) => "configuration",
         None => "missing_command",
@@ -460,6 +462,15 @@ fn sensitive_administrator_operation(
     command: Option<&control_request::Command>,
 ) -> Option<&'static str> {
     match command {
+        Some(control_request::Command::RecordingPolicyCommand(command)) => match command.action {
+            Some(proto::recording_policy_command::Action::SetOverride(_)) => {
+                Some("recording_override_set")
+            }
+            Some(proto::recording_policy_command::Action::ClearOverride(_)) => {
+                Some("recording_override_clear")
+            }
+            _ => None,
+        },
         Some(control_request::Command::CameraControlCommand(command)) => match command.action {
             Some(camera_control_command::Action::SetMotionDetection(_)) => {
                 Some("camera_motion_update")
@@ -722,6 +733,9 @@ impl ControlRequestHandler for ServerControlHandler {
                     Some(control_request::Command::RecordingMaintenanceCommand(command)) => {
                         recording_maintenance::dispatch(self, session_id, &principal, command)
                             .map(Some)
+                    }
+                    Some(control_request::Command::RecordingPolicyCommand(command)) => {
+                        recording_policy::dispatch(&self.state, &principal, command).map(Some)
                     }
                     Some(control_request::Command::StoredMediaCommand(command)) => {
                         match stored_media::dispatch(&self.state, session_id, command) {
@@ -1022,6 +1036,9 @@ fn server_capabilities(
     ];
     if state.notifications.is_some() {
         capability_ids.push("keeppeek.rules.v1".to_owned());
+    }
+    if state.recording_control.is_some() {
+        capability_ids.push(recording_policy::CAPABILITY.to_owned());
     }
     if event_search_catalog(state).is_ok() {
         capability_ids.push("keeppeek.event-workflow.v1".to_owned());
@@ -8585,6 +8602,7 @@ pub struct ServerState {
     events: Option<EventStore>,
     recording_demand: RecordingDemand,
     recording_health: RecordingHealthRegistry,
+    recording_control: Option<crate::storage::StorageHandle>,
     battery_wake: Option<BatteryWakeHandle>,
     config: SanitizedConfig,
     manufacturer_overrides: Arc<Mutex<HashMap<String, String>>>,
@@ -8659,6 +8677,7 @@ impl ServerState {
             events: None,
             recording_demand,
             recording_health: RecordingHealthRegistry::default(),
+            recording_control: None,
             battery_wake: None,
             config: sanitized_config,
             manufacturer_overrides: Arc::new(Mutex::new(manufacturer_overrides)),
@@ -8954,6 +8973,18 @@ impl ServerState {
 
     pub(crate) fn with_recording_health(mut self, health: RecordingHealthRegistry) -> Self {
         self.recording_health = health;
+        self
+    }
+
+    pub(crate) fn with_recording_control(
+        mut self,
+        storage: crate::storage::StorageHandle,
+        cameras: &HashMap<String, Vec<CameraConfig>>,
+    ) -> Self {
+        self.recording_control = Some(storage);
+        for camera in cameras.values().flatten() {
+            recording_policy::configure(&self, camera);
+        }
         self
     }
 
@@ -12264,6 +12295,7 @@ fn save_camera_settings(
             )
         })?;
     config.name = Some(persisted_name);
+    recording_policy::configure(state, &config);
     let started_config = start_runtime_camera(state, &config, !is_new_camera, true);
     let dynamically_started = started_config.is_some();
     if let Some(started_config) = started_config {

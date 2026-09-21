@@ -206,6 +206,7 @@ pub fn run(
         .with_recording_catalog(recording_catalog.handle())
         .with_backup_manager(backup_manager)
         .with_recording_health(recording_health.clone())
+        .with_recording_control(storage_engine.handle(), &camera_configs)
         .with_battery_wake(battery_wake.as_ref().map(BatteryWakeService::handle));
     let notification_runtime = NotificationRuntime::open_with_config_update(
         config_path,
