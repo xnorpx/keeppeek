@@ -3255,7 +3255,6 @@ fn rtc_config() -> RtcConfig {
         .set_snap_enabled(true)
         .set_dtls_version(DtlsVersion::Auto)
         .clear_codecs()
-        .enable_opus(true)
         .enable_pcma(true)
         .enable_pcmu(true)
         .enable_h264(true)
