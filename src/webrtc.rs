@@ -26,6 +26,8 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+pub(crate) mod audio;
 use str0m::{
     Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig,
     bwe::{Bitrate, BweKind},
