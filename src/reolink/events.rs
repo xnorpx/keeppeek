@@ -162,20 +162,43 @@ impl ReolinkLoop {
         let mut started_ids = Vec::with_capacity(4);
         let mut received_alarm = false;
         let mut received_active_alarm = false;
+        let mut received_motion_state = false;
         for data in events {
             if data.channel != self.channel {
                 continue;
             }
             received_alarm = true;
+            received_motion_state |= [
+                data.status.as_str(),
+                data.alarm_type.as_str(),
+                data.ai_types.as_str(),
+            ]
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .any(|value| {
+                !value
+                    .split(',')
+                    .map(str::trim)
+                    .all(|kind| kind.eq_ignore_ascii_case("visitor"))
+            });
             for kind in alarm_event_kinds(data, record_motion) {
                 received_active_alarm = true;
+                if kind == "doorbell_press" {
+                    let event_id = self.start_alarm_event(kind, active);
+                    let _ = self.tx.send(KeepPeekEvent::TimelineEventEnded {
+                        id: event_id,
+                        end_time_ms: unix_time_ms(),
+                    });
+                    active.remove("doorbell_press");
+                    continue;
+                }
                 if active.contains_key(&kind) {
                     continue;
                 }
                 started_ids.push(self.start_alarm_event(kind, active));
             }
         }
-        if received_alarm && !received_active_alarm {
+        if received_alarm && received_motion_state && !received_active_alarm {
             end_active_motion_events(&self.tx, active, unix_time_ms());
         }
         started_ids
