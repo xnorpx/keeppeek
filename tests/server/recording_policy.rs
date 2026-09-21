@@ -88,6 +88,52 @@ fn request(revision: String) -> proto::SetRecordingOverride {
 }
 
 #[test]
+fn recording_control_api_expires_at_either_clock_boundary_without_revival() {
+    use crate::storage::recording_control::Clock;
+    for (utc_ms, elapsed_ms) in [(70_000, 59_999), (69_999, 60_000)] {
+        let fixture = Fixture::new();
+        let storage = fixture.state.recording_control.as_ref().unwrap();
+        let start = std::time::Instant::now();
+        let set_time = |utc_ms, elapsed_ms| {
+            storage.set_control_clock_for_test(Clock {
+                utc_ms: Some(utc_ms),
+                monotonic: start + Duration::from_millis(elapsed_ms),
+            });
+        };
+        set_time(10_000, 0);
+        let command = request(fixture.get().revision);
+        let paused = fixture.request(Action::SetOverride(command)).unwrap();
+        assert_eq!(paused.override_state.unwrap().expires_at_ms, 70_000);
+        set_time(69_999, 59_999);
+        assert_eq!(
+            fixture.get().effective_mode,
+            proto::CameraRecordingMode::Off as i32
+        );
+        set_time(utc_ms, elapsed_ms);
+        let expired = fixture.get();
+        assert_ne!(expired.revision, paused.revision);
+        assert_eq!(
+            expired.effective_mode,
+            proto::CameraRecordingMode::Sub as i32
+        );
+        assert_eq!(
+            expired.reason,
+            proto::RecordingControlReason::Expired as i32
+        );
+        assert!(expired.override_state.is_none());
+        set_time(10_000, 60_001);
+        assert_eq!(fixture.get(), expired);
+        assert_eq!(
+            fixture
+                .request(Action::SetOverride(request(paused.revision)))
+                .unwrap_err()
+                ._http_status,
+            409
+        );
+    }
+}
+
+#[test]
 fn recording_controls_require_admin_and_live_backend() {
     let mut fixture = Fixture::new();
     let initial = fixture.get();

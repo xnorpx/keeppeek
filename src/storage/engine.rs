@@ -269,6 +269,8 @@ struct RecordingAdmission {
     policies: Arc<RwLock<HashMap<String, CameraRecordingPolicy>>>,
     discontinuous_streams: Arc<Mutex<HashMap<String, (String, String)>>>,
     health: RecordingHealthRegistry,
+    #[cfg(test)]
+    control_clock: Arc<Mutex<Option<Clock>>>,
 }
 
 impl RecordingAdmission {
