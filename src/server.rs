@@ -2,7 +2,7 @@ use crate::api::proto::{
     self, camera_configuration_command, camera_control_command, event_publication_command,
     event_search_command, logging_command, notification_rule_command, notification_rule_result,
     ok as control_ok, optional_string_update, request as control_request,
-    response as control_response, runtime_configuration_command, server_command,
+    response as control_response, runtime_configuration_command, server_command, talkback_command,
 };
 use crate::{
     access::{
@@ -115,6 +115,7 @@ pub(crate) mod state_store_schema;
 pub(crate) mod state_store_settings;
 pub(crate) mod state_store_watch;
 mod stored_media;
+mod talkback;
 
 pub(crate) fn migrate_peek_layout_configuration(
     config_path: &Path,
@@ -368,6 +369,35 @@ impl ControlCommandError {
     }
 }
 
+fn talkback_error(error: talkback::Error) -> ControlCommandError {
+    let (code, message) = match error {
+        talkback::Error::AlreadyOwned => (
+            proto::ErrorCode::Rejected,
+            "another session already owns talkback",
+        ),
+        talkback::Error::NotOwner => (
+            proto::ErrorCode::Rejected,
+            "this session does not own talkback",
+        ),
+        talkback::Error::MissingTarget => (
+            proto::ErrorCode::InvalidRequest,
+            "talkback target is required",
+        ),
+        talkback::Error::TargetNotFound => {
+            (proto::ErrorCode::NotFound, "talkback target was not found")
+        }
+        talkback::Error::NoEnabledTargets => (
+            proto::ErrorCode::Unavailable,
+            "no selected camera has talkback enabled",
+        ),
+        talkback::Error::TooManyTargets => (
+            proto::ErrorCode::InvalidRequest,
+            "talkback target set exceeds the server limit",
+        ),
+    };
+    ControlCommandError::new(code, 400, message)
+}
+
 fn required_access_role(command: Option<&control_request::Command>) -> AccessRole {
     match command {
         Some(control_request::Command::CameraControlCommand(command)) => match command.action {
@@ -425,6 +455,7 @@ fn required_access_role(command: Option<&control_request::Command>) -> AccessRol
             | control_request::Command::PublicationCommand(_)
             | control_request::Command::PublicationReport(_),
         ) => AccessRole::User,
+        Some(control_request::Command::TalkbackCommand(_)) => AccessRole::Administrator,
         _ => AccessRole::Administrator,
     }
 }
@@ -437,6 +468,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::Unsubscribe(_)) => "unsubscribe",
         Some(control_request::Command::PublishEvent(_)) => "publish_event",
         Some(control_request::Command::PublicationCommand(_)) => "publication",
+        Some(control_request::Command::TalkbackCommand(_)) => "talkback",
         Some(control_request::Command::StoredMediaCommand(_)) => "stored_media",
         Some(control_request::Command::EventPublicationCommand(_)) => "event_publication",
         Some(control_request::Command::GroupCommand(_)) => "group",
@@ -777,6 +809,12 @@ impl ControlRequestHandler for ServerControlHandler {
                             Err(error) => Err(error),
                         }
                     }
+                    Some(control_request::Command::TalkbackCommand(command)) => {
+                        handle_talkback(&self.state, session_id, command).map(|notification| {
+                            notifications.push(notification);
+                            None
+                        })
+                    }
                     Some(control_request::Command::SubscribeEvents(request)) => self
                         .state
                         .event_subscriptions
@@ -850,6 +888,8 @@ impl ControlRequestHandler for ServerControlHandler {
     }
 
     fn session_closed(&self, session_id: SessionId) {
+        self.state.talkback.stop_for_session(session_id);
+        self.state.webrtc.disarm_talkback(session_id);
         close_api_session(&self.state, session_id);
     }
 
@@ -1037,6 +1077,60 @@ impl ControlRequestHandler for ServerControlHandler {
             selected_variant_id,
         })
     }
+}
+
+fn handle_talkback(
+    server_state: &ServerState,
+    session_id: SessionId,
+    command: proto::TalkbackCommand,
+) -> Result<proto::Notification, ControlCommandError> {
+    let cameras = server_state
+        .camera_entries()
+        .into_iter()
+        .map(|camera| talkback::CameraTarget {
+            source_id: camera.info.id,
+            groups: camera.groups,
+            enabled: camera.info.capabilities.two_way_audio,
+        })
+        .collect::<Vec<_>>();
+    let state = match command.action {
+        Some(talkback_command::Action::Start(start)) => {
+            let target = start.target.ok_or_else(|| {
+                ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "talkback start requires a target",
+                )
+            })?;
+            server_state
+                .talkback
+                .start(session_id, target, &cameras)
+                .map_err(talkback_error)?
+        }
+        Some(talkback_command::Action::Stop(_)) => {
+            let state = server_state
+                .talkback
+                .stop(session_id)
+                .map_err(talkback_error)?;
+            server_state.webrtc.disarm_talkback(session_id);
+            state
+        }
+        None => {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "talkback command requires start or stop",
+            ));
+        }
+    };
+    if !state.active_source_ids.is_empty() {
+        server_state
+            .webrtc
+            .arm_talkback(session_id, state.active_source_ids.clone());
+    }
+    Ok(proto::Notification {
+        event: Some(proto::notification::Event::TalkbackState(state)),
+    })
 }
 
 fn server_capabilities(
@@ -8865,6 +8959,7 @@ pub struct ServerState {
     event_search_tasks: EventSearchTasks,
     event_publications: event_publication::Registry,
     event_subscriptions: event_subscription::Registry,
+    talkback: talkback::Registry,
     event_page_token_key: Arc<[u8; 32]>,
     camera_discovery_tasks: camera_discovery::Registry,
     camera_metadata: Arc<camera_metadata::Queue>,
@@ -9017,6 +9112,7 @@ impl ServerState {
             event_search_tasks: Arc::new(Mutex::new(HashMap::new())),
             event_publications: event_publication::Registry::default(),
             event_subscriptions: event_subscription::Registry::default(),
+            talkback: talkback::Registry::default(),
             event_page_token_key: Arc::new(rand::random()),
             camera_discovery_tasks: camera_discovery::Registry::default(),
             camera_metadata: Arc::new(camera_metadata::Queue::default()),

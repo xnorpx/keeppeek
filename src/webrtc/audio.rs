@@ -8,6 +8,7 @@ const MAX_AUDIO_QUEUE_AGE: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AudioCodec {
     Aac,
+    Opus,
     G711Alaw,
     G711Ulaw,
 }
@@ -41,7 +42,10 @@ impl AudioQueue {
         }
     }
 
-    #[expect(dead_code, reason = "Consumed by the negotiated RTP audio writer")]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Consumed by camera talkback send loops")
+    )]
     pub(crate) fn pop(&mut self, now: Instant) -> Option<AudioFrame> {
         self.expire(now);
         let frame = self.frames.pop_front()?;
@@ -49,12 +53,18 @@ impl AudioQueue {
         Some(frame)
     }
 
-    #[expect(dead_code, reason = "Reported by the WebRTC audio health path")]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Reported by the WebRTC audio health path")
+    )]
     pub(crate) const fn dropped_frames(&self) -> u64 {
         self.dropped_frames
     }
 
-    #[expect(dead_code, reason = "Used by the negotiated RTP audio writer")]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Consumed by camera talkback send loops")
+    )]
     pub(crate) fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
