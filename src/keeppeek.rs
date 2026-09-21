@@ -21,10 +21,7 @@ use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
     net::IpAddr,
-    sync::{
-        Arc,
-        mpsc::{self, Receiver, Sender, SyncSender},
-    },
+    sync::mpsc::{self, Receiver, Sender, SyncSender},
     thread::JoinHandle,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -352,7 +349,7 @@ pub struct KeepPeekLoop {
     battery_wake: Option<BatteryWakeHandle>,
     notifications: Option<NotificationHandle>,
     event_forwarder: Option<EventForwarderHandle>,
-    privacy: Option<Arc<PrivacyRegistry>>,
+    privacy: Option<std::sync::Arc<PrivacyRegistry>>,
     camera_names: HashMap<String, String>,
 }
 
@@ -395,7 +392,7 @@ impl KeepPeekLoop {
         self.live = Some(live);
     }
 
-    pub(crate) fn set_privacy_registry(&mut self, privacy: Arc<PrivacyRegistry>) {
+    pub(crate) fn set_privacy_registry(&mut self, privacy: std::sync::Arc<PrivacyRegistry>) {
         self.privacy = Some(privacy);
     }
 
