@@ -187,15 +187,126 @@ browser versions. Never exercise low-space or deletion experiments against an ev
    pressure using T5's injected capacities; expect oldest eligible cleanup, protected-media pause,
    and recovery after headroom returns. Recording bytes need not equal total disk usage.
 
-Real-media follow-up must set `KEEPPEEK_RUN_SLOW_TESTS=1` before running
-`cargo test --locked -p keeppeek --test storage_pipeline -- --nocapture`; otherwise those cases can
-return without assertions. This audit did not run that suite or independent FFmpeg decoding.
+The later implementation build `d7f209f` ran the real-media pipeline with
+`KEEPPEEK_RUN_SLOW_TESTS=1` and
+`cargo test --locked -p keeppeek --test storage_pipeline -- --nocapture`: all four tests passed
+in 20.05 seconds. `three_tier_storage_pipeline` ingested 588 frames and produced six MP4 files;
+`segment_moves_from_medium_to_long_term` observed zero medium and six long-term files;
+`same_path_no_extra_copy` observed six files. `long_term_retention_limit` observed five files /
+340,258 bytes before its legacy helper and zero afterward. This last test exercises the recursive
+helper, not the catalog-driven pressure or new retention executor. None of these observations
+proves independent decoding, pre-roll, or policy expiry; FFmpeg decoding remains outstanding.
 
 ## Decision ledger for Checkpoint A
 
-All decisions below are pending maintainer approval. They are concrete gaps, not silent defaults.
-The audit changes no configuration, schema, API, media, or deletion behavior and can be reverted
-independently.
+Policy direction approved by the repository owner in the implementation session on 2026-09-20:
+
+- Independent continuous, motion, and event rules inherit global defaults with camera overrides.
+  Durations are precise integers; zero disables only the selected rule.
+- Latest matching expiry wins. Keep each physical file once until all retained intervals expire.
+  Accept file-boundary over-retention explicitly; do not introduce compaction or claim exact
+  fragment-level physical-byte deletion.
+- Preserve committed deadlines across policy edits. Later matching evidence may extend them;
+  unavailable or already deleted media stays an explicit gap.
+- Configured-off and privacy bound manual/external recording requests. Configuration editing
+  remains distinct from temporary runtime overrides.
+- Preserve evidence holds and pressure safety; new policy settings default to disabled.
+
+Exact event mappings, control/API contracts, and benchmark budgets still need the reviews below.
+Per the owner's instruction, do not open a PR until every issue step and acceptance criterion is
+complete. Keep all #168 work in one PR.
+
+The direction for D1/D3 and the configured-off/privacy bounds in D4 is approved above.
+The remaining detailed decisions below are still pending; they are not silent defaults.
+The baseline audit remains tied to the inspected commit. The subsequent implementation evidence
+below is separate; it does not retroactively change a baseline classification.
+
+### Approved implementation progress
+
+The branch now includes a bounded pure resolver and an additive `recording_retention` catalog
+table. They do not activate retention or remove media. No configuration or protocol fields have
+been added. Existing admission and cleanup behavior is unchanged.
+
+On 2026-09-20, the following command passed on Windows with Rust 1.98.1, using the executable
+sources committed as `d7f209f` (resolver commit `7331173`):
+
+```text
+cargo test --locked -p keeppeek --test recording_policy_acceptance --test recording_retention_catalog
+recording_policy_acceptance: 8 passed; 0 failed
+recording_retention_catalog: 5 passed; 0 failed
+```
+
+- `recording_policy_examples_resolve_expected_deadlines` verifies the three example deadline
+  oracles. It does not yet prove retained physical intervals or cleanup eligibility.
+- The other resolver tests cover zero/sub-day duration, exact expiry, UTC boundaries, intersecting
+  class/eligibility windows, ordering, duplicate evidence, checked arithmetic, and bounded inputs.
+- `retention_deadline_survives_restart_and_zero_policy_without_losing_media` proves persistence
+  and monotonic expiry with unchanged synthetic media bytes.
+- `retention_conflict_incomplete_evidence_and_missing_media_leave_state_unchanged` checks missing
+  catalog identities, incomplete watermarks, and competing compare-and-swap revisions.
+- `shorter_deadlines_preserve_media_and_stale_policies_fail` verifies prospective policy safety.
+- `incomplete_and_claimed_recordings_reject_retention_updates` rejects unfinished recordings,
+  pending cleanup, and active maintenance claims without changing the prior snapshot or bytes.
+- `legacy_catalog_migration_and_path_changes_preserve_retention_identity` verifies additive
+  initialization and retention identity across a path change and restart.
+
+These tests use synthetic catalog/media fixtures, not decoded event recordings. Catalog commits
+preserve the maximum previous deadline and evidence watermark, reject stale policy revisions,
+and check a two-second command deadline before transaction commit. A reply timeout requires
+reloading state before retry. The stored watermark is a caller assertion; production evidence
+collection, bounded reevaluation, and safe expiry execution remain to be implemented. No complete
+acceptance criterion is inferred from these primitive tests.
+
+### Proposed event and control semantics for the runtime checkpoint
+
+This section is a reviewable proposal, not supported configuration or an approved protocol.
+
+Event classification uses explicit administrator mappings from `TimelineEvent.source` and exact
+`TimelineEvent.kind` to motion, alert, detection, or active-object evidence. Do not infer an alert
+from a detection label, bounding box, confidence, or arbitrary payload. Match the stable camera
+identity and, when present, the logical stream. A camera-wide event can apply to either configured
+stream. Limit mappings to 16 per camera and each event kind to 128 UTF-8 bytes. Unknown kinds and
+events without a closed, valid UTC interval report unavailable evidence. They cannot establish an
+evidence-complete deletion decision. Producer health and a durable ingestion watermark must
+establish evidence completeness separately from the absence of matching events.
+
+Event revisions invalidate only the intersecting source/time range. Reevaluation preserves prior
+committed deadlines; retraction cannot shorten them. Requested pre/post coverage is distinct from
+available decodable coverage, with #172 supplying pre-roll and its gap reasons. Policy edits are
+prospective unless bounded reevaluation is explicitly requested; disabling policy stops new age
+expiration and preserves catalog rows and media.
+
+| Input/state                                | Proposed effective result                              | Restart/expiry rule                                                            |
+| ------------------------------------------ | ------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| Configured Off, any request or event       | Off; reason `configured_disabled`                      | Persist configured mode only                                                   |
+| Privacy active, any permitted mode/request | Off; reason `privacy`                                  | #125 supplies authoritative privacy state; unknown required state fails closed |
+| Enabled configuration, no request          | Configured mode; reason `configuration`                | Rebuild from validated config                                                  |
+| Valid manual/external disable              | Off; expose actor, source, reason, expiry and revision | Temporary request is cleared at restart                                        |
+| Valid manual/external enable               | Configured mode, within privacy bound                  | Temporary request is cleared at restart                                        |
+| Expired request                            | Configured mode, within privacy bound; report expiry   | Expire at the earliest of UTC or monotonic deadline                            |
+| Concurrent/stale request revision          | Reject without changing the applied state              | Client reloads before retry                                                    |
+| Clock correction                           | Never extend a request's monotonic lifetime            | Invalid clock state suppresses the override                                    |
+
+Accept only one current request per camera, replaced through an expected-revision operation.
+Require a nonempty reason (at most 256 UTF-8 bytes), authenticated actor, and a positive TTL at most
+24 hours. No general scheduler or Home Assistant/MQTT adapter is proposed: a future approved
+adapter must use this same operation. Configuration edits remain the existing durable settings
+operation. After permission resumes, admission must reacquire a video keyframe before writing
+dependent frames. A new instance uses a new revision epoch so an old client request cannot match
+a reset counter.
+
+Proposed additive contract scope: `api/webrtc.proto` and `api/webrtc.md`, with regenerated
+`ui/src/lib/proto/webrtc_pb.ts`; typed get/update/set-override/clear-override commands, policy and
+effective-state responses, stale-revision checks, Admin-only mutations, and a recording-policy
+capability identifier. Existing fields remain unchanged. This scope requires explicit approval
+under `AGENTS.md` before editing protected files.
+
+Proposed AC-7 budgets, pending owner approval: at most 256 rows and two seconds per batch;
+one-event reevaluation p95 at most 250 ms; full reevaluation p95 at most 60 seconds; additional
+peak memory at most 256 MiB; ingest p95 regression at most 5%; at most four SQL statements per
+evaluated recording plus eight per batch. Use the 127-source, 30-day main/sub fixture, warm-up,
+and at least 30 release runs. Report baseline, result, delta, query counts, peak RSS, environment,
+and raw summaries; a failing measurement cannot silently change an approved budget.
 
 | ID  | Decision needed                                                                                                                                   | Consequence / current workaround                                                                                                                                     | Accountable owner |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
@@ -230,9 +341,10 @@ is presented as passing production behavior.
 | AC-6      | Historical owner builds and local assertions linked; limitations and Alpha owners explicit.               | Open #127/#131 evidence; #133 filesystem qualification and remaining deployment cases.                        |
 | AC-7      | Not measured or satisfied.                                                                                | D7 approved budgets and repeated release-build measurements, median/p95, query count, peak RSS, ingest delta. |
 
-Performance for this documentation change: N/A; executable paths and build inputs are unchanged.
-That exemption does not satisfy AC-7. Keep all incomplete issue criteria unchecked and link this PR
-with `Refs #168`, not an automatic issue-closing keyword.
+Performance for the baseline documentation commit is N/A. Subsequent executable changes require
+AC-7 measurements; those measurements are outstanding. Keep all incomplete issue criteria unchecked.
+Do not open the issue's single PR until the required implementation, dependencies, and verification
+are complete.
 
 [96]: https://github.com/xnorpx/keeppeek/issues/96
 [112]: https://github.com/xnorpx/keeppeek/issues/112
