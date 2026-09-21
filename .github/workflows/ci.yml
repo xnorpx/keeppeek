@@ -137,6 +137,11 @@ jobs:
         shell: bash
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1; then
+            for source in /etc/apt/sources.list.d/microsoft*.list; do
+              if [[ -f "$source" ]]; then
+                sudo mv "$source" "$source.disabled"
+              fi
+            done
             sudo apt-get update
             sudo apt-get install --yes ffmpeg
           fi
@@ -206,6 +211,11 @@ jobs:
         shell: bash
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1; then
+            for source in /etc/apt/sources.list.d/microsoft*.list; do
+              if [[ -f "$source" ]]; then
+                sudo mv "$source" "$source.disabled"
+              fi
+            done
             sudo apt-get update
             sudo apt-get install --yes ffmpeg
           fi
@@ -679,6 +689,11 @@ jobs:
         shell: bash
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1; then
+            for source in /etc/apt/sources.list.d/microsoft*.list; do
+              if [[ -f "$source" ]]; then
+                sudo mv "$source" "$source.disabled"
+              fi
+            done
             sudo apt-get update
             sudo apt-get install --yes ffmpeg
           fi
