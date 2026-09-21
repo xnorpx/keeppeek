@@ -8,6 +8,7 @@ use crate::{
         Stage as NotificationStage,
         model::{Candidate as NotificationCandidate, Severity, Trigger},
     },
+    privacy::PrivacyRegistry,
     reolink::ReolinkLoop,
     rtsp::{RtspLoop, RtspTransport},
     runtime::{FacadeSender, RouterMessage, WorkerEvent},
@@ -20,7 +21,10 @@ use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
     net::IpAddr,
-    sync::mpsc::{self, Receiver, Sender, SyncSender},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, Sender, SyncSender},
+    },
     thread::JoinHandle,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -348,6 +352,7 @@ pub struct KeepPeekLoop {
     battery_wake: Option<BatteryWakeHandle>,
     notifications: Option<NotificationHandle>,
     event_forwarder: Option<EventForwarderHandle>,
+    privacy: Option<Arc<PrivacyRegistry>>,
     camera_names: HashMap<String, String>,
 }
 
@@ -375,6 +380,7 @@ impl KeepPeekLoop {
             battery_wake: None,
             notifications: None,
             event_forwarder: None,
+            privacy: None,
             camera_names: HashMap::new(),
         }
     }
@@ -387,6 +393,10 @@ impl KeepPeekLoop {
 
     pub fn set_live(&mut self, live: Publisher) {
         self.live = Some(live);
+    }
+
+    pub(crate) fn set_privacy_registry(&mut self, privacy: Arc<PrivacyRegistry>) {
+        self.privacy = Some(privacy);
     }
 
     pub fn set_event_store(&mut self, events: EventStore) {
@@ -1119,6 +1129,9 @@ impl KeepPeekLoop {
                 }
             }
             KeepPeekEvent::TimelineEventImages { event, images } => {
+                if self.privacy_active(&event.camera_id) {
+                    return;
+                }
                 if let Some(events) = self.events.clone() {
                     match events.commit_native_images(*event, &images) {
                         Ok(event) => {
@@ -1177,6 +1190,9 @@ impl KeepPeekLoop {
                 event_id,
                 jpeg,
             } => {
+                if self.privacy_active(&camera_id) {
+                    return;
+                }
                 if let Some(events) = self.events.clone() {
                     if let Err(error) = events.save_thumbnail(&camera_id, &event_id, &jpeg) {
                         tracing::warn!(%camera_id, %event_id, %error, "unable to store event thumbnail");
@@ -1214,6 +1230,9 @@ impl KeepPeekLoop {
         attachment_path: Option<&std::path::Path>,
         occurred_at_ms: i64,
     ) {
+        if self.privacy_active(&event.camera_id) {
+            return;
+        }
         if let Some(publish) = &self.event_publisher {
             publish(event);
         }
@@ -1265,6 +1284,14 @@ impl KeepPeekLoop {
             occurred_at_ms,
             deep_link: event_deep_link(&event.camera_id, &event.id),
         });
+    }
+
+    fn privacy_active(&self, camera_id: &str) -> bool {
+        self.privacy.as_ref().is_some_and(|privacy| {
+            privacy
+                .decision(camera_id, chrono::Utc::now())
+                .map_or(true, |decision| decision.0)
+        })
     }
 
     fn handle_event_while_stopping(&mut self, camera_ip: IpAddr, event: KeepPeekEvent) {

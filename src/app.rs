@@ -244,6 +244,7 @@ pub fn run(
 
     let mut keeppeek = KeepPeekLoop::new(shutdown.clone(), Some(storage_engine.handle()));
     keeppeek.set_live(webrtc.live());
+    keeppeek.set_privacy_registry(server_state.privacy_registry());
     keeppeek.set_event_store(event_store);
     keeppeek.set_health_registry(health_registry);
     keeppeek.set_status_sender(router_tx.clone());
