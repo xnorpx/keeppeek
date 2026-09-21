@@ -12,6 +12,7 @@ import {
 import type { MqttSettingsUpdate } from './integrations';
 import { MqttControlClient } from './control-client-mqtt';
 import { RecordingMaintenanceClient } from './control-client-maintenance';
+import { RecordingControlClient, RECORDING_CONTROL_CAPABILITY } from './control-client-recording';
 import { PeekLayoutControlClient } from './control-client-peek-layouts';
 import { CameraAccessControlClient } from './control-client-camera-access';
 import type { PeekLayoutRegistry } from './peek-layout';
@@ -481,6 +482,10 @@ export class ControlClient {
 	#notifications = new NotificationControlClient((command) => this.request(command));
 	readonly recordingMaintenance = new RecordingMaintenanceClient((command) =>
 		this.request(command)
+	);
+	readonly recordingControl = new RecordingControlClient(
+		(command) => this.request(command),
+		() => this.#capabilityIds.includes(RECORDING_CONTROL_CAPABILITY)
 	);
 	#mqtt = new MqttControlClient((command) => this.request(command));
 	#peekLayouts = new PeekLayoutControlClient((command) => this.request(command));
