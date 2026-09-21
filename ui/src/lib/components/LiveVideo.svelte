@@ -7,6 +7,8 @@
 	import { emitTimelinePerformanceEvent } from '$lib/timeline-observability';
 	import CameraIcon from '@lucide/svelte/icons/camera';
 	import InfoIcon from '@lucide/svelte/icons/info';
+	import MicIcon from '@lucide/svelte/icons/mic';
+	import MicOffIcon from '@lucide/svelte/icons/mic-off';
 	import { Popover } from 'bits-ui';
 	import FocusedMediaViewport from './FocusedMediaViewport.svelte';
 
@@ -205,6 +207,19 @@
 	let diagnosticsAccessibleLabel = $derived(
 		diagnosticsLabel ? `${diagnosticsLabel} camera information` : 'WebRTC stream diagnostics'
 	);
+	let talkbackActive = $derived(livePeer.talkbackActive);
+
+	async function toggleTalkback(): Promise<void> {
+		try {
+			if (talkbackActive) {
+				await livePeer.stopTalkback();
+			} else {
+				await livePeer.startTalkback({ sourceId: cameraId });
+			}
+		} catch {
+			// The peer exposes the actionable error state to the next render.
+		}
+	}
 
 	onMount(() => {
 		mounted = true;
@@ -671,6 +686,20 @@
 						? 'calc(var(--focused-media-control-size, 1.75rem) + 4px)'
 						: undefined}
 				>
+					<button
+						type="button"
+						class="grid size-6 place-items-center rounded-sm border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none disabled:opacity-50"
+						aria-label={talkbackActive ? `Stop talkback to ${cameraId}` : `Talk to ${cameraId}`}
+						title={talkbackActive ? 'Stop talkback' : 'Talkback'}
+						disabled={status !== 'live'}
+						onclick={() => void toggleTalkback()}
+					>
+						{#if talkbackActive}
+							<MicOffIcon class="size-3.5 text-amber-300" />
+						{:else}
+							<MicIcon class="size-3.5" />
+						{/if}
+					</button>
 					{#if cameraHref && diagnosticsLabel}
 						<!-- eslint-disable svelte/no-navigation-without-resolve -->
 						<a
