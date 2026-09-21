@@ -1,8 +1,9 @@
 # Recording capability audit
 
 This is the evidence and decision ledger for [#168](https://github.com/xnorpx/keeppeek/issues/168).
-It implements the bounded audit slices, not the conditional retention or control implementation.
-The issue remains open: Checkpoint A, runtime acceptance criteria, and maintainer review are pending.
+It records the baseline audit and the approved retention/control implementation slices below.
+The issue remains open: runtime integration, dependency evidence, remaining owner decisions,
+performance qualification, and final maintainer review are pending.
 
 ## Baseline and classification
 
@@ -10,10 +11,11 @@ The issue remains open: Checkpoint A, runtime acceptance criteria, and maintaine
   2026-09-20. This is the live page, not a version-pinned release; no page revision was exposed.
 - KeepPeek: `0.1.0` source at
   [`d56e145bfae56daac6e7c900bb08d725d904806a`](https://github.com/xnorpx/keeppeek/tree/d56e145bfae56daac6e7c900bb08d725d904806a).
-  All relative source and test links below refer to that baseline; this documentation-only change
-  is an equivalent executable build. This does not certify every released `0.1.0` binary.
-- Audit author: Codex, 2026-09-20. Maintainer/date and accepted policy decisions: pending.
-  That review status applies to every row below.
+  The matrix describes that baseline; relative links locate the owning files. Follow-up commit
+  evidence below records subsequent changes and supersedes the corresponding baseline gaps.
+  This does not certify every released `0.1.0` binary.
+- Audit author: Codex, 2026-09-20. Approved policy decisions are recorded below. Final maintainer
+  review against the completed implementation remains pending for every row.
 - `Equivalent` means the narrowly stated outcome has an executed automated assertion and a
   reproducible procedure below. It is not a camera/browser qualification claim.
 - `Partial` means a foundation exists, but a required outcome or its qualification is missing.
@@ -281,6 +283,56 @@ temporary directory's inherited permissions are insufficient for native removal.
 authorize weakening the removal boundary. The checkout-volume removal fixture additionally
 requires NTFS; this checkout is on ReFS. Full qualification remains outstanding.
 
+At `7467abc`, the protected NTFS worktree run of `check.bat` passed all 2,598 Rust tests
+(21 skipped, 464.952 seconds). It then stopped at two `missing_const_for_fn` Clippy errors in
+the new recording control code. This is partial verification, not a passing canonical check.
+The subsequent bulk configuration regression passes with the seven recording-policy API tests:
+all affected camera bounds are applied before attempting runtime activation, including offline cameras.
+
+The next configuration slice adds default-disabled `[recording_retention]` settings with validated
+global rules, sparse camera overrides, exact event source/kind mappings, and whole-candidate
+validation. A regression reproduced direct-deserialization validation bypass before the validated
+conversion fixed it. This slice does not activate expiration, prove producer completeness, or
+complete the durable reevaluation worker. The configuration reference states that limitation.
+At `e4dee83`, `cargo test --locked -p keeppeek --test recording_retention_configuration -- --nocapture`
+passed all ten tests, and `cargo test --locked -p keeppeek --lib config::retention::tests -- --nocapture`
+passed the atomic-write rejection test. Markdown validation and `mdbook build book` passed;
+the book used the CI-pinned mdBook 0.5.4 and mdbook-mermaid 0.17.1 Windows release binaries,
+verified against their release asset digests. The two Clippy corrections are committed at `1c751c8`;
+the complete canonical check still needs to pass on the final build.
+
+At `c9ca87a`, `cargo test --locked -p keeppeek --test recording_policy_acceptance --test recording_retention_configuration -- --nocapture`
+passed nine resolver and ten configuration tests. Decisions include stable, validated rule IDs,
+all current matches in deterministic order, and a reason distinguishing a current match from a
+preserved committed deadline. Current matching IDs do not claim to explain the historical origin
+of a preserved deadline. Persisting that attribution with durable reevaluation remains pending.
+
+At `7df6b9e`, all eight `server::recording_policy::tests` passed. The new camera-removal regression
+first failed with effective mode `Sub` after successful deletion. Removal now installs an `Off`
+admission bound before requesting runtime shutdown; stale enable requests cannot revive it.
+
+Producer completeness is still an explicit blocker for safe automatic event-based expiration.
+`camera_events/lifecycle/history.rs` replay watermarks are in-memory deduplication state, not durable
+coverage assertions. `catalog::insert_event` permits later revisions with changed intervals, and
+the native event producer may end with an incomplete drain. Neither closed events, queue emptiness,
+transport health, nor the latest observed timestamp proves that no backdated event remains.
+The existing retention catalog primitive accepts a caller-supplied `evidence_through_ms`; that is
+not trusted producer evidence and does not authorize deletion. The producer scope, durable ordering,
+gap/restart invalidation, and handling of later revisions need a concrete completeness contract.
+Automatic expiration remains inactive while that contract is unresolved.
+
+The pure `Settings::normalize_event` adapter distinguishes unrelated canonical cameras/streams
+from unavailable evidence. It accepts only an explicitly mapped source/kind with a closed,
+nonempty interval; opaque camera IDs, malformed identity, unknown kinds, and open/invalid intervals
+do not become retention facts. The result retains the event ID/revision even when a later revision
+becomes unavailable. Camera-wide events can apply to both main and sub streams. This adapter does
+not advance an ingestion watermark, activate a policy, or authorize deletion.
+At `89e0d49`, the resolver/configuration/normalization suites passed 9/10/3 tests respectively;
+the final normalization run also exercised empty event IDs and canonical IPv6 identities.
+At `a374f3c`, the server policy suite passed all nine tests with deterministic UTC/monotonic
+boundary observations, no revival after rollback, and rejection of a revision invalidated by expiry.
+The injected clock is test-only; production admission still samples time inside its authority lock.
+
 ### Approved event and control semantics for the runtime checkpoint
 
 This section is the approved implementation contract. Only the control primitive and admission
@@ -333,15 +385,15 @@ evaluated recording plus eight per batch. Use the 127-source, 30-day main/sub fi
 and at least 30 release runs. Report baseline, result, delta, query counts, peak RSS, environment,
 and raw summaries; a failing measurement cannot silently change an approved budget.
 
-| ID  | Decision needed                                                                                                                                   | Consequence / current workaround                                                                                                                                                                      | Accountable owner |
+| ID  | Decision status                                                                                                                                   | Consequence / current workaround                                                                                                                                                                      | Accountable owner |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| D1  | Accept or reject independent class lifetimes, precise integer duration, latest-match expiry, and global/camera overrides.                         | Existing capacity limits cannot guarantee an age or the three examples. Export/download specific evidence; do not advertise class retention.                                                          | #168              |
-| D2  | Define normalized motion/alert/detection/active-object evidence and delayed/revised-event semantics.                                              | Event labels alone are insufficient. #96 ingestion is an input; #172 owns decodable pre-roll.                                                                                                         | #168              |
-| D3  | Decide file versus fragment expiry and whether policy edits can shorten committed deadlines.                                                      | Shared MP4 files can require over-retention; exact retained bytes may require separately approved compaction. No duplicate-object or exact-expiry result is claimed.                                  | #168              |
-| D4  | Assign generic control implementation and approve configured/privacy bounds, actor/reason/expiry, conflict and restart semantics.                 | Existing config edits change mode. They are not expiring automation requests; #125 covers privacy only. Temporary get/set/clear protocol is approved; production privacy integration remains pending. | #168              |
+| D1  | Approved: independent class lifetimes, integer durations, latest-match expiry, and global/camera overrides.                                       | Existing capacity limits cannot guarantee an age or the three examples. Export/download specific evidence; do not advertise class retention.                                                          | #168              |
+| D2  | Explicit source/kind mappings approved; trusted producer completeness remains to be implemented and qualified.                                    | Event labels alone are insufficient. #96 ingestion is an input; #172 owns decodable pre-roll.                                                                                                         | #168              |
+| D3  | Approved: whole-file retention and no shortening of committed deadlines.                                                                          | Shared MP4 files can require over-retention; exact retained bytes may require separately approved compaction. No duplicate-object or exact-expiry result is claimed.                                  | #168              |
+| D4  | Approved: temporary manual/external authority, configured/privacy bounds, attribution, expiry and restart semantics.                              | Existing config edits change mode. They are not expiring automation requests; #125 covers privacy only. Temporary get/set/clear protocol is approved; production privacy integration remains pending. | #168              |
 | D5  | Accept typed export/transcoding outcomes or approve deliberate differences for arbitrary arguments, hardware retry, and permanent export custody. | Download normal exports promptly. #127 owns timelapse; #131 owns playback adaptation, not an implied arbitrary export service.                                                                        | #168              |
 | D6  | Decide independent capacity/mount qualification for separated medium/long storage.                                                                | Check both mounted volumes operationally; do not infer protection of one from the other's capacity.                                                                                                   | #168              |
-| D7  | Approve latency, query-count, peak-memory, and ingest-impact budgets for the 127-source/30-day retention workload.                                | Existing safety/coverage benchmarks measure different paths. Numeric budgets are approved above; production evaluator and benchmark evidence remain pending.                                          | #168              |
+| D7  | Numeric latency, query-count, memory and ingest-impact budgets approved; measurement remains outstanding.                                         | Existing safety/coverage benchmarks measure different paths. Numeric budgets are approved above; production evaluator and benchmark evidence remain pending.                                          | #168              |
 
 Required control cases for D4 are: Off + event stays Off (current P1); configured enabled + privacy
 must suppress recording (pending #125); manual/external enable cannot bypass a disabled/privacy
@@ -356,15 +408,15 @@ is presented as passing production behavior.
 
 ## Acceptance status
 
-| Criterion | Audit result                                                                                              | Remaining closure evidence                                                                          |
-| --------- | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| AC-1      | All retrieved headings mapped to 32 classified rows with baseline, symbols, evidence/owner, and workflow. | Final-build matrix review remains pending; implementation decisions are recorded above.             |
-| AC-2      | Three examples are verified configuration/runtime gaps (R06–R08).                                         | Executed exact interval/physical-byte fixtures for the approved semantics.                          |
-| AC-3      | Resolver, sub-day expiry, restart/reevaluation guarantees absent (R09–R12).                               | Production evidence ingestion, bounded reevaluation, safe expiry, and final migration tests.        |
-| AC-4      | Keyframe EventBoost foundation passes T1/T2; pre-roll and independent event retention remain missing.     | #172 real-media decoded coverage plus delayed/revised-event evidence.                               |
-| AC-5      | Temporary authority, admission, API and UI implemented; full integration is incomplete.                   | #125 integration and final-build deterministic-clock admission/API/UI qualification.                |
-| AC-6      | Historical owner builds and local assertions linked; limitations and Alpha owners explicit.               | Open #127/#131 evidence; #133 filesystem qualification and remaining deployment cases.              |
-| AC-7      | Not measured or satisfied.                                                                                | Repeated release-build results against approved D7 budgets: median/p95, queries, RSS, ingest delta. |
+| Criterion | Audit result                                                                                               | Remaining closure evidence                                                                          |
+| --------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| AC-1      | All retrieved headings mapped to 32 classified rows with baseline, symbols, evidence/owner, and workflow.  | Final-build matrix review remains pending; implementation decisions are recorded above.             |
+| AC-2      | Three examples are verified configuration/runtime gaps (R06–R08).                                          | Executed exact interval/physical-byte fixtures for the approved semantics.                          |
+| AC-3      | Pure resolver and monotonic catalog primitive verified; production expiry/reevaluation remains incomplete. | Production evidence ingestion, bounded reevaluation, safe expiry, and final migration tests.        |
+| AC-4      | Keyframe EventBoost foundation passes T1/T2; pre-roll and independent event retention remain missing.      | #172 real-media decoded coverage plus delayed/revised-event evidence.                               |
+| AC-5      | Temporary authority, admission, API and UI implemented; full integration is incomplete.                    | #125 integration and final-build deterministic-clock admission/API/UI qualification.                |
+| AC-6      | Historical owner builds and local assertions linked; limitations and Alpha owners explicit.                | Open #127/#131 evidence; #133 filesystem qualification and remaining deployment cases.              |
+| AC-7      | Not measured or satisfied.                                                                                 | Repeated release-build results against approved D7 budgets: median/p95, queries, RSS, ingest delta. |
 
 Performance for the baseline documentation commit is N/A. Subsequent executable changes require
 AC-7 measurements; those measurements are outstanding. Keep all incomplete issue criteria unchecked.
