@@ -1166,9 +1166,11 @@
 			onsave={() => void saveWallPreferences()}
 			ondiscard={() => void discardWallPreferences()}
 		/>
-		<div class="absolute top-14 right-4 z-20 flex flex-col items-end gap-1.5">
+		<div class="absolute top-14 left-4 z-20 flex flex-col items-start gap-1.5">
 			{#if livePeer.talkbackGroups.length > 0}
-				<label class="flex items-center gap-2 rounded-sm border border-hairline bg-background/95 px-2 py-1 text-xs shadow-md">
+				<label
+					class="flex items-center gap-2 rounded-sm border border-hairline bg-background/95 px-2 py-1 text-xs shadow-md"
+				>
 					<span class="text-text-muted">Target</span>
 					<select
 						class="min-h-7 max-w-40 bg-transparent font-medium outline-none"
@@ -1194,7 +1196,10 @@
 				{broadcastTalkbackActive ? 'Stop broadcast' : 'Broadcast talkback'}
 			</Button>
 			{#if broadcastTalkbackError}
-				<p class="max-w-xs rounded-sm border border-destructive/40 bg-background/95 px-2 py-1 text-xs text-destructive" role="alert">
+				<p
+					class="max-w-xs rounded-sm border border-destructive/40 bg-background/95 px-2 py-1 text-xs text-destructive"
+					role="alert"
+				>
 					{broadcastTalkbackError}
 				</p>
 			{/if}

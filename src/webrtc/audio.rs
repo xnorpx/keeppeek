@@ -6,7 +6,7 @@ const MAX_AUDIO_QUEUE_BYTES: usize = 256 * 1024;
 const MAX_AUDIO_QUEUE_AGE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AudioCodec {
+pub enum AudioCodec {
     Aac,
     G711Alaw,
     G711Ulaw,
@@ -14,7 +14,7 @@ pub(crate) enum AudioCodec {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct AudioFrame {
+pub struct AudioFrame {
     pub(crate) codec: AudioCodec,
     pub(crate) sample_rate_hz: u32,
     pub(crate) channel_count: u8,
@@ -24,14 +24,14 @@ pub(crate) struct AudioFrame {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct AudioQueue {
+pub struct AudioQueue {
     frames: VecDeque<AudioFrame>,
     bytes: usize,
     dropped_frames: u64,
 }
 
 impl AudioQueue {
-    pub(crate) fn push(&mut self, frame: AudioFrame, now: Instant) {
+    pub fn push(&mut self, frame: AudioFrame, now: Instant) {
         self.expire(now);
         self.bytes = self.bytes.saturating_add(frame.data.len());
         self.frames.push_back(frame);
@@ -40,7 +40,7 @@ impl AudioQueue {
         }
     }
 
-    pub(crate) fn pop(&mut self, now: Instant) -> Option<AudioFrame> {
+    pub fn pop(&mut self, now: Instant) -> Option<AudioFrame> {
         self.expire(now);
         let frame = self.frames.pop_front()?;
         self.bytes = self.bytes.saturating_sub(frame.data.len());
@@ -51,7 +51,7 @@ impl AudioQueue {
         not(test),
         expect(dead_code, reason = "Reported by the WebRTC audio health path")
     )]
-    pub(crate) const fn dropped_frames(&self) -> u64 {
+    pub const fn dropped_frames(&self) -> u64 {
         self.dropped_frames
     }
 
@@ -76,7 +76,7 @@ impl AudioQueue {
     }
 }
 
-pub(crate) fn decode_g711(codec: AudioCodec, data: &[u8]) -> Option<Bytes> {
+pub fn decode_g711(codec: AudioCodec, data: &[u8]) -> Option<Bytes> {
     let decode = match codec {
         AudioCodec::G711Alaw => decode_alaw,
         AudioCodec::G711Ulaw => decode_ulaw,
@@ -89,15 +89,15 @@ pub(crate) fn decode_g711(codec: AudioCodec, data: &[u8]) -> Option<Bytes> {
     Some(Bytes::from(pcm))
 }
 
-pub(crate) fn encode_g711(codec: AudioCodec, pcm: &[u8]) -> Option<Bytes> {
+pub fn encode_g711(codec: AudioCodec, pcm: &[u8]) -> Option<Bytes> {
     let encode = match codec {
         AudioCodec::G711Alaw => encode_alaw,
         AudioCodec::G711Ulaw => encode_ulaw,
         _ => return None,
     };
     let mut encoded = Vec::with_capacity(pcm.len() / 2);
-    for sample in pcm.chunks_exact(2) {
-        encoded.push(encode(i16::from_le_bytes([sample[0], sample[1]])));
+    for &[low, high] in pcm.as_chunks::<2>().0 {
+        encoded.push(encode(i16::from_le_bytes([low, high])));
     }
     Some(Bytes::from(encoded))
 }

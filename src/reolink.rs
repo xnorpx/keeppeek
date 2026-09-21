@@ -655,14 +655,12 @@ impl ReolinkLoop {
                         .handle_input(Input::Command(Command::UnsubscribeStream { stream_id: id }));
                 }
                 if let Some(stream_id) = talk_stream_id {
-                    let _ = session.handle_input(Input::Command(Command::Talk(
-                        TalkCommand::Reset {
+                    let _ =
+                        session.handle_input(Input::Command(Command::Talk(TalkCommand::Reset {
                             channel: self.channel,
-                        },
-                    )));
-                    let _ = session.handle_input(Input::Command(Command::UnsubscribeStream {
-                        stream_id,
-                    }));
+                        })));
+                    let _ = session
+                        .handle_input(Input::Command(Command::UnsubscribeStream { stream_id }));
                 }
                 let _ = drain_outputs_simple(&mut session, wire.as_mut(), &mut out_buf);
                 let _ = wire.close();
@@ -1202,15 +1200,12 @@ impl ReolinkLoop {
                     .as_ref()
                     .is_some_and(|live| !live.talkback_is_armed(&camera_id))
             {
-                let _ = session.handle_input(Input::Command(Command::Talk(
-                    TalkCommand::Reset {
-                        channel: self.channel,
-                    },
-                )));
+                let _ = session.handle_input(Input::Command(Command::Talk(TalkCommand::Reset {
+                    channel: self.channel,
+                })));
                 if let Some(stream_id) = talk_stream_id.take() {
-                    let _ = session.handle_input(Input::Command(Command::UnsubscribeStream {
-                        stream_id,
-                    }));
+                    let _ = session
+                        .handle_input(Input::Command(Command::UnsubscribeStream { stream_id }));
                 }
                 talk_ready = false;
                 talk_config = None;
@@ -1234,9 +1229,7 @@ impl ReolinkLoop {
                     )))?;
                 }
             }
-            if talk_ready
-                && let (Some(config), Some(live)) = (&talk_config, &self.live)
-            {
+            if talk_ready && let (Some(config), Some(live)) = (&talk_config, &self.live) {
                 send_reolink_talkback(
                     &mut session,
                     live,
@@ -1327,19 +1320,19 @@ fn send_reolink_talkback(
         }
         for chunk in frame.data.chunks_exact(block_bytes).take(4) {
             let samples = chunk
-                .chunks_exact(2)
-                .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&[low, high]| i16::from_le_bytes([low, high]))
                 .collect::<Vec<_>>();
             let mut encoded = vec![0_u8; 4 + samples_per_block / 2];
             let encoded_len = encoder.encode_block(&samples, &mut encoded)?;
             encoded.truncate(encoded_len);
-            session.handle_input(Input::Command(Command::Talk(
-                TalkCommand::SendAdpcm {
-                    channel: config.channel,
-                    sequence: *sequence,
-                    data: encoded,
-                },
-            )))?;
+            session.handle_input(Input::Command(Command::Talk(TalkCommand::SendAdpcm {
+                channel: config.channel,
+                sequence: *sequence,
+                data: encoded,
+            })))?;
             *sequence = sequence.wrapping_add(1);
         }
     }
