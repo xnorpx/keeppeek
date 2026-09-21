@@ -244,6 +244,13 @@ fn camera_updates_preserve_sparse_retention_and_secret_references() {
     camera.display_name = Some("Updated".into());
     config::upsert_camera(&path, &camera).unwrap();
     let settings = fixture.load().unwrap();
+    let serialized = toml::to_string(&settings.recording_retention).unwrap();
+    let restored: config::retention::Settings = toml::from_str(&serialized).unwrap();
+    let ip = "192.0.2.8".parse().unwrap();
+    assert_eq!(
+        restored.policy_for(ip).unwrap(),
+        settings.recording_retention.policy_for(ip).unwrap()
+    );
     config::update_settings(&path, &settings).unwrap();
     let raw = std::fs::read_to_string(&path).unwrap();
     let after: toml::Table = toml::from_str(&raw).unwrap();

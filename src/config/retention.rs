@@ -2,6 +2,8 @@
 //!
 //! A resolved policy selects deadlines. It never grants permission to remove media.
 
+pub mod evidence;
+
 use crate::storage::{
     metadata::EventSource,
     retention::{EvidenceKind, RetentionMode, RetentionPolicy, RetentionRule, RuleClass, RuleId},
