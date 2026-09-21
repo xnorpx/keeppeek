@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::{Arc, RwLock},
 };
 
 const MAX_WINDOWS: usize = 64;
@@ -20,6 +21,7 @@ pub struct PrivacyGate {
 pub struct PrivacyRegistry {
     schedules: BTreeMap<String, PrivacySchedule>,
     gates: BTreeMap<String, std::sync::Arc<PrivacyGate>>,
+    aliases: Arc<RwLock<BTreeMap<String, String>>>,
 }
 
 impl PrivacyRegistry {
@@ -38,18 +40,37 @@ impl PrivacyRegistry {
             .keys()
             .map(|camera_id| (camera_id.clone(), std::sync::Arc::new(PrivacyGate::new())))
             .collect();
-        Ok(Self { schedules, gates })
+        Ok(Self {
+            schedules,
+            gates,
+            aliases: Arc::new(RwLock::new(BTreeMap::new())),
+        })
+    }
+
+    /// Associates a transport identity with a configured camera identity.
+    pub fn set_alias(&self, alias: String, camera_id: String) {
+        self.aliases
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(alias, camera_id);
     }
 
     /// Returns the effective active state and transition epoch for a camera.
     pub fn decision(&self, camera_id: &str, instant: DateTime<Utc>) -> anyhow::Result<(bool, u64)> {
-        let Some(schedule) = self.schedules.get(camera_id) else {
+        let configured_id = self
+            .aliases
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(camera_id)
+            .cloned()
+            .unwrap_or_else(|| camera_id.to_owned());
+        let Some(schedule) = self.schedules.get(&configured_id) else {
             return Ok((false, 0));
         };
         let active = schedule.is_active(instant)?;
         let gate = self
             .gates
-            .get(camera_id)
+            .get(&configured_id)
             .expect("configured privacy gate exists");
         let epoch = if active == gate.is_active() {
             gate.epoch()
@@ -63,7 +84,14 @@ impl PrivacyRegistry {
 
     /// Returns the gate for a configured camera.
     pub fn gate(&self, camera_id: &str) -> Option<std::sync::Arc<PrivacyGate>> {
-        self.gates.get(camera_id).cloned()
+        let configured_id = self
+            .aliases
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(camera_id)
+            .cloned()
+            .unwrap_or_else(|| camera_id.to_owned());
+        self.gates.get(&configured_id).cloned()
     }
 
     /// Resolves a camera whose configured identifier is its transport address.
