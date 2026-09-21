@@ -128,7 +128,7 @@ No private camera configuration or media was used. The ignored case is the exist
 | T6  | [`playback::tests::export_preserves_timestamp_gap_between_indexed_recordings`, `export_preserves_mixed_codec_gop_descriptions`, `export_omits_overlapping_samples_across_recording_boundaries`, `compatibility_remux_repairs_audio_timescale_and_is_cached`](../src/storage/playback.rs)                                                                                                                           | Passed; timestamps, sample descriptions, deduplication, and compatibility container behavior. Lifecycle/UI evidence is historical H2/H3, not part of this filtered run.                                                     |
 | T7  | [`engine::tests::startup_preserves_interrupted_recording_for_explicit_reconciliation`, `startup_preserves_unowned_active_files_in_both_media_roots`](../src/storage/engine.rs); [`catalog::maintenance::reconciliation::reindex::tests::queued_reindex_rejects_replaced_media_before_catalog_commit`](../src/storage/catalog/maintenance/reconciliation/reindex/tests.rs)                                          | Passed. Recovery preserves interrupted/unowned media; reindex rejects replaced identity. Native deletion qualification below failed.                                                                                        |
 
-### Verified qualification gap: native Windows maintenance
+### Initial qualification gap: native Windows maintenance
 
 Ten cases returned `PermissionDenied: recording path is not eligible for inspection`: nine
 maintenance execution/recovery cases and the native NTFS primitive case. The checkout-archive case
@@ -147,6 +147,10 @@ error does not establish their precise cause. Do not describe all eleven as a Re
 No filesystem checks were bypassed or permissions changed. #133 owns this qualification limitation;
 re-run native maintenance on an approved NTFS test root before claiming this deployment supports it.
 
+The later protected-NTFS canonical run recorded below passed these native tests. That resolves
+the audit runner's inspection failure for that environment; it does not add ReFS removal support
+or qualify every deployment's ACLs and directory ancestry.
+
 ### Historical owner evidence
 
 These are identified earlier builds, not fresh final-baseline browser or device tests. The linked
@@ -156,9 +160,30 @@ PR bodies carry their acceptance tables; CI status was inspected on 2026-09-20.
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | H1 / #112, closed, POC            | [PR #163](https://github.com/xnorpx/keeppeek/pull/163), tested `e9a77493ab832e745e7a5e8169203a780f3148bb`; [Windows CI](https://github.com/xnorpx/keeppeek/actions/runs/32927695180/job/98053765677)                                                                                     | Success. PR documents eight threshold tests, cleanup/recovery tests, editor workflow, and a 64-segment benchmark. That workload does not satisfy #168's 127-source/30-day retention benchmark. |
 | H2 / #113, closed, MVP            | [PR #189](https://github.com/xnorpx/keeppeek/pull/189), head `638e46e60eacaae1b1715ed2b75c10eb0333429e`; [Windows CI](https://github.com/xnorpx/keeppeek/actions/runs/33229773978/job/99040400013), [UI CI](https://github.com/xnorpx/keeppeek/actions/runs/33229773978/job/99040399905) | Success. PR body also names older local `ab4274e` evidence; do not mislabel it as the final head. Current lifecycle docs retain the 24-hour artifact limit.                                    |
-| H3 / #111, closed, POC            | [PR #161](https://github.com/xnorpx/keeppeek/pull/161), tested `284d0a555ee9c0f4ecc280ac500aa86fe5f3e927`; [UI CI](https://github.com/xnorpx/keeppeek/actions/runs/32917145263/job/98023120465)                                                                                          | Success. Compatible variant selection and one visible fallback; two platform codec skips in the reported local E2E run. Not universal H.265/Safari qualification.                              |
+| H3 / #111, closed, POC            | [PR #161](https://github.com/xnorpx/keeppeek/pull/161), local tests `284d0a555ee9c0f4ecc280ac500aa86fe5f3e927`, CI head `f587dd0aedd46a06908577048cba7f0dcbf08b23`; [UI CI](https://github.com/xnorpx/keeppeek/actions/runs/32917145263/job/98023120465)                                 | Success. Compatible variant selection and one visible fallback; two platform codec skips in the reported local E2E run. Not universal H.265/Safari qualification.                              |
 | H4 / #133, closed, Alpha          | [PR #233](https://github.com/xnorpx/keeppeek/pull/233), tested `47c9e7ff1774982d9f5121e23b322110a19a3e57`; [Windows CI](https://github.com/xnorpx/keeppeek/actions/runs/34282344700/job/102253479337)                                                                                    | Success. PR explicitly leaves exhaustive parent crash/scope qualification incomplete. Local audit failures above remain visible despite historical success.                                    |
 | Open implementation owners, Alpha | [#172][172] pre-roll; [#125](https://github.com/xnorpx/keeppeek/issues/125) privacy; [#127][127] timelapse; [#131][131] adaptation                                                                                                                                                       | No completion evidence claimed. Alpha membership is required, not automatic deferral.                                                                                                          |
+
+### AC-6 owner review, 2026-09-21
+
+AC-6 explicitly permits either linked completion evidence or a recorded limitation and owning
+milestone. The audit therefore does not require implementing the open owners inside #168.
+Issue state and checklist state are separate evidence: the counts below include both acceptance
+and completion-contract checkboxes from each live issue body, not just its acceptance criteria.
+
+| Owner                      | Live state / milestone | Checked / unchecked boxes | Evidence and remaining limitation                                                                                                                                                                                                                                                                                  |
+| -------------------------- | ---------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [#112][112] safety         | Closed / POC           | 0 / 15                    | H1 and T5 verify the named threshold, cleanup, hold/pause and recovery behavior. The unchecked issue body does not establish complete qualification. Separate-volume protection remains D6; its existing safety benchmark is not AC-7 evidence.                                                                    |
+| [#113][113] exports        | Closed / MVP           | 15 / 0                    | H2 supplies final-head Windows/UI CI; T6 and the qualified build below exercise export/container behavior. Artifacts expire after 24 hours; arbitrary FFmpeg options, encoder retry and permanent custody remain D5, not implied export capabilities.                                                              |
+| [#127][127] timelapse      | Open / Alpha           | 0 / 14                    | No completed timelapse implementation/build is claimed. Bounded sparse review and generated timelapse remain this owner's Alpha work; normal-speed export does not satisfy them.                                                                                                                                   |
+| [#131][131] adaptation     | Open / Alpha           | 0 / 14                    | H3 establishes earlier compatible-variant selection only. Adaptive switching/transcoding remains this owner's Alpha work. The qualified Chromium build still skips H.265 WebCodecs and mixed AVC/HEVC MSE, so neither it nor remux establishes universal codec support.                                            |
+| [#133][133] reconciliation | Closed / Alpha         | 0 / 15                    | H4 explicitly leaves complete scope/relationship coverage, exhaustive crash cases, removed/gap UI qualification and some remedies incomplete. The current protected-NTFS gate passes existing regressions; ReFS removal remains unsupported. Closed issue state does not erase those documented Alpha limitations. |
+
+Reproduce the owner-state review with `gh issue view NUMBER --json state,milestone,body,url` for
+112, 113, 127, 131 and 133, and inspect the exact H1-H4 PR/build links above. The canonical
+`3bf5ad5` build below is current regression evidence, not a replacement for missing owner tests.
+This completes the owner-evidence review portion of AC-6 while keeping each unimplemented
+capability and its milestone explicit. It does not complete AC-2/3/4/5/7 or approve D5/D6.
 
 ## Reproducible operator qualification
 
@@ -441,15 +466,15 @@ is presented as passing production behavior.
 
 ## Acceptance status
 
-| Criterion | Audit result                                                                                               | Remaining closure evidence                                                                          |
-| --------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| AC-1      | All retrieved headings mapped to 32 classified rows with baseline, symbols, evidence/owner, and workflow.  | Final-build matrix review remains pending; implementation decisions are recorded above.             |
-| AC-2      | Pure-resolver examples verified; production interval/physical-byte outcomes remain unverified.             | Executed exact interval/physical-byte fixtures for the approved semantics.                          |
-| AC-3      | Pure resolver and monotonic catalog primitive verified; production expiry/reevaluation remains incomplete. | Production evidence ingestion, bounded reevaluation, safe expiry, and final migration tests.        |
-| AC-4      | Keyframe EventBoost foundation passes T1/T2; pre-roll and independent event retention remain missing.      | #172 real-media decoded coverage plus delayed/revised-event evidence.                               |
-| AC-5      | Temporary authority, admission, API and UI implemented; full integration is incomplete.                    | #125 integration and final-build deterministic-clock admission/API/UI qualification.                |
-| AC-6      | Historical owner builds and local assertions linked; limitations and Alpha owners explicit.                | Open #127/#131 evidence; #133 filesystem qualification and remaining deployment cases.              |
-| AC-7      | Not measured or satisfied.                                                                                 | Repeated release-build results against approved D7 budgets: median/p95, queries, RSS, ingest delta. |
+| Criterion | Audit result                                                                                                      | Remaining closure evidence                                                                          |
+| --------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| AC-1      | All retrieved headings mapped to 32 classified rows with baseline, symbols, evidence/owner, and workflow.         | Final-build matrix review remains pending; implementation decisions are recorded above.             |
+| AC-2      | Pure-resolver examples verified; production interval/physical-byte outcomes remain unverified.                    | Executed exact interval/physical-byte fixtures for the approved semantics.                          |
+| AC-3      | Pure resolver and monotonic catalog primitive verified; production expiry/reevaluation remains incomplete.        | Production evidence ingestion, bounded reevaluation, safe expiry, and final migration tests.        |
+| AC-4      | Keyframe EventBoost foundation passes T1/T2; pre-roll and independent event retention remain missing.             | #172 real-media decoded coverage plus delayed/revised-event evidence.                               |
+| AC-5      | Temporary authority, admission, API and UI implemented; full integration is incomplete.                           | #125 integration and final-build deterministic-clock admission/API/UI qualification.                |
+| AC-6      | Owner evidence reviewed on 2026-09-21; exact builds, checklist discrepancies and milestone-owned limits recorded. | Final matrix review; D5/D6 remain separate owner decisions, not implicit parity claims.             |
+| AC-7      | Not measured or satisfied.                                                                                        | Repeated release-build results against approved D7 budgets: median/p95, queries, RSS, ingest delta. |
 
 Performance for the baseline documentation commit is N/A. Subsequent executable changes require
 AC-7 measurements; those measurements are outstanding. Keep all incomplete issue criteria unchecked.
