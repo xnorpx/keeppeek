@@ -169,7 +169,7 @@ impl CameraRecordingPolicy {
         permitted
     }
 
-    fn reset_coverage(&mut self) {
+    const fn reset_coverage(&mut self) {
         self.main_until = None;
         self.event_main_state = EventMainState::Idle;
         self.awaiting_keyframe = [true; 2];

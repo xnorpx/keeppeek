@@ -135,7 +135,7 @@ fn map_snapshot(source_id: String, value: Snapshot) -> proto::RecordingControlSt
     }
 }
 
-fn mode(value: crate::cameras::CameraRecordingMode) -> proto::CameraRecordingMode {
+const fn mode(value: crate::cameras::CameraRecordingMode) -> proto::CameraRecordingMode {
     use crate::cameras::CameraRecordingMode;
     match value {
         CameraRecordingMode::Off => proto::CameraRecordingMode::Off,
