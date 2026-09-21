@@ -391,6 +391,34 @@ shared build directory. Run `check.bat` from that worktree's root to reproduce t
 audit-only edits do not change the qualified executable sources. This passing gate does not
 complete the missing runtime retention, dependency, or benchmark acceptance evidence below.
 
+### Owner clarification: indefinite recording and event preservation
+
+On 2026-09-21, while resolving decision 1 about event completeness, the owner requested that a
+recording or event can be marked to remain saved forever until the owner removes it. Record this
+as acceptance of the conservative completeness direction plus a required operator-controlled
+preservation outcome. It does not resolve the separate export and mount decisions D5/D6.
+
+- Automatic event-based expiration requires durable producer evidence of completeness. Missing
+  confirmation preserves footage rather than assuming no further event will arrive. Producer
+  integration and its exact revision/gap contract remain implementation work.
+- Provide an explicit **Keep forever** action for a recording or event. The protection has no TTL,
+  survives restart, and prevents both ordinary age expiration and disk-pressure cleanup.
+- Saving an event must protect its available associated recording media as well as the event
+  information; saving only a bookmark or event label is insufficient. Already missing footage
+  remains an explicit gap, and protection cannot authorize recording through privacy/Off bounds.
+- Only an explicit authorized operator action can release this protection. Removing one hold must
+  not remove another hold on shared media. Unprotecting media and confirming its deletion must
+  remain distinct, visible actions so automatic retention consequences are clear.
+- If protected media prevents capacity recovery, retain it and report the recording pause/storage
+  pressure. Do not silently revoke protection to make space.
+
+The current catalog `set_recording_protected` primitive supplies an existing protection flag,
+and cleanup/maintenance consult that flag. It is not yet a complete operator feature: no typed
+recording/event hold command or matching UI exists, and durable hold attribution, event/media
+association, release coordination and race/restart qualification still need implementation.
+The requested outcome is approved; any expanded protected API contract must follow the repository's
+existing scoped approval requirement before those files are changed. No API file is changed here.
+
 ### Approved event and control semantics for the runtime checkpoint
 
 This section is the approved implementation contract. The primitives described above have
@@ -443,15 +471,15 @@ evaluated recording plus eight per batch. Use the 127-source, 30-day main/sub fi
 and at least 30 release runs. Report baseline, result, delta, query counts, peak RSS, environment,
 and raw summaries; a failing measurement cannot silently change an approved budget.
 
-| ID  | Decision status                                                                                                                                   | Consequence / current workaround                                                                                                                                                                      | Accountable owner |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| D1  | Approved: independent class lifetimes, integer durations, latest-match expiry, and global/camera overrides.                                       | Existing capacity limits cannot guarantee an age or the three examples. Export/download specific evidence; do not advertise class retention.                                                          | #168              |
-| D2  | Explicit source/kind mappings approved; trusted producer completeness remains to be implemented and qualified.                                    | Event labels alone are insufficient. #96 ingestion is an input; #172 owns decodable pre-roll.                                                                                                         | #168              |
-| D3  | Approved: whole-file retention and no shortening of committed deadlines.                                                                          | Shared MP4 files can require over-retention; exact retained bytes may require separately approved compaction. No duplicate-object or exact-expiry result is claimed.                                  | #168              |
-| D4  | Approved: temporary manual/external authority, configured/privacy bounds, attribution, expiry and restart semantics.                              | Existing config edits change mode. They are not expiring automation requests; #125 covers privacy only. Temporary get/set/clear protocol is approved; production privacy integration remains pending. | #168              |
-| D5  | Accept typed export/transcoding outcomes or approve deliberate differences for arbitrary arguments, hardware retry, and permanent export custody. | Download normal exports promptly. #127 owns timelapse; #131 owns playback adaptation, not an implied arbitrary export service.                                                                        | #168              |
-| D6  | Decide independent capacity/mount qualification for separated medium/long storage.                                                                | Check both mounted volumes operationally; do not infer protection of one from the other's capacity.                                                                                                   | #168              |
-| D7  | Numeric latency, query-count, memory and ingest-impact budgets approved; measurement remains outstanding.                                         | Existing safety/coverage benchmarks measure different paths. Numeric budgets are approved above; production evaluator and benchmark evidence remain pending.                                          | #168              |
+| ID  | Decision status                                                                                                                                                                            | Consequence / current workaround                                                                                                                                                                      | Accountable owner |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| D1  | Approved: independent class lifetimes, integer durations, latest-match expiry, and global/camera overrides.                                                                                | Existing capacity limits cannot guarantee an age or the three examples. Export/download specific evidence; do not advertise class retention.                                                          | #168              |
+| D2  | Approved: explicit source/kind mappings and durable producer completeness; preserve when confirmation is missing. Operator-controlled Keep forever for recordings/events is also required. | Completeness ingestion and the operator preservation workflow remain unimplemented. Event labels alone are insufficient; #96 supplies ingestion inputs and #172 owns decodable pre-roll.              | #168              |
+| D3  | Approved: whole-file retention and no shortening of committed deadlines.                                                                                                                   | Shared MP4 files can require over-retention; exact retained bytes may require separately approved compaction. No duplicate-object or exact-expiry result is claimed.                                  | #168              |
+| D4  | Approved: temporary manual/external authority, configured/privacy bounds, attribution, expiry and restart semantics.                                                                       | Existing config edits change mode. They are not expiring automation requests; #125 covers privacy only. Temporary get/set/clear protocol is approved; production privacy integration remains pending. | #168              |
+| D5  | Accept typed export/transcoding outcomes or approve deliberate differences for arbitrary arguments, hardware retry, and permanent export custody.                                          | Download normal exports promptly. #127 owns timelapse; #131 owns playback adaptation, not an implied arbitrary export service.                                                                        | #168              |
+| D6  | Decide independent capacity/mount qualification for separated medium/long storage.                                                                                                         | Check both mounted volumes operationally; do not infer protection of one from the other's capacity.                                                                                                   | #168              |
+| D7  | Numeric latency, query-count, memory and ingest-impact budgets approved; measurement remains outstanding.                                                                                  | Existing safety/coverage benchmarks measure different paths. Numeric budgets are approved above; production evaluator and benchmark evidence remain pending.                                          | #168              |
 
 Required control cases for D4 are: Off + event stays Off (current P1); configured enabled + privacy
 must suppress recording (pending #125); manual/external enable cannot bypass a disabled/privacy
