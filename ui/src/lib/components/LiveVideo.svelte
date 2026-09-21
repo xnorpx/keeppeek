@@ -93,8 +93,8 @@
 		mediaAspectRatio?: number;
 		suspensionReason?: string | null;
 		showFreshness?: boolean;
-		statusOverlay?: Snippet;
 		showDiagnostics?: boolean;
+		statusOverlay?: Snippet;
 		diagnosticsLabel?: string;
 		diagnosticsStatusClass?: string;
 		diagnosticsPosition?: 'top-right' | 'bottom-right';
@@ -131,8 +131,8 @@
 		mediaAspectRatio,
 		suspensionReason = null,
 		showFreshness = false,
-		statusOverlay,
 		showDiagnostics = true,
+		statusOverlay,
 		diagnosticsLabel,
 		diagnosticsStatusClass = 'bg-white/65',
 		diagnosticsPosition = 'top-right',
@@ -208,7 +208,8 @@
 	let diagnosticsAccessibleLabel = $derived(
 		diagnosticsLabel ? `${diagnosticsLabel} camera information` : 'WebRTC stream diagnostics'
 	);
-	let talkbackActive = $derived(livePeer.talkbackActive);
+	let talkbackControls = $derived(livePeer.cameraAudioAssets?.[cameraId] !== undefined);
+	let talkbackActive = $derived(talkbackControls && livePeer.talkbackActive);
 	let audioAssets = $derived(livePeer.cameraAudioAssets?.[cameraId]);
 
 	async function playAudioAsset(kind: 'quickReply' | 'chime', assetId: string): Promise<void> {
@@ -711,48 +712,50 @@
 						? 'calc(var(--focused-media-control-size, 1.75rem) + 4px)'
 						: undefined}
 				>
-					<button
-						type="button"
-						class="grid size-6 place-items-center rounded-sm border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none disabled:opacity-50"
-						aria-label={talkbackActive ? `Stop talkback to ${cameraId}` : `Talk to ${cameraId}`}
-						title={talkbackActive ? 'Stop talkback' : 'Talkback'}
-						disabled={status !== 'live'}
-						onclick={() => void toggleTalkback()}
-					>
-						{#if talkbackActive}
-							<MicOffIcon class="size-3.5 text-amber-300" />
-						{:else}
-							<MicIcon class="size-3.5" />
+					{#if talkbackControls}
+						<button
+							type="button"
+							class="grid size-6 place-items-center rounded-sm border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none disabled:opacity-50"
+							aria-label={talkbackActive ? `Stop talkback to ${cameraId}` : `Talk to ${cameraId}`}
+							title={talkbackActive ? 'Stop talkback' : 'Talkback'}
+							disabled={status !== 'live'}
+							onclick={() => void toggleTalkback()}
+						>
+							{#if talkbackActive}
+								<MicOffIcon class="size-3.5 text-amber-300" />
+							{:else}
+								<MicIcon class="size-3.5" />
+							{/if}
+						</button>
+						{#if (audioAssets?.quickReplies.length ?? 0) > 0 || (audioAssets?.chimes.length ?? 0) > 0}
+							<details class="relative">
+								<summary
+									class="grid size-6 cursor-pointer list-none place-items-center rounded-sm border border-white/15 bg-black/65 text-white/65 hover:bg-black/85 focus-visible:ring-2 focus-visible:ring-white/70"
+									aria-label="Play doorbell sound">♫</summary
+								>
+								<div
+									class="absolute top-8 right-0 z-40 flex min-w-40 flex-col gap-1 rounded-md border border-white/15 bg-zinc-950/95 p-2 text-left shadow-xl"
+								>
+									{#each audioAssets?.quickReplies ?? [] as asset (asset.id)}
+										<button
+											type="button"
+											class="rounded px-2 py-1 text-left text-xs text-white/80 hover:bg-white/10 disabled:opacity-50"
+											disabled={talkbackActive}
+											onclick={() => void playAudioAsset('quickReply', asset.id)}
+											>{asset.label}</button
+										>
+									{/each}
+									{#each audioAssets?.chimes ?? [] as asset (asset.id)}
+										<button
+											type="button"
+											class="rounded px-2 py-1 text-left text-xs text-white/80 hover:bg-white/10 disabled:opacity-50"
+											disabled={talkbackActive}
+											onclick={() => void playAudioAsset('chime', asset.id)}>{asset.label}</button
+										>
+									{/each}
+								</div>
+							</details>
 						{/if}
-					</button>
-					{#if (audioAssets?.quickReplies.length ?? 0) > 0 || (audioAssets?.chimes.length ?? 0) > 0}
-						<details class="relative">
-							<summary
-								class="grid size-6 cursor-pointer list-none place-items-center rounded-sm border border-white/15 bg-black/65 text-white/65 hover:bg-black/85 focus-visible:ring-2 focus-visible:ring-white/70"
-								aria-label="Play doorbell sound">♫</summary
-							>
-							<div
-								class="absolute top-8 right-0 z-40 flex min-w-40 flex-col gap-1 rounded-md border border-white/15 bg-zinc-950/95 p-2 text-left shadow-xl"
-							>
-								{#each audioAssets?.quickReplies ?? [] as asset (asset.id)}
-									<button
-										type="button"
-										class="rounded px-2 py-1 text-left text-xs text-white/80 hover:bg-white/10 disabled:opacity-50"
-										disabled={talkbackActive}
-										onclick={() => void playAudioAsset('quickReply', asset.id)}
-										>{asset.label}</button
-									>
-								{/each}
-								{#each audioAssets?.chimes ?? [] as asset (asset.id)}
-									<button
-										type="button"
-										class="rounded px-2 py-1 text-left text-xs text-white/80 hover:bg-white/10 disabled:opacity-50"
-										disabled={talkbackActive}
-										onclick={() => void playAudioAsset('chime', asset.id)}>{asset.label}</button
-									>
-								{/each}
-							</div>
-						</details>
 					{/if}
 					{#if cameraHref && diagnosticsLabel}
 						<!-- eslint-disable svelte/no-navigation-without-resolve -->
