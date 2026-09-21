@@ -1,13 +1,16 @@
 use super::state_store::{
-    Error, ExpiredEntry, Invalid, MAX_ENTRIES_PER_NAMESPACE, MAX_NAMESPACES, MAX_TOTAL_VALUE_BYTES,
-    MAX_VALUE_BYTES, StoredEntry, authorize_read, authorize_write, check_expected, ttl_expiry_ms,
-    validate_key, validate_namespace, validate_schema,
+    Error, ExpiredEntry, Invalid, MAX_ENTRIES_PER_NAMESPACE, MAX_KEY_CHARS, MAX_NAMESPACE_CHARS,
+    MAX_NAMESPACES, MAX_SCHEMA_CHARS, MAX_TOTAL_VALUE_BYTES, MAX_VALUE_BYTES, StoredEntry,
+    authorize_read, authorize_write, check_expected, ttl_expiry_ms, validate_key,
+    validate_namespace, validate_schema,
 };
 use prost::Message as _;
 use prost_types::Duration;
 use std::path::Path;
 
 const SCHEMA_VERSION: i64 = 1;
+// Authenticated owners are UUIDs or the local-administrator marker.
+const MAX_RESTORED_OWNER_BYTES: usize = 256;
 
 pub struct DurableStore {
     connection: turso::Connection,
@@ -32,6 +35,7 @@ impl DurableStore {
         let database = pollster::block_on(turso::Builder::new_local(path).build())?;
         let connection = database.connect()?;
         pollster::block_on(initialize_schema(&connection))?;
+        pollster::block_on(validate_restored_store(&connection))?;
         pollster::block_on(purge_expired(&connection, now_ms))?;
         pollster::block_on(truncate_write_ahead_log(&connection))?;
         let stored_bytes = pollster::block_on(stored_value_bytes(&connection))?;
@@ -857,6 +861,83 @@ async fn stored_value_bytes(connection: &turso::Connection) -> anyhow::Result<u6
     u64::try_from(row.get::<i64>(0)?).map_err(|error| anyhow::anyhow!("{error}"))
 }
 
+async fn validate_restored_store(connection: &turso::Connection) -> anyhow::Result<()> {
+    validate_restored_bounds(connection).await?;
+    let mut namespaces = connection
+        .query("SELECT namespace FROM namespaces", ())
+        .await?;
+    while let Some(row) = namespaces.next().await? {
+        validate_namespace(&row.get::<String>(0)?)
+            .map_err(|error| anyhow::anyhow!("invalid restored namespace: {error:?}"))?;
+    }
+    let mut entries = connection
+        .query("SELECT key, schema, value FROM entries", ())
+        .await?;
+    // ponytail: Startup validates one bounded document at a time; no second registry is needed.
+    while let Some(row) = entries.next().await? {
+        validate_key(&row.get::<String>(0)?)
+            .map_err(|error| anyhow::anyhow!("invalid restored key: {error:?}"))?;
+        let schema = row.get::<String>(1)?;
+        let value = prost_types::Struct::decode(row.get::<Vec<u8>>(2)?.as_slice())?;
+        super::state_store_schema::validate_value(&schema, &value)
+            .map_err(|error| anyhow::anyhow!("invalid restored value: {error:?}"))?;
+    }
+    Ok(())
+}
+
+async fn validate_restored_bounds(connection: &turso::Connection) -> anyhow::Result<()> {
+    let mut rows = connection
+        .query(
+            "SELECT
+            (SELECT COUNT(*) FROM namespaces),
+            (SELECT COALESCE(MAX(n), 0) FROM
+                (SELECT COUNT(*) AS n FROM entries GROUP BY namespace)),
+            (SELECT COALESCE(SUM(LENGTH(value)), 0) FROM entries),
+            (SELECT COUNT(*) FROM namespaces WHERE revision < 0
+                OR LENGTH(CAST(namespace AS BLOB)) > ?1),
+            (SELECT COUNT(*) FROM entries AS e LEFT JOIN namespaces AS n
+                ON e.namespace = n.namespace WHERE n.namespace IS NULL
+                OR LENGTH(value) > ?4 OR LENGTH(CAST(e.namespace AS BLOB)) > ?1
+                OR LENGTH(CAST(key AS BLOB)) > ?2 OR LENGTH(CAST(schema AS BLOB)) > ?3
+                OR LENGTH(CAST(owner_id AS BLOB)) > ?5
+                OR e.revision < 1 OR e.revision > n.revision OR updated_ms < 0
+                OR expires_ms < 0)",
+            turso::params![
+                MAX_NAMESPACE_CHARS as i64,
+                MAX_KEY_CHARS as i64,
+                MAX_SCHEMA_CHARS as i64,
+                MAX_VALUE_BYTES as i64,
+                MAX_RESTORED_OWNER_BYTES as i64
+            ],
+        )
+        .await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing restore bounds"))?;
+    anyhow::ensure!(
+        row.get::<i64>(0)? <= MAX_NAMESPACES as i64,
+        "restored state exceeds namespace limit"
+    );
+    anyhow::ensure!(
+        row.get::<i64>(1)? <= MAX_ENTRIES_PER_NAMESPACE as i64,
+        "restored state exceeds entry limit"
+    );
+    anyhow::ensure!(
+        row.get::<i64>(2)? <= MAX_TOTAL_VALUE_BYTES as i64,
+        "restored state exceeds value byte limit"
+    );
+    anyhow::ensure!(
+        row.get::<i64>(3)? == 0 && row.get::<i64>(4)? == 0,
+        "restored state contains invalid metadata or oversized values"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "state_store_qualification.rs"]
+mod qualification;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,6 +976,116 @@ mod tests {
     }
 
     const NOW_MS: u64 = 1_787_000_000_000;
+
+    fn expand_test_numbers(sql: &str) -> String {
+        let mut sql = sql.to_owned();
+        for count in [256, 1024] {
+            let values = (1..=count)
+                .map(|index| format!("({index})"))
+                .collect::<Vec<_>>()
+                .join(",");
+            sql = sql.replace(&format!("@{count}@"), &format!("VALUES {values}"));
+        }
+        sql
+    }
+
+    #[test]
+    fn restored_database_rejects_invalid_entries_and_bounds() {
+        let mutations = [
+            "UPDATE entries SET value = zeroblob(65537)",
+            "UPDATE entries SET schema = 'unknown.schema'",
+            "UPDATE entries SET value = X''",
+            "UPDATE entries SET value = X'FF'",
+            "UPDATE entries SET namespace = 'service/orphan/'",
+            "UPDATE entries SET revision = 2",
+            "WITH n(x) AS (@256@)
+             INSERT INTO namespaces SELECT 'service/extra-' || x || '/', 0 FROM n",
+            "WITH n(x) AS (@1024@)
+             INSERT INTO entries SELECT namespace, 'extra-' || x, schema, value, revision,
+             updated_ms, expires_ms, owner_id FROM entries CROSS JOIN n",
+            "UPDATE entries SET value = zeroblob(65536);
+             INSERT INTO namespaces VALUES('service/second/', 1);
+             WITH n(x) AS (@1024@)
+             INSERT INTO entries SELECT 'service/second/', 'extra-' || x, schema, value,
+             revision, updated_ms, expires_ms, owner_id FROM entries CROSS JOIN n",
+        ];
+        for (index, mutation) in mutations.iter().enumerate() {
+            let dir = TempDir::new();
+            let mut store = DurableStore::open(&dir.db_path(), NOW_MS).unwrap();
+            store
+                .put(
+                    "service/transcoder-a/",
+                    "key",
+                    "keeppeek.media-intent.v1",
+                    Some(media_intent_value("publish")),
+                    None,
+                    None,
+                    "admin",
+                    true,
+                    NOW_MS,
+                )
+                .unwrap();
+            let mutation = expand_test_numbers(mutation);
+            pollster::block_on(store.connection.execute_batch(&mutation)).unwrap();
+            drop(store);
+            let error = DurableStore::open(&dir.db_path(), NOW_MS)
+                .err()
+                .unwrap_or_else(|| panic!("restore accepted: {mutation}"));
+            if index == mutations.len() - 1 {
+                assert!(error.to_string().contains("value byte limit"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn continuous_churn_reuses_disk_without_restart() {
+        let dir = TempDir::new();
+        let mut store = DurableStore::open(&dir.db_path(), NOW_MS).unwrap();
+        let mut sizes = Vec::new();
+        for _ in 0..24 {
+            for index in 0..256 {
+                store
+                    .put(
+                        "service/churn/",
+                        &format!("key-{index}"),
+                        "keeppeek.media-intent.v1",
+                        Some(max_size_value()),
+                        None,
+                        None,
+                        "admin",
+                        true,
+                        NOW_MS,
+                    )
+                    .unwrap();
+            }
+            for index in 0..256 {
+                store
+                    .delete(
+                        "service/churn/",
+                        &format!("key-{index}"),
+                        None,
+                        "admin",
+                        true,
+                        NOW_MS,
+                    )
+                    .unwrap();
+            }
+            assert_eq!(store.stored_bytes(), 0);
+            sizes.push(dir_bytes(&dir));
+        }
+        println!(
+            "continuous churn bytes: {sizes:?}; files: {:?}",
+            dir_breakdown(&dir)
+        );
+        assert!(
+            sizes.iter().all(|bytes| *bytes <= 5 * 1_024 * 1_024),
+            "continuous churn exceeds its disk budget: {sizes:?}"
+        );
+        assert!(
+            sizes.windows(2).any(|pair| pair[1] < pair[0] / 2),
+            "continuous churn must reclaim the WAL without restart: {sizes:?}"
+        );
+    }
 
     fn media_intent_value(role: &str) -> Struct {
         let mut fields = BTreeMap::from([

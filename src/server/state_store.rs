@@ -14,9 +14,9 @@ use std::{
 };
 
 pub(super) const CAPABILITY_ID: &str = "keeppeek.state-store.v1";
-const MAX_NAMESPACE_CHARS: usize = 128;
-const MAX_KEY_CHARS: usize = 256;
-const MAX_SCHEMA_CHARS: usize = 128;
+pub(super) const MAX_NAMESPACE_CHARS: usize = 128;
+pub(super) const MAX_KEY_CHARS: usize = 256;
+pub(super) const MAX_SCHEMA_CHARS: usize = 128;
 pub(super) const MAX_VALUE_BYTES: usize = 64 * 1_024;
 pub(super) const MAX_ENTRIES_PER_NAMESPACE: usize = 1_024;
 const MAX_PENDING_EXPIRIES: usize = 4_096;
