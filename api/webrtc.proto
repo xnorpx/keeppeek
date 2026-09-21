@@ -47,6 +47,8 @@ message Request {
     ConfigurationCommand configuration_command = 25;
     EventWorkflowCommand event_workflow_command = 26;
     RecordingMaintenanceCommand recording_maintenance_command = 27;
+    // Arms the authenticated session microphone for one target set.
+    TalkbackCommand talkback_command = 28;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -79,6 +81,7 @@ message Notification {
     SourceSessionAdded source_session_added = 12;
     SourceSessionRemoved source_session_removed = 13;
     GroupMemberChanged group_member_changed = 14;
+    TalkbackState talkback_state = 17;
   }
 }
 
@@ -104,6 +107,16 @@ message SourceSessionRemoved {
 message GroupMemberChanged {
   string group_id = 1;
   repeated GroupMember members = 2;
+}
+
+// Reports the current talkback route. microphone_active stays false until the
+// client sends negotiated audio after an explicit StartTalkback command.
+message TalkbackState {
+  string owner_session_id = 1;
+  TalkbackTarget target = 2;
+  repeated string active_source_ids = 3;
+  repeated string failed_source_ids = 4;
+  bool microphone_active = 5;
 }
 
 message ServerCapabilities {
@@ -2360,6 +2373,31 @@ message PublicationCommand {
     StopPublication stop = 2;
   }
 }
+
+message TalkbackCommand {
+  oneof action {
+    StartTalkback start = 1;
+    StopTalkback stop = 2;
+  }
+}
+
+// Starts an explicit talkback route. The browser must still request microphone
+// access and send the negotiated audio track.
+message StartTalkback {
+  TalkbackTarget target = 1;
+}
+
+message StopTalkback {}
+
+message TalkbackTarget {
+  oneof selection {
+    string source_id = 1;
+    string group_id = 2;
+    AllTalkbackTargets all = 3;
+  }
+}
+
+message AllTalkbackTargets {}
 
 message StartPublication {
   string publication_id = 1;

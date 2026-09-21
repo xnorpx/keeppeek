@@ -1568,6 +1568,8 @@ impl SourceBitrate {
 struct Inner {
     sources: Mutex<HashMap<Source, SourceState>>,
     audio_sources: Mutex<HashMap<Source, AudioQueue>>,
+    talkback_routes: Mutex<HashMap<SessionId, Vec<String>>>,
+    talkback_audio: Mutex<HashMap<String, AudioQueue>>,
     camera_generations: Mutex<HashMap<IpAddr, u64>>,
     camera_preview_keyframes: Mutex<HashMap<IpAddr, CameraPreviewKeyframe>>,
     privacy: RwLock<Option<Arc<PrivacyRegistry>>>,
@@ -2215,6 +2217,60 @@ impl Publisher {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(camera_ip, camera_id);
 
+    pub(crate) fn arm_talkback(&self, session_id: SessionId, source_ids: Vec<String>) {
+        self.inner
+            .talkback_routes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session_id, source_ids);
+    }
+
+    pub(crate) fn disarm_talkback(&self, session_id: SessionId) {
+        self.inner
+            .talkback_routes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_id);
+    }
+
+    fn route_talkback_audio(&self, session_id: SessionId, frame: WebRtcAudioFrame) {
+        let routes = self
+            .inner
+            .talkback_routes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session_id)
+            .cloned()
+            .unwrap_or_default();
+        if routes.is_empty() {
+            return;
+        }
+        let mut audio = self
+            .inner
+            .talkback_audio
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for source_id in routes {
+            audio
+                .entry(source_id)
+                .or_default()
+                .push(frame.clone(), Instant::now());
+        }
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Consumed by camera talkback send loops")
+    )]
+    pub(crate) fn take_talkback_audio(&self, source_id: &str) -> Option<WebRtcAudioFrame> {
+        self.inner
+            .talkback_audio
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+             .get_mut(source_id)
+             .and_then(|queue| queue.pop(Instant::now()))
+     }
+
     pub(crate) fn publish_audio(&self, source: Source, frame: WebRtcAudioFrame) {
         if frame.sample_rate_hz == 0 || frame.channel_count == 0 || frame.data.is_empty() {
             return;
@@ -2414,6 +2470,13 @@ impl WebRtc {
 
     pub(crate) fn set_privacy_camera_id(&self, camera_ip: IpAddr, camera_id: String) {
         self.live.set_privacy_camera_id(camera_ip, camera_id);
+
+    pub(crate) fn arm_talkback(&self, session_id: SessionId, source_ids: Vec<String>) {
+        self.live.arm_talkback(session_id, source_ids);
+    }
+
+    pub(crate) fn disarm_talkback(&self, session_id: SessionId) {
+        self.live.disarm_talkback(session_id);
     }
 
     pub(crate) fn set_control_handler(&self, handler: Weak<dyn ControlRequestHandler>) {
@@ -3847,6 +3910,35 @@ fn drain_api_outputs(
                 {
                     media.available_video_mids.push(added.mid);
                 }
+            }
+            Output::Event(Event::MediaData(data)) => {
+                let Some(negotiated) = rtc.media(data.mid) else {
+                    continue;
+                };
+                if negotiated.kind() != MediaKind::Audio {
+                    continue;
+                }
+                let spec = data.params.spec();
+                let codec = match spec.codec {
+                    Codec::PCMA => audio::AudioCodec::G711Alaw,
+                    Codec::PCMU => audio::AudioCodec::G711Ulaw,
+                    Codec::Opus => audio::AudioCodec::Opus,
+                    _ => continue,
+                };
+                Publisher {
+                    inner: control.inner.clone(),
+                }
+                .route_talkback_audio(
+                    control.session_id,
+                    WebRtcAudioFrame {
+                        codec,
+                        sample_rate_hz: spec.clock_rate.get(),
+                        channel_count: spec.channels.unwrap_or(1),
+                        timestamp: None,
+                        received_at: data.network_time,
+                        data: Bytes::copy_from_slice(&data.data),
+                    },
+                );
             }
             Output::Event(Event::ChannelOpen(channel_id, label)) => {
                 let expected_label = if channel_id == channels.control {
@@ -7168,5 +7260,33 @@ mod tests {
         assert_eq!(inner.sources.lock().unwrap()[&source].subscribers.len(), 1);
         drop(second_subscription);
         assert_eq!(inner.sources.lock().unwrap()[&source].subscribers.len(), 0);
+    }
+
+    #[test]
+    fn talkback_audio_is_fanned_out_to_each_armed_source() {
+        let publisher = Publisher::default();
+        let session_id = SessionId::from_u64(9);
+        publisher.arm_talkback(session_id, vec!["front".to_owned(), "side".to_owned()]);
+        publisher.route_talkback_audio(
+            session_id,
+            WebRtcAudioFrame {
+                codec: audio::AudioCodec::G711Alaw,
+                sample_rate_hz: 8_000,
+                channel_count: 1,
+                timestamp: None,
+                received_at: Instant::now(),
+                data: Bytes::from_static(&[1, 2, 3]),
+            },
+        );
+
+        assert_eq!(
+            publisher.take_talkback_audio("front").unwrap().data,
+            Bytes::from_static(&[1, 2, 3])
+        );
+        assert_eq!(
+            publisher.take_talkback_audio("side").unwrap().data,
+            Bytes::from_static(&[1, 2, 3])
+        );
+        publisher.disarm_talkback(session_id);
     }
 }
