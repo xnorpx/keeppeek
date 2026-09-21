@@ -34,6 +34,18 @@ const ONVIF_GET_DEVICE_INFO: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 
 pub struct Reolink;
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReolinkDoorbellCapabilities {
+    pub visitor_events: bool,
+    pub talkback: bool,
+    pub quick_replies: bool,
+    pub auto_reply: bool,
+    pub chime: bool,
+    pub visitor_volume: Option<u8>,
+    pub talk_and_reply_volume: Option<u8>,
+    pub visitor_loudspeaker: Option<bool>,
+}
+
 impl CameraBrand for Reolink {
     fn name(&self) -> &'static str {
         "reolink"
@@ -850,6 +862,60 @@ impl ReolinkClient {
         })
     }
 
+    pub(crate) fn get_doorbell_capabilities(
+        &self,
+        channel: u32,
+        username: &str,
+    ) -> anyhow::Result<ReolinkDoorbellCapabilities> {
+        let events = self.api_call("GetEvents", Some(serde_json::json!({ "channel": channel })))?;
+        let visitor_events = events
+            .get("Events")
+            .and_then(|value| value.get("visitor"))
+            .and_then(|value| value.get("support"))
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value != 0);
+        let audio = self.api_call(
+            "GetAudioCfg",
+            Some(serde_json::json!({ "channel": channel })),
+        )?;
+        let audio = audio.get("AudioCfg").cloned().unwrap_or_default();
+        let volume = |name: &str| {
+            audio
+                .get(name)
+                .and_then(Value::as_u64)
+                .and_then(|value| u8::try_from(value).ok())
+        };
+        let files = self.api_call("GetAudioFileList", Some(serde_json::json!({})))?;
+        let quick_replies = files
+            .get("AudioFileList")
+            .and_then(|value| value.get("supportAudioPlay"))
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value != 0);
+        let auto_reply = self
+            .api_call("GetAutoReply", Some(serde_json::json!({})))
+            .is_ok();
+        let chime = self
+            .api_call("GetDingDongList", Some(serde_json::json!({})))
+            .ok()
+            .and_then(|value| value.get("DingDongList").cloned())
+            .and_then(|value| value.get("dingDong").and_then(Value::as_array).cloned())
+            .is_some_and(|items| !items.is_empty());
+
+        Ok(ReolinkDoorbellCapabilities {
+            visitor_events,
+            talkback: self.get_ability(username)?.two_way_audio,
+            quick_replies,
+            auto_reply,
+            chime,
+            visitor_volume: volume("visitorVolume"),
+            talk_and_reply_volume: volume("talkAndReplyVolume"),
+            visitor_loudspeaker: audio
+                .get("visitorLoudspeaker")
+                .and_then(Value::as_u64)
+                .map(|value| value != 0),
+        })
+    }
+
     pub fn get_image(&self, channel: u32) -> anyhow::Result<ImagingSettings> {
         let param = serde_json::json!({ "channel": channel });
         let value = self.api_call("GetImage", Some(param))?;
@@ -1512,6 +1578,16 @@ impl ReolinkClient {
         let ir_mode = client.get_ir_lights(0).ok();
         let presets = client.get_ptz_presets(0).unwrap_or_default();
         let capabilities = client.get_ability(&config.username).unwrap_or_default();
+        if let Ok(doorbell) = client.get_doorbell_capabilities(0, &config.username) {
+            tracing::debug!(
+                visitor_events = doorbell.visitor_events,
+                talkback = doorbell.talkback,
+                quick_replies = doorbell.quick_replies,
+                auto_reply = doorbell.auto_reply,
+                chime = doorbell.chime,
+                "Reolink doorbell capabilities"
+            );
+        }
 
         if profiles
             .first()
