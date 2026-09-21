@@ -117,7 +117,38 @@ fn handle_request(request: &Request, state: &ReolinkHttpState) -> Response {
             }
         }),
         "GetAudioCfg" => json!({
-            "AudioCfg": { "audioType": "aac", "sampleRate": 16000, "bitRate": 64 }
+            "AudioCfg": {
+                "audioType": "aac",
+                "sampleRate": 16000,
+                "bitRate": 64,
+                "visitorVolume": 80,
+                "talkAndReplyVolume": 70,
+                "visitorLoudspeaker": 1
+            }
+        }),
+        "GetEvents" => json!({
+            "Events": {
+                "visitor": { "support": 1, "alarm_state": 0, "channel": 0 }
+            }
+        }),
+        "GetAudioFileList" => json!({
+            "AudioFileList": {
+                "supportAudioPlay": 1,
+                "audioFile": [{ "id": 1, "name": "Hello" }]
+            }
+        }),
+        "GetAutoReply" => json!({
+            "AutoReply": { "enable": 0, "fileId": 1, "timeout": 10 }
+        }),
+        "GetDingDongList" => json!({
+            "DingDongList": {
+                "dingDong": [{ "id": "fake-chime-1", "name": "Fake Chime", "online": 1 }]
+            }
+        }),
+        "GetDingDongCfg" => json!({
+            "DingDongCfg": {
+                "id": "fake-chime-1", "volume": 3, "led": 1, "silent": 0
+            }
         }),
         "GetOsd" => json!({ "Osd": { "osdChannel": { "name": "Fake Reo-Proto" } } }),
         "GetImage" => json!({
