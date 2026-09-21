@@ -820,6 +820,9 @@ impl KeepPeekLoop {
                 transport,
                 video_meta,
                 audio_meta,
+                http_port: camera.config.http_port.or(camera.ports.http).unwrap_or(80),
+                talkback_channel: crate::isapi::Route::for_camera(camera)
+                    .map(|route| route.channel),
                 storage: self.storage.clone(),
                 live: self.live.clone(),
                 health: self.health.clone(),

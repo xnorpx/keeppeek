@@ -1,3 +1,5 @@
+use ::isapi::blocking::{Client as IsapiClient, Speaker as IsapiSpeaker, Talk as IsapiTalk};
+use ::isapi::{Credentials as IsapiCredentials, management::AudioCodec as IsapiAudioCodec};
 use crate::{
     cameras::{AudioEncoding, SessionTimestampNormalizer, VideoEncoding},
     keeppeek::{AudioMeta, KeepPeekEvent, StreamKind, VideoMeta},
@@ -12,7 +14,9 @@ use crate::{
     },
     webrtc::{
         Publisher, Source,
-        audio::{AudioCodec as WebRtcAudioCodec, AudioFrame as WebRtcAudioFrame},
+        audio::{
+            AudioCodec as WebRtcAudioCodec, AudioFrame as WebRtcAudioFrame, encode_g711,
+        },
     },
 };
 use bytes::Bytes;
@@ -34,7 +38,6 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use url::Url;
-
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const MEDIA_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -551,6 +554,8 @@ pub struct RtspLoop {
     pub camera_name: Option<String>,
     pub camera_brand: Option<String>,
     pub camera_port: u16,
+    pub http_port: u16,
+    pub talkback_channel: Option<u32>,
     pub stream: StreamKind,
     pub rtsp_url: String,
     pub username: String,
@@ -708,8 +713,19 @@ impl RtspLoop {
         );
         let mut video_continuity = VideoContinuity::new();
         let mut video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
+        let mut pending_talkback = None;
+        let mut talkback_session: Option<IsapiTalk> = None;
+        let mut talkback_speaker: Option<IsapiSpeaker> = None;
 
-        while let Some(item) = driver.next_item(&self.shutdown, Some(video_deadline))? {
+        while !self.shutdown.is_cancelled() {
+            self.drive_hikvision_talkback(
+                &mut pending_talkback,
+                &mut talkback_session,
+                &mut talkback_speaker,
+            );
+            let Some(item) = driver.next_item(&self.shutdown, Some(video_deadline))? else {
+                break;
+            };
             match item {
                 CodecItem::VideoFrame(frame) => {
                     video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
@@ -855,6 +871,98 @@ impl RtspLoop {
             }
         }
         Ok(())
+    }
+
+    fn drive_hikvision_talkback(
+        &self,
+        pending: &mut Option<WebRtcAudioFrame>,
+        session: &mut Option<IsapiTalk>,
+        speaker: &mut Option<IsapiSpeaker>,
+    ) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let source_id = self.camera_ip.to_string();
+        if self.stream != StreamKind::Main || !live.talkback_is_armed(&source_id) {
+            pending.take();
+            speaker.take();
+            session.take();
+            return;
+        }
+        if pending.is_none() {
+            *pending = live.take_talkback_audio(&source_id);
+        }
+        let Some(frame) = pending.take() else {
+            return;
+        };
+        if frame.codec != WebRtcAudioCodec::PcmS16Le
+            || frame.sample_rate_hz != 8_000
+            || frame.channel_count != 1
+        {
+            return;
+        }
+        if speaker.is_none() {
+            let Some(channel) = self.talkback_channel else {
+                return;
+            };
+            let origin = format!("http://{}:{}", self.camera_ip, self.http_port);
+            let credentials = IsapiCredentials::new(self.username.clone(), self.password.clone());
+            let client = match IsapiClient::builder(origin, credentials)
+                .cancelled({
+                    let shutdown = self.shutdown.clone();
+                    move || shutdown.is_cancelled()
+                })
+                .build()
+            {
+                Ok(client) => client,
+                Err(error) => {
+                    tracing::warn!(ip = %self.camera_ip, %error, "unable to build Hikvision talkback client");
+                    return;
+                }
+            };
+            let mut audio = match client.open_audio(channel, Duration::from_secs(300)) {
+                Ok(audio) => audio,
+                Err(error) => {
+                    tracing::warn!(ip = %self.camera_ip, %error, "unable to open Hikvision talkback audio");
+                    return;
+                }
+            };
+            match audio.speaker() {
+                Ok(opened) => {
+                    *session = Some(audio);
+                    *speaker = Some(opened);
+                }
+                Err(error) => {
+                    tracing::warn!(ip = %self.camera_ip, %error, "Hikvision speaker is unavailable");
+                    return;
+                }
+            }
+        }
+        let Some(speaker_ref) = speaker.as_mut() else {
+            return;
+        };
+        let codec = match speaker_ref.codec() {
+            IsapiAudioCodec::G711Alaw => WebRtcAudioCodec::G711Alaw,
+            IsapiAudioCodec::G711Ulaw => WebRtcAudioCodec::G711Ulaw,
+            _ => {
+                return;
+            }
+        };
+        let Some(encoded) = encode_g711(codec, &frame.data) else {
+            return;
+        };
+        let mut send_failed = false;
+        for chunk in encoded.chunks(1_600) {
+            if let Err(error) = speaker_ref.send(chunk) {
+                tracing::warn!(ip = %self.camera_ip, %error, "Hikvision talkback speaker send failed");
+                send_failed = true;
+                break;
+            }
+        }
+        if send_failed {
+            speaker.take();
+            session.take();
+        }
     }
 
     fn try_describe(&self, url: &Url) -> anyhow::Result<BlockingRtsp> {

@@ -90,6 +90,19 @@ pub(crate) fn decode_g711(codec: AudioCodec, data: &[u8]) -> Option<Bytes> {
     Some(Bytes::from(pcm))
 }
 
+pub(crate) fn encode_g711(codec: AudioCodec, pcm: &[u8]) -> Option<Bytes> {
+    let encode = match codec {
+        AudioCodec::G711Alaw => encode_alaw,
+        AudioCodec::G711Ulaw => encode_ulaw,
+        _ => return None,
+    };
+    let mut encoded = Vec::with_capacity(pcm.len() / 2);
+    for sample in pcm.chunks_exact(2) {
+        encoded.push(encode(i16::from_le_bytes([sample[0], sample[1]])));
+    }
+    Some(Bytes::from(encoded))
+}
+
 fn decode_alaw(encoded: u8) -> i16 {
     let value = encoded ^ 0x55;
     let magnitude = i16::from(value & 0x0f) << 4;
@@ -116,9 +129,34 @@ fn decode_ulaw(encoded: u8) -> i16 {
     }
 }
 
+fn encode_alaw(sample: i16) -> u8 {
+    let sign: u32 = if sample < 0 { 0 } else { 0x80 };
+    let magnitude = i32::from(sample).unsigned_abs().min(32_635);
+    let exponent: u32 = if magnitude < 256 {
+        0
+    } else {
+        31 - magnitude.leading_zeros() - 7
+    };
+    let mantissa: u32 = if exponent == 0 {
+        magnitude >> 4
+    } else {
+        magnitude >> (exponent + 3)
+    } & 0x0f;
+    (sign | (exponent << 4) | mantissa) as u8 ^ 0x55
+}
+
+fn encode_ulaw(sample: i16) -> u8 {
+    let sample = i32::from(sample);
+    let sign = if sample < 0 { 0x80 } else { 0 };
+    let magnitude = sample.unsigned_abs().min(32_635) as i32 + 0x84;
+    let exponent = (31 - magnitude.leading_zeros()).saturating_sub(7);
+    let mantissa = (magnitude >> (exponent + 3)) & 0x0f;
+    !(sign | ((exponent as i32) << 4) | mantissa) as u8
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AudioCodec, AudioFrame, AudioQueue, decode_g711};
+    use super::{AudioCodec, AudioFrame, AudioQueue, decode_g711, encode_g711};
     use bytes::Bytes;
     use std::time::{Duration, Instant};
 
@@ -165,5 +203,24 @@ mod tests {
         assert_eq!(i16::from_le_bytes([alaw[0], alaw[1]]), 8);
         assert_eq!(i16::from_le_bytes([ulaw[0], ulaw[1]]), 0);
         assert!(decode_g711(AudioCodec::Aac, &[0]).is_none());
+    }
+
+    #[test]
+    fn encodes_pcm_for_both_g711_variants() {
+        let pcm = [0_u8, 0_u8, 0xff, 0x7f, 0x00, 0x80];
+        let alaw = encode_g711(AudioCodec::G711Alaw, &pcm).unwrap();
+        let ulaw = encode_g711(AudioCodec::G711Ulaw, &pcm).unwrap();
+
+        assert_eq!(alaw.len(), 3);
+        assert_eq!(ulaw.len(), 3);
+        assert_eq!(
+            decode_g711(AudioCodec::G711Alaw, &alaw).unwrap().len(),
+            pcm.len()
+        );
+        assert_eq!(
+            decode_g711(AudioCodec::G711Ulaw, &ulaw).unwrap().len(),
+            pcm.len()
+        );
+        assert!(encode_g711(AudioCodec::Aac, &pcm).is_none());
     }
 }
