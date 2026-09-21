@@ -66,6 +66,9 @@ impl PrivacySchedule {
             if window.weekdays.contains(&weekday) && local_time >= start && local_time < end {
                 return Ok(true);
             }
+            if start > end && window.weekdays.contains(&weekday) && local_time >= start {
+                return Ok(true);
+            }
             if start > end {
                 let previous_weekday = if weekday == 1 { 7 } else { weekday - 1 };
                 if window.weekdays.contains(&previous_weekday)
@@ -126,6 +129,11 @@ mod tests {
         assert!(
             !policy
                 .is_active("2026-09-22T04:59:59Z".parse().unwrap())
+                .unwrap()
+        );
+        assert!(
+            policy
+                .is_active("2026-09-22T06:00:00Z".parse().unwrap())
                 .unwrap()
         );
         assert!(
