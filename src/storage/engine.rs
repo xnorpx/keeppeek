@@ -8,6 +8,7 @@ use crate::{
         identity::RecordingStreamIdentity,
         long_term::LongTermStore,
         medium_term::MediumTermWriter,
+        recording_control::Clock,
         recording_policy::{AdmissionDecision, CameraRecordingPolicy},
         safety::{
             FilesystemCapacity, StorageCleanupReason, StorageCleanupTrigger,
@@ -34,6 +35,11 @@ const GIBIBYTE_BYTES: u64 = 1_073_741_824;
 // This capacity absorbs short disk stalls and limits encoded camera data.
 const COMMAND_CAPACITY: usize = 4_096;
 const QUEUED_MEDIA_BYTES_CAPACITY: usize = 64 * 1_048_576;
+mod control;
+
+#[cfg(test)]
+#[path = "../../tests/storage/recording_control_admission.rs"]
+mod control_tests;
 
 #[derive(Clone)]
 pub struct StorageConfig {
@@ -277,13 +283,12 @@ impl RecordingAdmission {
         self.policies
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                camera_id.to_owned(),
-                CameraRecordingPolicy::new(mode, event_duration),
-            );
+            .entry(camera_id.to_owned())
+            .and_modify(|policy| policy.reconfigure(mode, event_duration))
+            .or_insert_with(|| CameraRecordingPolicy::new(mode, event_duration));
     }
 
-    fn note_event_at(&self, camera_id: &str, now: Instant) {
+    fn note_event(&self, camera_id: &str, clock: Option<Clock>) {
         let mut policies = self
             .policies
             .write()
@@ -291,7 +296,18 @@ impl RecordingAdmission {
         let Some(policy) = policies.get_mut(camera_id) else {
             return;
         };
-        policy.note_event(now);
+        policy.note_event(clock.unwrap_or_else(Clock::now));
+    }
+
+    #[cfg(test)]
+    fn note_event_at(&self, camera_id: &str, now: Instant) {
+        self.note_event(
+            camera_id,
+            Some(Clock {
+                monotonic: now,
+                ..Clock::now()
+            }),
+        );
     }
 
     #[cfg(test)]
@@ -310,9 +326,18 @@ impl RecordingAdmission {
         let policy = policies.entry(camera_id.to_owned()).or_insert_with(|| {
             CameraRecordingPolicy::new(CameraRecordingMode::default(), Duration::from_secs(60))
         });
-        policy.decide(stream_id, is_video, is_video_keyframe, now)
+        policy.decide(
+            stream_id,
+            is_video,
+            is_video_keyframe,
+            Clock {
+                monotonic: now,
+                ..Clock::now()
+            },
+        )
     }
 
+    #[cfg(test)]
     fn ingest_at(
         &self,
         tx: &StorageCommandSender,
@@ -323,12 +348,33 @@ impl RecordingAdmission {
         self.ingest_with_hook_at(tx, identity, frame, now, || {});
     }
 
+    #[cfg(test)]
     fn ingest_with_hook_at(
+        &self,
+        tx: &StorageCommandSender,
+        identity: RecordingStreamIdentity,
+        frame: RecordingFrame,
+        now: Instant,
+        before_send: impl FnOnce(),
+    ) {
+        self.ingest_with_clock(
+            tx,
+            identity,
+            frame,
+            Some(Clock {
+                monotonic: now,
+                ..Clock::now()
+            }),
+            before_send,
+        );
+    }
+
+    fn ingest_with_clock(
         &self,
         tx: &StorageCommandSender,
         mut identity: RecordingStreamIdentity,
         mut frame: RecordingFrame,
-        now: Instant,
+        clock: Option<Clock>,
         before_send: impl FnOnce(),
     ) {
         let mut policies = self
@@ -344,20 +390,27 @@ impl RecordingAdmission {
             &identity.stream_id,
             frame.frame.is_video(),
             frame.is_video_keyframe(),
-            now,
+            clock.unwrap_or_else(Clock::now),
         );
         before_send();
         match decision {
-            AdmissionDecision::Record => {
-                self.enqueue(tx, identity, frame);
-            }
+            AdmissionDecision::Record => {}
             AdmissionDecision::RecordAs(stream_id) => {
                 frame.timestamp = None;
                 identity = identity.with_recording_stream(stream_id);
-                self.enqueue(tx, identity, frame);
             }
-            AdmissionDecision::Ignore => {}
+            AdmissionDecision::Ignore => return,
         }
+        if policy.take_discontinuity(&identity.stream_id) {
+            self.discontinuous_streams
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    identity.storage_key.clone(),
+                    (identity.source_id.clone(), identity.stream_id.clone()),
+                );
+        }
+        self.enqueue(tx, identity, frame);
     }
 
     fn enqueue(
@@ -426,7 +479,7 @@ impl StorageHandle {
 
     pub fn ingest_stream(&self, identity: RecordingStreamIdentity, frame: RecordingFrame) {
         self.admission
-            .ingest_at(&self.tx, identity, frame, Instant::now());
+            .ingest_with_clock(&self.tx, identity, frame, None, || {});
     }
 
     pub fn configure_camera_recording(
@@ -439,7 +492,7 @@ impl StorageHandle {
     }
 
     pub fn note_camera_event(&self, camera_id: &str) {
-        self.admission.note_event_at(camera_id, Instant::now());
+        self.admission.note_event(camera_id, None);
     }
 
     pub fn preferred_audio_stream(&self, camera_id: &str) -> &'static str {
