@@ -16,6 +16,7 @@ pub mod metadata;
 pub mod nal;
 pub mod playback;
 mod recording_policy;
+pub mod retention;
 pub(crate) mod safety;
 pub mod search;
 pub mod segment;
