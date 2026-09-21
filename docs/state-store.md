@@ -29,19 +29,19 @@ dedicated store; live media belongs in RTP or media-data bindings.
 
 ## Namespaces and authorization
 
-KeepPeek applies ACLs per namespace. The initial namespace layout is configuration, not a
-client-controlled convention:
+KeepPeek applies the following namespace policy to the authenticated principal. Namespace
+spelling does not confer service identity or group membership:
 
-| Namespace               | Typical writer                     | Typical readers                   | Use                                                     |
-| ----------------------- | ---------------------------------- | --------------------------------- | ------------------------------------------------------- |
-| `system/`               | KeepPeek                           | Authorized clients                | Server-owned observed coordination state                |
-| `service/<service-id>/` | Approved service principal         | Authorized operators and services | Worker liveness, leases, output intent                  |
-| `group/<group-id>/`     | Authorized group members or server | Group members                     | Shared group preferences and non-authoritative UI state |
-| `user/<owner-id>/`      | That user/device principal         | Owner and allowed services        | Personal desired subscriptions and local preferences    |
+| Namespace               | Typical writer                       | Typical readers        | Use                                                     |
+| ----------------------- | ------------------------------------ | ---------------------- | ------------------------------------------------------- |
+| `system/`               | No client writes                     | Administrators         | Server-owned observed coordination state                |
+| `service/<service-id>/` | Administrators                       | Administrators         | Worker liveness, leases, output intent                  |
+| `group/<group-id>/`     | Administrators                       | Administrators         | Shared group preferences and non-authoritative UI state |
+| `user/<owner-id>/`      | Authenticated owner or administrator | Owner or administrator | Personal desired subscriptions and local preferences    |
 
-The current pre-1.0 access-key model is broad. Deployments that need distinct write rights must
-configure namespace policy server-side until per-key scopes exist. KeepPeek always overwrites any
-client-provided identity with the authenticated owner ID in the resulting entry.
+Service-specific grants and group-member grants are not implemented. Non-administrators fail
+closed for these namespaces, including watch delivery. KeepPeek assigns the authenticated
+principal as the owner; a client cannot supply another owner identity.
 
 ## Read, write, and delete
 
@@ -153,7 +153,7 @@ The worker flow is deliberately two-stage:
    owned by another principal.
 
 This separation prevents stale desired state from granting media access or causing a client to
-subscribe to a nonexistent stream. A state document saying “publish browser H.264” does not mean
+subscribe to a nonexistent stream. A state document saying â€œpublish browser H.264â€ does not mean
 the variant exists; only a ready `MediaVariantCapability` does.
 
 ## Service coordination
@@ -220,7 +220,9 @@ tests.
 
 Generic dispatch and the `keeppeek.state-store.v1` capability turn on only
 after the database opens and its namespaces, revisions, and entries load into
-memory. If the file cannot open, the server keeps running with an empty
+memory. Startup first rejects restored data with excessive counts or bytes,
+invalid identifiers or schemas, orphan entries, and inconsistent revisions.
+It checks metadata before decoding bounded documents. If the file cannot open, the server keeps running with an empty
 in-memory registry, generic commands stay rejected, and the capability stays
 unadvertised: no client ever sees durability the server cannot deliver.
 
@@ -244,32 +246,61 @@ restored database always means a new snapshot, following the rules in
 Quota, TTL, and full-disk behavior stay explicit. A TTL below one second is
 rejected; a TTL above 24 hours is clamped to 24 hours. Writes that would
 exceed the per-namespace entry bound or the total value-byte ceiling are
-rejected before allocation, so a failed write never reserves space. A storage
+rejected before admission, so a failed write never reserves store space. A storage
 or disk failure surfaces as a storage error on the mutating call and never
 reports a silent success, while previously committed entries stay readable.
 Settings-backed entries reject every TTL because configuration is not a lease.
 
 ## Measured performance
 
-Control-plane costs only; no media path is touched. Opening the database
-purges overdue leases, then truncates the write-ahead log, so an idle store
-holds no sidecar residue: after three fill/drain cycles of 1,024 maximum-size
-documents, every rest state measured exactly 897,024 bytes in `state-store.db`
-with a zero-byte WAL, and warmed refills reused pages (about 1.0 MB) instead
-of regrowing the cold-fill peak (about 4.1 MB).
+The reproducible qualification commands are:
 
-Per-operation averages over 200 operations on Windows 11 Pro (AMD Ryzen 5
-5600G, rustc 1.98.1), reproducible with
-`cargo test -p keeppeek --lib server::state_store_durable::tests::control_plane_latency -- --nocapture`:
+```sh
+cargo test --locked --release -p keeppeek --lib qualification -- --nocapture --test-threads=1
+cargo test --locked --release -p keeppeek --lib full_watch_capacity_fanout -- --nocapture --test-threads=1
+cargo test --locked -p keeppeek --lib continuous_churn -- --nocapture --test-threads=1
+```
 
-- memory-only registry put: about 17 microseconds per op (pre-durable baseline),
-- watch snapshot over 200 entries: about 654 microseconds per op,
-- durable write-through put (one SQLite commit per mutation): about 4.3
-  milliseconds per op.
+On Windows 11 Pro, AMD Ryzen 5 5600G, rustc 1.98.1, the release workload uses
+127 simulated owner IDs across 30 serial CAS rounds (3,810 operations per
+variant). Both variants construct the same 2,193-byte schema-valid document.
+The deterministic loop has no random workload seed. Measurements are in
+microseconds per operation:
 
-The durable commit dominates mutation cost; snapshots stay sub-millisecond at
-the 64-entry wire bound. Re-run the test on the target machine before treating
-these figures as budgets.
+| Operation              | p50 |   p95 | Maximum |
+| ---------------------- | --: | ----: | ------: |
+| In-memory CAS baseline |   7 |    11 |     119 |
+| Durable CAS            | 853 | 1,387 |   3,286 |
+| One-entry snapshot     |   2 |     3 |      17 |
+
+Durability adds 846 microseconds at p50 and 1,376 microseconds at p95. These
+are control-plane measurements, not media throughput or 127 simultaneous
+browser sessions. The test rejects any measured operation taking five seconds;
+that stall ceiling is not a latency service-level guarantee. A 300 ms idle
+sample measured 0% process CPU and 15,552,512 resident bytes. Sampling after
+each of 30 rounds observed a maximum of 19,861,504 resident bytes; this is a
+sampled process maximum, not an operating-system lifetime high-water mark.
+Run the workload alone or with `--test-threads=1` to avoid including another
+test's work in process measurements.
+
+At full capacity, 1,024 watches across 127 sessions received 30 fanout rounds.
+Fanout measured 742 microseconds at p50, 860 at p95, and 940 maximum. The
+workload held 30 pending updates per watch, then verified termination when
+additional unacknowledged updates exceeded the 32-update bound. This isolates
+the watch registry with a successful enqueue callback; the separate browser
+tests cover actual transport delivery and timeout closure.
+
+The quota workload admits 30,601 documents totaling 67,107,993 value bytes,
+rejects the next document at the 67,108,864-byte ceiling without mutating
+retained state, reopens the store, and verifies that deletion permits a new
+write. Namespace and per-namespace entry limits are tested separately.
+
+Continuous disk churn fills and drains 256 entries for 24 cycles on one open
+store. The observed database-plus-WAL maximum was 4,126,856 bytes; automatic
+checkpointing reclaimed the WAL without a restart. The regression ceiling is
+5 MiB for this fixed workload, not the ceiling for a fully populated store.
+Opening the store also truncates the WAL. The existing restart-churn test
+covers 1,024-entry cycles and page reuse after reopening.
 
 ## Acceptance scenarios
 

@@ -951,4 +951,65 @@ mod tests {
             Err(Error::Invalid(Invalid::WatchLimitExceeded))
         );
     }
+
+    #[test]
+    fn full_watch_capacity_fanout_has_bounded_latency_and_pending_updates() {
+        let state = ServerState::empty();
+        let watches = &state.state_store_watches;
+        for session in 0..127 {
+            admin_session(&state, SessionId::from_u64(session));
+        }
+        for index in 0..MAX_WATCHES_TOTAL {
+            register(
+                &state,
+                SessionId::from_u64((index % 127) as u64),
+                &format!("watch-{index}"),
+                "service/load/",
+                "",
+            );
+        }
+        assert_eq!(
+            watches.register(
+                SessionId::from_u64(0),
+                "service/load/".to_owned(),
+                String::new(),
+                "overflow".to_owned()
+            ),
+            Err(Error::Invalid(Invalid::WatchLimitExceeded))
+        );
+        let mut samples_us = Vec::with_capacity(30);
+        for revision in 1..=30 {
+            let start = Instant::now();
+            let sent = watches.publish(
+                &state,
+                &[put_event("service/load/", "key", revision)],
+                false,
+                NOW_MS,
+                |_, _| EnqueueOutcome::Sent,
+            );
+            samples_us.push(start.elapsed().as_micros());
+            assert_eq!(sent.len(), MAX_WATCHES_TOTAL);
+        }
+        let pending = watches.unacked_revisions(SessionId::from_u64(0), "watch-0");
+        assert_eq!(pending.len(), 30);
+        samples_us.sort_unstable();
+        println!(
+            "watch fanout: sessions=127 watches={MAX_WATCHES_TOTAL} rounds=30 pending_high_water=30 p50_us={} p95_us={} max_us={}",
+            samples_us[15], samples_us[28], samples_us[29]
+        );
+        assert!(
+            samples_us[29] < 5_000_000,
+            "full fanout must complete within five seconds"
+        );
+        for revision in 31..=33 {
+            watches.publish(
+                &state,
+                &[put_event("service/load/", "key", revision)],
+                false,
+                NOW_MS,
+                |_, _| EnqueueOutcome::Sent,
+            );
+        }
+        assert_eq!(watches.lock().len(), 0, "stalled watches must terminate");
+    }
 }
