@@ -4,7 +4,7 @@ use keeppeek::{
 };
 use std::time::{Duration, Instant};
 
-fn clock(now: Instant, utc_ms: i64) -> Clock {
+const fn clock(now: Instant, utc_ms: i64) -> Clock {
     Clock {
         monotonic: now,
         utc_ms: Some(utc_ms),
