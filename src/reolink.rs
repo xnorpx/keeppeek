@@ -1186,6 +1186,7 @@ fn normalize_alarm_kind(kind: &str) -> String {
         "people" | "person" => "person".to_owned(),
         "dog_cat" | "dogcat" | "animal" => "animal".to_owned(),
         "car" | "vehicle" => "vehicle".to_owned(),
+        "visitor" | "doorbell" | "doorbell_press" => "doorbell_press".to_owned(),
         other => other.to_owned(),
     }
 }
@@ -1199,7 +1200,7 @@ fn alarm_event_kinds(data: &AlarmEventData, record_generic_motion_events: bool) 
     } else {
         ""
     };
-    let mut kinds = Vec::with_capacity(3);
+    let mut kinds = Vec::with_capacity(4);
     for value in [
         data.status.as_str(),
         legacy_alarm_type,
@@ -1215,7 +1216,10 @@ fn alarm_event_kinds(data: &AlarmEventData, record_generic_motion_events: bool) 
             }
             let kind = normalize_alarm_kind(kind);
             if (record_generic_motion_events || kind != "motion")
-                && matches!(kind.as_str(), "motion" | "person" | "animal" | "vehicle")
+                && matches!(
+                    kind.as_str(),
+                    "motion" | "person" | "animal" | "vehicle" | "doorbell_press"
+                )
                 && !kinds.contains(&kind)
             {
                 kinds.push(kind);
@@ -1348,6 +1352,7 @@ mod tests {
         assert_eq!(normalize_alarm_kind("people"), "person");
         assert_eq!(normalize_alarm_kind("dog_cat"), "animal");
         assert_eq!(normalize_alarm_kind("vehicle"), "vehicle");
+        assert_eq!(normalize_alarm_kind("visitor"), "doorbell_press");
     }
 
     #[test]
@@ -1363,6 +1368,16 @@ mod tests {
             alarm_event_kinds(&alarm, true),
             vec!["motion", "person", "vehicle"]
         );
+    }
+
+    #[test]
+    fn visitor_alarm_becomes_a_point_event_kind() {
+        let alarm = AlarmEventData {
+            status: "visitor".try_into().unwrap(),
+            ..AlarmEventData::default()
+        };
+
+        assert_eq!(alarm_event_kinds(&alarm, false), vec!["doorbell_press"]);
     }
 
     #[test]
