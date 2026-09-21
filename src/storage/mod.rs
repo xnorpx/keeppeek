@@ -15,6 +15,7 @@ pub mod medium_term;
 pub mod metadata;
 pub mod nal;
 pub mod playback;
+pub mod recording_control;
 mod recording_policy;
 pub mod retention;
 pub(crate) mod safety;
