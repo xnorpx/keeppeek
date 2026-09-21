@@ -6,13 +6,19 @@ import {
 	MediaKind,
 	RequestSchema,
 	SubscribeMediaSchema,
+	TalkbackCommandSchema,
+	StartTalkbackSchema,
+	StopTalkbackSchema,
+	TalkbackTargetSchema,
+	AllTalkbackTargetsSchema,
 	UnsubscribeSchema,
 	VideoQuality,
 	type Ok,
 	type Request,
 	type SubscribeMedia,
 	type Response as ControlResponse,
-	type ServerCapabilities
+	type ServerCapabilities,
+	type TalkbackTarget
 } from './proto/webrtc_pb';
 import type { CreateResponse, LiveQuality } from './types';
 
@@ -58,12 +64,19 @@ export type LivePeerTrack = {
 	admissionError?: string | null;
 };
 
+export type TalkbackTargetSelection =
+	| { sourceId: string }
+	| { groupId: string }
+	| { all: true };
+
 export class LivePeer {
 	connectionState = $state<RTCPeerConnectionState>('new');
 	iceConnectionState = $state<RTCIceConnectionState>('new');
 	sessionId = $state<string | null>(null);
 	estimatedBitrateBps = $state<number | null>(null);
 	error = $state<string | null>(null);
+	talkbackActive = $state(false);
+	talkbackError = $state<string | null>(null);
 	tracks = $state.raw<Record<string, LivePeerTrack>>({});
 
 	#peer: RTCPeerConnection | null = null;
@@ -71,6 +84,8 @@ export class LivePeer {
 	#controlChannel: RTCDataChannel | null = null;
 	#reliableChannel: RTCDataChannel | null = null;
 	#unreliableChannel: RTCDataChannel | null = null;
+	#talkbackTransceiver: RTCRtpTransceiver | null = null;
+	#talkbackTrack: MediaStreamTrack | null = null;
 	#cameraByMid: Record<string, string> = {};
 	#sourceSessionByCamera: Record<string, string> = {};
 	#trackEventByMid: Record<string, RTCTrackEvent> = {};
@@ -129,6 +144,60 @@ export class LivePeer {
 
 	close(): Promise<void> {
 		return this.enqueue(async () => this.closeNow());
+	}
+
+	startTalkback(target: TalkbackTargetSelection): Promise<void> {
+		return this.enqueue(async () => {
+			if (this.#talkbackTransceiver === null) {
+				throw new Error('Talkback is unavailable until the live session is connected.');
+			}
+			if (this.talkbackActive) return;
+			this.talkbackError = null;
+			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			const track = stream.getAudioTracks()[0];
+			if (!track) {
+				stream.getTracks().forEach((item) => item.stop());
+				throw new Error('The microphone did not provide an audio track.');
+			}
+			try {
+				await this.#talkbackTransceiver.sender.replaceTrack(track);
+				await this.request({
+					case: 'talkbackCommand',
+					value: create(TalkbackCommandSchema, {
+						action: {
+							case: 'start',
+							value: create(StartTalkbackSchema, { target: talkbackTarget(target) })
+						}
+					})
+				});
+				this.#talkbackTrack = track;
+				this.talkbackActive = true;
+			} catch (error) {
+				await this.#talkbackTransceiver.sender.replaceTrack(null);
+				stream.getTracks().forEach((item) => item.stop());
+				this.talkbackError = error instanceof Error ? error.message : 'Talkback could not start.';
+				throw error;
+			}
+		});
+	}
+
+	stopTalkback(): Promise<void> {
+		return this.enqueue(async () => {
+			if (!this.talkbackActive) return;
+			try {
+				await this.request({
+					case: 'talkbackCommand',
+					value: create(TalkbackCommandSchema, {
+						action: { case: 'stop', value: create(StopTalkbackSchema) }
+					})
+				});
+			} finally {
+				await this.#talkbackTransceiver?.sender.replaceTrack(null);
+				this.#talkbackTrack?.stop();
+				this.#talkbackTrack = null;
+				this.talkbackActive = false;
+			}
+		});
 	}
 
 	closeOnPageHide(): void {
@@ -235,6 +304,7 @@ export class LivePeer {
 		this.#controlChannel = controlChannel;
 		this.#reliableChannel = reliableChannel;
 		this.#unreliableChannel = unreliableChannel;
+		this.#talkbackTransceiver = peer.addTransceiver('audio', { direction: 'sendonly' });
 		this.#topologyKey = topologyKey;
 		this.connectionState = peer.connectionState;
 		this.iceConnectionState = peer.iceConnectionState;
@@ -629,6 +699,11 @@ export class LivePeer {
 		this.#controlChannel = null;
 		this.#reliableChannel = null;
 		this.#unreliableChannel = null;
+		this.#talkbackTransceiver = null;
+		this.#talkbackTrack?.stop();
+		this.#talkbackTrack = null;
+		this.talkbackActive = false;
+		this.talkbackError = null;
 		peer?.close();
 		this.failPending('WebRTC media session closed.');
 		this.tracks = {};
@@ -678,6 +753,22 @@ function protoQuality(quality: LiveQuality): VideoQuality {
 	if (quality === 'high') return VideoQuality.HIGH;
 	if (quality === 'low') return VideoQuality.LOW;
 	return VideoQuality.AUTO;
+}
+
+function talkbackTarget(selection: TalkbackTargetSelection): TalkbackTarget {
+	if ('sourceId' in selection) {
+		return create(TalkbackTargetSchema, {
+			selection: { case: 'sourceId', value: selection.sourceId }
+		});
+	}
+	if ('groupId' in selection) {
+		return create(TalkbackTargetSchema, {
+			selection: { case: 'groupId', value: selection.groupId }
+		});
+	}
+	return create(TalkbackTargetSchema, {
+		selection: { case: 'all', value: create(AllTalkbackTargetsSchema) }
+	});
 }
 
 function waitForDataChannel(channel: RTCDataChannel): Promise<void> {
