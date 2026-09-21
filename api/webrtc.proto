@@ -47,6 +47,7 @@ message Request {
     ConfigurationCommand configuration_command = 25;
     EventWorkflowCommand event_workflow_command = 26;
     RecordingMaintenanceCommand recording_maintenance_command = 27;
+    RecordingPolicyCommand recording_policy_command = 28;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -752,6 +753,62 @@ enum CameraTransport {
   CAMERA_TRANSPORT_UNSPECIFIED = 0;
   CAMERA_TRANSPORT_TCP = 1;
   CAMERA_TRANSPORT_UDP = 2;
+}
+
+// Requires keeppeek.recording-control.v1. All actions require Administrator access.
+message RecordingPolicyCommand {
+  string source_id = 1;
+  oneof action {
+    GetRecordingControl get = 2;
+    SetRecordingOverride set_override = 3;
+    ClearRecordingOverride clear_override = 4;
+  }
+}
+
+message GetRecordingControl {}
+
+message SetRecordingOverride {
+  string expected_revision = 1;
+  bool enabled = 2;
+  RecordingOverrideSource source = 3;
+  string reason = 4;
+  uint64 ttl_ms = 5;
+}
+
+message ClearRecordingOverride { string expected_revision = 1; }
+
+enum RecordingOverrideSource {
+  RECORDING_OVERRIDE_SOURCE_UNSPECIFIED = 0;
+  RECORDING_OVERRIDE_SOURCE_MANUAL = 1;
+  RECORDING_OVERRIDE_SOURCE_EXTERNAL = 2;
+}
+
+enum RecordingControlReason {
+  RECORDING_CONTROL_REASON_UNSPECIFIED = 0;
+  RECORDING_CONTROL_REASON_CONFIGURATION = 1;
+  RECORDING_CONTROL_REASON_CONFIGURED_DISABLED = 2;
+  RECORDING_CONTROL_REASON_PRIVACY = 3;
+  RECORDING_CONTROL_REASON_PRIVACY_UNAVAILABLE = 4;
+  RECORDING_CONTROL_REASON_OVERRIDE = 5;
+  RECORDING_CONTROL_REASON_EXPIRED = 6;
+  RECORDING_CONTROL_REASON_CLOCK_UNAVAILABLE = 7;
+}
+
+message RecordingOverrideState {
+  bool enabled = 1;
+  RecordingOverrideSource source = 2;
+  string actor = 3;
+  string reason = 4;
+  int64 expires_at_ms = 5;
+}
+
+message RecordingControlState {
+  string source_id = 1;
+  string revision = 2;
+  CameraRecordingMode configured_mode = 3;
+  CameraRecordingMode effective_mode = 4;
+  RecordingControlReason reason = 5;
+  optional RecordingOverrideState override_state = 6;
 }
 
 message RuntimeConfigurationCommand {
@@ -2466,6 +2523,7 @@ message Ok {
     RecordingDeletionJob recording_deletion_job = 38;
     RecordingDeletionJobList recording_deletion_jobs = 39;
     RecordingReconciliationReport recording_reconciliation_report = 40;
+    RecordingControlState recording_control_state = 41;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";

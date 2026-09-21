@@ -6,6 +6,29 @@
 channels open. The server sends a complete `ServerCapabilities` snapshot on the
 control channel before sending live-source events, stored-media state, or stream payloads.
 
+## Temporary recording controls
+
+`keeppeek.recording-control.v1` advertises `RecordingPolicyCommand` get, set-override, and
+clear-override actions. Every action requires Administrator access. The actor is the authenticated
+server principal; clients cannot supply it. The result is `Ok.recording_control_state`, including
+configured/effective modes, an opaque revision, reason, and any current override with its UTC
+expiry. This capability does not advertise class retention, scheduling, pre-roll, or a privacy
+schedule provider.
+
+A set request requires the current revision, manual/external source, a nonblank reason of at most
+256 UTF-8 bytes, and an integer TTL of 1–86,400,000 milliseconds. An override can pause recording
+or allow the configured mode; it cannot enable configured-Off recording or bypass active/unknown
+required privacy. Overrides expire at the earlier UTC or monotonic deadline and clear on restart.
+Invalid clock observations suppress an override. Resuming admission waits for a fresh keyframe.
+
+Read current state before changing it. Mutations and automatic expiry advance the revision;
+stale writes fail without replacing the current request. After a response is lost, get the current
+state before retrying; resubmitting the old revision cannot extend the TTL. Errors use
+`INVALID_REQUEST` for malformed fields and `REJECTED` for authorization, unavailable controls,
+or revision/policy conflicts. The source ID is the camera's stable configured identity. Clearing
+an override restores configured permission within the privacy bound. Configuration edits use the
+existing configuration contract and are distinct from temporary controls.
+
 ## Channels
 
 | SCTP stream ID | Label             | Delivery                       | Payload                           |
