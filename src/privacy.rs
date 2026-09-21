@@ -65,6 +65,15 @@ impl PrivacyRegistry {
     pub fn gate(&self, camera_id: &str) -> Option<std::sync::Arc<PrivacyGate>> {
         self.gates.get(camera_id).cloned()
     }
+
+    /// Resolves a camera whose configured identifier is its transport address.
+    pub fn decision_for_ip(
+        &self,
+        camera_ip: std::net::IpAddr,
+        instant: DateTime<Utc>,
+    ) -> anyhow::Result<(bool, u64)> {
+        self.decision(&camera_ip.to_string(), instant)
+    }
 }
 
 impl PrivacyGate {

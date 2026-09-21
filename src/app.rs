@@ -185,6 +185,7 @@ pub fn run(
         recording_demand,
         webrtc.clone(),
     );
+    storage_engine.set_privacy_registry(server_state.privacy_registry());
     server_state.open_state_store();
     let backup_manager = BackupManager::open_with_config_update(
         config_path.to_path_buf(),

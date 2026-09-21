@@ -2997,6 +2997,24 @@ fn create_export_job(
             "export source was not found",
         )
     })?;
+    if state
+        .privacy
+        .decision(&camera.info.id, chrono::Utc::now())
+        .map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "camera privacy policy could not be evaluated",
+            )
+        })?
+        .0
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "camera privacy is active",
+        ));
+    }
     if !matches!(request.stream_id.as_str(), "main" | "sub")
         || !camera
             .info
@@ -8624,6 +8642,10 @@ pub struct ServerState {
 }
 
 impl ServerState {
+    pub(crate) fn privacy_registry(&self) -> Arc<PrivacyRegistry> {
+        self.privacy.clone()
+    }
+
     pub fn new(
         config: &Config,
         camera_configs: &HashMap<String, Vec<CameraConfig>>,
@@ -8639,13 +8661,15 @@ impl ServerState {
         let (export_history_path, export_jobs) = restored_export_jobs(storage);
         let privacy = PrivacyRegistry::new(config.privacy.cameras.clone())
             .expect("privacy configuration must be validated before server startup");
+        let privacy = Arc::new(privacy);
+        webrtc.set_privacy_registry(privacy.clone());
 
         Self {
             host: config.host.clone(),
             port: config.port,
             access_key: Arc::new(RwLock::new(config.access_key)),
             access_manager,
-            privacy: Arc::new(privacy),
+            privacy,
             access_metrics: Arc::new(AccessMetrics::default()),
             network_access: NetworkAccessPolicy::new(
                 config.access.local_networks.clone(),

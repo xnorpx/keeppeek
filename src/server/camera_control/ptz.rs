@@ -14,6 +14,18 @@ pub(in crate::server) fn handle_ptz(
     session_id: SessionId,
     command: proto::PtzCommand,
 ) -> Result<control_ok::Result, ControlCommandError> {
+    if state
+        .privacy
+        .decision(&command.source_id, chrono::Utc::now())
+        .map_err(|_| unavailable("camera privacy policy could not be evaluated"))?
+        .0
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "camera privacy is active",
+        ));
+    }
     let action = command.action.ok_or_else(|| {
         ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
