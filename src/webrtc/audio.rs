@@ -11,6 +11,7 @@ pub(crate) enum AudioCodec {
     Opus,
     G711Alaw,
     G711Ulaw,
+    PcmS16Le,
 }
 
 #[derive(Debug, Clone)]
@@ -85,9 +86,48 @@ impl AudioQueue {
     }
 }
 
+pub(crate) fn decode_g711(codec: AudioCodec, data: &[u8]) -> Option<Bytes> {
+    let decode = match codec {
+        AudioCodec::G711Alaw => decode_alaw,
+        AudioCodec::G711Ulaw => decode_ulaw,
+        _ => return None,
+    };
+    let mut pcm = Vec::with_capacity(data.len().saturating_mul(2));
+    for &sample in data {
+        pcm.extend_from_slice(&decode(sample).to_le_bytes());
+    }
+    Some(Bytes::from(pcm))
+}
+
+fn decode_alaw(encoded: u8) -> i16 {
+    let value = encoded ^ 0x55;
+    let magnitude = i16::from(value & 0x0f) << 4;
+    let exponent = (value >> 4) & 0x07;
+    let magnitude = if exponent == 0 {
+        magnitude + 8
+    } else {
+        (magnitude + 0x108) << (exponent - 1)
+    };
+    if value & 0x80 == 0 {
+        -magnitude
+    } else {
+        magnitude
+    }
+}
+
+fn decode_ulaw(encoded: u8) -> i16 {
+    let value = !encoded;
+    let magnitude = ((i16::from(value & 0x0f) << 3) + 0x84) << ((value >> 4) & 0x07);
+    if value & 0x80 == 0 {
+        0x84 - magnitude
+    } else {
+        magnitude - 0x84
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AudioCodec, AudioFrame, AudioQueue};
+    use super::{AudioCodec, AudioFrame, AudioQueue, decode_g711};
     use bytes::Bytes;
     use std::time::{Duration, Instant};
 
@@ -122,5 +162,17 @@ mod tests {
         assert!(queue.pop(start + Duration::from_millis(251)).is_none());
         assert_eq!(queue.dropped_frames(), 1);
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn decodes_g711_to_little_endian_pcm() {
+        let alaw = decode_g711(AudioCodec::G711Alaw, &[0xd5, 0x55]).unwrap();
+        let ulaw = decode_g711(AudioCodec::G711Ulaw, &[0xff, 0x7f]).unwrap();
+
+        assert_eq!(alaw.len(), 4);
+        assert_eq!(ulaw.len(), 4);
+        assert_eq!(i16::from_le_bytes([alaw[0], alaw[1]]), 8);
+        assert_eq!(i16::from_le_bytes([ulaw[0], ulaw[1]]), 0);
+        assert!(decode_g711(AudioCodec::Opus, &[0]).is_none());
     }
 }

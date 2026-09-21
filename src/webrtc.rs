@@ -28,7 +28,7 @@ use std::{
 };
 
 pub(crate) mod audio;
-use audio::{AudioFrame as WebRtcAudioFrame, AudioQueue};
+use audio::{AudioCodec as WebRtcAudioCodec, AudioFrame as WebRtcAudioFrame, AudioQueue, decode_g711};
 use str0m::{
     Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig,
     bwe::{Bitrate, BweKind},
@@ -3920,10 +3920,16 @@ fn drain_api_outputs(
                 }
                 let spec = data.params.spec();
                 let codec = match spec.codec {
-                    Codec::PCMA => audio::AudioCodec::G711Alaw,
-                    Codec::PCMU => audio::AudioCodec::G711Ulaw,
-                    Codec::Opus => audio::AudioCodec::Opus,
+                    Codec::PCMA => WebRtcAudioCodec::G711Alaw,
+                    Codec::PCMU => WebRtcAudioCodec::G711Ulaw,
+                    Codec::Opus => {
+                        tracing::debug!(session_id = %control.session_id, "dropping unsupported Opus talkback packet");
+                        continue;
+                    }
                     _ => continue,
+                };
+                let Some(pcm) = decode_g711(codec, &data.data) else {
+                    continue;
                 };
                 Publisher {
                     inner: control.inner.clone(),
@@ -3931,12 +3937,12 @@ fn drain_api_outputs(
                 .route_talkback_audio(
                     control.session_id,
                     WebRtcAudioFrame {
-                        codec,
+                        codec: WebRtcAudioCodec::PcmS16Le,
                         sample_rate_hz: spec.clock_rate.get(),
                         channel_count: spec.channels.unwrap_or(1),
                         timestamp: None,
                         received_at: data.network_time,
-                        data: Bytes::copy_from_slice(&data.data),
+                        data: pcm,
                     },
                 );
             }
