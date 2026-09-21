@@ -110,7 +110,7 @@ fn handle_request(request: &Request, state: &ReolinkHttpState) -> Response {
         "GetLocalLink" => json!({ "LocalLink": { "mac": "02:00:00:00:00:42" } }),
         "GetEnc" => json!({
             "Enc": {
-                "channel": 0,
+                "channel": requested_channel(&payload),
                 "audio": 1,
                 "mainStream": stream_config(&state.main, 8192),
                 "subStream": stream_config(&state.sub, 1024)
@@ -121,6 +121,7 @@ fn handle_request(request: &Request, state: &ReolinkHttpState) -> Response {
                 "audioType": "aac",
                 "sampleRate": 16000,
                 "bitRate": 64,
+                "channel": requested_channel(&payload),
                 "visitorVolume": 80,
                 "talkAndReplyVolume": 70,
                 "visitorLoudspeaker": 1
@@ -128,7 +129,7 @@ fn handle_request(request: &Request, state: &ReolinkHttpState) -> Response {
         }),
         "GetEvents" => json!({
             "Events": {
-                "visitor": { "support": 1, "alarm_state": 0, "channel": 0 }
+                "visitor": { "support": 1, "alarm_state": 0, "channel": requested_channel(&payload) }
             }
         }),
         "GetAudioFileList" => json!({
@@ -177,7 +178,7 @@ fn handle_request(request: &Request, state: &ReolinkHttpState) -> Response {
         }),
         "GetAlarm" => json!({
             "Alarm": {
-                "channel": 0, "type": "md",
+                "channel": requested_channel(&payload), "type": "md",
                 "enable": u8::from(*state.motion_enabled.lock().unwrap_or_else(|poisoned| poisoned.into_inner())),
                 "sens": [{ "id": 0, "sensitivity": 37 }],
                 "scope": { "area": "retained" }
@@ -236,6 +237,33 @@ fn requested_motion_state(payload: &Value) -> Option<bool> {
         .and_then(|alarm| alarm.get("enable"))
         .and_then(Value::as_u64)
         .map(|enabled| enabled != 0)
+}
+
+fn requested_channel(payload: &Value) -> u64 {
+    payload
+        .as_array()
+        .and_then(|requests| requests.first())
+        .and_then(|request| request.get("param"))
+        .and_then(|param| param.get("channel"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::requested_channel;
+    use serde_json::json;
+
+    #[test]
+    fn requested_channel_preserves_nonzero_channel_identity() {
+        assert_eq!(
+            requested_channel(&json!([{
+                "param": { "channel": 3 }
+            }])),
+            3
+        );
+        assert_eq!(requested_channel(&json!([])), 0);
+    }
 }
 
 fn error_response(command: &str, detail: &str) -> Response {
