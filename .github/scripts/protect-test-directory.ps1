@@ -7,7 +7,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $security = [System.Security.AccessControl.DirectorySecurity]::new()
-$security.SetOwner($owner)
+$existingOwner = (Get-Acl -LiteralPath $Directory).GetOwner([System.Security.Principal.SecurityIdentifier])
+# ReFS can reject an unnecessary owner assignment without the restore privilege.
+if ($existingOwner -ne $owner) {
+    $security.SetOwner($owner)
+}
 $security.SetAccessRuleProtection($true, $false)
 
 foreach ($identity in @($owner.Value, 'S-1-5-18', 'S-1-5-32-544')) {
@@ -38,8 +42,10 @@ if ($Recurse) {
                 throw 'Test storage must not contain reparse points.'
             }
             $entrySecurity = $entry.GetAccessControl()
-            $entrySecurity.SetOwner($owner)
-            $entry.SetAccessControl($entrySecurity)
+            if ($entrySecurity.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $owner) {
+                $entrySecurity.SetOwner($owner)
+                $entry.SetAccessControl($entrySecurity)
+            }
             if ($entry -is [System.IO.DirectoryInfo]) {
                 $pending.Enqueue($entry)
             }
