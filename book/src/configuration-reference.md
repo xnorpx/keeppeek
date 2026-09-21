@@ -60,7 +60,8 @@ Root fields must appear before a table header or they belong to that table.
 | `[logging]`                                        | `LoggingConfig`                                     | Service log destination                       |
 | `[operational_events]`                             | `OperationalEventsConfig`                           | Health-event timing                           |
 | `[operational_events.cameras."<camera-id-or-ip>"]` | `OperationalEventOverride`                          | Per-camera timing overrides                   |
-| `[privacy.cameras."<camera-id-or-ip>"]`          | `PrivacySchedule`                                   | Server-enforced recurring media privacy       |
+| `[privacy.default]`                               | `PrivacySchedule`                                   | Inherited server-enforced recurring privacy  |
+| `[privacy.cameras."<camera-id-or-ip>"]`          | `PrivacySchedule`                                   | Per-camera server-enforced recurring privacy |
 | `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision     |
 | `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                        |
 | `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                               |
@@ -377,10 +378,12 @@ nonempty check. The stable camera ID takes precedence over an IP-keyed override.
 
 ## Privacy schedules
 
-Type: `PrivacyConfig`, section `[privacy]`. Camera schedules are keyed by stable camera ID; the
-runtime also maps each configured camera IP to that ID before enforcing the policy.
+Type: `PrivacyConfig`, section `[privacy]`. The optional `[privacy.default]` schedule is inherited
+by cameras without a per-camera entry. Per-camera schedules are keyed by stable camera ID; an
+IP-keyed entry is accepted for migration and the runtime maps it to that camera ID.
 
-Type: `PrivacySchedule`, section `[privacy.cameras."<camera-id-or-ip>"]`.
+Types: `PrivacySchedule`, sections `[privacy.default]` and
+`[privacy.cameras."<camera-id-or-ip>"]`.
 
 | Field                | Type                       | Default  | Meaning |
 | -------------------- | -------------------------- | -------- | ------- |

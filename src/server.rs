@@ -8660,7 +8660,16 @@ impl ServerState {
         let sanitized_config = sanitized_config(config, storage, camera_count, &entries);
         let access_manager = initial_access_manager(config);
         let (export_history_path, export_jobs) = restored_export_jobs(storage);
-        let privacy = PrivacyRegistry::new(config.privacy.cameras.clone())
+        let mut privacy_schedules = config.privacy.cameras.clone();
+        for camera in &entries {
+            if let Some(schedule) = config
+                .privacy
+                .schedule_for(&camera.info.id, &camera.info.ip)
+            {
+                privacy_schedules.insert(camera.info.id.clone(), schedule.clone());
+            }
+        }
+        let privacy = PrivacyRegistry::new(privacy_schedules)
             .expect("privacy configuration must be validated before server startup");
         let privacy = Arc::new(privacy);
         webrtc.set_privacy_registry(privacy.clone());
