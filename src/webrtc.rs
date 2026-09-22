@@ -2376,6 +2376,7 @@ impl Publisher {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(camera_ip, camera_id);
+    }
 
     pub(crate) fn arm_talkback(&self, session_id: SessionId, source_ids: Vec<String>) {
         self.inner
@@ -2432,9 +2433,9 @@ impl Publisher {
             .talkback_audio
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-             .get_mut(source_id)
-             .and_then(|queue| queue.pop(Instant::now()))
-     }
+            .get_mut(source_id)
+            .and_then(|queue| queue.pop(Instant::now()))
+    }
 
     pub(crate) fn publish_audio(&self, source: Source, frame: WebRtcAudioFrame) {
         if frame.sample_rate_hz == 0 || frame.channel_count == 0 || frame.data.is_empty() {
@@ -2694,6 +2695,7 @@ impl WebRtc {
 
     pub(crate) fn set_privacy_camera_id(&self, camera_ip: IpAddr, camera_id: String) {
         self.live.set_privacy_camera_id(camera_ip, camera_id);
+    }
 
     pub(crate) fn arm_talkback(&self, session_id: SessionId, source_ids: Vec<String>) {
         self.live.arm_talkback(session_id, source_ids);
