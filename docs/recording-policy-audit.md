@@ -495,6 +495,21 @@ drift, bounded malformed metadata, legacy protection and independently owned hol
 the previously protected NTFS temporary directory. These focused results do not complete the
 event workflow, operator UI, or remaining issue acceptance criteria.
 
+The canonical Windows `check.bat` passed at `1a28ad5` from the existing NTFS qualification
+checkout, using the shared Cargo target and protected temporary directory described above:
+
+- Rust: 2,635 passed, 21 configured skips; nextest completed in 371.394 seconds.
+- Clippy, dependency analysis, Rust/TOML/Python formatting and frontend static checks passed.
+- UI: 389 Bun tests, 201 Chromium component/story tests and 57 compatibility tests passed.
+- Browser end-to-end: 266 passed in 2.2 minutes; the two existing codec-dependent cases skipped.
+
+The command exited zero. The local log is
+`C:\Users\xnorp\src\keeppeek-168-qualification\qualification-168-preservation.log`.
+From `ui`, `buf breaking ../api --against '../.git#ref=6fd2141,subdir=api'` also passed using the
+installed Bun binary shim. Markdown checks and `mdbook build book` passed. Subsequent evidence-only
+documentation edits do not alter this qualified executable build. These results do not establish
+the outstanding runtime-retention performance budgets or event preservation behavior.
+
 #### Verified recording-hold storage slice
 
 Commit `e752bf5` adds `catalog::holds` behind the existing serialized writer. Hold state has no
