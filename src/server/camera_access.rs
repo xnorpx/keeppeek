@@ -152,7 +152,46 @@ pub(super) fn authorize_command(
         Some(control_request::Command::EventSearchCommand(command)) => {
             authorize_event_search(&policy, command)
         }
+        Some(control_request::Command::TalkbackCommand(command)) => {
+            authorize_talkback(state, &policy, command)
+        }
         _ => Ok(()),
+    }
+}
+
+fn authorize_talkback(
+    state: &ServerState,
+    policy: &CameraAccess,
+    command: &proto::TalkbackCommand,
+) -> Result<(), ControlCommandError> {
+    let Some(proto::talkback_command::Action::Start(start)) = &command.action else {
+        return Ok(());
+    };
+    let Some(target) = &start.target else {
+        return Ok(());
+    };
+    let Some(selection) = &target.selection else {
+        return Ok(());
+    };
+    match selection {
+        proto::talkback_target::Selection::SourceId(source_id) => require_camera(policy, source_id),
+        proto::talkback_target::Selection::GroupId(group_id) => {
+            let ids = state
+                .camera_entries()
+                .into_iter()
+                .filter(|camera| camera.groups.iter().any(|group| group == group_id))
+                .map(|camera| camera.info.id)
+                .collect::<Vec<_>>();
+            require_cameras(policy, &ids)
+        }
+        proto::talkback_target::Selection::All(_) => {
+            let ids = state
+                .camera_entries()
+                .into_iter()
+                .map(|camera| camera.info.id)
+                .collect::<Vec<_>>();
+            require_cameras(policy, &ids)
+        }
     }
 }
 

@@ -75,6 +75,10 @@ export class AacAudioPlayback {
 		this.#decoder.configure(config);
 	}
 
+	async resume(): Promise<void> {
+		if (this.#context.state === 'suspended') await this.#context.resume();
+	}
+
 	push(frame: AudioDataFrame): void {
 		if (this.#closed || !this.#decoder) return;
 		this.#jitter.push(frame, (ready) => {

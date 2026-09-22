@@ -13,7 +13,16 @@ use reo_proto::{magic::*, media::*, *};
 use std::time::{Duration, Instant};
 
 mod common;
-use common::{make_header_bytes, talk_ability_response};
+use common::make_header_bytes;
+
+fn talk_ability_response(channel: u8) -> Vec<u8> {
+    let extension =
+        format!("<Extension version=\"1.1\"><channelId>{channel}</channelId></Extension>");
+    let xml = br#"<body><TalkAbility version="1.1"><duplexList><duplex>fullDuplex</duplex></duplexList><audioStreamModeList><audioStreamMode>speaker</audioStreamMode></audioStreamModeList><audioConfigList><audioConfig><audioType>adpcm</audioType><sampleRate>16000</sampleRate><samplePrecision>16</samplePrecision><lengthPerEncoder>640</lengthPerEncoder><soundTrack>mono</soundTrack></audioConfig></audioConfigList></TalkAbility></body>"#;
+    let mut response = extension.into_bytes();
+    response.extend_from_slice(xml);
+    response
+}
 
 // ── Wire message helpers ─────────────────────────────────────────────
 
