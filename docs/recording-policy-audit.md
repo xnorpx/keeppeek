@@ -417,10 +417,10 @@ cleanup/maintenance. The subsequent named-hold slice below adds durable recordin
 attribution, independent release and race/restart tests. It is not yet a complete operator feature:
 no typed recording/event hold command or matching UI exists, and event/media association and
 the complete operator workflow still need implementation.
-The requested outcome is approved; any expanded protected API contract must follow the repository's
-existing scoped approval requirement before those files are changed. No API file is changed here.
+The requested outcome and the additive API scope below are approved. Approval does not establish
+implementation or verification evidence; the operator workflow remains incomplete.
 
-#### Proposed preservation contract extension
+#### Approved preservation contract extension
 
 The earlier recording-control approval covers temporary per-camera recording requests. The
 operator preservation workflow needs an additional, additive scope in `api/webrtc.proto` and
@@ -439,9 +439,31 @@ operator preservation workflow needs an additional, additive scope in `api/webrt
 - Release removes only the selected preservation marker. It does not issue a media deletion
   command; the existing separately confirmed deletion workflow remains authoritative.
 
-This is a reviewable proposed contract scope, not an implemented protocol or an approval record.
-The storage primitive can be implemented and tested independently while this extension awaits
-the repository-required explicit API approval. Export-copy lifetime remains the separate D5 decision.
+On 2026-09-21, the owner approved this proposed Keep forever API extension in the task conversation.
+This authorizes the additive preservation contract in the three files named above; it does not
+authorize unrelated API changes. The contract is not yet implemented. Export-copy lifetime remains
+the separate D5 decision.
+
+The implementation review identified these required preservation boundaries:
+
+- Existing `recording_event_keyframes` links identify playback starting points, not every recording
+  spanning an event. Event preservation must account for the full requested interval and report
+  missing coverage rather than treating those links as a complete media inventory.
+- Event updates can replace metadata and attachments, and image cleanup runs independently of
+  recording cleanup. A saved event must retain its saved evidence and referenced assets; protecting
+  MP4 files alone cannot establish that the event is saved forever.
+- A durable event marker must retain its acquired membership across revisions. Shrinking or moving
+  an event must not silently release previously saved evidence. Release uses that stored membership
+  and removes only the selected marker's protection.
+- Active recordings are not eligible for the current finalized-recording hold primitive. Event
+  projection therefore needs durable pending state and a finalization/cleanup fence. Bounded or
+  unfinished projection cannot leave newly eligible media exposed while reporting complete success.
+- Expected revision requires explicit field presence, including an explicit initial revision of
+  zero. Server-owned marker identities must avoid collisions. Capacity rejection and lost replies
+  must preserve committed state and require a fresh read before retrying.
+
+These are implementation requirements from review, not verified runtime behavior. No preservation
+capability may be advertised until its corresponding target workflow and failure cases are tested.
 
 #### Verified recording-hold storage slice
 
