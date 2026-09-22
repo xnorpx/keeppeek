@@ -243,6 +243,12 @@ export class LivePeer {
 		});
 	}
 
+	resumeAudioPlayback(): Promise<void> {
+		return Promise.all(
+			[...this.#audioPlaybackByBinding.values()].map((playback) => playback.resume())
+		).then(() => undefined);
+	}
+
 	closeOnPageHide(): void {
 		const sessionToken = this.releaseLocalResources();
 		if (sessionToken === null) return;
@@ -620,9 +626,20 @@ export class LivePeer {
 				subscriptionIds: audioTrackId ? [subscriptionId, audioTrackId] : [subscriptionId]
 			})
 		});
+		const binding = this.#audioBindingByCamera[cameraId];
+		if (binding) {
+			this.#audioPlaybackByBinding.get(binding)?.close();
+			this.#audioPlaybackByBinding.delete(binding);
+			delete this.#audioBindingByCamera[cameraId];
+		}
+		for (const [mid, sourceId] of Object.entries(this.#audioCameraByMid)) {
+			if (sourceId === cameraId) delete this.#audioCameraByMid[mid];
+		}
 		this.replaceTrack(cameraId, {
 			status: 'queued',
 			subscribed: false,
+			audioReceiver: null,
+			audioStream: null,
 			pendingStream: null,
 			estimatedBitrateBps: null
 		});
@@ -696,22 +713,25 @@ export class LivePeer {
 				const capabilities = event.value;
 				this.#capabilities = capabilities;
 				this.cameraAudioAssets = Object.fromEntries(
-					capabilities.cameras.map((camera) => [
-						camera.sourceId,
-						{
-							quickReplies: (camera.deviceCapabilities?.quickReplies ?? []).map((asset) => ({
-								id: asset.assetId,
-								label: asset.displayName
-							})),
-							chimes: (camera.deviceCapabilities?.chimes ?? []).map((asset) => ({
-								id: asset.assetId,
-								label: asset.displayName
-							}))
-						}
-					])
+					capabilities.cameras
+						.filter((camera) => camera.deviceCapabilities?.twoWayAudio === true)
+						.map((camera) => [
+							camera.sourceId,
+							{
+								quickReplies: (camera.deviceCapabilities?.quickReplies ?? []).map((asset) => ({
+									id: asset.assetId,
+									label: asset.displayName
+								})),
+								chimes: (camera.deviceCapabilities?.chimes ?? []).map((asset) => ({
+									id: asset.assetId,
+									label: asset.displayName
+								}))
+							}
+						])
 				);
 				const groups = new Map<string, string>();
 				for (const camera of capabilities.cameras) {
+					if (camera.deviceCapabilities?.twoWayAudio !== true) continue;
 					for (const groupId of camera.groupIds) groups.set(groupId, groupId);
 				}
 				this.talkbackGroups = [...groups.keys()]

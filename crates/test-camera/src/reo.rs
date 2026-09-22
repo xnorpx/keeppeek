@@ -1,6 +1,6 @@
 use crate::{
     BatteryWakeEndpoint,
-    media::{Codec, EncodedFrame, VideoSource},
+    media::{EncodedFrame, VideoSource},
 };
 use anyhow::{Context, anyhow};
 use reo_proto::{
@@ -979,6 +979,7 @@ fn pad_to_eight(data: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::Codec;
 
     fn camera() -> BaichuanCamera {
         let source = VideoSource {
