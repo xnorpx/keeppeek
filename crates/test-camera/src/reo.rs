@@ -47,6 +47,10 @@ pub struct ReoServer {
 }
 
 impl ReoServer {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "test-camera startup mirrors the fixture API"
+    )]
     pub(crate) fn start(
         address: SocketAddr,
         username: String,
@@ -94,7 +98,7 @@ impl ReoServer {
                         main,
                         sub,
                         channel_count,
-                    )
+                    );
                 })?;
             (Some(stop), Some(worker), Some(tcp_port))
         };
