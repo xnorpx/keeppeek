@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-598db736.js";
+            window.path_to_searchindex_js = "searchindex-88347fa2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -235,6 +235,8 @@ Root fields must appear before a table header or they belong to that table.</p>
 <tr><td><code>[logging]</code></td><td><code>LoggingConfig</code></td><td>Service log destination</td></tr>
 <tr><td><code>[operational_events]</code></td><td><code>OperationalEventsConfig</code></td><td>Health-event timing</td></tr>
 <tr><td><code>[operational_events.cameras."&lt;camera-id-or-ip&gt;"]</code></td><td><code>OperationalEventOverride</code></td><td>Per-camera timing overrides</td></tr>
+<tr><td><code>[privacy.default]</code></td><td><code>PrivacySchedule</code></td><td>Inherited server-enforced recurring privacy</td></tr>
+<tr><td><code>[privacy.cameras."&lt;camera-id-or-ip&gt;"]</code></td><td><code>PrivacySchedule</code></td><td>Per-camera server-enforced recurring privacy</td></tr>
 <tr><td><code>[event_forwarder.mqtt]</code></td><td><code>MqttForwarderConfig</code> inside <code>EventForwarderConfig</code></td><td>MQTT configuration; server-owned revision</td></tr>
 <tr><td><code>[camera_defaults]</code></td><td><code>CameraCredentialDefaults</code></td><td>Shared camera defaults</td></tr>
 <tr><td><code>[&lt;namespace&gt;.&lt;camera-key&gt;]</code></td><td><code>CameraConfig</code></td><td>Camera settings</td></tr>
@@ -579,6 +581,33 @@ the configuration directory if you need it during a recovery rehearsal. Source:
 <p>Each effective policy requires warning hold-down no greater than outage hold-down. Outage and
 recovery durations cannot exceed <code>86400</code> seconds. Override keys contain 1 to 256 bytes after the
 nonempty check. The stable camera ID takes precedence over an IP-keyed override.</p>
+<h2 id="privacy-schedules"><a class="header" href="#privacy-schedules">Privacy schedules</a></h2>
+<p>Type: <code>PrivacyConfig</code>, section <code>[privacy]</code>. The optional <code>[privacy.default]</code> schedule is inherited
+by cameras without a per-camera entry. Per-camera schedules are keyed by stable camera ID; an
+IP-keyed entry is accepted for migration and the runtime maps it to that camera ID.</p>
+<p>Types: <code>PrivacySchedule</code>, sections <code>[privacy.default]</code> and
+<code>[privacy.cameras."&lt;camera-id-or-ip&gt;"]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>true</code></td><td>Retain the policy but disable its scheduled enforcement when false.</td></tr>
+<tr><td><code>timezone</code></td><td><code>String</code></td><td>Required</td><td>IANA timezone used for recurring local windows.</td></tr>
+<tr><td><code>windows</code></td><td>Array of <code>PrivacyWindow</code></td><td>Empty</td><td>Half-open weekly privacy windows; at most 64.</td></tr>
+<tr><td><code>temporary_override</code></td><td>Optional <code>PrivacyOverride</code></td><td>None</td><td>Bounded persisted override that suspends matching windows.</td></tr>
+<tr><td><code>keep_camera_connected</code></td><td><code>bool</code></td><td><code>true</code></td><td>Keep camera ingress warm while delivery is blocked.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Each <code>PrivacyWindow</code> has <code>weekdays</code> (ISO values 1 through 7), <code>start</code>, and <code>end</code> in <code>HH:MM</code>.
+Equal endpoints are rejected; an end earlier than the start is an overnight interval. Both
+occurrences of a repeated daylight-saving local time are protected. A <code>PrivacyOverride</code> requires
+nonempty <code>actor</code> and <code>reason</code>, RFC3339 <code>accepted_at</code> and <code>expires_at</code>, and expires within 24 hours.
+Control-channel configuration requests replace the override actor and acceptance time with the
+authenticated administrator and server time before the candidate configuration is validated.
+Invalid privacy policy data fails validation before the server accepts camera media.</p>
 <h2 id="mqtt-event-forwarding"><a class="header" href="#mqtt-event-forwarding">MQTT event forwarding</a></h2>
 <p>Types: <code>EventForwarderConfig</code> has one field, <code>mqtt: MqttForwarderConfig</code>. Section:
 <code>[event_forwarder.mqtt]</code>. Source:
