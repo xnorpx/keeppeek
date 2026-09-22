@@ -29,6 +29,7 @@ use std::{
     time::Duration,
 };
 
+pub mod holds;
 pub mod maintenance;
 pub mod retention;
 pub mod workflow;
@@ -387,6 +388,11 @@ enum Command {
     DeletionIntent {
         request: maintenance::jobs::Request,
         reply: SyncSender<anyhow::Result<maintenance::jobs::Job>>,
+    },
+    Hold {
+        request: holds::Request,
+        deadline: std::time::Instant,
+        reply: SyncSender<anyhow::Result<Option<holds::Snapshot>>>,
     },
     Retention {
         request: retention::Request,
@@ -1543,16 +1549,8 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                     request,
                 )));
             }
-            Command::Retention {
-                request,
-                deadline,
-                reply,
-            } => {
-                let _ = reply.send(pollster::block_on(retention::execute(
-                    &connection,
-                    request,
-                    deadline,
-                )));
+            command @ (Command::Retention { .. } | Command::Hold { .. }) => {
+                execute_policy_command(&connection, command);
             }
             Command::UpsertRecording { recording, reply } => {
                 let _ = reply.send(pollster::block_on(upsert_recording(&connection, recording)));
@@ -1853,6 +1851,30 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
             }
             Command::Shutdown => break,
         }
+    }
+}
+
+fn execute_policy_command(connection: &turso::Connection, command: Command) {
+    match command {
+        Command::Retention {
+            request,
+            deadline,
+            reply,
+        } => {
+            let _ = reply.send(pollster::block_on(retention::execute(
+                connection, request, deadline,
+            )));
+        }
+        Command::Hold {
+            request,
+            deadline,
+            reply,
+        } => {
+            let _ = reply.send(pollster::block_on(holds::execute(
+                connection, request, deadline,
+            )));
+        }
+        _ => unreachable!("only policy commands reach the policy dispatcher"),
     }
 }
 
@@ -2402,6 +2424,7 @@ async fn set_recording_protected(
     recording_id: &str,
     protected: bool,
 ) -> anyhow::Result<()> {
+    holds::reject_legacy_update(connection, recording_id).await?;
     connection
         .execute(
             "UPDATE recording_files
@@ -2415,7 +2438,8 @@ async fn set_recording_protected(
 
 pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()> {
     initialize_base_schema(connection).await?;
-    retention::initialize(connection).await
+    retention::initialize(connection).await?;
+    holds::initialize(connection).await
 }
 
 async fn initialize_base_schema(connection: &turso::Connection) -> anyhow::Result<()> {
