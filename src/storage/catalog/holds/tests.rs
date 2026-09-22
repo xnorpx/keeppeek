@@ -68,6 +68,105 @@ fn update(revision: Option<u64>, active: bool) -> Update {
 }
 
 #[test]
+fn inspection_distinguishes_marker_protection_and_missing_media() {
+    use crate::storage::long_term::inspection::Archive;
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    fixture.seed(&catalog);
+    let handle = catalog.handle();
+    handle
+        .update_recording_path("media", &fixture.root.join("media.mp4"), true)
+        .unwrap();
+    let archive = Archive::open(&fixture.root).unwrap();
+    let initial = handle
+        .inspect_recording_hold("media", "recording", Some(&archive))
+        .unwrap();
+    assert!(initial.hold.is_none());
+    assert!(initial.media_available);
+    assert!(!initial.protected);
+    assert_eq!(initial.bytes, 64);
+    handle
+        .update_recording_hold("media", "event", update(None, true))
+        .unwrap();
+    let shared = handle
+        .inspect_recording_hold("media", "recording", Some(&archive))
+        .unwrap();
+    assert!(shared.protected);
+    assert!(shared.independently_protected);
+    assert!(shared.hold.is_none());
+    std::fs::remove_file(fixture.root.join("media.mp4")).unwrap();
+    let missing = handle
+        .inspect_recording_hold("media", "event", Some(&archive))
+        .unwrap();
+    assert!(missing.hold.unwrap().active);
+    assert!(missing.protected);
+    assert!(!missing.media_available);
+    assert!(
+        handle
+            .inspect_recording_hold("absent", "recording", Some(&archive))
+            .is_err()
+    );
+}
+
+#[test]
+fn inspection_preserves_attribution_without_an_archive_and_detects_file_drift() {
+    use crate::storage::long_term::inspection::Archive;
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    fixture.seed(&catalog);
+    let handle = catalog.handle();
+    let path = fixture.root.join("media.mp4");
+    handle.update_recording_path("media", &path, true).unwrap();
+    let saved = handle
+        .update_recording_hold("media", "saved", update(None, true))
+        .unwrap();
+    let archive = Archive::open(&fixture.root).unwrap();
+    let state = handle
+        .inspect_recording_hold("media", "saved", None)
+        .unwrap();
+    assert_eq!(state.hold, Some(saved.clone()));
+    assert!(!state.media_available);
+    assert!(!state.independently_protected);
+    std::fs::write(&path, [42; 65]).unwrap();
+    assert!(
+        !handle
+            .inspect_recording_hold("media", "saved", Some(&archive))
+            .unwrap()
+            .media_available
+    );
+    std::fs::rename(&path, fixture.root.join("original.mp4")).unwrap();
+    std::fs::write(&path, [42; 64]).unwrap();
+    let replaced = handle
+        .inspect_recording_hold("media", "saved", Some(&archive))
+        .unwrap();
+    assert!(!replaced.media_available);
+    assert_eq!(replaced.hold, Some(saved));
+    handle
+        .update_recording_hold("media", "saved", update(Some(1), false))
+        .unwrap();
+    handle.set_recording_protected("media", true).unwrap();
+    let legacy = handle
+        .inspect_recording_hold("media", "saved", None)
+        .unwrap();
+    assert!(legacy.independently_protected);
+    handle
+        .update_recording_hold("media", "saved", update(Some(2), true))
+        .unwrap();
+    assert!(
+        handle
+            .inspect_recording_hold("media", "saved", None)
+            .unwrap()
+            .independently_protected
+    );
+    fixture.execute("UPDATE recording_files SET path = printf('%5000s', 'x'), file_identity = printf('%5000s', 'x') WHERE id = 'media'");
+    let malformed = handle
+        .inspect_recording_hold("media", "saved", Some(&archive))
+        .unwrap();
+    assert!(malformed.hold.unwrap().active);
+    assert!(!malformed.media_available);
+}
+
+#[test]
 fn independent_holds_survive_restart_and_release_only_their_own_protection() {
     let fixture = Fixture::new();
     let catalog = fixture.open();

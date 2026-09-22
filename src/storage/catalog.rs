@@ -394,6 +394,12 @@ enum Command {
         deadline: std::time::Instant,
         reply: SyncSender<anyhow::Result<Option<holds::Snapshot>>>,
     },
+    InspectHold {
+        recording_id: String,
+        hold_id: String,
+        deadline: std::time::Instant,
+        reply: SyncSender<anyhow::Result<holds::inspection::Inputs>>,
+    },
     Retention {
         request: retention::Request,
         deadline: std::time::Instant,
@@ -1549,7 +1555,9 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                     request,
                 )));
             }
-            command @ (Command::Retention { .. } | Command::Hold { .. }) => {
+            command @ (Command::Retention { .. }
+            | Command::Hold { .. }
+            | Command::InspectHold { .. }) => {
                 execute_policy_command(&connection, command);
             }
             Command::UpsertRecording { recording, reply } => {
@@ -1856,6 +1864,19 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
 
 fn execute_policy_command(connection: &turso::Connection, command: Command) {
     match command {
+        Command::InspectHold {
+            recording_id,
+            hold_id,
+            deadline,
+            reply,
+        } => {
+            let _ = reply.send(pollster::block_on(holds::inspection::read(
+                connection,
+                &recording_id,
+                &hold_id,
+                deadline,
+            )));
+        }
         Command::Retention {
             request,
             deadline,

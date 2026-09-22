@@ -97,6 +97,7 @@ mod logging;
 mod mqtt_integration;
 mod native_events;
 mod peek_layouts;
+mod preservation;
 pub(crate) mod recording_coverage;
 mod recording_maintenance;
 mod recording_policy;
@@ -452,6 +453,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::EventWorkflowCommand(_)) => "event_workflow",
         Some(control_request::Command::RecordingMaintenanceCommand(_)) => "recording_maintenance",
         Some(control_request::Command::RecordingPolicyCommand(_)) => "recording_policy",
+        Some(control_request::Command::PreservationCommand(_)) => "preservation",
         Some(control_request::Command::NotificationRuleCommand(_)) => "notification_rule",
         Some(control_request::Command::ConfigurationCommand(_)) => "configuration",
         None => "missing_command",
@@ -462,15 +464,10 @@ fn sensitive_administrator_operation(
     command: Option<&control_request::Command>,
 ) -> Option<&'static str> {
     match command {
-        Some(control_request::Command::RecordingPolicyCommand(command)) => match command.action {
-            Some(proto::recording_policy_command::Action::SetOverride(_)) => {
-                Some("recording_override_set")
-            }
-            Some(proto::recording_policy_command::Action::ClearOverride(_)) => {
-                Some("recording_override_clear")
-            }
-            _ => None,
-        },
+        Some(
+            command @ (control_request::Command::RecordingPolicyCommand(_)
+            | control_request::Command::PreservationCommand(_)),
+        ) => recording_policy::sensitive_operation(command),
         Some(control_request::Command::CameraControlCommand(command)) => match command.action {
             Some(camera_control_command::Action::SetMotionDetection(_)) => {
                 Some("camera_motion_update")
@@ -734,9 +731,11 @@ impl ControlRequestHandler for ServerControlHandler {
                         recording_maintenance::dispatch(self, session_id, &principal, command)
                             .map(Some)
                     }
-                    Some(control_request::Command::RecordingPolicyCommand(command)) => {
-                        recording_policy::dispatch(&self.state, &principal, command).map(Some)
-                    }
+                    Some(
+                        command @ (control_request::Command::RecordingPolicyCommand(_)
+                        | control_request::Command::PreservationCommand(_)),
+                    ) => recording_policy::dispatch_control(&self.state, &principal, command)
+                        .map(Some),
                     Some(control_request::Command::StoredMediaCommand(command)) => {
                         match stored_media::dispatch(&self.state, session_id, command) {
                             Ok(dispatch) => {
@@ -1042,6 +1041,7 @@ fn server_capabilities(
     }
     if event_search_catalog(state).is_ok() {
         capability_ids.push("keeppeek.event-workflow.v1".to_owned());
+        capability_ids.push(preservation::CAPABILITY.to_owned());
         if cfg!(any(unix, windows)) {
             capability_ids.push("keeppeek.recording-maintenance.v1".to_owned());
         }

@@ -48,6 +48,7 @@ message Request {
     EventWorkflowCommand event_workflow_command = 26;
     RecordingMaintenanceCommand recording_maintenance_command = 27;
     RecordingPolicyCommand recording_policy_command = 28;
+    PreservationCommand preservation_command = 29;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -809,6 +810,63 @@ message RecordingControlState {
   CameraRecordingMode effective_mode = 4;
   RecordingControlReason reason = 5;
   optional RecordingOverrideState override_state = 6;
+}
+
+// Recording targets require keeppeek.recording-preservation.v1.
+// Event targets require keeppeek.event-preservation.v1, which is not yet implemented.
+message PreservationTarget {
+  oneof target {
+    string recording_id = 1;
+    string event_id = 2;
+  }
+}
+
+// All actions require Administrator access. Actor identity comes from the live session.
+message PreservationCommand {
+  PreservationTarget target = 1;
+  oneof action {
+    GetPreservation get = 2;
+    MutatePreservation save_forever = 3;
+    MutatePreservation release = 4;
+  }
+}
+
+message GetPreservation {}
+
+message MutatePreservation {
+  // Presence is required. Zero explicitly selects a marker that has never existed.
+  optional uint64 expected_revision = 1;
+  string reason = 2;
+}
+
+enum PreservationCoverage {
+  PRESERVATION_COVERAGE_UNSPECIFIED = 0;
+  PRESERVATION_COVERAGE_UNPROTECTED = 1;
+  PRESERVATION_COVERAGE_PROTECTED = 2;
+  // Reserved for durable unfinished event projection, never a transient request.
+  PRESERVATION_COVERAGE_PENDING = 3;
+  PRESERVATION_COVERAGE_UNAVAILABLE = 4;
+}
+
+enum PreservationGapReason {
+  PRESERVATION_GAP_REASON_UNSPECIFIED = 0;
+  PRESERVATION_GAP_REASON_MEDIA_UNAVAILABLE = 1;
+  PRESERVATION_GAP_REASON_RECORDING_INELIGIBLE = 2;
+}
+
+message PreservationState {
+  PreservationTarget target = 1;
+  uint64 revision = 2;
+  bool marker_active = 3;
+  // Attribution of the last mutation, including release.
+  string actor = 4;
+  string reason = 5;
+  PreservationCoverage coverage = 6;
+  // Point-in-time verified file metadata, not a promise of decodability or future availability.
+  uint64 protected_objects = 7;
+  uint64 protected_bytes = 8;
+  repeated PreservationGapReason gaps = 9;
+  bool independently_protected = 10;
 }
 
 message RuntimeConfigurationCommand {
@@ -2524,6 +2582,7 @@ message Ok {
     RecordingDeletionJobList recording_deletion_jobs = 39;
     RecordingReconciliationReport recording_reconciliation_report = 40;
     RecordingControlState recording_control_state = 41;
+    PreservationState preservation_state = 42;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";

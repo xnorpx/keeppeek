@@ -143,6 +143,58 @@ fn recording_actions(revision: &str) -> [proto::recording_policy_command::Action
 }
 
 #[test]
+fn preservation_rejects_users_and_revoked_administrators_at_the_live_session_boundary() {
+    use proto::preservation_command::Action;
+    let state = media_test_state();
+    for role in [AccessRole::User, AccessRole::Administrator] {
+        let issued = state
+            .access_manager
+            .create_credential(&format!("preservation {role:?}"), None, role, None, 1_000)
+            .unwrap();
+        let session = LiveApiSession::new(&state.webrtc);
+        bind_credential_test_session(&state, session.id, issued.access_key);
+        if role == AccessRole::Administrator {
+            invalidate_credential(&state, &issued, true);
+        }
+        let mutation = proto::MutatePreservation {
+            expected_revision: Some(0),
+            reason: "evidence".into(),
+        };
+        for action in [
+            Action::SaveForever(mutation.clone()),
+            Action::Release(mutation),
+            Action::Get(proto::GetPreservation {}),
+        ] {
+            let request = proto::Request {
+                request_id: 42,
+                command: Some(control_request::Command::PreservationCommand(
+                    proto::PreservationCommand {
+                        target: Some(proto::PreservationTarget {
+                            target: Some(proto::preservation_target::Target::RecordingId(
+                                "media".into(),
+                            )),
+                        }),
+                        action: Some(action),
+                    },
+                )),
+            };
+            let denied = session.request(&test_control_handler(state.clone()), request);
+            assert_rejected(
+                &denied,
+                if role == AccessRole::User {
+                    "Administrator role is required for this operation"
+                } else {
+                    "API session expired or was revoked"
+                },
+            );
+            if role == AccessRole::Administrator {
+                break;
+            }
+        }
+    }
+}
+
+#[test]
 fn invalidated_control_session_closes_only_after_its_rejection_is_sent() {
     for revoke in [false, true] {
         let state = media_test_state();

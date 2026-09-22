@@ -8,6 +8,42 @@ use crate::{
 
 pub(super) const CAPABILITY: &str = "keeppeek.recording-control.v1";
 
+pub(super) fn dispatch_control(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    command: proto::request::Command,
+) -> Result<proto::ok::Result, ControlCommandError> {
+    match command {
+        proto::request::Command::RecordingPolicyCommand(command) => {
+            dispatch(state, principal, command)
+        }
+        proto::request::Command::PreservationCommand(command) => {
+            super::preservation::dispatch(state, principal, command)
+        }
+        _ => unreachable!("only recording policy commands reach this dispatcher"),
+    }
+}
+
+pub(super) const fn sensitive_operation(command: &proto::request::Command) -> Option<&'static str> {
+    match command {
+        proto::request::Command::RecordingPolicyCommand(command) => match command.action {
+            Some(proto::recording_policy_command::Action::SetOverride(_)) => {
+                Some("recording_override_set")
+            }
+            Some(proto::recording_policy_command::Action::ClearOverride(_)) => {
+                Some("recording_override_clear")
+            }
+            _ => None,
+        },
+        proto::request::Command::PreservationCommand(command) => match command.action {
+            Some(proto::preservation_command::Action::SaveForever(_)) => Some("preservation_save"),
+            Some(proto::preservation_command::Action::Release(_)) => Some("preservation_release"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 pub(super) fn configure(state: &ServerState, camera: &crate::cameras::CameraConfig) {
     if let Some(storage) = &state.recording_control {
         storage.configure_camera_recording(

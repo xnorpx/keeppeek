@@ -3,6 +3,9 @@
 use super::{Command, RecordingCatalogHandle, to_i64, to_u64};
 use std::{sync::mpsc, time::Instant};
 
+pub(super) mod inspection;
+pub use inspection::Inspection;
+
 const MAX_HOLDS_PER_RECORDING: i64 = 256;
 const MAX_ID_BYTES: usize = 128;
 const MAX_ACTOR_BYTES: usize = 128;

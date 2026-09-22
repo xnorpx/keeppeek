@@ -415,8 +415,8 @@ preservation outcome. It does not resolve the separate export and mount decision
 The catalog `set_recording_protected` primitive supplies the protection flag consulted by
 cleanup/maintenance. The subsequent named-hold slice below adds durable recording-level
 attribution, independent release and race/restart tests. It is not yet a complete operator feature:
-no typed recording/event hold command or matching UI exists, and event/media association and
-the complete operator workflow still need implementation.
+the typed recording API slice below supplies recording commands, but event/media association,
+event commands and the matching operator UI still need implementation.
 The requested outcome and the additive API scope below are approved. Approval does not establish
 implementation or verification evidence; the operator workflow remains incomplete.
 
@@ -441,8 +441,8 @@ operator preservation workflow needs an additional, additive scope in `api/webrt
 
 On 2026-09-21, the owner approved this proposed Keep forever API extension in the task conversation.
 This authorizes the additive preservation contract in the three files named above; it does not
-authorize unrelated API changes. The contract is not yet implemented. Export-copy lifetime remains
-the separate D5 decision.
+authorize unrelated API changes. The recording-target slice below implements part of this contract;
+event preservation remains unavailable. Export-copy lifetime remains the separate D5 decision.
 
 The implementation review identified these required preservation boundaries:
 
@@ -464,6 +464,36 @@ The implementation review identified these required preservation boundaries:
 
 These are implementation requirements from review, not verified runtime behavior. No preservation
 capability may be advertised until its corresponding target workflow and failure cases are tested.
+
+#### Recording preservation API slice
+
+The additive `PreservationCommand` supports Administrator read, save-forever and release for a stable
+recording ID. `keeppeek.recording-preservation.v1` identifies this target workflow. Event targets
+are explicitly rejected, and `keeppeek.event-preservation.v1` is not advertised. This separation
+prevents a recording-only implementation from presenting an event as fully preserved.
+
+The shared operator marker requires an explicitly present revision (including zero initially) and
+a bounded reason. The live session supplies attribution. Released markers retain revisions, and
+releasing this marker leaves other holds and legacy protection intact. The response distinguishes
+this marker from aggregate protection and reports typed gaps without losing revision or attribution.
+Counts reflect point-in-time size/identity observations through the existing confined archive
+inspector; they do not verify decoding or guarantee against external filesystem modification.
+Missing media or an inaccessible archive does not prevent releasing the marker.
+
+The catalog inspection reads marker, independent protection, file metadata and eligibility in one
+writer observation, bounds path/identity projections, and verifies metadata outside the writer.
+The protocol and generated TypeScript binding use the approved additive scope. Generation uses
+the existing `ui/buf.gen.yaml` and installed protoc-gen-es 2.14.1, restricted to `api/webrtc.proto`.
+The operator UI and durable event/attachment projection remain outstanding.
+
+On 2026-09-22, `cargo test --locked -p keeppeek --lib preservation` passed eight tests (0.49 seconds):
+typed save/release, stale revision rejection, independent holds, missing media before/after save,
+input and role rejection, event-target isolation, optional revision wire presence, capability
+gating, and the live revoked-session boundary. The compiled library test binary also passed all
+11 `storage::catalog::holds::tests` (0.70 seconds), including archive absence, replacement/size
+drift, bounded malformed metadata, legacy protection and independently owned holds. Tests used
+the previously protected NTFS temporary directory. These focused results do not complete the
+event workflow, operator UI, or remaining issue acceptance criteria.
 
 #### Verified recording-hold storage slice
 

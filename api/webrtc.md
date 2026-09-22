@@ -29,6 +29,45 @@ or revision/policy conflicts. The source ID is the camera's stable configured id
 an override restores configured permission within the privacy bound. Configuration edits use the
 existing configuration contract and are distinct from temporary controls.
 
+## Keep forever recording preservation
+
+`keeppeek.recording-preservation.v1` advertises `PreservationCommand` for a recording target.
+Every action requires a live Administrator session. Select exactly one stable recording ID, at
+most 128 UTF-8 bytes; paths and arbitrary selectors are not accepted. Event targets require the
+separate `keeppeek.event-preservation.v1` capability, which is not yet advertised or implemented.
+An event request is rejected rather than interpreted as a recording ID.
+
+Read the current `Ok.preservation_state` before saving or releasing. Both mutations require an
+explicit `expected_revision`, including zero for a marker that has never existed, and a nonblank
+reason of at most 256 UTF-8 bytes. IDs and reasons reject control characters. The actor comes from
+the authenticated session. The recording marker is shared among administrators; any administrator
+may release it using its current revision. Attribution identifies the last mutation, including
+release. Released markers retain their revisions. Stale updates fail without changing protection.
+After a lost response or an unavailable result, reload state before retrying: a mutation may have
+committed even if the subsequent observation failed.
+
+Save installs indefinite catalog protection for finalized recordings with a known end and no
+cleanup/maintenance claim. It has no TTL and survives restart. Release removes only this marker;
+other holds and independent legacy protection remain effective. Release neither deletes media nor
+requires its file to remain accessible. Unprotected media becomes eligible for ordinary storage
+policy; manual deletion still uses the separately confirmed maintenance workflow.
+
+`marker_active` describes this marker; `coverage` describes aggregate protection and observed
+availability. Other protection can leave coverage `PROTECTED` after this marker is released;
+`independently_protected` identifies that condition even while this marker is active. Missing,
+changed, inaccessible or ineligible media produces `UNAVAILABLE` with typed gaps while preserving
+the marker's revision and attribution. Counts include only an eligible protected file whose size
+and identity were observed through the configured archive's confined metadata inspector. They are
+point-in-time logical file bytes, not reclaimable space, verified media contents, decodability or
+a guarantee against external file changes. Media outside that archive cannot be reported as
+verified coverage. `PENDING` is reserved for durable unfinished event projection; this recording
+workflow never emits it.
+
+Errors use `INVALID_REQUEST` for malformed fields, `UNAVAILABLE` when the catalog backend is absent,
+and `REJECTED` for authorization, unavailable targets or conflicting state. Storage pressure cannot release these holds: if protected media
+prevents capacity recovery, recording pauses under the existing storage safety policy. This
+capability does not implement event/attachment preservation or change export-copy lifetime.
+
 ## Channels
 
 | SCTP stream ID | Label             | Delivery                       | Payload                           |
