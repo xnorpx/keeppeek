@@ -590,6 +590,7 @@
 
 <div
 	bind:this={container}
+	role="group"
 	onpointerdown={() => void livePeer.resumeAudioPlayback()}
 	class="relative bg-video {className}"
 	class:media-framed={mediaAspectRatio !== undefined}
