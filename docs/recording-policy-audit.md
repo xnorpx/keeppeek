@@ -412,12 +412,70 @@ preservation outcome. It does not resolve the separate export and mount decision
 - If protected media prevents capacity recovery, retain it and report the recording pause/storage
   pressure. Do not silently revoke protection to make space.
 
-The current catalog `set_recording_protected` primitive supplies an existing protection flag,
-and cleanup/maintenance consult that flag. It is not yet a complete operator feature: no typed
-recording/event hold command or matching UI exists, and durable hold attribution, event/media
-association, release coordination and race/restart qualification still need implementation.
+The catalog `set_recording_protected` primitive supplies the protection flag consulted by
+cleanup/maintenance. The subsequent named-hold slice below adds durable recording-level
+attribution, independent release and race/restart tests. It is not yet a complete operator feature:
+no typed recording/event hold command or matching UI exists, and event/media association and
+the complete operator workflow still need implementation.
 The requested outcome is approved; any expanded protected API contract must follow the repository's
 existing scoped approval requirement before those files are changed. No API file is changed here.
+
+#### Proposed preservation contract extension
+
+The earlier recording-control approval covers temporary per-camera recording requests. The
+operator preservation workflow needs an additional, additive scope in `api/webrtc.proto` and
+`api/webrtc.md`, with canonical regeneration of `ui/src/lib/proto/webrtc_pb.ts`:
+
+- A typed preservation target selects exactly one stable recording ID or event ID; no host path
+  or arbitrary SQL/filter is accepted.
+- Typed read, save-forever and release commands use the existing authenticated control channel.
+  Mutations require Administrator authority, a nonempty reason of at most 256 UTF-8 bytes and an
+  expected revision; actor identity comes from the authenticated session.
+- Responses distinguish unprotected, protected, pending and unavailable coverage, and expose
+  revision, attribution, protected object/byte counts and gaps. A pending event projection cannot
+  be presented as fully saved. Protecting one shared media object must preserve other active holds.
+- A dedicated advertised capability gates the UI. Older servers show the action as unavailable;
+  no unrelated command or metadata field is used as a fallback.
+- Release removes only the selected preservation marker. It does not issue a media deletion
+  command; the existing separately confirmed deletion workflow remains authoritative.
+
+This is a reviewable proposed contract scope, not an implemented protocol or an approval record.
+The storage primitive can be implemented and tested independently while this extension awaits
+the repository-required explicit API approval. Export-copy lifetime remains the separate D5 decision.
+
+#### Verified recording-hold storage slice
+
+Commit `e752bf5` adds `catalog::holds` behind the existing serialized writer. Hold state has no
+TTL and retains its revision after release. A recording can retain at most 256 named hold
+identities, including released identities; existing identities can still be released/reactivated
+at that limit. IDs and actors are bounded to 128 UTF-8 bytes, reasons to 256, and requests use
+the existing bounded queue and two-second deadline. These are internal storage limits, not a
+claim that the operator API exists.
+
+The first active hold captures prior independent protection; the last release restores it.
+Legacy flag changes are rejected while named holds are active. Finalized media with a known end
+can acquire a hold only before cleanup or maintenance claims it. Existing cleanup selection
+continues to consult the effective flag. Catalog deletion and clearing that flag are also fenced
+while a named hold remains active. The new tables are additive and keyed by recording identity,
+so moving the owned media path does not discard protection. Arbitrary direct database edits are
+not a supported preservation interface.
+
+On Windows, `cargo test --locked -p keeppeek --lib storage::catalog::holds::tests -- --nocapture`
+passed all nine tests (0.66 seconds). They cover overlapping holds, restart, legacy protection,
+stale/inactive release, cleanup-first ordering, active/unknown-end/maintenance-claimed rejection,
+UTF-8 limits, the retained-identity cap, revision overflow, transaction failure rollback, additive
+migration, media relocation and expired actor requests. The same executable passed these five
+existing regressions with `TEMP`/`TMP` set to the protected NTFS test directory:
+
+- `storage::engine::tests::cleanup_pauses_recording_when_no_eligible_media_remains`
+- `storage::engine::tests::cleanup_delete_failure_is_actionable_and_capacity_recovery_resumes_recording`
+- `storage::engine::tests::startup_cleanup_removes_only_oldest_catalog_media_to_recovery_target`
+- `storage::catalog::tests::cleanup_candidates_exclude_active_and_protected_recordings`
+- `storage::catalog::maintenance::jobs::tests::active_protected_pending_unknown_end_and_empty_scopes_cannot_be_prepared`
+
+`cargo clippy --locked -p keeppeek --lib --tests -- -D warnings`, Rust formatting and Markdown
+validation passed. These focused results do not extend the earlier canonical `3bf5ad5` gate to
+the new implementation or complete event preservation, API/UI, retention evaluation or AC-7.
 
 ### Approved event and control semantics for the runtime checkpoint
 
