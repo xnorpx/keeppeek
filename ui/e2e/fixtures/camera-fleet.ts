@@ -250,6 +250,8 @@ export function cameraFleetConfiguration(
 				configured_source: 'none',
 				effective_source: 'none',
 				override_expires_at_ms: null,
+				override_actor: null,
+				override_reason: null,
 				blocked_capabilities: [],
 				error: null,
 				revision: 0

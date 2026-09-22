@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
 };
 
 const MAX_WINDOWS: usize = 64;
@@ -20,13 +20,19 @@ pub enum PrivacySource {
 pub struct PrivacyGate {
     active: AtomicBool,
     epoch: AtomicU64,
+    transition: Mutex<()>,
+}
+
+#[derive(Debug, Default)]
+struct PrivacyState {
+    schedules: BTreeMap<String, PrivacySchedule>,
+    gates: BTreeMap<String, std::sync::Arc<PrivacyGate>>,
 }
 
 /// Resolves the effective schedule for each camera.
 #[derive(Debug, Clone, Default)]
 pub struct PrivacyRegistry {
-    schedules: Arc<RwLock<BTreeMap<String, PrivacySchedule>>>,
-    gates: Arc<RwLock<BTreeMap<String, std::sync::Arc<PrivacyGate>>>>,
+    state: Arc<RwLock<PrivacyState>>,
     aliases: Arc<RwLock<BTreeMap<String, String>>>,
 }
 
@@ -47,8 +53,7 @@ impl PrivacyRegistry {
             .map(|camera_id| (camera_id.clone(), std::sync::Arc::new(PrivacyGate::new())))
             .collect();
         Ok(Self {
-            schedules: Arc::new(RwLock::new(schedules)),
-            gates: Arc::new(RwLock::new(gates)),
+            state: Arc::new(RwLock::new(PrivacyState { schedules, gates })),
             aliases: Arc::new(RwLock::new(BTreeMap::new())),
         })
     }
@@ -59,21 +64,17 @@ impl PrivacyRegistry {
         schedules: BTreeMap<String, PrivacySchedule>,
     ) -> anyhow::Result<()> {
         let replacement = Self::new(schedules)?;
-        let schedules = replacement
-            .schedules
+        let replacement_state = replacement
+            .state
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let mut current_schedules = self
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let old_gates = std::mem::take(&mut state.gates);
+        state.gates = replacement_state
             .schedules
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut gates = self
-            .gates
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let old_gates = std::mem::take(&mut *gates);
-        *gates = schedules
             .keys()
             .map(|camera_id| {
                 (
@@ -85,7 +86,7 @@ impl PrivacyRegistry {
                 )
             })
             .collect();
-        *current_schedules = schedules;
+        state.schedules = replacement_state.schedules.clone();
         Ok(())
     }
 
@@ -106,29 +107,19 @@ impl PrivacyRegistry {
             .get(camera_id)
             .cloned()
             .unwrap_or_else(|| camera_id.to_owned());
-        let schedules = self
-            .schedules
+        let state = self
+            .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(schedule) = schedules.get(&configured_id) else {
+        let Some(schedule) = state.schedules.get(&configured_id) else {
             return Ok((false, 0));
         };
         let active = schedule.is_active_unchecked(instant)?;
-        drop(schedules);
-        let gate = self
+        let gate = state
             .gates
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&configured_id)
-            .cloned()
-            .expect("configured privacy gate exists");
-        let epoch = if active == gate.is_active() {
-            gate.epoch()
-        } else if active {
-            gate.activate()
-        } else {
-            gate.deactivate()
-        };
+            .ok_or_else(|| anyhow::anyhow!("privacy gate is missing for configured camera"))?;
+        let epoch = gate.set_active(active);
         Ok((active, epoch))
     }
 
@@ -141,9 +132,10 @@ impl PrivacyRegistry {
             .get(camera_id)
             .cloned()
             .unwrap_or_else(|| camera_id.to_owned());
-        self.gates
+        self.state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .gates
             .get(&configured_id)
             .cloned()
     }
@@ -157,9 +149,10 @@ impl PrivacyRegistry {
             .get(camera_id)
             .cloned()
             .unwrap_or_else(|| camera_id.to_owned());
-        self.schedules
+        self.state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .schedules
             .get(&configured_id)
             .cloned()
     }
@@ -180,21 +173,31 @@ impl PrivacyGate {
         Self {
             active: AtomicBool::new(false),
             epoch: AtomicU64::new(0),
+            transition: Mutex::new(()),
         }
+    }
+
+    fn set_active(&self, active: bool) -> u64 {
+        let _transition = self
+            .transition
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.active.load(Ordering::Acquire) == active {
+            return self.epoch();
+        }
+        let epoch = self.epoch.fetch_add(1, Ordering::AcqRel).saturating_add(1);
+        self.active.store(active, Ordering::Release);
+        epoch
     }
 
     /// Activates privacy before publishing the new epoch.
     pub fn activate(&self) -> u64 {
-        let epoch = self.epoch.fetch_add(1, Ordering::AcqRel).saturating_add(1);
-        self.active.store(true, Ordering::Release);
-        epoch
+        self.set_active(true)
     }
 
     /// Deactivates privacy and advances the epoch so stale media is rejected.
     pub fn deactivate(&self) -> u64 {
-        let epoch = self.epoch.fetch_add(1, Ordering::AcqRel).saturating_add(1);
-        self.active.store(false, Ordering::Release);
-        epoch
+        self.set_active(false)
     }
 
     /// Returns whether a producer may publish media for the observed epoch.
@@ -236,9 +239,16 @@ pub struct PrivacySchedule {
     pub windows: Vec<PrivacyWindow>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temporary_override: Option<PrivacyOverride>,
+    /// Keeps camera ingress connected while privacy blocks media delivery.
+    #[serde(default = "default_keep_camera_connected")]
+    pub keep_camera_connected: bool,
 }
 
 const fn default_privacy_enabled() -> bool {
+    true
+}
+
+const fn default_keep_camera_connected() -> bool {
     true
 }
 
@@ -494,6 +504,7 @@ mod tests {
             timezone: "America/Los_Angeles".into(),
             windows: vec![window],
             temporary_override: None,
+            keep_camera_connected: true,
         }
     }
 
@@ -558,6 +569,7 @@ mod tests {
                 timezone: "UTC-8".into(),
                 windows: vec![],
                 temporary_override: None,
+                keep_camera_connected: true,
             }
             .validate()
             .is_err()
@@ -584,6 +596,7 @@ mod tests {
                 timezone: "UTC".into(),
                 windows,
                 temporary_override: None,
+                keep_camera_connected: true,
             }
             .validate()
             .is_err()
@@ -640,6 +653,7 @@ mod tests {
                 end: "03:30".into(),
             }],
             temporary_override: None,
+            keep_camera_connected: true,
         };
         let next = policy
             .next_transition("2026-03-08T09:00:00Z".parse().unwrap())
@@ -700,5 +714,50 @@ mod tests {
             .unwrap();
         assert_eq!(before.0, after.0);
         assert!(after.1 >= before.1);
+    }
+
+    #[test]
+    fn replacing_schedules_is_atomic_for_concurrent_decisions() {
+        let mut schedules = BTreeMap::new();
+        schedules.insert(
+            "front".to_owned(),
+            schedule(PrivacyWindow {
+                weekdays: vec![1],
+                start: "00:00".into(),
+                end: "01:00".into(),
+            }),
+        );
+        let registry = Arc::new(PrivacyRegistry::new(schedules).unwrap());
+        let workers = (0..4)
+            .map(|_| {
+                let registry = registry.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..256 {
+                        registry.decision("front", Utc::now()).unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for iteration in 0..256 {
+            let schedules = if iteration % 2 == 0 {
+                let mut schedules = BTreeMap::new();
+                schedules.insert(
+                    "front".to_owned(),
+                    schedule(PrivacyWindow {
+                        weekdays: vec![1],
+                        start: "00:00".into(),
+                        end: "01:00".into(),
+                    }),
+                );
+                schedules
+            } else {
+                BTreeMap::new()
+            };
+            registry.replace_schedules(schedules).unwrap();
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
     }
 }

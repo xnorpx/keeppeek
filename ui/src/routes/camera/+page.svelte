@@ -79,6 +79,7 @@
 	let previewAvailable = $derived(
 		camera !== null &&
 			liveHealth !== null &&
+			privacyStatus?.active !== true &&
 			liveHealth.state !== 'offline' &&
 			liveHealth.configured_profiles.length > 0
 	);
@@ -625,6 +626,7 @@
 					health={liveHealth}
 					stream={previewStream}
 					{previewAvailable}
+					privacyActive={privacyStatus?.active === true}
 					{catalogUrl}
 					commandTransportAvailable
 					mode={mobileMode}
@@ -653,6 +655,7 @@
 						health={liveHealth}
 						stream={previewStream}
 						{previewAvailable}
+						privacyActive={privacyStatus?.active === true}
 						commandTransportAvailable
 					/>
 					{#if editingConfiguration && cameraSettings}

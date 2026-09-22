@@ -702,6 +702,7 @@ fn private_native_media_is_dropped_before_storage() {
                     accepted_at: (now - chrono::Duration::minutes(1)).to_rfc3339(),
                     expires_at: (now + chrono::Duration::minutes(1)).to_rfc3339(),
                 }),
+                keep_camera_connected: true,
             },
         )]))
         .unwrap();

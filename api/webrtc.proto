@@ -157,6 +157,8 @@ message PrivacyStatus {
   uint64 revision = 10;
   // Source of the persisted schedule before a temporary override applies.
   PrivacyEffectiveSource configured_source = 11;
+  optional string override_actor = 12;
+  optional string override_reason = 13;
 }
 
 enum PrivacyEffectiveSource {
@@ -172,6 +174,7 @@ message PrivacySchedule {
   string timezone = 2;
   repeated PrivacyWindow windows = 3;
   optional PrivacyOverride temporary_override = 4;
+  optional bool keep_camera_connected = 5;
 }
 
 message PrivacyWindow {

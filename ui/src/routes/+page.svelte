@@ -201,6 +201,9 @@
 	let cameraHealthById = $derived(
 		new Map((serverHealth?.cameras ?? []).map((camera) => [camera.id, camera]))
 	);
+	let focusedPrivacyActive = $derived(
+		focusedCamera !== null && cameraHealthById.get(focusedCamera.id)?.privacy?.active === true
+	);
 	let focusedRecordingDiagnostics = $derived(
 		presentPeekRecordingDiagnostics(
 			focusedCamera === null ? null : (cameraHealthById.get(focusedCamera.id) ?? null)
@@ -518,6 +521,7 @@
 				(camera) =>
 					camera.profiles.length > 0 &&
 					previewStreams.get(camera.id) !== null &&
+					cameraHealthById.get(camera.id)?.privacy?.active !== true &&
 					presentPeekCamera(camera, cameraHealthById.get(camera.id) ?? null).state !== 'offline'
 			)
 			.slice(0, wallCapacity)
@@ -826,6 +830,7 @@
 			(camera) =>
 				camera.profiles.length > 0 &&
 				previewStreams.get(camera.id) !== null &&
+				cameraHealthById.get(camera.id)?.privacy?.active !== true &&
 				presentPeekCamera(camera, cameraHealthById.get(camera.id) ?? null).state !== 'offline'
 		);
 		const demands = availableCameras.map(liveDemand);
@@ -1213,21 +1218,33 @@
 							class="focus-stage group absolute inset-0 overflow-hidden bg-black"
 						>
 							{#key focusedCamera.id}
-								<LiveVideo
-									cameraId={focusedCamera.id}
-									digitalZoom
-									{focusedControls}
-									stream={focusPreviewPresented ? focusedVariant : previewStream(focusedCamera)}
-									quality={effectiveFocusQuality}
-									fallbackFrameUrl={peekViewState.cameraFrame(focusedCamera.id)}
-									diagnosticsLabel={cameraLabel(focusedCamera)}
-									diagnosticsStatusClass={focusedDiagnosticsStatusClass}
-									diagnosticsRecording={focusedRecordingDiagnostics}
-									cameraHref={cameraHref(focusedCamera.id)}
-									onframepresented={handleFocusFramePresented}
-									onvisibilitychange={handleTileVisibility}
-									class="size-full min-h-0 overflow-hidden"
-								/>
+								{#if focusedPrivacyActive}
+									<div class="grid size-full place-items-center bg-surface px-6 text-center">
+										<div class="space-y-2">
+											<RadioIcon class="mx-auto size-6 text-primary-soft" />
+											<p class="text-lg font-semibold">Privacy active</p>
+											<p class="text-sm text-text-muted">
+												Server media delivery is blocked for this camera.
+											</p>
+										</div>
+									</div>
+								{:else}
+									<LiveVideo
+										cameraId={focusedCamera.id}
+										digitalZoom
+										{focusedControls}
+										stream={focusPreviewPresented ? focusedVariant : previewStream(focusedCamera)}
+										quality={effectiveFocusQuality}
+										fallbackFrameUrl={peekViewState.cameraFrame(focusedCamera.id)}
+										diagnosticsLabel={cameraLabel(focusedCamera)}
+										diagnosticsStatusClass={focusedDiagnosticsStatusClass}
+										diagnosticsRecording={focusedRecordingDiagnostics}
+										cameraHref={cameraHref(focusedCamera.id)}
+										onframepresented={handleFocusFramePresented}
+										onvisibilitychange={handleTileVisibility}
+										class="size-full min-h-0 overflow-hidden"
+									/>
+								{/if}
 							{/key}
 						</div>
 
@@ -1306,18 +1323,24 @@
 											? 'ring-2 ring-primary'
 											: 'ring-1 ring-white/15'}"
 									>
-										<LiveVideo
-											cameraId={camera.id}
-											stream="sub"
-											showDiagnostics={false}
-											onframepresented={(frame) => {
-												if (frame.status === 'live' && frame.stream === 'sub') {
-													handleBackgroundFramePresented(camera.id);
-												}
-											}}
-											onvisibilitychange={handleTileVisibility}
-											class="size-full overflow-hidden"
-										/>
+										{#if cameraHealthById.get(camera.id)?.privacy?.active === true}
+											<div class="grid size-full place-items-center bg-surface text-center">
+												<span class="text-2xs font-medium text-primary-soft">PRIVACY ACTIVE</span>
+											</div>
+										{:else}
+											<LiveVideo
+												cameraId={camera.id}
+												stream="sub"
+												showDiagnostics={false}
+												onframepresented={(frame) => {
+													if (frame.status === 'live' && frame.stream === 'sub') {
+														handleBackgroundFramePresented(camera.id);
+													}
+												}}
+												onvisibilitychange={handleTileVisibility}
+												class="size-full overflow-hidden"
+											/>
+										{/if}
 										<button
 											type="button"
 											class="absolute inset-0 z-10 focus-visible:ring-2 focus-visible:ring-white focus-visible:outline-none focus-visible:ring-inset"

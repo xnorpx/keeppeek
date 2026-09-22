@@ -189,6 +189,22 @@ pub(in crate::server) fn close_session(state: &ServerState, session_id: SessionI
     });
 }
 
+pub(in crate::server) fn stop_for_privacy(state: &ServerState, source_id: &str) -> bool {
+    let mut owners = state
+        .ptz_owners
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(owner) = owners.remove(source_id) else {
+        return true;
+    };
+    if super::stop(&owner.camera).is_ok() {
+        return true;
+    }
+    owners.insert(source_id.to_owned(), owner);
+    tracing::warn!(%source_id, "unable to confirm stop of privacy-blocked PTZ movement");
+    false
+}
+
 fn unavailable(message: &str) -> ControlCommandError {
     ControlCommandError::new(proto::ErrorCode::Unavailable, 502, message)
 }

@@ -553,6 +553,7 @@ export type PrivacySchedule = {
 	timezone: string;
 	windows: PrivacyWindow[];
 	temporary_override: PrivacyOverride | null;
+	keep_camera_connected: boolean;
 };
 
 export type PrivacySchedulePatch = ConfigurationPatchValue<PrivacySchedule>;
@@ -570,6 +571,8 @@ export type PrivacyStatus = {
 	configured_source: 'none' | 'default' | 'camera';
 	effective_source: 'none' | 'default' | 'camera' | 'override';
 	override_expires_at_ms: number | null;
+	override_actor: string | null;
+	override_reason: string | null;
 	blocked_capabilities: string[];
 	error: string | null;
 	revision: number;

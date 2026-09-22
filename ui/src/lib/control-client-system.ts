@@ -561,6 +561,8 @@ function privacyStatus(
 			source === 2 ? 'default' : source === 3 ? 'camera' : source === 4 ? 'override' : 'none',
 		override_expires_at_ms:
 			status.overrideExpiresAtMs === undefined ? null : Number(status.overrideExpiresAtMs),
+		override_actor: status.overrideActor ?? null,
+		override_reason: status.overrideReason ?? null,
 		blocked_capabilities: [...status.blockedCapabilities],
 		error: status.error ?? null,
 		revision: numeric(status.revision)
