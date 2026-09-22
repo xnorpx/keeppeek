@@ -1238,7 +1238,8 @@ fn server_capabilities(
         .iter()
         .zip(camera_info.iter())
         .map(|(entry, info)| {
-            let mut camera = proto_camera_info(info, camera_control::ptz_capability(entry), &entry.groups);
+            let mut camera =
+                proto_camera_info(info, camera_control::ptz_capability(entry), &entry.groups);
             let (active, epoch, error) =
                 match state.privacy.decision(&entry.info.id, chrono::Utc::now()) {
                     Ok((active, epoch)) => (active, epoch, None),
