@@ -261,6 +261,14 @@ fn ability_channels(channel_count: u8) -> Vec<Value> {
         .collect()
 }
 
+fn error_response(command: &str, detail: &str) -> Response {
+    Response::json(&json!([{
+        "cmd": command,
+        "code": 1,
+        "error": { "detail": detail, "rspCode": 1 }
+    }]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::requested_channel;
@@ -282,12 +290,4 @@ mod tests {
         assert_eq!(super::ability_channels(3).len(), 3);
         assert_eq!(super::ability_channels(0).len(), 1);
     }
-}
-
-fn error_response(command: &str, detail: &str) -> Response {
-    Response::json(&json!([{
-        "cmd": command,
-        "code": 1,
-        "error": { "detail": detail, "rspCode": 1 }
-    }]))
 }
