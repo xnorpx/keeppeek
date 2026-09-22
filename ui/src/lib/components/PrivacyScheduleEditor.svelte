@@ -27,11 +27,28 @@
 	let form = $state<PrivacySchedule>(copySchedule(null));
 	let loadedSchedule = $state<PrivacySchedule | null>(null);
 	let validationError = $state<string | null>(null);
+	let overrideEnabled = $state(false);
+	let overrideReason = $state('');
+	let overrideDurationMinutes = $state('60');
 
 	$effect(() => {
 		if (schedule !== loadedSchedule) {
 			loadedSchedule = schedule;
 			form = copySchedule(schedule);
+			overrideEnabled = schedule?.temporary_override !== null;
+			overrideReason = schedule?.temporary_override?.reason ?? '';
+			overrideDurationMinutes = schedule?.temporary_override
+				? String(
+						Math.max(
+							1,
+							Math.ceil(
+								(schedule.temporary_override.expires_at_ms -
+									schedule.temporary_override.accepted_at_ms) /
+									60_000
+							)
+						)
+					)
+				: '60';
 		}
 	});
 
@@ -50,13 +67,15 @@
 					enabled: value.enabled,
 					timezone: value.timezone,
 					windows: value.windows.map((window) => ({ ...window, weekdays: [...window.weekdays] })),
-					temporary_override: value.temporary_override ? { ...value.temporary_override } : null
+					temporary_override: value.temporary_override ? { ...value.temporary_override } : null,
+					keep_camera_connected: value.keep_camera_connected
 				}
 			: {
 					enabled: true,
 					timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
 					windows: [],
-					temporary_override: null
+					temporary_override: null,
+					keep_camera_connected: true
 				};
 	}
 
@@ -86,7 +105,24 @@
 			validationError = 'Every privacy window needs at least one weekday.';
 			return;
 		}
-		void onsave({ operation: 'set', value: copySchedule(form) });
+		const duration = Number(overrideDurationMinutes);
+		if (
+			overrideEnabled &&
+			(!overrideReason.trim() || !Number.isInteger(duration) || duration < 1 || duration > 1440)
+		) {
+			validationError = 'Temporary overrides need a reason and a duration from 1 to 1440 minutes.';
+			return;
+		}
+		const value = copySchedule(form);
+		value.temporary_override = overrideEnabled
+			? {
+					actor: '',
+					reason: overrideReason.trim(),
+					accepted_at_ms: Date.now(),
+					expires_at_ms: Date.now() + duration * 60_000
+				}
+			: null;
+		void onsave({ operation: 'set', value });
 	}
 </script>
 
@@ -136,6 +172,67 @@
 					/>
 				</label>
 			</div>
+
+			<div class="grid gap-3 rounded-sm border border-hairline bg-raised p-3">
+				<label class="flex items-center gap-2 text-sm font-medium" for="privacy-keep-connected">
+					<input
+						id="privacy-keep-connected"
+						type="checkbox"
+						bind:checked={form.keep_camera_connected}
+						class="size-4 accent-primary"
+					/>
+					Keep camera connection warm during privacy
+				</label>
+				<p class="text-xs text-text-muted">
+					Media delivery, recording, snapshots, and controls remain blocked. Keeping ingress warm
+					shortens recovery when the schedule ends.
+				</p>
+			</div>
+
+			<section
+				class="grid gap-3 rounded-sm border border-hairline bg-raised p-3"
+				aria-labelledby="privacy-override-heading"
+			>
+				<div>
+					<h3 id="privacy-override-heading" class="text-sm font-semibold">Temporary override</h3>
+					<p class="mt-1 text-xs text-text-muted">
+						Administrator-only. The server records the actor and acceptance time.
+					</p>
+				</div>
+				<label class="flex items-center gap-2 text-sm font-medium" for="privacy-override-enabled">
+					<input
+						id="privacy-override-enabled"
+						type="checkbox"
+						bind:checked={overrideEnabled}
+						class="size-4 accent-primary"
+					/>
+					Allow privacy only until the override expires
+				</label>
+				{#if overrideEnabled}
+					<div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
+						<label class="grid gap-1.5 text-sm font-medium" for="privacy-override-reason">
+							Reason
+							<Input
+								id="privacy-override-reason"
+								bind:value={overrideReason}
+								maxlength={256}
+								placeholder="Maintenance"
+							/>
+						</label>
+						<label class="grid gap-1.5 text-sm font-medium" for="privacy-override-duration">
+							Duration (minutes)
+							<Input
+								id="privacy-override-duration"
+								type="number"
+								min="1"
+								max="1440"
+								step="1"
+								bind:value={overrideDurationMinutes}
+							/>
+						</label>
+					</div>
+				{/if}
+			</section>
 
 			<div class="space-y-3" aria-labelledby="privacy-windows-heading">
 				<div class="flex flex-wrap items-center justify-between gap-3">

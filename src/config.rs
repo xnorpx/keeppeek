@@ -3920,6 +3920,7 @@ mod tests {
             timezone: "UTC".into(),
             windows: vec![],
             temporary_override: None,
+            keep_camera_connected: true,
         };
         let ip = crate::privacy::PrivacySchedule {
             timezone: "America/Los_Angeles".into(),

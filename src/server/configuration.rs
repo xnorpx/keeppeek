@@ -107,10 +107,30 @@ impl Registry {
     }
 }
 
+#[cfg(test)]
 pub(super) fn dispatch(
     state: &ServerState,
     command: proto::ConfigurationCommand,
 ) -> Result<control_ok::Result, ControlCommandError> {
+    dispatch_inner(state, None, command)
+}
+
+pub(super) fn dispatch_as(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    command: proto::ConfigurationCommand,
+) -> Result<control_ok::Result, ControlCommandError> {
+    dispatch_inner(state, Some(principal.id()), command)
+}
+
+fn dispatch_inner(
+    state: &ServerState,
+    actor: Option<String>,
+    mut command: proto::ConfigurationCommand,
+) -> Result<control_ok::Result, ControlCommandError> {
+    if let Some(actor) = actor.as_deref() {
+        stamp_privacy_override(&mut command, actor);
+    }
     let result = match command.action {
         Some(proto::configuration_command::Action::Get(request)) => {
             proto::configuration_result::Result::Snapshot(locked_configuration_snapshot_page(
@@ -158,6 +178,41 @@ pub(super) fn dispatch(
             result: Some(result),
         },
     ))
+}
+
+fn stamp_privacy_override(command: &mut proto::ConfigurationCommand, actor: &str) {
+    let Some(proto::configuration_command::Action::Plan(request)) = command.action.as_mut() else {
+        return;
+    };
+    let Some(change) = request
+        .change
+        .as_mut()
+        .and_then(|change| change.change.as_mut())
+    else {
+        return;
+    };
+    match change {
+        proto::configuration_change::Change::Privacy(patch) => {
+            stamp_privacy_schedule_update(&mut patch.schedule, actor);
+        }
+        proto::configuration_change::Change::PrivacyDefaults(patch) => {
+            stamp_privacy_schedule_update(&mut patch.schedule, actor);
+        }
+        _ => {}
+    }
+}
+
+fn stamp_privacy_schedule_update(update: &mut Option<proto::PrivacyScheduleUpdate>, actor: &str) {
+    let Some(proto::privacy_schedule_update::Value::Set(schedule)) =
+        update.as_mut().and_then(|update| update.value.as_mut())
+    else {
+        return;
+    };
+    let Some(override_) = schedule.temporary_override.as_mut() else {
+        return;
+    };
+    override_.actor = actor.to_owned();
+    override_.accepted_at_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
 }
 
 fn plan_configuration_change(
@@ -1090,6 +1145,7 @@ fn privacy_schedule_from_proto(
         timezone: schedule.timezone.clone(),
         windows,
         temporary_override,
+        keep_camera_connected: schedule.keep_camera_connected.unwrap_or(true),
     };
     schedule.validate()?;
     Ok(schedule)
@@ -3343,6 +3399,7 @@ mod tests {
                 end: "06:00".to_owned(),
             }],
             temporary_override: None,
+            keep_camera_connected: Some(true),
         };
         let plan = plan_configuration_change(
             &state,

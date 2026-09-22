@@ -1,11 +1,13 @@
 import { existsSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const repositoryRoot = path.resolve(import.meta.dir, '../..');
 const runId = process.env.KEEPPEEK_E2E_RUN_ID ?? '';
 if (runId && !/^[a-z0-9-]{1,64}$/.test(runId)) throw new Error('Invalid E2E run ID');
-const testRoot = path.join(repositoryRoot, 'target', `ui-logging-e2e${runId ? `-${runId}` : ''}`);
+const storageParent = process.platform === 'win32' ? tmpdir() : path.join(repositoryRoot, 'target');
+const testRoot = path.join(storageParent, `ui-logging-e2e${runId ? `-${runId}` : ''}`);
 const seedAge = Number(process.env.KEEPPEEK_E2E_SEED_AGE_SECONDS ?? '240');
 if (!Number.isInteger(seedAge) || seedAge < 0 || seedAge > 86_400)
 	throw new Error('Invalid E2E seed age');

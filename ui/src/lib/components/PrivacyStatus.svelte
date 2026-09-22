@@ -47,7 +47,7 @@
 						? 'Live media, recording, snapshots, event attachments, external services, publication, PTZ, and talkback are blocked by the server.'
 						: 'The server will enforce the next scheduled transition for every media path.'}
 				</p>
-				<dl class="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+				<dl class="mt-3 grid gap-2 text-xs lg:grid-cols-4 sm:grid-cols-2">
 					<div>
 						<dt class="text-muted-foreground">Timezone</dt>
 						<dd class="font-mono">{status.timezone}</dd>
@@ -60,6 +60,18 @@
 						<dt class="text-muted-foreground">Revision</dt>
 						<dd class="font-mono">{status.revision}</dd>
 					</div>
+					{#if status.override_reason}
+						<div>
+							<dt class="text-muted-foreground">Override reason</dt>
+							<dd>{status.override_reason}</dd>
+						</div>
+					{/if}
+					{#if status.override_actor}
+						<div>
+							<dt class="text-muted-foreground">Override actor</dt>
+							<dd class="font-mono">{status.override_actor}</dd>
+						</div>
+					{/if}
 				</dl>
 				{#if status.error}
 					<p class="mt-3 text-xs text-destructive" role="alert">{status.error}</p>

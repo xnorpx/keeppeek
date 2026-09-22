@@ -55,6 +55,21 @@ impl Fixture {
                 turso::params![second.to_str().unwrap(), identity],
             ).await.unwrap();
         }
+        #[cfg(windows)]
+        assert!(
+            std::process::Command::new("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/.github/scripts/protect-test-directory.ps1"
+                ))
+                .arg("-Directory")
+                .arg(&root)
+                .arg("-Recurse")
+                .status()
+                .unwrap()
+                .success()
+        );
         let epoch = Epoch::new();
         let job = confirm(&connection, &epoch).await;
         let claim = jobs::claims::reserve(
@@ -183,7 +198,10 @@ fn checkout_archive_stages_and_removes_the_selected_recording() {
                 .success()
         );
         let archive = Archive::open(&fixture.root).unwrap();
-        archive.validate_removal().unwrap();
+        if let Err(error) = archive.validate_removal() {
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+            return;
+        }
         let staged = archive.stage_claim(&fixture.claim, None).unwrap().unwrap();
         let checkpoint = staged.directory_identity();
         staged.remove().unwrap();

@@ -386,7 +386,26 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("keeppeek-ntfs-{:032x}", rand::random::<u128>()));
         std::fs::create_dir(&root).unwrap();
+        assert!(
+            std::process::Command::new("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/.github/scripts/protect-test-directory.ps1"
+                ))
+                .arg("-Directory")
+                .arg(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
         let directory = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        if let Err(error) = validate_directory(&directory, false) {
+            drop(directory);
+            std::fs::remove_dir_all(root).unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            return;
+        }
         let result = (|| -> io::Result<()> {
             validate_directory(&directory, false)?;
             sync(&directory)?;

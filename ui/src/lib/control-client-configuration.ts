@@ -376,6 +376,7 @@ function protoPrivacySchedule(schedule: PrivacySchedule) {
 			start: window.start,
 			end: window.end
 		})),
+		keepCameraConnected: schedule.keep_camera_connected,
 		temporaryOverride: schedule.temporary_override
 			? {
 					actor: schedule.temporary_override.actor,
@@ -609,6 +610,7 @@ function privacySchedule(schedule: ProtoPrivacySchedule): PrivacySchedule {
 			start: window.start,
 			end: window.end
 		})),
+		keep_camera_connected: schedule.keepCameraConnected ?? true,
 		temporary_override: schedule.temporaryOverride
 			? {
 					actor: schedule.temporaryOverride.actor,
@@ -639,6 +641,8 @@ function privacyStatus(status: ProtoPrivacyStatus | undefined): PrivacyStatus {
 			source === 2 ? 'default' : source === 3 ? 'camera' : source === 4 ? 'override' : 'none',
 		override_expires_at_ms:
 			status?.overrideExpiresAtMs === undefined ? null : Number(status.overrideExpiresAtMs),
+		override_actor: status?.overrideActor ?? null,
+		override_reason: status?.overrideReason ?? null,
 		blocked_capabilities: [...(status?.blockedCapabilities ?? [])],
 		error: status?.error ?? null,
 		revision: Number(status?.revision ?? 0n)
