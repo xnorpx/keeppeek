@@ -36,6 +36,7 @@ impl Worker {
             camera,
             Arc::clone(&slot),
             registry.clone(),
+            Arc::new(crate::privacy::PrivacyRegistry::default()),
             shutdown.clone(),
         )
         .unwrap()
@@ -207,7 +208,17 @@ fn disabled_snapshots_do_not_start_a_worker() {
             camera.config.events.clone(),
         )
         .unwrap();
-    assert!(spawn(&camera, slot, registry, shutdown).unwrap().is_none());
+    assert!(
+        spawn(
+            &camera,
+            slot,
+            registry,
+            Arc::new(crate::privacy::PrivacyRegistry::default()),
+            shutdown,
+        )
+        .unwrap()
+        .is_none()
+    );
 }
 
 #[test]

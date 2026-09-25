@@ -37,6 +37,7 @@ use crate::{
         AttemptRecord, ClearScope, Handle as NotificationHandle, HistoryEvent, HistoryGroup, Inbox,
         NotificationItem, RuleRecord, RuleStoreError, Stage, model::Rule as NotificationRule,
     },
+    privacy::{PrivacyRegistry, PrivacySource},
     rtsp::{RtspTransport, probe_rtsp_video},
     runtime::{
         FacadeSendError, FacadeSender, RouterError, RouterMessage, RouterQuery, RouterResponse,
@@ -67,7 +68,7 @@ use rouille::{Request, Response, ResponseBody, Server, router};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::File,
     io::{Cursor, Read, Seek, SeekFrom, Write},
     net::{IpAddr, Ipv4Addr, TcpListener, ToSocketAddrs},
@@ -321,6 +322,7 @@ struct CameraEntry {
     control: Option<CameraControl>,
     control_revision: Arc<()>,
     hikvision: Option<camera_control::Report>,
+    runtime_camera: Option<crate::cameras::Camera>,
 }
 
 #[derive(Clone)]
@@ -588,18 +590,32 @@ impl ControlRequestHandler for ServerControlHandler {
         channel: proto::DataChannelKind,
         message: proto::Message,
     ) -> Result<(), ControlHandlerError> {
-        self.authorize_api_session(
-            session_id,
-            AccessRole::Administrator,
-            "event_attachment_publish",
-        )
-        .map_err(|(error, close_session)| ControlHandlerError {
-            code: error.code,
-            message: error.message,
-            close_session,
-        })?;
-        event_publication::ingest(&self.state, session_id, channel, message)
-            .map_err(|error| ControlHandlerError::new(error.code, error.message))
+        let principal = self
+            .authorize_api_session(
+                session_id,
+                AccessRole::Administrator,
+                "event_attachment_publish",
+            )
+            .map_err(|(error, close_session)| ControlHandlerError {
+                code: error.code,
+                message: error.message,
+                close_session,
+            })?;
+        event_publication::ingest(&self.state, session_id, channel, message).map_err(|error| {
+            if is_privacy_denial(&error.message) {
+                record_access_audit(
+                    &self.state,
+                    i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                    Some(&principal.id()),
+                    Some(principal.role),
+                    "privacy_denied",
+                    None,
+                    "policy_active",
+                    self.session_classification(session_id),
+                );
+            }
+            ControlHandlerError::new(error.code, error.message)
+        })
     }
 
     fn unsubscribe_for_session(&self, session_id: SessionId, subscription_ids: &[String]) {
@@ -637,6 +653,7 @@ impl ControlRequestHandler for ServerControlHandler {
         let mut data_messages = Vec::new();
         let mut notifications = Vec::new();
         let sensitive_operation = sensitive_administrator_operation(request.command.as_ref());
+        let privacy_target = privacy_denial_target(&self.state, request.command.as_ref());
         let result = match self.authorize_request(session_id, &request) {
             Err((error, close_session)) => {
                 if close_session {
@@ -714,7 +731,7 @@ impl ControlRequestHandler for ServerControlHandler {
                         .handle_notification_rules(session_id, command)
                         .map(Some),
                     Some(control_request::Command::ConfigurationCommand(command)) => {
-                        configuration::dispatch(&self.state, command).map(Some)
+                        configuration::dispatch_as(&self.state, &principal, command).map(Some)
                     }
                     Some(control_request::Command::EventWorkflowCommand(command)) => {
                         event_workflow::dispatch(&self.state, &principal, command).map(Some)
@@ -788,6 +805,26 @@ impl ControlRequestHandler for ServerControlHandler {
                         sensitive_operation,
                         None,
                         "success",
+                        self.session_classification(session_id),
+                    );
+                }
+                if let Err(error) = &result
+                    && is_privacy_denial(&error.message)
+                {
+                    record_access_audit(
+                        &self.state,
+                        i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                        Some(&principal.id()),
+                        Some(principal.role),
+                        "privacy_denied",
+                        privacy_target.as_deref(),
+                        if error.message.contains("could not be evaluated")
+                            || error.message.contains("is unavailable")
+                        {
+                            "policy_unavailable"
+                        } else {
+                            "policy_active"
+                        },
                         self.session_classification(session_id),
                     );
                 }
@@ -869,6 +906,22 @@ impl ControlRequestHandler for ServerControlHandler {
                     "media source session not found",
                 )
             })?;
+        let (privacy_active, _) = self
+            .state
+            .privacy
+            .decision(&camera.info.id, chrono::Utc::now())
+            .map_err(|_| {
+                ControlHandlerError::new(
+                    proto::ErrorCode::Unavailable,
+                    "camera privacy policy is unavailable",
+                )
+            })?;
+        if privacy_active {
+            return Err(ControlHandlerError::new(
+                proto::ErrorCode::Rejected,
+                "camera privacy is active",
+            ));
+        }
         let camera_ip = camera.info.ip.parse().map_err(|_| {
             ControlHandlerError::new(
                 proto::ErrorCode::Internal,
@@ -997,7 +1050,28 @@ fn server_capabilities(
     let cameras = camera_entries
         .iter()
         .zip(camera_info.iter())
-        .map(|(entry, info)| proto_camera_info(info, camera_control::ptz_capability(entry)))
+        .map(|(entry, info)| {
+            let mut camera = proto_camera_info(info, camera_control::ptz_capability(entry));
+            let (active, epoch, error) =
+                match state.privacy.decision(&entry.info.id, chrono::Utc::now()) {
+                    Ok((active, epoch)) => (active, epoch, None),
+                    Err(error) => (true, u64::MAX, Some(error.to_string())),
+                };
+            let source = state
+                .privacy_sources
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&entry.info.id)
+                .copied();
+            camera.privacy = Some(privacy_status(
+                state.privacy.schedule(&entry.info.id).as_ref(),
+                active,
+                epoch,
+                source,
+                error,
+            ));
+            camera
+        })
         .collect();
     let source_sessions = camera_info
         .iter()
@@ -1216,7 +1290,138 @@ fn proto_camera_info(camera: &CameraInfo, ptz: proto::PtzCapability) -> proto::C
             two_way_audio: camera.capabilities.two_way_audio,
         }),
         ptz: Some(ptz),
+        privacy: None,
     }
+}
+
+fn proto_privacy_schedule(schedule: &crate::privacy::PrivacySchedule) -> proto::PrivacySchedule {
+    proto::PrivacySchedule {
+        enabled: schedule.enabled,
+        timezone: schedule.timezone.clone(),
+        windows: schedule
+            .windows
+            .iter()
+            .map(|window| proto::PrivacyWindow {
+                weekdays: window.weekdays.iter().map(|day| u32::from(*day)).collect(),
+                start: window.start.clone(),
+                end: window.end.clone(),
+            })
+            .collect(),
+        keep_camera_connected: Some(schedule.keep_camera_connected),
+        temporary_override: schedule.temporary_override.as_ref().and_then(|override_| {
+            Some(proto::PrivacyOverride {
+                actor: override_.actor.clone(),
+                reason: override_.reason.clone(),
+                accepted_at_ms: chrono::DateTime::parse_from_rfc3339(&override_.accepted_at)
+                    .ok()?
+                    .timestamp_millis(),
+                expires_at_ms: chrono::DateTime::parse_from_rfc3339(&override_.expires_at)
+                    .ok()?
+                    .timestamp_millis(),
+            })
+        }),
+    }
+}
+
+fn privacy_status(
+    schedule: Option<&crate::privacy::PrivacySchedule>,
+    active: bool,
+    epoch: u64,
+    source: Option<PrivacySource>,
+    mut error: Option<String>,
+) -> proto::PrivacyStatus {
+    let Some(schedule) = schedule else {
+        return proto::PrivacyStatus {
+            configured_source: proto::PrivacyEffectiveSource::None as i32,
+            effective_source: proto::PrivacyEffectiveSource::None as i32,
+            blocked_capabilities: Vec::new(),
+            ..Default::default()
+        };
+    };
+    let effective_source = if schedule
+        .temporary_override
+        .as_ref()
+        .and_then(|override_| {
+            chrono::DateTime::parse_from_rfc3339(&override_.accepted_at)
+                .ok()
+                .zip(chrono::DateTime::parse_from_rfc3339(&override_.expires_at).ok())
+        })
+        .is_some_and(|(accepted_at, expires_at)| {
+            let now = chrono::Utc::now();
+            now >= accepted_at && now < expires_at
+        }) {
+        proto::PrivacyEffectiveSource::Override
+    } else {
+        match source {
+            Some(PrivacySource::Default) => proto::PrivacyEffectiveSource::Default,
+            Some(PrivacySource::Camera) | None => proto::PrivacyEffectiveSource::Camera,
+        }
+    };
+    let configured_source = match source {
+        Some(PrivacySource::Default) => proto::PrivacyEffectiveSource::Default,
+        Some(PrivacySource::Camera) | None => proto::PrivacyEffectiveSource::Camera,
+    };
+    let next_transition_at_ms = match schedule.next_transition(chrono::Utc::now()) {
+        Ok(next_transition) => next_transition.map(|value| value.timestamp_millis()),
+        Err(next_transition_error) => {
+            if error.is_none() {
+                error = Some(next_transition_error.to_string());
+            }
+            None
+        }
+    };
+    proto::PrivacyStatus {
+        configured: true,
+        active,
+        enabled: schedule.enabled,
+        timezone: schedule.timezone.clone(),
+        next_transition_at_ms,
+        configured_source: configured_source as i32,
+        effective_source: effective_source as i32,
+        override_expires_at_ms: schedule.temporary_override.as_ref().and_then(|override_| {
+            chrono::DateTime::parse_from_rfc3339(&override_.expires_at)
+                .ok()
+                .map(|value| value.timestamp_millis())
+        }),
+        override_actor: schedule
+            .temporary_override
+            .as_ref()
+            .map(|override_| override_.actor.clone()),
+        override_reason: schedule
+            .temporary_override
+            .as_ref()
+            .map(|override_| override_.reason.clone()),
+        blocked_capabilities: [
+            "live_video",
+            "live_audio",
+            "recording",
+            "snapshots",
+            "event_attachments",
+            "external_services",
+            "group_publication",
+            "ptz",
+            "talkback",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        error,
+        revision: epoch,
+    }
+}
+
+fn privacy_override_active(
+    schedule: Option<&crate::privacy::PrivacySchedule>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    schedule
+        .and_then(|schedule| schedule.temporary_override.as_ref())
+        .and_then(|override_| {
+            chrono::DateTime::parse_from_rfc3339(&override_.accepted_at)
+                .ok()
+                .zip(chrono::DateTime::parse_from_rfc3339(&override_.expires_at).ok())
+        })
+        .is_some_and(|(accepted_at, expires_at)| now >= accepted_at && now < expires_at)
 }
 
 impl ServerControlHandler {
@@ -2980,6 +3185,24 @@ fn create_export_job(
             "export source was not found",
         )
     })?;
+    if state
+        .privacy
+        .decision(&camera.info.id, chrono::Utc::now())
+        .map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "camera privacy policy could not be evaluated",
+            )
+        })?
+        .0
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "camera privacy is active",
+        ));
+    }
     if !matches!(request.stream_id.as_str(), "main" | "sub")
         || !camera
             .info
@@ -3869,6 +4092,13 @@ fn download_export(
         })?;
         (record.job.clone(), path, expected_checksum)
     };
+    if privacy_active_for_media(state, &job.source_id)? {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "camera privacy is active",
+        ));
+    }
     let size = path
         .metadata()
         .map_err(|error| {
@@ -3929,6 +4159,13 @@ fn download_export(
             "export checksum verification failed; retry the export",
         ));
     }
+    if privacy_active_for_media(state, &job.source_id)? {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "camera privacy is active",
+        ));
+    }
     let chunk_count = payload.len().div_ceil(DATA_MESSAGE_CHUNK_BYTES);
     let chunk_count_u32 = u32::try_from(chunk_count).map_err(|_| {
         ControlCommandError::new(
@@ -3987,6 +4224,56 @@ fn download_export(
         },
         messages,
     ))
+}
+
+fn privacy_active_for_media(
+    state: &ServerState,
+    source_id: &str,
+) -> Result<bool, ControlCommandError> {
+    state
+        .privacy
+        .decision(source_id, chrono::Utc::now())
+        .map(|(active, _)| active)
+        .map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "camera privacy policy could not be evaluated",
+            )
+        })
+}
+
+fn cancel_privacy_exports(state: &ServerState, source_id: &str) {
+    let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+    let mut cleanup = Vec::new();
+    let mut jobs = state
+        .export_jobs
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut changed = false;
+    for (job_id, record) in jobs.iter_mut() {
+        if record.request.source_id != source_id
+            || record.job.status != proto::ExportJobStatus::Running as i32
+        {
+            continue;
+        }
+        record.cancel.store(true, Ordering::Release);
+        record.job.status = proto::ExportJobStatus::Cancelled as i32;
+        record.job.error = Some("Export was cancelled because camera privacy is active".to_owned());
+        record.job.retryable = true;
+        record.updated_at_ms = now_ms;
+        record.completed_at_ms = Some(now_ms);
+        record.path = None;
+        cleanup.push((job_id.clone(), record.artifact_id.clone()));
+        changed = true;
+    }
+    if changed {
+        persist_export_jobs_logged(state, &jobs, "privacy cancellation");
+    }
+    drop(jobs);
+    for (job_id, artifact_id) in cleanup {
+        let _ = cleanup_export_attempt_artifacts(state, &job_id, &artifact_id);
+    }
 }
 
 fn cleanup_expired_exports(state: &ServerState) {
@@ -8084,6 +8371,7 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
         control,
         control_revision: Arc::new(()),
         hikvision: None,
+        runtime_camera: camera.cloned(),
     }
 }
 
@@ -8556,6 +8844,10 @@ pub struct ServerState {
     port: u16,
     access_key: Arc<RwLock<AccessKey>>,
     access_manager: AccessManager,
+    privacy: Arc<PrivacyRegistry>,
+    privacy_sources: Arc<RwLock<BTreeMap<String, PrivacySource>>>,
+    privacy_epochs: Arc<Mutex<HashMap<IpAddr, u64>>>,
+    privacy_override_states: Arc<Mutex<HashMap<IpAddr, bool>>>,
     access_metrics: Arc<AccessMetrics>,
     network_access: NetworkAccessPolicy,
     require_secure_remote: bool,
@@ -8606,6 +8898,47 @@ pub struct ServerState {
 }
 
 impl ServerState {
+    pub(crate) fn privacy_registry(&self) -> Arc<PrivacyRegistry> {
+        self.privacy.clone()
+    }
+
+    pub(crate) fn reload_privacy_from_configuration(
+        &self,
+        root: &toml::Table,
+    ) -> anyhow::Result<()> {
+        let privacy: crate::config::PrivacyConfig = root
+            .get("privacy")
+            .cloned()
+            .map(toml::Value::try_into)
+            .transpose()?
+            .unwrap_or_default();
+        let mut schedules = privacy.cameras.clone();
+        let mut sources = privacy
+            .cameras
+            .keys()
+            .map(|camera_id| (camera_id.clone(), PrivacySource::Camera))
+            .collect::<BTreeMap<_, _>>();
+        for camera in self.camera_entries() {
+            if let Some(schedule) = privacy.schedule_for(&camera.info.id, &camera.info.ip) {
+                let source = if privacy.cameras.contains_key(&camera.info.id)
+                    || privacy.cameras.contains_key(&camera.info.ip)
+                {
+                    PrivacySource::Camera
+                } else {
+                    PrivacySource::Default
+                };
+                sources.insert(camera.info.id.clone(), source);
+                schedules.insert(camera.info.id, schedule.clone());
+            }
+        }
+        self.privacy.replace_schedules(schedules)?;
+        *self
+            .privacy_sources
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = sources;
+        Ok(())
+    }
+
     pub fn new(
         config: &Config,
         camera_configs: &HashMap<String, Vec<CameraConfig>>,
@@ -8619,12 +8952,49 @@ impl ServerState {
         let sanitized_config = sanitized_config(config, storage, camera_count, &entries);
         let access_manager = initial_access_manager(config);
         let (export_history_path, export_jobs) = restored_export_jobs(storage);
+        let mut privacy_schedules = config.privacy.cameras.clone();
+        let mut privacy_sources = config
+            .privacy
+            .cameras
+            .keys()
+            .map(|camera_id| (camera_id.clone(), PrivacySource::Camera))
+            .collect::<BTreeMap<_, _>>();
+        for camera in &entries {
+            if let Some(schedule) = config
+                .privacy
+                .schedule_for(&camera.info.id, &camera.info.ip)
+            {
+                let source = if config.privacy.cameras.contains_key(&camera.info.id)
+                    || config.privacy.cameras.contains_key(&camera.info.ip)
+                {
+                    PrivacySource::Camera
+                } else {
+                    PrivacySource::Default
+                };
+                privacy_sources.insert(camera.info.id.clone(), source);
+                privacy_schedules.insert(camera.info.id.clone(), schedule.clone());
+            }
+        }
+        let privacy = PrivacyRegistry::new(privacy_schedules)
+            .expect("privacy configuration must be validated before server startup");
+        let privacy = Arc::new(privacy);
+        webrtc.set_privacy_registry(privacy.clone());
+        for camera in &entries {
+            if let Ok(camera_ip) = camera.info.ip.parse::<IpAddr>() {
+                privacy.set_alias(camera_ip.to_string(), camera.info.id.clone());
+                webrtc.set_privacy_camera_id(camera_ip, camera.info.id.clone());
+            }
+        }
 
         Self {
             host: config.host.clone(),
             port: config.port,
             access_key: Arc::new(RwLock::new(config.access_key)),
             access_manager,
+            privacy,
+            privacy_sources: Arc::new(RwLock::new(privacy_sources)),
+            privacy_epochs: Arc::new(Mutex::new(HashMap::new())),
+            privacy_override_states: Arc::new(Mutex::new(HashMap::new())),
             access_metrics: Arc::new(AccessMetrics::default()),
             network_access: NetworkAccessPolicy::new(
                 config.access.local_networks.clone(),
@@ -8745,6 +9115,147 @@ impl ServerState {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    fn enforce_privacy_transitions(&self) {
+        let now = chrono::Utc::now();
+        for camera in self.camera_entries() {
+            let Ok(camera_ip) = camera.info.ip.parse::<IpAddr>() else {
+                continue;
+            };
+            let Ok((active, epoch)) = self.privacy.decision(&camera.info.id, now) else {
+                self.webrtc.live().reset_camera(camera_ip);
+                let first_failure = self
+                    .privacy_epochs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(camera_ip, u64::MAX)
+                    .is_none_or(|previous| previous != u64::MAX);
+                if first_failure {
+                    record_access_audit(
+                        self,
+                        i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                        None,
+                        Some(AccessRole::Administrator),
+                        "privacy_policy_evaluation",
+                        Some(&camera.info.id),
+                        "failed_closed",
+                        ClientClassificationReason::DirectLocal,
+                    );
+                }
+                continue;
+            };
+            let previous_epoch = self
+                .privacy_epochs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(camera_ip, epoch);
+            let changed = previous_epoch.is_none_or(|previous| previous != epoch);
+            let schedule = self.privacy.schedule(&camera.info.id);
+            let override_active = privacy_override_active(schedule.as_ref(), now);
+            let previous_override_active = self
+                .privacy_override_states
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(camera_ip, override_active);
+            let override_changed =
+                previous_override_active.is_none_or(|previous| previous != override_active);
+            if changed && (previous_epoch.is_some() || active) {
+                let override_transition = override_changed.then(|| {
+                    if override_active {
+                        ("privacy_override_applied", "override_active")
+                    } else if schedule
+                        .as_ref()
+                        .is_some_and(|schedule| schedule.temporary_override.is_some())
+                    {
+                        ("privacy_override_expired", "override_expired")
+                    } else {
+                        ("privacy_override_cancelled", "administrator_cancelled")
+                    }
+                });
+                record_access_audit(
+                    self,
+                    i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                    None,
+                    Some(AccessRole::Administrator),
+                    override_transition.map_or(
+                        if active {
+                            "privacy_activated"
+                        } else {
+                            "privacy_deactivated"
+                        },
+                        |(action, _)| action,
+                    ),
+                    Some(&camera.info.id),
+                    override_transition.map_or(
+                        if active {
+                            "policy_disabled"
+                        } else {
+                            "policy_enabled"
+                        },
+                        |(_, reason)| reason,
+                    ),
+                    ClientClassificationReason::DirectLocal,
+                );
+            }
+            if active {
+                if changed {
+                    self.webrtc.live().reset_camera(camera_ip);
+                }
+                cancel_privacy_exports(self, &camera.info.id);
+                if changed
+                    && schedule
+                        .as_ref()
+                        .is_some_and(|schedule| !schedule.keep_camera_connected)
+                    && let Some(runtime) = &self.camera_runtime
+                    && let Err(error) = runtime.stop_camera(camera_ip)
+                {
+                    tracing::warn!(%camera_ip, %error, "privacy could not stop camera ingress");
+                    record_access_audit(
+                        self,
+                        i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                        None,
+                        Some(AccessRole::Administrator),
+                        "privacy_camera_stop_failed",
+                        Some(&camera.info.id),
+                        "policy_active",
+                        ClientClassificationReason::DirectLocal,
+                    );
+                }
+                if !camera_control::stop_for_privacy(self, &camera.info.id) && changed {
+                    record_access_audit(
+                        self,
+                        i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                        None,
+                        Some(AccessRole::Administrator),
+                        "privacy_ptz_stop_failed",
+                        Some(&camera.info.id),
+                        "policy_active",
+                        ClientClassificationReason::DirectLocal,
+                    );
+                }
+            } else if changed
+                && previous_epoch.is_some()
+                && schedule
+                    .as_ref()
+                    .is_some_and(|schedule| !schedule.keep_camera_connected)
+                && let Some(runtime) = &self.camera_runtime
+                && let Some(runtime_camera) = &camera.runtime_camera
+                && let Err(error) = runtime.start_camera(runtime_camera.clone())
+            {
+                tracing::warn!(%camera_ip, %error, "privacy could not restart camera ingress");
+                record_access_audit(
+                    self,
+                    i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                    None,
+                    Some(AccessRole::Administrator),
+                    "privacy_camera_start_failed",
+                    Some(&camera.info.id),
+                    "policy_inactive",
+                    ClientClassificationReason::DirectLocal,
+                );
+            }
+        }
     }
 
     fn camera(&self, id: &str) -> Option<CameraEntry> {
@@ -9033,6 +9544,39 @@ fn access_command_error(operation: &str, error: anyhow::Error) -> ControlCommand
         409,
         format!("unable to {operation}: {error}"),
     )
+}
+
+fn is_privacy_denial(message: &str) -> bool {
+    message.contains("camera privacy is active")
+        || message.contains("camera privacy policy could not be evaluated")
+        || message.contains("camera privacy policy is unavailable")
+}
+
+fn privacy_denial_target(
+    state: &ServerState,
+    command: Option<&control_request::Command>,
+) -> Option<String> {
+    match command {
+        Some(control_request::Command::ExportCommand(command)) => match &command.action {
+            Some(proto::export_command::Action::Create(request)) => Some(request.source_id.clone()),
+            _ => None,
+        },
+        Some(control_request::Command::SubscribeMedia(command)) => state
+            .camera_entries()
+            .into_iter()
+            .find(|camera| {
+                proto_camera_source_session(&camera.info, &state.webrtc)
+                    .is_some_and(|source| source.source_session_id == command.source_session_id)
+            })
+            .map(|camera| camera.info.id),
+        Some(control_request::Command::EventPublicationCommand(command)) => match &command.action {
+            Some(event_publication_command::Action::Start(request)) => {
+                request.event.as_ref().map(|event| event.source_id.clone())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn close_api_session(state: &ServerState, session_id: SessionId) {
@@ -9613,6 +10157,7 @@ fn serve_with_state_on_listener_inner(
     }
 
     while !shutdown.is_cancelled() {
+        session_reaper_state.enforce_privacy_transitions();
         expire_api_sessions(&session_reaper_state);
         expire_event_publications(&session_reaper_state);
         expire_state_store_watches(&session_reaper_state);
@@ -13791,7 +14336,7 @@ mod tests {
         assert!(metrics.contains("keeppeek_notification_delivery_failures_total 1"));
         assert!(metrics.contains("keeppeek_webrtc_multi_track_sessions 1"));
         assert!(metrics.contains("keeppeek_webrtc_multi_tracks 3"));
-        let proto = health_snapshot::proto_health_snapshot(health);
+        let proto = health_snapshot::proto_health_snapshot(&state, health);
         assert_eq!(
             proto.health_contract_version,
             CAMERA_HEALTH_CONTRACT_VERSION
@@ -19592,6 +20137,98 @@ mod tests {
     }
 
     #[test]
+    fn ready_export_is_blocked_when_privacy_activates() {
+        use chrono::{Datelike, Timelike};
+
+        let state = media_test_state();
+        let now = chrono::Utc::now();
+        let minute = i32::try_from(now.time().hour()).unwrap() * 60
+            + i32::try_from(now.time().minute()).unwrap();
+        let start = (minute + 1_439) % 1_440;
+        let end = (minute + 2) % 1_440;
+        let weekday = u8::try_from(now.weekday().number_from_monday()).unwrap();
+        let previous_weekday = if weekday == 1 { 7 } else { weekday - 1 };
+        let mut weekdays = vec![weekday];
+        if start > end {
+            weekdays.push(previous_weekday);
+        }
+        state
+            .privacy
+            .replace_schedules(BTreeMap::from([(
+                "127.0.0.1".to_owned(),
+                crate::privacy::PrivacySchedule {
+                    enabled: true,
+                    timezone: "UTC".to_owned(),
+                    windows: vec![crate::privacy::PrivacyWindow {
+                        weekdays,
+                        start: format!("{:02}:{:02}", start / 60, start % 60),
+                        end: format!("{:02}:{:02}", end / 60, end % 60),
+                    }],
+                    temporary_override: None,
+                    keep_camera_connected: true,
+                },
+            )]))
+            .unwrap();
+        let request = proto::CreateExportJob {
+            job_id: "private-ready-export".to_owned(),
+            source_id: "127.0.0.1".to_owned(),
+            stream_id: "main".to_owned(),
+            start_time: Some(millis_timestamp(1_000)),
+            end_time: Some(millis_timestamp(2_000)),
+            allow_partial: false,
+            burn_in_timestamp: false,
+            event_seed: None,
+        };
+        let now_ms = i64::try_from(unix_time_ms()).unwrap();
+        state.export_jobs.lock().unwrap().insert(
+            request.job_id.clone(),
+            ExportJobRecord {
+                requester_id: "owner".to_owned(),
+                artifact_id: "private-ready-artifact".to_owned(),
+                request: request.clone(),
+                job: proto::ExportJob {
+                    job_id: request.job_id.clone(),
+                    source_id: request.source_id.clone(),
+                    stream_id: request.stream_id.clone(),
+                    requested_start_time: request.start_time,
+                    requested_end_time: request.end_time,
+                    aligned_start_time: None,
+                    status: proto::ExportJobStatus::Ready as i32,
+                    progress_per_mille: 1_000,
+                    bytes_written: 7,
+                    estimated_bytes: Some(7),
+                    file_name: Some("evidence.mp4".to_owned()),
+                    sha256: Some("deadbeef".to_owned()),
+                    expires_at: Some(millis_timestamp(now_ms + 60_000)),
+                    missing_ranges: Vec::new(),
+                    error: None,
+                    retryable: false,
+                    burn_in_timestamp: false,
+                    event_seed: None,
+                },
+                path: Some(PathBuf::from("private-ready-export.mp4")),
+                cancel: Arc::new(AtomicBool::new(false)),
+                created_at_ms: now_ms,
+                started_at_ms: Some(now_ms),
+                updated_at_ms: now_ms,
+                completed_at_ms: Some(now_ms),
+                downloaded_at_ms: None,
+            },
+        );
+        let error = download_export(
+            &state,
+            "owner",
+            proto::DownloadExport {
+                job_id: request.job_id,
+                channel: proto::DataChannelKind::ReliableData as i32,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+        assert!(error.message.contains("privacy is active"));
+    }
+
+    #[test]
     fn export_monitor_terminalizes_stall_and_worker_panic() {
         let directory =
             std::env::temp_dir().join(format!("keeppeek-export-monitor-{}", rand::random::<u64>()));
@@ -22450,6 +23087,7 @@ mod tests {
             control: None,
             control_revision: Arc::new(()),
             hikvision: None,
+            runtime_camera: None,
         }]));
         let updated =
             set_camera_manufacturer(&state, "192.0.2.55", Some("Hikvision".to_owned())).unwrap();

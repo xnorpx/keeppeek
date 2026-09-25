@@ -19,6 +19,21 @@ impl Fixture {
         ));
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("recording.mp4"), [42; 64]).unwrap();
+        #[cfg(windows)]
+        assert!(
+            std::process::Command::new("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/.github/scripts/protect-test-directory.ps1"
+                ))
+                .arg("-Directory")
+                .arg(&root)
+                .arg("-Recurse")
+                .status()
+                .unwrap()
+                .success()
+        );
         Self { root }
     }
 

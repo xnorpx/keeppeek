@@ -99,8 +99,11 @@
 		admission && admission !== 'admitted' ? admissionLabels[admission] : null
 	);
 	let presentation = $derived(presentPeekCamera(camera, health));
+	let privacyActive = $derived(health?.privacy?.active === true);
 	let hasRecentFrames = $state(false);
-	let rendersVideo = $derived(presentation.state !== 'offline' && presentation.state !== 'stopped');
+	let rendersVideo = $derived(
+		!privacyActive && presentation.state !== 'offline' && presentation.state !== 'stopped'
+	);
 	let showsCachedFrame = $derived(rendersVideo && !hasRecentFrames && fallbackFrameUrl !== null);
 	let waitingForFirstFrame = $derived(
 		(admission === undefined || admission === 'admitted') &&
@@ -314,10 +317,19 @@
 		: undefined}
 	style:outline-offset={cornerRadiusPx === 0 ? '-1px' : undefined}
 	data-peek-camera-state={visualState}
+	data-peek-camera-privacy={privacyActive ? 'active' : undefined}
 	data-peek-camera-size={layoutMode ? 'layout' : mobileFeatured ? 'featured' : 'compact'}
 	class="group relative min-w-0 overflow-hidden rounded-lg border md:col-span-1 {tileSurface} {borderColor} {mobileSizeClass}"
 >
-	{#if rendersVideo}
+	{#if privacyActive}
+		<div class="absolute inset-0 grid place-items-center bg-surface px-4 text-center">
+			<div class="space-y-1.5">
+				<VideoOffIcon class="mx-auto size-5 text-primary-soft" />
+				<p class="text-sm font-semibold">Privacy active</p>
+				<p class="text-xs text-text-muted">Server media delivery is blocked.</p>
+			</div>
+		</div>
+	{:else if rendersVideo}
 		<LiveVideo
 			cameraId={camera.id}
 			{stream}

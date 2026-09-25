@@ -3,7 +3,7 @@ use super::{CameraEntry, ControlCommandError, MotionDetection, ReolinkClient, Se
 mod capabilities;
 mod ptz;
 pub(super) use capabilities::{Report, ptz_capability};
-pub(super) use ptz::{Owner, close_session, handle_ptz};
+pub(super) use ptz::{Owner, close_session, handle_ptz, stop_for_privacy};
 
 pub(super) fn available(camera: &CameraEntry) -> bool {
     camera.control.is_some() || hikvision_route(camera).is_some()

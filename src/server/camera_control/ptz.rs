@@ -14,6 +14,18 @@ pub(in crate::server) fn handle_ptz(
     session_id: SessionId,
     command: proto::PtzCommand,
 ) -> Result<control_ok::Result, ControlCommandError> {
+    if state
+        .privacy
+        .decision(&command.source_id, chrono::Utc::now())
+        .map_err(|_| unavailable("camera privacy policy could not be evaluated"))?
+        .0
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "camera privacy is active",
+        ));
+    }
     let action = command.action.ok_or_else(|| {
         ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
@@ -175,6 +187,22 @@ pub(in crate::server) fn close_session(state: &ServerState, session_id: SessionI
         tracing::warn!(%source_id, "unable to confirm stop of session-owned PTZ movement");
         true
     });
+}
+
+pub(in crate::server) fn stop_for_privacy(state: &ServerState, source_id: &str) -> bool {
+    let mut owners = state
+        .ptz_owners
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(owner) = owners.remove(source_id) else {
+        return true;
+    };
+    if super::stop(&owner.camera).is_ok() {
+        return true;
+    }
+    owners.insert(source_id.to_owned(), owner);
+    tracing::warn!(%source_id, "unable to confirm stop of privacy-blocked PTZ movement");
+    false
 }
 
 fn unavailable(message: &str) -> ControlCommandError {

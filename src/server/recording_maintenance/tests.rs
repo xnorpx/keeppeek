@@ -46,6 +46,21 @@ impl Fixture {
         handle
             .update_recording_path("recording", &file, true)
             .unwrap();
+        #[cfg(windows)]
+        assert!(
+            std::process::Command::new("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/.github/scripts/protect-test-directory.ps1"
+                ))
+                .arg("-Directory")
+                .arg(&root)
+                .arg("-Recurse")
+                .status()
+                .unwrap()
+                .success()
+        );
         let mut state = ServerState::empty();
         state.catalog = Some(handle);
         state.storage_config.long_term_path = root.clone();

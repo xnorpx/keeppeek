@@ -516,6 +516,13 @@ pub(super) fn publish_images(
     image: Option<Arc<[u8]>>,
     additional: &[(String, Arc<[u8]>)],
 ) {
+    if state
+        .privacy
+        .decision(&event.source_id, chrono::Utc::now())
+        .map_or(true, |decision| decision.0)
+    {
+        return;
+    }
     for delivery in state.event_subscriptions.deliveries(event) {
         publish_delivery(state, event, image.as_ref(), additional, delivery);
     }
@@ -528,6 +535,13 @@ pub(super) fn publish_native_images(
     image: Option<Arc<[u8]>>,
     additional: &[(String, Arc<[u8]>)],
 ) {
+    if state
+        .privacy
+        .decision(&event.source_id, chrono::Utc::now())
+        .map_or(true, |decision| decision.0)
+    {
+        return;
+    }
     let Ok(ip) = camera.ip.parse() else {
         return;
     };

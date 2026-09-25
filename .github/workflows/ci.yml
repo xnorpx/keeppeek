@@ -274,6 +274,9 @@ jobs:
       - name: Install UI dependencies
         working-directory: ui
         run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Verify Windows storage ACL setup without module autoloading
+        if: runner.os == 'Windows'
+        run: powershell.exe -NoLogo -NoProfile -NonInteractive -File .github/scripts/test-protect-test-directory.ps1
       - name: Build Rust workspace
         run: cargo build --locked --all
       - name: Verify Windows service installation
