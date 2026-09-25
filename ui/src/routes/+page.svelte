@@ -263,7 +263,7 @@
 		) {
 			const currentTransition = peekViewState.transition;
 			if (currentTransition) peekViewState.finishTransition(currentTransition);
-			finishFocusReturn();
+			// ponytail: Let route teardown remove focus. Clearing it here reactivates the Viewer.
 			return;
 		}
 		const cameraFrames = captureCameraFrames();
