@@ -22,7 +22,6 @@ const MQTT_CHANNEL_CAPACITY: usize = 8;
 const MQTT_KEEP_ALIVE: Duration = Duration::from_secs(15);
 const MQTT_MAX_PACKET_BYTES: u32 = 16 * 1_024 * 1_024;
 const MQTT_SESSION_EXPIRY_SECS: u32 = 24 * 60 * 60;
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 pub(super) struct BrokerSession {
     client: Client,
@@ -157,14 +156,12 @@ impl BrokerSession {
         let remaining = deadline
             .checked_duration_since(now)
             .ok_or_else(timeout_failure)?;
-        match self.connection.recv_timeout(remaining.min(POLL_INTERVAL)) {
+        // ponytail: Use the operation deadline. Cancelling a partial handshake drops its socket.
+        match self.connection.recv_timeout(remaining) {
             Ok(Ok(event)) => Ok(event),
             Ok(Err(error)) => {
                 self.connected = false;
                 Err(connection_failure(&error))
-            }
-            Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => {
-                self.next_event(deadline)
             }
             Err(RecvTimeoutError::Timeout) => Err(timeout_failure()),
             Err(RecvTimeoutError::Disconnected) => Err(BrokerFailure {
@@ -397,6 +394,55 @@ mod tests {
             authentication.detail,
             "MQTT broker rejected the configured credentials."
         );
+    }
+
+    #[test]
+    fn connection_waits_for_connack_within_operation_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let broker = std::thread::spawn(move || {
+            let mut stream = accept_before_deadline(&listener);
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let (_, connect) = read_frame(&mut stream);
+            assert_eq!(connect[6], 5);
+            // Delay CONNACK beyond the former 100 ms polling interval.
+            std::thread::sleep(Duration::from_millis(250));
+            stream.write_all(&[0x20, 0x03, 0x00, 0x00, 0x00]).unwrap();
+        });
+        let config = MqttForwarderConfig {
+            broker_url: format!("mqtt://{address}"),
+            ..MqttForwarderConfig::default()
+        };
+        let mut session = BrokerSession::new(&config).unwrap();
+        let result = session.connect(Duration::from_secs(2));
+        broker.join().unwrap();
+        result.unwrap();
+    }
+
+    #[test]
+    fn connection_without_connack_stops_at_operation_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let broker = std::thread::spawn(move || {
+            let mut stream = accept_before_deadline(&listener);
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let (_, connect) = read_frame(&mut stream);
+            assert_eq!(connect[6], 5);
+            let mut closed = [0_u8; 1];
+            assert_eq!(stream.read(&mut closed).unwrap(), 0);
+        });
+        let config = MqttForwarderConfig {
+            broker_url: format!("mqtt://{address}"),
+            ..MqttForwarderConfig::default()
+        };
+        let mut session = BrokerSession::new(&config).unwrap();
+        let result = session.connect(Duration::from_millis(250));
+        broker.join().unwrap();
+        assert_eq!(result.unwrap_err().kind, BrokerFailureKind::Timeout);
     }
 
     #[test]
@@ -633,6 +679,24 @@ mod tests {
         assert_eq!(error.kind, BrokerFailureKind::Protocol);
         assert!(error.detail.contains("MQTT 5"));
         broker.join().unwrap();
+    }
+
+    fn accept_before_deadline(listener: &TcpListener) -> std::net::TcpStream {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    return stream;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("MQTT fixture accept failed: {error}"),
+            }
+        }
+        panic!("MQTT client did not connect before the fixture deadline");
     }
 
     fn read_frame(stream: &mut impl Read) -> (u8, Vec<u8>) {
