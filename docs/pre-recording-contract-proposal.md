@@ -40,7 +40,7 @@ A typed pre-roll diagnostic reports enabled/active state, selected stream,
 requested milliseconds, available milliseconds, retained bytes, and one bounded
 reason enum. Required reasons are startup, missing keyframe, duration eviction,
 per-stream pressure, and global pressure. Additional explicit states cover
-disabled policy, malformed order, decoder/session discontinuity, privacy,
+ready history, pending replay, disabled policy, malformed order, decoder/session discontinuity, privacy,
 storage pause, and writer failure. A queued replay is pending, not committed
 coverage; writer failure must not report a successful recording interval.
 
@@ -48,6 +48,9 @@ Diagnostics contain no encoded media, private URLs, credentials, or host paths.
 Use existing Administrator write authorization and camera read filtering.
 
 ## Recording semantics requiring the owner decision
+
+The owner approved the opt-in delay below. Protected API changes remain pending
+explicit approval for this issue.
 
 EventBoost with nonzero pre-roll holds recent candidate sub/main GOPs before
 committing one monotonic recording. The opt-in delay is bounded by the selected

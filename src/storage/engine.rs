@@ -1959,7 +1959,7 @@ mod tests {
                 codec: AudioCodec::Aac,
                 sample_rate: 48_000,
                 duration: Duration::from_millis(20),
-                data: vec![0xff, 0xf1, 0x4c, 0x40, 0, 0, 0, 0xaa],
+                data: vec![0xff, 0xf1, 0x4c, 0x40, 0, 0, 0, 0xaa].into(),
             }),
         }
     }

@@ -26,8 +26,9 @@ work and decisions; it does not claim acceptance evidence.
    frames. Proposed behavior: hold candidate sub/main GOPs for the requested
    horizon, select one monotonic output, and release continuous sub coverage
    early when pressure requires it. The uncommitted horizon can be lost on crash.
-   Default zero pre-roll preserves current persistence behavior. Owner decision
-   is required by the issue before connecting this to live admission.
+   Default zero pre-roll preserves current persistence behavior. The owner
+   approved this opt-in delay by asking to finish after the concrete delay and
+   crash-loss proposal was presented.
 2. The hard history ceiling is 30 seconds. A preceding keyframe older than that
    ceiling is unavailable, even when it would cover the requested cutoff. Report
    shortened coverage. Event-only writes no samples at/after the exclusive
@@ -41,7 +42,7 @@ work and decisions; it does not claim acceptance evidence.
 ## Ordered work and evidence
 
 - [ ] Record owner decisions and the exact additive API proposal.
-- [ ] Establish regression fixtures for all five legacy recording modes.
+- [x] Establish regression fixtures for all five legacy recording modes.
 - [ ] Implement a pure GOP history primitive with duration, stream-byte, global-
       byte, and metadata bounds. Cover open GOP accounting, malformed order,
       audio trimming, configuration epochs, and deterministic whole-GOP eviction.
@@ -81,13 +82,30 @@ it does not replace the canonical Cargo results.
 `cargo clippy --locked --lib --tests -- -D warnings` also passed. Formatting and
 diff checks passed. These are checkpoint results, not full-issue qualification.
 
-The module remains test-only until integration is authorized and complete. Audio
-window trimming, decoder/session epochs, diagnostic reason codes, bounded replay
-scheduling, runtime integration, configuration, API, UI, and performance evidence
-remain unfinished. No issue acceptance criterion is marked complete. No PR has
-been opened, and no protected API source has changed.
+The next checkpoint adds packet boundary/overlap trimming, current history
+reasons, recovery after malformed GOPs, and payload-owned replay reservations.
+Audio uses `Bytes`, and the writer slices AAC payloads so the reservation follows
+the encoded bytes through preparation and MP4 sample buffering. Two actual writer
+tests verify reservation release and receive-clock audio timing, including gaps
+between packets whose camera timestamps use different origins. The audio timing
+and malformed-GOP coverage regressions have observed red/green results.
 
-The EventBoost persistence-delay decision is pending. The additive API proposal
+Final checkpoint storage verification: `cargo test --locked --lib storage::`
+passed 229 tests with one pre-existing ignored test. This includes all 20 buffer
+tests and both new MP4 ownership/timing tests. The log is
+`target/preroll-checkpoint-storage.log`. This is a storage checkpoint, not the
+issue's runtime, UI, real-camera, or performance qualification.
+`cargo clippy --locked --lib --tests -- -D warnings` passed on the same source
+(`target/preroll-checkpoint-clippy.log`), as did Rust/Markdown formatting and
+`git diff --check`.
+
+The buffer and receive-clock append entry point remain test-only. Decoder/session
+epochs, active-window audio handling, bounded replay scheduling, runtime
+integration, configuration, API, UI, and performance evidence remain unfinished.
+No issue acceptance criterion is marked complete. No PR has been opened, and no
+protected API source has changed.
+
+The EventBoost persistence-delay decision is approved. The additive API proposal
 is in `docs/pre-recording-contract-proposal.md`; its protected edits also require
 current-task approval. Existing generic task plans were preserved.
 
@@ -110,6 +128,17 @@ Independent design review identified the following integration requirements:
   including silent streams; clear history on privacy/reconnect/reconfiguration.
 - Bound replay work per scheduler turn and prioritize continuous recording over
   optional history. Include concurrent replay in performance measurements.
+- Bypass short-term retention for selected historical output; a replay longer
+  than that retention would otherwise lose its beginning before persistence.
+- Keep the output watermark at selection, including audio end time. Already
+  selected sub frames cannot be replaced by a delayed main replay.
+- Use the shared receive clock for replay audio/video output. RTSP normalizes
+  their protocol timestamp origins independently. Preserve audio gaps, and reject
+  overlapping packets before the writer can shift them beyond video coverage.
+- Fence both history and pending output by privacy/session generation. Check
+  cancellation and event deadlines without waiting for another camera frame.
+- Writer-held replay cannot prevent the live keyframe needed to finish its GOP.
+  Budget pressure needs an explicit progress path through the existing writer.
 
 Reuse encoded payloads and the existing writer, queue, catalog, and event path.
 No detector, transcoder, second recording writer, or persistent pre-roll cache.

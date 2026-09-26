@@ -980,7 +980,7 @@ impl ReolinkLoop {
                                         codec: fc,
                                         sample_rate,
                                         duration,
-                                        data: data.to_vec(),
+                                        data: data.to_vec().into(),
                                     });
                                     storage.ingest_stream(
                                         RecordingStreamIdentity::new(

@@ -7,7 +7,6 @@ use crate::storage::{
     layout, nal,
     segment::RecordingFrame,
 };
-use bytes::Bytes;
 use std::{
     fs::File,
     io::BufWriter,
@@ -171,6 +170,36 @@ impl MediumTermWriter {
             }
         }
         Ok(self.recorded_duration.saturating_sub(previous_duration))
+    }
+
+    #[cfg(test)]
+    pub(super) fn append_received(
+        &mut self,
+        mut frame: RecordingFrame,
+    ) -> std::io::Result<Duration> {
+        let origin = self.segment_origin.unwrap_or(frame.received_at);
+        let elapsed = frame
+            .received_at
+            .checked_duration_since(origin)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "replay precedes the recording origin",
+                )
+            })?;
+        // Camera audio and video timestamps can use different session origins.
+        frame.timestamp = Some(
+            self.camera_timestamp_origin
+                .unwrap_or_default()
+                .checked_add(elapsed)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "replay timestamp exceeds the recording timeline",
+                    )
+                })?,
+        );
+        self.append_one(frame)
     }
 
     fn activate_prepared(&mut self) -> std::io::Result<()> {
@@ -424,7 +453,7 @@ impl MediumTermWriter {
                             duration: sample_duration,
                             rendering_offset: 0,
                             is_sync: true,
-                            bytes: Bytes::copy_from_slice(raw_aac),
+                            bytes: audio.data.slice(audio.data.len() - raw_aac.len()..),
                         },
                     )
                     .map_err(mp4_err)?;
@@ -758,6 +787,113 @@ mod tests {
                 ]),
             }),
         }
+    }
+
+    #[test]
+    fn replay_payload_reservations_survive_preparation_and_mp4_sample_storage() {
+        use crate::storage::pre_record::PreRecordBuffers;
+
+        let root = std::env::temp_dir().join(format!("keeppeek-replay-{}", uuid::Uuid::new_v4()));
+        let start = Instant::now();
+        let end = start + Duration::from_millis(100);
+        let mut buffers = PreRecordBuffers::new(1024, 1024);
+        buffers.configure("camera", "main", Duration::from_secs(2));
+        let first = video_frame(start, Duration::ZERO);
+        let video_bytes = first.byte_len();
+        buffers.push("camera", "main", first, start);
+        let audio_data = Bytes::from_static(&[0xff, 0xf1, 0x4c, 0x40, 0, 0, 0, 0xaa]);
+        let audio_bytes = audio_data.len();
+        buffers.push(
+            "camera",
+            "main",
+            RecordingFrame {
+                received_at: start,
+                timestamp: Some(Duration::ZERO),
+                frame: MediaFrame::Audio(AudioFrame {
+                    codec: AudioCodec::Aac,
+                    sample_rate: 16000,
+                    duration: Duration::from_millis(20),
+                    data: audio_data,
+                }),
+            },
+            start,
+        );
+        buffers.push(
+            "camera",
+            "main",
+            video_frame(end, Duration::from_millis(100)),
+            end,
+        );
+        let mut replay = buffers.take("camera", "main", end).into_iter();
+        let mut writer = MediumTermWriter::create(&root, "camera/main", start, 8192).unwrap();
+        writer
+            .append_one(replay.next().unwrap().into_frame())
+            .unwrap();
+        writer
+            .append_one(replay.next().unwrap().into_frame())
+            .unwrap();
+        assert_eq!(buffers.bytes(), video_bytes * 2 + audio_bytes);
+        writer.activate_prepared().unwrap();
+        assert_eq!(buffers.bytes(), video_bytes * 2 + audio_bytes);
+        writer
+            .append_one(replay.next().unwrap().into_frame())
+            .unwrap();
+        assert_eq!(buffers.bytes(), video_bytes);
+        let path = writer.finalize().unwrap();
+        assert_eq!(buffers.bytes(), 0);
+        let parsed = mp4::read_mp4(File::open(path).unwrap()).unwrap();
+        assert_eq!(parsed.tracks().len(), 2);
+        drop(parsed);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replay_receive_clock_preserves_audio_gaps_and_independent_track_origins() {
+        let root =
+            std::env::temp_dir().join(format!("keeppeek-audio-clock-{}", uuid::Uuid::new_v4()));
+        let start = Instant::now();
+        let mut writer = MediumTermWriter::create(&root, "camera/main", start, 8192).unwrap();
+        writer
+            .append_received(video_frame(start, Duration::from_secs(10)))
+            .unwrap();
+        for received_ms in [10, 70] {
+            writer
+                .append_received(RecordingFrame {
+                    received_at: start + Duration::from_millis(received_ms),
+                    timestamp: Some(Duration::ZERO),
+                    frame: MediaFrame::Audio(AudioFrame {
+                        codec: AudioCodec::Aac,
+                        sample_rate: 16000,
+                        duration: Duration::from_millis(20),
+                        data: Bytes::from_static(&[0xff, 0xf1, 0x60, 0x40, 0, 0, 0, 0xaa]),
+                    }),
+                })
+                .unwrap();
+        }
+        writer
+            .append_received(video_frame(
+                start + Duration::from_millis(100),
+                Duration::from_secs(11),
+            ))
+            .unwrap();
+        let path = writer.finalize().unwrap();
+        let mut parsed = mp4::read_mp4(File::open(path).unwrap()).unwrap();
+        let (&audio_id, track) = parsed
+            .tracks()
+            .iter()
+            .find(|(_, track)| track.track_type().unwrap() == mp4::TrackType::Audio)
+            .unwrap();
+        let timescale = u64::from(track.timescale());
+        let first = parsed.read_sample(audio_id, 1).unwrap().unwrap();
+        let second = parsed.read_sample(audio_id, 2).unwrap().unwrap();
+        assert_eq!(first.start_time * 1000 / timescale, 10);
+        assert_eq!(second.start_time * 1000 / timescale, 70);
+        assert_eq!(
+            (second.start_time + u64::from(second.duration)) * 1000 / timescale,
+            90
+        );
+        drop(parsed);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn incomplete_video_frame(received_at: Instant, timestamp: Duration) -> RecordingFrame {
@@ -1398,7 +1534,7 @@ mod tests {
                     codec: AudioCodec::Aac,
                     sample_rate: 48_000,
                     duration: Duration::from_millis(20),
-                    data: vec![0xFF, 0xF1, 0x4C, 0x40, 0, 0, 0, 0xAA],
+                    data: vec![0xFF, 0xF1, 0x4C, 0x40, 0, 0, 0, 0xAA].into(),
                 }),
             })
             .unwrap();
@@ -1410,7 +1546,7 @@ mod tests {
                     codec: AudioCodec::Aac,
                     sample_rate: 48_000,
                     duration: Duration::from_millis(20),
-                    data: vec![0xFF, 0xF1, 0x4C, 0x40, 0, 0, 0, 0xBB],
+                    data: vec![0xFF, 0xF1, 0x4C, 0x40, 0, 0, 0, 0xBB].into(),
                 }),
             })
             .unwrap();
@@ -1422,7 +1558,7 @@ mod tests {
                     codec: AudioCodec::Aac,
                     sample_rate: 48_000,
                     duration: Duration::from_millis(20),
-                    data: vec![0xFF, 0xF1, 0x4C, 0x40, 0, 0, 0, 0xCC],
+                    data: vec![0xFF, 0xF1, 0x4C, 0x40, 0, 0, 0, 0xCC].into(),
                 }),
             })
             .unwrap();
