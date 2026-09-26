@@ -827,7 +827,7 @@ impl RtspLoop {
                                 codec,
                                 sample_rate,
                                 duration,
-                                data,
+                                data: data.into(),
                             });
                             if let Some(storage) = &self.storage {
                                 let timestamp = timestamp
