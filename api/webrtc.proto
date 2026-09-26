@@ -47,6 +47,8 @@ message Request {
     ConfigurationCommand configuration_command = 25;
     EventWorkflowCommand event_workflow_command = 26;
     RecordingMaintenanceCommand recording_maintenance_command = 27;
+    // Arms the authenticated session microphone for one target set.
+    TalkbackCommand talkback_command = 28;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -79,6 +81,7 @@ message Notification {
     SourceSessionAdded source_session_added = 12;
     SourceSessionRemoved source_session_removed = 13;
     GroupMemberChanged group_member_changed = 14;
+    TalkbackState talkback_state = 17;
   }
 }
 
@@ -104,6 +107,16 @@ message SourceSessionRemoved {
 message GroupMemberChanged {
   string group_id = 1;
   repeated GroupMember members = 2;
+}
+
+// Reports the current talkback route. microphone_active stays false until the
+// client sends negotiated audio after an explicit StartTalkback command.
+message TalkbackState {
+  string owner_session_id = 1;
+  TalkbackTarget target = 2;
+  repeated string active_source_ids = 3;
+  repeated string failed_source_ids = 4;
+  bool microphone_active = 5;
 }
 
 message ServerCapabilities {
@@ -142,6 +155,7 @@ message CameraInfo {
   CameraDeviceCapabilities device_capabilities = 17;
   PtzCapability ptz = 18;
   PrivacyStatus privacy = 19;
+  repeated string group_ids = 20;
 }
 
 message PrivacyStatus {
@@ -197,6 +211,13 @@ message CameraDeviceCapabilities {
   bool analytics = 4;
   bool imaging = 5;
   bool two_way_audio = 6;
+  repeated CameraAudioAsset quick_replies = 7;
+  repeated CameraAudioAsset chimes = 8;
+}
+
+message CameraAudioAsset {
+  string asset_id = 1;
+  string display_name = 2;
 }
 
 message PtzCapability {
@@ -214,7 +235,19 @@ message CameraControlCommand {
     SetMotionDetection set_motion_detection = 2;
     SetCameraManufacturer set_manufacturer = 3;
     GetMotionDetection get_motion_detection = 4;
+    PlayQuickReply play_quick_reply = 5;
+    PlayChime play_chime = 6;
   }
+}
+
+message PlayQuickReply {
+  string source_id = 1;
+  string asset_id = 2;
+}
+
+message PlayChime {
+  string source_id = 1;
+  string asset_id = 2;
 }
 
 message GetMotionDetection {
@@ -2361,6 +2394,31 @@ message PublicationCommand {
   }
 }
 
+message TalkbackCommand {
+  oneof action {
+    StartTalkback start = 1;
+    StopTalkback stop = 2;
+  }
+}
+
+// Starts an explicit talkback route. The browser must still request microphone
+// access and send the negotiated audio track.
+message StartTalkback {
+  TalkbackTarget target = 1;
+}
+
+message StopTalkback {}
+
+message TalkbackTarget {
+  oneof selection {
+    string source_id = 1;
+    string group_id = 2;
+    AllTalkbackTargets all = 3;
+  }
+}
+
+message AllTalkbackTargets {}
+
 message StartPublication {
   string publication_id = 1;
   string source_session_id = 2;
@@ -2534,6 +2592,7 @@ message Ok {
     RecordingDeletionJob recording_deletion_job = 38;
     RecordingDeletionJobList recording_deletion_jobs = 39;
     RecordingReconciliationReport recording_reconciliation_report = 40;
+    CameraAudioPlaybackResult camera_audio_playback_result = 41;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -2549,6 +2608,12 @@ message MotionDetectionResult {
 message CameraManufacturerResult {
   string source_id = 1;
   optional string manufacturer = 2;
+}
+
+message CameraAudioPlaybackResult {
+  string source_id = 1;
+  string asset_id = 2;
+  string kind = 3;
 }
 
 message CameraDiscoveryResult {

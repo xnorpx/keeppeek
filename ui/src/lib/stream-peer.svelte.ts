@@ -1,18 +1,29 @@
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { createSession, deleteSession } from './api';
+import { AacAudioPlayback } from './audio-playback';
 import {
 	ControlEnvelopeSchema,
+	CameraControlCommandSchema,
 	DeliveryTransport,
 	MediaKind,
+	MessageSchema,
 	RequestSchema,
 	SubscribeMediaSchema,
+	TalkbackCommandSchema,
+	StartTalkbackSchema,
+	PlayQuickReplySchema,
+	PlayChimeSchema,
+	StopTalkbackSchema,
+	TalkbackTargetSchema,
+	AllTalkbackTargetsSchema,
 	UnsubscribeSchema,
 	VideoQuality,
 	type Ok,
 	type Request,
 	type SubscribeMedia,
 	type Response as ControlResponse,
-	type ServerCapabilities
+	type ServerCapabilities,
+	type TalkbackTarget
 } from './proto/webrtc_pb';
 import type { CreateResponse, LiveQuality } from './types';
 
@@ -46,8 +57,11 @@ export type LivePeerPlan = {
 export type LivePeerTrack = {
 	cameraId: string;
 	trackId: string;
+	audioTrackId: string;
 	receiver: RTCRtpReceiver | null;
 	stream: MediaStream | null;
+	audioReceiver: RTCRtpReceiver | null;
+	audioStream: MediaStream | null;
 	status: 'queued' | 'connecting' | 'live' | 'unavailable';
 	requestedQuality: LiveQuality;
 	requestedVariantId: 'main' | 'sub' | null;
@@ -58,20 +72,36 @@ export type LivePeerTrack = {
 	admissionError?: string | null;
 };
 
+export type TalkbackTargetSelection = { sourceId: string } | { groupId: string } | { all: true };
+
+export type CameraAudioAssets = {
+	quickReplies: ReadonlyArray<{ id: string; label: string }>;
+	chimes: ReadonlyArray<{ id: string; label: string }>;
+};
+
 export class LivePeer {
 	connectionState = $state<RTCPeerConnectionState>('new');
 	iceConnectionState = $state<RTCIceConnectionState>('new');
 	sessionId = $state<string | null>(null);
 	estimatedBitrateBps = $state<number | null>(null);
 	error = $state<string | null>(null);
+	talkbackActive = $state(false);
+	talkbackError = $state<string | null>(null);
 	tracks = $state.raw<Record<string, LivePeerTrack>>({});
+	talkbackGroups = $state.raw<ReadonlyArray<{ id: string; label: string }>>([]);
+	cameraAudioAssets = $state.raw<Record<string, CameraAudioAssets>>({});
 
 	#peer: RTCPeerConnection | null = null;
 	#sessionToken: string | null = null;
 	#controlChannel: RTCDataChannel | null = null;
 	#reliableChannel: RTCDataChannel | null = null;
 	#unreliableChannel: RTCDataChannel | null = null;
+	#talkbackTransceiver: RTCRtpTransceiver | null = null;
+	#talkbackTrack: MediaStreamTrack | null = null;
 	#cameraByMid: Record<string, string> = {};
+	#audioCameraByMid: Record<string, string> = {};
+	#audioPlaybackByBinding = new Map<string, AacAudioPlayback>();
+	#audioBindingByCamera: Record<string, string> = {};
 	#sourceSessionByCamera: Record<string, string> = {};
 	#trackEventByMid: Record<string, RTCTrackEvent> = {};
 	#nextRequestId = 1n;
@@ -129,6 +159,94 @@ export class LivePeer {
 
 	close(): Promise<void> {
 		return this.enqueue(async () => this.closeNow());
+	}
+
+	startTalkback(target: TalkbackTargetSelection): Promise<void> {
+		return this.enqueue(async () => {
+			if (this.#talkbackTransceiver === null) {
+				throw new Error('Talkback is unavailable until the live session is connected.');
+			}
+			if (this.talkbackActive) return;
+			this.talkbackError = null;
+			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			const track = stream.getAudioTracks()[0];
+			if (!track) {
+				stream.getTracks().forEach((item) => item.stop());
+				throw new Error('The microphone did not provide an audio track.');
+			}
+			try {
+				await this.#talkbackTransceiver.sender.replaceTrack(track);
+				await this.request({
+					case: 'talkbackCommand',
+					value: create(TalkbackCommandSchema, {
+						action: {
+							case: 'start',
+							value: create(StartTalkbackSchema, { target: talkbackTarget(target) })
+						}
+					})
+				});
+				this.#talkbackTrack = track;
+				this.talkbackActive = true;
+			} catch (error) {
+				await this.#talkbackTransceiver.sender.replaceTrack(null);
+				stream.getTracks().forEach((item) => item.stop());
+				this.talkbackError = error instanceof Error ? error.message : 'Talkback could not start.';
+				throw error;
+			}
+		});
+	}
+
+	stopTalkback(): Promise<void> {
+		return this.enqueue(async () => {
+			if (!this.talkbackActive) return;
+			try {
+				await this.request({
+					case: 'talkbackCommand',
+					value: create(TalkbackCommandSchema, {
+						action: { case: 'stop', value: create(StopTalkbackSchema) }
+					})
+				});
+			} finally {
+				await this.#talkbackTransceiver?.sender.replaceTrack(null);
+				this.#talkbackTrack?.stop();
+				this.#talkbackTrack = null;
+				this.talkbackActive = false;
+			}
+		});
+	}
+
+	playQuickReply(sourceId: string, assetId: string): Promise<void> {
+		return this.enqueue(async () => {
+			await this.request({
+				case: 'cameraControlCommand',
+				value: create(CameraControlCommandSchema, {
+					action: {
+						case: 'playQuickReply',
+						value: create(PlayQuickReplySchema, { sourceId, assetId })
+					}
+				})
+			});
+		});
+	}
+
+	playChime(sourceId: string, assetId: string): Promise<void> {
+		return this.enqueue(async () => {
+			await this.request({
+				case: 'cameraControlCommand',
+				value: create(CameraControlCommandSchema, {
+					action: {
+						case: 'playChime',
+						value: create(PlayChimeSchema, { sourceId, assetId })
+					}
+				})
+			});
+		});
+	}
+
+	resumeAudioPlayback(): Promise<void> {
+		return Promise.all(
+			[...this.#audioPlaybackByBinding.values()].map((playback) => playback.resume())
+		).then(() => undefined);
 	}
 
 	closeOnPageHide(): void {
@@ -235,23 +353,27 @@ export class LivePeer {
 		this.#controlChannel = controlChannel;
 		this.#reliableChannel = reliableChannel;
 		this.#unreliableChannel = unreliableChannel;
+		this.#talkbackTransceiver = peer.addTransceiver('audio', { direction: 'sendonly' });
 		this.#topologyKey = topologyKey;
 		this.connectionState = peer.connectionState;
 		this.iceConnectionState = peer.iceConnectionState;
 		this.error = null;
 		this.#cameraByMid = {};
+		this.#audioCameraByMid = {};
 		this.#sourceSessionByCamera = {};
 		this.#trackEventByMid = {};
 		this.#capabilities = null;
 		const controlOpened = waitForDataChannel(controlChannel);
 		controlChannel.onmessage = (event) => this.receiveControl(event);
 		controlChannel.onclose = () => this.failPending('WebRTC control channel closed.');
+		reliableChannel.onmessage = (event) => this.receiveMediaData(event);
 
 		const localTracks = plans.map((plan, index) => {
 			const trackId = `camera-${index}`;
 			const transceiver = peer.addTransceiver('video', { direction: 'recvonly' });
+			const audioTransceiver = peer.addTransceiver('audio', { direction: 'recvonly' });
 			preferH265(transceiver);
-			return { ...plan, trackId, transceiver };
+			return { ...plan, trackId, audioTrackId: `audio-${index}`, transceiver, audioTransceiver };
 		});
 
 		this.tracks = Object.fromEntries(
@@ -260,8 +382,11 @@ export class LivePeer {
 				{
 					cameraId: track.cameraId,
 					trackId: track.trackId,
+					audioTrackId: track.audioTrackId,
 					receiver: null,
 					stream: null,
+					audioReceiver: null,
+					audioStream: null,
 					status: track.active ? 'connecting' : 'queued',
 					requestedQuality: track.quality,
 					requestedVariantId: track.variantId ?? null,
@@ -276,9 +401,11 @@ export class LivePeer {
 		peer.ontrack = (event) => {
 			if (peer !== this.#peer || event.transceiver.mid === null) return;
 			this.#trackEventByMid[event.transceiver.mid] = event;
-			const cameraId = this.#cameraByMid[event.transceiver.mid];
+			const cameraId =
+				this.#cameraByMid[event.transceiver.mid] ?? this.#audioCameraByMid[event.transceiver.mid];
 			if (!cameraId) return;
-			this.attachTrackEvent(cameraId, event);
+			if (event.track?.kind === 'audio') this.attachAudioTrackEvent(cameraId, event);
+			else this.attachTrackEvent(cameraId, event);
 		};
 		peer.onconnectionstatechange = () => {
 			if (peer !== this.#peer) return;
@@ -307,6 +434,9 @@ export class LivePeer {
 			for (const track of localTracks) {
 				if (track.transceiver.mid === null) {
 					throw new Error(`No SDP MID assigned for ${track.cameraId}`);
+				}
+				if (track.audioTransceiver.mid === null) {
+					throw new Error(`No audio SDP MID assigned for ${track.cameraId}`);
 				}
 			}
 
@@ -416,6 +546,60 @@ export class LivePeer {
 		});
 		const event = this.#trackEventByMid[mid];
 		if (event) this.attachTrackEvent(cameraId, event);
+		await this.subscribeAudio(cameraId, this.track(cameraId)?.audioTrackId ?? `audio-${cameraId}`);
+	}
+
+	private async subscribeAudio(cameraId: string, subscriptionId: string): Promise<void> {
+		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
+		const source = this.#capabilities?.sourceSessions.find(
+			(item) => item.sourceSessionId === sourceSessionId
+		);
+		const variant =
+			source?.audio?.variants.find((item) => item.variantId === 'main') ??
+			source?.audio?.variants[0];
+		if (!variant) return;
+		const requestedDeliveryTransport = variant.deliveryTransports.includes(
+			DeliveryTransport.RELIABLE_DATA
+		)
+			? DeliveryTransport.RELIABLE_DATA
+			: DeliveryTransport.RTP;
+		const result = await this.requestMedia(
+			cameraId,
+			create(SubscribeMediaSchema, {
+				subscriptionId,
+				sourceSessionId,
+				kind: MediaKind.AUDIO,
+				requestedDeliveryTransport,
+				videoQuality: VideoQuality.AUTO,
+				variantId: variant.variantId
+			})
+		);
+		if (result?.case !== 'subscriptionResult') return;
+		if (result.value.delivery.case === 'rtp') {
+			const mid = result.value.delivery.value.mid;
+			this.#audioCameraByMid[mid] = cameraId;
+			const event = this.#trackEventByMid[mid];
+			if (event) this.attachAudioTrackEvent(cameraId, event);
+			return;
+		}
+		if (result.value.delivery.case !== 'mediaData' || variant.codec?.name.toLowerCase() !== 'aac')
+			return;
+		const format = variant.format?.format;
+		if (format?.case !== 'audio') return;
+		const playback = new AacAudioPlayback();
+		try {
+			await playback.configure(
+				variant.codec?.name ?? 'aac',
+				format.value.decoderConfig,
+				format.value.sampleRateHz,
+				format.value.channelCount
+			);
+			this.#audioPlaybackByBinding.set(result.value.delivery.value.streamBindingId, playback);
+			this.#audioBindingByCamera[cameraId] = result.value.delivery.value.streamBindingId;
+		} catch (error) {
+			playback.close();
+			console.warn(`AAC playback is unavailable for ${cameraId}`, error);
+		}
 	}
 
 	private async requestMedia(
@@ -435,13 +619,27 @@ export class LivePeer {
 	}
 
 	private async unsubscribeTrack(cameraId: string, subscriptionId: string): Promise<void> {
+		const audioTrackId = this.track(cameraId)?.audioTrackId;
 		await this.request({
 			case: 'unsubscribe',
-			value: create(UnsubscribeSchema, { subscriptionIds: [subscriptionId] })
+			value: create(UnsubscribeSchema, {
+				subscriptionIds: audioTrackId ? [subscriptionId, audioTrackId] : [subscriptionId]
+			})
 		});
+		const binding = this.#audioBindingByCamera[cameraId];
+		if (binding) {
+			this.#audioPlaybackByBinding.get(binding)?.close();
+			this.#audioPlaybackByBinding.delete(binding);
+			delete this.#audioBindingByCamera[cameraId];
+		}
+		for (const [mid, sourceId] of Object.entries(this.#audioCameraByMid)) {
+			if (sourceId === cameraId) delete this.#audioCameraByMid[mid];
+		}
 		this.replaceTrack(cameraId, {
 			status: 'queued',
 			subscribed: false,
+			audioReceiver: null,
+			audioStream: null,
 			pendingStream: null,
 			estimatedBitrateBps: null
 		});
@@ -457,6 +655,14 @@ export class LivePeer {
 					? new MediaStream([mediaTrack])
 					: (event.streams[0] ?? new MediaStream());
 		this.replaceTrack(cameraId, { receiver: event.receiver, stream, status: 'live' });
+	}
+
+	private attachAudioTrackEvent(cameraId: string, event: RTCTrackEvent): void {
+		const mediaTrack = event.track ?? event.receiver.track;
+		const stream = mediaTrack
+			? new MediaStream([mediaTrack])
+			: (event.streams[0] ?? new MediaStream());
+		this.replaceTrack(cameraId, { audioReceiver: event.receiver, audioStream: stream });
 	}
 
 	private async request(command: Request['command']): Promise<Ok['result']> {
@@ -506,9 +712,38 @@ export class LivePeer {
 			if (event.case === 'initialCapabilities') {
 				const capabilities = event.value;
 				this.#capabilities = capabilities;
+				this.cameraAudioAssets = Object.fromEntries(
+					capabilities.cameras
+						.filter((camera) => camera.deviceCapabilities?.twoWayAudio === true)
+						.map((camera) => [
+							camera.sourceId,
+							{
+								quickReplies: (camera.deviceCapabilities?.quickReplies ?? []).map((asset) => ({
+									id: asset.assetId,
+									label: asset.displayName
+								})),
+								chimes: (camera.deviceCapabilities?.chimes ?? []).map((asset) => ({
+									id: asset.assetId,
+									label: asset.displayName
+								}))
+							}
+						])
+				);
+				const groups = new Map<string, string>();
+				for (const camera of capabilities.cameras) {
+					if (camera.deviceCapabilities?.twoWayAudio !== true) continue;
+					for (const groupId of camera.groupIds) groups.set(groupId, groupId);
+				}
+				this.talkbackGroups = [...groups.keys()]
+					.sort((left, right) => left.localeCompare(right))
+					.map((id) => ({ id, label: id }));
 				this.#sourceSessionByCamera = Object.fromEntries(
 					capabilities.sourceSessions
-						.filter((source) => source.sourceId.length > 0 && source.video !== undefined)
+						.filter(
+							(source) =>
+								source.sourceId.length > 0 &&
+								(source.video !== undefined || source.audio !== undefined)
+						)
 						.map((source) => [source.sourceId, source.sourceSessionId])
 				);
 				for (const waiter of this.#capabilitiesWaiters) {
@@ -539,6 +774,19 @@ export class LivePeer {
 		this.#pending.delete(envelope.message.value.requestId);
 		clearTimeout(pending.timeout);
 		pending.resolve(envelope.message.value);
+	}
+
+	private receiveMediaData(event: MessageEvent): void {
+		if (!(event.data instanceof ArrayBuffer)) return;
+		try {
+			const message = fromBinary(MessageSchema, new Uint8Array(event.data));
+			if (message.message.case !== 'audio' || message.message.value.message.case !== 'frame')
+				return;
+			const frame = message.message.value.message.value;
+			this.#audioPlaybackByBinding.get(frame.streamBindingId)?.push(frame);
+		} catch (error) {
+			console.debug('Ignoring invalid WebRTC media data', error);
+		}
 	}
 
 	private waitForCapabilities(): Promise<ServerCapabilities> {
@@ -576,7 +824,7 @@ export class LivePeer {
 	private async closeNow(): Promise<void> {
 		const subscriptionIds = Object.values(this.tracks)
 			.filter((track) => track.subscribed)
-			.map((track) => track.trackId);
+			.flatMap((track) => [track.trackId, track.audioTrackId]);
 		if (this.#controlChannel?.readyState === 'open' && subscriptionIds.length > 0) {
 			try {
 				await this.request({
@@ -608,9 +856,15 @@ export class LivePeer {
 		this.#sessionToken = null;
 		this.#topologyKey = '';
 		this.#cameraByMid = {};
+		this.#audioCameraByMid = {};
+		for (const playback of this.#audioPlaybackByBinding.values()) playback.close();
+		this.#audioPlaybackByBinding.clear();
+		this.#audioBindingByCamera = {};
 		this.#sourceSessionByCamera = {};
 		this.#trackEventByMid = {};
 		this.#capabilities = null;
+		this.talkbackGroups = [];
+		this.cameraAudioAssets = {};
 		this.sessionId = null;
 		this.estimatedBitrateBps = null;
 		for (const stream of Object.values(this.tracks).flatMap((track) =>
@@ -629,6 +883,11 @@ export class LivePeer {
 		this.#controlChannel = null;
 		this.#reliableChannel = null;
 		this.#unreliableChannel = null;
+		this.#talkbackTransceiver = null;
+		this.#talkbackTrack?.stop();
+		this.#talkbackTrack = null;
+		this.talkbackActive = false;
+		this.talkbackError = null;
 		peer?.close();
 		this.failPending('WebRTC media session closed.');
 		this.tracks = {};
@@ -678,6 +937,22 @@ function protoQuality(quality: LiveQuality): VideoQuality {
 	if (quality === 'high') return VideoQuality.HIGH;
 	if (quality === 'low') return VideoQuality.LOW;
 	return VideoQuality.AUTO;
+}
+
+function talkbackTarget(selection: TalkbackTargetSelection): TalkbackTarget {
+	if ('sourceId' in selection) {
+		return create(TalkbackTargetSchema, {
+			selection: { case: 'sourceId', value: selection.sourceId }
+		});
+	}
+	if ('groupId' in selection) {
+		return create(TalkbackTargetSchema, {
+			selection: { case: 'groupId', value: selection.groupId }
+		});
+	}
+	return create(TalkbackTargetSchema, {
+		selection: { case: 'all', value: create(AllTalkbackTargetsSchema) }
+	});
 }
 
 function waitForDataChannel(channel: RTCDataChannel): Promise<void> {

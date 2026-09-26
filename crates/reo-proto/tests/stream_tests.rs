@@ -15,6 +15,15 @@ use std::time::{Duration, Instant};
 mod common;
 use common::make_header_bytes;
 
+fn talk_ability_response(channel: u8) -> Vec<u8> {
+    let extension =
+        format!("<Extension version=\"1.1\"><channelId>{channel}</channelId></Extension>");
+    let xml = br#"<body><TalkAbility version="1.1"><duplexList><duplex>fullDuplex</duplex></duplexList><audioStreamModeList><audioStreamMode>speaker</audioStreamMode></audioStreamModeList><audioConfigList><audioConfig><audioType>adpcm</audioType><sampleRate>16000</sampleRate><samplePrecision>16</samplePrecision><lengthPerEncoder>640</lengthPerEncoder><soundTrack>mono</soundTrack></audioConfig></audioConfigList></TalkAbility></body>"#;
+    let mut response = extension.into_bytes();
+    response.extend_from_slice(xml);
+    response
+}
+
 // ── Wire message helpers ─────────────────────────────────────────────
 
 /// Build a complete wire message with BC header + body.
@@ -1220,6 +1229,95 @@ fn test_external_talkback_command_flow() {
         MEDIA_MAGIC_ADPCM
     );
     assert_eq!(u16::from_le_bytes(body[10..12].try_into().unwrap()), 7);
+}
+
+#[test]
+fn test_external_talkback_preserves_nonzero_channel_identity() {
+    let now = Instant::now();
+    let channel = 3;
+    let mut session = BcSession::default_client(now);
+    session.set_state(SessionState::Connected);
+
+    session
+        .handle_input(Input::Command(Command::OpenTalkback { channel }))
+        .unwrap();
+    let wire = drain_tcp_sends(&mut session);
+    let (header, hdr_len) = PacketHeader::parse(&wire).unwrap();
+    let body = std::str::from_utf8(&wire[hdr_len..]).unwrap();
+    assert_eq!(header.channel_id(), channel);
+    assert!(body.contains("<channelId>3</channelId>"));
+
+    session
+        .handle_input(Input::Command(Command::Talk(TalkCommand::QueryAbility {
+            channel,
+        })))
+        .unwrap();
+    let wire = drain_tcp_sends(&mut session);
+    let (header, hdr_len) = PacketHeader::parse(&wire).unwrap();
+    assert_eq!(header.channel_id(), channel);
+    let extension_len = header.extension.unwrap() as usize;
+    let extension = std::str::from_utf8(&wire[hdr_len..hdr_len + extension_len]).unwrap();
+    assert!(extension.contains("<channelId>3</channelId>"));
+
+    let response_body = talk_ability_response(channel);
+    let extension_len = response_body
+        .windows(b"<body>".len())
+        .position(|window| window == b"<body>")
+        .unwrap();
+    let response = make_wire_message(
+        COMMAND_TALK_CAPABILITIES,
+        &response_body,
+        make_status(BC_CLASS_MODERN_EXT, 0),
+        Some(extension_len as u32),
+    );
+    session
+        .handle_input(Input::TcpData(now, &response))
+        .unwrap();
+    let mut buf = [0_u8; 4096];
+    let ability = loop {
+        match session.poll_output(&mut buf).unwrap() {
+            Output::Event(Event::Talk(TalkEvent::Ability(ability))) => break ability,
+            Output::Event(_) => {}
+            other => panic!("expected Talk ability, got {other:?}"),
+        }
+    };
+
+    session
+        .handle_input(Input::Command(Command::Talk(TalkCommand::Configure(
+            ability.select_adpcm(channel).unwrap(),
+        ))))
+        .unwrap();
+    let wire = drain_tcp_sends(&mut session);
+    let (header, hdr_len) = PacketHeader::parse(&wire).unwrap();
+    assert_eq!(header.channel_id(), channel);
+    let extension_len = header.extension.unwrap() as usize;
+    let body = std::str::from_utf8(&wire[hdr_len + extension_len..]).unwrap();
+    assert!(body.contains("<channelId>3</channelId>"));
+
+    session
+        .handle_input(Input::Command(Command::Talk(TalkCommand::SendAdpcm {
+            channel,
+            sequence: 7,
+            data: vec![0, 0, 0, 0, 0],
+        })))
+        .unwrap();
+    let wire = drain_tcp_sends(&mut session);
+    let (header, hdr_len) = PacketHeader::parse(&wire).unwrap();
+    assert_eq!(header.channel_id(), channel);
+    let extension_len = header.extension.unwrap() as usize;
+    let extension = std::str::from_utf8(&wire[hdr_len..hdr_len + extension_len]).unwrap();
+    assert!(extension.contains("<channelId>3</channelId>"));
+
+    session
+        .handle_input(Input::Command(Command::CloseTalkback { channel }))
+        .unwrap();
+    let wire = drain_tcp_sends(&mut session);
+    let (header, hdr_len) = PacketHeader::parse(&wire).unwrap();
+    assert_eq!(header.msg_id, COMMAND_TALK_RESET);
+    assert_eq!(header.channel_id(), channel);
+    let extension_len = header.extension.unwrap() as usize;
+    let extension = std::str::from_utf8(&wire[hdr_len..hdr_len + extension_len]).unwrap();
+    assert!(extension.contains("<channelId>3</channelId>"));
 }
 
 // ── Test: P-frame (non-keyframe) video ───────────────────────────────

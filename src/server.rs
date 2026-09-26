@@ -2,7 +2,7 @@ use crate::api::proto::{
     self, camera_configuration_command, camera_control_command, event_publication_command,
     event_search_command, logging_command, notification_rule_command, notification_rule_result,
     ok as control_ok, optional_string_update, request as control_request,
-    response as control_response, runtime_configuration_command, server_command,
+    response as control_response, runtime_configuration_command, server_command, talkback_command,
 };
 use crate::{
     access::{
@@ -115,6 +115,7 @@ pub(crate) mod state_store_schema;
 pub(crate) mod state_store_settings;
 pub(crate) mod state_store_watch;
 mod stored_media;
+mod talkback;
 
 pub(crate) fn migrate_peek_layout_configuration(
     config_path: &Path,
@@ -368,11 +369,42 @@ impl ControlCommandError {
     }
 }
 
+fn talkback_error(error: talkback::Error) -> ControlCommandError {
+    let (code, message) = match error {
+        talkback::Error::AlreadyOwned => (
+            proto::ErrorCode::Rejected,
+            "another session already owns talkback",
+        ),
+        talkback::Error::NotOwner => (
+            proto::ErrorCode::Rejected,
+            "this session does not own talkback",
+        ),
+        talkback::Error::MissingTarget => (
+            proto::ErrorCode::InvalidRequest,
+            "talkback target is required",
+        ),
+        talkback::Error::TargetNotFound => {
+            (proto::ErrorCode::NotFound, "talkback target was not found")
+        }
+        talkback::Error::NoEnabledTargets => (
+            proto::ErrorCode::Unavailable,
+            "no selected camera has talkback enabled",
+        ),
+        talkback::Error::TooManyTargets => (
+            proto::ErrorCode::InvalidRequest,
+            "talkback target set exceeds the server limit",
+        ),
+    };
+    ControlCommandError::new(code, 400, message)
+}
+
 fn required_access_role(command: Option<&control_request::Command>) -> AccessRole {
     match command {
         Some(control_request::Command::CameraControlCommand(command)) => match command.action {
             Some(camera_control_command::Action::Ptz(_))
-            | Some(camera_control_command::Action::GetMotionDetection(_)) => AccessRole::User,
+            | Some(camera_control_command::Action::GetMotionDetection(_))
+            | Some(camera_control_command::Action::PlayQuickReply(_))
+            | Some(camera_control_command::Action::PlayChime(_)) => AccessRole::User,
             _ => AccessRole::Administrator,
         },
         Some(control_request::Command::EventSearchCommand(command)) => match command.action {
@@ -425,6 +457,7 @@ fn required_access_role(command: Option<&control_request::Command>) -> AccessRol
             | control_request::Command::PublicationCommand(_)
             | control_request::Command::PublicationReport(_),
         ) => AccessRole::User,
+        Some(control_request::Command::TalkbackCommand(_)) => AccessRole::Administrator,
         _ => AccessRole::Administrator,
     }
 }
@@ -437,6 +470,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::Unsubscribe(_)) => "unsubscribe",
         Some(control_request::Command::PublishEvent(_)) => "publish_event",
         Some(control_request::Command::PublicationCommand(_)) => "publication",
+        Some(control_request::Command::TalkbackCommand(_)) => "talkback",
         Some(control_request::Command::StoredMediaCommand(_)) => "stored_media",
         Some(control_request::Command::EventPublicationCommand(_)) => "event_publication",
         Some(control_request::Command::GroupCommand(_)) => "group",
@@ -777,6 +811,12 @@ impl ControlRequestHandler for ServerControlHandler {
                             Err(error) => Err(error),
                         }
                     }
+                    Some(control_request::Command::TalkbackCommand(command)) => {
+                        handle_talkback(&self.state, session_id, command).map(|notification| {
+                            notifications.push(notification);
+                            None
+                        })
+                    }
                     Some(control_request::Command::SubscribeEvents(request)) => self
                         .state
                         .event_subscriptions
@@ -850,6 +890,8 @@ impl ControlRequestHandler for ServerControlHandler {
     }
 
     fn session_closed(&self, session_id: SessionId) {
+        self.state.talkback.stop_for_session(session_id);
+        self.state.webrtc.disarm_talkback(session_id);
         close_api_session(&self.state, session_id);
     }
 
@@ -868,10 +910,16 @@ impl ControlRequestHandler for ServerControlHandler {
         &self,
         request: &proto::SubscribeMedia,
     ) -> Result<MediaSubscriptionPlan, ControlHandlerError> {
-        if proto::MediaKind::try_from(request.kind) != Ok(proto::MediaKind::Video) {
+        let media_kind = proto::MediaKind::try_from(request.kind).map_err(|_| {
+            ControlHandlerError::new(proto::ErrorCode::InvalidRequest, "media kind is invalid")
+        })?;
+        if !matches!(
+            media_kind,
+            proto::MediaKind::Video | proto::MediaKind::Audio
+        ) {
             return Err(ControlHandlerError::new(
                 proto::ErrorCode::InvalidRequest,
-                "only video media subscriptions are currently supported",
+                "only camera video and audio media subscriptions are supported",
             ));
         }
         let delivery_transport = proto::DeliveryTransport::try_from(
@@ -890,6 +938,12 @@ impl ControlRequestHandler for ServerControlHandler {
             return Err(ControlHandlerError::new(
                 proto::ErrorCode::InvalidRequest,
                 "camera video requires RTP or reliable data delivery",
+            ));
+        }
+        if request.source_session_id.is_empty() {
+            return Err(ControlHandlerError::new(
+                proto::ErrorCode::InvalidRequest,
+                "media source session is required",
             ));
         }
         let camera = self
@@ -928,6 +982,84 @@ impl ControlRequestHandler for ServerControlHandler {
                 "camera has an invalid IP address",
             )
         })?;
+        if media_kind == proto::MediaKind::Audio {
+            let source_session = proto_camera_source_session(&camera.info, &self.state.webrtc)
+                .ok_or_else(|| {
+                    ControlHandlerError::new(
+                        proto::ErrorCode::NotFound,
+                        "camera audio source session not found",
+                    )
+                })?;
+            let audio = source_session.audio.ok_or_else(|| {
+                ControlHandlerError::new(
+                    proto::ErrorCode::NotFound,
+                    "camera has no advertised audio variant",
+                )
+            })?;
+            let selected_variant_id = if request.variant_id.is_empty() {
+                audio
+                    .variants
+                    .iter()
+                    .find(|variant| variant.variant_id == "main")
+                    .or_else(|| audio.variants.first())
+                    .map(|variant| variant.variant_id.clone())
+                    .ok_or_else(|| {
+                        ControlHandlerError::new(
+                            proto::ErrorCode::NotFound,
+                            "camera has no advertised audio variant",
+                        )
+                    })?
+            } else {
+                request.variant_id.clone()
+            };
+            let selected_variant = audio
+                .variants
+                .into_iter()
+                .find(|variant| variant.variant_id == selected_variant_id)
+                .ok_or_else(|| {
+                    ControlHandlerError::new(proto::ErrorCode::NotFound, "audio variant not found")
+                })?;
+            let delivery_transport = proto::DeliveryTransport::try_from(
+                request.requested_delivery_transport,
+            )
+            .map_err(|_| {
+                ControlHandlerError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    "audio delivery transport is invalid",
+                )
+            })?;
+            if !selected_variant
+                .delivery_transports
+                .contains(&(delivery_transport as i32))
+            {
+                return Err(ControlHandlerError::new(
+                    proto::ErrorCode::Unavailable,
+                    "selected audio delivery transport is unavailable",
+                ));
+            }
+            return Ok(MediaSubscriptionPlan {
+                media_kind: proto::MediaKind::Audio,
+                source_session_id: request.source_session_id.clone(),
+                camera_ip,
+                has_sub_stream: false,
+                recording_label: camera.recording_label,
+                quality: StreamQuality::Auto,
+                delivery_transport,
+                codec: selected_variant.codec.ok_or_else(|| {
+                    ControlHandlerError::new(
+                        proto::ErrorCode::Internal,
+                        "selected audio variant has no codec",
+                    )
+                })?,
+                format: selected_variant.format.ok_or_else(|| {
+                    ControlHandlerError::new(
+                        proto::ErrorCode::Internal,
+                        "selected audio variant has no format",
+                    )
+                })?,
+                selected_variant_id,
+            });
+        }
         let live_sources = self.state.webrtc.live_video_sources(camera_ip);
         let has_main_stream = live_sources
             .iter()
@@ -1026,6 +1158,7 @@ impl ControlRequestHandler for ServerControlHandler {
             )
         })?;
         Ok(MediaSubscriptionPlan {
+            media_kind: proto::MediaKind::Video,
             source_session_id: request.source_session_id.clone(),
             camera_ip,
             has_sub_stream,
@@ -1037,6 +1170,60 @@ impl ControlRequestHandler for ServerControlHandler {
             selected_variant_id,
         })
     }
+}
+
+fn handle_talkback(
+    server_state: &ServerState,
+    session_id: SessionId,
+    command: proto::TalkbackCommand,
+) -> Result<proto::Notification, ControlCommandError> {
+    let cameras = server_state
+        .camera_entries()
+        .into_iter()
+        .map(|camera| talkback::CameraTarget {
+            source_id: camera.info.id,
+            groups: camera.groups,
+            enabled: camera.info.capabilities.two_way_audio,
+        })
+        .collect::<Vec<_>>();
+    let state = match command.action {
+        Some(talkback_command::Action::Start(start)) => {
+            let target = start.target.ok_or_else(|| {
+                ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "talkback start requires a target",
+                )
+            })?;
+            server_state
+                .talkback
+                .start(session_id, target, &cameras)
+                .map_err(talkback_error)?
+        }
+        Some(talkback_command::Action::Stop(_)) => {
+            let state = server_state
+                .talkback
+                .stop(session_id)
+                .map_err(talkback_error)?;
+            server_state.webrtc.disarm_talkback(session_id);
+            state
+        }
+        None => {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "talkback command requires start or stop",
+            ));
+        }
+    };
+    if !state.active_source_ids.is_empty() {
+        server_state
+            .webrtc
+            .arm_talkback(session_id, state.active_source_ids.clone());
+    }
+    Ok(proto::Notification {
+        event: Some(proto::notification::Event::TalkbackState(state)),
+    })
 }
 
 fn server_capabilities(
@@ -1051,7 +1238,8 @@ fn server_capabilities(
         .iter()
         .zip(camera_info.iter())
         .map(|(entry, info)| {
-            let mut camera = proto_camera_info(info, camera_control::ptz_capability(entry));
+            let mut camera =
+                proto_camera_info(info, camera_control::ptz_capability(entry), &entry.groups);
             let (active, epoch, error) =
                 match state.privacy.decision(&entry.info.id, chrono::Utc::now()) {
                     Ok((active, epoch)) => (active, epoch, None),
@@ -1157,6 +1345,7 @@ fn proto_camera_source_session(
 ) -> Option<proto::SourceSession> {
     let camera_ip = camera.ip.parse().ok()?;
     let live_sources = webrtc.live_video_sources(camera_ip);
+    let live_audio_sources = webrtc.live_audio_sources(camera_ip);
     let variants = ["main", "sub"]
         .into_iter()
         .filter_map(|stream| {
@@ -1209,14 +1398,51 @@ fn proto_camera_source_session(
             })
         })
         .collect::<Vec<_>>();
-    (!variants.is_empty()).then(|| proto::SourceSession {
+    let audio_variants = live_audio_sources
+        .into_iter()
+        .map(|source| {
+            let delivery_transport = if source.codec == "aac" {
+                proto::DeliveryTransport::ReliableData
+            } else {
+                proto::DeliveryTransport::Rtp
+            };
+            proto::MediaVariantCapability {
+                variant_id: source.stream.to_string(),
+                codec: Some(proto::CodecDescriptor {
+                    name: source.codec.to_owned(),
+                    parameters: HashMap::new(),
+                }),
+                format: Some(proto::MediaDataFormat {
+                    format: Some(proto::media_data_format::Format::Audio(
+                        proto::AudioDataFormat {
+                            sample_rate_hz: source.sample_rate_hz,
+                            channel_count: u32::from(source.channel_count),
+                            decoder_config: source.decoder_config,
+                        },
+                    )),
+                }),
+                delivery_transports: vec![delivery_transport as i32],
+                nominal_bitrate_bps: 0,
+                quality_rank: if source.stream == StreamKind::Main {
+                    2
+                } else {
+                    1
+                },
+                origin: proto::MediaVariantOrigin::Native as i32,
+                lineage: Vec::new(),
+            }
+        })
+        .collect::<Vec<_>>();
+    (!variants.is_empty() || !audio_variants.is_empty()).then(|| proto::SourceSession {
         source_session_id: camera_source_session_id(
             &camera.id,
             webrtc.camera_generation(camera_ip),
         ),
         source_id: camera.id.clone(),
         display_name: camera.name.clone().unwrap_or_else(|| camera.id.clone()),
-        audio: None,
+        audio: (!audio_variants.is_empty()).then_some(proto::MediaStreamCapability {
+            variants: audio_variants,
+        }),
         video: Some(proto::MediaStreamCapability { variants }),
         data_payloads: Vec::new(),
         event_types: native_events::with_publication_types(native_events::event_types(camera)),
@@ -1263,7 +1489,11 @@ fn proto_camera_stored_media_source(
     })
 }
 
-fn proto_camera_info(camera: &CameraInfo, ptz: proto::PtzCapability) -> proto::CameraInfo {
+fn proto_camera_info(
+    camera: &CameraInfo,
+    ptz: proto::PtzCapability,
+    group_ids: &[String],
+) -> proto::CameraInfo {
     proto::CameraInfo {
         source_id: camera.id.clone(),
         display_name: camera.name.clone().unwrap_or_else(|| camera.id.clone()),
@@ -1288,9 +1518,29 @@ fn proto_camera_info(camera: &CameraInfo, ptz: proto::PtzCapability) -> proto::C
             analytics: camera.capabilities.analytics,
             imaging: camera.capabilities.imaging,
             two_way_audio: camera.capabilities.two_way_audio,
+            quick_replies: camera
+                .capabilities
+                .quick_replies
+                .iter()
+                .map(proto_camera_audio_asset)
+                .collect(),
+            chimes: camera
+                .capabilities
+                .chimes
+                .iter()
+                .map(proto_camera_audio_asset)
+                .collect(),
         }),
         ptz: Some(ptz),
         privacy: None,
+        group_ids: group_ids.to_vec(),
+    }
+}
+
+fn proto_camera_audio_asset(asset: &crate::cameras::CameraAudioAsset) -> proto::CameraAudioAsset {
+    proto::CameraAudioAsset {
+        asset_id: asset.asset_id.clone(),
+        display_name: asset.display_name.clone(),
     }
 }
 
@@ -2147,6 +2397,26 @@ impl ServerControlHandler {
                     proto::CameraManufacturerResult {
                         source_id: camera.id,
                         manufacturer: camera.manufacturer,
+                    },
+                ))
+            }
+            Some(camera_control_command::Action::PlayQuickReply(request)) => {
+                play_camera_audio_asset(&self.state, &request.source_id, &request.asset_id, true)?;
+                Ok(control_ok::Result::CameraAudioPlaybackResult(
+                    proto::CameraAudioPlaybackResult {
+                        source_id: request.source_id,
+                        asset_id: request.asset_id,
+                        kind: "quick_reply".to_owned(),
+                    },
+                ))
+            }
+            Some(camera_control_command::Action::PlayChime(request)) => {
+                play_camera_audio_asset(&self.state, &request.source_id, &request.asset_id, false)?;
+                Ok(control_ok::Result::CameraAudioPlaybackResult(
+                    proto::CameraAudioPlaybackResult {
+                        source_id: request.source_id,
+                        asset_id: request.asset_id,
+                        kind: "chime".to_owned(),
                     },
                 ))
             }
@@ -8077,6 +8347,55 @@ fn reolink_goto_preset(control: &CameraControl, preset_id: u32) -> anyhow::Resul
     client.goto_preset(0, preset_id, 32)
 }
 
+fn play_camera_audio_asset(
+    state: &ServerState,
+    source_id: &str,
+    asset_id: &str,
+    quick_reply: bool,
+) -> Result<(), ControlCommandError> {
+    let camera = state.camera(source_id).ok_or_else(|| {
+        ControlCommandError::new(proto::ErrorCode::NotFound, 404, "camera not found")
+    })?;
+    let assets = if quick_reply {
+        &camera.info.capabilities.quick_replies
+    } else {
+        &camera.info.capabilities.chimes
+    };
+    if !assets.iter().any(|asset| asset.asset_id == asset_id) {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::NotFound,
+            404,
+            "camera audio asset not found",
+        ));
+    }
+    let control = camera.control.as_ref().ok_or_else(|| {
+        ControlCommandError::new(
+            proto::ErrorCode::UnsupportedRequest,
+            501,
+            "camera audio assets are unsupported for this camera",
+        )
+    })?;
+    let client = logged_in_reolink(control).map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            502,
+            format!("camera audio login failed: {error}"),
+        )
+    })?;
+    let result = if quick_reply {
+        client.quick_reply_play(0, asset_id)
+    } else {
+        client.ding_dong_play(asset_id)
+    };
+    result.map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            502,
+            format!("camera audio playback failed: {error}"),
+        )
+    })
+}
+
 fn logged_in_reolink(control: &CameraControl) -> anyhow::Result<ReolinkClient> {
     let mut client = ReolinkClient::new_with_http_port(control.ip, control.http_port);
     client.login(&control.username, &control.password)?;
@@ -8865,6 +9184,7 @@ pub struct ServerState {
     event_search_tasks: EventSearchTasks,
     event_publications: event_publication::Registry,
     event_subscriptions: event_subscription::Registry,
+    talkback: talkback::Registry,
     event_page_token_key: Arc<[u8; 32]>,
     camera_discovery_tasks: camera_discovery::Registry,
     camera_metadata: Arc<camera_metadata::Queue>,
@@ -9017,6 +9337,7 @@ impl ServerState {
             event_search_tasks: Arc::new(Mutex::new(HashMap::new())),
             event_publications: event_publication::Registry::default(),
             event_subscriptions: event_subscription::Registry::default(),
+            talkback: talkback::Registry::default(),
             event_page_token_key: Arc::new(rand::random()),
             camera_discovery_tasks: camera_discovery::Registry::default(),
             camera_metadata: Arc::new(camera_metadata::Queue::default()),
@@ -18057,7 +18378,7 @@ mod tests {
                     proto::VideoQuality::Auto,
                     "",
                 ),
-                proto::ErrorCode::InvalidRequest,
+                proto::ErrorCode::NotFound,
             ),
             (
                 media_request(

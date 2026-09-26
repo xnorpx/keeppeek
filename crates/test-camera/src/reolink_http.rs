@@ -22,6 +22,7 @@ impl ReolinkHttpServer {
         main: VideoSource,
         sub: VideoSource,
         onvif_port: u16,
+        channel_count: u8,
     ) -> anyhow::Result<Self> {
         let state = ReolinkHttpState {
             username,
@@ -30,6 +31,7 @@ impl ReolinkHttpServer {
             main,
             sub,
             onvif_port,
+            channel_count: channel_count.max(1),
             http_port: Arc::new(Mutex::new(0)),
         };
         let handler_state = state.clone();
@@ -63,6 +65,7 @@ struct ReolinkHttpState {
     main: VideoSource,
     sub: VideoSource,
     onvif_port: u16,
+    channel_count: u8,
     http_port: Arc<Mutex<u16>>,
 }
 
@@ -110,15 +113,48 @@ fn handle_request(request: &Request, state: &ReolinkHttpState) -> Response {
         "GetLocalLink" => json!({ "LocalLink": { "mac": "02:00:00:00:00:42" } }),
         "GetEnc" => json!({
             "Enc": {
-                "channel": 0,
+                "channel": requested_channel(&payload),
                 "audio": 1,
                 "mainStream": stream_config(&state.main, 8192),
                 "subStream": stream_config(&state.sub, 1024)
             }
         }),
         "GetAudioCfg" => json!({
-            "AudioCfg": { "audioType": "aac", "sampleRate": 16000, "bitRate": 64 }
+            "AudioCfg": {
+                "audioType": "aac",
+                "sampleRate": 16000,
+                "bitRate": 64,
+                "channel": requested_channel(&payload),
+                "visitorVolume": 80,
+                "talkAndReplyVolume": 70,
+                "visitorLoudspeaker": 1
+            }
         }),
+        "GetEvents" => json!({
+            "Events": {
+                "visitor": { "support": 1, "alarm_state": 0, "channel": requested_channel(&payload) }
+            }
+        }),
+        "GetAudioFileList" => json!({
+            "AudioFileList": {
+                "supportAudioPlay": 1,
+                "audioFile": [{ "id": 1, "name": "Hello" }]
+            }
+        }),
+        "GetAutoReply" => json!({
+            "AutoReply": { "enable": 0, "fileId": 1, "timeout": 10 }
+        }),
+        "GetDingDongList" => json!({
+            "DingDongList": {
+                "dingDong": [{ "id": "fake-chime-1", "name": "Fake Chime", "online": 1 }]
+            }
+        }),
+        "GetDingDongCfg" => json!({
+            "DingDongCfg": {
+                "id": "fake-chime-1", "volume": 3, "led": 1, "silent": 0
+            }
+        }),
+        "QuickReplyPlay" | "DingDongOpt" => json!({}),
         "GetOsd" => json!({ "Osd": { "osdChannel": { "name": "Fake Reo-Proto" } } }),
         "GetImage" => json!({
             "Image": { "bright": 128, "contrast": 128, "saturation": 128, "sharpen": 128 }
@@ -130,15 +166,7 @@ fn handle_request(request: &Request, state: &ReolinkHttpState) -> Response {
                 "ptz": { "permit": 1 },
                 "alarm": { "permit": 1 },
                 "record": { "permit": 1 },
-                "abilityChn": [{
-                    "ptz": { "permit": 1 },
-                    "audioCfg": { "permit": 1 },
-                    "alarm": { "permit": 1 },
-                    "recCfg": { "permit": 1 },
-                    "ai": { "permit": 1 },
-                    "image": { "permit": 1 },
-                    "talkCfg": { "permit": 1 }
-                }]
+                "abilityChn": ability_channels(state.channel_count)
             }
         }),
         "GetMdState" => json!({
@@ -146,7 +174,7 @@ fn handle_request(request: &Request, state: &ReolinkHttpState) -> Response {
         }),
         "GetAlarm" => json!({
             "Alarm": {
-                "channel": 0, "type": "md",
+                "channel": requested_channel(&payload), "type": "md",
                 "enable": u8::from(*state.motion_enabled.lock().unwrap_or_else(|poisoned| poisoned.into_inner())),
                 "sens": [{ "id": 0, "sensitivity": 37 }],
                 "scope": { "area": "retained" }
@@ -207,10 +235,59 @@ fn requested_motion_state(payload: &Value) -> Option<bool> {
         .map(|enabled| enabled != 0)
 }
 
+fn requested_channel(payload: &Value) -> u64 {
+    payload
+        .as_array()
+        .and_then(|requests| requests.first())
+        .and_then(|request| request.get("param"))
+        .and_then(|param| param.get("channel"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+fn ability_channels(channel_count: u8) -> Vec<Value> {
+    (0..channel_count.max(1))
+        .map(|_| {
+            json!({
+                "ptz": { "permit": 1 },
+                "audioCfg": { "permit": 1 },
+                "alarm": { "permit": 1 },
+                "recCfg": { "permit": 1 },
+                "ai": { "permit": 1 },
+                "image": { "permit": 1 },
+                "talkCfg": { "permit": 1 }
+            })
+        })
+        .collect()
+}
+
 fn error_response(command: &str, detail: &str) -> Response {
     Response::json(&json!([{
         "cmd": command,
         "code": 1,
         "error": { "detail": detail, "rspCode": 1 }
     }]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::requested_channel;
+    use serde_json::json;
+
+    #[test]
+    fn requested_channel_preserves_nonzero_channel_identity() {
+        assert_eq!(
+            requested_channel(&json!([{
+                "param": { "channel": 3 }
+            }])),
+            3
+        );
+        assert_eq!(requested_channel(&json!([])), 0);
+    }
+
+    #[test]
+    fn ability_fixture_has_one_entry_per_logical_channel() {
+        assert_eq!(super::ability_channels(3).len(), 3);
+        assert_eq!(super::ability_channels(0).len(), 1);
+    }
 }
