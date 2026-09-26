@@ -15,6 +15,8 @@ pub mod medium_term;
 pub mod metadata;
 pub mod nal;
 pub mod playback;
+#[cfg(test)]
+mod pre_record;
 mod recording_policy;
 pub(crate) mod safety;
 pub mod search;
