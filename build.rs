@@ -1,3 +1,6 @@
+#[path = "build_support/camera_database.rs"]
+mod camera_database;
+
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
@@ -18,7 +21,6 @@ const CAMERA_DATABASE_ARCHIVE_SHA256: &str =
 const CAMERA_DATABASE_ARCHIVE_ENV: &str = "KEEPPEEK_CAMERA_DATABASE_ARCHIVE";
 const CAMERA_DATABASE_ARCHIVE_FILE: &str = "cameras.zip";
 const CAMERA_DATABASE_FILES: &[&str] = &["cameras.json", "cameras.csv", "release-metadata.json"];
-const CAMERA_DATABASE_DOWNLOAD_ATTEMPTS: usize = 3;
 const UI_BUILD_DIR_ENV: &str = "KEEPPEEK_UI_BUILD_DIR";
 const UI_BUILD_LOCK_RETRY: Duration = Duration::from_millis(100);
 const UI_BUILD_LOCK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -159,7 +161,7 @@ fn download_camera_database() -> io::Result<()> {
                 )
             })?
         }
-        None => download_camera_database_archive()?,
+        None => camera_database::download_camera_database_archive(CAMERA_DATABASE_ARCHIVE_URL)?,
     };
 
     validate_camera_database_archive_digest(&bytes)?;
@@ -189,61 +191,6 @@ fn encode_lower_hex(bytes: impl AsRef<[u8]>) -> String {
         output.push(char::from(HEX[(byte & 0x0f) as usize]));
     }
     output
-}
-
-fn download_camera_database_archive() -> io::Result<Vec<u8>> {
-    let config = ureq::Agent::config_builder()
-        .tls_config(
-            ureq::tls::TlsConfig::builder()
-                .provider(ureq::tls::TlsProvider::NativeTls)
-                .build(),
-        )
-        .build();
-    let agent = ureq::Agent::new_with_config(config);
-    let mut last_error = None;
-    for attempt in 1..=CAMERA_DATABASE_DOWNLOAD_ATTEMPTS {
-        let response = match agent.get(CAMERA_DATABASE_ARCHIVE_URL).call() {
-            Ok(response) => response,
-            Err(ureq::Error::StatusCode(status)) => {
-                return Err(io::Error::other(format!(
-                    "camera database download returned HTTP {status}"
-                )));
-            }
-            Err(error) => {
-                last_error = Some(format!("failed to download camera database: {error}"));
-                if attempt < CAMERA_DATABASE_DOWNLOAD_ATTEMPTS {
-                    eprintln!(
-                        "camera database download attempt {attempt} failed: {error}; retrying"
-                    );
-                    thread::sleep(Duration::from_secs(attempt as u64));
-                    continue;
-                }
-                break;
-            }
-        };
-        if !response.status().is_success() {
-            return Err(io::Error::other(format!(
-                "camera database download returned HTTP {}",
-                response.status()
-            )));
-        }
-        let mut body = response.into_body();
-        match body.read_to_vec() {
-            Ok(bytes) => return Ok(bytes),
-            Err(error) => {
-                last_error = Some(format!("failed to read camera database: {error}"));
-                if attempt < CAMERA_DATABASE_DOWNLOAD_ATTEMPTS {
-                    eprintln!(
-                        "camera database download attempt {attempt} failed while reading: {error}; retrying"
-                    );
-                    thread::sleep(Duration::from_secs(attempt as u64));
-                }
-            }
-        }
-    }
-    Err(io::Error::other(last_error.unwrap_or_else(|| {
-        "failed to download camera database".to_owned()
-    })))
 }
 
 fn validate_camera_database_archive(bytes: &[u8]) -> io::Result<()> {

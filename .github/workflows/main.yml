@@ -30,11 +30,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+      - uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
         with:
           languages: rust
           build-mode: none
-      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+      - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
         with:
           category: /language:rust
 
@@ -211,12 +211,16 @@ jobs:
             }
             Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory, $env:OUTPUT_DIRECTORY
           }
+      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af # v2
+        if: matrix.os == 'windows-11-arm'
+        with:
+          tool: nextest
       - name: Run platform Rust tests
         if: matrix.os != 'windows-latest'
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            cargo test --locked --all --lib --bins --tests -- --test-threads=1
+            cargo nextest run --locked --workspace --lib --bins --tests --test-threads 2
           else
             cargo test --locked --all --lib --bins --tests
           fi
@@ -250,6 +254,9 @@ jobs:
         run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Install Chromium
         run: bunx playwright install chromium
+      - name: Verify Windows storage ACL setup without module autoloading
+        if: runner.os == 'Windows'
+        run: powershell.exe -NoLogo -NoProfile -NonInteractive -File ../.github/scripts/test-protect-test-directory.ps1
       - name: Run full platform Playwright suite
         env:
           KEEPPEEK_PYTHON: ${{ steps.python.outputs.python-path }}

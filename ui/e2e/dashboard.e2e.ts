@@ -24,16 +24,19 @@ async function expectFrontDoorCameraInformation(page: Page, scope: Locator) {
 	await trigger.click();
 	const dialog = page.getByRole('dialog', { name: 'Front Door camera information' });
 	await expect(dialog).toBeVisible();
-	expect(
-		await dialog.evaluate((element) => {
-			const bounds = element.getBoundingClientRect();
-			const hit = document.elementFromPoint(
-				bounds.left + bounds.width / 2,
-				bounds.top + bounds.height / 2
-			);
-			return hit !== null && element.contains(hit);
-		})
-	).toBe(true);
+	// Bits UI applies the portal's stacking order on the next animation frame.
+	await expect
+		.poll(() =>
+			dialog.evaluate((element) => {
+				const bounds = element.getBoundingClientRect();
+				const hit = document.elementFromPoint(
+					bounds.left + bounds.width / 2,
+					bounds.top + bounds.height / 2
+				);
+				return hit !== null && element.contains(hit);
+			})
+		)
+		.toBe(true);
 	await expect(page.locator('[data-web-rtc-recording="front-door"]')).toHaveText(
 		'Sub stream · recording'
 	);
