@@ -57,7 +57,7 @@ pub struct AudioFrame {
     pub codec: AudioCodec,
     pub sample_rate: u32,
     pub duration: Duration,
-    pub data: Vec<u8>,
+    pub data: Bytes,
 }
 
 pub enum MediaFrame {
