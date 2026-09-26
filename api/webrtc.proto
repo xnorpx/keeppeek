@@ -141,6 +141,53 @@ message CameraInfo {
   bool is_reolink = 16;
   CameraDeviceCapabilities device_capabilities = 17;
   PtzCapability ptz = 18;
+  PrivacyStatus privacy = 19;
+}
+
+message PrivacyStatus {
+  bool configured = 1;
+  bool active = 2;
+  bool enabled = 3;
+  string timezone = 4;
+  optional int64 next_transition_at_ms = 5;
+  PrivacyEffectiveSource effective_source = 6;
+  optional int64 override_expires_at_ms = 7;
+  repeated string blocked_capabilities = 8;
+  optional string error = 9;
+  uint64 revision = 10;
+  // Source of the persisted schedule before a temporary override applies.
+  PrivacyEffectiveSource configured_source = 11;
+  optional string override_actor = 12;
+  optional string override_reason = 13;
+}
+
+enum PrivacyEffectiveSource {
+  PRIVACY_EFFECTIVE_SOURCE_UNSPECIFIED = 0;
+  PRIVACY_EFFECTIVE_SOURCE_NONE = 1;
+  PRIVACY_EFFECTIVE_SOURCE_DEFAULT = 2;
+  PRIVACY_EFFECTIVE_SOURCE_CAMERA = 3;
+  PRIVACY_EFFECTIVE_SOURCE_OVERRIDE = 4;
+}
+
+message PrivacySchedule {
+  bool enabled = 1;
+  string timezone = 2;
+  repeated PrivacyWindow windows = 3;
+  optional PrivacyOverride temporary_override = 4;
+  optional bool keep_camera_connected = 5;
+}
+
+message PrivacyWindow {
+  repeated uint32 weekdays = 1;
+  string start = 2;
+  string end = 3;
+}
+
+message PrivacyOverride {
+  string actor = 1;
+  string reason = 2;
+  int64 accepted_at_ms = 3;
+  int64 expires_at_ms = 4;
 }
 
 message CameraDeviceCapabilities {
@@ -375,6 +422,23 @@ message ConfigurationChange {
     CameraConfigurationPatch patch = 1;
     string template_id = 2;
     CameraDefaultPatch defaults = 3;
+    PrivacyConfigurationPatch privacy = 4;
+    PrivacyDefaultPatch privacy_defaults = 5;
+  }
+}
+
+message PrivacyConfigurationPatch {
+  PrivacyScheduleUpdate schedule = 1;
+}
+
+message PrivacyDefaultPatch {
+  PrivacyScheduleUpdate schedule = 1;
+}
+
+message PrivacyScheduleUpdate {
+  oneof value {
+    PrivacySchedule set = 1;
+    bool clear = 2;
   }
 }
 
@@ -484,6 +548,7 @@ message ConfigurationSnapshot {
   repeated ConfigurationDomain domains = 7;
   uint32 total_camera_count = 8;
   string next_page_token = 9;
+  PrivacySchedule privacy_default = 10;
 }
 
 message CameraDefaultValues {
@@ -499,6 +564,7 @@ message CameraDefaultValues {
   CameraRecordingMode effective_recording_mode = 10;
   optional uint32 configured_event_recording_duration_secs = 11;
   uint32 effective_event_recording_duration_secs = 12;
+  PrivacySchedule privacy = 13;
 }
 
 message CameraEffectiveConfiguration {
@@ -511,6 +577,8 @@ message CameraEffectiveConfiguration {
   EffectiveBoolValue record_generic_motion_events = 7;
   EffectiveCameraRecordingModeValue recording_mode = 8;
   EffectiveUint32Value event_recording_duration_secs = 9;
+  PrivacySchedule privacy = 10;
+  PrivacyStatus privacy_status = 11;
 }
 
 message EffectiveSecretValue {
@@ -2701,6 +2769,7 @@ message CameraHealthSnapshot {
   repeated string reason_codes = 15;
   string detail = 16;
   CameraHealthDimensionsSnapshot dimensions = 17;
+  PrivacyStatus privacy = 18;
 }
 
 message CameraHealthDimensionsSnapshot {

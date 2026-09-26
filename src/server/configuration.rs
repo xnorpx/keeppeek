@@ -107,10 +107,30 @@ impl Registry {
     }
 }
 
+#[cfg(test)]
 pub(super) fn dispatch(
     state: &ServerState,
     command: proto::ConfigurationCommand,
 ) -> Result<control_ok::Result, ControlCommandError> {
+    dispatch_inner(state, None, command)
+}
+
+pub(super) fn dispatch_as(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    command: proto::ConfigurationCommand,
+) -> Result<control_ok::Result, ControlCommandError> {
+    dispatch_inner(state, Some(principal.id()), command)
+}
+
+fn dispatch_inner(
+    state: &ServerState,
+    actor: Option<String>,
+    mut command: proto::ConfigurationCommand,
+) -> Result<control_ok::Result, ControlCommandError> {
+    if let Some(actor) = actor.as_deref() {
+        stamp_privacy_override(&mut command, actor);
+    }
     let result = match command.action {
         Some(proto::configuration_command::Action::Get(request)) => {
             proto::configuration_result::Result::Snapshot(locked_configuration_snapshot_page(
@@ -160,6 +180,41 @@ pub(super) fn dispatch(
     ))
 }
 
+fn stamp_privacy_override(command: &mut proto::ConfigurationCommand, actor: &str) {
+    let Some(proto::configuration_command::Action::Plan(request)) = command.action.as_mut() else {
+        return;
+    };
+    let Some(change) = request
+        .change
+        .as_mut()
+        .and_then(|change| change.change.as_mut())
+    else {
+        return;
+    };
+    match change {
+        proto::configuration_change::Change::Privacy(patch) => {
+            stamp_privacy_schedule_update(&mut patch.schedule, actor);
+        }
+        proto::configuration_change::Change::PrivacyDefaults(patch) => {
+            stamp_privacy_schedule_update(&mut patch.schedule, actor);
+        }
+        _ => {}
+    }
+}
+
+fn stamp_privacy_schedule_update(update: &mut Option<proto::PrivacyScheduleUpdate>, actor: &str) {
+    let Some(proto::privacy_schedule_update::Value::Set(schedule)) =
+        update.as_mut().and_then(|update| update.value.as_mut())
+    else {
+        return;
+    };
+    let Some(override_) = schedule.temporary_override.as_mut() else {
+        return;
+    };
+    override_.actor = actor.to_owned();
+    override_.accepted_at_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+}
+
 fn plan_configuration_change(
     state: &ServerState,
     request: proto::PlanConfigurationChange,
@@ -185,7 +240,11 @@ fn plan_configuration_change(
         })?;
     let cameras = loaded_camera_configurations(&config_path, &root)
         .map_err(|error| configuration_internal_error("load cameras", error))?;
-    let default_change = matches!(change, proto::configuration_change::Change::Defaults(_));
+    let default_change = matches!(
+        change,
+        proto::configuration_change::Change::Defaults(_)
+            | proto::configuration_change::Change::PrivacyDefaults(_)
+    );
     let (targets, plan_targets, mut issues) = if default_change {
         all_configuration_targets(cameras)
     } else {
@@ -337,8 +396,14 @@ fn apply_configuration_plan(
             stored.plan.issues,
         ));
     }
+    config::validate_configuration_table(&config_path, &stored.candidate).map_err(|error| {
+        configuration_internal_error("revalidate configuration plan before commit", error)
+    })?;
     config::write_configuration_table(&config_path, &stored.candidate)
         .map_err(|error| configuration_internal_error("commit configuration plan", error))?;
+    state
+        .reload_privacy_from_configuration(&stored.candidate)
+        .map_err(|error| configuration_internal_error("activate privacy policy", error))?;
     state.configuration_plans.remove(&request.plan_id);
 
     let saved = config::load_cameras(&config_path)
@@ -896,6 +961,45 @@ fn apply_change_to_candidate(
                     .to_owned(),
             )
         }
+        proto::configuration_change::Change::Privacy(patch) => {
+            let fields = privacy_patch_fields(patch);
+            if fields.is_empty() {
+                issues.push(configuration_issue(
+                    "change.privacy",
+                    "privacy_patch_empty",
+                    "Select a privacy schedule or clear the camera schedule.",
+                ));
+            }
+            for target in targets {
+                apply_privacy_schedule_update(
+                    root,
+                    Some(target.config.ip.to_string()),
+                    patch.schedule.as_ref(),
+                    &mut issues,
+                );
+            }
+            (
+                fields,
+                "Privacy policy changes are validated and committed atomically before runtime activation."
+                    .to_owned(),
+            )
+        }
+        proto::configuration_change::Change::PrivacyDefaults(patch) => {
+            let fields = privacy_default_patch_fields(patch);
+            if fields.is_empty() {
+                issues.push(configuration_issue(
+                    "change.privacy_defaults",
+                    "privacy_default_patch_empty",
+                    "Select a privacy schedule or clear the inherited schedule.",
+                ));
+            }
+            apply_privacy_schedule_update(root, None, patch.schedule.as_ref(), &mut issues);
+            (
+                fields,
+                "The inherited privacy policy flows to cameras without a per-camera schedule."
+                    .to_owned(),
+            )
+        }
     };
     if !issues.is_empty() {
         return Err(issues);
@@ -905,6 +1009,152 @@ fn apply_change_to_candidate(
         semantics,
         proto::ConfigurationImpact::ReconnectCamera,
     ))
+}
+
+fn privacy_patch_fields(patch: &proto::PrivacyConfigurationPatch) -> Vec<String> {
+    patch
+        .schedule
+        .as_ref()
+        .and_then(|update| update.value.as_ref())
+        .map(|_| vec!["privacy_schedule".to_owned()])
+        .unwrap_or_default()
+}
+
+fn privacy_default_patch_fields(patch: &proto::PrivacyDefaultPatch) -> Vec<String> {
+    patch
+        .schedule
+        .as_ref()
+        .and_then(|update| update.value.as_ref())
+        .map(|_| vec!["privacy_default".to_owned()])
+        .unwrap_or_default()
+}
+
+fn apply_privacy_schedule_update(
+    root: &mut toml::Table,
+    camera_id: Option<String>,
+    update: Option<&proto::PrivacyScheduleUpdate>,
+    issues: &mut Vec<proto::ConfigurationIssue>,
+) {
+    let Some(update) = update else {
+        issues.push(configuration_issue(
+            "privacy.schedule",
+            "privacy_schedule_missing",
+            "A privacy schedule update is required.",
+        ));
+        return;
+    };
+    let privacy = root
+        .entry("privacy".to_owned())
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut();
+    let Some(privacy) = privacy else {
+        issues.push(configuration_issue(
+            "privacy",
+            "privacy_table_invalid",
+            "The privacy value must be a table.",
+        ));
+        return;
+    };
+    match update.value.as_ref() {
+        Some(proto::privacy_schedule_update::Value::Set(schedule)) => {
+            let Ok(schedule) = privacy_schedule_from_proto(schedule) else {
+                issues.push(configuration_issue(
+                    "privacy.schedule",
+                    "privacy_schedule_invalid",
+                    "The privacy schedule is invalid.",
+                ));
+                return;
+            };
+            let Ok(value) = toml::Value::try_from(schedule) else {
+                issues.push(configuration_issue(
+                    "privacy.schedule",
+                    "privacy_schedule_encoding_failed",
+                    "The privacy schedule could not be encoded.",
+                ));
+                return;
+            };
+            match camera_id {
+                Some(camera_id) => {
+                    if let Some(cameras) = privacy
+                        .entry("cameras".to_owned())
+                        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+                        .as_table_mut()
+                    {
+                        cameras.insert(camera_id, value);
+                    }
+                }
+                None => {
+                    privacy.insert("default".to_owned(), value);
+                }
+            }
+        }
+        Some(proto::privacy_schedule_update::Value::Clear(_)) => match camera_id {
+            Some(camera_id) => {
+                privacy
+                    .get_mut("cameras")
+                    .and_then(toml::Value::as_table_mut)
+                    .map(|cameras| cameras.remove(&camera_id));
+            }
+            None => {
+                privacy.remove("default");
+            }
+        },
+        None => issues.push(configuration_issue(
+            "privacy.schedule",
+            "privacy_schedule_value_missing",
+            "A privacy schedule set or clear value is required.",
+        )),
+    }
+}
+
+fn privacy_schedule_from_proto(
+    schedule: &proto::PrivacySchedule,
+) -> anyhow::Result<crate::privacy::PrivacySchedule> {
+    let windows = schedule
+        .windows
+        .iter()
+        .map(|window| {
+            Ok(crate::privacy::PrivacyWindow {
+                weekdays: window
+                    .weekdays
+                    .iter()
+                    .copied()
+                    .map(u8::try_from)
+                    .collect::<Result<Vec<_>, _>>()?,
+                start: window.start.clone(),
+                end: window.end.clone(),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let temporary_override = schedule
+        .temporary_override
+        .as_ref()
+        .map(
+            |override_| -> anyhow::Result<crate::privacy::PrivacyOverride> {
+                Ok(crate::privacy::PrivacyOverride {
+                    actor: override_.actor.clone(),
+                    reason: override_.reason.clone(),
+                    accepted_at: rfc3339_from_millis(override_.accepted_at_ms)?,
+                    expires_at: rfc3339_from_millis(override_.expires_at_ms)?,
+                })
+            },
+        )
+        .transpose()?;
+    let schedule = crate::privacy::PrivacySchedule {
+        enabled: schedule.enabled,
+        timezone: schedule.timezone.clone(),
+        windows,
+        temporary_override,
+        keep_camera_connected: schedule.keep_camera_connected.unwrap_or(true),
+    };
+    schedule.validate()?;
+    Ok(schedule)
+}
+
+fn rfc3339_from_millis(milliseconds: i64) -> anyhow::Result<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(milliseconds)
+        .map(|value| value.to_rfc3339())
+        .ok_or_else(|| anyhow::anyhow!("timestamp is outside the supported range"))
 }
 
 fn apply_to_camera_tables(
@@ -1456,6 +1706,26 @@ fn configuration_changes(
         .collect::<HashMap<_, _>>();
     let after_defaults = after.get("camera_defaults").and_then(toml::Value::as_table);
     let mut changes = Vec::new();
+    let before_privacy = before.get("privacy").and_then(toml::Value::as_table);
+    let after_privacy = after.get("privacy").and_then(toml::Value::as_table);
+    if fields.iter().any(|field| field == "privacy_default") {
+        let old_value = before_privacy.and_then(|table| table.get("default"));
+        let new_value = after_privacy.and_then(|table| table.get("default"));
+        if old_value != new_value {
+            changes.push(proto::ConfigurationFieldChange {
+                camera_id: None,
+                field: "privacy_default".to_owned(),
+                old_configured_value: old_value
+                    .map_or_else(|| "inherited".to_owned(), toml_value_label),
+                old_effective_value: String::new(),
+                new_configured_value: new_value
+                    .map_or_else(|| "inherited".to_owned(), toml_value_label),
+                new_effective_value: String::new(),
+                source: proto::ConfigurationValueSource::Default as i32,
+                secret: false,
+            });
+        }
+    }
     for target in targets {
         let Some(old) = before_cameras.get(&target.config.ip) else {
             continue;
@@ -1464,6 +1734,35 @@ fn configuration_changes(
             continue;
         };
         for field in fields {
+            if field == "privacy_schedule" {
+                let old_value = before_privacy
+                    .and_then(|table| table.get("cameras"))
+                    .and_then(toml::Value::as_table)
+                    .and_then(|cameras| cameras.get(&target.config.ip.to_string()));
+                let new_value = after_privacy
+                    .and_then(|table| table.get("cameras"))
+                    .and_then(toml::Value::as_table)
+                    .and_then(|cameras| cameras.get(&target.config.ip.to_string()));
+                if old_value != new_value {
+                    changes.push(proto::ConfigurationFieldChange {
+                        camera_id: Some(target.config.ip.to_string()),
+                        field: field.clone(),
+                        old_configured_value: old_value
+                            .map_or_else(|| "inherited".to_owned(), toml_value_label),
+                        old_effective_value: String::new(),
+                        new_configured_value: new_value
+                            .map_or_else(|| "inherited".to_owned(), toml_value_label),
+                        new_effective_value: String::new(),
+                        source: if new_value.is_some() {
+                            proto::ConfigurationValueSource::Override as i32
+                        } else {
+                            proto::ConfigurationValueSource::Default as i32
+                        },
+                        secret: false,
+                    });
+                }
+                continue;
+            }
             let secret = field_is_secret(field);
             let old_configured = configured_field_value(&old.configured, field, secret);
             let new_configured = configured_field_value(&new.configured, field, secret);
@@ -2379,6 +2678,17 @@ fn configuration_snapshot(state: &ServerState) -> anyhow::Result<proto::Configur
                 .unwrap_or_else(crate::cameras::default_event_recording_duration_secs),
         )
         .unwrap_or(u32::MAX),
+        privacy: root
+            .get("privacy")
+            .and_then(toml::Value::as_table)
+            .and_then(|privacy| privacy.get("default"))
+            .and_then(|value| {
+                value
+                    .clone()
+                    .try_into::<crate::privacy::PrivacySchedule>()
+                    .ok()
+            })
+            .map(|schedule| crate::server::proto_privacy_schedule(&schedule)),
     };
     let cameras = cameras
         .into_iter()
@@ -2408,6 +2718,17 @@ fn configuration_snapshot(state: &ServerState) -> anyhow::Result<proto::Configur
         domains: configuration_domains(state),
         total_camera_count,
         next_page_token: String::new(),
+        privacy_default: root
+            .get("privacy")
+            .and_then(toml::Value::as_table)
+            .and_then(|privacy| privacy.get("default"))
+            .and_then(|value| {
+                value
+                    .clone()
+                    .try_into::<crate::privacy::PrivacySchedule>()
+                    .ok()
+            })
+            .map(|schedule| crate::server::proto_privacy_schedule(&schedule)),
     })
 }
 
@@ -2593,7 +2914,7 @@ fn proto_effective_camera(
         configured_value::<u64>(&camera.configured, "event_recording_duration_secs");
     let camera_proto = proto::CameraSettings {
         id: camera_id.clone(),
-        ip: camera_id,
+        ip: camera_id.clone(),
         display_name: camera.config.display_name.clone(),
         manufacturer_override: camera.config.manufacturer_override().map(str::to_owned),
         username_configured: !camera.config.username.is_empty(),
@@ -2720,6 +3041,30 @@ fn proto_effective_camera(
                 live.event_recording_duration_secs == camera.config.event_recording_duration_secs
             })),
         }),
+        privacy: state
+            .privacy
+            .schedule(&camera_id)
+            .as_ref()
+            .map(crate::server::proto_privacy_schedule),
+        privacy_status: {
+            let (active, epoch, error) =
+                match state.privacy.decision(&camera_id, chrono::Utc::now()) {
+                    Ok((active, epoch)) => (active, epoch, None),
+                    Err(error) => (true, u64::MAX, Some(error.to_string())),
+                };
+            Some(crate::server::privacy_status(
+                state.privacy.schedule(&camera_id).as_ref(),
+                active,
+                epoch,
+                state
+                    .privacy_sources
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&camera_id)
+                    .copied(),
+                error,
+            ))
+        },
     })
 }
 
@@ -3020,6 +3365,85 @@ mod tests {
         assert_eq!(
             transport.source,
             proto::ConfigurationValueSource::Override as i32
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn privacy_schedule_plan_and_apply_updates_runtime_and_persistence() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-privacy-configuration-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let config_path = directory.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+                [cameras.front]
+                ip = "192.0.2.10"
+            "#,
+        )
+        .unwrap();
+        let state = ServerState::empty().with_camera_config_path(config_path.clone());
+        let revision = configuration_snapshot(&state)
+            .unwrap()
+            .configuration_revision;
+        let schedule = proto::PrivacySchedule {
+            enabled: true,
+            timezone: "UTC".to_owned(),
+            windows: vec![proto::PrivacyWindow {
+                weekdays: vec![1],
+                start: "22:00".to_owned(),
+                end: "06:00".to_owned(),
+            }],
+            temporary_override: None,
+            keep_camera_connected: Some(true),
+        };
+        let plan = plan_configuration_change(
+            &state,
+            proto::PlanConfigurationChange {
+                expected_configuration_revision: revision.clone(),
+                targets: Some(proto::ConfigurationTargetSelector {
+                    selection: Some(proto::configuration_target_selector::Selection::CameraIds(
+                        proto::CameraIdList {
+                            camera_ids: vec!["192.0.2.10".to_owned()],
+                        },
+                    )),
+                }),
+                change: Some(proto::ConfigurationChange {
+                    change: Some(proto::configuration_change::Change::Privacy(
+                        proto::PrivacyConfigurationPatch {
+                            schedule: Some(proto::PrivacyScheduleUpdate {
+                                value: Some(proto::privacy_schedule_update::Value::Set(schedule)),
+                            }),
+                        },
+                    )),
+                }),
+            },
+        )
+        .unwrap();
+        assert!(plan.valid, "privacy plan issues: {:?}", plan.issues);
+        assert_eq!(plan.changes[0].field, "privacy_schedule");
+
+        let applied = apply_configuration_plan(
+            &state,
+            proto::ApplyConfigurationPlan {
+                plan_id: plan.plan_id,
+                expected_configuration_revision: revision,
+            },
+        )
+        .unwrap();
+        assert!(applied.configuration_committed);
+        assert_eq!(
+            state.privacy.schedule("192.0.2.10").unwrap().timezone,
+            "UTC"
+        );
+        let root = config::load_configuration_table(&config_path).unwrap();
+        assert_eq!(
+            root["privacy"]["cameras"]["192.0.2.10"]["timezone"].as_str(),
+            Some("UTC")
         );
 
         std::fs::remove_dir_all(directory).unwrap();

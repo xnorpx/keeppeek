@@ -10,6 +10,7 @@
 		health: CameraHealth | null;
 		stream: 'main' | 'sub';
 		previewAvailable: boolean;
+		privacyActive?: boolean;
 		commandTransportAvailable?: boolean;
 		paperFrame?: boolean;
 	};
@@ -19,19 +20,22 @@
 		health,
 		stream,
 		previewAvailable,
+		privacyActive = false,
 		commandTransportAvailable = false,
 		paperFrame = false
 	}: Props = $props();
 	let label = $derived(camera.name ?? camera.id);
 	let control = $derived(presentCameraControl(camera, commandTransportAvailable));
 	let previewStatus = $derived(
-		health === null
-			? 'Waiting for camera health'
-			: health.state === 'offline'
-				? (health.last_error ?? 'Camera is offline')
-				: health.configured_profiles.length === 0
-					? 'No configured media profile was reported'
-					: 'Live preview is unavailable'
+		privacyActive
+			? 'Privacy schedule is active; media delivery is blocked'
+			: health === null
+				? 'Waiting for camera health'
+				: health.state === 'offline'
+					? (health.last_error ?? 'Camera is offline')
+					: health.configured_profiles.length === 0
+						? 'No configured media profile was reported'
+						: 'Live preview is unavailable'
 	);
 	let previewProfile = $derived(
 		camera.profiles.find((profile) => profile.stream === stream) ?? camera.profiles[0] ?? null
@@ -100,6 +104,16 @@
 						>{previewHealth?.drops ?? 0} DROPPED · {previewHealth?.reconnects ?? 0} RECONNECTS</span
 					>
 				</div>
+			{:else if privacyActive}
+				<div class="absolute inset-0 grid place-items-center px-6 text-center">
+					<div class="space-y-2">
+						<RadioIcon class="mx-auto size-5 text-primary-soft" />
+						<p class="text-sm font-medium text-white">Privacy active</p>
+						<p class="text-xs text-text-muted">
+							Server media delivery is blocked until the schedule ends.
+						</p>
+					</div>
+				</div>
 			{:else if previewAvailable}
 				<LiveVideo cameraId={camera.id} {stream} quality="auto" class="size-full overflow-hidden" />
 			{:else}
@@ -119,7 +133,7 @@
 			{/if}
 		</div>
 
-		{#if control.showPtz}
+		{#if control.showPtz && !privacyActive}
 			<CameraPtzControl
 				cameraId={camera.id}
 				commandAvailable={control.commandAvailable}

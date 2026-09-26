@@ -20,8 +20,14 @@ impl Events {
         let registry = Registry::default();
         let shutdown = Shutdown::new();
         let (sent, received) = mpsc::sync_channel(8);
-        let handles =
-            crate::camera_events::spawn(&camera, sent, registry.clone(), shutdown.clone()).unwrap();
+        let handles = crate::camera_events::spawn(
+            &camera,
+            sent,
+            registry.clone(),
+            Arc::new(crate::privacy::PrivacyRegistry::default()),
+            shutdown.clone(),
+        )
+        .unwrap();
         Self {
             ip: camera.config.ip,
             registry,

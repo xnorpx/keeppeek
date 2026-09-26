@@ -12,12 +12,14 @@ use std::thread::JoinHandle;
 
 use crate::cameras::Camera;
 use crate::keeppeek::KeepPeekEvent;
+use crate::privacy::PrivacyRegistry;
 use crate::shutdown::Shutdown;
 
 pub fn spawn(
     camera: &Camera,
     sent: mpsc::SyncSender<KeepPeekEvent>,
     registry: Registry,
+    privacy: Arc<PrivacyRegistry>,
     shutdown: Shutdown,
 ) -> anyhow::Result<Vec<JoinHandle<()>>> {
     camera.config.events.validate(camera.config.ip)?;
@@ -40,7 +42,13 @@ pub fn spawn(
         shutdown.clone(),
         camera.config.events.clone(),
     )?;
-    let snapshot = snapshot::spawn(camera, Arc::clone(&slot), registry, shutdown.clone())?;
+    let snapshot = snapshot::spawn(
+        camera,
+        Arc::clone(&slot),
+        registry,
+        privacy,
+        shutdown.clone(),
+    )?;
     let snapshots = snapshot.as_ref().map(|(sent, _)| sent.clone());
     let actor = consumer::Consumer::new(
         camera,

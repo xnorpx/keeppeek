@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 test.describe.configure({ mode: 'serial' });
@@ -9,7 +10,8 @@ let backend: ChildProcess | undefined;
 let backendPort = 0;
 let serverOutput = '';
 const runId = `maintenance-${process.pid}`;
-const root = path.resolve('..', 'target', `ui-logging-e2e-${runId}`);
+const storageParent = process.platform === 'win32' ? tmpdir() : path.resolve('..', 'target');
+const root = path.join(storageParent, `ui-logging-e2e-${runId}`);
 const now = Date.now();
 
 test.beforeAll(async ({ request }) => {

@@ -20,6 +20,7 @@
 		health: CameraHealth | null;
 		stream: 'main' | 'sub';
 		previewAvailable: boolean;
+		privacyActive?: boolean;
 		catalogUrl?: string | null;
 		commandTransportAvailable: boolean;
 		mode: MobileCameraMode;
@@ -32,6 +33,7 @@
 		health,
 		stream,
 		previewAvailable,
+		privacyActive = false,
 		catalogUrl = null,
 		commandTransportAvailable,
 		mode,
@@ -145,7 +147,15 @@
 	{#if mode === 'live'}
 		<div class="flex h-[652px] shrink-0 flex-col gap-[14px] p-[15px]">
 			<div class="relative h-[252px] shrink-0 overflow-hidden rounded-sm bg-video">
-				{#if previewAvailable}
+				{#if privacyActive}
+					<div class="grid size-full place-items-center px-6 text-center">
+						<div>
+							<RadioIcon class="mx-auto size-5 text-primary-soft" />
+							<p class="mt-2 text-xs font-medium text-white">Privacy active</p>
+							<p class="mt-1 text-2xs text-text-muted">Media delivery is blocked by the server.</p>
+						</div>
+					</div>
+				{:else if previewAvailable}
 					<LiveVideo
 						cameraId={camera.id}
 						{stream}
@@ -234,7 +244,15 @@
 	{:else if mode === 'ptz'}
 		<div class="flex h-[728px] shrink-0 flex-col gap-[14px] p-[15px]">
 			<div class="relative h-[220px] shrink-0 overflow-hidden rounded-sm bg-video">
-				{#if previewAvailable}
+				{#if privacyActive}
+					<div class="grid size-full place-items-center px-6 text-center">
+						<div>
+							<RadioIcon class="mx-auto size-5 text-primary-soft" />
+							<p class="mt-2 text-xs font-medium text-white">Privacy active</p>
+							<p class="mt-1 text-2xs text-text-muted">PTZ and live media are blocked.</p>
+						</div>
+					</div>
+				{:else if previewAvailable}
 					<LiveVideo
 						cameraId={camera.id}
 						{stream}
@@ -254,12 +272,20 @@
 					>
 				</div>
 			</div>
-			<CameraPtzControl
-				cameraId={camera.id}
-				commandAvailable={control.commandAvailable}
-				reason={control.reason}
-				variant="mobile"
-			/>
+			{#if !privacyActive}
+				<CameraPtzControl
+					cameraId={camera.id}
+					commandAvailable={control.commandAvailable}
+					reason={control.reason}
+					variant="mobile"
+				/>
+			{:else}
+				<div
+					class="flex h-[42px] items-center rounded-sm border border-primary/35 bg-primary/10 px-3 text-xs leading-4 text-text-muted"
+				>
+					PTZ is blocked while server privacy is active.
+				</div>
+			{/if}
 			<div
 				class="flex h-[42px] shrink-0 items-center gap-2 rounded-sm border border-healthy/35 bg-healthy/10 px-3 text-xs leading-4 text-text-muted"
 			>

@@ -60,6 +60,8 @@ Root fields must appear before a table header or they belong to that table.
 | `[logging]`                                        | `LoggingConfig`                                     | Service log destination                       |
 | `[operational_events]`                             | `OperationalEventsConfig`                           | Health-event timing                           |
 | `[operational_events.cameras."<camera-id-or-ip>"]` | `OperationalEventOverride`                          | Per-camera timing overrides                   |
+| `[privacy.default]`                                | `PrivacySchedule`                                   | Inherited server-enforced recurring privacy   |
+| `[privacy.cameras."<camera-id-or-ip>"]`            | `PrivacySchedule`                                   | Per-camera server-enforced recurring privacy  |
 | `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision     |
 | `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                        |
 | `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                               |
@@ -373,6 +375,31 @@ Type: `OperationalEventOverride`, section `[operational_events.cameras."<camera-
 Each effective policy requires warning hold-down no greater than outage hold-down. Outage and
 recovery durations cannot exceed `86400` seconds. Override keys contain 1 to 256 bytes after the
 nonempty check. The stable camera ID takes precedence over an IP-keyed override.
+
+## Privacy schedules
+
+Type: `PrivacyConfig`, section `[privacy]`. The optional `[privacy.default]` schedule is inherited
+by cameras without a per-camera entry. Per-camera schedules are keyed by stable camera ID; an
+IP-keyed entry is accepted for migration and the runtime maps it to that camera ID.
+
+Types: `PrivacySchedule`, sections `[privacy.default]` and
+`[privacy.cameras."<camera-id-or-ip>"]`.
+
+| Field                   | Type                       | Default  | Meaning                                                             |
+| ----------------------- | -------------------------- | -------- | ------------------------------------------------------------------- |
+| `enabled`               | `bool`                     | `true`   | Retain the policy but disable its scheduled enforcement when false. |
+| `timezone`              | `String`                   | Required | IANA timezone used for recurring local windows.                     |
+| `windows`               | Array of `PrivacyWindow`   | Empty    | Half-open weekly privacy windows; at most 64.                       |
+| `temporary_override`    | Optional `PrivacyOverride` | None     | Bounded persisted override that suspends matching windows.          |
+| `keep_camera_connected` | `bool`                     | `true`   | Keep camera ingress warm while delivery is blocked.                 |
+
+Each `PrivacyWindow` has `weekdays` (ISO values 1 through 7), `start`, and `end` in `HH:MM`.
+Equal endpoints are rejected; an end earlier than the start is an overnight interval. Both
+occurrences of a repeated daylight-saving local time are protected. A `PrivacyOverride` requires
+nonempty `actor` and `reason`, RFC3339 `accepted_at` and `expires_at`, and expires within 24 hours.
+Control-channel configuration requests replace the override actor and acceptance time with the
+authenticated administrator and server time before the candidate configuration is validated.
+Invalid privacy policy data fails validation before the server accepts camera media.
 
 ## MQTT event forwarding
 

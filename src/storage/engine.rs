@@ -1,3 +1,4 @@
+use crate::privacy::PrivacyRegistry;
 use crate::{
     cameras::CameraRecordingMode,
     config::StorageToml,
@@ -263,6 +264,7 @@ struct RecordingAdmission {
     policies: Arc<RwLock<HashMap<String, CameraRecordingPolicy>>>,
     discontinuous_streams: Arc<Mutex<HashMap<String, (String, String)>>>,
     health: RecordingHealthRegistry,
+    privacy: Arc<RwLock<Option<Arc<PrivacyRegistry>>>>,
 }
 
 impl RecordingAdmission {
@@ -331,6 +333,16 @@ impl RecordingAdmission {
         now: Instant,
         before_send: impl FnOnce(),
     ) {
+        if self.privacy_active(&identity.source_id) {
+            self.discontinuous_streams
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    identity.storage_key.clone(),
+                    (identity.source_id, identity.stream_id),
+                );
+            return;
+        }
         let mut policies = self
             .policies
             .write()
@@ -358,6 +370,18 @@ impl RecordingAdmission {
             }
             AdmissionDecision::Ignore => {}
         }
+    }
+
+    fn privacy_active(&self, camera_id: &str) -> bool {
+        self.privacy
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|privacy| {
+                privacy
+                    .decision(camera_id, chrono::Utc::now())
+                    .map_or(true, |decision| decision.0)
+            })
     }
 
     fn enqueue(
@@ -490,12 +514,18 @@ impl StorageEngine {
         let admission = RecordingAdmission::new(health.clone());
         let worker_demand = demand.clone();
         let worker_health = health.clone();
+        let worker_privacy = admission.privacy.clone();
         let (tx, rx) = storage_command_channel(COMMAND_CAPACITY, QUEUED_MEDIA_BYTES_CAPACITY);
         let thread = std::thread::Builder::new()
             .name("storage-writer".into())
             .spawn(move || {
-                let mut worker =
-                    WriterWorker::new_with_health(config, worker_demand, catalog, worker_health);
+                let mut worker = WriterWorker::new_with_health(
+                    config,
+                    worker_demand,
+                    catalog,
+                    worker_health,
+                    worker_privacy,
+                );
                 worker.run(rx);
             })
             .expect("failed to spawn storage writer thread");
@@ -514,6 +544,14 @@ impl StorageEngine {
             tx: self.tx.clone(),
             admission: self.admission.clone(),
         }
+    }
+
+    pub(crate) fn set_privacy_registry(&self, privacy: Arc<PrivacyRegistry>) {
+        *self
+            .admission
+            .privacy
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(privacy);
     }
 
     pub fn demand(&self) -> RecordingDemand {
@@ -567,6 +605,7 @@ struct WriterWorker {
     catalog: Option<RecordingCatalogHandle>,
     pipelines: HashMap<String, CameraPipeline>,
     long_term: LongTermStore,
+    privacy: Arc<RwLock<Option<Arc<PrivacyRegistry>>>>,
 }
 
 impl WriterWorker {
@@ -576,7 +615,13 @@ impl WriterWorker {
         demand: RecordingDemand,
         catalog: Option<RecordingCatalogHandle>,
     ) -> Self {
-        Self::new_with_health(config, demand, catalog, RecordingHealthRegistry::default())
+        Self::new_with_health(
+            config,
+            demand,
+            catalog,
+            RecordingHealthRegistry::default(),
+            Arc::new(RwLock::new(None)),
+        )
     }
 
     fn new_with_health(
@@ -584,6 +629,7 @@ impl WriterWorker {
         demand: RecordingDemand,
         catalog: Option<RecordingCatalogHandle>,
         health: RecordingHealthRegistry,
+        privacy: Arc<RwLock<Option<Arc<PrivacyRegistry>>>>,
     ) -> Self {
         let long_term = LongTermStore::new(config.long_term_path.clone());
         let safety = health.storage();
@@ -595,6 +641,7 @@ impl WriterWorker {
             catalog,
             pipelines: HashMap::new(),
             long_term,
+            privacy,
         }
     }
 
@@ -632,6 +679,20 @@ impl WriterWorker {
                         frame,
                         discontinuity,
                     } => {
+                        let privacy_active = self
+                            .privacy
+                            .read()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .as_ref()
+                            .is_some_and(|privacy| {
+                                privacy
+                                    .decision(&identity.source_id, chrono::Utc::now())
+                                    .map_or(true, |decision| decision.0)
+                            });
+                        if privacy_active {
+                            self.finish_stream_before_gap(&identity.storage_key);
+                            continue;
+                        }
                         if discontinuity {
                             self.finish_stream_before_gap(&identity.storage_key);
                         }
@@ -2128,7 +2189,13 @@ mod tests {
         config.short_term_duration = Duration::ZERO;
         config.flush_interval = Duration::ZERO;
         let health = RecordingHealthRegistry::default();
-        let mut worker = WriterWorker::new_with_health(config, demand, None, health.clone());
+        let mut worker = WriterWorker::new_with_health(
+            config,
+            demand,
+            None,
+            health.clone(),
+            Arc::new(RwLock::new(None)),
+        );
         let started_at = Instant::now();
 
         worker.ingest(

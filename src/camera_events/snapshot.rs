@@ -12,7 +12,7 @@ use onvif::{
 };
 
 use super::registry::{Input, Registry, Slot};
-use crate::{cameras::Camera, shutdown::Shutdown};
+use crate::{cameras::Camera, privacy::PrivacyRegistry, shutdown::Shutdown};
 
 pub(super) struct Job {
     pub camera_id: String,
@@ -23,6 +23,7 @@ pub(super) fn spawn(
     camera: &Camera,
     slot: Arc<Slot>,
     registry: Registry,
+    privacy: Arc<PrivacyRegistry>,
     shutdown: Shutdown,
 ) -> anyhow::Result<Option<(SyncSender<Job>, JoinHandle<()>)>> {
     if !camera.config.events.snapshots {
@@ -44,7 +45,7 @@ pub(super) fn spawn(
     let (sent, received) = mpsc::sync_channel(4);
     let handle = std::thread::Builder::new()
         .name(format!("event-snapshot-{ip}"))
-        .spawn(move || run(client, ip, registry, received, slot, shutdown))?;
+        .spawn(move || run(client, ip, registry, privacy, received, slot, shutdown))?;
     Ok(Some((sent, handle)))
 }
 
@@ -52,6 +53,7 @@ fn run(
     mut client: Client,
     ip: IpAddr,
     registry: Registry,
+    privacy: Arc<PrivacyRegistry>,
     received: Receiver<Job>,
     slot: Arc<Slot>,
     shutdown: Shutdown,
@@ -64,6 +66,12 @@ fn run(
         };
         if shutdown.is_cancelled() {
             return;
+        }
+        if privacy
+            .decision(&job.camera_id, chrono::Utc::now())
+            .map_or(true, |(active, _)| active)
+        {
+            continue;
         }
         let Some(endpoint) = registry.snapshot_endpoint(ip) else {
             slot.update(|evidence| evidence.snapshot_failures += 1);

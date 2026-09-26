@@ -257,6 +257,7 @@ struct ProjectionContext<'a> {
     health: &'a [CameraHealth],
     storage_paused: bool,
     recording_threshold_ms: u64,
+    privacy: &'a crate::privacy::PrivacyRegistry,
 }
 
 struct GapBuildContext<'a> {
@@ -516,6 +517,7 @@ fn build_response(
         health: &health.cameras,
         storage_paused: health.storage.safety.recording_state.as_str() == "paused",
         recording_threshold_ms: recording_freshness_threshold_ms(&state.storage_config),
+        privacy: &state.privacy,
     };
     let mut cameras = state
         .camera_entries()
@@ -641,6 +643,7 @@ pub fn metric_snapshot(
         health: &health.cameras,
         storage_paused: health.storage.safety.recording_state.as_str() == "paused",
         recording_threshold_ms: recording_freshness_threshold_ms(&state.storage_config),
+        privacy: &state.privacy,
     };
     let cameras = state
         .camera_entries()
@@ -686,7 +689,13 @@ fn project_camera(
         .map(|stream_id| project_stream(camera, stream_id, health, context))
         .collect::<Vec<_>>();
     let recording_requested = streams.iter().any(|stream| stream.recording_requested);
-    let state = if streams.is_empty() {
+    let privacy_active = context
+        .privacy
+        .decision(&camera.info.id, chrono::Utc::now())
+        .map_or(true, |decision| decision.0);
+    let state = if privacy_active {
+        RecordingCoverageState::PausedByPolicy
+    } else if streams.is_empty() {
         RecordingCoverageState::NotConfigured
     } else if !recording_requested {
         RecordingCoverageState::PausedByPolicy
@@ -706,6 +715,17 @@ fn project_camera(
         RecordingCoverageState::Degraded
     } else {
         RecordingCoverageState::Unknown
+    };
+    let streams = if privacy_active {
+        streams
+            .into_iter()
+            .map(|mut stream| {
+                stream.writer_state = WriterState::PolicyDisabled;
+                stream
+            })
+            .collect()
+    } else {
+        streams
     };
     CameraRecordingCoverage {
         camera_id: camera.info.id.clone(),

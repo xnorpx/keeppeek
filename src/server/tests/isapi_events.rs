@@ -363,6 +363,15 @@ fn hikvision_ptz_uses_shared_ownership_presets_and_disconnect_stop() {
     .unwrap();
     assert!(xml.contains("<pan>50</pan>"));
     assert!(xml.contains("<tilt>-25</tilt>"));
+    assert!(camera_control::stop_for_privacy(&state, "127.0.0.1"));
+    let xml = String::from_utf8(
+        fake.resource("/ISAPI/PTZCtrl/channels/1/continuous")
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(xml.contains("<pan>0</pan>"));
+    assert!(xml.contains("<tilt>0</tilt>"));
+    assert!(state.ptz_owners.lock().unwrap().is_empty());
     let presets = handler
         .handle_ptz(
             owner,

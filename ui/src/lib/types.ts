@@ -535,6 +535,49 @@ export type CameraDefaultPatch = Pick<
 	| 'event_recording_duration_secs'
 >;
 
+export type PrivacyWindow = {
+	weekdays: number[];
+	start: string;
+	end: string;
+};
+
+export type PrivacyOverride = {
+	actor: string;
+	reason: string;
+	accepted_at_ms: number;
+	expires_at_ms: number;
+};
+
+export type PrivacySchedule = {
+	enabled: boolean;
+	timezone: string;
+	windows: PrivacyWindow[];
+	temporary_override: PrivacyOverride | null;
+	keep_camera_connected: boolean;
+};
+
+export type PrivacySchedulePatch = ConfigurationPatchValue<PrivacySchedule>;
+
+export type PrivacyConfigurationPatch = {
+	schedule: PrivacySchedulePatch;
+};
+
+export type PrivacyStatus = {
+	configured: boolean;
+	active: boolean;
+	enabled: boolean;
+	timezone: string;
+	next_transition_at_ms: number | null;
+	configured_source: 'none' | 'default' | 'camera';
+	effective_source: 'none' | 'default' | 'camera' | 'override';
+	override_expires_at_ms: number | null;
+	override_actor: string | null;
+	override_reason: string | null;
+	blocked_capabilities: string[];
+	error: string | null;
+	revision: number;
+};
+
 export type ConfigurationTargetSelector =
 	| { mode: 'camera-ids'; camera_ids: string[] }
 	| {
@@ -549,7 +592,9 @@ export type ConfigurationTargetSelector =
 export type ConfigurationChange =
 	| { mode: 'patch'; patch: CameraConfigurationPatch }
 	| { mode: 'template'; template_id: string }
-	| { mode: 'defaults'; patch: CameraDefaultPatch };
+	| { mode: 'defaults'; patch: CameraDefaultPatch }
+	| { mode: 'privacy'; patch: PrivacyConfigurationPatch }
+	| { mode: 'privacy-defaults'; patch: PrivacyConfigurationPatch };
 
 export type ConfigurationPlanRequest = {
 	expected_configuration_revision: string;
@@ -607,6 +652,8 @@ export type CameraEffectiveConfiguration = {
 	record_generic_motion_events: EffectiveConfigurationValue<boolean>;
 	recording_mode: EffectiveConfigurationValue<CameraRecordingMode>;
 	event_recording_duration_secs: EffectiveConfigurationValue<number>;
+	privacy: PrivacySchedule | null;
+	privacy_status: PrivacyStatus;
 };
 
 export type CameraDefaultValues = {
@@ -622,6 +669,7 @@ export type CameraDefaultValues = {
 	effective_recording_mode: CameraRecordingMode;
 	configured_event_recording_duration_secs: number | null;
 	effective_event_recording_duration_secs: number;
+	privacy: PrivacySchedule | null;
 };
 
 export type ConfigurationLimits = {
@@ -650,6 +698,7 @@ export type ConfigurationSnapshot = {
 	templates: ConfigurationTemplate[];
 	limits: ConfigurationLimits;
 	domains: ConfigurationDomain[];
+	privacy_default: PrivacySchedule | null;
 };
 
 export type ConfigurationPlanTarget = {
@@ -838,6 +887,7 @@ export interface CameraHealth {
 	last_error: string | null;
 	configured_profiles: ProfileSummary[];
 	streams: StreamHealth[];
+	privacy?: PrivacyStatus;
 }
 
 export interface StreamHealthDimensions {

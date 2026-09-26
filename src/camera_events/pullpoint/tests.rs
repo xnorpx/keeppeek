@@ -172,15 +172,23 @@ fn queue_pressure_unsubscribes_before_two_second_lease_expires() {
     let shutdown = producer.shutdown.clone();
     let slot = Arc::clone(&producer.slot);
     let handle = thread::spawn(move || producer.subscribe());
+    // Discovery precedes the lease; successful unsubscribe still proves cleanup before expiry.
+    let pulled = fake.wait_for_pulls(1, Duration::from_secs(5));
     let (finished, result) = finish(handle, &shutdown, Duration::from_millis(1600));
 
     assert!(
-        finished,
-        "queue pressure kept the producer alive until cancellation"
+        pulled,
+        "subscription did not reach its first pull: {result:?}"
     );
     assert!(
-        result.is_err(),
-        "undelivered notifications must be reported"
+        finished,
+        "queue pressure kept the producer alive until cancellation: {result:?}"
+    );
+    assert!(
+        result
+            .as_ref()
+            .is_err_and(|error| error.is::<super::DeliveryTimeout>()),
+        "undelivered notifications must report a delivery timeout: {result:?}"
     );
     assert_eq!(fake.pull_count(), 1);
     assert_eq!(fake.renew_count(), 0);

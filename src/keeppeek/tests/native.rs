@@ -1,5 +1,6 @@
 use super::*;
 use crate::storage::{RecordingCatalog, metadata::EventSource};
+use std::collections::BTreeMap;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -683,4 +684,51 @@ fn optional_native_snapshot_failure_does_not_block_lifecycle_commits() {
     drop(store);
     catalog.shutdown();
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn private_native_media_is_dropped_before_storage() {
+    with_native_recorder(|mut recorder, store| {
+        let now = chrono::Utc::now();
+        let privacy = crate::privacy::PrivacyRegistry::new(BTreeMap::from([(
+            "127.0.0.1".to_owned(),
+            crate::privacy::PrivacySchedule {
+                enabled: true,
+                timezone: "UTC".to_owned(),
+                windows: Vec::new(),
+                temporary_override: Some(crate::privacy::PrivacyOverride {
+                    actor: "test".to_owned(),
+                    reason: "privacy test".to_owned(),
+                    accepted_at: (now - chrono::Duration::minutes(1)).to_rfc3339(),
+                    expires_at: (now + chrono::Duration::minutes(1)).to_rfc3339(),
+                }),
+                keep_camera_connected: true,
+            },
+        )]))
+        .unwrap();
+        recorder.set_privacy_registry(Arc::new(privacy));
+        let (reply, received) = mpsc::sync_channel(1);
+        recorder.handle_event(KeepPeekEvent::NativeBatch {
+            owner: uuid::Uuid::new_v4(),
+            lifetime: Arc::new(AtomicBool::new(true)),
+            reply,
+            changes: vec![
+                motion("private"),
+                KeepPeekEvent::TimelineEventThumbnail {
+                    camera_id: "127.0.0.1".to_owned(),
+                    event_id: "private".to_owned(),
+                    jpeg: vec![1, 2, 3],
+                },
+            ],
+        });
+        assert_eq!(received.recv().unwrap(), 2);
+        assert!(
+            store
+                .event_by_id("private")
+                .unwrap()
+                .unwrap()
+                .attachments
+                .is_empty()
+        );
+    });
 }

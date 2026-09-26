@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $security = [System.Security.AccessControl.DirectorySecurity]::new()
-$existingOwner = (Get-Acl -LiteralPath $Directory).GetOwner([System.Security.Principal.SecurityIdentifier])
+$existingOwner = [System.IO.Directory]::GetAccessControl($Directory).GetOwner([System.Security.Principal.SecurityIdentifier])
 # ReFS can reject an unnecessary owner assignment without the restore privilege.
 if ($existingOwner -ne $owner) {
     $security.SetOwner($owner)

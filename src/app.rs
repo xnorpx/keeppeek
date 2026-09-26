@@ -185,6 +185,7 @@ pub fn run(
         recording_demand,
         webrtc.clone(),
     );
+    storage_engine.set_privacy_registry(server_state.privacy_registry());
     server_state.open_state_store();
     let backup_manager = BackupManager::open_with_config_update(
         config_path.to_path_buf(),
@@ -243,6 +244,7 @@ pub fn run(
 
     let mut keeppeek = KeepPeekLoop::new(shutdown.clone(), Some(storage_engine.handle()));
     keeppeek.set_live(webrtc.live());
+    keeppeek.set_privacy_registry(server_state.privacy_registry());
     keeppeek.set_event_store(event_store);
     keeppeek.set_health_registry(health_registry);
     keeppeek.set_status_sender(router_tx.clone());
