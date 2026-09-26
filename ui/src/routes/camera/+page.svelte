@@ -4,6 +4,8 @@
 	import { onMount, tick } from 'svelte';
 	import CameraConfigurationEditor from '$lib/components/CameraConfigurationEditor.svelte';
 	import CameraOverview from '$lib/components/CameraOverview.svelte';
+	import PrivacyScheduleEditor from '$lib/components/PrivacyScheduleEditor.svelte';
+	import PrivacyStatus from '$lib/components/PrivacyStatus.svelte';
 	import MobileCameraPage, { type MobileCameraMode } from '$lib/components/MobileCameraPage.svelte';
 	import { exactCatalogCameraMatch, firstHttpCameraCatalogSource } from '$lib/camera-wizard';
 	import { useControlClient } from '$lib/control-context';
@@ -15,7 +17,9 @@
 		CameraListItem,
 		CameraSettings,
 		CameraSettingsUpdate,
+		ConfigurationSnapshot,
 		MotionDetection,
+		PrivacySchedulePatch,
 		StreamHealth
 	} from '$lib/types';
 	import ArrowLeftIcon from '@lucide/svelte/icons/arrow-left';
@@ -38,12 +42,16 @@
 
 	let details = $state.raw<CameraDetailsResponse | null>(null);
 	let cameraSettings = $state.raw<CameraSettings | null>(null);
+	let configurationSnapshot = $state.raw<ConfigurationSnapshot | null>(null);
 	let serverHealth = $state.raw<CameraHealth | null>(null);
 	let error = $state<string | null>(null);
 	let configurationError = $state<string | null>(null);
 	let configurationStatus = $state<string | null>(null);
 	let editingConfiguration = $state(false);
+	let editingPrivacy = $state(false);
 	let savingConfiguration = $state(false);
+	let savingPrivacy = $state(false);
+	let privacyError = $state<string | null>(null);
 	let motionError = $state<string | null>(null);
 	let loading = $state(true);
 	let refreshing = $state(false);
@@ -61,9 +69,17 @@
 	let cameraId = $derived(page.url.searchParams.get('camera')?.trim() ?? '');
 	let camera = $derived(details?.camera ?? null);
 	let liveHealth = $derived(serverHealth ?? details?.health ?? null);
+	let effectiveConfiguration = $derived(
+		configurationSnapshot?.cameras.find((candidate) => candidate.camera.id === cameraId) ?? null
+	);
+	let privacySchedule = $derived(effectiveConfiguration?.privacy ?? null);
+	let privacyStatus = $derived(
+		liveHealth?.privacy ?? effectiveConfiguration?.privacy_status ?? null
+	);
 	let previewAvailable = $derived(
 		camera !== null &&
 			liveHealth !== null &&
+			privacyStatus?.active !== true &&
 			liveHealth.state !== 'offline' &&
 			liveHealth.configured_profiles.length > 0
 	);
@@ -127,7 +143,9 @@
 		manufacturerError = null;
 		configurationError = null;
 		configurationStatus = null;
+		privacyError = null;
 		editingConfiguration = false;
+		editingPrivacy = false;
 		editingManufacturer = false;
 		void loadCamera(id, controller.signal);
 		const timer = window.setInterval(() => {
@@ -141,13 +159,20 @@
 
 	async function loadCamera(id: string, signal?: AbortSignal): Promise<boolean> {
 		try {
-			const [nextDetails, settingsResult] = await Promise.all([
+			const [nextDetails, settingsResult, privacyResult] = await Promise.all([
 				controlClient.getCameraDetails(id, signal),
 				controlClient.getCameraSettings().then(
 					(value) => ({ value, error: null }),
 					(cause: unknown) => ({
 						value: [] as CameraSettings[],
 						error: cause instanceof Error ? cause.message : 'Camera configuration is unavailable.'
+					})
+				),
+				controlClient.getConfigurationSnapshot().then(
+					(value) => ({ value, error: null }),
+					(cause: unknown) => ({
+						value: null,
+						error: cause instanceof Error ? cause.message : 'Privacy configuration is unavailable.'
 					})
 				)
 			]);
@@ -158,6 +183,8 @@
 				settingsResult.value.find(
 					(candidate) => candidate.id === id || candidate.ip === nextDetails.camera.ip
 				) ?? null;
+			configurationSnapshot = privacyResult.value;
+			privacyError = privacyResult.error;
 			configurationError =
 				settingsResult.error ??
 				(cameraSettings === null ? 'Camera configuration is unavailable for this source.' : null);
@@ -231,6 +258,17 @@
 		if (mobileMode === 'settings') mobileMode = 'live';
 	}
 
+	function closePrivacy(): void {
+		editingPrivacy = false;
+	}
+
+	async function openPrivacy(): Promise<void> {
+		privacyError = null;
+		editingPrivacy = true;
+		await tick();
+		document.getElementById('privacy')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+	}
+
 	function setMobileMode(mode: MobileCameraMode): void {
 		mobileMode = mode;
 		if (mode === 'settings') void openConfiguration();
@@ -263,6 +301,39 @@
 				cause instanceof Error ? cause.message : 'Camera settings were not saved.';
 		} finally {
 			savingConfiguration = false;
+		}
+	}
+
+	async function savePrivacy(patch: PrivacySchedulePatch): Promise<void> {
+		if (!camera || !configurationSnapshot || savingPrivacy) return;
+		savingPrivacy = true;
+		privacyError = null;
+		try {
+			const plan = await controlClient.planConfigurationChange({
+				expected_configuration_revision: configurationSnapshot.configuration_revision,
+				targets: { mode: 'camera-ids', camera_ids: [camera.id] },
+				change: { mode: 'privacy', patch: { schedule: patch } }
+			});
+			if (!plan.valid) {
+				throw new Error(
+					plan.issues
+						.map((issue) => issue.message)
+						.filter(Boolean)
+						.join(' ') || 'Privacy schedule is invalid.'
+				);
+			}
+			const result = await controlClient.applyConfigurationPlan(
+				plan.plan_id,
+				plan.configuration_revision
+			);
+			configurationSnapshot = result.snapshot;
+			editingPrivacy = false;
+			configurationStatus = 'Privacy schedule saved. Server enforcement updated.';
+			await refreshHealth(camera.id);
+		} catch (cause) {
+			privacyError = cause instanceof Error ? cause.message : 'Privacy schedule was not saved.';
+		} finally {
+			savingPrivacy = false;
 		}
 	}
 
@@ -500,6 +571,9 @@
 			{error}
 		</div>
 	{:else if details && camera}
+		<div class="mx-3 md:mx-0">
+			<PrivacyStatus status={privacyStatus} />
+		</div>
 		{#if mobileViewport}
 			{#if mobileMode === 'settings'}
 				<div id="configuration" class="p-3">
@@ -511,6 +585,26 @@
 							oncancel={closeConfiguration}
 							onsave={saveConfiguration}
 						/>
+						<div id="privacy" class="mt-4">
+							{#if editingPrivacy}
+								<PrivacyScheduleEditor
+									schedule={privacySchedule}
+									statusSource={privacyStatus?.configured_source}
+									saving={savingPrivacy}
+									error={privacyError}
+									oncancel={closePrivacy}
+									onsave={savePrivacy}
+								/>
+							{:else}
+								<button
+									type="button"
+									class="w-full rounded-md border border-hairline bg-surface p-4 text-left text-sm font-semibold focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+									onclick={() => void openPrivacy()}
+								>
+									Edit privacy schedule
+								</button>
+							{/if}
+						</div>
 					{:else}
 						<div class="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm">
 							<p class="text-destructive" role="alert">
@@ -532,6 +626,7 @@
 					health={liveHealth}
 					stream={previewStream}
 					{previewAvailable}
+					privacyActive={privacyStatus?.active === true}
 					{catalogUrl}
 					commandTransportAvailable
 					mode={mobileMode}
@@ -545,7 +640,7 @@
 						class="sticky top-4 space-y-1 border-l border-hairline py-1"
 						aria-label="Camera sections"
 					>
-						{#each [['overview', 'Overview'], ['configuration', 'Configuration'], ['connection', 'Connection'], ['events', 'Events'], ['streams', 'Streams'], ['audio', 'Audio'], ['advanced', 'Advanced']] as [id, label] (id)}
+						{#each [['overview', 'Overview'], ['configuration', 'Configuration'], ['privacy', 'Privacy'], ['connection', 'Connection'], ['events', 'Events'], ['streams', 'Streams'], ['audio', 'Audio'], ['advanced', 'Advanced']] as [id, label] (id)}
 							<a
 								href={`#${id}`}
 								class="block border-l-2 border-transparent px-3 py-2 text-xs text-text-muted hover:border-primary hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
@@ -560,6 +655,7 @@
 						health={liveHealth}
 						stream={previewStream}
 						{previewAvailable}
+						privacyActive={privacyStatus?.active === true}
 						commandTransportAvailable
 					/>
 					{#if editingConfiguration && cameraSettings}
@@ -597,6 +693,36 @@
 							</button>
 						</section>
 					{/if}
+					<section id="privacy" class="scroll-mt-16">
+						{#if editingPrivacy}
+							<PrivacyScheduleEditor
+								schedule={privacySchedule}
+								statusSource={privacyStatus?.configured_source}
+								saving={savingPrivacy}
+								error={privacyError}
+								oncancel={closePrivacy}
+								onsave={savePrivacy}
+							/>
+						{:else}
+							<div
+								class="flex flex-wrap items-center justify-between gap-4 rounded-md border border-hairline bg-surface p-4"
+							>
+								<div>
+									<h2 class="text-sm font-semibold">Privacy schedule</h2>
+									<p class="mt-1 text-xs text-text-muted">
+										Server-enforced privacy across every media and control path.
+									</p>
+								</div>
+								<button
+									type="button"
+									class="inline-flex h-8 items-center rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+									onclick={() => void openPrivacy()}
+								>
+									Edit schedule
+								</button>
+							</div>
+						{/if}
+					</section>
 					<section
 						id="connection"
 						class="grid scroll-mt-16 gap-x-8 gap-y-5 rounded-md border border-hairline bg-surface p-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.7fr)]"

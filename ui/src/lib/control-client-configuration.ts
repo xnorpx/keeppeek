@@ -28,6 +28,9 @@ import {
 	OptionalCameraTransportUpdateSchema,
 	OptionalStringUpdateSchema,
 	OptionalUint32UpdateSchema,
+	PrivacyConfigurationPatchSchema,
+	PrivacyDefaultPatchSchema,
+	PrivacyScheduleUpdateSchema,
 	PlanConfigurationChangeSchema,
 	PreviewConfigurationTemplateImportSchema,
 	SaveConfigurationTemplateSchema,
@@ -40,6 +43,8 @@ import {
 	type ConfigurationSnapshot as ProtoConfigurationSnapshot,
 	type ConfigurationTemplate as ProtoConfigurationTemplate,
 	type ConfigurationTemplateImportPreview as ProtoConfigurationTemplateImportPreview,
+	type PrivacySchedule as ProtoPrivacySchedule,
+	type PrivacyStatus as ProtoPrivacyStatus,
 	type EffectiveBoolValue as ProtoEffectiveBoolValue,
 	type EffectiveCameraBackendValue,
 	type EffectiveCameraRecordingModeValue,
@@ -71,7 +76,10 @@ import type {
 	ConfigurationTemplateImportPreview,
 	ConfigurationValueSource,
 	EffectiveConfigurationValue,
-	EffectiveSecretValue
+	EffectiveSecretValue,
+	PrivacySchedule,
+	PrivacySchedulePatch,
+	PrivacyStatus
 } from './types';
 
 type SendRequest = (command: Request['command']) => Promise<Ok['result']>;
@@ -325,9 +333,59 @@ function protoChange(change: ConfigurationChange) {
 			change: { case: 'defaults', value: protoDefaultPatch(change.patch) }
 		});
 	}
+	if (change.mode === 'privacy') {
+		return create(ConfigurationChangeSchema, {
+			change: {
+				case: 'privacy',
+				value: create(PrivacyConfigurationPatchSchema, {
+					schedule: protoPrivacyScheduleUpdate(change.patch.schedule)
+				})
+			}
+		});
+	}
+	if (change.mode === 'privacy-defaults') {
+		return create(ConfigurationChangeSchema, {
+			change: {
+				case: 'privacyDefaults',
+				value: create(PrivacyDefaultPatchSchema, {
+					schedule: protoPrivacyScheduleUpdate(change.patch.schedule)
+				})
+			}
+		});
+	}
 	return create(ConfigurationChangeSchema, {
 		change: { case: 'patch', value: protoCameraPatch(change.patch) }
 	});
+}
+
+function protoPrivacyScheduleUpdate(schedule: PrivacySchedulePatch) {
+	return create(PrivacyScheduleUpdateSchema, {
+		value:
+			schedule.operation === 'clear'
+				? { case: 'clear', value: true }
+				: { case: 'set', value: protoPrivacySchedule(schedule.value) }
+	});
+}
+
+function protoPrivacySchedule(schedule: PrivacySchedule) {
+	return {
+		enabled: schedule.enabled,
+		timezone: schedule.timezone,
+		windows: schedule.windows.map((window) => ({
+			weekdays: window.weekdays,
+			start: window.start,
+			end: window.end
+		})),
+		keepCameraConnected: schedule.keep_camera_connected,
+		temporaryOverride: schedule.temporary_override
+			? {
+					actor: schedule.temporary_override.actor,
+					reason: schedule.temporary_override.reason,
+					acceptedAtMs: BigInt(schedule.temporary_override.accepted_at_ms),
+					expiresAtMs: BigInt(schedule.temporary_override.expires_at_ms)
+				}
+			: undefined
+	};
 }
 
 function protoCameraPatch(patch: CameraConfigurationPatch) {
@@ -467,6 +525,7 @@ function configurationSnapshot(snapshot: ProtoConfigurationSnapshot): Configurat
 			maximum_plan_targets: snapshot.limits.maximumPlanTargets,
 			maximum_import_bytes: snapshot.limits.maximumImportBytes
 		},
+		privacy_default: snapshot.privacyDefault ? privacySchedule(snapshot.privacyDefault) : null,
 		domains: snapshot.domains.map((domain) => ({
 			domain_id: domain.domainId,
 			label: domain.label,
@@ -499,7 +558,8 @@ function cameraDefaults(defaults: ProtoCameraDefaultValues): CameraDefaultValues
 				: cameraRecordingMode(defaults.configuredRecordingMode),
 		effective_recording_mode: cameraRecordingMode(defaults.effectiveRecordingMode),
 		configured_event_recording_duration_secs: defaults.configuredEventRecordingDurationSecs ?? null,
-		effective_event_recording_duration_secs: defaults.effectiveEventRecordingDurationSecs
+		effective_event_recording_duration_secs: defaults.effectiveEventRecordingDurationSecs,
+		privacy: defaults.privacy ? privacySchedule(defaults.privacy) : null
 	};
 }
 
@@ -533,7 +593,59 @@ function cameraEffectiveConfiguration(
 		event_recording_duration_secs: effectiveValue(
 			camera.eventRecordingDurationSecs,
 			(value: number) => value
-		)
+		),
+		privacy: camera.privacy ? privacySchedule(camera.privacy) : null,
+		privacy_status: camera.privacyStatus
+			? privacyStatus(camera.privacyStatus)
+			: privacyStatus(undefined)
+	};
+}
+
+function privacySchedule(schedule: ProtoPrivacySchedule): PrivacySchedule {
+	return {
+		enabled: schedule.enabled,
+		timezone: schedule.timezone,
+		windows: schedule.windows.map((window) => ({
+			weekdays: [...window.weekdays],
+			start: window.start,
+			end: window.end
+		})),
+		keep_camera_connected: schedule.keepCameraConnected ?? true,
+		temporary_override: schedule.temporaryOverride
+			? {
+					actor: schedule.temporaryOverride.actor,
+					reason: schedule.temporaryOverride.reason,
+					accepted_at_ms: Number(schedule.temporaryOverride.acceptedAtMs),
+					expires_at_ms: Number(schedule.temporaryOverride.expiresAtMs)
+				}
+			: null
+	};
+}
+
+function privacyStatus(status: ProtoPrivacyStatus | undefined): PrivacyStatus {
+	const source = status?.effectiveSource ?? 1;
+	return {
+		configured: status?.configured ?? false,
+		active: status?.active ?? false,
+		enabled: status?.enabled ?? false,
+		timezone: status?.timezone ?? '',
+		next_transition_at_ms:
+			status?.nextTransitionAtMs === undefined ? null : Number(status.nextTransitionAtMs),
+		configured_source:
+			status?.configuredSource === 2
+				? 'default'
+				: status?.configuredSource === 3
+					? 'camera'
+					: 'none',
+		effective_source:
+			source === 2 ? 'default' : source === 3 ? 'camera' : source === 4 ? 'override' : 'none',
+		override_expires_at_ms:
+			status?.overrideExpiresAtMs === undefined ? null : Number(status.overrideExpiresAtMs),
+		override_actor: status?.overrideActor ?? null,
+		override_reason: status?.overrideReason ?? null,
+		blocked_capabilities: [...(status?.blockedCapabilities ?? [])],
+		error: status?.error ?? null,
+		revision: Number(status?.revision ?? 0n)
 	};
 }
 

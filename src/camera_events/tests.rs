@@ -24,7 +24,14 @@ fn pullpoint_worker_delivers_once_renews_and_unsubscribes_on_shutdown() {
     let registry = super::Registry::default();
     let shutdown = Shutdown::new();
     let (sent, received) = mpsc::sync_channel(8);
-    let handles = super::spawn(&camera, sent, registry.clone(), shutdown.clone()).unwrap();
+    let handles = super::spawn(
+        &camera,
+        sent,
+        registry.clone(),
+        std::sync::Arc::new(crate::privacy::PrivacyRegistry::default()),
+        shutdown.clone(),
+    )
+    .unwrap();
     assert!(fake.wait_for_pulls(1, Duration::from_secs(3)));
     let timestamp = chrono::Utc::now().to_rfc3339();
     let event = notification(
@@ -86,7 +93,14 @@ fn metadata_owner_accepts_gzip_ignores_exi_and_deduplicates_profile_copies() {
     let registry = super::Registry::default();
     let shutdown = Shutdown::new();
     let (sent, received) = mpsc::sync_channel(8);
-    let handles = super::spawn(&camera, sent, registry.clone(), shutdown.clone()).unwrap();
+    let handles = super::spawn(
+        &camera,
+        sent,
+        registry.clone(),
+        std::sync::Arc::new(crate::privacy::PrivacyRegistry::default()),
+        shutdown.clone(),
+    )
+    .unwrap();
     let body = format!(
         "<tt:MetadataStream xmlns:tt=\"http://www.onvif.org/ver10/schema\"><tt:Event>{}</tt:Event></tt:MetadataStream>",
         notification(

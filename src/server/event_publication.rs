@@ -1279,6 +1279,19 @@ fn validate_event_identity(
                 "event source was not found",
             )
         })?;
+    if state
+        .privacy
+        .decision(&camera.info.id, chrono::Utc::now())
+        .map_or(true, |decision| decision.0)
+    {
+        return Err(publication_error(
+            publication_id,
+            &event.event_id,
+            proto::EventPublicationErrorCode::EventInvalid,
+            None,
+            "camera privacy is active",
+        ));
+    }
     if proto_camera_source_session(&camera.info, &state.webrtc)
         .is_none_or(|source| source.source_session_id != source_session_id)
     {

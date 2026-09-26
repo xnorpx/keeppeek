@@ -136,7 +136,10 @@
 		}
 		const layoutIds = new Set(activeLayout.items.map((item) => item.cameraId));
 		const candidates = cameras.filter(
-			(camera) => layoutIds.has(camera.id) && camera.profiles.length > 0
+			(camera) =>
+				layoutIds.has(camera.id) &&
+				camera.profiles.length > 0 &&
+				healthById.get(camera.id)?.privacy?.active !== true
 		);
 		const demands: GridTileDemand[] = candidates.map((camera) => ({
 			cameraId: camera.id,

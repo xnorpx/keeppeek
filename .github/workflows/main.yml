@@ -211,12 +211,16 @@ jobs:
             }
             Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory, $env:OUTPUT_DIRECTORY
           }
+      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af # v2
+        if: matrix.os == 'windows-11-arm'
+        with:
+          tool: nextest
       - name: Run platform Rust tests
         if: matrix.os != 'windows-latest'
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            cargo test --locked --all --lib --bins --tests -- --test-threads=1
+            cargo nextest run --locked --workspace --lib --bins --tests --test-threads 2
           else
             cargo test --locked --all --lib --bins --tests
           fi
@@ -250,6 +254,9 @@ jobs:
         run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Install Chromium
         run: bunx playwright install chromium
+      - name: Verify Windows storage ACL setup without module autoloading
+        if: runner.os == 'Windows'
+        run: powershell.exe -NoLogo -NoProfile -NonInteractive -File ../.github/scripts/test-protect-test-directory.ps1
       - name: Run full platform Playwright suite
         env:
           KEEPPEEK_PYTHON: ${{ steps.python.outputs.python-path }}
