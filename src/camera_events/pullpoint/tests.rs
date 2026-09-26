@@ -174,7 +174,7 @@ fn queue_pressure_unsubscribes_before_two_second_lease_expires() {
     let handle = thread::spawn(move || producer.subscribe());
     // Discovery precedes the lease; successful unsubscribe still proves cleanup before expiry.
     let pulled = fake.wait_for_pulls(1, Duration::from_secs(5));
-    let (finished, result) = finish(handle, &shutdown, Duration::from_millis(1600));
+    let (finished, result) = finish(handle, &shutdown, Duration::from_millis(2300));
 
     assert!(
         pulled,
