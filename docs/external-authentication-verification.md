@@ -45,9 +45,15 @@ also passed against the source-fingerprinted final release build.
   advisory exceptions.
 - `git diff --check`: passed. `api/backup.proto` and its generated TypeScript
   binding are unchanged.
+- CI follow-up crash tests: four passed after a deterministic reproduction failed
+  with two recovered leases versus one acknowledged lease. Missing or changed
+  acknowledged entries and out-of-bounds extra commits still fail the oracle.
+  Workspace formatting and all-target Clippy with warnings denied passed.
 - CI shared-fixture artifact selection: ten positive/negative selector cases and
   exact Bash syntax passed. Browser shards use the already tested precompiled
   executable override instead of compiling Rust inside the browser deadline.
+  The authentication fixture and application fixtures build in parallel jobs with
+  the existing 15-minute limits; browser shards require both artifacts.
 
 Eleven release benchmark processes passed: bearer median p95 stayed at 600 ns,
 cookie p95 was 1,900 ns, and maximum measured owner/watch cleanup was 0.4043 ms.
@@ -103,6 +109,15 @@ the reproducible visual evidence.
   `require_secure_remote = false` policy. The regression now returns anonymous
   bearer discovery, while the secure default and all configured external methods
   still reject insecure transport. Forged forwarding headers do not change this.
+- The macOS crash-recovery test observed a committed lease whose acknowledgment
+  was interrupted by the kill. The test already permits bounded unacknowledged
+  commits, but its strict lease-count assertion rejected this valid case. The
+  corrected oracle checks every acknowledged entry, including each lease, by
+  key, revision, value, and lease kind while retaining the extra-commit bounds,
+  lease-expiry purge, and CAS checks. Production storage behavior is unchanged.
+- The shared E2E build exceeded its 15-minute job limit while compiling the second
+  release graph for the authentication fixture. Separate parallel builders retain
+  the existing budgets and fail-closed artifact dependencies without skipping tests.
 - Self-review was used as an explicitly disclosed fallback for the additional
   doubt-driven pass; it is not represented as an independent security audit.
 

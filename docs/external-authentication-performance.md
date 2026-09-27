@@ -181,9 +181,12 @@ This identifies the uncommitted issue123 build on the baseline commit above.
 
 After measurement, CI required multiline formatting for the `jsonwebtoken` and
 `rustls` feature arrays in `Cargo.toml`. Parsing the manifest before and after
-that whitespace-only change produced identical values. The measured executable
-is therefore an identified equivalent build for that formatting correction;
-the Rust sources, dependency versions, features, and lockfile are unchanged.
+that whitespace-only change produced identical values. Subsequent CI corrections
+change only the crash-recovery test oracle and run the authentication fixture
+build in a separate parallel job. Production Rust sources, benchmark harnesses,
+dependency versions, features, and the lockfile are unchanged. The measured
+executable is therefore an identified equivalent build for runtime measurements;
+the final source-tree fingerprint differs because of formatting and test changes.
 
 The fingerprint is SHA-256 of LF-joined, sorted, unique git-visible paths ending
 in `.rs`, `.proto`, or `.toml`, plus `Cargo.lock`; each line contains the relative
