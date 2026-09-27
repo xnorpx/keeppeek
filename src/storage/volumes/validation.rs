@@ -169,7 +169,7 @@ fn validate_selector(value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn comparison_root(root: &Path) -> anyhow::Result<PathBuf> {
+pub(in crate::storage) fn comparison_root(root: &Path) -> anyhow::Result<PathBuf> {
     let text = root
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("volume root must be valid UTF-8"))?;

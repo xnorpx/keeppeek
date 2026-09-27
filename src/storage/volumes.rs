@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
 
 mod placement;
-mod validation;
+pub(in crate::storage) mod validation;
 
 /// Keeps validation and status responses bounded for a local recorder.
 pub const VOLUMES_MAX: usize = 32;
