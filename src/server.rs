@@ -12730,6 +12730,7 @@ fn save_runtime_settings(
         port: update.port,
         storage: StorageToml {
             medium_term_path: Some(medium_term_path),
+            named_volumes: None,
             long_term_path: Some(long_term_path),
             recording_catalog_path,
             event_thumbnail_path,
