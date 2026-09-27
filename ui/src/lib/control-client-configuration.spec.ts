@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	CameraBackend as ProtoCameraBackend,
 	CameraDefaultValuesSchema,
+	EventRecordingStream,
 	ConfigurationApplyResultSchema,
 	ConfigurationLimitsSchema,
 	ConfigurationPlanSchema,
@@ -69,7 +70,14 @@ describe('configuration control client', () => {
 		await client.plan({
 			expected_configuration_revision: snapshot.configuration_revision,
 			targets: { mode: 'camera-ids', camera_ids: ['192.0.2.10'] },
-			change: { mode: 'patch', patch: { backend: { operation: 'clear' } } }
+			change: {
+				mode: 'patch',
+				patch: {
+					backend: { operation: 'clear' },
+					event_pre_recording_duration_secs: { operation: 'set', value: 0 },
+					event_recording_stream: { operation: 'set', value: 'sub' }
+				}
+			}
 		});
 
 		const request = commands[1];
@@ -85,6 +93,13 @@ describe('configuration control client', () => {
 		expect(request.value.action.value.change.change.value.backend?.value).toEqual({
 			case: 'clear',
 			value: true
+		});
+		expect(
+			request.value.action.value.change.change.value.eventPreRecordingDurationSecs?.value
+		).toEqual({ case: 'set', value: 0 });
+		expect(request.value.action.value.change.change.value.eventRecordingStream?.value).toEqual({
+			case: 'set',
+			value: EventRecordingStream.SUB
 		});
 	});
 

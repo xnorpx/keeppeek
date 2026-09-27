@@ -31,6 +31,11 @@ pub struct RecordingStreamHealthSnapshot {
 pub struct RecordingHealthRegistry {
     inner: Arc<Mutex<HashMap<String, RecordingStreamHealth>>>,
     storage: StorageSafetyHealthRegistry,
+    pre_recording: Arc<Mutex<HashMap<String, super::event_recording::PreRecordStatus>>>,
+    #[cfg(feature = "event-preroll-benchmark-current")]
+    benchmark_failures: Arc<std::sync::atomic::AtomicU64>,
+    #[cfg(feature = "event-preroll-benchmark-current")]
+    benchmark_first_failure: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Default)]
@@ -50,6 +55,51 @@ struct Observation {
 }
 
 impl RecordingHealthRegistry {
+    #[cfg(feature = "event-preroll-benchmark-current")]
+    pub(crate) fn benchmark_failure_count(&self) -> u64 {
+        self.benchmark_failures
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(feature = "event-preroll-benchmark-current")]
+    pub(crate) fn benchmark_first_failure(&self) -> Option<String> {
+        self.benchmark_first_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn note_pre_recording(
+        &self,
+        source: &str,
+        status: super::event_recording::PreRecordStatus,
+    ) {
+        let mut statuses = self
+            .pre_recording
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if statuses.contains_key(source) || statuses.len() < 127 {
+            statuses.insert(source.to_owned(), status);
+        }
+    }
+
+    pub(crate) fn pre_recording(
+        &self,
+        source: &str,
+    ) -> Option<super::event_recording::PreRecordStatus> {
+        self.pre_recording
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(source)
+            .cloned()
+    }
+
+    pub(crate) fn clear_pre_recording(&self, source: &str) {
+        self.pre_recording
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(source);
+    }
     pub(crate) fn note_attempt(&self, stream_id: &str) {
         self.note_attempt_at(stream_id, Instant::now(), unix_time_ms());
     }
@@ -103,6 +153,15 @@ impl RecordingHealthRegistry {
     }
 
     fn note_failure_at(&self, stream_id: &str, error: &str, at: Instant, at_ms: u64) {
+        #[cfg(feature = "event-preroll-benchmark-current")]
+        {
+            self.benchmark_first_failure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_or_insert_with(|| error.chars().take(MAX_ERROR_CHARS).collect());
+            self.benchmark_failures
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let mut streams = self
             .inner
             .lock()
@@ -168,6 +227,30 @@ fn unix_time_ms() -> u64 {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[cfg(feature = "event-preroll-benchmark-current")]
+    #[test]
+    fn benchmark_failure_count_survives_recovery_and_registry_clones() {
+        let health = RecordingHealthRegistry::default();
+        let observer = health.clone();
+        assert_eq!(observer.benchmark_failure_count(), 0);
+        health.note_failure("camera/main", "test writer failure");
+        health.note_progress("camera/main", Duration::from_secs(1));
+        assert!(observer.snapshot().streams[0].last_error.is_none());
+        assert_eq!(observer.benchmark_failure_count(), 1);
+        health.note_failure("other/sub", "test queue failure");
+        assert_eq!(observer.benchmark_failure_count(), 2);
+        assert_eq!(
+            observer.benchmark_first_failure().as_deref(),
+            Some("test writer failure")
+        );
+        let bounded = RecordingHealthRegistry::default();
+        bounded.note_failure("camera/main", &"x".repeat(MAX_ERROR_CHARS + 10));
+        assert_eq!(
+            bounded.benchmark_first_failure().unwrap().chars().count(),
+            MAX_ERROR_CHARS
+        );
+    }
 
     #[test]
     fn new_progress_clears_obsolete_writer_failure() {

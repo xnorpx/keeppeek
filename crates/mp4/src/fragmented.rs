@@ -90,6 +90,14 @@ impl<W> FragmentedMp4Writer<W> {
     pub fn has_pending_samples(&self) -> bool {
         self.tracks.iter().any(|track| !track.samples.is_empty())
     }
+
+    /// Drops uncommitted media without changing fragments already written.
+    pub fn discard_pending_samples(&mut self) {
+        for track in &mut self.tracks {
+            track.samples.clear();
+            track.pending_sample_description_index = None;
+        }
+    }
 }
 
 impl<W: Write + Seek> FragmentedMp4Writer<W> {

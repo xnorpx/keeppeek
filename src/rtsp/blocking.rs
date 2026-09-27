@@ -688,6 +688,9 @@ impl RtspLoop {
             }
         }
         driver.play()?;
+        if let Some(storage) = &self.storage {
+            storage.reset_event_recording(&self.camera_ip.to_string());
+        }
         video_timestamps.begin_session();
         audio_timestamps.begin_session();
 

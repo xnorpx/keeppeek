@@ -572,6 +572,9 @@ impl ReolinkLoop {
     ) -> anyhow::Result<()> {
         reset_stream_bindings(streams);
         let camera_id = self.camera_ip.to_string();
+        if let Some(storage) = &self.storage {
+            storage.reset_event_recording(&camera_id);
+        }
         let storage_label = self.storage_label();
         let addr = SocketAddr::new(self.camera_ip, BAICHUAN_PORT);
         tracing::info!(
@@ -767,6 +770,15 @@ impl ReolinkLoop {
                                 StreamKind::Main => main_meta.clone(),
                                 StreamKind::Sub => sub_meta.clone(),
                             };
+                            if streams.iter().any(|entry| {
+                                entry.kind == kind
+                                    && entry
+                                        .stream_id
+                                        .is_some_and(|previous| previous != stream_id)
+                            }) && let Some(storage) = &self.storage
+                            {
+                                storage.reset_event_recording(&camera_id);
+                            }
                             let entry = bind_stream_entry(
                                 streams,
                                 stream_id,
@@ -990,7 +1002,15 @@ impl ReolinkLoop {
                             else {
                                 continue;
                             };
-                            if audio_stream != preferred_kind {
+                            if audio_stream != preferred_kind
+                                && !self.storage.as_ref().is_some_and(|storage| {
+                                    let stream = match audio_stream {
+                                        StreamKind::Main => "main",
+                                        StreamKind::Sub => "sub",
+                                    };
+                                    storage.retains_event_audio(&camera_id, stream)
+                                })
+                            {
                                 continue;
                             }
                             let (encoding, frame_codec) = match codec {
@@ -1027,6 +1047,7 @@ impl ReolinkLoop {
                                 };
                                 if let Some(live) = &self.live
                                     && let Some(web_codec) = web_codec
+                                    && audio_stream == preferred_kind
                                 {
                                     live.publish_audio(
                                         Source {

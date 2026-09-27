@@ -54,6 +54,8 @@
 		record_generic_motion_events: '' | 'true' | 'false';
 		recording_mode: '' | CameraRecordingMode;
 		event_recording_duration_secs: string;
+		event_pre_recording_duration_secs: string;
+		event_recording_stream: '' | 'main' | 'sub';
 	};
 	type Props = {
 		selectedCameraIds: string[];
@@ -65,6 +67,7 @@
 	let { selectedCameraIds, filteredCameraIds, onclose }: Props = $props();
 	const controlClient = useControlClient();
 	const capabilities = useCapabilityState();
+	let preRecordingSupported = $derived(capabilities.supports('keeppeek.recording.pre-roll.v1'));
 
 	let dialog = $state<HTMLDialogElement | null>(null);
 	let closeButton = $state<HTMLButtonElement | null>(null);
@@ -459,7 +462,9 @@
 			transport: '',
 			record_generic_motion_events: '',
 			recording_mode: '',
-			event_recording_duration_secs: ''
+			event_recording_duration_secs: '',
+			event_pre_recording_duration_secs: '',
+			event_recording_stream: ''
 		};
 	}
 
@@ -480,7 +485,11 @@
 					? ''
 					: (template.values.record_generic_motion_events.toString() as 'true' | 'false'),
 			recording_mode: template.values.recording_mode ?? '',
-			event_recording_duration_secs: template.values.event_recording_duration_secs?.toString() ?? ''
+			event_recording_duration_secs:
+				template.values.event_recording_duration_secs?.toString() ?? '',
+			event_pre_recording_duration_secs:
+				template.values.event_pre_recording_duration_secs?.toString() ?? '',
+			event_recording_stream: template.values.event_recording_stream ?? ''
 		};
 	}
 
@@ -502,6 +511,14 @@
 			values.record_generic_motion_events = draft.record_generic_motion_events === 'true';
 		}
 		if (draft.recording_mode) values.recording_mode = draft.recording_mode;
+		if (draft.event_recording_stream) values.event_recording_stream = draft.event_recording_stream;
+		if (draft.event_pre_recording_duration_secs)
+			values.event_pre_recording_duration_secs = parseTemplateNumber(
+				draft.event_pre_recording_duration_secs,
+				'Pre-recording duration',
+				30,
+				0
+			);
 		if (draft.event_recording_duration_secs) {
 			values.event_recording_duration_secs = parseTemplateNumber(
 				draft.event_recording_duration_secs,
@@ -520,10 +537,15 @@
 		};
 	}
 
-	function parseTemplateNumber(value: string, label: string, maximum: number): number {
+	function parseTemplateNumber(value: string, label: string, maximum: number, minimum = 1): number {
 		const number = Number(value);
-		if (!Number.isSafeInteger(number) || number < 1 || number > maximum) {
-			throw new Error(`${label} must be a whole number between 1 and ${maximum}.`);
+		if (
+			!/^\d+$/.test(value.trim()) ||
+			!Number.isSafeInteger(number) ||
+			number < minimum ||
+			number > maximum
+		) {
+			throw new Error(`${label} must be a whole number between ${minimum} and ${maximum}.`);
 		}
 		return number;
 	}
@@ -801,7 +823,11 @@
 						<div class="bg-background p-3">
 							<p class="font-mono text-2xs tracking-caps text-text-faint">EVENT WINDOW</p>
 							<p class="mt-1 text-sm font-semibold">
-								{snapshot.defaults.effective_event_recording_duration_secs}s
+								{snapshot.defaults.effective_event_recording_duration_secs}s after
+								<span class="block text-xs text-text-muted"
+									>{snapshot.defaults.effective_event_pre_recording_duration_secs ?? 0}s before / {snapshot
+										.defaults.effective_event_recording_stream ?? 'main'}</span
+								>
 							</p>
 							<p class="mt-1 text-xs text-text-muted">
 								{snapshot.defaults.configured_event_recording_duration_secs !== null
@@ -851,11 +877,18 @@
 												class="ml-2 font-mono text-2xs text-text-faint"
 												>{sourceLabel(entry.recording_mode.source)}</span
 											></td
-										><td class="px-3 py-2">{entry.event_recording_duration_secs.effective}s</td><td
-											class="px-3 py-2"
+										><td class="px-3 py-2"
+											>{entry.event_recording_duration_secs.effective}s after
+											<span class="block text-text-muted"
+												>{entry.event_pre_recording_duration_secs?.effective ?? 0}s before / {entry
+													.event_recording_stream?.effective ?? 'main'}</span
+											></td
+										><td class="px-3 py-2"
 											>{entry.backend.runtime_applied &&
 											entry.transport.runtime_applied &&
-											entry.recording_mode.runtime_applied
+											entry.recording_mode.runtime_applied &&
+											(entry.event_pre_recording_duration_secs?.runtime_applied ?? true) &&
+											(entry.event_recording_stream?.runtime_applied ?? true)
 												? 'CURRENT'
 												: 'PENDING'}</td
 										></tr
@@ -891,6 +924,7 @@
 						</p>
 					</div>
 					<ConfigurationPolicyFields
+						{preRecordingSupported}
 						bind:draft={defaultsDraft}
 						includeCredentials={true}
 						includePorts={false}
@@ -1008,7 +1042,8 @@
 											value="sub">Sub</option
 										><option value="main">Main</option><option value="both">Both</option><option
 											value="event-boost">Event boost</option
-										></select
+										>{#if preRecordingSupported}<option value="event-only">Events only</option
+											>{/if}</select
 									></label
 								><label class="grid gap-1 text-sm font-medium" for="template-duration"
 									>Event window<Input
@@ -1019,7 +1054,22 @@
 										bind:value={templateDraft.event_recording_duration_secs}
 										placeholder="Not included"
 									/></label
-								><label class="grid gap-1 text-sm font-medium" for="template-motion"
+								>{#if preRecordingSupported}<label class="grid gap-1 text-sm font-medium"
+										>Pre-recording seconds<Input
+											inputmode="numeric"
+											bind:value={templateDraft.event_pre_recording_duration_secs}
+											placeholder="Not included (0 to 30)"
+										/></label
+									>
+									<label class="grid gap-1 text-sm font-medium"
+										>Event recording stream<select
+											class={selectClass}
+											bind:value={templateDraft.event_recording_stream}
+											><option value="">Not included</option><option value="main">Main</option
+											><option value="sub">Sub</option></select
+										></label
+									>
+								{/if}<label class="grid gap-1 text-sm font-medium" for="template-motion"
 									>Generic motion events<select
 										id="template-motion"
 										class={selectClass}
@@ -1179,6 +1229,7 @@
 							>{/if}
 					</div>
 					{#if bulkChangeMode === 'patch'}<ConfigurationPolicyFields
+							{preRecordingSupported}
 							bind:draft={bulkDraft}
 							includeCredentials={true}
 							includePorts={true}

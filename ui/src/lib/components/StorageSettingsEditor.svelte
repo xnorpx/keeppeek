@@ -35,6 +35,8 @@
 		mediumTermSeconds: string;
 		flushIntervalSeconds: string;
 		writeBufferBytes: string;
+		preRecordingStreamMaxBytes: string;
+		preRecordingGlobalMaxBytes: string;
 		longTermMaxGigabytes: string;
 		minimumFreeGigabytes: string;
 		maximumUsedPercent: string;
@@ -50,6 +52,7 @@
 
 	type Props = {
 		config: SanitizedConfig;
+		preRecordingSupported?: boolean;
 		health: ServerHealthResponse | null;
 		saving?: boolean;
 		error?: string | null;
@@ -57,7 +60,15 @@
 		onsave: (update: SettingsConfigUpdate) => void | Promise<void>;
 	};
 
-	let { config, health, saving = false, error = null, oncancel, onsave }: Props = $props();
+	let {
+		config,
+		preRecordingSupported = false,
+		health,
+		saving = false,
+		error = null,
+		oncancel,
+		onsave
+	}: Props = $props();
 
 	const GIBIBYTE_BYTES = 1_073_741_824;
 	const MAX_WRITE_BUFFER_BYTES = 64 * 1_024 * 1_024;
@@ -69,7 +80,9 @@
 		'shortTermSeconds',
 		'mediumTermSeconds',
 		'flushIntervalSeconds',
-		'writeBufferBytes'
+		'writeBufferBytes',
+		'preRecordingStreamMaxBytes',
+		'preRecordingGlobalMaxBytes'
 	];
 	const initialDraft = untrack(() => storageDraftFromConfig(config));
 	let draft = $state<StorageDraft>({ ...initialDraft });
@@ -131,6 +144,12 @@
 			mediumTermSeconds: value.storage.medium_term_secs.toString(),
 			flushIntervalSeconds: value.storage.flush_interval_secs.toString(),
 			writeBufferBytes: value.storage.write_buffer_bytes.toString(),
+			preRecordingStreamMaxBytes: (
+				value.storage.pre_recording_stream_max_bytes ?? 67_108_864
+			).toString(),
+			preRecordingGlobalMaxBytes: (
+				value.storage.pre_recording_global_max_bytes ?? 268_435_456
+			).toString(),
 			longTermMaxGigabytes: value.storage.long_term_max_gb.toString(),
 			minimumFreeGigabytes: (value.storage.minimum_free_gb ?? 0).toString(),
 			maximumUsedPercent: value.storage.maximum_used_percent?.toString() ?? '',
@@ -193,8 +212,31 @@
 		);
 	}
 
-	function validateDraft(value: StorageDraft, unlimitedConfirmed: boolean) {
-		const errors: Record<FieldName, string | null> = {
+	function preRecordingErrors(value: StorageDraft) {
+		let stream = wholeNumberError(
+			value.preRecordingStreamMaxBytes,
+			'Per-stream pre-recording limit',
+			1,
+			Number.MAX_SAFE_INTEGER
+		);
+		const global = wholeNumberError(
+			value.preRecordingGlobalMaxBytes,
+			'Global pre-recording limit',
+			1,
+			Number.MAX_SAFE_INTEGER
+		);
+		if (
+			!stream &&
+			!global &&
+			Number(value.preRecordingStreamMaxBytes) > Number(value.preRecordingGlobalMaxBytes)
+		) {
+			stream = 'Per-stream pre-recording limit must not exceed the global limit.';
+		}
+		return { preRecordingStreamMaxBytes: stream, preRecordingGlobalMaxBytes: global };
+	}
+
+	function recordingFieldErrors(value: StorageDraft) {
+		return {
 			mediumTermPath: pathError(value.mediumTermPath, 'Active recording path'),
 			longTermPath: pathError(value.longTermPath, 'Recording location'),
 			recordingCatalogPath: pathError(value.recordingCatalogPath, 'Recording catalog path'),
@@ -228,7 +270,12 @@
 				'Write buffer',
 				1,
 				MAX_WRITE_BUFFER_BYTES
-			),
+			)
+		};
+	}
+
+	function storageSafetyFieldErrors(value: StorageDraft) {
+		return {
 			longTermMaxGigabytes: wholeNumberError(
 				value.longTermMaxGigabytes,
 				'Maximum recording storage',
@@ -260,6 +307,14 @@
 				0,
 				Number.MAX_SAFE_INTEGER
 			)
+		};
+	}
+
+	function validateDraft(value: StorageDraft, unlimitedConfirmed: boolean) {
+		const errors: Record<FieldName, string | null> = {
+			...preRecordingErrors(value),
+			...recordingFieldErrors(value),
+			...storageSafetyFieldErrors(value)
 		};
 		if (allSafetyLimitsDisabled(value) && !unlimitedConfirmed) {
 			errors.longTermMaxGigabytes = 'Confirm unbounded storage before continuing.';
@@ -375,6 +430,8 @@
 			mediumTermSeconds: 'Recording file duration',
 			flushIntervalSeconds: 'Flush interval',
 			writeBufferBytes: 'Write buffer',
+			preRecordingStreamMaxBytes: 'Per-stream pre-recording limit',
+			preRecordingGlobalMaxBytes: 'Global pre-recording limit',
 			longTermMaxGigabytes: 'Archive limit',
 			minimumFreeGigabytes: 'Minimum free space',
 			maximumUsedPercent: 'Maximum filesystem usage',
@@ -403,6 +460,12 @@
 				medium_term_secs: parseWholeNumber(draft.mediumTermSeconds),
 				flush_interval_secs: parseWholeNumber(draft.flushIntervalSeconds),
 				write_buffer_bytes: parseWholeNumber(draft.writeBufferBytes),
+				pre_recording_stream_max_bytes: preRecordingSupported
+					? parseWholeNumber(draft.preRecordingStreamMaxBytes)
+					: undefined,
+				pre_recording_global_max_bytes: preRecordingSupported
+					? parseWholeNumber(draft.preRecordingGlobalMaxBytes)
+					: undefined,
 				long_term_max_gb: parseWholeNumber(draft.longTermMaxGigabytes),
 				minimum_free_gb: parseWholeNumber(draft.minimumFreeGigabytes),
 				maximum_used_percent: String(draft.maximumUsedPercent).trim()
@@ -661,7 +724,7 @@
 							Critical pressure pauses recording only when eligible footage cannot restore headroom.
 						</p>
 						<div class="mt-3 grid gap-4 lg:grid-cols-3 sm:grid-cols-2">
-							{#each [{ field: 'minimumFreeGigabytes', id: 'minimum-free-gigabytes', label: 'Minimum free space (GiB)', minimum: 0, placeholder: undefined }, { field: 'maximumUsedPercent', id: 'maximum-used-percent', label: 'Maximum filesystem used (%)', minimum: 1, placeholder: 'Disabled' }, { field: 'warningFreeGigabytes', id: 'warning-free-gigabytes', label: 'Warning free space (GiB)', minimum: 0, placeholder: undefined }, { field: 'criticalFreeGigabytes', id: 'critical-free-gigabytes', label: 'Critical free space (GiB)', minimum: 0, placeholder: undefined }, { field: 'cleanupHysteresisGigabytes', id: 'cleanup-hysteresis-gigabytes', label: 'Cleanup hysteresis (GiB)', minimum: 0, placeholder: undefined }] as item (item.field)}
+							{#each [{ field: 'minimumFreeGigabytes', id: 'minimum-free-gigabytes', label: 'Minimum free space (GiB)', minimum: 0, placeholder: undefined }, { field: 'maximumUsedPercent', id: 'maximum-used-percent', label: 'Maximum filesystem used (%)', minimum: 1, placeholder: 'Disabled' }, { field: 'warningFreeGigabytes', id: 'warning-free-gigabytes', label: 'Warning free space (GiB)', minimum: 0, placeholder: undefined }, { field: 'criticalFreeGigabytes', id: 'critical-free-gigabytes', label: 'Critical free space (GiB)', minimum: 0, placeholder: undefined }, { field: 'cleanupHysteresisGigabytes', id: 'cleanup-hysteresis-gigabytes', label: 'Cleanup hysteresis (GiB)', minimum: 0, placeholder: undefined }].filter((item) => preRecordingSupported || !item.field.startsWith('preRecording')) as item (item.field)}
 								<label class="grid gap-1.5 text-sm font-medium" for={item.id}>
 									{item.label}
 									<Input
@@ -784,7 +847,7 @@
 							</span>
 						</summary>
 						<div class="mt-4 grid gap-4 sm:grid-cols-2">
-							{#each [{ field: 'mediumTermPath', id: 'medium-term-path', label: 'Active recording path' }, { field: 'recordingCatalogPath', id: 'recording-catalog-path', label: 'Recording catalog path' }, { field: 'eventThumbnailPath', id: 'event-thumbnail-path', label: 'Event thumbnail path' }] as item (item.field)}
+							{#each [{ field: 'mediumTermPath', id: 'medium-term-path', label: 'Active recording path' }, { field: 'recordingCatalogPath', id: 'recording-catalog-path', label: 'Recording catalog path' }, { field: 'eventThumbnailPath', id: 'event-thumbnail-path', label: 'Event thumbnail path' }].filter((item) => preRecordingSupported || !item.field.startsWith('preRecording')) as item (item.field)}
 								<label class="grid gap-1.5 text-sm font-medium sm:col-span-2" for={item.id}>
 									{item.label}
 									<Input
@@ -803,7 +866,7 @@
 									{/if}
 								</label>
 							{/each}
-							{#each [{ field: 'eventThumbnailMaxMegabytes', id: 'event-thumbnail-max-megabytes', label: 'Thumbnail storage limit (MiB)', minimum: 0 }, { field: 'shortTermSeconds', id: 'short-term-seconds', label: 'Memory buffer (seconds)', minimum: 0 }, { field: 'mediumTermSeconds', id: 'medium-term-seconds', label: 'Recording file duration (seconds)', minimum: 0 }, { field: 'flushIntervalSeconds', id: 'flush-interval-seconds', label: 'Flush interval (seconds)', minimum: 0 }, { field: 'writeBufferBytes', id: 'write-buffer-bytes', label: 'Write buffer (bytes)', minimum: 1 }] as item (item.field)}
+							{#each [{ field: 'eventThumbnailMaxMegabytes', id: 'event-thumbnail-max-megabytes', label: 'Thumbnail storage limit (MiB)', minimum: 0 }, { field: 'shortTermSeconds', id: 'short-term-seconds', label: 'Memory buffer (seconds)', minimum: 0 }, { field: 'mediumTermSeconds', id: 'medium-term-seconds', label: 'Recording file duration (seconds)', minimum: 0 }, { field: 'flushIntervalSeconds', id: 'flush-interval-seconds', label: 'Flush interval (seconds)', minimum: 0 }, { field: 'writeBufferBytes', id: 'write-buffer-bytes', label: 'Write buffer (bytes)', minimum: 1 }, { field: 'preRecordingStreamMaxBytes', id: 'pre-recording-stream-max-bytes', label: 'Per-stream pre-recording limit (bytes)', minimum: 1 }, { field: 'preRecordingGlobalMaxBytes', id: 'pre-recording-global-max-bytes', label: 'Global pre-recording limit (bytes)', minimum: 1 }].filter((item) => preRecordingSupported || !item.field.startsWith('preRecording')) as item (item.field)}
 								<label class="grid gap-1.5 text-sm font-medium" for={item.id}>
 									{item.label}
 									<Input

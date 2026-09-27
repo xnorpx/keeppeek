@@ -187,7 +187,9 @@ describe('Camera wizard drafts', () => {
 			transport: 'tcp',
 			record_generic_motion_events: false,
 			recording_mode: 'event-boost',
-			event_recording_duration_secs: 60
+			event_recording_duration_secs: 60,
+			event_pre_recording_duration_secs: 0,
+			event_recording_stream: 'main'
 		});
 	});
 
@@ -236,5 +238,40 @@ describe('Camera wizard drafts', () => {
 		const update = cameraWizardUpdate(draft);
 		expect(update).not.toHaveProperty('username');
 		expect(update).not.toHaveProperty('password');
+	});
+});
+
+describe('event-only setup', () => {
+	it('validates the pre-recording boundaries and preserves zero', () => {
+		const draft = {
+			...emptyCameraWizardDraft(),
+			ip: '192.0.2.1',
+			displayName: 'Gate',
+			username: 'test',
+			password: 'test',
+			recordingMode: 'event-only' as const
+		};
+		for (const seconds of ['0', '30']) {
+			expect(
+				validateCameraWizardStep('recording', {
+					...draft,
+					eventPreRecordingDurationSeconds: seconds
+				})
+			).toBeNull();
+		}
+		for (const seconds of ['-1', '31', '0.5', '', '1e1']) {
+			expect(
+				validateCameraWizardStep('recording', {
+					...draft,
+					eventPreRecordingDurationSeconds: seconds
+				})
+			).toContain('Pre-recording duration');
+		}
+		expect(cameraWizardUpdate({ ...draft, eventRecordingStream: 'sub' })).toMatchObject({
+			recording_mode: 'event-only',
+			event_pre_recording_duration_secs: 0,
+			event_recording_stream: 'sub',
+			event_recording_duration_secs: 60
+		});
 	});
 });

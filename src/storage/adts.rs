@@ -19,6 +19,9 @@ pub const fn parse_adts(data: &[u8]) -> Option<AdtsInfo> {
 
     let protection_absent = data[1] & 0x01;
     let header_len = if protection_absent == 1 { 7 } else { 9 };
+    if data.len() < header_len {
+        return None;
+    }
 
     let profile = ((data[2] >> 6) & 0x03) + 1;
     let freq_index = ((data[2] >> 2) & 0x0F) as usize;
@@ -78,5 +81,17 @@ mod tests {
         let (raw, info) = strip_adts(&data);
         assert!(info.is_none());
         assert_eq!(raw, &data);
+    }
+
+    #[test]
+    fn truncated_crc_header_is_not_sliced_past_the_packet() {
+        for data in [
+            &[0xff, 0xf0, 0x50, 0x80, 0x02, 0x80, 0x00][..],
+            &[0xff, 0xf0, 0x50, 0x80, 0x02, 0x80, 0x00, 0x00][..],
+        ] {
+            let (raw, info) = strip_adts(data);
+            assert!(info.is_none());
+            assert_eq!(raw, data);
+        }
     }
 }

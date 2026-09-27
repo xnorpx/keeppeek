@@ -1,4 +1,9 @@
 use crate::privacy::PrivacyRegistry;
+#[cfg(feature = "event-preroll-benchmark")]
+#[doc(hidden)]
+pub mod admission_benchmark;
+mod event;
+use super::event_recording::{EventOutput, EventRecordings, EventSettings, QueuedEventFrame};
 use crate::{
     cameras::CameraRecordingMode,
     config::StorageToml,
@@ -18,12 +23,13 @@ use crate::{
         short_term::ShortTermBuffer,
     },
 };
+use event::{EventAdmission, EventFence, EventSourceState};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, RwLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -53,6 +59,8 @@ pub struct StorageConfig {
     pub warning_free_bytes: u64,
     pub critical_free_bytes: u64,
     pub cleanup_hysteresis_bytes: u64,
+    pub pre_recording_stream_max_bytes: usize,
+    pub pre_recording_global_max_bytes: usize,
 }
 
 impl Default for StorageConfig {
@@ -100,6 +108,10 @@ impl StorageConfig {
             warning_free_bytes: toml.warning_free_gb.saturating_mul(GIBIBYTE_BYTES),
             critical_free_bytes: toml.critical_free_gb.saturating_mul(GIBIBYTE_BYTES),
             cleanup_hysteresis_bytes: toml.cleanup_hysteresis_gb.saturating_mul(GIBIBYTE_BYTES),
+            pre_recording_stream_max_bytes: usize::try_from(toml.pre_recording_stream_max_bytes)
+                .expect("validated pre-recording stream budget fits this platform"),
+            pre_recording_global_max_bytes: usize::try_from(toml.pre_recording_global_max_bytes)
+                .expect("validated pre-recording global budget fits this platform"),
         }
     }
 
@@ -128,6 +140,27 @@ impl StorageConfig {
 }
 
 enum Command {
+    ConfigureEventRecording {
+        source: String,
+        settings: EventSettings,
+        fence: EventFence,
+    },
+    EventInput {
+        identity: RecordingStreamIdentity,
+        // Keep optional history from enlarging every legacy channel slot.
+        input: Box<QueuedEventFrame>,
+        fence: EventFence,
+        main_slot: Option<event::OptionalMainSlot>,
+    },
+    RecordingEvent {
+        source: String,
+        at: Instant,
+        fence: EventFence,
+    },
+    ResetEventStream {
+        source: String,
+        fence: EventFence,
+    },
     Ingest {
         identity: RecordingStreamIdentity,
         frame: RecordingFrame,
@@ -142,6 +175,8 @@ struct StorageCommandSender {
     tx: mpsc::SyncSender<Command>,
     queued_media_bytes: Arc<AtomicUsize>,
     media_bytes_capacity: usize,
+    command_capacity: usize,
+    optional_main_slots: Arc<AtomicUsize>,
 }
 
 struct StorageCommandReceiver {
@@ -166,6 +201,8 @@ fn storage_command_channel(
             tx,
             queued_media_bytes: queued_media_bytes.clone(),
             media_bytes_capacity,
+            command_capacity,
+            optional_main_slots: Arc::new(AtomicUsize::new(0)),
         },
         StorageCommandReceiver {
             rx,
@@ -265,6 +302,8 @@ struct RecordingAdmission {
     discontinuous_streams: Arc<Mutex<HashMap<String, (String, String)>>>,
     health: RecordingHealthRegistry,
     privacy: Arc<RwLock<Option<Arc<PrivacyRegistry>>>>,
+    events: Arc<Mutex<HashMap<String, EventAdmission>>>,
+    events_enabled: Arc<AtomicBool>,
 }
 
 impl RecordingAdmission {
@@ -343,21 +382,33 @@ impl RecordingAdmission {
                 );
             return;
         }
+        // ponytail: Enabled control commands already serialize on the event mutex.
+        if self.events_enabled.load(Ordering::Acquire) {
+            let events = self
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(entry) = events.get(&identity.source_id) {
+                self.ingest_event(tx, entry, identity, frame);
+                return;
+            }
+        }
         let mut policies = self
             .policies
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let policy = policies
-            .entry(identity.source_id.clone())
-            .or_insert_with(|| {
-                CameraRecordingPolicy::new(CameraRecordingMode::default(), Duration::from_secs(60))
-            });
-        let decision = policy.decide(
-            &identity.stream_id,
-            frame.frame.is_video(),
-            frame.is_video_keyframe(),
-            now,
-        );
+        // Configuration can enable a source between the early lookup and this lock.
+        if self.events_enabled.load(Ordering::Acquire) {
+            let events = self
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(entry) = events.get(&identity.source_id) {
+                self.ingest_event(tx, entry, identity, frame);
+                return;
+            }
+        }
+        let decision = Self::legacy_decision(&mut policies, &identity, &frame, now);
         before_send();
         match decision {
             AdmissionDecision::Record => {
@@ -370,6 +421,33 @@ impl RecordingAdmission {
             }
             AdmissionDecision::Ignore => {}
         }
+    }
+
+    fn legacy_decision(
+        policies: &mut HashMap<String, CameraRecordingPolicy>,
+        identity: &RecordingStreamIdentity,
+        frame: &RecordingFrame,
+        now: Instant,
+    ) -> AdmissionDecision {
+        if let Some(policy) = policies.get_mut(&identity.source_id) {
+            return policy.decide(
+                &identity.stream_id,
+                frame.frame.is_video(),
+                frame.is_video_keyframe(),
+                now,
+            );
+        }
+        policies
+            .entry(identity.source_id.clone())
+            .or_insert_with(|| {
+                CameraRecordingPolicy::new(CameraRecordingMode::default(), Duration::from_secs(60))
+            })
+            .decide(
+                &identity.stream_id,
+                frame.frame.is_video(),
+                frame.is_video_keyframe(),
+                now,
+            )
     }
 
     fn privacy_active(&self, camera_id: &str) -> bool {
@@ -463,7 +541,8 @@ impl StorageHandle {
     }
 
     pub fn note_camera_event(&self, camera_id: &str) {
-        self.admission.note_event_at(camera_id, Instant::now());
+        self.admission
+            .note_event(&self.tx, camera_id, Instant::now());
     }
 
     pub fn preferred_audio_stream(&self, camera_id: &str) -> &'static str {
@@ -606,6 +685,9 @@ struct WriterWorker {
     pipelines: HashMap<String, CameraPipeline>,
     long_term: LongTermStore,
     privacy: Arc<RwLock<Option<Arc<PrivacyRegistry>>>>,
+    event_recordings: Option<EventRecordings>,
+    event_sources: HashMap<String, EventSourceState>,
+    event_tick: Option<Instant>,
 }
 
 impl WriterWorker {
@@ -642,6 +724,9 @@ impl WriterWorker {
             pipelines: HashMap::new(),
             long_term,
             privacy,
+            event_recordings: None,
+            event_sources: HashMap::new(),
+            event_tick: None,
         }
     }
 
@@ -659,8 +744,20 @@ impl WriterWorker {
         }
 
         loop {
-            let cmd = if safety_enabled {
-                match rx.recv_timeout(reap_interval) {
+            let replay_work = self.drain_event_outputs(Instant::now());
+            let timeout = if self.event_recordings.is_some() {
+                Some(if replay_work == 32 {
+                    Duration::ZERO
+                } else {
+                    Duration::from_millis(25)
+                })
+            } else if safety_enabled {
+                Some(reap_interval)
+            } else {
+                None
+            };
+            let cmd = if let Some(timeout) = timeout {
+                match rx.recv_timeout(timeout) {
                     Ok(cmd) => Some(cmd),
                     Err(mpsc::RecvTimeoutError::Timeout) => None,
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -672,44 +769,8 @@ impl WriterWorker {
                 }
             };
 
-            if let Some(cmd) = cmd {
-                match cmd {
-                    Command::Ingest {
-                        identity,
-                        frame,
-                        discontinuity,
-                    } => {
-                        let privacy_active = self
-                            .privacy
-                            .read()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .as_ref()
-                            .is_some_and(|privacy| {
-                                privacy
-                                    .decision(&identity.source_id, chrono::Utc::now())
-                                    .map_or(true, |decision| decision.0)
-                            });
-                        if privacy_active {
-                            self.finish_stream_before_gap(&identity.storage_key);
-                            continue;
-                        }
-                        if discontinuity {
-                            self.finish_stream_before_gap(&identity.storage_key);
-                        }
-                        self.ingest(identity, frame);
-                    }
-                    Command::FlushAll => {
-                        self.flush_all();
-                    }
-                    Command::Shutdown => {
-                        tracing::debug!("storage writer received shutdown command");
-                        self.shutdown_flush();
-                        tracing::debug!("shutdown flush complete, finalizing segments");
-                        self.finalize_all();
-                        tracing::debug!("all segments finalized");
-                        break;
-                    }
-                }
+            if cmd.is_some_and(|command| self.handle_command(command)) {
+                break;
             }
 
             if safety_enabled && last_reap.elapsed() >= reap_interval {
@@ -717,6 +778,42 @@ impl WriterWorker {
                 self.enforce_storage_limit(StorageCleanupTrigger::Periodic);
             }
         }
+    }
+
+    fn handle_command(&mut self, command: Command) -> bool {
+        match command {
+            Command::Ingest {
+                identity,
+                frame,
+                discontinuity,
+            } => {
+                let private = self
+                    .privacy
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                    .is_some_and(|privacy| {
+                        privacy
+                            .decision(&identity.source_id, chrono::Utc::now())
+                            .map_or(true, |decision| decision.0)
+                    });
+                if private || discontinuity {
+                    self.finish_stream_before_gap(&identity.storage_key);
+                }
+                if !private {
+                    self.ingest(identity, frame);
+                }
+            }
+            Command::FlushAll => self.flush_all(),
+            Command::Shutdown => {
+                self.stop_event_recordings();
+                self.shutdown_flush();
+                self.finalize_all();
+                return true;
+            }
+            command => self.handle_event_command(command),
+        }
+        false
     }
 
     fn enforce_storage_limit(&self, trigger: StorageCleanupTrigger) {
@@ -937,6 +1034,15 @@ impl WriterWorker {
         camera_id: &str,
         frame: RecordingFrame,
     ) -> std::io::Result<WriteProgress> {
+        self.write_frame_to_pipeline(camera_id, frame, false)
+    }
+
+    fn write_frame_to_pipeline(
+        &mut self,
+        camera_id: &str,
+        frame: RecordingFrame,
+        received_clock: bool,
+    ) -> std::io::Result<WriteProgress> {
         let pipeline = self.pipelines.get_mut(camera_id).unwrap();
 
         let needs_rotation = pipeline
@@ -970,7 +1076,12 @@ impl WriterWorker {
             pipeline.medium_term = Some(writer);
         }
 
-        let recorded_duration = pipeline.medium_term.as_mut().unwrap().append_one(frame)?;
+        let writer = pipeline.medium_term.as_mut().unwrap();
+        let recorded_duration = if received_clock {
+            writer.append_received(frame)?
+        } else {
+            writer.append_one(frame)?
+        };
 
         if let Some((path, recording_id)) = rotated {
             self.move_to_long_term(camera_id, &path, &recording_id)?;
@@ -1263,7 +1374,27 @@ mod tests {
     use bytes::Bytes;
     use std::fs::File;
 
-    fn storage_config(name: &str) -> StorageConfig {
+    #[test]
+    fn optional_event_input_does_not_enlarge_legacy_channel_slots() {
+        #[allow(dead_code)]
+        enum LegacyCommand {
+            Ingest {
+                identity: RecordingStreamIdentity,
+                frame: RecordingFrame,
+                discontinuity: bool,
+            },
+            FlushAll,
+            Shutdown,
+        }
+        let legacy = std::mem::size_of::<LegacyCommand>();
+        let current = std::mem::size_of::<Command>();
+        assert!(
+            current <= legacy,
+            "optional history enlarged every channel slot: {legacy} -> {current} bytes"
+        );
+    }
+
+    pub(super) fn storage_config(name: &str) -> StorageConfig {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("test-output")
@@ -1284,6 +1415,8 @@ mod tests {
             warning_free_bytes: 0,
             critical_free_bytes: 0,
             cleanup_hysteresis_bytes: 0,
+            pre_recording_stream_max_bytes: 64 * 1_048_576,
+            pre_recording_global_max_bytes: 256 * 1_048_576,
         }
     }
 
@@ -1894,7 +2027,7 @@ mod tests {
         }
     }
 
-    fn key_frame(received_at: Instant) -> RecordingFrame {
+    pub(super) fn key_frame(received_at: Instant) -> RecordingFrame {
         RecordingFrame {
             received_at,
             timestamp: None,

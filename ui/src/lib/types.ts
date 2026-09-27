@@ -308,6 +308,8 @@ export interface SanitizedStorage {
 	medium_term_secs: number;
 	flush_interval_secs: number;
 	write_buffer_bytes: number;
+	pre_recording_stream_max_bytes?: number;
+	pre_recording_global_max_bytes?: number;
 	long_term_max_gb: number;
 	minimum_free_gb?: number;
 	maximum_used_percent?: number | null;
@@ -350,7 +352,9 @@ export type CameraBackend = 'auto' | 'retina' | 'reo-proto';
 
 export type CameraTransport = 'tcp' | 'udp';
 
-export type CameraRecordingMode = 'off' | 'sub' | 'main' | 'both' | 'event-boost';
+export type CameraRecordingMode = 'off' | 'sub' | 'main' | 'both' | 'event-boost' | 'event-only';
+
+export type EventRecordingStream = 'main' | 'sub';
 
 export interface CameraSettings {
 	id: string;
@@ -370,6 +374,8 @@ export interface CameraSettings {
 	record_generic_motion_events: boolean;
 	recording_mode: CameraRecordingMode;
 	event_recording_duration_secs: number;
+	event_pre_recording_duration_secs?: number;
+	event_recording_stream?: EventRecordingStream;
 	health: CameraHealth['state'] | null;
 	model: string | null;
 }
@@ -483,6 +489,8 @@ export interface CameraSettingsUpdate {
 	record_generic_motion_events?: boolean;
 	recording_mode?: CameraRecordingMode;
 	event_recording_duration_secs?: number;
+	event_pre_recording_duration_secs?: number;
+	event_recording_stream?: EventRecordingStream;
 }
 
 export interface CameraSettingsUpdateResponse {
@@ -522,6 +530,8 @@ export type CameraConfigurationPatch = {
 	record_generic_motion_events?: ConfigurationPatchValue<boolean>;
 	recording_mode?: ConfigurationPatchValue<CameraRecordingMode>;
 	event_recording_duration_secs?: ConfigurationPatchValue<number>;
+	event_pre_recording_duration_secs?: ConfigurationPatchValue<number>;
+	event_recording_stream?: ConfigurationPatchValue<EventRecordingStream>;
 };
 
 export type CameraDefaultPatch = Pick<
@@ -533,6 +543,8 @@ export type CameraDefaultPatch = Pick<
 	| 'record_generic_motion_events'
 	| 'recording_mode'
 	| 'event_recording_duration_secs'
+	| 'event_pre_recording_duration_secs'
+	| 'event_recording_stream'
 >;
 
 export type PrivacyWindow = {
@@ -612,6 +624,8 @@ export type ConfigurationTemplateValues = {
 	record_generic_motion_events?: boolean;
 	recording_mode?: CameraRecordingMode;
 	event_recording_duration_secs?: number;
+	event_pre_recording_duration_secs?: number;
+	event_recording_stream?: EventRecordingStream;
 };
 
 export type ConfigurationTemplate = {
@@ -652,6 +666,8 @@ export type CameraEffectiveConfiguration = {
 	record_generic_motion_events: EffectiveConfigurationValue<boolean>;
 	recording_mode: EffectiveConfigurationValue<CameraRecordingMode>;
 	event_recording_duration_secs: EffectiveConfigurationValue<number>;
+	event_pre_recording_duration_secs?: EffectiveConfigurationValue<number>;
+	event_recording_stream?: EffectiveConfigurationValue<EventRecordingStream>;
 	privacy: PrivacySchedule | null;
 	privacy_status: PrivacyStatus;
 };
@@ -669,6 +685,10 @@ export type CameraDefaultValues = {
 	effective_recording_mode: CameraRecordingMode;
 	configured_event_recording_duration_secs: number | null;
 	effective_event_recording_duration_secs: number;
+	configured_event_pre_recording_duration_secs?: number | null;
+	effective_event_pre_recording_duration_secs?: number;
+	configured_event_recording_stream?: EventRecordingStream | null;
+	effective_event_recording_stream?: EventRecordingStream;
 	privacy: PrivacySchedule | null;
 };
 
@@ -888,6 +908,15 @@ export interface CameraHealth {
 	configured_profiles: ProfileSummary[];
 	streams: StreamHealth[];
 	privacy?: PrivacyStatus;
+	pre_recording?: {
+		enabled: boolean;
+		active: boolean;
+		selected_stream: EventRecordingStream;
+		requested_ms: number;
+		available_ms: number;
+		retained_bytes: number;
+		reason: string;
+	};
 }
 
 export interface StreamHealthDimensions {
@@ -1056,6 +1085,8 @@ export interface StorageHealth {
 	medium_term_seconds: number;
 	flush_interval_seconds: number;
 	write_buffer_bytes: number;
+	pre_recording_stream_max_bytes?: number;
+	pre_recording_global_max_bytes?: number;
 	long_term_max_bytes: number;
 	minimum_free_bytes?: number;
 	maximum_used_percent?: number | null;

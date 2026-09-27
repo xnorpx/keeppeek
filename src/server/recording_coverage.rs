@@ -1295,6 +1295,7 @@ const fn recording_policy_name(mode: crate::cameras::CameraRecordingMode) -> &'s
         crate::cameras::CameraRecordingMode::Main => "main",
         crate::cameras::CameraRecordingMode::Both => "both",
         crate::cameras::CameraRecordingMode::EventBoost => "event-boost",
+        crate::cameras::CameraRecordingMode::EventOnly => "event-only",
     }
 }
 

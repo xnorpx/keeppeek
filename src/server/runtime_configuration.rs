@@ -68,6 +68,12 @@ pub(super) fn dispatch(
                     port,
                     expected_configuration_revision: update.expected_configuration_revision,
                     storage: RuntimeStorageSettingsUpdate {
+                        pre_recording_stream_max_bytes: storage
+                            .pre_recording_stream_max_bytes
+                            .unwrap_or(current_storage.pre_recording_stream_max_bytes),
+                        pre_recording_global_max_bytes: storage
+                            .pre_recording_global_max_bytes
+                            .unwrap_or(current_storage.pre_recording_global_max_bytes),
                         medium_term_path: storage.medium_term_path,
                         long_term_path: storage.long_term_path,
                         recording_catalog_path: storage.recording_catalog_path,

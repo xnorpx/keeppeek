@@ -4,6 +4,7 @@ pub mod benchmark;
 pub mod catalog;
 pub mod demand;
 pub mod engine;
+pub(crate) mod event_recording;
 pub mod events;
 pub mod frame;
 pub(crate) mod health;
@@ -15,7 +16,6 @@ pub mod medium_term;
 pub mod metadata;
 pub mod nal;
 pub mod playback;
-#[cfg(test)]
 mod pre_record;
 mod recording_policy;
 pub(crate) mod safety;

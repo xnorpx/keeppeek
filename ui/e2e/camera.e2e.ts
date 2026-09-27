@@ -641,3 +641,76 @@ test('renders Board 24 mobile settings as the editable per-camera owner', async 
 	await expect(editor.getByRole('button', { name: 'Save camera settings' })).toBeEnabled();
 	expect(controls.cameraUpdates).toEqual([]);
 });
+
+for (const width of [320, 1440]) {
+	test(`saves and reloads event-only pre-recording at ${width}px`, async ({ page }) => {
+		await page.setViewportSize({ width, height: 900 });
+		const { camera, health } = mobilePtzCamera();
+		const settings = configuredCamera(camera);
+		const saved = {
+			...settings,
+			recording_mode: 'event-only' as const,
+			event_pre_recording_duration_secs: 30,
+			event_recording_stream: 'sub' as const
+		};
+		const errors: string[] = [];
+		page.on('pageerror', (error) => errors.push(error.message));
+		page.on('console', (message) => {
+			if (message.type() === 'error') errors.push(message.text());
+		});
+		const controls = await mockControlPeer(page, {
+			cameras: [camera],
+			capabilityIds: ['keeppeek.recording.pre-roll.v1'],
+			health: { cameras: [{ ...health, configured_profiles: camera.profiles }] },
+			cameraSettingsSequence: [[settings], [saved]],
+			cameraUpdateResult: { camera: saved, restart_required: true },
+			motionDetection: { supported: true, controllable: true, enabled: true, error: null }
+		});
+		await page.goto(`/camera?camera=${camera.id}`);
+		await page
+			.getByRole('button', { name: width < 768 ? 'Settings' : 'Edit settings', exact: true })
+			.click();
+		const editor = page.locator('[data-camera-configuration-editor]');
+		await editor.getByLabel('Recording mode').selectOption('event-only');
+		await editor.getByLabel('Pre-recording duration (seconds)').fill('31');
+		await editor.getByRole('button', { name: 'Save camera settings' }).click();
+		await expect(editor.getByRole('alert')).toBeFocused();
+		expect(controls.cameraUpdates).toHaveLength(0);
+		await page.screenshot({ path: test.info().outputPath('event-pre-recording-validation.png') });
+		await editor.locator('[data-event-recording-fields]').screenshot({
+			path: test.info().outputPath('event-pre-recording-invalid-fields.png')
+		});
+		await editor.getByLabel('Pre-recording duration (seconds)').fill('30');
+		await editor.getByLabel('Pre-recording duration (seconds)').press('Tab');
+		await expect(editor.getByLabel('Event recording stream')).toBeFocused();
+		await editor.getByLabel('Event recording stream').selectOption('sub');
+		await editor.getByRole('button', { name: 'Save camera settings' }).click();
+		await expect.poll(() => controls.cameraUpdates).toHaveLength(1);
+		expect(controls.cameraUpdates[0]?.update).toMatchObject({
+			recording_mode: 'event-only',
+			event_pre_recording_duration_secs: 30,
+			event_recording_stream: 'sub'
+		});
+		await page.reload();
+		await page
+			.getByRole('button', { name: width < 768 ? 'Settings' : 'Edit settings', exact: true })
+			.click();
+		await expect(editor.getByLabel('Recording mode')).toHaveValue('event-only');
+		await expect(editor.getByLabel('Pre-recording duration (seconds)')).toHaveValue('30');
+		await expect(editor.getByLabel('Event recording stream')).toHaveValue('sub');
+		expect(
+			await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+		).toBe(true);
+		expect(errors).toEqual([]);
+		const recording = editor.getByRole('region', { name: 'Recording', exact: true });
+		await recording.screenshot({
+			path: test.info().outputPath('event-pre-recording-enabled.png')
+		});
+		await editor.getByLabel('Recording mode').selectOption('event-boost');
+		await editor.getByLabel('Pre-recording duration (seconds)').fill('0');
+		await expect(recording).toContainText('0 disables pre-recording');
+		await recording.screenshot({
+			path: test.info().outputPath('event-pre-recording-disabled.png')
+		});
+	});
+}

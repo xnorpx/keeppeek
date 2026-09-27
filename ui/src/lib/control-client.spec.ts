@@ -1946,6 +1946,8 @@ describe('ControlClient', () => {
 				record_generic_motion_events: false,
 				recording_mode: 'event-boost',
 				event_recording_duration_secs: 60,
+				event_pre_recording_duration_secs: 0,
+				event_recording_stream: 'main',
 				health: 'healthy',
 				model: 'RLC-811A'
 			}

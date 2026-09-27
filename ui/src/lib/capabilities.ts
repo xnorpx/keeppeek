@@ -7,6 +7,16 @@ export type ServerCapabilityContract = {
 };
 
 export const serverCapabilityCatalog = {
+	'keeppeek.recording.pre-roll.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'GOP-aligned event history, bounded memory, event-only admission, and replay diagnostics',
+		unlocks: 'Event-only recording, pre-recording durations and memory limits',
+		whenMissing:
+			'Pre-recording controls remain hidden and existing recording settings remain editable',
+		failureGuarantee:
+			'Memory pressure shortens history with explicit reasons; privacy clears buffered media'
+	},
 	'keeppeek.recording-maintenance.v1': {
 		delivery: 'required-mvp',
 		serverOwns:

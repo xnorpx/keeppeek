@@ -437,6 +437,8 @@ fn gather_camera_info(
             record_generic_motion_events: false,
             recording_mode: Default::default(),
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
 
         match ReolinkClient::connect(&config) {
@@ -732,6 +734,8 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                     record_generic_motion_events: false,
                     recording_mode: Default::default(),
                     event_recording_duration_secs: 60,
+                    event_pre_recording_duration_secs: 0,
+                    event_recording_stream: Default::default(),
                 },
                 |result| CameraConfig {
                     events: Default::default(),
@@ -751,6 +755,8 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                     record_generic_motion_events: false,
                     recording_mode: Default::default(),
                     event_recording_duration_secs: 60,
+                    event_pre_recording_duration_secs: 0,
+                    event_recording_stream: Default::default(),
                 },
             )
         })
@@ -929,6 +935,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: Default::default(),
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         }
     }
 

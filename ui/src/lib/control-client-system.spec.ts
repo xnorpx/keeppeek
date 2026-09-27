@@ -4,6 +4,9 @@ import { describe, expect, it } from 'vitest';
 import { numeric, serverHealth } from './control-client-system';
 import {
 	CameraHealthSnapshotSchema,
+	PreRecordingDiagnosticsSchema,
+	PreRecordingReason,
+	EventRecordingStream,
 	EventSchema,
 	HealthTotalsSnapshotSchema,
 	HealthIssueSnapshotSchema,
@@ -40,6 +43,15 @@ describe('control client system mapping', () => {
 				cameras: [
 					create(CameraHealthSnapshotSchema, {
 						id: 'known',
+						preRecording: create(PreRecordingDiagnosticsSchema, {
+							enabled: true,
+							active: false,
+							selectedStream: EventRecordingStream.SUB,
+							requestedMs: 30_000n,
+							availableMs: 4_000n,
+							retainedBytes: 1_048_576n,
+							reason: PreRecordingReason.GLOBAL_PRESSURE
+						}),
 						state: 'healthy',
 						reason: 'healthy'
 					}),
@@ -53,6 +65,15 @@ describe('control client system mapping', () => {
 			unusedEventMapper
 		);
 
+		expect(health.cameras[0]?.pre_recording).toEqual({
+			enabled: true,
+			active: false,
+			selected_stream: 'sub',
+			requested_ms: 30_000,
+			available_ms: 4_000,
+			retained_bytes: 1_048_576,
+			reason: 'global pressure'
+		});
 		expect(health.cameras.map(({ id, state, reason }) => ({ id, state, reason }))).toEqual([
 			{ id: 'known', state: 'healthy', reason: 'healthy' },
 			{ id: 'future', state: 'unknown', reason: 'unknown' }

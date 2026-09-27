@@ -245,6 +245,10 @@ pub struct CameraConfig {
     pub recording_mode: CameraRecordingMode,
     #[serde(default = "default_event_recording_duration_secs")]
     pub event_recording_duration_secs: u64,
+    #[serde(default)]
+    pub event_pre_recording_duration_secs: u64,
+    #[serde(default)]
+    pub event_recording_stream: EventRecordingStream,
 }
 
 impl fmt::Debug for CameraConfig {
@@ -269,6 +273,11 @@ impl fmt::Debug for CameraConfig {
                 "record_generic_motion_events",
                 &self.record_generic_motion_events,
             )
+            .field(
+                "event_pre_recording_duration_secs",
+                &self.event_pre_recording_duration_secs,
+            )
+            .field("event_recording_stream", &self.event_recording_stream)
             .field("recording_mode", &self.recording_mode)
             .field(
                 "event_recording_duration_secs",
@@ -311,6 +320,15 @@ pub enum CameraRecordingMode {
     Both,
     #[default]
     EventBoost,
+    EventOnly,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EventRecordingStream {
+    Sub,
+    #[default]
+    Main,
 }
 
 fn configured_rtsp_url(value: Option<&str>) -> Option<String> {
@@ -1860,6 +1878,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: CameraRecordingMode::Sub,
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
 
         let camera = configured_camera(&config);
@@ -1898,6 +1918,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: CameraRecordingMode::Sub,
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config])]);
 
@@ -1935,6 +1957,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: CameraRecordingMode::Sub,
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config])]);
 
@@ -1973,6 +1997,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: CameraRecordingMode::Sub,
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
         let mut camera = Camera {
             config,
@@ -2042,6 +2068,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: CameraRecordingMode::Sub,
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
         let mut camera = Camera {
             config,

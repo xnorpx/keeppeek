@@ -487,6 +487,7 @@
 				{#if runtimeEditor === 'storage'}
 					<div class="mt-4">
 						<StorageSettingsEditor
+							preRecordingSupported={capabilities.supports('keeppeek.recording.pre-roll.v1')}
 							{config}
 							health={serverHealth}
 							saving={savingRuntimeSettings}

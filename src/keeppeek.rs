@@ -477,9 +477,11 @@ impl KeepPeekLoop {
             self.camera_names.insert(name.clone(), name.clone());
         }
         if let Some(storage) = &self.storage {
-            storage.configure_camera_recording(
+            storage.configure_camera_event_recording(
                 &camera.config.ip.to_string(),
                 camera.config.recording_mode,
+                camera.config.event_recording_stream,
+                Duration::from_secs(camera.config.event_pre_recording_duration_secs),
                 Duration::from_secs(camera.config.event_recording_duration_secs),
             );
         }
@@ -1387,6 +1389,8 @@ mod tests {
                 record_generic_motion_events: false,
                 recording_mode: Default::default(),
                 event_recording_duration_secs: 60,
+                event_pre_recording_duration_secs: 0,
+                event_recording_stream: Default::default(),
             },
             device: DeviceInfo::default(),
             reported_manufacturer: None,
@@ -1469,6 +1473,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: Default::default(),
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
 
         assert_eq!(
@@ -1535,6 +1541,8 @@ mod tests {
                 record_generic_motion_events: false,
                 recording_mode: Default::default(),
                 event_recording_duration_secs: 60,
+                event_pre_recording_duration_secs: 0,
+                event_recording_stream: Default::default(),
             },
             device: DeviceInfo::default(),
             reported_manufacturer: None,
@@ -1621,6 +1629,8 @@ mod tests {
                     record_generic_motion_events: false,
                     recording_mode: Default::default(),
                     event_recording_duration_secs: 60,
+                    event_pre_recording_duration_secs: 0,
+                    event_recording_stream: Default::default(),
                 },
                 device: DeviceInfo::default(),
                 reported_manufacturer: None,

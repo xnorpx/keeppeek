@@ -172,7 +172,6 @@ impl MediumTermWriter {
         Ok(self.recorded_duration.saturating_sub(previous_duration))
     }
 
-    #[cfg(test)]
     pub(super) fn append_received(
         &mut self,
         mut frame: RecordingFrame,
@@ -556,6 +555,48 @@ impl MediumTermWriter {
         }
     }
 
+    pub(super) fn discard_pending(&mut self) -> std::io::Result<()> {
+        match &mut self.state {
+            WriterState::Active(active) => {
+                active.writer.discard_pending_samples();
+                active.fragment_start_dts = None;
+                active.last_video_dts = None;
+                active.next_audio_dts = None;
+            }
+            _ => self.state = WriterState::WaitingForKeyframe,
+        }
+        Ok(())
+    }
+
+    pub(super) fn finalize_before(mut self, end: Instant) -> std::io::Result<PathBuf> {
+        self.activate_prepared()?;
+        let limit = self.segment_origin.map(|origin| {
+            duration_to_ticks(end.saturating_duration_since(origin), VIDEO_TIMESCALE)
+        });
+        let mut completed = None;
+        if let WriterState::Active(active) = &mut self.state
+            && let (Some(limit), Some(last), Some(start)) =
+                (limit, active.last_video_dts, active.fragment_start_dts)
+        {
+            let end_dts = limit.min(last.saturating_add(u64::from(active.last_video_duration)));
+            if end_dts <= last {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "event deadline does not follow the last video sample",
+                ));
+            }
+            completed = active
+                .writer
+                .flush_fragment_before_sample(active.video_track, end_dts)
+                .map_err(mp4_err)?
+                .map(|fragment| (fragment, start, end_dts));
+        }
+        if let Some((fragment, start, end)) = completed {
+            self.insert_catalog_fragment(fragment, start, end)?;
+        }
+        self.finalize()
+    }
+
     pub const fn bytes_written(&self) -> u64 {
         self.bytes_written
     }
@@ -577,7 +618,7 @@ impl MediumTermWriter {
     }
 }
 
-fn required_video_media_config(video: &VideoFrame) -> std::io::Result<mp4::MediaConfig> {
+pub(super) fn required_video_media_config(video: &VideoFrame) -> std::io::Result<mp4::MediaConfig> {
     video_media_config(video)?.ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -621,51 +662,62 @@ fn video_media_config(video: &VideoFrame) -> std::io::Result<Option<mp4::MediaCo
                 pic_param_set: pps,
             })))
         }
-        VideoCodec::H265 => {
-            let (vps, sps, pps) = nal::extract_h265_params(&video.data);
-            let (vps, sps, pps) = match (vps, sps, pps) {
-                (None, None, None) => return Ok(None),
-                (Some(vps), Some(sps), Some(pps)) => (vps, sps, pps),
-                _ => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "H.265 keyframe has incomplete decoder parameters",
-                    ));
-                }
-            };
-            let parameters = retina::codec::h265::parameters_from_vps_sps_pps(
-                &vps,
-                &sps,
-                &pps,
-                retina::codec::h26x::Framing::FourByteLength,
-            )
-            .map_err(|error| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("invalid H.265 parameter sets: {error}"),
-                )
-            })?;
-            let (width, height) = parameters.pixel_dimensions();
-            Ok(Some(mp4::MediaConfig::HevcConfig(mp4::HevcConfig {
-                width: u16::try_from(width).map_err(|_| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "H.265 width exceeds MP4 range",
-                    )
-                })?,
-                height: u16::try_from(height).map_err(|_| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "H.265 height exceeds MP4 range",
-                    )
-                })?,
-                vps,
-                sps,
-                pps,
-                decoder_config: parameters.extra_data().to_vec(),
-            })))
-        }
+        VideoCodec::H265 => h265_media_config(video),
     }
+}
+
+fn h265_media_config(video: &VideoFrame) -> std::io::Result<Option<mp4::MediaConfig>> {
+    let (vps, sps, pps) = nal::extract_h265_params(&video.data);
+    let (vps, sps, pps) = match (vps, sps, pps) {
+        (None, None, None) => return Ok(None),
+        (Some(vps), Some(sps), Some(pps)) => (vps, sps, pps),
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "H.265 keyframe has incomplete decoder parameters",
+            ));
+        }
+    };
+    if [&vps, &sps, &pps]
+        .iter()
+        .any(|parameter| u16::try_from(parameter.len()).is_err())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "H.265 parameter set exceeds the 16-bit MP4 wire length",
+        ));
+    }
+    let parameters = retina::codec::h265::parameters_from_vps_sps_pps(
+        &vps,
+        &sps,
+        &pps,
+        retina::codec::h26x::Framing::FourByteLength,
+    )
+    .map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid H.265 parameter sets: {error}"),
+        )
+    })?;
+    let (width, height) = parameters.pixel_dimensions();
+    Ok(Some(mp4::MediaConfig::HevcConfig(mp4::HevcConfig {
+        width: u16::try_from(width).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "H.265 width exceeds MP4 range",
+            )
+        })?,
+        height: u16::try_from(height).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "H.265 height exceeds MP4 range",
+            )
+        })?,
+        vps,
+        sps,
+        pps,
+        decoder_config: parameters.extra_data().to_vec(),
+    })))
 }
 
 fn resolve_video_dts(previous_dts: Option<u64>, camera_dts: u64, fallback_duration: u32) -> u64 {
@@ -948,6 +1000,27 @@ mod tests {
         }
         frame_data.extend_from_slice(&sample);
         (Bytes::from(frame_data), decoder)
+    }
+
+    #[test]
+    fn oversized_decoder_parameters_return_an_error_without_panicking() {
+        let (keyframe, decoder) = h265_keyframe();
+        let length = u32::from_be_bytes(keyframe[..4].try_into().unwrap()) as usize;
+        let mut data = 65_536_u32.to_be_bytes().to_vec();
+        data.extend_from_slice(&keyframe[4..4 + length]);
+        data.resize(4 + 65_536, 0);
+        data.extend_from_slice(&keyframe[4 + length..]);
+        let video = VideoFrame {
+            codec: VideoCodec::H265,
+            is_keyframe: true,
+            width: u32::from(decoder.width),
+            height: u32::from(decoder.height),
+            data: data.into(),
+        };
+        assert_eq!(
+            required_video_media_config(&video).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
     }
 
     fn h264_keyframe(name: &str) -> (Bytes, mp4::Mp4VideoDecoderConfig) {

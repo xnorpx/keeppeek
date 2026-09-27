@@ -1,7 +1,7 @@
 # Event pre-recording contract proposal
 
-Status: proposal for issue #172. The protected API has not been edited.
-Base: `7ab761b`. Existing field numbers remain unchanged.
+Status: approved for issue #172 by the owner's "ok finalize it" response.
+Base: `e4f8289`. Existing field numbers remain unchanged.
 
 ## Protected files and generated output
 
@@ -49,8 +49,7 @@ Use existing Administrator write authorization and camera read filtering.
 
 ## Recording semantics requiring the owner decision
 
-The owner approved the opt-in delay below. Protected API changes remain pending
-explicit approval for this issue.
+The owner approved the opt-in delay below and the additive contract above.
 
 EventBoost with nonzero pre-roll holds recent candidate sub/main GOPs before
 committing one monotonic recording. The opt-in delay is bounded by the selected

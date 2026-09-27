@@ -21,6 +21,8 @@ import {
 	RotateAccessKeySchema,
 	RuntimeConfigurationCommandSchema,
 	RuntimeStorageConfigurationSchema,
+	EventRecordingStream,
+	PreRecordingReason,
 	ServerCommandSchema,
 	SetLoggingFilterSchema,
 	UpdateRuntimeConfigurationSchema
@@ -132,7 +134,15 @@ export class SystemControlClient {
 			maximumUsedPercent: update.storage.maximum_used_percent ?? 0,
 			warningFreeGb: BigInt(update.storage.warning_free_gb ?? 0),
 			criticalFreeGb: BigInt(update.storage.critical_free_gb ?? 0),
-			cleanupHysteresisGb: BigInt(update.storage.cleanup_hysteresis_gb ?? 0)
+			cleanupHysteresisGb: BigInt(update.storage.cleanup_hysteresis_gb ?? 0),
+			preRecordingStreamMaxBytes:
+				update.storage.pre_recording_stream_max_bytes === undefined
+					? undefined
+					: BigInt(update.storage.pre_recording_stream_max_bytes),
+			preRecordingGlobalMaxBytes:
+				update.storage.pre_recording_global_max_bytes === undefined
+					? undefined
+					: BigInt(update.storage.pre_recording_global_max_bytes)
 		});
 		const command = create(RuntimeConfigurationCommandSchema, {
 			action: {
@@ -231,6 +241,14 @@ export function runtimeConfiguration(config: SanitizedRuntimeConfiguration): San
 			medium_term_secs: numeric(config.storage.mediumTermSecs),
 			flush_interval_secs: numeric(config.storage.flushIntervalSecs),
 			write_buffer_bytes: numeric(config.storage.writeBufferBytes),
+			pre_recording_stream_max_bytes:
+				config.storage.preRecordingStreamMaxBytes === undefined
+					? undefined
+					: numeric(config.storage.preRecordingStreamMaxBytes),
+			pre_recording_global_max_bytes:
+				config.storage.preRecordingGlobalMaxBytes === undefined
+					? undefined
+					: numeric(config.storage.preRecordingGlobalMaxBytes),
 			long_term_max_gb: numeric(config.storage.longTermMaxGb),
 			minimum_free_gb:
 				config.storage.minimumFreeGb === undefined ? 0 : numeric(config.storage.minimumFreeGb),
@@ -540,7 +558,21 @@ function cameraHealth(camera: ServerHealthSnapshot['cameras'][number]): CameraHe
 		last_error: camera.lastError ?? null,
 		configured_profiles: camera.configuredProfiles.map(healthProfile),
 		streams: camera.streams.map(streamHealth),
-		privacy: camera.privacy ? privacyStatus(camera.privacy) : undefined
+		privacy: camera.privacy ? privacyStatus(camera.privacy) : undefined,
+		pre_recording: camera.preRecording
+			? {
+					enabled: camera.preRecording.enabled,
+					active: camera.preRecording.active,
+					selected_stream:
+						camera.preRecording.selectedStream === EventRecordingStream.SUB ? 'sub' : 'main',
+					requested_ms: numeric(camera.preRecording.requestedMs),
+					available_ms: numeric(camera.preRecording.availableMs),
+					retained_bytes: numeric(camera.preRecording.retainedBytes),
+					reason: (PreRecordingReason[camera.preRecording.reason] ?? 'UNKNOWN')
+						.toLowerCase()
+						.replaceAll('_', ' ')
+				}
+			: undefined
 	};
 }
 

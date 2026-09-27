@@ -56,6 +56,7 @@ import {
 	CameraConfigurationCommandSchema,
 	CameraControlCommandSchema,
 	CameraRecordingMode as ProtoCameraRecordingMode,
+	EventRecordingStream as ProtoEventRecordingStream,
 	CameraTransport as ProtoCameraTransport,
 	CancelCameraDiscoverySchema,
 	CancelEventSearchMediaSchema,
@@ -1846,7 +1847,14 @@ export class ControlClient {
 				update.recording_mode === undefined
 					? undefined
 					: protoCameraRecordingMode(update.recording_mode),
-			eventRecordingDurationSecs: update.event_recording_duration_secs
+			eventRecordingDurationSecs: update.event_recording_duration_secs,
+			eventPreRecordingDurationSecs: update.event_pre_recording_duration_secs,
+			eventRecordingStream:
+				update.event_recording_stream === undefined
+					? undefined
+					: update.event_recording_stream === 'sub'
+						? ProtoEventRecordingStream.SUB
+						: ProtoEventRecordingStream.MAIN
 		});
 		const command = create(CameraConfigurationCommandSchema, {
 			action: { case: 'update', value: payload }
@@ -4057,6 +4065,7 @@ function protoTransport(transport: CameraTransport): ProtoCameraTransport {
 }
 
 function protoCameraRecordingMode(mode: CameraRecordingMode): ProtoCameraRecordingMode {
+	if (mode === 'event-only') return ProtoCameraRecordingMode.EVENT_ONLY;
 	if (mode === 'off') return ProtoCameraRecordingMode.OFF;
 	if (mode === 'sub') return ProtoCameraRecordingMode.SUB;
 	if (mode === 'main') return ProtoCameraRecordingMode.MAIN;
@@ -4094,8 +4103,13 @@ function cameraSettings(camera: import('./proto/webrtc_pb').CameraSettings): Cam
 						? 'main'
 						: camera.recordingMode === ProtoCameraRecordingMode.BOTH
 							? 'both'
-							: 'event-boost',
+							: camera.recordingMode === ProtoCameraRecordingMode.EVENT_ONLY
+								? 'event-only'
+								: 'event-boost',
 		event_recording_duration_secs: camera.eventRecordingDurationSecs || 60,
+		event_pre_recording_duration_secs: camera.eventPreRecordingDurationSecs,
+		event_recording_stream:
+			camera.eventRecordingStream === ProtoEventRecordingStream.SUB ? 'sub' : 'main',
 		health: (camera.health ?? null) as CameraSettings['health'],
 		model: camera.model ?? null
 	};

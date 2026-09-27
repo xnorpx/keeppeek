@@ -116,6 +116,8 @@ pub struct SanitizedStorage {
     pub warning_free_gb: u64,
     pub critical_free_gb: u64,
     pub cleanup_hysteresis_gb: u64,
+    pub pre_recording_stream_max_bytes: u64,
+    pub pre_recording_global_max_bytes: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
