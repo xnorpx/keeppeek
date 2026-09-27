@@ -12,6 +12,7 @@
 	import UsersIcon from '@lucide/svelte/icons/users';
 	import AccessPaperFrame from './AccessPaperFrame.svelte';
 	import AccessRuntime from './AccessRuntime.svelte';
+	import ExternalAuthenticationSection from './ExternalAuthenticationSection.svelte';
 	import SharedAccessKeyControl from './SharedAccessKeyControl.svelte';
 
 	type Props = {
@@ -58,8 +59,8 @@
 					<div>
 						<p class="text-sm font-semibold">Server-authoritative access policy</p>
 						<p class="mt-1 text-xs leading-5 text-text-muted">
-							Local policy resolves to Administrator. Remote HTTP and WebRTC sessions bind a named
-							Bearer credential, role, client classification, and credential revision.
+							Local policy resolves to Administrator. Remote sessions bind a named bearer credential
+							or external identity, its role, and server-enforced camera grants.
 						</p>
 					</div>
 				</div>
@@ -127,6 +128,7 @@
 		</div>
 
 		{#if controller}
+			<ExternalAuthenticationSection {controller} />
 			<AccessRuntime {controller} {onrevealaccesskey} />
 		{:else}<div class="grid lg:grid-cols-2">
 				<div class="space-y-4 border-b border-hairline p-5 lg:border-r lg:border-b-0">

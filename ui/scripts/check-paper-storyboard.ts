@@ -148,6 +148,7 @@ type PositioningContract = {
 		blockers: string[];
 	};
 	httpPaths: string[];
+	authenticationHttpPaths: string[];
 	backupHttpPaths: string[];
 	internalHttpPaths: string[];
 	principles: Array<{
@@ -593,10 +594,22 @@ if (
 	throw new Error('Board 01 stored-event limitations are missing');
 }
 const expectedHttpPaths = ['/create', '/delete', '/logs', '/logs/snapshot', '/metrics'];
+const expectedAuthenticationHttpPaths = [
+	'/auth/session',
+	'/auth/login',
+	'/auth/callback',
+	'/auth/logout'
+];
 const expectedBackupHttpPaths = ['/config/export', '/config/apply'];
 const expectedInternalHttpPaths = ['/recording-coverage'];
 if (positioningContract.httpPaths.join('|') !== expectedHttpPaths.join('|')) {
 	throw new Error('Board 01 HTTP boundary changed');
+}
+if (
+	positioningContract.authenticationHttpPaths.join('|') !==
+	expectedAuthenticationHttpPaths.join('|')
+) {
+	throw new Error('Approved browser authentication HTTP boundary changed');
 }
 if (positioningContract.backupHttpPaths.join('|') !== expectedBackupHttpPaths.join('|')) {
 	throw new Error('Board 01 backup HTTP boundary changed');
@@ -608,8 +621,24 @@ const openApi = await readFile(resolve('..', 'api/openapi.yaml'), 'utf8');
 const openApiPaths = [...openApi.matchAll(/^  (\/[a-z-]+(?:\/[a-z-]+)*):$/gm)].map(
 	(match) => match[1]
 );
-if (openApiPaths.join('|') !== expectedHttpPaths.join('|')) {
+if (
+	openApiPaths.join('|') !== [...expectedAuthenticationHttpPaths, ...expectedHttpPaths].join('|')
+) {
 	throw new Error('OpenAPI exposes a noncanonical Board 01 HTTP path');
+}
+const authenticationSource = await readFile(resolve('..', 'src/server/authentication.rs'), 'utf8');
+const authenticationRoutes = [
+	...new Set(
+		[...authenticationSource.matchAll(/\("([A-Z]+)", "(\/auth\/[^"\r\n]+)"\)/g)].map(
+			(match) => `${match[1]} ${match[2]}`
+		)
+	)
+].sort();
+if (
+	authenticationRoutes.join('|') !==
+	['GET /auth/callback', 'GET /auth/session', 'POST /auth/login', 'POST /auth/logout'].join('|')
+) {
+	throw new Error('Rust authentication router exceeds its approved browser-only boundary');
 }
 const serverSource = await readFile(resolve('..', 'src/server.rs'), 'utf8');
 const serverPaths = [

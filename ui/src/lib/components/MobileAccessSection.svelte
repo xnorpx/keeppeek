@@ -3,6 +3,7 @@
 	import UsersIcon from '@lucide/svelte/icons/users';
 	import type { ControlClient } from '$lib/control-client';
 	import AccessRuntime from './AccessRuntime.svelte';
+	import ExternalAuthenticationSection from './ExternalAuthenticationSection.svelte';
 	import SharedAccessKeyControl from './SharedAccessKeyControl.svelte';
 
 	type Props = {
@@ -28,6 +29,7 @@
 			</div>
 		</div>
 		<AccessRuntime {controller} {onrevealaccesskey} />
+		<ExternalAuthenticationSection {controller} />
 	</section>
 {:else}
 	<section data-mobile-access class="min-h-[660px] p-4 md:hidden" aria-label="Mobile access">

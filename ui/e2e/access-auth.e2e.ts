@@ -3,6 +3,19 @@ import { mockControlPeer } from './fixtures/control-peer';
 
 const accessKey = '550e8400-e29b-41d4-a716-446655440000';
 
+test('development proxy forwards browser session discovery to the real local backend', async ({
+	request
+}) => {
+	const response = await request.get('/auth/session');
+	expect(response.status()).toBe(200);
+	expect(await response.json()).toMatchObject({
+		local: true,
+		identity: { role: 'administrator' },
+		methods: [],
+		csrf_token: null
+	});
+});
+
 async function browserCredentialArtifacts(page: import('@playwright/test').Page): Promise<string> {
 	return page.evaluate(() =>
 		JSON.stringify({
@@ -38,7 +51,7 @@ test('remote User signs in without persistent token artifacts and returns on rev
 	});
 
 	await page.goto('/');
-	await expect(page.getByRole('heading', { name: 'Remote sign-in' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Remote sign-in', exact: true })).toBeVisible();
 	await expect(page.getByLabel('Access key')).toHaveAttribute('type', 'password');
 	await expect(page.locator('[data-shell-rail]')).toHaveCount(0);
 	await page.getByLabel('Access key').fill(accessKey);
@@ -54,14 +67,14 @@ test('remote User signs in without persistent token artifacts and returns on rev
 	await expect(page.getByRole('link', { name: 'Settings' })).toHaveCount(0);
 	await expect(page.getByRole('link', { name: 'Cameras' })).toHaveCount(0);
 	await expect(page.getByRole('link', { name: 'Health' })).toHaveCount(0);
-	expect(controls.createAuthorizations).toEqual([null, `Bearer ${accessKey}`]);
+	expect(controls.createAuthorizations).toEqual([`Bearer ${accessKey}`]);
 	expect(await browserCredentialArtifacts(page)).not.toContain(accessKey);
 	expect(consoleMessages.join('\n')).not.toContain(accessKey);
 
 	await page.evaluate(() => {
 		(window as unknown as Window & { closeKeepPeekControl(): void }).closeKeepPeekControl();
 	});
-	await expect(page.getByRole('heading', { name: 'Remote sign-in' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Remote sign-in', exact: true })).toBeVisible();
 	await expect(
 		page.getByText('The remote session expired, was revoked, or disconnected.')
 	).toBeVisible();

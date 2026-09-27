@@ -22,7 +22,9 @@
 	import { setPeekViewState } from '$lib/peek-view-context.svelte';
 	import { initializeBrowserLogging } from '$lib/browser-logs';
 	import KeyboardOverlay from '$lib/components/KeyboardOverlay.svelte';
-	import RemoteSignIn from '$lib/components/RemoteSignIn.svelte';
+	import ExternalSignIn from '$lib/components/ExternalSignIn.svelte';
+	import AdministratorVerificationWindow from '$lib/components/AdministratorVerificationWindow.svelte';
+	import { isAdministratorVerificationWindow } from '$lib/external-authentication.svelte';
 	import MobileNavigation from '$lib/components/MobileNavigation.svelte';
 	import MobileSettingsHeader from '$lib/components/MobileSettingsHeader.svelte';
 	import PeekPage from './+page.svelte';
@@ -36,7 +38,10 @@
 	import type { ServerHealthResponse } from '$lib/types';
 	import { setShellHealthPublisher } from '$lib/shell-health-context';
 
-	initializeBrowserLogging();
+	const verificationWindow =
+		typeof window !== 'undefined' &&
+		isAdministratorVerificationWindow(new URL(window.location.href));
+	if (!verificationWindow) initializeBrowserLogging();
 	const shellHealthRefreshIntervalMs = 5_000;
 
 	let { children }: { children: Snippet } = $props();
@@ -153,6 +158,7 @@
 	});
 
 	onMount(() => {
+		if (verificationWindow) return;
 		const closeAppearance = appearance.initialize();
 		const closeCapabilities = controlClient.onCapabilities((capabilityIds) => {
 			capabilities.updateAdvertised(capabilityIds);
@@ -314,7 +320,7 @@
 	let viewerActive = $derived(page.url.pathname === '/viewer');
 	let liveViewActive = $derived(dashboardActive || viewerActive);
 	$effect(() => {
-		if (!liveViewActive) return;
+		if (verificationWindow || accessState.status !== 'authenticated' || !liveViewActive) return;
 		return livePeer.hold();
 	});
 	let primaryViewActive = $derived(
@@ -367,12 +373,27 @@
 	});
 
 	$effect.pre(() => {
-		if (page.url.pathname !== '/system-health') return;
+		if (
+			verificationWindow ||
+			accessState.status !== 'authenticated' ||
+			page.url.pathname !== '/system-health'
+		)
+			return;
 		return livePeer.hold();
 	});
 </script>
 
-{#if accessState.status === 'authenticated'}
+{#if verificationWindow}
+	<AdministratorVerificationWindow />
+{:else if accessState.status === 'authenticated'}
+	{#if controlClient.externalAuthentication.error}
+		<p
+			role="alert"
+			class="fixed top-0 right-0 z-50 max-w-sm border border-destructive bg-background p-4 text-sm text-destructive"
+		>
+			{controlClient.externalAuthentication.error}
+		</p>
+	{/if}
 	<Tooltip.Provider delayDuration={0}>
 		<div
 			data-keyboard-ready={keyboardReady}
@@ -624,7 +645,8 @@
 		</div>
 	{/if}
 {:else}
-	<RemoteSignIn
+	<ExternalSignIn
+		authentication={controlClient.externalAuthentication}
 		state={accessState}
 		onsignin={(accessKey) => controlClient.signIn(accessKey)}
 		onretry={() => controlClient.checkAccess()}

@@ -79,6 +79,9 @@ test('previews, cancels and deletes exact synthetic recordings with desktop and 
 	page.on('console', (message) => {
 		if (message.type() === 'error') errors.push(message.text());
 	});
+	await page.route('**/auth/session', (route) =>
+		route.continue({ url: `http://127.0.0.1:${backendPort}/auth/session` })
+	);
 	await page.route('**/create', (route) =>
 		route.continue({ url: `http://127.0.0.1:${backendPort}/create` })
 	);

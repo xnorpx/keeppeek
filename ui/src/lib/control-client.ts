@@ -2,6 +2,7 @@ import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { durationFromMs, timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt';
 import {
 	ApiRequestError,
+	applyCookieConfigurationArchive,
 	createSession,
 	deleteSession,
 	fetchLogSnapshot as fetchAuthenticatedLogSnapshot,
@@ -9,6 +10,15 @@ import {
 	fetchMetricsSnapshot as fetchAuthenticatedMetricsSnapshot,
 	fetchRecordingCoverage as fetchAuthenticatedRecordingCoverage
 } from './api';
+import type { HttpCredential } from './api';
+import { ExternalAuthentication, authenticationError } from './external-authentication.svelte';
+import { ExternalAuthenticationAdmin } from './external-authentication-admin';
+import { ConfigurationRestoreVerificationClient } from './configuration-restore-verification';
+import {
+	AccessAuthenticationMethod,
+	type ExternalAuthenticationSettings,
+	type ConfigurationPlan as ExternalAuthenticationPlan
+} from './proto/webrtc_pb';
 import type { MqttSettingsUpdate } from './integrations';
 import { MqttControlClient } from './control-client-mqtt';
 import { RecordingMaintenanceClient } from './control-client-maintenance';
@@ -471,7 +481,107 @@ export class ControlClient {
 	#objectUrls = new Set<string>();
 	#capabilityIds: readonly string[] = [];
 	#capabilityListeners = new Set<CapabilityListener>();
-	#accessKey: string | null = null;
+	#accessKey: HttpCredential = null;
+	readonly externalAuthentication = new ExternalAuthentication();
+	#externalAdministration = new ExternalAuthenticationAdmin((command) => this.request(command));
+	#restoreVerification = new ConfigurationRestoreVerificationClient((command) =>
+		this.requestRestoreVerification(command)
+	);
+	private requestRestoreVerification(command: Request['command']) {
+		const original = this.#accessState;
+		const admit = () => {
+			const current = this.#accessState;
+			if (
+				current.status !== 'authenticated' ||
+				!current.session ||
+				current.session.local ||
+				current.session.role !== 'administrator' ||
+				current.session.id !== original.session?.id ||
+				current.generation !== original.generation
+			)
+				throw new Error(
+					'Restore verification requires the same live remote Administrator session.'
+				);
+		};
+		return this.request(command, controlTimeoutMs, undefined, admit);
+	}
+
+	beginConfigurationRestoreVerification(archiveBytes: bigint, archiveSha256: string) {
+		return this.#restoreVerification.begin(archiveBytes, archiveSha256);
+	}
+	appendConfigurationRestoreVerification(preparationId: string, offset: bigint, data: Uint8Array) {
+		return this.#restoreVerification.append(preparationId, offset, data);
+	}
+	getConfigurationRestoreVerification(preparationId: string) {
+		return this.#restoreVerification.get(preparationId);
+	}
+	confirmConfigurationRestoreVerification(preparationId: string, verificationId?: string) {
+		return this.#restoreVerification.confirm(preparationId, verificationId);
+	}
+	async prepareConfigurationRestoreVerification(
+		file: File,
+		signal: AbortSignal,
+		onprogress?: (receivedBytes: number) => void
+	) {
+		const original = this.#accessState;
+		let changed = false;
+		const stop = this.onAccessState((state) => {
+			if (
+				state.status !== 'authenticated' ||
+				state.session?.id !== original.session?.id ||
+				state.generation !== original.generation
+			)
+				changed = true;
+		});
+		const guard = () => {
+			signal.throwIfAborted();
+			if (
+				changed ||
+				!original.session ||
+				original.session.local ||
+				original.session.role !== 'administrator'
+			)
+				throw new Error(
+					'Restore verification requires the same live remote Administrator session.'
+				);
+		};
+		try {
+			return await this.#restoreVerification.prepare(file, guard, onprogress);
+		} finally {
+			stop();
+		}
+	}
+
+	getExternalAuthentication() {
+		return this.#externalAdministration.getSettings();
+	}
+	planExternalAuthentication(settings: ExternalAuthenticationSettings | null, revision: string) {
+		return this.#externalAdministration.plan(settings, revision);
+	}
+	applyExternalAuthentication(plan: ExternalAuthenticationPlan, verificationId?: string) {
+		return this.#externalAdministration.apply(plan, verificationId);
+	}
+	listExternalIdentities(pageToken = '') {
+		return this.#externalAdministration.listIdentities(pageToken);
+	}
+	listBrowserSessions(pageToken = '') {
+		return this.#externalAdministration.listSessions(pageToken);
+	}
+	revokeExternalIdentity(identityId: string, revision: bigint) {
+		return this.#externalAdministration.revokeIdentity(identityId, revision);
+	}
+	revokeBrowserSession(sessionId: string) {
+		return this.#externalAdministration.revokeSession(sessionId);
+	}
+	prepareAdministratorVerification(planId: string, providerId: string, origin: string) {
+		return this.#externalAdministration.prepare(planId, providerId, origin);
+	}
+	getAdministratorVerification(verificationId: string) {
+		return this.#externalAdministration.getVerification(verificationId);
+	}
+	verifyAdministratorBearer(planId: string, accessKey: string) {
+		return this.#externalAdministration.verifyBearer(planId, accessKey);
+	}
 	#accessState: AccessConnectionState = {
 		status: 'checking',
 		session: null,
@@ -491,7 +601,9 @@ export class ControlClient {
 		(command) => this.request(command),
 		() => this.eventWorkflowIdentity()
 	);
-	#backups = new BackupHttpClient(() => this.#accessKey);
+	#backups = new BackupHttpClient(() =>
+		typeof this.#accessKey === 'string' ? this.#accessKey : null
+	);
 	#system = new SystemControlClient(
 		(command) => this.request(command),
 		(event) => recordingEvent(event, new Map<string, ChunkAccumulator>(), () => {})
@@ -553,13 +665,22 @@ export class ControlClient {
 
 	async checkAccess(): Promise<void> {
 		try {
+			if (typeof this.#accessKey !== 'string') {
+				await this.externalAuthentication.discover();
+				this.#accessKey = this.externalAuthentication.credential;
+				const session = this.externalAuthentication.session!;
+				if (!session.local && !session.identity) {
+					this.publishAccessState({ status: 'sign-in-required', session: null, message: null });
+					return;
+				}
+			}
 			await this.getServerCapabilities();
 		} catch (error) {
-			if (this.#accessState.status === 'checking') {
+			if (this.externalAuthentication.error || this.#accessState.status === 'checking') {
 				this.publishAccessState({
 					status: 'error',
 					session: null,
-					message: error instanceof Error ? error.message : 'KeepPeek could not be reached.'
+					message: this.externalAuthentication.error ?? authenticationError(error)
 				});
 			}
 			throw error;
@@ -567,6 +688,12 @@ export class ControlClient {
 	}
 
 	async signIn(accessKey: string): Promise<void> {
+		if (
+			this.externalAuthentication.credential ||
+			this.externalAuthentication.session?.bearer_enabled === false
+		) {
+			throw new Error('Access-key sign-in is not available for this session.');
+		}
 		const candidate = accessKey.trim();
 		if (candidate.length === 0 || candidate.length > 128) {
 			throw new Error('Enter a valid access key.');
@@ -583,6 +710,14 @@ export class ControlClient {
 
 	async signOut(): Promise<void> {
 		const accessKey = this.#accessKey;
+		if (accessKey && typeof accessKey !== 'string') {
+			try {
+				await this.externalAuthentication.logout();
+			} catch (error) {
+				this.externalAuthentication.error = authenticationError(error);
+				return;
+			}
+		}
 		const sessionId = this.release();
 		if (sessionId !== null) await deleteSession(sessionId, accessKey).catch(() => undefined);
 		this.#accessKey = null;
@@ -653,7 +788,10 @@ export class ControlClient {
 
 	async applyConfiguration(file: File, signal?: AbortSignal) {
 		return this.authenticatedHttp(
-			() => this.#backups.apply(file, signal),
+			() =>
+				this.#accessKey && typeof this.#accessKey !== 'string'
+					? applyCookieConfigurationArchive(file, this.#accessKey, signal)
+					: this.#backups.apply(file, signal),
 			[400, 409, 410, 411, 413, 415, 503]
 		);
 	}
@@ -2105,14 +2243,21 @@ export class ControlClient {
 		}
 	}
 
+	private async connectForRequest(signal?: AbortSignal, admit?: () => void): Promise<void> {
+		admit?.();
+		signal?.throwIfAborted();
+		await this.connect();
+		admit?.();
+		signal?.throwIfAborted();
+	}
+
 	private async request(
 		command: Request['command'],
 		timeoutMs = controlTimeoutMs,
-		signal?: AbortSignal
+		signal?: AbortSignal,
+		admit?: () => void
 	) {
-		signal?.throwIfAborted();
-		await this.connect();
-		signal?.throwIfAborted();
+		await this.connectForRequest(signal, admit);
 		const channel = this.#controlChannel;
 		if (!channel || channel.readyState !== 'open') {
 			throw new Error('WebRTC control channel is unavailable.');
@@ -2793,20 +2938,27 @@ export class ControlClient {
 	private publishConnectionError(error: unknown): void {
 		if (error instanceof ApiRequestError && error.status === 401) {
 			const hadCredential = this.#accessKey !== null;
+			const cookieSession = Boolean(this.#accessKey && typeof this.#accessKey !== 'string');
 			this.#accessKey = null;
 			this.publishAccessState({
 				status: 'sign-in-required',
 				session: null,
-				message: hadCredential ? 'The access key is invalid, expired, or revoked.' : null
+				message: cookieSession
+					? authenticationError(error)
+					: hadCredential
+						? 'The access key is invalid, expired, or revoked.'
+						: null
 			});
 			return;
 		}
 		const message =
-			error instanceof ApiRequestError && error.status === 426
-				? 'Remote access requires HTTPS or a configured trusted proxy.'
-				: error instanceof ApiRequestError && error.status === 429
-					? 'Too many failed sign-in attempts. Try again shortly.'
-					: 'KeepPeek could not establish a secure session.';
+			error instanceof ApiRequestError && error.status === 403
+				? authenticationError(error)
+				: error instanceof ApiRequestError && error.status === 426
+					? 'Remote access requires HTTPS or a configured trusted proxy.'
+					: error instanceof ApiRequestError && error.status === 429
+						? 'Too many failed sign-in attempts. Try again shortly.'
+						: 'KeepPeek could not establish a secure session.';
 		this.publishAccessState({ status: 'error', session: null, message });
 	}
 
@@ -2904,7 +3056,25 @@ function accessSession(session: ProtoAccessSession): AccessSession {
 		lastActivityAtMs: Number(session.lastActivityAtMs),
 		absoluteExpiresAtMs: Number(session.absoluteExpiresAtMs),
 		credentialExpiresAtMs:
-			session.credentialExpiresAtMs === undefined ? null : Number(session.credentialExpiresAtMs)
+			session.credentialExpiresAtMs === undefined ? null : Number(session.credentialExpiresAtMs),
+		...(session.authentication
+			? {
+					authentication: {
+						method:
+							session.authentication.method === AccessAuthenticationMethod.OIDC
+								? ('oidc' as const)
+								: session.authentication.method === AccessAuthenticationMethod.PROXY
+									? ('proxy' as const)
+									: session.authentication.method === AccessAuthenticationMethod.BEARER
+										? ('bearer' as const)
+										: session.authentication.method === AccessAuthenticationMethod.TRUSTED_LOCAL
+											? ('trusted-local' as const)
+											: ('unknown' as const),
+						providerId: session.authentication.providerId ?? null,
+						identityId: session.authentication.identityId ?? null
+					}
+				}
+			: {})
 	};
 }
 

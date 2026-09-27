@@ -1,4 +1,11 @@
 import { createHash } from 'node:crypto';
+import type { BrowserSession } from '../../src/lib/external-authentication.svelte';
+import {
+	ExternalAuthenticationConfigurationSchema,
+	ExternalAuthenticationResultSchema,
+	ExternalIdentityListSchema,
+	BrowserSessionListSchema
+} from '../../src/lib/proto/webrtc_pb';
 import { create, fromBinary, toBinary, type JsonObject } from '@bufbuild/protobuf';
 import { AnySchema, durationFromMs, timestampFromDate } from '@bufbuild/protobuf/wkt';
 import type { Page } from '@playwright/test';
@@ -897,6 +904,8 @@ export async function mockControlPeer(
 		const envelope = fromBinary(ControlEnvelopeSchema, Uint8Array.from(payload));
 		if (envelope.message.case !== 'request') throw new Error('expected control request');
 		const request = envelope.message.value;
+		const authenticationResult = mockAuthenticationCommand(request);
+		if (authenticationResult) return authenticationResult;
 		if (request.command.case === 'configurationCommand') {
 			const action = request.command.value.action;
 			if (!action.case) return encodedError(request.requestId, 'configuration action is required');
@@ -2708,6 +2717,68 @@ export async function mockControlPeer(
 		Object.defineProperty(window, 'OffscreenCanvas', { value: MockOffscreenCanvas });
 		Object.defineProperty(navigator, 'sendBeacon', { value: () => true });
 	});
+	await mockControlHttp(page, options, requests);
+	return requests;
+}
+
+function mockAuthenticationCommand(
+	request: import('../../src/lib/proto/webrtc_pb').Request
+): number[] | undefined {
+	if (
+		request.command.case === 'configurationCommand' &&
+		request.command.value.action.case === 'getExternalAuthentication'
+	) {
+		return encodedConfigurationResult(request.requestId, {
+			case: 'externalAuthentication',
+			value: create(ExternalAuthenticationConfigurationSchema, {
+				configurationRevision: 'fixture-disabled-authentication'
+			})
+		});
+	}
+	if (
+		request.command.case !== 'serverCommand' ||
+		request.command.value.action.case !== 'externalAuthentication'
+	)
+		return undefined;
+	const action = request.command.value.action.value.action;
+	if (action.case === 'listIdentities' || action.case === 'listSessions') {
+		return encodedOk(request.requestId, {
+			case: 'externalAuthenticationResult',
+			value: create(ExternalAuthenticationResultSchema, {
+				result:
+					action.case === 'listIdentities'
+						? { case: 'identities', value: create(ExternalIdentityListSchema) }
+						: { case: 'sessions', value: create(BrowserSessionListSchema) }
+			})
+		});
+	}
+	return encodedError(request.requestId, 'external authentication action is not configured');
+}
+
+async function mockControlHttp(
+	page: Page,
+	options: MockControlPeerOptions,
+	requests: ControlRequests
+): Promise<void> {
+	const bootstrap: BrowserSession = {
+		local: options.accessLocal !== false,
+		bearer_enabled: Boolean(options.requiredAccessKey),
+		methods: [],
+		identity:
+			options.requiredAccessKey && options.accessLocal === false
+				? null
+				: {
+						id:
+							options.accessLocal === false
+								? '550e8400-e29b-41d4-a716-446655440001'
+								: 'local-administrator',
+						display_name: options.accessLocal === false ? 'Remote browser' : 'Local Administrator',
+						role: options.accessRole ?? 'administrator'
+					},
+		csrf_token:
+			options.accessLocal === false && !options.requiredAccessKey ? 'playwright-csrf' : null
+	};
+	await page.route('**/auth/session', (route) => route.fulfill({ json: bootstrap }));
 	await page.route('**/create', async (route) => {
 		const authorization = route.request().headers().authorization ?? null;
 		requests.createAuthorizations.push(authorization);
@@ -2725,7 +2796,6 @@ export async function mockControlPeer(
 			await route.fulfill({ status: 204 });
 		}
 	);
-	return requests;
 }
 
 function encodedCapabilities(

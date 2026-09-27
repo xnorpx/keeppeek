@@ -18,6 +18,11 @@ export type CameraAccessSettings = {
 };
 
 export type AccessSession = {
+	authentication?: {
+		method: 'trusted-local' | 'bearer' | 'oidc' | 'proxy' | 'unknown';
+		providerId: string | null;
+		identityId: string | null;
+	};
 	id: string;
 	principalId: string;
 	displayName: string;

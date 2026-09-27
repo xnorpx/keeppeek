@@ -1,14 +1,21 @@
 <script lang="ts">
 	import type { AccessCredential } from '$lib/access';
+	import { AccessRole, type ExternalIdentity } from '$lib/proto/webrtc_pb';
 	import type { PeekLayoutAudience } from '$lib/peek-layout';
 
 	type Props = {
 		credentials: readonly AccessCredential[];
+		externalIdentities?: readonly ExternalIdentity[];
 		audience: PeekLayoutAudience;
 		onchange: (audience: PeekLayoutAudience) => void;
 	};
 
-	let { credentials, audience, onchange }: Props = $props();
+	let { credentials, externalIdentities = [], audience, onchange }: Props = $props();
+	let externalUsers = $derived(
+		externalIdentities
+			.filter((identity) => identity.role === AccessRole.USER)
+			.toSorted((left, right) => left.displayName.localeCompare(right.displayName))
+	);
 	let userCredentials = $derived(
 		credentials
 			.filter((credential) => credential.role === 'user' && credential.revokedAtMs === null)
@@ -43,7 +50,7 @@
 		<input type="checkbox" class="size-4" checked={audience.everyone} onchange={setEveryone} />
 		<span class="min-w-0 flex-1">
 			<span class="block font-medium">Everyone with KeepPeek access</span>
-			<span class="block text-text-muted">All named credentials</span>
+			<span class="block text-text-muted">All named credentials and external identities</span>
 		</span>
 	</label>
 
@@ -61,9 +68,29 @@
 					<span class="min-w-0 flex-1 truncate font-medium">{credential.name}</span>
 					<span class="shrink-0 font-mono text-2xs text-text-faint">{status(credential)}</span>
 				</label>
-			{:else}
-				<p class="px-3 py-4 text-xs text-text-muted">No User credentials are available.</p>
 			{/each}
+			{#each externalUsers as identity (identity.identityId)}
+				<label class="flex min-h-11 items-center gap-3 px-3 text-xs">
+					<input
+						type="checkbox"
+						class="size-4"
+						checked={audience.credentialIds.includes(identity.identityId)}
+						disabled={!identity.enabled}
+						onchange={(event) => setCredential(identity.identityId, event)}
+					/>
+					<span class="min-w-0 flex-1"
+						><span class="block truncate font-medium">{identity.displayName}</span><span
+							class="block text-text-muted">{identity.providerName} · External identity</span
+						></span
+					>
+					<span class="text-2xs text-text-faint">{identity.enabled ? 'Active' : 'Revoked'}</span>
+				</label>
+			{/each}
+			{#if !userCredentials.length && !externalUsers.length}<p
+					class="px-3 py-4 text-xs text-text-muted"
+				>
+					No User identities are available.
+				</p>{/if}
 		</div>
 	{/if}
 
