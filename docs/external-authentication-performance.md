@@ -188,6 +188,14 @@ dependency versions, features, and the lockfile are unchanged. The measured
 executable is therefore an identified equivalent build for runtime measurements;
 the final source-tree fingerprint differs because of formatting and test changes.
 
+A later browser-only correction starts the live-view channel-opening wait after
+signaling succeeds. The server workloads measured above are unchanged. In two
+deterministic browser tests, rejected or abandoned signaling retained one orphan
+timer before the correction and zero afterward. A successfully signaled channel
+that never opens still fails after the unchanged 10,000 ms timeout and deletes
+its server session. These are lifecycle assertions, not CPU or interaction-latency
+benchmarks; no browser-wide performance claim is inferred from them.
+
 The fingerprint is SHA-256 of LF-joined, sorted, unique git-visible paths ending
 in `.rs`, `.proto`, or `.toml`, plus `Cargo.lock`; each line contains the relative
 path, one space, and the file's uppercase SHA-256. It covers tracked and untracked

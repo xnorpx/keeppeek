@@ -197,6 +197,68 @@ afterEach(() => {
 });
 
 describe('LivePeer', () => {
+	it('leaves no channel-opening timer when signaling rejects revoked access', async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockRejectedValue(new Error('Access was revoked'));
+		const peer = new LivePeer();
+		try {
+			await expect(peer.configure([{ cameraId: 'front-door', quality: 'low' }])).rejects.toThrow(
+				'Access was revoked'
+			);
+			expect(peer.connectionState).toBe('closed');
+			expect(peer.error).toBe('Access was revoked');
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it('leaves no channel-opening timer when an offer is abandoned', async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		const peer = new LivePeer();
+		vi.spyOn(FakePeerConnection.prototype, 'createOffer').mockImplementation(async () => {
+			peer.closeOnPageHide();
+			return { type: 'offer', sdp: 'v=0' };
+		});
+		try {
+			await peer.configure([{ cameraId: 'front-door', quality: 'low' }]);
+			expect(api.createSession).not.toHaveBeenCalled();
+			expect(peer.connectionState).toBe('closed');
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it('still rejects and cleans up when a signaled control channel never opens', async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		vi.spyOn(FakePeerConnection.prototype, 'setRemoteDescription').mockResolvedValue(undefined);
+		api.createSession.mockResolvedValue({
+			session_id: 'never-opened',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		try {
+			const rejected = expect(
+				peer.configure([{ cameraId: 'front-door', quality: 'low' }])
+			).rejects.toThrow('WebRTC control-channel channel did not open.');
+			await vi.advanceTimersByTimeAsync(10_000);
+			await rejected;
+			expect(api.deleteSession).toHaveBeenCalledWith('never-opened', null, undefined);
+			expect(peer.connectionState).toBe('closed');
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
 	it('retains recovery errors for an authorized camera with no live source yet', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		FakeDataChannel.offlineCamera = 'offline-camera';

@@ -22,9 +22,11 @@ does not acquire proof headers or a dry-run HTTP mode.
 
 ## Recorded checks
 
-The final canonical Windows check completed successfully on 2026-09-27 with
+The reference canonical Windows check completed successfully on 2026-09-27 with
 `KEEPPEEK_RUN_SLOW_TESTS=1`. All performance budgets and capacity/cleanup assertions
-also passed against the source-fingerprinted final release build.
+also passed against the source-fingerprinted release build. This reference run
+precedes the CI follow-ups below; the implementing PR records the later full
+canonical rerun and final-commit CI results.
 
 - `cargo test --locked --lib oidc -- --test-threads=8`: 41 passed.
 - `cargo test --lib server::authentication:: -- --nocapture`: 67 passed after the
@@ -49,6 +51,10 @@ also passed against the source-fingerprinted final release build.
   with two recovered leases versus one acknowledged lease. Missing or changed
   acknowledged entries and out-of-bounds extra commits still fail the oracle.
   Workspace formatting and all-target Clippy with warnings denied passed.
+- CI follow-up live-peer browser unit tests: 12 passed. Two new regressions first
+  failed because rejected or abandoned signaling retained an orphan opening timer.
+  The correction leaves zero timers in both cases and preserves the genuine
+  channel-opening timeout and server-session cleanup.
 - CI shared-fixture artifact selection: ten positive/negative selector cases and
   exact Bash syntax passed. Browser shards use the already tested precompiled
   executable override instead of compiling Rust inside the browser deadline.
@@ -118,6 +124,11 @@ the reproducible visual evidence.
 - The shared E2E build exceeded its 15-minute job limit while compiling the second
   release graph for the authentication fixture. Separate parallel builders retain
   the existing budgets and fail-closed artifact dependencies without skipping tests.
+- A camera-access browser scenario passed only after retry because revoked access
+  interrupted live-view signaling, leaving an unobserved channel-opening timer.
+  The waiter now starts only when it can be immediately awaited after signaling.
+  Existing already-open handling, timeout failure, and session cleanup remain;
+  no browser-error assertion or test retry policy is relaxed.
 - Self-review was used as an explicitly disclosed fallback for the additional
   doubt-driven pass; it is not represented as an independent security audit.
 
