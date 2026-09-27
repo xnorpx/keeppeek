@@ -1,0 +1,237 @@
+{
+  "percentile_method": "nearest rank: ceil(0.95*n)-1",
+  "workloads": [
+    {
+      "fixture": "1080p-h264-gop1.mp4",
+      "cameras": 1,
+      "runs": 30,
+      "event_to_first_committed_frame_ms": {
+        "median": 4.11365,
+        "p95": 4.9559,
+        "minimum": 3.8630999999999998,
+        "maximum": 5.048699999999999
+      },
+      "flush_ms": {
+        "median": 28.72605,
+        "p95": 31.285,
+        "minimum": 26.1615,
+        "maximum": 36.416700000000006
+      },
+      "flush_mib_per_second": {
+        "median": 251.53087235882936,
+        "p95": 267.5995191214992,
+        "minimum": 198.40679732210876,
+        "maximum": 276.18144280870894
+      },
+      "producer_wait_ms": {
+        "median": 19.3509,
+        "p95": 20.881,
+        "minimum": 16.6443,
+        "maximum": 20.894799999999996
+      }
+    },
+    {
+      "fixture": "1080p-h264-gop10.mp4",
+      "cameras": 1,
+      "runs": 30,
+      "event_to_first_committed_frame_ms": {
+        "median": 6.426449999999999,
+        "p95": 6.6184,
+        "minimum": 5.7787999999999995,
+        "maximum": 6.7142
+      },
+      "flush_ms": {
+        "median": 18.6824,
+        "p95": 20.007299999999997,
+        "minimum": 17.1486,
+        "maximum": 21.360500000000002
+      },
+      "flush_mib_per_second": {
+        "median": 368.80465353183763,
+        "p95": 400.3921412582036,
+        "minimum": 322.56492885661834,
+        "maximum": 401.790709611385
+      },
+      "producer_wait_ms": {
+        "median": 8.71345,
+        "p95": 10.1952,
+        "minimum": 7.626800000000001,
+        "maximum": 10.2151
+      }
+    },
+    {
+      "fixture": "1080p-h265-gop1.mp4",
+      "cameras": 127,
+      "runs": 30,
+      "event_to_first_committed_frame_ms": {
+        "median": 5.82515,
+        "p95": 7.414,
+        "minimum": 4.5507,
+        "maximum": 7.7709
+      },
+      "flush_ms": {
+        "median": 3833.82405,
+        "p95": 4445.7944,
+        "minimum": 3747.1601,
+        "maximum": 4659.4669
+      },
+      "flush_mib_per_second": {
+        "median": 151.82451356188852,
+        "p95": 154.79712496906853,
+        "minimum": 124.92147957114291,
+        "maximum": 155.33563648928867
+      },
+      "producer_wait_ms": {
+        "median": 2652.7068499999996,
+        "p95": 3037.0022999999997,
+        "minimum": 2589.4547999999995,
+        "maximum": 3122.8030999999996
+      }
+    },
+    {
+      "fixture": "1080p-h265-gop10.mp4",
+      "cameras": 1,
+      "runs": 30,
+      "event_to_first_committed_frame_ms": {
+        "median": 5.3643,
+        "p95": 6.4809,
+        "minimum": 5.0834,
+        "maximum": 6.6324000000000005
+      },
+      "flush_ms": {
+        "median": 18.21305,
+        "p95": 19.213,
+        "minimum": 16.9621,
+        "maximum": 21.012900000000002
+      },
+      "flush_mib_per_second": {
+        "median": 266.3534651106311,
+        "p95": 283.4725030670263,
+        "minimum": 230.86262687379315,
+        "maximum": 285.9960318731954
+      },
+      "producer_wait_ms": {
+        "median": 8.667349999999999,
+        "p95": 9.106399999999999,
+        "minimum": 7.5998,
+        "maximum": 10.1559
+      }
+    },
+    {
+      "fixture": "2160p-h264-gop1.mp4",
+      "cameras": 1,
+      "runs": 30,
+      "event_to_first_committed_frame_ms": {
+        "median": 4.3671500000000005,
+        "p95": 4.9598,
+        "minimum": 3.8744,
+        "maximum": 4.9958
+      },
+      "flush_ms": {
+        "median": 30.2063,
+        "p95": 32.857699999999994,
+        "minimum": 28.578300000000002,
+        "maximum": 34.399
+      },
+      "flush_mib_per_second": {
+        "median": 613.0458737903978,
+        "p95": 626.3900645451133,
+        "minimum": 538.3250734072002,
+        "maximum": 647.9687105298173
+      },
+      "producer_wait_ms": {
+        "median": 20.8388,
+        "p95": 22.551700000000004,
+        "minimum": 19.3104,
+        "maximum": 24.125
+      }
+    },
+    {
+      "fixture": "2160p-h264-gop10.mp4",
+      "cameras": 1,
+      "runs": 30,
+      "event_to_first_committed_frame_ms": {
+        "median": 8.5778,
+        "p95": 10.1349,
+        "minimum": 7.9936,
+        "maximum": 13.063699999999999
+      },
+      "flush_ms": {
+        "median": 22.5062,
+        "p95": 30.7849,
+        "minimum": 20.926000000000002,
+        "maximum": 67.9454
+      },
+      "flush_mib_per_second": {
+        "median": 821.768817971129,
+        "p95": 883.4308661931137,
+        "minimum": 272.20224199155047,
+        "maximum": 883.8234833705769
+      },
+      "producer_wait_ms": {
+        "median": 11.72915,
+        "p95": 13.3345,
+        "minimum": 11.607800000000001,
+        "maximum": 16.3541
+      }
+    },
+    {
+      "fixture": "2160p-h265-gop1.mp4",
+      "cameras": 127,
+      "runs": 30,
+      "event_to_first_committed_frame_ms": {
+        "median": 96.31145000000001,
+        "p95": 103.56909999999999,
+        "minimum": 92.30869999999999,
+        "maximum": 106.0712
+      },
+      "flush_ms": {
+        "median": 3833.3716999999997,
+        "p95": 4325.9632,
+        "minimum": 3738.6644,
+        "maximum": 4459.0574
+      },
+      "flush_mib_per_second": {
+        "median": 344.3598556333204,
+        "p95": 351.4876509538752,
+        "minimum": 296.0399777972419,
+        "maximum": 353.08311002523436
+      },
+      "producer_wait_ms": {
+        "median": 2564.2423000000003,
+        "p95": 2704.1528999999996,
+        "minimum": 2480.4606000000003,
+        "maximum": 2760.7157000000016
+      }
+    },
+    {
+      "fixture": "2160p-h265-gop10.mp4",
+      "cameras": 1,
+      "runs": 30,
+      "event_to_first_committed_frame_ms": {
+        "median": 7.9444,
+        "p95": 8.5126,
+        "minimum": 7.561,
+        "maximum": 8.5314
+      },
+      "flush_ms": {
+        "median": 20.5467,
+        "p95": 22.7963,
+        "minimum": 19.680300000000003,
+        "maximum": 25.1311
+      },
+      "flush_mib_per_second": {
+        "median": 763.9787430272911,
+        "p95": 794.067454212641,
+        "minimum": 624.6095648370142,
+        "maximum": 797.6060037131288
+      },
+      "producer_wait_ms": {
+        "median": 10.1964,
+        "p95": 11.839500000000001,
+        "minimum": 9.1209,
+        "maximum": 11.843
+      }
+    }
+  ]
+}

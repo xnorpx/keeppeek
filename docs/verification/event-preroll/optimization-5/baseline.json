@@ -1,0 +1,4954 @@
+{
+  "mode": "baseline",
+  "revision": "e4f828915e463a9c153546f655c9b98fcace5a85",
+  "executable_sha256": "db2cebe0d4c69a30941b2370c4867d041fd66cad4376c2b8a2c0eed71001e1ea",
+  "operating_system": "windows",
+  "architecture": "x86_64",
+  "timer_scope": "RecordingAdmission::ingest_at only; queue drain, history selection, ShortTermBuffer and fixture cloning are outside the per-frame timer",
+  "workloads": [
+    {
+      "fixture": "1080p-h264-gop1.mp4",
+      "fixture_sha256": "801402b7cda6641531a9c07eeff7b6374a6503c5b3028aa9c3c228d57ebe4a12",
+      "camera_count": 1,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1484,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1479,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1573,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14889999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.149,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1497,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1497,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1497,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14750000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1479,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1478,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1483,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1474,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1496,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1549,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1479,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14750000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1486,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14809999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14730000000000001,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1478,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14750000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14730000000000001,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14770000000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14880000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14809999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14880000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "1080p-h264-gop1.mp4",
+      "fixture_sha256": "801402b7cda6641531a9c07eeff7b6374a6503c5b3028aa9c3c228d57ebe4a12",
+      "camera_count": 127,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3747,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3413,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.426599999999997,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3413,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3181,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3363,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3612,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1492,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1495,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3227,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.149099999999997,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.653,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3426,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.049799999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3711,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.330199999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.6,
+          "total_work_ms": 20.7285,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.352899999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2084,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1464,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.4255,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.4633,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.4762,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2886,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2295,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.6913,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.423099999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.485200000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.5915,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.5534,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "1080p-h264-gop10.mp4",
+      "fixture_sha256": "964d44f652f1ce636c9a6f5406074803697d74eaddb0004d447b80b782018e22",
+      "camera_count": 1,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.15789999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1575,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1571,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1582,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1571,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1573,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1571,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.157,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.15760000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1589,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.16190000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1568,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.156,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.157,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.157,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1563,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.15760000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1571,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.15660000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1565,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.157,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1563,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.15660000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1565,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1583,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1617,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1574,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1568,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1561,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1564,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "1080p-h264-gop10.mp4",
+      "fixture_sha256": "964d44f652f1ce636c9a6f5406074803697d74eaddb0004d447b80b782018e22",
+      "camera_count": 127,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1602,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1775,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3867,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.201800000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3473,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0047,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.959699999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1841,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.095399999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3846,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2863,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.136,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9937,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3809,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1688,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0474,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1785,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9227,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.277099999999997,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0059,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2177,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9854,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1699,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1841,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1186,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.033,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 21.473499999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2194,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3433,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1586,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "1080p-h265-gop1.mp4",
+      "fixture_sha256": "5407343aef02f22ee1a759ec44d1f65ad4b25076db16a23b498c9b3a6cddb391",
+      "camera_count": 1,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.157,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1573,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1565,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1563,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1558,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1564,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1568,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1561,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1572,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1563,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.156,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1565,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1562,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.16090000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.157,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.15660000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1562,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1571,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1565,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1573,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.15589999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.15760000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1571,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1564,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1571,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.15689999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.157,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1616,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1565,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.39999999999999997,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.15689999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "1080p-h265-gop1.mp4",
+      "fixture_sha256": "5407343aef02f22ee1a759ec44d1f65ad4b25076db16a23b498c9b3a6cddb391",
+      "camera_count": 127,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.747799999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0504,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.4406,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.603700000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.4708,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2941,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.961599999999997,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3217,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2576,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2938,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.061,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1696,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1107,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.6933,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.5182,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0027,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.9666,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3101,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.5468,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1162,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3721,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.004299999999997,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.046899999999997,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.200200000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9729,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2758,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0334,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.8702,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.4138,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.5014,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "1080p-h265-gop10.mp4",
+      "fixture_sha256": "3d882bbebc46c1a378bf2eacc43d6bb7433c676721c2e1d3325b7061108eb597",
+      "camera_count": 1,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1479,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1479,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1482,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1485,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1736,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1479,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1471,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14750000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.147,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1483,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1537,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1469,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1469,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1467,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1471,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1469,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1462,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14679999999999999,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1479,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14750000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1471,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1472,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1556,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14679999999999999,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "1080p-h265-gop10.mp4",
+      "fixture_sha256": "3d882bbebc46c1a378bf2eacc43d6bb7433c676721c2e1d3325b7061108eb597",
+      "camera_count": 127,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.094199999999997,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.4019,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1189,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.279700000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.5438,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3329,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2258,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2235,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0686,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9147,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0052,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.189500000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1608,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1326,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3058,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0431,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1705,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9316,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.4243,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.435100000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3655,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1602,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9682,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.292099999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9275,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0191,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1341,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.342100000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2075,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1874,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "2160p-h264-gop1.mp4",
+      "fixture_sha256": "cbdf16d79507b8e36c7c418ba5398bb4a97ae2109e96476ca28d529df57094e4",
+      "camera_count": 1,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14880000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1486,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1487,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1479,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1482,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.7,
+          "total_work_ms": 0.1839,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.7999999999999999,
+          "total_work_ms": 0.20049999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14909999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1478,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14750000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1483,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14909999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1487,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1482,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1482,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1483,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14889999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1484,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1532,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1474,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14770000000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14770000000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1485,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1479,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14750000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1478,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14809999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.148,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14809999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "2160p-h264-gop1.mp4",
+      "fixture_sha256": "cbdf16d79507b8e36c7c418ba5398bb4a97ae2109e96476ca28d529df57094e4",
+      "camera_count": 127,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.8379,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0717,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.846999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3361,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0702,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2198,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.002000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.8055,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1843,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0291,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9559,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.049599999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0259,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0369,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.081500000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1074,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.8548,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.8393,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.8526,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 20.4589,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.004900000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.227899999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1646,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.968,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0455,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.828,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.233,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0456,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.018,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "2160p-h264-gop10.mp4",
+      "fixture_sha256": "2f9559bc6a9ec1913d3a6d4256c45c004875c6119909bee058bd8d949c02fe1b",
+      "camera_count": 1,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1464,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1454,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1462,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.146,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1467,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1457,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14559999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1536,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.146,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1453,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1457,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1459,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1457,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1467,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1457,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1522,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14579999999999999,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1466,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1467,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14559999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1503,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14550000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.146,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1451,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.145,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14579999999999999,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1454,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1463,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14559999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1461,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "2160p-h264-gop10.mp4",
+      "fixture_sha256": "2f9559bc6a9ec1913d3a6d4256c45c004875c6119909bee058bd8d949c02fe1b",
+      "camera_count": 127,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.7428,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1413,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.8899,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9677,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.6837,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0113,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.905600000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9342,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.6997,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9119,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.7054,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.7698,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3122,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.8591,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.6871,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1135,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.7312,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0985,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.8286,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.212699999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.8683,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9386,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9451,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0881,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.7164,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1121,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.823800000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.790000000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.673599999999997,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.7583,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "2160p-h265-gop1.mp4",
+      "fixture_sha256": "4e999aa0c6392f33e671fc3ff7bec5755614759f17dc342b9d56b934f8eb4661",
+      "camera_count": 1,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 360,
+          "median_ingest_us": 0.5,
+          "p95_ingest_us": 0.6,
+          "total_work_ms": 0.21760000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.5,
+          "total_work_ms": 0.1676,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1457,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1461,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1466,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1467,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1461,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1461,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1463,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1496,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1463,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1457,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14650000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1463,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1459,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.146,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1462,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14650000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1459,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14559999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1464,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14550000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1502,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.146,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1459,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1459,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14650000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1461,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.146,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.146,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "2160p-h265-gop1.mp4",
+      "fixture_sha256": "4e999aa0c6392f33e671fc3ff7bec5755614759f17dc342b9d56b934f8eb4661",
+      "camera_count": 127,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9848,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9857,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.8784,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.029500000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2498,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0394,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.797600000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.253200000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.8934,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1735,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.7307,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.5833,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1518,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2928,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.844,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9968,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.7563,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9448,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.7702,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.063,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.8731,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3889,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0477,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.935299999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.729,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.113000000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.797600000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.224999999999998,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1653,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.4422,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "2160p-h265-gop10.mp4",
+      "fixture_sha256": "04da32c4e221ed1d85fc65890bb87154c0df5c85fd81d6713042129ef804b162",
+      "camera_count": 1,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1472,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.148,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14750000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14750000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1549,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1493,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.147,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1467,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.147,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1469,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.147,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1472,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1478,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1483,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1492,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14730000000000001,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1518,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1482,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14770000000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14980000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1479,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.14750000000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1474,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1479,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1482,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 360,
+          "median_ingest_us": 0.19999999999999998,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 0.1476,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "fixture": "2160p-h265-gop10.mp4",
+      "fixture_sha256": "04da32c4e221ed1d85fc65890bb87154c0df5c85fd81d6713042129ef804b162",
+      "camera_count": 127,
+      "measured_runs": 30,
+      "warmup_runs": 3,
+      "runs": [
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9508,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.7819,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.7931,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1179,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9165,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0262,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.3329,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.739700000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.6611,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2513,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9077,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0034,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.8895,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1209,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.2535,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9517,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.639300000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.922600000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1325,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.9335,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.874200000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.1133,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.6307,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.904500000000002,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.8534,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.934900000000003,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0761,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 18.784,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.0553,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        },
+        {
+          "frames": 45720,
+          "median_ingest_us": 0.3,
+          "p95_ingest_us": 0.39999999999999997,
+          "total_work_ms": 19.4766,
+          "peak_history_bytes": 0,
+          "peak_stream_bytes": 0,
+          "history_instances": 0,
+          "pending_channel_bytes": 0
+        }
+      ]
+    }
+  ]
+}

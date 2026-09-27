@@ -1,0 +1,2464 @@
+{
+  "commit_observer": "catalog fragment insertion",
+  "commit_poll_sleep_ms": 1,
+  "executable_sha256": "ec67771afe5532c5f4abe027b0a50b420c416fcad9c29dd33d6532a30af6330b",
+  "revision": "2e9dd8400bd37e575be782898fd740925d3872ee",
+  "workloads": [
+    {
+      "cameras": 1,
+      "fixture": "1080p-h264-gop1.mp4",
+      "fixture_sha256": "801402b7cda6641531a9c07eeff7b6374a6503c5b3028aa9c3c228d57ebe4a12",
+      "runs": [
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.3062,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 254.5435616915752,
+          "flush_ms": 28.3854,
+          "media_files": 1,
+          "producer_wait_ms": 19.303299999999997
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.1069,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 248.878659939722,
+          "flush_ms": 29.031499999999998,
+          "media_files": 1,
+          "producer_wait_ms": 19.2467
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 3.9836000000000005,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 252.3124700046109,
+          "flush_ms": 28.6364,
+          "media_files": 1,
+          "producer_wait_ms": 19.2841
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.2368,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 247.80231624139296,
+          "flush_ms": 29.1576,
+          "media_files": 1,
+          "producer_wait_ms": 19.340500000000002
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.2286,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 238.24320554084704,
+          "flush_ms": 30.3275,
+          "media_files": 1,
+          "producer_wait_ms": 19.2759
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.0161,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 246.23157404135958,
+          "flush_ms": 29.343600000000002,
+          "media_files": 1,
+          "producer_wait_ms": 19.311500000000002
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.1613,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 248.30731747353073,
+          "flush_ms": 29.098300000000002,
+          "media_files": 1,
+          "producer_wait_ms": 19.4092
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.0722,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 254.30435680713637,
+          "flush_ms": 28.4121,
+          "media_files": 1,
+          "producer_wait_ms": 18.3147
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.0237,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 247.18599590288292,
+          "flush_ms": 29.2303,
+          "media_files": 1,
+          "producer_wait_ms": 19.3341
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 3.9261,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 257.39082539666845,
+          "flush_ms": 28.0714,
+          "media_files": 1,
+          "producer_wait_ms": 19.601
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.2046,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 254.01736790066303,
+          "flush_ms": 28.4442,
+          "media_files": 1,
+          "producer_wait_ms": 19.2458
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.1305,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 250.4504724911883,
+          "flush_ms": 28.849300000000003,
+          "media_files": 1,
+          "producer_wait_ms": 19.313
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.404800000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 246.89205969021256,
+          "flush_ms": 29.2651,
+          "media_files": 1,
+          "producer_wait_ms": 19.8685
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.097700000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 237.82992923154026,
+          "flush_ms": 30.3802,
+          "media_files": 1,
+          "producer_wait_ms": 21.012
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.0451999999999995,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 237.50861455756458,
+          "flush_ms": 30.4213,
+          "media_files": 1,
+          "producer_wait_ms": 19.3342
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.1135,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 256.4662408169654,
+          "flush_ms": 28.1726,
+          "media_files": 1,
+          "producer_wait_ms": 19.382399999999997
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.4438,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 255.22511148303187,
+          "flush_ms": 28.3096,
+          "media_files": 1,
+          "producer_wait_ms": 19.2608
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.190799999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 251.30589146293667,
+          "flush_ms": 28.7511,
+          "media_files": 1,
+          "producer_wait_ms": 19.3198
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.0327,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 257.08859879734274,
+          "flush_ms": 28.104400000000002,
+          "media_files": 1,
+          "producer_wait_ms": 19.3425
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 3.9259999999999997,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 250.13140631791896,
+          "flush_ms": 28.886100000000003,
+          "media_files": 1,
+          "producer_wait_ms": 19.2582
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 5.7971,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 253.59744258914262,
+          "flush_ms": 28.4913,
+          "media_files": 1,
+          "producer_wait_ms": 19.3511
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.358,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 253.67757575898153,
+          "flush_ms": 28.4823,
+          "media_files": 1,
+          "producer_wait_ms": 19.5287
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 3.9696000000000002,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 253.17091926010937,
+          "flush_ms": 28.5393,
+          "media_files": 1,
+          "producer_wait_ms": 19.2505
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 3.9913,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 244.78257889576753,
+          "flush_ms": 29.5173,
+          "media_files": 1,
+          "producer_wait_ms": 19.5088
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 3.9189000000000003,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 253.5138019781984,
+          "flush_ms": 28.500700000000002,
+          "media_files": 1,
+          "producer_wait_ms": 19.328699999999998
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.0203,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 254.58661254660012,
+          "flush_ms": 28.380599999999998,
+          "media_files": 1,
+          "producer_wait_ms": 19.270200000000003
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.0365,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 244.99090661395348,
+          "flush_ms": 29.4922,
+          "media_files": 1,
+          "producer_wait_ms": 19.39
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.2271,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 253.99861549797475,
+          "flush_ms": 28.4463,
+          "media_files": 1,
+          "producer_wait_ms": 19.3747
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.1541,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 255.40825739908868,
+          "flush_ms": 28.2893,
+          "media_files": 1,
+          "producer_wait_ms": 19.3153
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7576298,
+          "event_to_first_committed_frame_ms": 4.4296999999999995,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 236.84606561377413,
+          "flush_ms": 30.5064,
+          "media_files": 1,
+          "producer_wait_ms": 19.8179
+        }
+      ]
+    },
+    {
+      "cameras": 1,
+      "fixture": "1080p-h264-gop10.mp4",
+      "fixture_sha256": "964d44f652f1ce636c9a6f5406074803697d74eaddb0004d447b80b782018e22",
+      "runs": [
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.5007,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 355.7123470749508,
+          "flush_ms": 19.369999999999997,
+          "media_files": 1,
+          "producer_wait_ms": 8.7278
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 5.9416,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 396.2177922024288,
+          "flush_ms": 17.3898,
+          "media_files": 1,
+          "producer_wait_ms": 8.6034
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.3175,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 365.3506634944481,
+          "flush_ms": 18.859,
+          "media_files": 1,
+          "producer_wait_ms": 8.663799999999998
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.4703,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 389.82009611443135,
+          "flush_ms": 17.6752,
+          "media_files": 1,
+          "producer_wait_ms": 8.6878
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 5.8364,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 399.4057250502462,
+          "flush_ms": 17.250999999999998,
+          "media_files": 1,
+          "producer_wait_ms": 8.6385
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 5.6093,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 386.8652885897854,
+          "flush_ms": 17.810200000000002,
+          "media_files": 1,
+          "producer_wait_ms": 8.6566
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.1716,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 389.588659925352,
+          "flush_ms": 17.685699999999997,
+          "media_files": 1,
+          "producer_wait_ms": 7.420800000000001
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 5.9108,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 387.06305581350574,
+          "flush_ms": 17.8011,
+          "media_files": 1,
+          "producer_wait_ms": 8.6894
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 7.0666,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 340.3449889275064,
+          "flush_ms": 20.244600000000002,
+          "media_files": 1,
+          "producer_wait_ms": 10.5637
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 5.9096,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 396.5689844162559,
+          "flush_ms": 17.3744,
+          "media_files": 1,
+          "producer_wait_ms": 8.6539
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.409599999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 381.90338788365756,
+          "flush_ms": 18.041600000000003,
+          "media_files": 1,
+          "producer_wait_ms": 8.648200000000001
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 5.701099999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 376.9557599593945,
+          "flush_ms": 18.2784,
+          "media_files": 1,
+          "producer_wait_ms": 8.6573
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.4877,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 353.71096751687907,
+          "flush_ms": 19.4796,
+          "media_files": 1,
+          "producer_wait_ms": 10.2044
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.3083,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 372.3699928576646,
+          "flush_ms": 18.5035,
+          "media_files": 1,
+          "producer_wait_ms": 9.6797
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.1918,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 367.13582469730846,
+          "flush_ms": 18.767300000000002,
+          "media_files": 1,
+          "producer_wait_ms": 8.6758
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 5.884399999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 381.24830753968973,
+          "flush_ms": 18.0726,
+          "media_files": 1,
+          "producer_wait_ms": 8.8082
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.4668,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 383.6299950358453,
+          "flush_ms": 17.9604,
+          "media_files": 1,
+          "producer_wait_ms": 8.693200000000001
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 5.7624,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 374.5622859681763,
+          "flush_ms": 18.3952,
+          "media_files": 1,
+          "producer_wait_ms": 8.638
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 5.968,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 376.6549042170118,
+          "flush_ms": 18.293,
+          "media_files": 1,
+          "producer_wait_ms": 8.6875
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.4847,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 380.3958550906138,
+          "flush_ms": 18.1131,
+          "media_files": 1,
+          "producer_wait_ms": 8.7218
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.0453,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 374.92099963225866,
+          "flush_ms": 18.3776,
+          "media_files": 1,
+          "producer_wait_ms": 8.6918
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.5338,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 382.2232914232822,
+          "flush_ms": 18.026500000000002,
+          "media_files": 1,
+          "producer_wait_ms": 8.687000000000001
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 5.8411,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 368.6365109674653,
+          "flush_ms": 18.6909,
+          "media_files": 1,
+          "producer_wait_ms": 8.645
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 5.969,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 398.16858886318073,
+          "flush_ms": 17.3046,
+          "media_files": 1,
+          "producer_wait_ms": 8.6343
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.4475,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 392.5071015963016,
+          "flush_ms": 17.554199999999998,
+          "media_files": 1,
+          "producer_wait_ms": 8.7113
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.4605,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 362.0543733463192,
+          "flush_ms": 19.0307,
+          "media_files": 1,
+          "producer_wait_ms": 8.655100000000001
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.430899999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 383.86723509227636,
+          "flush_ms": 17.9493,
+          "media_files": 1,
+          "producer_wait_ms": 8.6522
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 5.974,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 360.48783381511385,
+          "flush_ms": 19.1134,
+          "media_files": 1,
+          "producer_wait_ms": 8.7722
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 5.9033,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 378.0934492378918,
+          "flush_ms": 18.2234,
+          "media_files": 1,
+          "producer_wait_ms": 7.6321
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 7224844,
+          "event_to_first_committed_frame_ms": 6.4581,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 345.453951970489,
+          "flush_ms": 19.9452,
+          "media_files": 1,
+          "producer_wait_ms": 9.6617
+        }
+      ]
+    },
+    {
+      "cameras": 127,
+      "fixture": "1080p-h265-gop1.mp4",
+      "fixture_sha256": "5407343aef02f22ee1a759ec44d1f65ad4b25076db16a23b498c9b3a6cddb391",
+      "runs": [
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.640499999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 153.3242571229802,
+          "flush_ms": 3796.3171,
+          "media_files": 127,
+          "producer_wait_ms": 2629.7900999999983
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.402200000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 154.72393941882396,
+          "flush_ms": 3761.9744,
+          "media_files": 127,
+          "producer_wait_ms": 2616.904599999999
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.5238,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 153.7776932963598,
+          "flush_ms": 3785.1231,
+          "media_files": 127,
+          "producer_wait_ms": 2623.9994
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 7.079700000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 153.43524183869036,
+          "flush_ms": 3793.5710999999997,
+          "media_files": 127,
+          "producer_wait_ms": 2649.6061
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 4.742,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 154.0200890246043,
+          "flush_ms": 3779.1661,
+          "media_files": 127,
+          "producer_wait_ms": 2634.6448
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 4.918900000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 153.9429132044261,
+          "flush_ms": 3781.0607000000005,
+          "media_files": 127,
+          "producer_wait_ms": 2613.106700000001
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.016900000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 152.9423441279188,
+          "flush_ms": 3805.7969,
+          "media_files": 127,
+          "producer_wait_ms": 2640.9883
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 4.4593,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 152.90851844434692,
+          "flush_ms": 3806.6388,
+          "media_files": 127,
+          "producer_wait_ms": 2654.6355000000003
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.0479,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 152.9815844307109,
+          "flush_ms": 3804.8207,
+          "media_files": 127,
+          "producer_wait_ms": 2657.668400000001
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 5.037,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 154.21754327956992,
+          "flush_ms": 3774.3273999999997,
+          "media_files": 127,
+          "producer_wait_ms": 2643.654900000001
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 4.4542,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 151.83035680633202,
+          "flush_ms": 3833.6701,
+          "media_files": 127,
+          "producer_wait_ms": 2644.974100000001
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.0105,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 153.7915767501834,
+          "flush_ms": 3784.7814,
+          "media_files": 127,
+          "producer_wait_ms": 2614.1767
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.5630999999999995,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 154.50527313145992,
+          "flush_ms": 3767.2986,
+          "media_files": 127,
+          "producer_wait_ms": 2631.1393000000003
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 4.6068999999999996,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 153.56284618490352,
+          "flush_ms": 3790.4188,
+          "media_files": 127,
+          "producer_wait_ms": 2625.8668
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.9963999999999995,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 150.8790248043224,
+          "flush_ms": 3857.8424,
+          "media_files": 127,
+          "producer_wait_ms": 2589.2140000000013
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.5085999999999995,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 152.47229495241285,
+          "flush_ms": 3817.5296,
+          "media_files": 127,
+          "producer_wait_ms": 2643.4017000000013
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 4.399,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 153.56253828349406,
+          "flush_ms": 3790.4264,
+          "media_files": 127,
+          "producer_wait_ms": 2622.6538
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.4756,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 153.74465044152262,
+          "flush_ms": 3785.9366,
+          "media_files": 127,
+          "producer_wait_ms": 2639.283200000002
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.4114,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 151.95452710128,
+          "flush_ms": 3830.5373999999997,
+          "media_files": 127,
+          "producer_wait_ms": 2634.1092
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.010599999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 152.76268385842783,
+          "flush_ms": 3810.2727999999997,
+          "media_files": 127,
+          "producer_wait_ms": 2665.774800000001
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 5.933199999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 152.28552872094247,
+          "flush_ms": 3822.2115,
+          "media_files": 127,
+          "producer_wait_ms": 2642.408000000001
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 7.3314,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 153.28806623319264,
+          "flush_ms": 3797.2134,
+          "media_files": 127,
+          "producer_wait_ms": 2658.397699999999
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 4.3986,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 154.62552835506432,
+          "flush_ms": 3764.3687,
+          "media_files": 127,
+          "producer_wait_ms": 2613.1826999999994
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.0905000000000005,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 156.7642217302497,
+          "flush_ms": 3713.0124,
+          "media_files": 127,
+          "producer_wait_ms": 2564.178999999999
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.6057,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 152.36328470675042,
+          "flush_ms": 3820.2609,
+          "media_files": 127,
+          "producer_wait_ms": 2641.5992000000024
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 4.3454,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 154.49262599861572,
+          "flush_ms": 3767.607,
+          "media_files": 127,
+          "producer_wait_ms": 2623.7691
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 6.8385,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 152.33540364914217,
+          "flush_ms": 3820.9601,
+          "media_files": 127,
+          "producer_wait_ms": 2668.806399999999
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 7.0486,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 153.05583911856755,
+          "flush_ms": 3802.9748,
+          "media_files": 127,
+          "producer_wait_ms": 2660.1602999999996
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 4.8017,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 125.2915810809366,
+          "flush_ms": 4645.7032,
+          "media_files": 127,
+          "producer_wait_ms": 2559.158100000001
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 610342010,
+          "event_to_first_committed_frame_ms": 12.0853,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 149.20168263595744,
+          "flush_ms": 3901.2127,
+          "media_files": 127,
+          "producer_wait_ms": 2632.4258000000004
+        }
+      ]
+    },
+    {
+      "cameras": 1,
+      "fixture": "1080p-h265-gop10.mp4",
+      "fixture_sha256": "3d882bbebc46c1a378bf2eacc43d6bb7433c676721c2e1d3325b7061108eb597",
+      "runs": [
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.4969,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 255.8890426228955,
+          "flush_ms": 18.9578,
+          "media_files": 1,
+          "producer_wait_ms": 8.7498
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.4171000000000005,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 279.5600251395369,
+          "flush_ms": 17.3526,
+          "media_files": 1,
+          "producer_wait_ms": 8.6134
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.158,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 254.118318704463,
+          "flush_ms": 19.0899,
+          "media_files": 1,
+          "producer_wait_ms": 8.6364
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.1589,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 255.58570160831644,
+          "flush_ms": 18.9803,
+          "media_files": 1,
+          "producer_wait_ms": 7.6258
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.4064,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 266.57434606390456,
+          "flush_ms": 18.1979,
+          "media_files": 1,
+          "producer_wait_ms": 8.6176
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.4561,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 256.97480584161883,
+          "flush_ms": 18.8777,
+          "media_files": 1,
+          "producer_wait_ms": 8.6112
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.7846,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 271.36402648342977,
+          "flush_ms": 17.8767,
+          "media_files": 1,
+          "producer_wait_ms": 8.7057
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.3336,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 260.87738795482346,
+          "flush_ms": 18.595299999999998,
+          "media_files": 1,
+          "producer_wait_ms": 8.594100000000001
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.3571,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 265.5049089406458,
+          "flush_ms": 18.2712,
+          "media_files": 1,
+          "producer_wait_ms": 8.707799999999999
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.5529,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 273.97709797903156,
+          "flush_ms": 17.7062,
+          "media_files": 1,
+          "producer_wait_ms": 8.6938
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.1617,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 274.9819058604046,
+          "flush_ms": 17.6415,
+          "media_files": 1,
+          "producer_wait_ms": 8.6454
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.4307,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 257.2268862007046,
+          "flush_ms": 18.8592,
+          "media_files": 1,
+          "producer_wait_ms": 8.7842
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.4909,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 266.4557449322382,
+          "flush_ms": 18.206,
+          "media_files": 1,
+          "producer_wait_ms": 8.735199999999999
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.2275,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 254.27949198735328,
+          "flush_ms": 19.0778,
+          "media_files": 1,
+          "producer_wait_ms": 8.6709
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.738700000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 233.63787510830787,
+          "flush_ms": 20.763299999999997,
+          "media_files": 1,
+          "producer_wait_ms": 8.7291
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.7578000000000005,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 252.30236654321348,
+          "flush_ms": 19.2273,
+          "media_files": 1,
+          "producer_wait_ms": 7.7421
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.5996,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 252.64268710804046,
+          "flush_ms": 19.2014,
+          "media_files": 1,
+          "producer_wait_ms": 8.6495
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.7036,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 257.3237619276541,
+          "flush_ms": 18.8521,
+          "media_files": 1,
+          "producer_wait_ms": 8.6342
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.5125,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 263.5146172694266,
+          "flush_ms": 18.409200000000002,
+          "media_files": 1,
+          "producer_wait_ms": 8.645
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.325,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 238.37476314015382,
+          "flush_ms": 20.3507,
+          "media_files": 1,
+          "producer_wait_ms": 7.619699999999999
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.301100000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 262.83928655142245,
+          "flush_ms": 18.456500000000002,
+          "media_files": 1,
+          "producer_wait_ms": 8.6724
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.192699999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 251.82170329299876,
+          "flush_ms": 19.264,
+          "media_files": 1,
+          "producer_wait_ms": 8.9056
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.198,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 285.50958108624144,
+          "flush_ms": 16.991,
+          "media_files": 1,
+          "producer_wait_ms": 8.7238
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.5516000000000005,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 267.3161605649475,
+          "flush_ms": 18.1474,
+          "media_files": 1,
+          "producer_wait_ms": 8.672799999999999
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.4677,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 271.8003861629498,
+          "flush_ms": 17.848,
+          "media_files": 1,
+          "producer_wait_ms": 8.7302
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.2878,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 263.61199040539975,
+          "flush_ms": 18.4024,
+          "media_files": 1,
+          "producer_wait_ms": 8.5948
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.4889,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 257.09329017098565,
+          "flush_ms": 18.869,
+          "media_files": 1,
+          "producer_wait_ms": 8.6921
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.495,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 252.1830120103724,
+          "flush_ms": 19.2364,
+          "media_files": 1,
+          "producer_wait_ms": 8.711
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.689,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 274.30087656055184,
+          "flush_ms": 17.6853,
+          "media_files": 1,
+          "producer_wait_ms": 8.6577
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 5086740,
+          "event_to_first_committed_frame_ms": 5.7939,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 245.60632317729426,
+          "flush_ms": 19.7515,
+          "media_files": 1,
+          "producer_wait_ms": 8.6326
+        }
+      ]
+    },
+    {
+      "cameras": 1,
+      "fixture": "2160p-h264-gop1.mp4",
+      "fixture_sha256": "cbdf16d79507b8e36c7c418ba5398bb4a97ae2109e96476ca28d529df57094e4",
+      "runs": [
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.4867,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 595.6934009346359,
+          "flush_ms": 31.0862,
+          "media_files": 1,
+          "producer_wait_ms": 20.8786
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.3659,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 571.4978319481727,
+          "flush_ms": 32.402300000000004,
+          "media_files": 1,
+          "producer_wait_ms": 20.8478
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.3017,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 515.2002949151233,
+          "flush_ms": 35.943000000000005,
+          "media_files": 1,
+          "producer_wait_ms": 25.3385
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.4361,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 453.8987678139062,
+          "flush_ms": 40.7973,
+          "media_files": 1,
+          "producer_wait_ms": 20.995199999999997
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.3853,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 572.2767088445673,
+          "flush_ms": 32.3582,
+          "media_files": 1,
+          "producer_wait_ms": 20.979000000000003
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.0425,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 298.75393168732177,
+          "flush_ms": 61.9836,
+          "media_files": 1,
+          "producer_wait_ms": 20.568
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 5.1699,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 570.0797712068281,
+          "flush_ms": 32.4829,
+          "media_files": 1,
+          "producer_wait_ms": 21.455000000000002
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.3241,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 593.6290989101943,
+          "flush_ms": 31.194300000000002,
+          "media_files": 1,
+          "producer_wait_ms": 20.911
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.2696000000000005,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 603.7062555466028,
+          "flush_ms": 30.6736,
+          "media_files": 1,
+          "producer_wait_ms": 21.0886
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.270099999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 596.6915274160209,
+          "flush_ms": 31.034200000000002,
+          "media_files": 1,
+          "producer_wait_ms": 20.9728
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.2017,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 618.4674849334294,
+          "flush_ms": 29.941499999999998,
+          "media_files": 1,
+          "producer_wait_ms": 19.7601
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.3838,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 588.1406683775426,
+          "flush_ms": 31.4854,
+          "media_files": 1,
+          "producer_wait_ms": 21.0822
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.475,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 618.6286426380393,
+          "flush_ms": 29.9337,
+          "media_files": 1,
+          "producer_wait_ms": 20.4311
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 5.5459000000000005,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 551.385597993529,
+          "flush_ms": 33.5842,
+          "media_files": 1,
+          "producer_wait_ms": 23.6454
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.935700000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 546.3925396382613,
+          "flush_ms": 33.8911,
+          "media_files": 1,
+          "producer_wait_ms": 22.3602
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.9255,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 582.3807490104123,
+          "flush_ms": 31.7968,
+          "media_files": 1,
+          "producer_wait_ms": 20.6825
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.3324,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 576.5242685239099,
+          "flush_ms": 32.1198,
+          "media_files": 1,
+          "producer_wait_ms": 19.776100000000003
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.0051000000000005,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 640.2728806690551,
+          "flush_ms": 28.9218,
+          "media_files": 1,
+          "producer_wait_ms": 18.508499999999998
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.2337,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 555.3026541919219,
+          "flush_ms": 33.347300000000004,
+          "media_files": 1,
+          "producer_wait_ms": 20.8714
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 3.9061,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 619.659555818828,
+          "flush_ms": 29.8839,
+          "media_files": 1,
+          "producer_wait_ms": 19.7611
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 5.6247,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 552.5817764091215,
+          "flush_ms": 33.5115,
+          "media_files": 1,
+          "producer_wait_ms": 27.525799999999997
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.3614,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 608.4391062965099,
+          "flush_ms": 30.435,
+          "media_files": 1,
+          "producer_wait_ms": 19.8669
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 3.8727,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 589.7609215652229,
+          "flush_ms": 31.3989,
+          "media_files": 1,
+          "producer_wait_ms": 20.7075
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 5.544099999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 584.1738655907493,
+          "flush_ms": 31.699199999999998,
+          "media_files": 1,
+          "producer_wait_ms": 32.4188
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.419700000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 567.4489159953506,
+          "flush_ms": 32.633500000000005,
+          "media_files": 1,
+          "producer_wait_ms": 21.012100000000004
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.3201,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 491.5872045058808,
+          "flush_ms": 37.6695,
+          "media_files": 1,
+          "producer_wait_ms": 20.8083
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.9106000000000005,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 602.9553526701228,
+          "flush_ms": 30.7118,
+          "media_files": 1,
+          "producer_wait_ms": 20.8777
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.9981,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 564.2776801018462,
+          "flush_ms": 32.816900000000004,
+          "media_files": 1,
+          "producer_wait_ms": 20.8689
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.9109,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 570.3290923299755,
+          "flush_ms": 32.468700000000005,
+          "media_files": 1,
+          "producer_wait_ms": 22.245
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19417367,
+          "event_to_first_committed_frame_ms": 4.4523,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 601.3204677380729,
+          "flush_ms": 30.7953,
+          "media_files": 1,
+          "producer_wait_ms": 21.142100000000003
+        }
+      ]
+    },
+    {
+      "cameras": 1,
+      "fixture": "2160p-h264-gop10.mp4",
+      "fixture_sha256": "2f9559bc6a9ec1913d3a6d4256c45c004875c6119909bee058bd8d949c02fe1b",
+      "runs": [
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.6372,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 855.2708587910387,
+          "flush_ms": 21.6246,
+          "media_files": 1,
+          "producer_wait_ms": 11.751199999999999
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.431,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 858.5303568765322,
+          "flush_ms": 21.5425,
+          "media_files": 1,
+          "producer_wait_ms": 11.6919
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.1692,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 809.7126789198818,
+          "flush_ms": 22.841299999999997,
+          "media_files": 1,
+          "producer_wait_ms": 10.6591
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.6801,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 807.0204085529703,
+          "flush_ms": 22.9175,
+          "media_files": 1,
+          "producer_wait_ms": 11.691300000000002
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 9.018099999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 866.2184603753728,
+          "flush_ms": 21.3513,
+          "media_files": 1,
+          "producer_wait_ms": 11.6716
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.5112,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 852.7628024922628,
+          "flush_ms": 21.688200000000002,
+          "media_files": 1,
+          "producer_wait_ms": 11.763599999999999
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 9.1046,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 849.5507718354767,
+          "flush_ms": 21.7702,
+          "media_files": 1,
+          "producer_wait_ms": 11.7669
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.7485,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 825.1968844901638,
+          "flush_ms": 22.4127,
+          "media_files": 1,
+          "producer_wait_ms": 11.708
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.607,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 827.5600018351265,
+          "flush_ms": 22.3487,
+          "media_files": 1,
+          "producer_wait_ms": 10.7502
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.584,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 745.5512642807553,
+          "flush_ms": 24.807,
+          "media_files": 1,
+          "producer_wait_ms": 11.760800000000001
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.5808,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 812.8121495377862,
+          "flush_ms": 22.754199999999997,
+          "media_files": 1,
+          "producer_wait_ms": 11.7375
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.3965,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 884.279864070757,
+          "flush_ms": 20.9152,
+          "media_files": 1,
+          "producer_wait_ms": 11.1827
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.5057,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 838.1813334396546,
+          "flush_ms": 22.065499999999997,
+          "media_files": 1,
+          "producer_wait_ms": 11.700600000000001
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.712,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 800.3743416946959,
+          "flush_ms": 23.1078,
+          "media_files": 1,
+          "producer_wait_ms": 11.6799
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.2653,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 805.5265772218072,
+          "flush_ms": 22.96,
+          "media_files": 1,
+          "producer_wait_ms": 11.6547
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.5982,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 843.2948751356573,
+          "flush_ms": 21.9317,
+          "media_files": 1,
+          "producer_wait_ms": 11.7178
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.5463,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 749.1327997364226,
+          "flush_ms": 24.688399999999998,
+          "media_files": 1,
+          "producer_wait_ms": 11.866000000000001
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 9.508799999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 806.9394241229285,
+          "flush_ms": 22.919800000000002,
+          "media_files": 1,
+          "producer_wait_ms": 11.9862
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 9.062199999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 830.577757404859,
+          "flush_ms": 22.2675,
+          "media_files": 1,
+          "producer_wait_ms": 11.7631
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.5828,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 726.817554271437,
+          "flush_ms": 25.4464,
+          "media_files": 1,
+          "producer_wait_ms": 12.197600000000001
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 11.184899999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 764.5454746250706,
+          "flush_ms": 24.1907,
+          "media_files": 1,
+          "producer_wait_ms": 13.2341
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 9.6251,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 742.9337607258136,
+          "flush_ms": 24.8944,
+          "media_files": 1,
+          "producer_wait_ms": 13.2459
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.5125,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 849.9529047933445,
+          "flush_ms": 21.7599,
+          "media_files": 1,
+          "producer_wait_ms": 11.6023
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.4525,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 804.4999287935124,
+          "flush_ms": 22.9893,
+          "media_files": 1,
+          "producer_wait_ms": 11.6867
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.6393,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 837.9079230457849,
+          "flush_ms": 22.0727,
+          "media_files": 1,
+          "producer_wait_ms": 11.7488
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.7516,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 814.5088789707355,
+          "flush_ms": 22.706799999999998,
+          "media_files": 1,
+          "producer_wait_ms": 11.7492
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.58,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 825.1932026793928,
+          "flush_ms": 22.4128,
+          "media_files": 1,
+          "producer_wait_ms": 11.711599999999999
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.668199999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 807.7358896726541,
+          "flush_ms": 22.897199999999998,
+          "media_files": 1,
+          "producer_wait_ms": 11.7089
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.423699999999998,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 867.6325950795251,
+          "flush_ms": 21.316499999999998,
+          "media_files": 1,
+          "producer_wait_ms": 11.686399999999999
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 19393298,
+          "event_to_first_committed_frame_ms": 8.3648,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 835.6515234753141,
+          "flush_ms": 22.1323,
+          "media_files": 1,
+          "producer_wait_ms": 11.6998
+        }
+      ]
+    },
+    {
+      "cameras": 127,
+      "fixture": "2160p-h265-gop1.mp4",
+      "fixture_sha256": "4e999aa0c6392f33e671fc3ff7bec5755614759f17dc342b9d56b934f8eb4661",
+      "runs": [
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 98.1026,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 341.245201536865,
+          "flush_ms": 3868.3599,
+          "media_files": 127,
+          "producer_wait_ms": 2607.3131000000003
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 95.7957,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 350.7177245426234,
+          "flush_ms": 3763.8795,
+          "media_files": 127,
+          "producer_wait_ms": 2504.7794999999996
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 93.6944,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 349.8446742654008,
+          "flush_ms": 3773.2724,
+          "media_files": 127,
+          "producer_wait_ms": 2528.5828999999985
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 97.1219,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 340.58300179392154,
+          "flush_ms": 3875.8812000000003,
+          "media_files": 127,
+          "producer_wait_ms": 2601.9801999999995
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 116.5833,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 346.60174311652315,
+          "flush_ms": 3808.5765,
+          "media_files": 127,
+          "producer_wait_ms": 2576.861000000002
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 94.07730000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 345.49038134946227,
+          "flush_ms": 3820.8278,
+          "media_files": 127,
+          "producer_wait_ms": 2549.3766
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 94.9213,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 344.0159082735857,
+          "flush_ms": 3837.2041,
+          "media_files": 127,
+          "producer_wait_ms": 2566.1626000000006
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 94.2875,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 348.39796222010835,
+          "flush_ms": 3788.9408,
+          "media_files": 127,
+          "producer_wait_ms": 2509.033299999999
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 97.1683,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 338.42928219515966,
+          "flush_ms": 3900.5468,
+          "media_files": 127,
+          "producer_wait_ms": 2570.0964999999997
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 119.1143,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 342.3975080215666,
+          "flush_ms": 3855.3413,
+          "media_files": 127,
+          "producer_wait_ms": 2608.3268
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 98.0987,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 344.20345643833446,
+          "flush_ms": 3835.1132999999995,
+          "media_files": 127,
+          "producer_wait_ms": 2561.6511
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 95.14739999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 346.28356142233963,
+          "flush_ms": 3812.076,
+          "media_files": 127,
+          "producer_wait_ms": 2523.7209999999995
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 95.10820000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 348.2586933320495,
+          "flush_ms": 3790.4559999999997,
+          "media_files": 127,
+          "producer_wait_ms": 2552.6659000000027
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 92.6039,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 350.68957716934455,
+          "flush_ms": 3764.1816000000003,
+          "media_files": 127,
+          "producer_wait_ms": 2510.3624999999997
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 115.4903,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 346.5226409154746,
+          "flush_ms": 3809.4459,
+          "media_files": 127,
+          "producer_wait_ms": 2549.489900000001
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 94.75840000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 341.27250609056875,
+          "flush_ms": 3868.0504,
+          "media_files": 127,
+          "producer_wait_ms": 2584.8192000000017
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 95.3252,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 346.91569619849156,
+          "flush_ms": 3805.1298,
+          "media_files": 127,
+          "producer_wait_ms": 2531.8368
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 95.6884,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 347.6974267601338,
+          "flush_ms": 3796.5746999999997,
+          "media_files": 127,
+          "producer_wait_ms": 2551.3899000000015
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 93.40220000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 346.50809637381036,
+          "flush_ms": 3809.6058,
+          "media_files": 127,
+          "producer_wait_ms": 2560.099199999999
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 95.7068,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 345.77837405087166,
+          "flush_ms": 3817.6455,
+          "media_files": 127,
+          "producer_wait_ms": 2582.9590999999987
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 96.50319999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 341.27861161595797,
+          "flush_ms": 3867.9812,
+          "media_files": 127,
+          "producer_wait_ms": 2575.083499999999
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 97.3989,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 341.21898621943694,
+          "flush_ms": 3868.6571,
+          "media_files": 127,
+          "producer_wait_ms": 2547.8890000000006
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 96.4062,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 347.17881317848105,
+          "flush_ms": 3802.246,
+          "media_files": 127,
+          "producer_wait_ms": 2513.0568
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 98.18050000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 348.525342910475,
+          "flush_ms": 3787.556,
+          "media_files": 127,
+          "producer_wait_ms": 2516.561199999999
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 95.4456,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 348.2229106125868,
+          "flush_ms": 3790.8455,
+          "media_files": 127,
+          "producer_wait_ms": 2547.2646999999984
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 94.5998,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 339.06504434389683,
+          "flush_ms": 3893.2331,
+          "media_files": 127,
+          "producer_wait_ms": 2602.2579999999994
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 93.97500000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 344.77267864270317,
+          "flush_ms": 3828.7815,
+          "media_files": 127,
+          "producer_wait_ms": 2522.7489999999993
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 96.83550000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 342.92888065000676,
+          "flush_ms": 3849.3674,
+          "media_files": 127,
+          "producer_wait_ms": 2542.7201999999993
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 94.6138,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 349.4872282693637,
+          "flush_ms": 3777.1316,
+          "media_files": 127,
+          "producer_wait_ms": 2532.5463999999993
+        },
+        {
+          "cameras": 127,
+          "committed_media_bytes": 1384182452,
+          "event_to_first_committed_frame_ms": 94.58279999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 346.6787964726036,
+          "flush_ms": 3807.73,
+          "media_files": 127,
+          "producer_wait_ms": 2524.146300000001
+        }
+      ]
+    },
+    {
+      "cameras": 1,
+      "fixture": "2160p-h265-gop10.mp4",
+      "fixture_sha256": "04da32c4e221ed1d85fc65890bb87154c0df5c85fd81d6713042129ef804b162",
+      "runs": [
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 9.5411,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 648.971395993645,
+          "flush_ms": 24.1877,
+          "media_files": 1,
+          "producer_wait_ms": 11.7143
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 8.040500000000002,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 701.9804587801857,
+          "flush_ms": 22.3612,
+          "media_files": 1,
+          "producer_wait_ms": 10.7335
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.906399999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 792.3039286733035,
+          "flush_ms": 19.812,
+          "media_files": 1,
+          "producer_wait_ms": 10.1157
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 8.0221,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 705.1718524202826,
+          "flush_ms": 22.259999999999998,
+          "media_files": 1,
+          "producer_wait_ms": 11.784400000000002
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 8.191199999999998,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 725.7410356822747,
+          "flush_ms": 21.629099999999998,
+          "media_files": 1,
+          "producer_wait_ms": 11.6781
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.997300000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 770.5812540131802,
+          "flush_ms": 20.3705,
+          "media_files": 1,
+          "producer_wait_ms": 10.2067
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 8.277899999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 726.4060119890736,
+          "flush_ms": 21.6093,
+          "media_files": 1,
+          "producer_wait_ms": 9.4119
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.965699999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 787.0047948336704,
+          "flush_ms": 19.9454,
+          "media_files": 1,
+          "producer_wait_ms": 10.1772
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.949299999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 744.5288657314314,
+          "flush_ms": 21.083299999999998,
+          "media_files": 1,
+          "producer_wait_ms": 10.1473
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 8.0711,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 743.9360683065714,
+          "flush_ms": 21.1001,
+          "media_files": 1,
+          "producer_wait_ms": 11.714300000000001
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 8.241,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 703.2163675527393,
+          "flush_ms": 22.3219,
+          "media_files": 1,
+          "producer_wait_ms": 11.6984
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.992300000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 754.8654667498047,
+          "flush_ms": 20.7946,
+          "media_files": 1,
+          "producer_wait_ms": 10.6836
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 8.931,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 750.9831756079766,
+          "flush_ms": 20.9021,
+          "media_files": 1,
+          "producer_wait_ms": 11.1184
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.966600000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 760.5343822009868,
+          "flush_ms": 20.6396,
+          "media_files": 1,
+          "producer_wait_ms": 10.184899999999999
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.993500000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 770.8574995519116,
+          "flush_ms": 20.363200000000003,
+          "media_files": 1,
+          "producer_wait_ms": 10.252600000000001
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.9326,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 776.332144793937,
+          "flush_ms": 20.2196,
+          "media_files": 1,
+          "producer_wait_ms": 11.1618
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 8.0272,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 663.8244744412699,
+          "flush_ms": 23.6465,
+          "media_files": 1,
+          "producer_wait_ms": 11.759400000000001
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.2702,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 766.1619208744381,
+          "flush_ms": 20.488,
+          "media_files": 1,
+          "producer_wait_ms": 9.0697
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.9442,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 733.8225803905159,
+          "flush_ms": 21.390900000000002,
+          "media_files": 1,
+          "producer_wait_ms": 10.1567
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.995,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 779.6792018435334,
+          "flush_ms": 20.1328,
+          "media_files": 1,
+          "producer_wait_ms": 10.2509
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.8937,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 799.4705942058575,
+          "flush_ms": 19.6344,
+          "media_files": 1,
+          "producer_wait_ms": 10.1386
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.9644,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 693.933619277889,
+          "flush_ms": 22.620500000000003,
+          "media_files": 1,
+          "producer_wait_ms": 11.7182
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 8.0873,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 721.7666489583271,
+          "flush_ms": 21.748199999999997,
+          "media_files": 1,
+          "producer_wait_ms": 11.708000000000002
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 10.6052,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 559.5185631953109,
+          "flush_ms": 28.054699999999997,
+          "media_files": 1,
+          "producer_wait_ms": 13.2536
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 8.0303,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 705.0514932255719,
+          "flush_ms": 22.2638,
+          "media_files": 1,
+          "producer_wait_ms": 11.6855
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.959600000000001,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 797.0713908079056,
+          "flush_ms": 19.6935,
+          "media_files": 1,
+          "producer_wait_ms": 10.152
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.398,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 788.5862848712153,
+          "flush_ms": 19.9054,
+          "media_files": 1,
+          "producer_wait_ms": 10.1369
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 8.298399999999999,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 715.2939364263153,
+          "flush_ms": 21.945,
+          "media_files": 1,
+          "producer_wait_ms": 11.7856
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 8.1904,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 693.2012080194436,
+          "flush_ms": 22.644399999999997,
+          "media_files": 1,
+          "producer_wait_ms": 11.757
+        },
+        {
+          "cameras": 1,
+          "committed_media_bytes": 16459629,
+          "event_to_first_committed_frame_ms": 7.9065,
+          "final_pending_channel_bytes": 0,
+          "flush_mib_per_second": 703.1974660040537,
+          "flush_ms": 22.322499999999998,
+          "media_files": 1,
+          "producer_wait_ms": 11.604199999999999
+        }
+      ]
+    }
+  ]
+}

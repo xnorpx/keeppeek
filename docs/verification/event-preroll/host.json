@@ -1,0 +1,15 @@
+{
+  "cpu": "AMD Ryzen 5 5600G",
+  "physical_cores": 6,
+  "logical_processors": 12,
+  "physical_memory_bytes": 16473337856,
+  "os": "Windows 11 Pro x86-64",
+  "os_version": "10.0.26200",
+  "rustc": "1.98.1 (48a229cea 2026-09-01)",
+  "cargo": "1.98.1 (797e8a9bc 2026-08-05)",
+  "build_and_fixture_filesystem": "E: ReFS",
+  "sink_filesystem": "C: NTFS",
+  "measured_runs_per_workload": 30,
+  "warmups_per_workload": 3,
+  "capture_date_utc": "2026-09-26"
+}
