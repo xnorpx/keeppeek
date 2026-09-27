@@ -196,6 +196,13 @@ that never opens still fails after the unchanged 10,000 ms timeout and deletes
 its server session. These are lifecycle assertions, not CPU or interaction-latency
 benchmarks; no browser-wide performance claim is inferred from them.
 
+A subsequent mobile-timeline correction records initial centering only after
+its animation frame runs. This prevents a playback update from cancelling the
+only initial scroll. The deterministic browser regression changes from zero
+completed scrolls to one, preserves manual scrolling after completion, and checks
+pending-frame cleanup on unmount. It changes neither the measured server paths
+nor their dependencies, and is not a browser latency benchmark.
+
 The fingerprint is SHA-256 of LF-joined, sorted, unique git-visible paths ending
 in `.rs`, `.proto`, or `.toml`, plus `Cargo.lock`; each line contains the relative
 path, one space, and the file's uppercase SHA-256. It covers tracked and untracked
