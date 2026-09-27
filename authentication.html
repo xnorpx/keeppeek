@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cfdeebab.js";
+            window.path_to_searchindex_js = "searchindex-e64824f6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -182,7 +182,9 @@ itself through a cloud relay. Access depends on two decisions:</p>
 <li>If not, which remote credential and role does the client have?</li>
 </ol>
 <p>Local clients use KeepPeek as <strong>Administrator</strong> without signing in. Remote clients must sign in
-with a named Bearer credential assigned either the <strong>Administrator</strong> or <strong>User</strong> role.</p>
+with a named bearer credential or an explicitly configured OIDC/identity-proxy method,
+assigned either the <strong>Administrator</strong> or <strong>User</strong> role. External methods are opt-in;
+they do not change the trusted-local policy.</p>
 <blockquote>
 <p>Treat local network configuration as an authentication boundary. Any device in a configured
 local range receives Administrator access.</p>
@@ -201,7 +203,8 @@ camera setup remains available while remote access is pending.</p>
 <ul>
 <li><strong>Local:</strong> the address is in <code>access.local_networks</code>. The client becomes Administrator without a
 sign-in screen.</li>
-<li><strong>Remote:</strong> every other address. The client must provide an active, unexpired Bearer credential.</li>
+<li><strong>Remote:</strong> every other address. The client must provide an active, unexpired bearer credential
+or use an explicitly configured external authentication method.</li>
 <li><strong>Unknown or malformed:</strong> treated as remote and denied without a valid credential.</li>
 </ul>
 <p>The default local networks include IPv4 and IPv6 loopback, RFC 1918 private networks, IPv4 and IPv6
@@ -229,6 +232,20 @@ customize it.</p>
 <li>Leave it out when each VPN client should sign in with an individual credential and role.</li>
 </ul>
 <p>Restart KeepPeek after changing the network policy.</p>
+<h2 id="external-sign-in"><a class="header" href="#external-sign-in">External sign-in</a></h2>
+<p>Administrators configure providers, exact origins, explicit role/camera mappings,
+identities, and browser-session revocation under <strong>Settings → Access</strong>. Browser
+cookies are secure, HTTP-only, host-only, and bound to one allowed origin. Provider
+tokens never reach the application UI. Sign-out revokes dependent connections;
+restart invalidates all external browser sessions.</p>
+<p>Provider secrets remain references into <code>secrets.toml</code>. Changing the last usable
+remote Administrator path requires fresh proof against the exact proposed
+configuration and explicit confirmation on the original control connection.
+The same protection applies to configuration ZIP restore. An unavailable provider,
+stale proof, or failed write cannot activate the candidate.</p>
+<p>See the <a href="configuration-reference.html#external-authentication-configuration">field reference</a>
+and <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/external-authentication-operations.md">deployment and recovery guide</a>
+for TLS, reverse-proxy header sanitation, mixed-mode deadlines, and troubleshooting.</p>
 <h2 id="roles"><a class="header" href="#roles">Roles</a></h2>
 <p>KeepPeek has two fixed roles.</p>
 <div class="table-wrapper">

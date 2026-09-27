@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cfdeebab.js";
+            window.path_to_searchindex_js = "searchindex-e64824f6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -382,6 +382,99 @@ listener.</p>
 </tbody>
 </table>
 </div>
+<h2 id="external-authentication-configuration"><a class="header" href="#external-authentication-configuration">External authentication configuration</a></h2>
+<p>Type: <code>access::external::Config</code>, optional section <code>[external_auth]</code>. Configured
+OIDC providers use browser authorization-code login with PKCE. Configured identity
+proxies use exact assertions from their immediate trusted transport peer. Both
+methods use revocable browser sessions and the existing server-side camera grants.
+Omitting the section preserves existing local and bearer behavior.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation</th></tr>
+</thead>
+<tbody>
+<tr><td><code>allowed_origins</code></td><td><code>Vec&lt;String&gt;</code></td><td>Required</td><td>1–16 unique canonical exact HTTPS origins, without credentials, path, query, fragment, wildcard, or trailing slash.</td></tr>
+<tr><td><code>providers</code></td><td><code>Vec&lt;Provider&gt;</code></td><td>Required</td><td>1–4 providers with unique IDs.</td></tr>
+<tr><td><code>bearer_enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Mixed mode requires an explicit transition deadline.</td></tr>
+<tr><td><code>bearer_transition_until_ms</code></td><td>Optional <code>i64</code></td><td>Absent</td><td>Positive Unix milliseconds; present if and only if <code>bearer_enabled</code> is true.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Each <code>[[external_auth.providers]]</code> has <code>id</code>, <code>name</code>, <code>mappings</code>, and a <code>method</code>
+table. IDs contain 1–64 ASCII letters, digits, underscores, or hyphens. Names
+contain 1–64 bytes without control characters and cannot be whitespace-only.
+At least one mapping is required per provider; there are at most 128 across all
+providers. Unknown fields are rejected.</p>
+<p>Each <code>[[external_auth.providers.mappings]]</code> contains <code>claim</code> (1–64 bytes), <code>value</code>
+(1–256 bytes), and <code>role</code> (<code>administrator</code> or <code>user</code>). Claim names and values cannot
+be whitespace-only or contain control characters. User mappings require an explicit
+<code>camera_access</code> table using the existing <code>all_cameras</code>, <code>camera_ids</code>, and <code>group_ids</code>
+fields and limits, with at most 128 camera and group IDs combined per external
+identity policy. Set <code>all_cameras</code> and <code>camera_ids</code> explicitly; <code>group_ids</code> defaults
+to an empty list. With <code>all_cameras = false</code>, empty camera and group lists grant
+no cameras. Administrator mappings must
+omit <code>camera_access</code> because Administrators are unrestricted. Unmapped identities
+and identities matching multiple rules are denied. Mapping claims must be strings
+or lists of at most 128 strings, each at most 256 bytes; the claims object is limited
+to 16 KiB serialized JSON.</p>
+<p>For <code>[external_auth.providers.method]</code> with <code>kind = "oidc"</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation</th></tr>
+</thead>
+<tbody>
+<tr><td><code>issuer</code></td><td><code>String</code></td><td>Required</td><td>HTTPS URL without user-info, query, or fragment.</td></tr>
+<tr><td><code>client_id</code></td><td><code>String</code></td><td>Required</td><td>1–256 bytes, nonblank, no control characters.</td></tr>
+<tr><td><code>client_secret</code></td><td>Optional <code>String</code></td><td>Absent</td><td>Complete <code>{secret:KEY}</code> or <code>{secret:KEY|url}</code> reference; resolved value is nonblank, at most 4,096 bytes, without control characters. Inline secrets are rejected.</td></tr>
+<tr><td><code>redirect_uri</code></td><td><code>String</code></td><td>Required</td><td>Allowed HTTPS origin with exactly <code>/auth/callback</code>, no query or fragment.</td></tr>
+<tr><td><code>scopes</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>["openid"]</code></td><td>At most 16 unique OAuth scope tokens of 1–64 bytes; must include <code>openid</code>.</td></tr>
+<tr><td><code>display_name_claim</code></td><td><code>String</code></td><td><code>"name"</code></td><td>1–64 bytes, nonblank, no control characters.</td></tr>
+<tr><td><code>endpoint_origins</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>[]</code></td><td>At most 16 unique canonical HTTPS origins for additional provider endpoints.</td></tr>
+<tr><td><code>private_networks</code></td><td><code>Vec&lt;IpNet&gt;</code></td><td><code>[]</code></td><td>At most 64 explicitly permitted private issuer networks.</td></tr>
+<tr><td><code>logout_uri</code></td><td>Optional <code>String</code></td><td>Absent</td><td>HTTPS URL without user-info, query, or fragment.</td></tr>
+</tbody>
+</table>
+</div>
+<p>All external-authentication URLs are limited to 2,048 bytes. A configured URL does
+not authorize arbitrary discovery redirects or other network destinations.</p>
+<p>For <code>[external_auth.providers.method]</code> with <code>kind = "proxy"</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation</th></tr>
+</thead>
+<tbody>
+<tr><td><code>trusted_peers</code></td><td><code>Vec&lt;IpNet&gt;</code></td><td>Required</td><td>1–64 immediate transport-peer CIDRs, independent of forwarded-client classification.</td></tr>
+<tr><td><code>subject_header</code></td><td><code>String</code></td><td>Required</td><td>Exact identity assertion header.</td></tr>
+<tr><td><code>role_header</code></td><td><code>String</code></td><td>Required</td><td>Exact role assertion header; values still require explicit mapping.</td></tr>
+<tr><td><code>name_header</code></td><td>Optional <code>String</code></td><td>Absent</td><td>Optional display metadata header.</td></tr>
+<tr><td><code>secret_header</code></td><td>Optional <code>String</code></td><td>Absent</td><td>Present if and only if <code>shared_secret</code> is present.</td></tr>
+<tr><td><code>shared_secret</code></td><td>Optional <code>String</code></td><td>Absent</td><td>Same reference and resolved-value rules as <code>client_secret</code>.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Header names are distinct ignoring ASCII case, at most 64 ASCII letters, digits,
+or hyphens, start with <code>X-</code>, and cannot start with <code>X-Forwarded-</code>. Secret references
+remain unchanged in <code>config.toml</code>; only the runtime copy resolves them. Existing
+configuration validation rejects invalid candidates before the atomic writer runs.</p>
+<p>Trusted peer networks from different identity proxy providers must not overlap.
+KeepPeek checks the immediate peer after normalizing IPv4-mapped IPv6 addresses;
+configure IPv4 CIDRs for those peers.</p>
+<h3 id="durable-external-identities"><a class="header" href="#durable-external-identities">Durable external identities</a></h3>
+<p><code>[external_identities]</code> has <code>version = 1</code> and at most 1,024 <code>records</code>. Each record
+contains <code>id</code> (non-nil UUID), <code>provider_id</code>, <code>subject_fingerprint</code> (64 lowercase
+hexadecimal characters), <code>display_name</code>, <code>role</code>, <code>camera_access</code>, positive
+<code>revision</code>, <code>enabled</code>, and nonnegative <code>created_at_ms</code>. Provider and display names
+are nonblank, at most 64 bytes, and contain no control characters. Subject
+fingerprints and IDs are unique. Administrator camera access is unrestricted.</p>
+<p>The optional <code>admission_policy_fingerprint</code> is a 64-character lowercase hexadecimal
+digest of the resolved provider policy at successful authentication. KeepPeek
+updates it after ordinary or replacement-Administrator authentication. An absent
+or stale digest cannot count as a retained Administrator path; the identity must
+authenticate under the current policy first. Legacy records remain readable and
+still trigger lockout protection. Raw subjects, claims, and tokens are not stored.</p>
 <h2 id="camera-defaults-and-camera-entries"><a class="header" href="#camera-defaults-and-camera-entries">Camera defaults and camera entries</a></h2>
 <p>Source: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs">camera types</a> and
 the camera loader in <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config.rs">configuration</a>.</p>
