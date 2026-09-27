@@ -151,3 +151,22 @@ backfill excludes volume-owned rows so replacing a file cannot silently replace 
 This is still an internal catalog increment: production registration/backfill, growing writers,
 authorized move transitions, reader leases, artifact owners, metadata handoff, and Administrator
 operations remain outstanding.
+
+## Pinned root inspection increment
+
+`volumes::root::Root` opens a validated absolute root one component at a time, without
+creating missing directories or following links. Windows checks every opened handle for
+reparse attributes and records the volume GUID, serial number, and full 128-bit directory ID.
+Unix records the device and inode. Debug output redacts paths and identities.
+
+Capacity observations carry the caller's preceding ledger revision. Unix queries the pinned
+directory with `fstatvfs`; Windows queries the pinned volume GUID directly with
+`GetDiskFreeSpaceExW`. Neither path substitutes an existing ancestor. Revalidation brackets
+the probe. The two-second deadline rejects slow observations after system calls return; it
+cannot interrupt a blocked filesystem call.
+
+Tests cover missing roots without creation, identity stability, pinned-root capacity, and
+final/intermediate links. Windows pins prevent directory renames; Unix tests rename and
+replacement detection. This is an inspection primitive, not writer integration or permission
+to enable a configured volume. Runtime ownership, recovery, and Administrator operations
+listed above still must be implemented before activation.
