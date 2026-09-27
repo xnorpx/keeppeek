@@ -37,7 +37,26 @@ pub(super) fn dispatch(
                     "runtime configuration requires storage settings",
                 ));
             };
+            if storage.named_volumes.is_some() && update.expected_configuration_revision.is_empty()
+            {
+                return Err(ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "named-volume updates require the current configuration revision",
+                ));
+            }
             let current_storage = current_config(state).storage;
+            let named_volumes = storage
+                .named_volumes
+                .map(super::storage_volumes::from_wire)
+                .transpose()
+                .map_err(|error| {
+                    ControlCommandError::new(
+                        proto::ErrorCode::InvalidRequest,
+                        400,
+                        error.to_string(),
+                    )
+                })?;
             let write_buffer_bytes = usize::try_from(storage.write_buffer_bytes).map_err(|_| {
                 ControlCommandError::new(
                     proto::ErrorCode::InvalidRequest,
@@ -68,6 +87,7 @@ pub(super) fn dispatch(
                     port,
                     expected_configuration_revision: update.expected_configuration_revision,
                     storage: RuntimeStorageSettingsUpdate {
+                        named_volumes,
                         pre_recording_stream_max_bytes: storage
                             .pre_recording_stream_max_bytes
                             .unwrap_or(current_storage.pre_recording_stream_max_bytes),
