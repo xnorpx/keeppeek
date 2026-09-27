@@ -49,7 +49,7 @@ The acceptance criteria and ordered slices in issue #129 remain authoritative.
 - [ ] Benchmarks, operational docs, independent review, and canonical Windows validation.
       Record final SHA, commands, outcomes, performance distributions and CI links before completion.
 
-## Protected API proposal (not yet applied)
+## Approved API scope
 
 Files: `api/webrtc.proto` and `api/webrtc.md`, plus generated bindings through the existing
 generator. Preserve all existing fields and operations.
@@ -68,8 +68,9 @@ generator. Preserve all existing fields and operations.
 - Add a capability marker only after these operations are implemented and verified. No HTTP
   endpoint or unrelated state-store payload substitutes for these operations.
 
-The repository's protected API rule requires explicit approval for these files and scope.
-Config and pure placement work can proceed while that approval is pending.
+The owner approved extending the protobuf API on 2026-09-27 for this task. The scope above
+includes the protocol documentation, generated bindings, and contract tests. Approval is recorded;
+it does not imply that runtime operations or their acceptance evidence are implemented.
 
 ## Durable location checkpoint
 

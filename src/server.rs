@@ -122,6 +122,7 @@ mod state_store_integration;
 pub(crate) mod state_store_schema;
 pub(crate) mod state_store_settings;
 pub(crate) mod state_store_watch;
+mod storage_volumes;
 mod stored_media;
 mod talkback;
 
@@ -253,6 +254,8 @@ struct RuntimeSettingsUpdate {
 
 #[derive(Deserialize)]
 struct RuntimeStorageSettingsUpdate {
+    #[serde(default)]
+    named_volumes: Option<crate::storage::volumes::VolumeConfiguration<String>>,
     medium_term_path: String,
     long_term_path: String,
     recording_catalog_path: String,
@@ -8163,6 +8166,7 @@ fn proto_runtime_configuration_result(
             port: u32::from(config.port),
             configuration_revision: config.configuration_revision,
             storage: Some(proto::RuntimeStorageConfiguration {
+                named_volumes: config.storage.named_volumes.map(storage_volumes::to_wire),
                 medium_term_path: config.storage.medium_term_path,
                 long_term_path: config.storage.long_term_path,
                 recording_catalog_path: config.storage.recording_catalog_path,
@@ -10433,6 +10437,7 @@ fn sanitized_config(
         port: config.port,
         configuration_revision: configuration_revision(config),
         storage: SanitizedStorage {
+            named_volumes: storage_volumes::sanitized(config),
             medium_term_path,
             long_term_path,
             recording_catalog_path,
@@ -12894,6 +12899,15 @@ fn save_runtime_settings(
             )
         })
     };
+    if let Some(volumes) = &update.storage.named_volumes {
+        config::validate_volume_configuration(config_path, volumes).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                format!("invalid named-volume configuration: {error}"),
+            )
+        })?;
+    }
     let resolved_host = resolve("host", &update.host)?;
     let Some(host) = normalize_server_host(&resolved_host) else {
         return Err(ControlCommandError::new(
@@ -13167,17 +13181,21 @@ fn save_runtime_settings(
             ));
         }
     }
-    let saved =
-        match config::update_settings_with_migration(config_path, &settings, migration.as_ref()) {
-            Ok(saved) => saved,
-            Err(error) => {
-                return Err(ControlCommandError::new(
-                    proto::ErrorCode::Internal,
-                    500,
-                    format!("unable to save settings: {error}"),
-                ));
-            }
-        };
+    let saved = match config::update_settings_with_volume_draft(
+        config_path,
+        &settings,
+        migration.as_ref(),
+        update.storage.named_volumes.as_ref(),
+    ) {
+        Ok(saved) => saved,
+        Err(error) => {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                format!("unable to save settings: {error}"),
+            ));
+        }
+    };
     let camera_count = config::load_cameras(config_path)
         .map(|cameras| cameras.values().map(Vec::len).sum())
         .unwrap_or(state.config.camera_count);
@@ -22148,6 +22166,7 @@ mod tests {
         .with_camera_config_path(config_path.clone());
         let handler = test_control_handler(state);
         let storage_update = |safety: Option<u64>| proto::RuntimeStorageConfiguration {
+            named_volumes: None,
             medium_term_path: recordings.to_string_lossy().into_owned(),
             long_term_path: recordings.to_string_lossy().into_owned(),
             recording_catalog_path: recordings
@@ -24484,6 +24503,7 @@ mod tests {
                 port: 3200,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: medium_term_path.to_string_lossy().into_owned(),
                     long_term_path: long_term_path.to_string_lossy().into_owned(),
                     recording_catalog_path: recording_catalog_path.to_string_lossy().into_owned(),
@@ -24579,6 +24599,7 @@ mod tests {
                 port: 0,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: "/media/invalid".to_owned(),
                     long_term_path: "/archive/invalid".to_owned(),
                     recording_catalog_path: "/metadata/invalid-recordings.db".to_owned(),
@@ -24640,6 +24661,7 @@ mod tests {
                 port: 3200,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: writable.clone(),
                     long_term_path: writable.clone(),
                     recording_catalog_path: directory
@@ -24687,6 +24709,7 @@ mod tests {
                 port: 3200,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: inaccessible_path.to_owned(),
                     long_term_path: inaccessible_path.to_owned(),
                     recording_catalog_path: directory
@@ -24733,6 +24756,7 @@ mod tests {
                 port: 3200,
                 expected_configuration_revision: stale_revision,
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: writable.clone(),
                     long_term_path: writable,
                     recording_catalog_path: directory
@@ -24816,6 +24840,7 @@ mod tests {
                 port: 3000,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: next.to_string_lossy().into_owned(),
                     long_term_path: next.to_string_lossy().into_owned(),
                     recording_catalog_path: current
@@ -24938,6 +24963,7 @@ mod tests {
                 port: 3000,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: next_recordings.to_string_lossy().into_owned(),
                     long_term_path: next_recordings.to_string_lossy().into_owned(),
                     recording_catalog_path: next_catalog.to_string_lossy().into_owned(),
