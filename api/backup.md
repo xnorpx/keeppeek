@@ -10,6 +10,16 @@ Every endpoint requires an Administrator principal. A direct local request is Ad
 configured network policy. A remote request sends a named Administrator credential in the
 `Authorization: Bearer <UUID>` header and uses HTTPS when secure remote access is required.
 
+Configured external browser identities may authenticate as Administrator with the
+host-only session cookie. Such mutations also require exact same-origin `Origin`
+and `X-KeepPeek-CSRF`; cookie-plus-bearer requests are rejected. The current
+`POST /config/apply` path cannot remove the last usable remote Administrator without
+fresh replacement evidence and explicit confirmation. Prepare the exact ZIP and
+confirm it through [protobuf restore verification](webrtc.md#configuration-archive-verification)
+on the original live control connection. The HTTP upload does not accept proof
+headers, a dry-run mode, or additional parameters. Authorization is consumed before
+staging; failure or a changed file requires fresh preparation. `backup.proto` is unchanged.
+
 ## ProtoJSON
 
 Requests use `Content-Type: application/json` and responses use `application/json`. Field names are

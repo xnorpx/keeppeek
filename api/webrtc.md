@@ -80,6 +80,122 @@ with one raw `access_key`; that field is absent from list, enable/disable, and r
 `GetAccessKey` is a one-time local claim for the first-run Administrator credential;
 `RotateAccessKey` remains its compatibility rotation operation.
 
+`AccessSession.authentication` is additive metadata with a typed method:
+trusted-local, bearer, OIDC, or proxy. Only external sessions include `provider_id`
+and the stable directory `identity_id`; neither is a raw provider subject. The
+metadata contains no claims, cookies, or tokens. Clients must tolerate an absent
+message (older servers, an expired browser binding, or an external identity whose
+revision is no longer current) and unknown future enum values. This field does not
+change authorization.
+
+`ServerCommand.external_authentication` requires Administrator. `list_identities`
+returns persistent external identity IDs, provider labels, subject fingerprints,
+display names, roles, camera policies, revisions, and revocation state.
+`list_sessions` returns active authenticated browser-session IDs and creation,
+activity, and absolute-expiry times; anonymous login sessions are not listed.
+Neither result contains raw subjects, claims, provider tokens, cookies, or CSRF tokens.
+
+Both lists default to 16 rows and accept `page_size` from 1 through 32. Pages are
+also bounded to 48 KiB before envelope overhead. Pass `next_page_token` unchanged
+for the next page; an empty token marks the end. Ordering is by stable UUID, not
+creation time. Lists are live views, so concurrent additions and revocations may
+change later pages. `revoke_session` is idempotent for a valid browser-session UUID.
+It invalidates authorization, cancels dependent work, and requests transport closure
+before returning the first page of the remaining browser sessions. These operations
+are audited without storing session-cookie handles or raw identity claims.
+
+`ConfigurationCommand.get_external_authentication` returns the current configuration
+revision and typed external-authentication settings, or no settings when disabled.
+Secret fields contain only the stored `secrets.toml` references. The query does not
+resolve references or return provider tokens. It uses a separate result so camera
+snapshot pagination does not repeat provider settings. Responses exceeding the
+control-message size limit fail explicitly.
+
+`external_authentication.verify_administrator_bearer` verifies a replacement bearer
+key against an existing authentication configuration plan. It requires a live,
+remotely authenticated Administrator WebRTC session; trusted-local access and
+session zero cannot supply this proof. The candidate must disable external
+authentication and retain the listener and network-trust settings. The credential
+selected by normal bearer matching must be an enabled, non-revoked, already claimed,
+non-expiring Administrator. Verification does not enable the candidate or issue a
+session. The request key is bounded to 64 bytes, is redacted from debug output, and
+is neither returned nor retained in the proof.
+
+The result contains a `verification_id`, its configuration-plan ID, and an expiry.
+Pass the ID in `ApplyConfigurationPlan.administrator_confirmation` with `confirm`
+explicitly true on the same connection. Evidence is bound to the exact principal
+revision/browser, candidate, current configuration, resolved authentication values,
+and companion secrets-file bytes. Changing any binding, closing the parent session,
+or expiring the proof rejects apply without writing configuration. Proofs last at
+most five minutes and never outlive their plan. Limits are 32 proofs server-wide,
+two per session, and a 1 MiB secrets file for this verification flow. Capacity
+exhaustion returns a rejected control error with status 429; live proofs are not
+evicted. Preparing a proof is not idempotent and consumes a slot on each success.
+
+For a candidate trusted proxy, use `prepare_administrator_verification` with the
+plan ID, candidate provider ID, and exact candidate origin. Its result has
+`verified=false` and a `browser_start` containing a one-use CSRF challenge. Transfer
+that challenge only to the intended window at that exact origin. Submit the
+existing `POST /auth/login` form there, using the verification ID as
+`candidate_plan_id`, together with `provider_id`, `csrf_token`, and `return_path`.
+The server checks the immediate proxy peer and candidate mappings. It does not
+replace the session cookie or persist the identity during verification. A consumed
+challenge cannot be retried, including after invalid proxy evidence.
+
+Poll `get_administrator_verification` on the original control connection. Status
+never returns the browser challenge. Only `verified=true` evidence can be confirmed;
+pending evidence cannot authorize apply. Apply admits the prepared identity into
+both the persisted and runtime directories with the same UUID and revision. A
+revoked identity or exhausted directory rejects verification without changing
+configuration. Candidate OIDC uses the same preparation and receipt commands.
+It performs discovery, authorization-code/PKCE exchange, and token validation
+against the candidate, with a separate anonymous transaction cookie. The callback
+records evidence only; it never replaces the authenticated application cookie.
+
+A failed configuration write preserves the proof and live authentication. A
+successful write consumes the proof before activation, even if subsequent camera
+or privacy activation fails. Re-read configuration after an ambiguous apply error;
+do not assume it rolled back. Confirmation ordering precedes session cleanup: a
+close that wins final admission rejects apply, while a later close waits for the
+admitted commit. Slow persistence can therefore delay completion of that close.
+These operations add no HTTP parameters, headers, routes, or response modes.
+
+### Configuration archive verification
+
+Before a lockout-sensitive ZIP restore, use `external_authentication.begin_restore_verification`
+on the initiating remote Administrator connection. Supply the exact archive length
+and lowercase SHA-256 digest. Send `append_restore_verification` chunks of 1–32,768
+bytes with the returned `preparation_id` and exact next byte offset. The final chunk
+validates the ZIP and resolves its configuration against the archive's own secrets,
+using the same storage-path transformation as restore. Preparation does not stage
+or activate settings. Invalid offsets, digests, or archives discard the upload.
+
+`get_restore_verification` returns upload progress, expiry, readiness, confirmation
+requirements, and candidate authentication settings containing secret references
+only. Use its `preparation_id` as `configuration_plan_id` in the existing replacement
+Administrator verification commands. `confirm_restore_verification` requires
+`confirm=true` and, for a lockout transition, a verified `administrator_confirmation`
+with its own explicit confirmation. All commands require the original live remote
+Administrator connection. Trusted-local access cannot supply replacement evidence.
+
+After confirmation, upload that exact ZIP through the unchanged `POST /config/apply`.
+The server matches the current HTTP principal and archive digest to exactly one
+confirmed preparation, checks the original control session and current target
+revision, and consumes authorization before staging. Ambiguous, expired, revoked,
+changed-target, and different-archive bindings are rejected. A failed stage requires
+fresh preparation and confirmation. The admitted replacement identity is included
+in the staged configuration; archive secrets remain authoritative. No HTTP proof
+header, query parameter, or alternative response mode is introduced.
+
+Preparations expire after five minutes, with at most one per control session and
+four server-wide. Total reserved ZIP bytes are limited to 1 GiB, including completed
+preparations. Native configuration and secrets documents retain the existing 16 MiB
+per-document inspection limits. Temporary files are private, removed on completion,
+failure, expiry, or parent-session closure, and recovered from the bounded private
+upload directory after restart. Ordinary restores that preserve a usable remote
+Administrator do not require replacement evidence; they still recheck the live
+HTTP principal immediately before staging. Local recovery access is unchanged.
+
 ## Capabilities and events
 
 `ServerCapabilities` is a complete snapshot for its receiving connection, not a delta. The server

@@ -77,11 +77,13 @@ pub(super) fn discover(
             "at most 32 additional subnets may be scanned at once",
         ));
     }
-    let task = state
-        .camera_discovery_tasks
-        .start(session_id, &discovery_id)?;
-    let cameras = discover_camera_settings(networks, subnets, router_tx, state, task.as_ref());
-    let cancelled = task.as_ref().is_some_and(TaskHandle::finish);
+    let task = super::session_lifecycle::admit(state, session_id, || {
+        state
+            .camera_discovery_tasks
+            .start(session_id, &discovery_id)
+    })?;
+    let cameras = discover_camera_settings(networks, subnets, router_tx, state, &task);
+    let cancelled = task.finish();
     let cameras = cameras?;
     Ok(control_ok::Result::CameraDiscoveryResult(
         proto_camera_discovery_result(discovery_id, cameras, true, cancelled),
@@ -195,21 +197,11 @@ impl TaskHandle {
     }
 
     pub(super) fn finish(&self) -> bool {
-        let cancelled = self
-            .tasks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_mut(&self.key)
-            .map(|task| {
-                task.complete = true;
-                task.cancelled.load(Ordering::Acquire)
-            })
-            .unwrap_or(false);
         self.tasks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.key);
-        cancelled
+        self.cancelled.load(Ordering::Acquire)
     }
 
     #[cfg(test)]
@@ -228,11 +220,15 @@ impl Registry {
         &self,
         session_id: SessionId,
         discovery_id: &str,
-    ) -> Result<Option<TaskHandle>, ControlCommandError> {
-        if discovery_id.is_empty() {
-            return Ok(None);
-        }
-        let key = (session_id, discovery_id.to_owned());
+    ) -> Result<TaskHandle, ControlCommandError> {
+        let key = (
+            session_id,
+            if discovery_id.is_empty() {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                discovery_id.to_owned()
+            },
+        );
         let cancelled = Arc::new(AtomicBool::new(false));
         let mut tasks = self
             .tasks
@@ -260,11 +256,11 @@ impl Registry {
                 cancelled: cancelled.clone(),
             },
         );
-        Ok(Some(TaskHandle {
+        Ok(TaskHandle {
             tasks: self.tasks.clone(),
             key,
             cancelled,
-        }))
+        })
     }
 
     pub(super) fn snapshot(
@@ -333,6 +329,16 @@ fn task_not_found() -> ControlCommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_discovery_is_tracked_and_cancelled_on_disconnect() {
+        let registry = Registry::default();
+        let id = SessionId::from_u64(991);
+        let task = registry.start(id, "").unwrap();
+        registry.close_session(id);
+        assert!(task.cancellation_token().load(Ordering::Acquire));
+        assert!(task.finish());
+    }
 
     fn network(cidr: &str, interface_name: &str, preferred: bool) -> CameraDiscoveryNetwork {
         CameraDiscoveryNetwork {
@@ -411,10 +417,7 @@ mod tests {
     fn duplicate_discovery_task_is_rejected_until_the_active_task_finishes() {
         let registry = Registry::default();
         let session_id = SessionId::from_u64(2);
-        let task = registry
-            .start(session_id, "shared-discovery")
-            .unwrap()
-            .unwrap();
+        let task = registry.start(session_id, "shared-discovery").unwrap();
 
         let Err(error) = registry.start(session_id, "shared-discovery") else {
             panic!("duplicate discovery task must be rejected");
@@ -425,11 +428,6 @@ mod tests {
         registry.cancel(session_id, "shared-discovery").unwrap();
         assert!(task.is_cancelled());
         assert!(task.finish());
-        assert!(
-            registry
-                .start(session_id, "shared-discovery")
-                .unwrap()
-                .is_some()
-        );
+        assert!(registry.start(session_id, "shared-discovery").is_ok());
     }
 }

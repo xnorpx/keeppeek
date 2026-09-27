@@ -14,6 +14,20 @@ use std::{
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
+pub mod browser_sessions;
+#[cfg(test)]
+mod credential_migration_tests;
+pub mod external;
+pub mod external_proto;
+pub mod identities;
+pub mod login_transactions;
+pub mod migration;
+pub mod oidc;
+#[cfg(test)]
+pub mod oidc_fixture;
+pub mod oidc_transport;
+pub mod proxy_identity;
+
 const LEGACY_ACCESS_CATALOG_NAME: &str = "access.toml";
 const ACCESS_CATALOG_SECTION: &str = "access_credentials";
 const ACCESS_CATALOG_VERSION: u32 = 1;
@@ -696,34 +710,13 @@ impl AccessManager {
         if authentication_is_rate_limited(&mut state, address, now_instant) {
             return Err(AuthenticationFailure::RateLimited);
         }
-        let failure = if authorization.is_empty() {
-            Some(AuthenticationFailure::Missing)
-        } else if authorization.len() != 1 {
-            Some(AuthenticationFailure::Malformed)
-        } else {
-            None
+        let (candidate, failure) = match presented_bearer(authorization) {
+            Ok(key) => (Some(key), None),
+            Err(failure) => (None, Some(failure)),
         };
-        let candidate = failure
-            .is_none()
-            .then(|| {
-                let mut parts = authorization[0].split_ascii_whitespace();
-                match (parts.next(), parts.next(), parts.next()) {
-                    (Some(scheme), Some(value), None) if scheme.eq_ignore_ascii_case("Bearer") => {
-                        AccessKey::parse(value).ok().filter(|key| !key.is_unset())
-                    }
-                    _ => None,
-                }
-            })
-            .flatten();
-        let mut matched_index = None;
-        if let Some(candidate) = candidate {
-            let fingerprint = candidate.fingerprint();
-            for (index, credential) in state.catalog.credentials.iter().enumerate() {
-                if credential.verifier.matches(fingerprint) {
-                    matched_index = Some(index);
-                }
-            }
-        }
+        let matched_index = candidate.and_then(|candidate| {
+            matching_credential_index(&state.catalog.credentials, candidate.fingerprint())
+        });
         let failure = failure.or_else(|| {
             let credential = matched_index.and_then(|index| state.catalog.credentials.get(index));
             match credential {
@@ -935,7 +928,7 @@ impl AccessManager {
         id: Uuid,
         enabled: bool,
     ) -> anyhow::Result<CredentialMetadata> {
-        self.mutate_catalog(|catalog| {
+        self.mutate_catalog_guarded((!enabled).then(|| (id, now_ms())), |catalog| {
             let credential = credential_mut(catalog, id)?;
             if credential.revoked_at_ms.is_some() {
                 anyhow::bail!("revoked credentials cannot be changed");
@@ -951,7 +944,7 @@ impl AccessManager {
         id: Uuid,
         now: i64,
     ) -> anyhow::Result<CredentialMetadata> {
-        self.mutate_catalog(|catalog| {
+        self.mutate_catalog_guarded(Some((id, now)), |catalog| {
             let credential = credential_mut(catalog, id)?;
             if credential.revoked_at_ms.is_none() {
                 credential.revoked_at_ms = Some(now);
@@ -1082,6 +1075,14 @@ impl AccessManager {
         &self,
         mutate: impl FnOnce(&mut AccessCatalog) -> anyhow::Result<T>,
     ) -> anyhow::Result<T> {
+        self.mutate_catalog_guarded(None, mutate)
+    }
+
+    fn mutate_catalog_guarded<T>(
+        &self,
+        removal: Option<(Uuid, i64)>,
+        mutate: impl FnOnce(&mut AccessCatalog) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
         let config_update = self
             .state
             .lock()
@@ -1103,7 +1104,12 @@ impl AccessManager {
                 return Err(error);
             }
         };
-        if let Err(error) = persist_catalog(&state) {
+        let persisted = removal
+            .map_or(Ok(()), |(id, now)| {
+                preserve_credential_administrator(&state, &previous, id, now)
+            })
+            .and_then(|()| persist_catalog(&state));
+        if let Err(error) = persisted {
             state.catalog = previous;
             return Err(error);
         }
@@ -1126,6 +1132,36 @@ impl AccessManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         persist_catalog(&state)
     }
+}
+
+fn presented_bearer(authorization: &[&str]) -> Result<AccessKey, AuthenticationFailure> {
+    if authorization.is_empty() {
+        return Err(AuthenticationFailure::Missing);
+    }
+    if authorization.len() != 1 {
+        return Err(AuthenticationFailure::Malformed);
+    }
+    let mut parts = authorization[0].split_ascii_whitespace();
+    let key = match (parts.next(), parts.next(), parts.next()) {
+        (Some(scheme), Some(value), None) if scheme.eq_ignore_ascii_case("Bearer") => {
+            AccessKey::parse(value).ok().filter(|key| !key.is_unset())
+        }
+        _ => None,
+    };
+    key.ok_or(AuthenticationFailure::Invalid)
+}
+
+fn matching_credential_index(
+    credentials: &[StoredCredential],
+    fingerprint: AccessKeyFingerprint,
+) -> Option<usize> {
+    let mut matched = None;
+    for (index, credential) in credentials.iter().enumerate() {
+        if credential.verifier.matches(fingerprint) {
+            matched = Some(index);
+        }
+    }
+    matched
 }
 
 fn legacy_credential(access_key: AccessKey, created_at_ms: i64) -> StoredCredential {
@@ -1237,6 +1273,54 @@ fn register_authentication_failure(state: &mut AccessState, address: IpAddr, now
             attempts: 0,
         });
     window.attempts = window.attempts.saturating_add(1);
+}
+
+fn preserve_credential_administrator(
+    state: &AccessState,
+    previous: &AccessCatalog,
+    id: Uuid,
+    now: i64,
+) -> anyhow::Result<()> {
+    let removes_administrator = previous.credentials.iter().any(|credential| {
+        credential.id == id
+            && credential.role == AccessRole::Administrator
+            && !credential.initial_secret_pending
+            && credential.is_active(credential.revision, now)
+    });
+    if !removes_administrator {
+        return Ok(());
+    }
+    // ponytail: reuse full configuration validation for these infrequent mutations.
+    // The caller holds both locks; use its catalog instead of locking the manager again.
+    let mut root = state.config_path.as_ref().map_or_else(
+        || Ok(toml::Table::new()),
+        |path| crate::config::load_configuration_table(path),
+    )?;
+    let [before, after] = [previous, &state.catalog].map(|catalog| -> anyhow::Result<_> {
+        root.insert(
+            ACCESS_CATALOG_SECTION.to_owned(),
+            toml::Value::try_from(PersistedAccessCatalog {
+                version: catalog.version,
+                credentials: catalog.credentials.clone(),
+            })?,
+        );
+        let config = match &state.config_path {
+            Some(path) => crate::config::validated_configuration_table(path, &root)?,
+            None => crate::config::Config {
+                source: root.clone(),
+                ..crate::config::Config::default()
+            },
+        };
+        Ok(config)
+    });
+    let before = before?;
+    let after = after?;
+    anyhow::ensure!(
+        !migration::has_current_administrator(&before, now)?
+            || migration::preserves_administrator(&before, &after, now)?,
+        "cannot remove the last remote Administrator; authenticate a replacement Administrator first"
+    );
+    Ok(())
 }
 
 fn persist_catalog(state: &AccessState) -> anyhow::Result<()> {

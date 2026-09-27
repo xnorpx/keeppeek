@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "configuration_authentication.rs"]
+mod authentication_settings;
+
 const MAXIMUM_TEMPLATES: usize = 64;
 const MAXIMUM_TEMPLATE_NAME_BYTES: usize = 128;
 const MAXIMUM_TEMPLATE_DESCRIPTION_BYTES: usize = 1_024;
@@ -18,6 +21,8 @@ const LEGACY_TEMPLATE_STORE_FILE: &str = "configuration-templates.json";
 pub(super) struct Registry {
     plans: Arc<Mutex<HashMap<String, StoredPlan>>>,
     imports: Arc<Mutex<HashMap<String, StoredImportPreview>>>,
+    pub(super) proofs: Arc<Mutex<authentication::verification::Registry>>,
+    pub(super) restore_proofs: Arc<Mutex<authentication::verification::restore::Registry>>,
 }
 
 #[derive(Clone)]
@@ -117,25 +122,31 @@ pub(super) fn dispatch(
 
 pub(super) fn dispatch_as(
     state: &ServerState,
+    session: SessionId,
     principal: &ApiPrincipal,
     command: proto::ConfigurationCommand,
 ) -> Result<control_ok::Result, ControlCommandError> {
-    dispatch_inner(state, Some(principal.id()), command)
+    dispatch_inner(state, Some((session, principal)), command)
 }
 
 fn dispatch_inner(
     state: &ServerState,
-    actor: Option<String>,
+    actor: Option<(SessionId, &ApiPrincipal)>,
     mut command: proto::ConfigurationCommand,
 ) -> Result<control_ok::Result, ControlCommandError> {
-    if let Some(actor) = actor.as_deref() {
-        stamp_privacy_override(&mut command, actor);
+    if let Some((_, principal)) = actor {
+        stamp_privacy_override(&mut command, &principal.id());
     }
     let result = match command.action {
         Some(proto::configuration_command::Action::Get(request)) => {
             proto::configuration_result::Result::Snapshot(locked_configuration_snapshot_page(
                 state, request,
             )?)
+        }
+        Some(proto::configuration_command::Action::GetExternalAuthentication(_)) => {
+            proto::configuration_result::Result::ExternalAuthentication(
+                external_authentication_configuration(state)?,
+            )
         }
         Some(proto::configuration_command::Action::SaveTemplate(request)) => {
             proto::configuration_result::Result::Template(save_template(state, request)?)
@@ -150,7 +161,9 @@ fn dispatch_inner(
             proto::configuration_result::Result::Plan(plan_configuration_change(state, request)?)
         }
         Some(proto::configuration_command::Action::Apply(request)) => {
-            proto::configuration_result::Result::Applied(apply_configuration_plan(state, request)?)
+            proto::configuration_result::Result::Applied(apply_configuration_plan_as(
+                state, actor, request,
+            )?)
         }
         Some(proto::configuration_command::Action::ExportTemplates(request)) => {
             proto::configuration_result::Result::ExportedTemplates(export_templates(
@@ -178,6 +191,31 @@ fn dispatch_inner(
             result: Some(result),
         },
     ))
+}
+
+fn external_authentication_configuration(
+    state: &ServerState,
+) -> Result<proto::ExternalAuthenticationConfiguration, ControlCommandError> {
+    let _update = state
+        .config_update
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_, root, _, configuration_revision) = load_revision_state(state)?;
+    let settings = crate::access::external_proto::from_root(&root).map_err(|error| {
+        configuration_internal_error("read external authentication settings", error)
+    })?;
+    let result = proto::ExternalAuthenticationConfiguration {
+        configuration_revision,
+        settings,
+    };
+    if result.encoded_len() > MAXIMUM_CONFIGURATION_RESPONSE_BYTES - 128 {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            413,
+            "external authentication settings exceed the control-message limit",
+        ));
+    }
+    Ok(result)
 }
 
 fn stamp_privacy_override(command: &mut proto::ConfigurationCommand, actor: &str) {
@@ -238,7 +276,37 @@ fn plan_configuration_change(
                 )],
             )
         })?;
-    let cameras = loaded_camera_configurations(&config_path, &root)
+    if let proto::configuration_change::Change::ExternalAuthentication(update) = change {
+        if request.targets.is_some() {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "authentication changes do not accept camera targets",
+            ));
+        }
+        return authentication_settings::plan(state, root, current_revision, update);
+    }
+    plan_camera_change(
+        state,
+        &config_path,
+        &root,
+        &templates,
+        current_revision,
+        request.targets,
+        change,
+    )
+}
+
+fn plan_camera_change(
+    state: &ServerState,
+    config_path: &Path,
+    root: &toml::Table,
+    templates: &StoredTemplateDocument,
+    current_revision: String,
+    selector: Option<proto::ConfigurationTargetSelector>,
+    change: proto::configuration_change::Change,
+) -> Result<proto::ConfigurationPlan, ControlCommandError> {
+    let cameras = loaded_camera_configurations(config_path, root)
         .map_err(|error| configuration_internal_error("load cameras", error))?;
     let default_change = matches!(
         change,
@@ -248,29 +316,19 @@ fn plan_configuration_change(
     let (targets, plan_targets, mut issues) = if default_change {
         all_configuration_targets(cameras)
     } else {
-        resolve_configuration_targets(request.targets, cameras, &current_revision)?
+        resolve_configuration_targets(selector, cameras, &current_revision)?
     };
     let mut candidate = root.clone();
     let (touched_fields, apply_semantics, impact) =
-        apply_change_to_candidate(&config_path, &mut candidate, &targets, &templates, &change)
+        apply_change_to_candidate(config_path, &mut candidate, &targets, templates, &change)
             .map_err(|change_issues| {
                 configuration_validation_error(&current_revision, change_issues)
             })?;
-    let candidate_valid = match config::validate_configuration_table(&config_path, &candidate) {
-        Ok(()) => true,
-        Err(error) => {
-            issues.push(configuration_issue(
-                "configuration",
-                "candidate_validation_failed",
-                format!("The complete candidate configuration is invalid: {error}"),
-            ));
-            false
-        }
-    };
+    let candidate_valid = candidate_is_valid(config_path, &candidate, &mut issues);
     let changes = if candidate_valid {
         configuration_changes(
-            &config_path,
-            &root,
+            config_path,
+            root,
             &candidate,
             &targets,
             &touched_fields,
@@ -304,7 +362,35 @@ fn plan_configuration_change(
         impact: impact as i32,
         valid,
         apply_semantics,
+        requires_administrator_confirmation: false,
     };
+    retain_camera_plan(state, plan, candidate, &targets)
+}
+
+fn candidate_is_valid(
+    config_path: &Path,
+    candidate: &toml::Table,
+    issues: &mut Vec<proto::ConfigurationIssue>,
+) -> bool {
+    match config::validate_configuration_table(config_path, candidate) {
+        Ok(()) => true,
+        Err(error) => {
+            issues.push(configuration_issue(
+                "configuration",
+                "candidate_validation_failed",
+                format!("The complete candidate configuration is invalid: {error}"),
+            ));
+            false
+        }
+    }
+}
+
+fn retain_camera_plan(
+    state: &ServerState,
+    plan: proto::ConfigurationPlan,
+    candidate: toml::Table,
+    targets: &[LoadedCameraConfiguration],
+) -> Result<proto::ConfigurationPlan, ControlCommandError> {
     if configuration_response_bytes(proto::configuration_result::Result::Plan(plan.clone()))
         > MAXIMUM_CONFIGURATION_RESPONSE_BYTES
     {
@@ -317,7 +403,7 @@ fn plan_configuration_change(
             )],
         ));
     }
-    if valid {
+    if plan.valid {
         state.configuration_plans.insert(StoredPlan {
             plan: plan.clone(),
             candidate,
@@ -348,8 +434,17 @@ fn configuration_response_bytes(result: proto::configuration_result::Result) -> 
     .encoded_len()
 }
 
+#[cfg(test)]
 fn apply_configuration_plan(
     state: &ServerState,
+    request: proto::ApplyConfigurationPlan,
+) -> Result<proto::ConfigurationApplyResult, ControlCommandError> {
+    apply_configuration_plan_as(state, None, request)
+}
+
+fn apply_configuration_plan_as(
+    state: &ServerState,
+    actor: Option<(SessionId, &ApiPrincipal)>,
     request: proto::ApplyConfigurationPlan,
 ) -> Result<proto::ConfigurationApplyResult, ControlCommandError> {
     let stored = state
@@ -369,14 +464,101 @@ fn apply_configuration_plan(
         .config_update
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (config_path, _root, _templates, current_revision) = load_revision_state(state)?;
-    require_revision(&request.expected_configuration_revision, &current_revision)?;
+    let (config_path, root, _templates, current_revision) = load_revision_state(state)?;
+    validate_apply_plan(state, &stored, &request, &current_revision)?;
+    let before = config::validated_configuration_table(&config_path, &root).map_err(|error| {
+        configuration_internal_error("validate current configuration before commit", error)
+    })?;
+    let after = config::validated_configuration_table(&config_path, &stored.candidate).map_err(
+        |error| configuration_internal_error("revalidate configuration plan before commit", error),
+    )?;
+    let candidate = authentication::verification::Candidate {
+        plan_id: stored.plan.plan_id.clone(),
+        revision: current_revision,
+        expires_at_ms: stored.plan.expires_at_ms,
+        path: config_path,
+        before,
+        after,
+    };
+    if request.administrator_confirmation.is_some() {
+        authentication::verification::commit(state, actor, &request, &candidate)?;
+    } else {
+        commit_preserving_plan(state, actor, &candidate)?;
+    }
+    let result = activate_committed_plan(state, &stored, &candidate.path);
+    drop(configuration_update);
+    super::expire_api_sessions(state);
+    result
+}
+
+fn commit_preserving_plan(
+    state: &ServerState,
+    actor: Option<(SessionId, &ApiPrincipal)>,
+    candidate: &authentication::verification::Candidate,
+) -> Result<(), ControlCommandError> {
+    let commit = || {
+        let authentication = authentication_settings::prepare_activation(
+            state,
+            &candidate.before,
+            &candidate.after,
+        )?;
+        #[cfg(test)]
+        authentication::before_configuration_commit(state);
+        authentication::commit_configuration(
+            state,
+            actor.map(|(_, principal)| principal),
+            authentication,
+            || {
+                config::write_configuration_table(&candidate.path, &candidate.after.source).map_err(
+                    |error| configuration_internal_error("commit configuration plan", error),
+                )
+            },
+        )
+    };
+    match actor {
+        Some((session, principal)) => session_lifecycle::admit(state, session, || {
+            let owns = if session.as_u64() == 0 {
+                principal.is_local()
+            } else {
+                state
+                    .api_session_owners
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&session)
+                    .is_some_and(|owner| owner.principal.identity == principal.identity)
+            };
+            if !owns || principal.role != AccessRole::Administrator {
+                return Err(ControlCommandError::new(
+                    proto::ErrorCode::Rejected,
+                    403,
+                    "configuration requires its live Administrator session",
+                ));
+            }
+            commit()
+        }),
+        // The actor-free entry point exists only for internal unit tests.
+        None if cfg!(test) => commit(),
+        None => Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            403,
+            "configuration actor is required",
+        )),
+    }
+}
+
+fn validate_apply_plan(
+    state: &ServerState,
+    stored: &StoredPlan,
+    request: &proto::ApplyConfigurationPlan,
+    current_revision: &str,
+) -> Result<(), ControlCommandError> {
+    require_revision(&request.expected_configuration_revision, current_revision)?;
     if stored.plan.configuration_revision != current_revision {
         return Err(configuration_error(
             proto::ConfigurationErrorCode::TargetChanged,
             proto::ErrorCode::Rejected,
             "configuration targets changed after this plan was created",
-            &current_revision,
+            current_revision,
             Vec::new(),
         ));
     }
@@ -386,27 +568,29 @@ fn apply_configuration_plan(
             proto::ConfigurationErrorCode::PlanExpired,
             proto::ErrorCode::Rejected,
             "configuration plan expired",
-            &current_revision,
+            current_revision,
             Vec::new(),
         ));
     }
     if !stored.plan.valid {
         return Err(configuration_validation_error(
-            &current_revision,
-            stored.plan.issues,
+            current_revision,
+            stored.plan.issues.clone(),
         ));
     }
-    config::validate_configuration_table(&config_path, &stored.candidate).map_err(|error| {
-        configuration_internal_error("revalidate configuration plan before commit", error)
-    })?;
-    config::write_configuration_table(&config_path, &stored.candidate)
-        .map_err(|error| configuration_internal_error("commit configuration plan", error))?;
+    Ok(())
+}
+
+fn activate_committed_plan(
+    state: &ServerState,
+    stored: &StoredPlan,
+    config_path: &Path,
+) -> Result<proto::ConfigurationApplyResult, ControlCommandError> {
+    state.configuration_plans.remove(&stored.plan.plan_id);
     state
         .reload_privacy_from_configuration(&stored.candidate)
         .map_err(|error| configuration_internal_error("activate privacy policy", error))?;
-    state.configuration_plans.remove(&request.plan_id);
-
-    let saved = config::load_cameras(&config_path)
+    let saved = config::load_cameras(config_path)
         .map_err(|error| configuration_internal_error("load committed cameras", error))?
         .into_values()
         .flatten()
@@ -443,13 +627,59 @@ fn apply_configuration_plan(
             detail,
         });
     }
-    drop(configuration_update);
     Ok(proto::ConfigurationApplyResult {
-        plan_id: request.plan_id,
+        plan_id: stored.plan.plan_id.clone(),
         configuration_committed: true,
         snapshot: None,
         activations,
         impact: stored.plan.impact,
+    })
+}
+
+pub(super) fn verification_candidate(
+    state: &ServerState,
+    plan_id: &str,
+) -> Result<authentication::verification::Candidate, ControlCommandError> {
+    let unavailable = || {
+        ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "authentication configuration plan is unavailable",
+        )
+    };
+    if plan_id.len() > 36 {
+        return Err(unavailable());
+    }
+    let stored = state
+        .configuration_plans
+        .get(plan_id)
+        .ok_or_else(unavailable)?;
+    if !stored.target_ids.is_empty()
+        || !stored.plan.valid
+        || !stored
+            .plan
+            .changes
+            .iter()
+            .any(|change| change.field == "external_auth")
+    {
+        return Err(unavailable());
+    }
+    let (path, root, _, revision) = load_revision_state(state)?;
+    if stored.plan.configuration_revision != revision
+        || stored.plan.expires_at_ms <= i64::try_from(unix_time_ms()).unwrap_or(i64::MAX)
+    {
+        return Err(unavailable());
+    }
+    let before = config::validated_configuration_table(&path, &root).map_err(|_| unavailable())?;
+    let after = config::validated_configuration_table(&path, &stored.candidate)
+        .map_err(|_| unavailable())?;
+    Ok(authentication::verification::Candidate {
+        plan_id: stored.plan.plan_id,
+        revision,
+        expires_at_ms: stored.plan.expires_at_ms,
+        path,
+        before,
+        after,
     })
 }
 
@@ -890,19 +1120,7 @@ fn apply_change_to_candidate(
     let mut issues = Vec::new();
     let (fields, semantics) = match change {
         proto::configuration_change::Change::Patch(patch) => {
-            let fields = camera_patch_fields(patch);
-            if fields.is_empty() {
-                issues.push(configuration_issue(
-                    "change.patch",
-                    "camera_patch_empty",
-                    "Select at least one camera setting to change.",
-                ));
-            }
-            for target in targets {
-                apply_to_camera_tables(root, target.config.ip, |table| {
-                    apply_camera_patch(config_path, table, patch, &mut issues);
-                });
-            }
+            let fields = patch_camera_targets(config_path, root, targets, patch, &mut issues);
             (
                 fields,
                 "Named fields become explicit camera overrides; untouched fields and secret references are preserved."
@@ -910,24 +1128,7 @@ fn apply_change_to_candidate(
             )
         }
         proto::configuration_change::Change::TemplateId(template_id) => {
-            let Some(template) = templates
-                .templates
-                .iter()
-                .find(|template| template.template_id == *template_id)
-            else {
-                issues.push(configuration_issue(
-                    "change.template_id",
-                    "template_not_found",
-                    "The selected template is not present in the current revision.",
-                ));
-                return Err(issues);
-            };
-            let fields = template_fields(&template.values);
-            for target in targets {
-                apply_to_camera_tables(root, target.config.ip, |table| {
-                    apply_template_values(table, &template.values);
-                });
-            }
+            let fields = template_camera_targets(root, targets, templates, template_id)?;
             (
                 fields,
                 "Applying this template creates explicit camera overrides. Later template edits or deletion do not mutate cameras."
@@ -935,26 +1136,7 @@ fn apply_change_to_candidate(
             )
         }
         proto::configuration_change::Change::Defaults(patch) => {
-            let fields = default_patch_fields(patch);
-            if fields.is_empty() {
-                issues.push(configuration_issue(
-                    "change.defaults",
-                    "default_patch_empty",
-                    "Select at least one shared camera default to change.",
-                ));
-            }
-            let defaults = root
-                .entry("camera_defaults".to_owned())
-                .or_insert_with(|| toml::Value::Table(toml::Table::new()))
-                .as_table_mut();
-            match defaults {
-                Some(defaults) => apply_default_patch(defaults, patch, &mut issues),
-                None => issues.push(configuration_issue(
-                    "camera_defaults",
-                    "default_table_invalid",
-                    "The camera_defaults value must be a table.",
-                )),
-            }
+            let fields = patch_shared_camera_defaults(root, patch, &mut issues);
             (
                 fields,
                 "Shared defaults flow only to cameras without an explicit override. Existing overrides remain unchanged."
@@ -962,22 +1144,7 @@ fn apply_change_to_candidate(
             )
         }
         proto::configuration_change::Change::Privacy(patch) => {
-            let fields = privacy_patch_fields(patch);
-            if fields.is_empty() {
-                issues.push(configuration_issue(
-                    "change.privacy",
-                    "privacy_patch_empty",
-                    "Select a privacy schedule or clear the camera schedule.",
-                ));
-            }
-            for target in targets {
-                apply_privacy_schedule_update(
-                    root,
-                    Some(target.config.ip.to_string()),
-                    patch.schedule.as_ref(),
-                    &mut issues,
-                );
-            }
+            let fields = patch_camera_privacy(root, targets, patch, &mut issues);
             (
                 fields,
                 "Privacy policy changes are validated and committed atomically before runtime activation."
@@ -1000,6 +1167,9 @@ fn apply_change_to_candidate(
                     .to_owned(),
             )
         }
+        proto::configuration_change::Change::ExternalAuthentication(_) => {
+            unreachable!("global authentication changes bypass camera planning")
+        }
     };
     if !issues.is_empty() {
         return Err(issues);
@@ -1009,6 +1179,108 @@ fn apply_change_to_candidate(
         semantics,
         proto::ConfigurationImpact::ReconnectCamera,
     ))
+}
+
+fn patch_camera_privacy(
+    root: &mut toml::Table,
+    targets: &[LoadedCameraConfiguration],
+    patch: &proto::PrivacyConfigurationPatch,
+    issues: &mut Vec<proto::ConfigurationIssue>,
+) -> Vec<String> {
+    let fields = privacy_patch_fields(patch);
+    if fields.is_empty() {
+        issues.push(configuration_issue(
+            "change.privacy",
+            "privacy_patch_empty",
+            "Select a privacy schedule or clear the camera schedule.",
+        ));
+    }
+    for target in targets {
+        apply_privacy_schedule_update(
+            root,
+            Some(target.config.ip.to_string()),
+            patch.schedule.as_ref(),
+            issues,
+        );
+    }
+    fields
+}
+
+fn patch_camera_targets(
+    config_path: &Path,
+    root: &mut toml::Table,
+    targets: &[LoadedCameraConfiguration],
+    patch: &proto::CameraConfigurationPatch,
+    issues: &mut Vec<proto::ConfigurationIssue>,
+) -> Vec<String> {
+    let fields = camera_patch_fields(patch);
+    if fields.is_empty() {
+        issues.push(configuration_issue(
+            "change.patch",
+            "camera_patch_empty",
+            "Select at least one camera setting to change.",
+        ));
+    }
+    for target in targets {
+        apply_to_camera_tables(root, target.config.ip, |table| {
+            apply_camera_patch(config_path, table, patch, issues);
+        });
+    }
+    fields
+}
+
+fn template_camera_targets(
+    root: &mut toml::Table,
+    targets: &[LoadedCameraConfiguration],
+    templates: &StoredTemplateDocument,
+    template_id: &str,
+) -> Result<Vec<String>, Vec<proto::ConfigurationIssue>> {
+    let template = templates
+        .templates
+        .iter()
+        .find(|template| template.template_id == template_id)
+        .ok_or_else(|| {
+            vec![configuration_issue(
+                "change.template_id",
+                "template_not_found",
+                "The selected template is not present in the current revision.",
+            )]
+        })?;
+    let fields = template_fields(&template.values);
+    for target in targets {
+        apply_to_camera_tables(root, target.config.ip, |table| {
+            apply_template_values(table, &template.values);
+        });
+    }
+    Ok(fields)
+}
+
+fn patch_shared_camera_defaults(
+    root: &mut toml::Table,
+    patch: &proto::CameraDefaultPatch,
+    issues: &mut Vec<proto::ConfigurationIssue>,
+) -> Vec<String> {
+    let fields = default_patch_fields(patch);
+    if fields.is_empty() {
+        issues.push(configuration_issue(
+            "change.defaults",
+            "default_patch_empty",
+            "Select at least one shared camera default to change.",
+        ));
+    }
+    let defaults = root
+        .entry("camera_defaults".to_owned())
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut();
+    match defaults {
+        Some(defaults) => apply_default_patch(defaults, patch, issues),
+        None => issues.push(configuration_issue(
+            "camera_defaults",
+            "default_table_invalid",
+            "The camera_defaults value must be a table.",
+        )),
+    }
+    fields
 }
 
 fn privacy_patch_fields(patch: &proto::PrivacyConfigurationPatch) -> Vec<String> {
@@ -3785,6 +4057,7 @@ mod tests {
             proto::ApplyConfigurationPlan {
                 plan_id: plan.plan_id,
                 expected_configuration_revision: revision,
+                administrator_confirmation: None,
             },
         )
         .unwrap();
@@ -3843,6 +4116,64 @@ mod tests {
         assert_ne!(detail.current_configuration_revision, initial_revision);
         assert_eq!(load_templates(&config_path).unwrap().templates.len(), 1);
 
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn external_settings_query_preserves_references_without_resolving_secrets() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-auth-settings-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[external_auth]
+allowed_origins = ["https://keeppeek.example"]
+[[external_auth.providers]]
+id = "company"
+name = "Company"
+mappings = [{claim = "groups", value = "admins", role = "administrator"}]
+[external_auth.providers.method]
+kind = "oidc"
+issuer = "https://identity.example"
+client_id = "keeppeek"
+client_secret = "{secret:UNRESOLVED}"
+redirect_uri = "https://keeppeek.example/auth/callback"
+"#,
+        )
+        .unwrap();
+        let state = ServerState::empty().with_camera_config_path(path);
+        let result = dispatch(
+            &state,
+            proto::ConfigurationCommand {
+                action: Some(
+                    proto::configuration_command::Action::GetExternalAuthentication(
+                        proto::GetExternalAuthenticationConfiguration {},
+                    ),
+                ),
+            },
+        )
+        .unwrap();
+        let control_ok::Result::ConfigurationResult(result) = result else {
+            panic!("wrong result")
+        };
+        let Some(proto::configuration_result::Result::ExternalAuthentication(result)) =
+            result.result
+        else {
+            panic!("wrong configuration result")
+        };
+        assert!(!result.configuration_revision.is_empty());
+        let settings = result.settings.unwrap();
+        let Some(proto::external_authentication_provider::Method::Oidc(oidc)) =
+            &settings.providers[0].method
+        else {
+            panic!("wrong provider method")
+        };
+        assert_eq!(
+            oidc.client_secret_reference.as_deref(),
+            Some("{secret:UNRESOLVED}")
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -3992,6 +4323,7 @@ mod tests {
             proto::ApplyConfigurationPlan {
                 plan_id: planned.plan_id,
                 expected_configuration_revision: revision,
+                administrator_confirmation: None,
             },
         )
         .unwrap();
@@ -4081,6 +4413,7 @@ mod tests {
             proto::ApplyConfigurationPlan {
                 plan_id: plan.plan_id,
                 expected_configuration_revision: revision,
+                administrator_confirmation: None,
             },
         )
         .unwrap();
@@ -4289,6 +4622,7 @@ mod tests {
             proto::ApplyConfigurationPlan {
                 plan_id: stale_plan.plan_id,
                 expected_configuration_revision: original_revision,
+                administrator_confirmation: None,
             },
         )
         .unwrap_err();
@@ -4313,6 +4647,7 @@ mod tests {
             proto::ApplyConfigurationPlan {
                 plan_id: fresh_plan.plan_id,
                 expected_configuration_revision: current_revision,
+                administrator_confirmation: None,
             },
         )
         .unwrap();
@@ -4387,6 +4722,7 @@ mod tests {
             proto::ApplyConfigurationPlan {
                 plan_id: plan.plan_id,
                 expected_configuration_revision: revision,
+                administrator_confirmation: None,
             },
         )
         .unwrap_err();

@@ -402,12 +402,20 @@ message ConfigurationCommand {
     ExportConfigurationTemplates export_templates = 7;
     PreviewConfigurationTemplateImport preview_import = 8;
     ApplyConfigurationTemplateImport apply_import = 9;
+    GetExternalAuthenticationConfiguration get_external_authentication = 10;
   }
 }
 
 message GetConfigurationSnapshot {
   optional uint32 page_size = 1;
   string page_token = 2;
+}
+
+message GetExternalAuthenticationConfiguration {}
+
+message ExternalAuthenticationConfiguration {
+  string configuration_revision = 1;
+  ExternalAuthenticationSettings settings = 2;
 }
 
 message SaveConfigurationTemplate {
@@ -459,6 +467,14 @@ message ConfigurationChange {
     CameraDefaultPatch defaults = 3;
     PrivacyConfigurationPatch privacy = 4;
     PrivacyDefaultPatch privacy_defaults = 5;
+    ExternalAuthenticationUpdate external_authentication = 6;
+  }
+}
+
+message ExternalAuthenticationUpdate {
+  oneof value {
+    ExternalAuthenticationSettings set = 1;
+    bool clear = 2;
   }
 }
 
@@ -553,6 +569,12 @@ message OptionalBoolUpdate {
 message ApplyConfigurationPlan {
   string plan_id = 1;
   string expected_configuration_revision = 2;
+  AdministratorConfirmation administrator_confirmation = 3;
+}
+
+message AdministratorConfirmation {
+  string verification_id = 1;
+  bool confirm = 2;
 }
 
 message ExportConfigurationTemplates {
@@ -719,6 +741,7 @@ message ConfigurationPlan {
   ConfigurationImpact impact = 8;
   bool valid = 9;
   string apply_semantics = 10;
+  bool requires_administrator_confirmation = 11;
 }
 
 message ConfigurationPlanTarget {
@@ -826,6 +849,7 @@ message ConfigurationResult {
     ConfigurationApplyResult applied = 4;
     ConfigurationTemplateDocumentResult exported_templates = 5;
     ConfigurationTemplateImportPreview import_preview = 6;
+    ExternalAuthenticationConfiguration external_authentication = 7;
   }
 }
 
@@ -1338,10 +1362,110 @@ message ServerCommand {
     ListAccessSessions list_access_sessions = 10;
     RevokeAccessSession revoke_access_session = 11;
     ListAccessAudit list_access_audit = 12;
+    ExternalAuthenticationCommand external_authentication = 13;
   }
 }
 
 message RestartServer {}
+
+message ExternalAuthenticationCommand {
+  oneof action {
+    ListExternalIdentities list_identities = 1;
+    ListBrowserSessions list_sessions = 2;
+    RevokeExternalIdentity revoke_identity = 3;
+    RevokeBrowserSession revoke_session = 4;
+    VerifyAdministratorBearer verify_administrator_bearer = 5;
+    PrepareAdministratorVerification prepare_administrator_verification = 6;
+    GetAdministratorVerification get_administrator_verification = 7;
+    BeginConfigurationRestoreVerification begin_restore_verification = 8;
+    AppendConfigurationRestoreVerification append_restore_verification = 9;
+    GetConfigurationRestoreVerification get_restore_verification = 10;
+    ConfirmConfigurationRestoreVerification confirm_restore_verification = 11;
+  }
+}
+
+message VerifyAdministratorBearer {
+  string configuration_plan_id = 1;
+  string access_key = 2;
+}
+
+// Uploads the exact ZIP for inspection without adding an HTTP preparation route.
+message BeginConfigurationRestoreVerification {
+  uint64 archive_bytes = 1;
+  string archive_sha256 = 2;
+}
+
+message AppendConfigurationRestoreVerification {
+  string preparation_id = 1;
+  uint64 offset = 2;
+  // Each append contains 1 to 32768 bytes, at the exact next offset.
+  bytes data = 3;
+}
+
+message GetConfigurationRestoreVerification {
+  string preparation_id = 1;
+}
+
+message ConfirmConfigurationRestoreVerification {
+  string preparation_id = 1;
+  AdministratorConfirmation administrator_confirmation = 2;
+  bool confirm = 3;
+}
+
+message ConfigurationRestoreVerification {
+  // Use this ID as configuration_plan_id for replacement Administrator proofs.
+  string preparation_id = 1;
+  uint64 archive_bytes = 2;
+  uint64 received_bytes = 3;
+  int64 expires_at_ms = 4;
+  bool ready = 5;
+  bool requires_administrator_confirmation = 6;
+  bool confirmed = 7;
+  ExternalAuthenticationSettings candidate_authentication = 8;
+}
+
+message AdministratorVerification {
+  string verification_id = 1;
+  string configuration_plan_id = 2;
+  int64 expires_at_ms = 3;
+  bool verified = 4;
+  AdministratorBrowserStart browser_start = 5;
+}
+
+message PrepareAdministratorVerification {
+  string configuration_plan_id = 1;
+  string provider_id = 2;
+  string origin = 3;
+}
+
+message GetAdministratorVerification {
+  string verification_id = 1;
+}
+
+message AdministratorBrowserStart {
+  string origin = 1;
+  string provider_id = 2;
+  string csrf_token = 3;
+}
+
+message ListExternalIdentities {
+  optional uint32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListBrowserSessions {
+  optional uint32 page_size = 1;
+  string page_token = 2;
+}
+
+message RevokeBrowserSession {
+  string session_id = 1;
+}
+
+message RevokeExternalIdentity {
+  string identity_id = 1;
+  uint64 expected_revision = 2;
+}
 
 message GetAccessKey {}
 
@@ -2610,6 +2734,7 @@ message Ok {
     RecordingDeletionJobList recording_deletion_jobs = 39;
     RecordingReconciliationReport recording_reconciliation_report = 40;
     CameraAudioPlaybackResult camera_audio_playback_result = 41;
+    ExternalAuthenticationResult external_authentication_result = 42;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -3255,11 +3380,117 @@ message AccessSession {
   int64 last_activity_at_ms = 8;
   int64 absolute_expires_at_ms = 9;
   optional int64 credential_expires_at_ms = 10;
+  AccessAuthentication authentication = 11;
+}
+
+enum AccessAuthenticationMethod {
+  ACCESS_AUTHENTICATION_METHOD_UNSPECIFIED = 0;
+  ACCESS_AUTHENTICATION_METHOD_TRUSTED_LOCAL = 1;
+  ACCESS_AUTHENTICATION_METHOD_BEARER = 2;
+  ACCESS_AUTHENTICATION_METHOD_OIDC = 3;
+  ACCESS_AUTHENTICATION_METHOD_PROXY = 4;
+}
+
+message AccessAuthentication {
+  AccessAuthenticationMethod method = 1;
+  optional string provider_id = 2;
+  optional string identity_id = 3;
 }
 
 message AccessSessionResult {
   AccessSession current = 1;
   repeated AccessSession sessions = 2;
+}
+
+message CameraAccessPolicy {
+  bool all_cameras = 1;
+  repeated string camera_ids = 2;
+  repeated string group_ids = 3;
+}
+
+message ExternalAuthenticationSettings {
+  repeated string allowed_origins = 1;
+  repeated ExternalAuthenticationProvider providers = 2;
+  bool bearer_enabled = 3;
+  optional int64 bearer_transition_until_ms = 4;
+}
+
+message ExternalAuthenticationProvider {
+  string provider_id = 1;
+  string name = 2;
+  repeated ExternalRoleMapping mappings = 3;
+  oneof method {
+    OidcAuthenticationSettings oidc = 4;
+    ProxyAuthenticationSettings proxy = 5;
+  }
+}
+
+message ExternalRoleMapping {
+  string claim = 1;
+  string value = 2;
+  AccessRole role = 3;
+  CameraAccessPolicy camera_access = 4;
+}
+
+message OidcAuthenticationSettings {
+  string issuer = 1;
+  string client_id = 2;
+  optional string client_secret_reference = 3;
+  string redirect_uri = 4;
+  repeated string scopes = 5;
+  string display_name_claim = 6;
+  repeated string endpoint_origins = 7;
+  repeated string private_networks = 8;
+  optional string logout_uri = 9;
+}
+
+message ProxyAuthenticationSettings {
+  repeated string trusted_peers = 1;
+  string subject_header = 2;
+  string role_header = 3;
+  optional string name_header = 4;
+  optional string secret_header = 5;
+  optional string shared_secret_reference = 6;
+}
+
+message ExternalIdentity {
+  string identity_id = 1;
+  string provider_id = 2;
+  string provider_name = 3;
+  string subject_fingerprint = 4;
+  string display_name = 5;
+  AccessRole role = 6;
+  CameraAccessPolicy camera_access = 7;
+  uint64 revision = 8;
+  bool enabled = 9;
+  int64 created_at_ms = 10;
+}
+
+message BrowserSession {
+  string session_id = 1;
+  string identity_id = 2;
+  int64 created_at_ms = 3;
+  int64 last_activity_at_ms = 4;
+  int64 absolute_expires_at_ms = 5;
+}
+
+message ExternalIdentityList {
+  repeated ExternalIdentity identities = 1;
+  string next_page_token = 2;
+}
+
+message BrowserSessionList {
+  repeated BrowserSession sessions = 1;
+  string next_page_token = 2;
+}
+
+message ExternalAuthenticationResult {
+  oneof result {
+    ExternalIdentityList identities = 1;
+    BrowserSessionList sessions = 2;
+    AdministratorVerification administrator_verification = 3;
+    ConfigurationRestoreVerification restore_verification = 4;
+  }
 }
 
 message AccessAuditEvent {

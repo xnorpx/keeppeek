@@ -9,7 +9,8 @@ traffic reaches the HTTP listener.
 A protected request resolves from the immediate TCP peer:
 
 - A direct address in `access.local_networks` is a local Administrator without sign-in.
-- Every other direct address is remote and must use a named Bearer credential.
+- Every other direct address is remote and must use a named bearer credential or
+  an explicitly configured [external authentication method](external-authentication-operations.md).
 - A forwarding header from an untrusted peer never changes the effective address and forces remote
   classification.
 - A peer in `access.trusted_proxies` must provide the one supported forwarded-client contract.
@@ -76,8 +77,9 @@ TLS connection after termination. Do not add a proxy to `trusted_proxies` unless
 header sanitation, network path, and bypass firewall are under the same administrative control.
 
 Direct remote HTTP receives `426`; use HTTPS or the trusted proxy. Credential values are accepted
-only as `Authorization: Bearer <UUID>`. They are never read from URLs, copied recording links, SDP,
-or cookies.
+only as `Authorization: Bearer <UUID>`. Bearer keys are never read from URLs, copied recording links,
+SDP, or cookies. Opt-in external authentication uses a separate opaque secure browser cookie, not
+a bearer key or provider token, and requires exact Origin/CSRF checks for HTTP mutations.
 
 ## Roles
 

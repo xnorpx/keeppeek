@@ -58,6 +58,44 @@ pub struct BackupManager {
     operation_failures: AtomicU64,
 }
 
+/// An inspected upload that can be staged within its authorization callback.
+pub struct ConfigurationApply<'a> {
+    pub(crate) archive_sha256: String,
+    pub(crate) candidate: super::NativeConfigurationCandidate,
+    manager: &'a BackupManager,
+    archive_path: &'a Path,
+    plan: backup_proto::RestorePlan,
+    now_unix_ms: u64,
+}
+
+impl ConfigurationApply<'_> {
+    pub(crate) fn config_path(&self) -> &Path {
+        &self.manager.config_path
+    }
+
+    /// Stages the upload after the caller admits its live Administrator session.
+    ///
+    /// The configuration-update lock remains held through this call. Do not acquire it again.
+    pub(crate) fn stage(
+        self,
+        admitted: Option<&crate::config::Config>,
+    ) -> anyhow::Result<backup_proto::RestoreRecord> {
+        super::restore::prepare_configuration_apply(&self.manager.config_path)?;
+        let options = super::StageRestoreOptions {
+            bundle_path: self.archive_path,
+            target_config_path: &self.manager.config_path,
+            plan: &self.plan,
+            now_unix_ms: self.now_unix_ms,
+        };
+        match admitted {
+            Some(configuration) => {
+                super::stage_restore_with_configuration(options, &configuration.source)
+            }
+            None => super::stage_restore(options),
+        }
+    }
+}
+
 impl BackupManager {
     pub(crate) fn export_configuration(
         &self,
@@ -89,11 +127,27 @@ impl BackupManager {
         Ok((format!("keeppeek-config-{now_unix_ms}.zip"), bytes))
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_configuration(
         &self,
         reader: impl Read,
         content_length: u64,
         now_unix_ms: u64,
+    ) -> anyhow::Result<backup_proto::RestoreRecord> {
+        self.apply_configuration_authorized(reader, content_length, now_unix_ms, |context| {
+            context.stage(None)
+        })
+    }
+
+    /// Inspects an upload and authorizes staging under the configuration-update lock.
+    ///
+    /// The callback must keep live-session admission around its consuming `stage` call.
+    pub(crate) fn apply_configuration_authorized(
+        &self,
+        reader: impl Read,
+        content_length: u64,
+        now_unix_ms: u64,
+        authorize: impl FnOnce(ConfigurationApply<'_>) -> anyhow::Result<backup_proto::RestoreRecord>,
     ) -> anyhow::Result<backup_proto::RestoreRecord> {
         if now_unix_ms == 0 || content_length == 0 {
             return Err(super::ServiceError::invalid(
@@ -114,20 +168,27 @@ impl BackupManager {
         remove_if_exists(&temporary)?;
         let result = (|| {
             let mut file = create_private_file(&temporary)?;
-            stream_upload(reader, &mut file, content_length).map_err(|error| {
-                if error.is::<std::io::Error>() {
-                    error
-                } else {
-                    super::ServiceError::invalid(
-                        "Content-Length",
-                        "configuration archive does not match Content-Length",
-                    )
-                    .into()
-                }
-            })?;
+            let archive_sha256 =
+                stream_upload(reader, &mut file, content_length).map_err(|error| {
+                    if error.is::<std::io::Error>() {
+                        error
+                    } else {
+                        super::ServiceError::invalid(
+                            "Content-Length",
+                            "configuration archive does not match Content-Length",
+                        )
+                        .into()
+                    }
+                })?;
             file.sync_all()?;
             drop(file);
-            self.stage_configuration_archive(&temporary, archive_id, now_unix_ms)
+            self.authorize_configuration_archive(
+                &temporary,
+                archive_id,
+                archive_sha256,
+                now_unix_ms,
+                authorize,
+            )
         })();
         if let Err(error) = remove_if_exists(&temporary) {
             tracing::warn!(error_kind = ?error.kind(), "configuration upload cleanup failed");
@@ -135,12 +196,41 @@ impl BackupManager {
         result
     }
 
-    fn stage_configuration_archive(
+    fn authorize_configuration_archive(
+        &self,
+        archive_path: &Path,
+        archive_id: String,
+        archive_sha256: String,
+        now_unix_ms: u64,
+        authorize: impl FnOnce(ConfigurationApply<'_>) -> anyhow::Result<backup_proto::RestoreRecord>,
+    ) -> anyhow::Result<backup_proto::RestoreRecord> {
+        let _config_update = self
+            .config_update
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let plan = self.plan_configuration_archive(archive_path, archive_id, now_unix_ms)?;
+        anyhow::ensure!(
+            plan.archive_sha256 == archive_sha256,
+            "configuration upload changed during inspection"
+        );
+        let candidate = super::inspect_configuration_candidate(archive_path, &self.config_path)?;
+        // ponytail: this synchronous callback keeps authorization and staging in one transaction.
+        authorize(ConfigurationApply {
+            archive_sha256,
+            candidate,
+            manager: self,
+            archive_path,
+            plan,
+            now_unix_ms,
+        })
+    }
+
+    fn plan_configuration_archive(
         &self,
         archive_path: &Path,
         archive_id: String,
         now_unix_ms: u64,
-    ) -> anyhow::Result<backup_proto::RestoreRecord> {
+    ) -> anyhow::Result<backup_proto::RestorePlan> {
         let manifest = super::inspect_bundle(std::fs::File::open(archive_path)?).map_err(|_| {
             super::ServiceError::invalid("archive", "configuration archive failed validation")
         })?;
@@ -158,10 +248,6 @@ impl BackupManager {
             .find(|path| path.kind == backup_proto::BackupPathKind::ConfigDirectory as i32)
             .ok_or_else(|| anyhow::anyhow!("configuration archive source path is missing"))?;
         let target_directory = self.config_path.parent().unwrap_or_else(|| Path::new("."));
-        let _config_update = self
-            .config_update
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let request = backup_proto::CreateRestorePlanRequest {
             client_request_id: archive_id.clone(),
             backup_id: archive_id,
@@ -189,13 +275,7 @@ impl BackupManager {
             )
             .into());
         }
-        super::restore::prepare_configuration_apply(&self.config_path)?;
-        super::stage_restore(super::StageRestoreOptions {
-            bundle_path: archive_path,
-            target_config_path: &self.config_path,
-            plan: &plan,
-            now_unix_ms,
-        })
+        Ok(plan)
     }
 
     /// Returns fixed limits and sections supported by this server build.
@@ -659,6 +739,7 @@ impl BackupManager {
                 },
             )?;
             file.sync_all()?;
+            drop(file);
             let archive_bytes = std::fs::metadata(&temporary)?.len();
             if request.expected_archive_bytes != 0 && archive_bytes > request.expected_archive_bytes
             {
@@ -708,6 +789,7 @@ impl BackupManager {
         let mut file = create_private_file(&upload.temporary_path)?;
         let actual_sha256 = stream_upload(reader, &mut file, content_length)?;
         file.sync_all()?;
+        drop(file);
         if !upload.archive_sha256.is_empty() && actual_sha256 != upload.archive_sha256 {
             return Err(
                 super::ServiceError::checksum("uploaded backup checksum does not match").into(),
@@ -931,14 +1013,7 @@ fn read_metadata_file(path: &Path) -> anyhow::Result<StoredBackup> {
 }
 
 fn create_private_file(path: &Path) -> std::io::Result<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.create_new(true).read(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options.open(path)
+    super::create_private_file(path)
 }
 
 fn hash_file(path: &Path) -> anyhow::Result<String> {
@@ -971,6 +1046,141 @@ fn remove_if_exists(path: &Path) -> std::io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authorized_configuration_apply_denial_preserves_files_and_completed_journal() {
+        for completed in [false, true] {
+            let directory = test_directory();
+            let config_path = directory.join("config.toml");
+            std::fs::write(&config_path, "host = 'localhost'\n").unwrap();
+            std::fs::write(crate::config::secrets_path(&config_path), "").unwrap();
+            let manager = BackupManager::open(config_path.clone()).unwrap();
+            let (_, bytes) = manager.export_configuration(1_788_000_000_000).unwrap();
+            let length = u64::try_from(bytes.len()).unwrap();
+            if completed {
+                manager
+                    .apply_configuration(Cursor::new(&bytes), length, 1_788_000_000_001)
+                    .unwrap();
+                super::super::recover_pending_restore(&config_path, 1_788_000_000_002).unwrap();
+                super::super::mark_restore_healthy(&config_path, 1_788_000_000_003).unwrap();
+            }
+            let original = configuration_files(&directory);
+            let mut authorized = false;
+            let error = manager
+                .apply_configuration_authorized(
+                    Cursor::new(&bytes),
+                    length,
+                    1_788_000_000_004,
+                    |context| {
+                        authorized = true;
+                        assert_eq!(
+                            context.archive_sha256,
+                            super::super::encode_lower_hex(Sha256::digest(&bytes))
+                        );
+                        assert_eq!(context.candidate.configuration.host, "localhost");
+                        assert!(matches!(
+                            manager.config_update.try_lock(),
+                            Err(TryLockError::WouldBlock)
+                        ));
+                        anyhow::bail!("test authorization denied")
+                    },
+                )
+                .unwrap_err();
+            assert!(authorized);
+            assert_eq!(error.to_string(), "test authorization denied");
+            assert_eq!(configuration_files(&directory), original);
+            assert!(!manager.root.join(".configuration-apply.tmp").exists());
+            assert!(manager.config_update.try_lock().is_ok());
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    fn configuration_files(directory: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut files = Vec::new();
+        for parent in [directory.to_owned(), directory.join(".backups")] {
+            for entry in std::fs::read_dir(parent).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_file() {
+                    files.push((path.clone(), std::fs::read(path).unwrap()));
+                }
+            }
+        }
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
+    }
+
+    #[test]
+    fn authorized_configuration_apply_stages_candidate_with_exact_upload_hash() {
+        let directory = test_directory();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "host = 'localhost'\n").unwrap();
+        std::fs::write(crate::config::secrets_path(&config_path), "").unwrap();
+        let manager = BackupManager::open(config_path.clone()).unwrap();
+        let (_, bytes) = manager.export_configuration(1_788_000_000_000).unwrap();
+        let digest = super::super::encode_lower_hex(Sha256::digest(&bytes));
+        let staged = manager
+            .apply_configuration_authorized(
+                Cursor::new(&bytes),
+                u64::try_from(bytes.len()).unwrap(),
+                1_788_000_000_001,
+                |context| {
+                    assert_eq!(context.archive_sha256, digest);
+                    let admitted = context.candidate.configuration.clone();
+                    let result = context.stage(Some(&admitted))?;
+                    assert!(matches!(
+                        manager.config_update.try_lock(),
+                        Err(TryLockError::WouldBlock)
+                    ));
+                    Ok(result)
+                },
+            )
+            .unwrap();
+        let journal: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(manager.root.join("restore-journal.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(journal["archive_sha256"].as_str(), Some(digest.as_str()));
+        assert_eq!(
+            staged.state,
+            backup_proto::RestoreState::AwaitingRestart as i32
+        );
+        assert!(!manager.root.join(".configuration-apply.tmp").exists());
+        super::super::recover_pending_restore(&config_path, 1_788_000_000_002).unwrap();
+        assert_eq!(
+            crate::config::load_config(&config_path).unwrap().host,
+            "localhost"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn authorized_configuration_apply_rejects_bad_upload_before_authorization() {
+        let directory = test_directory();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "host = 'localhost'\n").unwrap();
+        std::fs::write(crate::config::secrets_path(&config_path), "").unwrap();
+        let manager = BackupManager::open(config_path).unwrap();
+        let original = configuration_files(&directory);
+        for length in [2, 3, 4] {
+            let mut called = false;
+            assert!(
+                manager
+                    .apply_configuration_authorized(
+                        Cursor::new(b"bad"),
+                        length,
+                        1_788_000_000_001,
+                        |_| {
+                            called = true;
+                            anyhow::bail!("authorization must not run")
+                        },
+                    )
+                    .is_err()
+            );
+            assert!(!called);
+            assert_eq!(configuration_files(&directory), original);
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn configuration_apply_preserves_secret_backed_target_storage_paths() {

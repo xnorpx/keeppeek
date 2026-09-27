@@ -7,7 +7,7 @@ use url::{Host, Url};
 #[cfg(test)]
 mod tests;
 #[cfg(windows)]
-mod windows;
+pub mod windows;
 
 const CONTROL_BODY_BYTES_MAX: u64 = 16 * 1024 * 1024;
 const ERROR_BODY_BYTES_MAX: u64 = 64 * 1024;
@@ -150,7 +150,8 @@ impl BackupHttpClient {
                 "configuration export did not return a ZIP archive",
             ));
         }
-        let mut output = create_private_file(destination)?;
+        let mut output = create_private_file(destination)
+            .map_err(|_| BackupClientError::Protocol("backup destination could not be created"))?;
         let result = save_export(response, &mut output);
         drop(output);
         if result.is_err() && std::fs::remove_file(destination).is_err() {
@@ -224,18 +225,18 @@ fn decode_api_error(mut response: Response<Body>) -> BackupClientError {
     BackupClientError::Api { status, error }
 }
 
-fn create_private_file(path: &Path) -> Result<File, BackupClientError> {
+pub fn create_private_file(path: &Path) -> std::io::Result<File> {
     #[cfg(windows)]
     let result = windows::create_private(path);
     #[cfg(not(windows))]
     let result = create_private_portable(path);
-    result.map_err(|_| BackupClientError::Protocol("backup destination could not be created"))
+    result
 }
 
 #[cfg(not(windows))]
 fn create_private_portable(path: &Path) -> std::io::Result<File> {
     let mut options = File::options();
-    options.create_new(true).write(true);
+    options.create_new(true).read(true).write(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;

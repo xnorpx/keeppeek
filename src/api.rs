@@ -194,6 +194,33 @@ pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/keeppeek.webrtc.v1.rs"));
 }
 
+impl fmt::Debug for proto::VerifyAdministratorBearer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerifyAdministratorBearer")
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for proto::AdministratorBrowserStart {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AdministratorBrowserStart")
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for proto::AppendConfigurationRestoreVerification {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AppendConfigurationRestoreVerification")
+            .field("preparation_id", &self.preparation_id)
+            .field("offset", &self.offset)
+            .field("data", &"[redacted]")
+            .finish()
+    }
+}
+
 pub mod backup_proto {
     #![allow(clippy::all, clippy::pedantic, clippy::nursery, warnings)]
     include!(concat!(env!("OUT_DIR"), "/keeppeek.backup.v1.rs"));
@@ -295,6 +322,25 @@ mod backup_proto_json_tests {
 mod tests {
     use super::proto;
     use prost::Message as _;
+
+    #[test]
+    fn access_session_authentication_is_additive_and_preserves_unknown_methods() {
+        let legacy = proto::AccessSession::decode([0x0a, 0x01, b'7'].as_slice()).unwrap();
+        assert_eq!(legacy.session_id, "7");
+        assert!(legacy.authentication.is_none());
+        let mut current = legacy;
+        current.authentication = Some(proto::AccessAuthentication {
+            method: 123,
+            provider_id: Some("company".into()),
+            identity_id: Some("fb1975f7-7f9a-4d41-9f63-26e4d52098ab".into()),
+        });
+        let encoded = current.encode_to_vec();
+        assert_eq!(encoded[3], 0x5a, "authentication must use additive tag 11");
+        assert_eq!(
+            proto::AccessSession::decode(encoded.as_slice()).unwrap(),
+            current
+        );
+    }
 
     #[test]
     fn configuration_plan_round_trips_exact_targets_and_inheritance_clear() {

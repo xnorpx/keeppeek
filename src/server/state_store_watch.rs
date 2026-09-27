@@ -360,6 +360,19 @@ fn session_authorized(
     let Some(session) = sessions.get(&session_id) else {
         return false;
     };
+    let now = std::time::Instant::now();
+    let now_ms = i64::try_from(super::unix_time_ms()).unwrap_or(i64::MAX);
+    if session
+        .lifecycle
+        .closed
+        .load(std::sync::atomic::Ordering::Acquire)
+        || now_ms >= session.absolute_expires_at_ms
+        || now.saturating_duration_since(session.last_activity)
+            >= state.api_session_policy.idle_timeout
+        || !super::authentication::active(state, &session.principal, now, now_ms)
+    {
+        return false;
+    }
     authorize_read(
         layout,
         &session.principal.id(),
@@ -421,6 +434,7 @@ mod tests {
 
     fn session_record(principal: ApiPrincipal) -> super::super::ApiSessionRecord {
         super::super::ApiSessionRecord {
+            lifecycle: Default::default(),
             principal,
             classification: ClientClassification {
                 peer_address: IpAddr::V4(Ipv4Addr::LOCALHOST),

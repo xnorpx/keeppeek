@@ -44,6 +44,7 @@ mod tests {
             .insert(
                 session,
                 super::super::ApiSessionRecord {
+                    lifecycle: Default::default(),
                     principal: ApiPrincipal::local(IpAddr::V4(Ipv4Addr::LOCALHOST)),
                     classification: ClientClassification {
                         peer_address: IpAddr::V4(Ipv4Addr::LOCALHOST),

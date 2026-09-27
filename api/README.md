@@ -89,6 +89,21 @@ when `require_secure_remote` is enabled. A configured trusted proxy is treated a
 the proxy is responsible for accepting HTTPS from its client and forwarding over its protected
 link to KeepPeek.
 
+When explicitly configured, OIDC and trusted identity proxies use a server-owned
+browser session instead of a bearer credential. The previously approved browser
+routes are `GET /auth/session`, `POST /auth/login`, `GET /auth/callback`, and
+`POST /auth/logout`; their schemas are in `openapi.yaml`. Cookies are host-only,
+Secure, HttpOnly, and SameSite=Lax. Cookie-authenticated mutations require exact
+same-origin `Origin` and `X-KeepPeek-CSRF`. Do not send a session cookie and bearer
+together. Proxy assertions are trusted only from configured immediate peers, not
+forwarded-client headers. Administrator/User and camera authorization use the same
+principal policy for both methods. See [external authentication](../docs/external-authentication.md).
+
+Provider configuration, identity/session administration, and replacement-Administrator
+verification use [protobuf control commands](webrtc.md), not additional HTTP
+administration routes. Lockout-sensitive configuration restores prepare and confirm
+the exact ZIP over that same live control connection before the existing HTTP upload.
+
 ### Network policy
 
 The default local CIDRs cover IPv4 loopback, RFC 1918, IPv4 link-local, IPv6 loopback, IPv6 unique
