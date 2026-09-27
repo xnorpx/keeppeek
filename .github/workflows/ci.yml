@@ -346,6 +346,7 @@ jobs:
       - name: Install UI dependencies
         working-directory: ui
         run: bun install --no-save --registry=https://registry.npmjs.org/
+      - uses: ./.github/actions/setup-ffmpeg
       - name: Run Rust tests
         id: rust-tests
         shell: bash
