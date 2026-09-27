@@ -373,9 +373,12 @@
 					<div class="min-w-0 flex-1">
 						<p class="truncate text-sm font-medium">{session.displayName}</p>
 						<p class="mt-0.5 text-xs text-text-faint">
-							{session.local ? 'Local' : 'Remote'} · {session.clientClassification} · {shortId(
-								session.id
-							)}
+							{session.authentication?.method ?? (session.local ? 'trusted-local' : 'bearer')}
+							{#if session.authentication?.providerId}
+								· {session.authentication.providerId}{/if}
+							{#if session.authentication?.identityId}
+								· {shortId(session.authentication.identityId)}{/if}
+							· {session.clientClassification} · {shortId(session.id)}
 						</p>
 					</div>
 					<Button

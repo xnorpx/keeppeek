@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import type { AccessCredential } from '$lib/access';
+	import type { ExternalIdentity } from '$lib/proto/webrtc_pb';
 	import type { PeekLayout, PeekLayoutAudience } from '$lib/peek-layout';
 	import XIcon from '@lucide/svelte/icons/x';
 	import PeekDashboardAudiencePicker from './PeekDashboardAudiencePicker.svelte';
@@ -8,12 +9,13 @@
 	type Props = {
 		dashboard: PeekLayout;
 		credentials: readonly AccessCredential[];
+		externalIdentities?: readonly ExternalIdentity[];
 		busy: boolean;
 		onsave: (audience: PeekLayoutAudience) => Promise<boolean>;
 		onclose: () => void;
 	};
 
-	let { dashboard, credentials, busy, onsave, onclose }: Props = $props();
+	let { dashboard, credentials, externalIdentities = [], busy, onsave, onclose }: Props = $props();
 	let closeButton = $state<HTMLButtonElement | null>(null);
 	let audience = $state.raw<PeekLayoutAudience>(
 		untrack(() => ({
@@ -66,6 +68,7 @@
 		<div class="p-4">
 			<PeekDashboardAudiencePicker
 				{credentials}
+				{externalIdentities}
 				{audience}
 				onchange={(value) => (audience = value)}
 			/>

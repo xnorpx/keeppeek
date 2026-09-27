@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import type { AccessCredential } from '$lib/access';
+	import type { ExternalIdentity } from '$lib/proto/webrtc_pb';
+	import { externalAudienceIdentities } from '$lib/external-authentication-admin';
 	import type { ControlClient } from '$lib/control-client';
 	import type { GridTileVisibility } from '$lib/grid-visibility';
 	import {
@@ -32,6 +34,7 @@
 
 	let cameras = $state.raw<readonly CameraListItem[]>([]);
 	let credentials = $state.raw<readonly AccessCredential[]>([]);
+	let externalIdentities = $state.raw<readonly ExternalIdentity[]>([]);
 	let registry = $state.raw<PeekLayoutRegistry | null>(null);
 	let loading = $state(true);
 	let busy = $state(false);
@@ -87,17 +90,20 @@
 		error = null;
 		const generation = peekViewState.generation;
 		try {
-			const [loadedCameras, loadedRegistry, loadedCredentials] = await Promise.all([
-				controller.getCameras(),
-				controller.getPeekLayoutRegistry(),
-				controller.listAccessCredentials()
-			]);
+			const [loadedCameras, loadedRegistry, loadedCredentials, loadedIdentities] =
+				await Promise.all([
+					controller.getCameras(),
+					controller.getPeekLayoutRegistry(),
+					controller.listAccessCredentials(),
+					externalAudienceIdentities((token) => controller.listExternalIdentities(token))
+				]);
 			if (!peekViewState.updateFromSettings(generation, loadedCameras, health, loadedRegistry)) {
 				return;
 			}
 			cameras = loadedCameras;
 			registry = loadedRegistry;
 			credentials = loadedCredentials;
+			externalIdentities = loadedIdentities;
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Dashboards could not be loaded.';
 		} finally {
@@ -107,7 +113,10 @@
 	}
 
 	async function refreshCredentials(): Promise<void> {
-		credentials = await controller.listAccessCredentials();
+		[credentials, externalIdentities] = await Promise.all([
+			controller.listAccessCredentials(),
+			externalAudienceIdentities((token) => controller.listExternalIdentities(token))
+		]);
 	}
 
 	function previewStream(camera: CameraListItem): 'main' | 'sub' {
@@ -211,6 +220,7 @@
 				{activeLayout}
 				{cameras}
 				{credentials}
+				{externalIdentities}
 				{busy}
 				onrefreshcredentials={refreshCredentials}
 				onchange={persist}

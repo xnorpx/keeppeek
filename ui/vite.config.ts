@@ -22,6 +22,7 @@ export default defineConfig({
 			'@lucide/svelte/icons/arrow-up',
 			'@lucide/svelte/icons/audio-lines',
 			'@lucide/svelte/icons/bell-ring',
+			'@lucide/svelte/icons/bookmark',
 			'@lucide/svelte/icons/car-front',
 			'@lucide/svelte/icons/check',
 			'@lucide/svelte/icons/check-check',
@@ -49,6 +50,7 @@ export default defineConfig({
 			'@lucide/svelte/icons/rotate-cw',
 			'@lucide/svelte/icons/scan',
 			'@lucide/svelte/icons/scan-line',
+			'@lucide/svelte/icons/scan-search',
 			'@lucide/svelte/icons/save',
 			'@lucide/svelte/icons/settings-2',
 			'@lucide/svelte/icons/shield-off',
@@ -66,6 +68,7 @@ export default defineConfig({
 			allow: [uiRoot, ...fontSourceRoots]
 		},
 		proxy: {
+			'/auth/': apiTarget,
 			'/create': apiTarget,
 			'/config/': apiTarget,
 			'/delete': apiTarget,

@@ -8,6 +8,11 @@ import type {
 	ServerLogEntry,
 	StreamRecordingCoverage
 } from './types';
+import type { BrowserCredential } from './external-authentication.svelte';
+import { fromJsonString } from '@bufbuild/protobuf';
+import { RestoreRecordSchema, RestoreState } from './proto/backup_pb';
+
+export type HttpCredential = string | BrowserCredential | null | undefined;
 
 export class ApiRequestError extends Error {
 	constructor(
@@ -20,14 +25,25 @@ export class ApiRequestError extends Error {
 }
 
 function authenticatedHeaders(
-	accessKey: string | null | undefined,
-	headers: Record<string, string>
+	accessKey: HttpCredential,
+	headers: Record<string, string>,
+	mutating = false
 ): Record<string, string> {
+	if (accessKey && typeof accessKey !== 'string') {
+		return mutating ? { ...headers, 'X-KeepPeek-CSRF': accessKey.csrfToken } : headers;
+	}
 	return accessKey ? { ...headers, Authorization: `Bearer ${accessKey}` } : headers;
 }
 
-export async function fetchLogSnapshot(accessKey?: string | null): Promise<LogSnapshot> {
+function cookieOptions(credential: HttpCredential): RequestInit {
+	return credential && typeof credential !== 'string'
+		? { credentials: 'same-origin', redirect: 'error' }
+		: {};
+}
+
+export async function fetchLogSnapshot(accessKey?: HttpCredential): Promise<LogSnapshot> {
 	const response = await fetch('/logs/snapshot', {
+		...cookieOptions(accessKey),
 		headers: authenticatedHeaders(accessKey, { Accept: 'application/json' }),
 		cache: 'no-store'
 	});
@@ -37,8 +53,9 @@ export async function fetchLogSnapshot(accessKey?: string | null): Promise<LogSn
 	return value;
 }
 
-export async function fetchMetricsSnapshot(accessKey?: string | null): Promise<string> {
+export async function fetchMetricsSnapshot(accessKey?: HttpCredential): Promise<string> {
 	const response = await fetch('/metrics', {
+		...cookieOptions(accessKey),
 		headers: authenticatedHeaders(accessKey, { Accept: 'text/plain' }),
 		cache: 'no-store'
 	});
@@ -48,7 +65,7 @@ export async function fetchMetricsSnapshot(accessKey?: string | null): Promise<s
 
 export async function fetchRecordingCoverage(
 	query: RecordingCoverageQuery = {},
-	accessKey?: string | null,
+	accessKey?: HttpCredential,
 	signal?: AbortSignal
 ): Promise<RecordingCoverageResponse> {
 	const parameters = new URLSearchParams();
@@ -71,6 +88,7 @@ export async function fetchRecordingCoverage(
 	}
 	const suffix = parameters.size === 0 ? '' : `?${parameters}`;
 	const request: RequestInit = {
+		...cookieOptions(accessKey),
 		headers: authenticatedHeaders(accessKey, { Accept: 'application/json' }),
 		cache: 'no-store'
 	};
@@ -86,10 +104,11 @@ export async function fetchRecordingCoverage(
 
 export async function fetchLogStream(
 	url: string,
-	accessKey: string | null | undefined,
+	accessKey: HttpCredential,
 	signal: AbortSignal
 ): Promise<Response> {
 	const response = await fetch(url, {
+		...cookieOptions(accessKey),
 		headers: authenticatedHeaders(accessKey, { Accept: 'text/event-stream' }),
 		cache: 'no-store',
 		signal
@@ -102,23 +121,29 @@ export async function fetchLogStream(
 async function postEmpty(
 	path: string,
 	body?: unknown,
-	accessKey?: string | null,
+	accessKey?: HttpCredential,
 	keepalive = false
 ): Promise<void> {
 	const res = await fetch(
 		path,
 		body === undefined
 			? {
+					...cookieOptions(accessKey),
 					method: 'POST',
-					headers: authenticatedHeaders(accessKey, {}),
+					headers: authenticatedHeaders(accessKey, {}, true),
 					keepalive
 				}
 			: {
+					...cookieOptions(accessKey),
 					method: 'POST',
-					headers: authenticatedHeaders(accessKey, {
-						'Content-Type': 'application/json',
-						Prefer: 'return=representation'
-					}),
+					headers: authenticatedHeaders(
+						accessKey,
+						{
+							'Content-Type': 'application/json',
+							Prefer: 'return=representation'
+						},
+						true
+					),
 					body: JSON.stringify(body),
 					keepalive
 				}
@@ -136,7 +161,7 @@ export async function waitForMetricsAt(origin: string): Promise<void> {
 
 export async function createSession(
 	offer: RTCSessionDescriptionInit,
-	accessKey?: string | null
+	accessKey?: HttpCredential
 ): Promise<CreateResponse> {
 	const request: CreateRequest = { offer: { type: offer.type as string, sdp: offer.sdp! } };
 	const requestString = JSON.stringify(request);
@@ -156,11 +181,16 @@ export async function createSession(
 	}
 
 	const res = await fetch('/create', {
+		...cookieOptions(accessKey),
 		method: 'POST',
-		headers: authenticatedHeaders(accessKey, {
-			'Content-Type': 'application/json',
-			'Content-Encoding': 'gzip'
-		}),
+		headers: authenticatedHeaders(
+			accessKey,
+			{
+				'Content-Type': 'application/json',
+				'Content-Encoding': 'gzip'
+			},
+			true
+		),
 		body
 	});
 
@@ -173,10 +203,40 @@ export async function createSession(
 
 export function deleteSession(
 	sessionId: string,
-	accessKey?: string | null,
+	accessKey?: HttpCredential,
 	options: { keepalive?: boolean } = {}
 ): Promise<void> {
 	return postEmpty('/delete', { session_id: sessionId }, accessKey, options.keepalive);
+}
+
+export async function applyCookieConfigurationArchive(
+	file: File,
+	credential: BrowserCredential,
+	signal?: AbortSignal
+) {
+	if (file.size === 0) throw new ApiRequestError(400, 'The configuration ZIP is empty.');
+	if (file.size > 1024 * 1024 * 1024) {
+		throw new ApiRequestError(413, 'The configuration ZIP exceeds the 1 GiB limit.');
+	}
+	const response = await fetch('/config/apply', {
+		method: 'POST',
+		credentials: 'same-origin',
+		redirect: 'error',
+		cache: 'no-store',
+		headers: authenticatedHeaders(
+			credential,
+			{ 'Content-Type': 'application/zip', Accept: 'application/json' },
+			true
+		),
+		body: file,
+		...(signal ? { signal } : {})
+	});
+	if (!response.ok) throw new ApiRequestError(response.status, response.statusText);
+	const result = fromJsonString(RestoreRecordSchema, await response.text());
+	if (result.state !== RestoreState.AWAITING_RESTART) {
+		throw new ApiRequestError(502, 'Configuration apply did not return a staged restore.');
+	}
+	return result;
 }
 
 function isLogSnapshot(value: unknown): value is LogSnapshot {

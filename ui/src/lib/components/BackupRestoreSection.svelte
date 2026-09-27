@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, type ComponentProps } from 'svelte';
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
@@ -8,14 +8,18 @@
 	import type { ControlClient } from '$lib/control-client';
 	import type { RestoreRecord } from '$lib/proto/backup_pb';
 	import { Button } from './ui/button/index.js';
+	import ConfigurationRestoreReview from './ConfigurationRestoreReview.svelte';
 
 	type Props = {
-		controller: ControlClient;
+		controller: ComponentProps<typeof ConfigurationRestoreReview>['controller'] &
+			Pick<ControlClient, 'onCapabilities' | 'exportConfiguration'>;
 		onrestart: () => void | Promise<void>;
 	};
 
 	let { controller, onrestart }: Props = $props();
 	let administrator = $state(false);
+	let local = $state(false);
+	let restoreBusy = $state(false);
 	let supported = $state(false);
 	let action = $state<string | null>(null);
 	let error = $state<string | null>(null);
@@ -33,6 +37,7 @@
 	$effect(() => {
 		return controller.onAccessState((state) => {
 			administrator = state.session?.role === 'administrator';
+			local = state.session?.local === true;
 			if (!administrator) transfer?.abort();
 		});
 	});
@@ -79,7 +84,7 @@
 
 	async function applyConfiguration(): Promise<void> {
 		const file = uploadedFile;
-		if (!file || !validFile || !confirmed || staged) return;
+		if (!local || !file || !validFile || !confirmed || staged) return;
 		await run('Applying configuration', async (signal) => {
 			const record = await controller.applyConfiguration(file, signal);
 			if (!signal.aborted) staged = record;
@@ -161,30 +166,49 @@
 					accept=".zip,application/zip"
 					class="block w-full min-w-0 text-xs text-text-muted file:mr-3 file:rounded-sm file:border file:border-hairline-strong file:bg-raised file:px-3 file:py-2 file:text-sm file:font-medium file:text-text focus-visible:outline-2 focus-visible:outline-ring"
 					onchange={selectArchive}
-					disabled={action !== null || staged !== null}
+					disabled={action !== null || staged !== null || restoreBusy}
 				/>
 			</label>
 			{#if uploadedFile}
 				<p class="font-mono text-xs break-all text-text-muted">{uploadedFile.name}</p>
 			{/if}
-			<label class="flex items-start gap-2 text-xs leading-5">
-				<input
-					type="checkbox"
-					class="mt-1 shrink-0"
-					bind:checked={confirmed}
-					disabled={!validFile || action !== null || staged !== null}
-				/>
-				<span
-					>Replace <span class="font-mono">config.toml</span> and
-					<span class="font-mono">secrets.toml</span> on restart.</span
+			{#if !local && uploadedFile && validFile && !staged}
+				{#key uploadedFile}
+					<ConfigurationRestoreReview
+						{controller}
+						file={uploadedFile}
+						onbusy={(busy) => {
+							restoreBusy = busy;
+						}}
+						onstaged={(record) => {
+							staged = record;
+						}}
+					/>
+				{/key}
+			{:else if local}
+				<p class="text-xs text-text-muted">
+					Local restore retains the server's lockout guard. Use a remote Administrator session to
+					prove a replacement sign-in method.
+				</p>
+				<label class="flex items-start gap-2 text-xs leading-5">
+					<input
+						type="checkbox"
+						class="mt-1 size-4 shrink-0"
+						bind:checked={confirmed}
+						disabled={!validFile || action !== null || staged !== null}
+					/>
+					<span
+						>Replace <span class="font-mono">config.toml</span> and
+						<span class="font-mono">secrets.toml</span> on restart.</span
+					>
+				</label>
+				<Button
+					onclick={() => void applyConfiguration()}
+					disabled={!validFile || !confirmed || action !== null || staged !== null}
 				>
-			</label>
-			<Button
-				onclick={() => void applyConfiguration()}
-				disabled={!validFile || !confirmed || action !== null || staged !== null}
-			>
-				<UploadIcon /> Apply configuration
-			</Button>
+					<UploadIcon /> Apply configuration
+				</Button>
+			{/if}
 			{#if staged}
 				<div class="space-y-3 border-t border-hairline pt-4">
 					<p class="text-sm text-healthy" role="status">Configuration staged. Restart required.</p>

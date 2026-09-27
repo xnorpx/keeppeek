@@ -57,6 +57,7 @@
 		]
 	},
 	"httpPaths": ["/create", "/delete", "/logs", "/logs/snapshot", "/metrics"],
+	"authenticationHttpPaths": ["/auth/session", "/auth/login", "/auth/callback", "/auth/logout"],
 	"backupHttpPaths": ["/config/export", "/config/apply"],
 	"internalHttpPaths": ["/recording-coverage"],
 	"principles": [

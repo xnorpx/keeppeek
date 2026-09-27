@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import type { AccessCredential } from '$lib/access';
+	import type { ExternalIdentity } from '$lib/proto/webrtc_pb';
 	import type { CameraListItem } from '$lib/types';
 	import {
 		createPeekLayout,
@@ -37,6 +38,7 @@
 		activeLayout: PeekLayout;
 		cameras: readonly CameraListItem[];
 		credentials: readonly AccessCredential[];
+		externalIdentities?: readonly ExternalIdentity[];
 		busy: boolean;
 		onrefreshcredentials: () => Promise<void>;
 		onchange: (registry: PeekLayoutRegistry) => Promise<boolean>;
@@ -47,6 +49,7 @@
 		activeLayout,
 		cameras,
 		credentials,
+		externalIdentities = [],
 		busy,
 		onrefreshcredentials,
 		onchange
@@ -346,6 +349,7 @@
 					<div class="pt-2">
 						<PeekDashboardAudiencePicker
 							{credentials}
+							{externalIdentities}
 							audience={newAudience}
 							onchange={(audience) => (newAudience = audience)}
 						/>
@@ -373,6 +377,7 @@
 	<PeekDashboardAccessDialog
 		dashboard={activeLayout}
 		{credentials}
+		{externalIdentities}
 		{busy}
 		onsave={saveAccess}
 		onclose={() => (accessOpen = false)}
