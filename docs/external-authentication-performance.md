@@ -179,6 +179,12 @@ source fingerprint was identical immediately before and after compilation:
 `F830FED5EBD1868DAE664DCE534F60F6571524638A33B682950A8804C9010F93`.
 This identifies the uncommitted issue123 build on the baseline commit above.
 
+After measurement, CI required multiline formatting for the `jsonwebtoken` and
+`rustls` feature arrays in `Cargo.toml`. Parsing the manifest before and after
+that whitespace-only change produced identical values. The measured executable
+is therefore an identified equivalent build for that formatting correction;
+the Rust sources, dependency versions, features, and lockfile are unchanged.
+
 The fingerprint is SHA-256 of LF-joined, sorted, unique git-visible paths ending
 in `.rs`, `.proto`, or `.toml`, plus `Cargo.lock`; each line contains the relative
 path, one space, and the file's uppercase SHA-256. It covers tracked and untracked
