@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-88347fa2.js";
+            window.path_to_searchindex_js = "searchindex-cfdeebab.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -399,6 +399,8 @@ the camera loader in <a href="https://github.com/xnorpx/keeppeek/blob/main/src/c
 <tr><td><code>record_generic_motion_events</code></td><td>Optional <code>bool</code></td><td>No shared override; camera model defaults to <code>false</code>.</td></tr>
 <tr><td><code>recording_mode</code></td><td>Optional <code>CameraRecordingMode</code></td><td>No shared override; camera model defaults to <code>"event-boost"</code>.</td></tr>
 <tr><td><code>event_recording_duration_secs</code></td><td>Optional <code>u64</code></td><td>No shared override; camera model defaults to <code>60</code> seconds.</td></tr>
+<tr><td><code>event_pre_recording_duration_secs</code></td><td>Optional <code>u64</code></td><td>No shared override; camera model defaults to <code>0</code>; range <code>0..30</code> seconds.</td></tr>
+<tr><td><code>event_recording_stream</code></td><td>Optional <code>EventRecordingStream</code></td><td>No shared override; camera model defaults to <code>"main"</code>; <code>"main"</code> or <code>"sub"</code>.</td></tr>
 </tbody>
 </table>
 </div>
@@ -426,8 +428,10 @@ per-camera field is absent. Ports and RTSP URLs are not fields of <code>CameraCr
 <tr><td><code>backend</code></td><td><code>CameraBackend</code></td><td>Shared default or <code>"auto"</code></td><td><code>"auto"</code>, <code>"retina"</code>, or <code>"reo-proto"</code>.</td></tr>
 <tr><td><code>transport</code></td><td><code>CameraTransport</code></td><td>Shared default or <code>"tcp"</code></td><td><code>"tcp"</code> or <code>"udp"</code>.</td></tr>
 <tr><td><code>record_generic_motion_events</code></td><td><code>bool</code></td><td>Shared default or <code>false</code></td><td>Opt in to supported generic motion events.</td></tr>
-<tr><td><code>recording_mode</code></td><td><code>CameraRecordingMode</code></td><td>Shared default or <code>"event-boost"</code></td><td><code>"off"</code>, <code>"sub"</code>, <code>"main"</code>, <code>"both"</code>, or <code>"event-boost"</code>.</td></tr>
-<tr><td><code>event_recording_duration_secs</code></td><td><code>u64</code></td><td>Shared default or <code>60</code></td><td>Event-triggered recording duration; typed configuration operations use <code>1..3600</code> seconds.</td></tr>
+<tr><td><code>recording_mode</code></td><td><code>CameraRecordingMode</code></td><td>Shared default or <code>"event-boost"</code></td><td><code>"off"</code>, <code>"sub"</code>, <code>"main"</code>, <code>"both"</code>, <code>"event-boost"</code>, or <code>"event-only"</code>.</td></tr>
+<tr><td><code>event_recording_duration_secs</code></td><td><code>u64</code></td><td>Shared default or <code>60</code></td><td>Event-triggered recording duration; typed operations and TOML loading for event-only or pre-roll-enabled event-boost require <code>1..3600</code> seconds.</td></tr>
+<tr><td><code>event_pre_recording_duration_secs</code></td><td><code>u64</code></td><td>Shared default or <code>0</code></td><td>Range <code>0..30</code> seconds; <code>0</code> disables pre-roll allocation.</td></tr>
+<tr><td><code>event_recording_stream</code></td><td><code>EventRecordingStream</code></td><td>Shared default or <code>"main"</code></td><td><code>"main"</code> or <code>"sub"</code>; selects the event-only recording stream. EventBoost always boosts to main.</td></tr>
 <tr><td><code>events</code></td><td><code>EventConfig</code></td><td>Defaults below</td><td>Camera-native event policy, independent of video backend; configured through the file.</td></tr>
 </tbody>
 </table>
@@ -497,6 +501,8 @@ to <code>.event-thumbnails</code> under that same directory. See
 <tr><td><code>warning_free_gb</code></td><td><code>u64</code></td><td><code>20</code></td><td>Warning-free-space threshold, in GiB.</td></tr>
 <tr><td><code>critical_free_gb</code></td><td><code>u64</code></td><td><code>10</code></td><td>Critical-free-space threshold, in GiB.</td></tr>
 <tr><td><code>cleanup_hysteresis_gb</code></td><td><code>u64</code></td><td><code>5</code></td><td>Cleanup recovery margin, in GiB.</td></tr>
+<tr><td><code>pre_recording_stream_max_bytes</code></td><td><code>u64</code></td><td><code>67108864</code> (64 MiB)</td><td>Positive encoded-byte limit per candidate stream; must not exceed the global limit.</td></tr>
+<tr><td><code>pre_recording_global_max_bytes</code></td><td><code>u64</code></td><td><code>268435456</code> (256 MiB)</td><td>Positive encoded-byte limit across all candidate streams, including pending replay; must fit the platform address space and TOML signed 64-bit integer range.</td></tr>
 </tbody>
 </table>
 </div>
@@ -876,8 +882,10 @@ Templates are versioned, server-managed configuration records, not another setti
 <tr><td><code>backend</code></td><td><code>CameraBackend</code></td><td><code>"auto"</code>, <code>"retina"</code>, or <code>"reo-proto"</code>.</td></tr>
 <tr><td><code>transport</code></td><td><code>CameraTransport</code></td><td><code>"tcp"</code> or <code>"udp"</code>.</td></tr>
 <tr><td><code>record_generic_motion_events</code></td><td><code>bool</code></td><td>Generic motion-event preference.</td></tr>
-<tr><td><code>recording_mode</code></td><td><code>CameraRecordingMode</code></td><td><code>"off"</code>, <code>"sub"</code>, <code>"main"</code>, <code>"both"</code>, or <code>"event-boost"</code>.</td></tr>
+<tr><td><code>recording_mode</code></td><td><code>CameraRecordingMode</code></td><td><code>"off"</code>, <code>"sub"</code>, <code>"main"</code>, <code>"both"</code>, <code>"event-boost"</code>, or <code>"event-only"</code>.</td></tr>
 <tr><td><code>event_recording_duration_secs</code></td><td><code>u32</code></td><td><code>1..3600</code> seconds.</td></tr>
+<tr><td><code>event_pre_recording_duration_secs</code></td><td><code>u32</code></td><td><code>0..30</code> seconds.</td></tr>
+<tr><td><code>event_recording_stream</code></td><td><code>EventRecordingStream</code></td><td><code>"main"</code> or <code>"sub"</code>.</td></tr>
 </tbody>
 </table>
 </div>
@@ -1079,6 +1087,22 @@ reference in the same change and verify both load and write paths with synthetic
 <p>For an upgrade from separate legacy stores, follow
 <a href="./upgrades-and-migrations.html#what-startup-migrates">What startup migrates</a>. For retention of runtime
 and recording data, see <a href="./backup-and-restore.html#what-survives-a-restart">Backup and restore</a>.</p>
+<h3 id="event-recording-pre-roll"><a class="header" href="#event-recording-pre-roll">Event recording pre-roll</a></h3>
+<p><code>event-only</code> stores only accepted event windows from the selected main or sub stream.
+<code>event-boost</code> keeps continuous sub recording and uses main quality during event
+windows. A nonzero <code>event_pre_recording_duration_secs</code> enables bounded encoded
+history for these modes. EventBoost then delays persistence by up to the selected
+duration so an event can replace pending sub coverage with main coverage. A crash
+can lose this uncommitted window. With zero pre-roll, existing recording modes
+keep their immediate admission behavior.</p>
+<p>Changes persist in <code>config.toml</code> through the existing atomic writer. Camera
+changes use the existing source restart path when available; otherwise the
+response reports that a restart is required. Memory-budget changes require an
+application restart. Omitted updates retain existing values; cleared camera
+values inherit camera defaults. These settings contain no credentials. Existing supported secret references
+in camera credentials and URLs remain preserved. Whole-GOP eviction can shorten coverage under duration or memory
+pressure; health diagnostics report available coverage and the reason. Privacy,
+stream discontinuities and storage failures invalidate optional history.</p>
 
                     </main>
 
