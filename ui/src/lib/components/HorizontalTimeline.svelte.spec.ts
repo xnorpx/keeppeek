@@ -14,6 +14,99 @@ function pointer(type: string, pointerId: number, clientX: number): PointerEvent
 }
 
 describe('HorizontalTimeline', () => {
+	it('centers the latest playhead when playback changes before the first frame', async () => {
+		const frames = new Map<number, FrameRequestCallback>();
+		let frameId = 0;
+		const schedule = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+			frames.set(++frameId, callback);
+			return frameId;
+		});
+		const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+			frames.delete(id);
+		});
+		try {
+			const dayStartMs = Date.UTC(2026, 7, 10);
+			const view = await render(HorizontalTimeline, {
+				props: {
+					segments: [],
+					selectedUrl: null,
+					playheadMs: dayStartMs + 12 * 3_600_000,
+					dayStartMs,
+					nowMs: dayStartMs + 86_400_000,
+					onSeek: vi.fn()
+				}
+			});
+			const scroller = page.getByRole('slider', { name: /recording timeline scrubber/i }).element();
+			Object.assign(scroller.style, { width: '400px', overflowX: 'auto' });
+			scroller.dispatchEvent(new Event('scroll'));
+			expect(frames.size).toBeGreaterThan(0);
+			const latestPlayheadMs = dayStartMs + 16 * 3_600_000;
+			await view.rerender({ playheadMs: latestPlayheadMs });
+			const pending = [...frames.values()];
+			frames.clear();
+			for (const callback of pending) callback(performance.now());
+			expect(scroller.scrollLeft).toBeGreaterThan(0);
+			await expect.element(scroller).toHaveAttribute('aria-valuetext', '16:00 UTC');
+			scroller.scrollLeft = 0;
+			scroller.dispatchEvent(new Event('scroll'));
+			await view.rerender({ playheadMs: latestPlayheadMs + 1_000 });
+			expect(frames.size).toBe(0);
+			expect(scroller.scrollLeft).toBe(0);
+			await view.rerender({
+				dayStartMs: dayStartMs + 86_400_000,
+				playheadMs: latestPlayheadMs + 86_400_000
+			});
+			expect(frames.size).toBe(1);
+			await view.unmount();
+			expect(frames.size).toBe(0);
+		} finally {
+			schedule.mockRestore();
+			cancel.mockRestore();
+		}
+	});
+
+	it.each([-12, 36])('waits for the selected day playhead instead of hour %i', async (hour) => {
+		const frames = new Map<number, FrameRequestCallback>();
+		let frameId = 0;
+		const schedule = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+			frames.set(++frameId, callback);
+			return frameId;
+		});
+		const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+			frames.delete(id);
+		});
+		try {
+			const dayStartMs = Date.UTC(2026, 7, 10);
+			const view = await render(HorizontalTimeline, {
+				props: {
+					segments: [],
+					selectedUrl: null,
+					playheadMs: dayStartMs + hour * 3_600_000,
+					dayStartMs,
+					nowMs: dayStartMs + 86_400_000,
+					onSeek: vi.fn()
+				}
+			});
+			const scroller = page.getByRole('slider', { name: /recording timeline scrubber/i }).element();
+			Object.assign(scroller.style, { width: '400px', overflowX: 'auto' });
+			scroller.dispatchEvent(new Event('scroll'));
+			await view.rerender({});
+			const staleFrames = [...frames.values()];
+			frames.clear();
+			for (const callback of staleFrames) callback(performance.now());
+			await view.rerender({ playheadMs: dayStartMs + 12 * 3_600_000 });
+			const pending = [...frames.values()];
+			frames.clear();
+			for (const callback of pending) callback(performance.now());
+			expect(scroller.scrollLeft).toBeGreaterThan(0);
+			await expect.element(scroller).toHaveAttribute('aria-valuetext', '12:00 UTC');
+			await view.unmount();
+		} finally {
+			schedule.mockRestore();
+			cancel.mockRestore();
+		}
+	});
+
 	it('renders an open operational interval that began before the viewport', async () => {
 		const dayStartMs = Date.UTC(2026, 7, 10);
 		await render(HorizontalTimeline, {

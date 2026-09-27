@@ -279,13 +279,18 @@
 		if (
 			!scroller ||
 			selectedMs === null ||
+			selectedMs < selectedDayStartMs ||
+			selectedMs >= selectedDayStartMs + DAY_MS ||
 			viewportExtentPx <= 0 ||
 			centeredDayStartMs === selectedDayStartMs
 		) {
 			return;
 		}
-		centeredDayStartMs = selectedDayStartMs;
-		const frame = requestAnimationFrame(() => centerTimestamp(selectedMs));
+		const frame = requestAnimationFrame(() => {
+			centerTimestamp(selectedMs);
+			// A cancelled frame must leave the next playback update free to center.
+			centeredDayStartMs = selectedDayStartMs;
+		});
 		return () => cancelAnimationFrame(frame);
 	});
 

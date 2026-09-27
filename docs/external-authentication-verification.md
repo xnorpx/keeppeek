@@ -55,6 +55,13 @@ canonical rerun and final-commit CI results.
   failed because rejected or abandoned signaling retained an orphan opening timer.
   The correction leaves zero timers in both cases and preserves the genuine
   channel-opening timeout and server-session cleanup.
+- Local follow-up horizontal-timeline browser unit tests: six passed. A new
+  regression holds the first animation frame and changes playback before it runs.
+  Before the fix the timeline stays at midnight; afterward it centers the latest
+  playback timestamp. Further regressions wait for the selected day's playhead
+  instead of consuming centering with the previous or next day's timestamp.
+  The tests also verify manual-scroll preservation and cancellation on unmount.
+  Ten real mobile playback repetitions passed with retries disabled.
 - CI shared-fixture artifact selection: ten positive/negative selector cases and
   exact Bash syntax passed. Browser shards use the already tested precompiled
   executable override instead of compiling Rust inside the browser deadline.
@@ -129,6 +136,11 @@ the reproducible visual evidence.
   The waiter now starts only when it can be immediately awaited after signaling.
   Existing already-open handling, timeout failure, and session cleanup remain;
   no browser-error assertion or test retry policy is relaxed.
+- A local mobile playback check found an empty timeline while video decoded.
+  The timeline marked initial centering complete before its animation frame ran.
+  A playback update could cancel that frame and suppress the replacement scroll.
+  Completion is now recorded only after centering runs with the selected day's
+  playhead. The existing end-to-end assertion and timeout remain unchanged.
 - Self-review was used as an explicitly disclosed fallback for the additional
   doubt-driven pass; it is not represented as an independent security audit.
 
@@ -141,7 +153,7 @@ Rust 1.98.1, Bun 1.4.0, Python 3.12.10 and installed FFmpeg. The base is main
 From the repository root run `check.bat` on Windows or `./check.sh` on Unix. The
 canonical entry point builds Rust, runs nextest, Clippy, dependency-use and format
 checks, and then the complete UI quality and browser suites. Set
-`KEEPPEEK_RUN_SLOW_TESTS=1` to include the main-only slow camera tests. The final
+`KEEPPEEK_RUN_SLOW_TESTS=1` to include the main-only slow camera tests. The reference
 run used isolated E2E ports 54327/54184 and run ID `issue123-canonical-final`.
 The TLS scenarios
 are also reproducible with `bun run test:e2e:run -- e2e/external-authentication.e2e.ts`
