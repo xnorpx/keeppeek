@@ -10,7 +10,7 @@ macro_rules! enum_bridge {
                 _ => anyhow::bail!("invalid storage volume enum value"),
             }
         }
-        fn $to(value: $model) -> i32 {
+        const fn $to(value: $model) -> i32 {
             match value {
                 $($model::$variant => proto::$wire::$variant as i32,)+
             }
@@ -162,10 +162,10 @@ fn restore_string_references(value: &mut toml::Value, raw: &toml::Value) {
         (toml::Value::Table(value), toml::Value::Table(raw)) => {
             for (key, value) in value {
                 // Enum strings are represented by typed values on the wire.
-                if !matches!(key.as_str(), "roles" | "state" | "role" | "strategy") {
-                    if let Some(raw) = raw.get(key) {
-                        restore_string_references(value, raw);
-                    }
+                if !matches!(key.as_str(), "roles" | "state" | "role" | "strategy")
+                    && let Some(raw) = raw.get(key)
+                {
+                    restore_string_references(value, raw);
                 }
             }
         }
