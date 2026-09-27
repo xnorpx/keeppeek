@@ -1,4 +1,5 @@
 pub use crate::access::AccessKey;
+mod storage_volumes;
 use crate::{
     access,
     cameras::{
@@ -507,6 +508,8 @@ const fn default_battery_wake_stale_after_secs() -> u64 {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageToml {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub named_volumes: Option<crate::storage::volumes::VolumeConfiguration>,
     #[serde(default)]
     pub medium_term_path: Option<String>,
 
@@ -882,6 +885,7 @@ const fn default_cleanup_hysteresis_gb() -> u64 {
 impl Default for StorageToml {
     fn default() -> Self {
         Self {
+            named_volumes: None,
             medium_term_path: None,
             long_term_path: None,
             recording_catalog_path: None,
@@ -1581,6 +1585,7 @@ pub fn update_settings_with_migration(
         "cleanup_hysteresis_gb".to_owned(),
         toml::Value::Integer(i64::try_from(settings.storage.cleanup_hysteresis_gb)?),
     );
+    storage_volumes::persist(storage, settings.storage.named_volumes.as_ref(), &secrets)?;
     match migration {
         Some(migration) => {
             migration.validate()?;
@@ -1748,6 +1753,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     if let Some(external_auth) = &config.external_auth {
         external_auth.validate()?;
     }
+    storage_volumes::validate(config.storage.named_volumes.as_ref())?;
     if let Some(callbacks) = &config.isapi_callbacks {
         callbacks.validate()?;
     }
@@ -3558,6 +3564,7 @@ mod tests {
             host: "127.0.0.1".to_owned(),
             port: 3200,
             storage: StorageToml {
+                named_volumes: None,
                 medium_term_path: None,
                 long_term_path: None,
                 recording_catalog_path: Some("/metadata/recordings.db".to_owned()),
