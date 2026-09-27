@@ -141,18 +141,7 @@ pub(super) fn dispatch(
     command: proto::StoredMediaCommand,
 ) -> Result<StoredMediaDispatch, ControlCommandError> {
     match command.action {
-        Some(stored_media_command::Action::Open(open)) => {
-            validate_client_id(&open.stored_media_id, "stored media cursor ID")?;
-            let reservation = reserve_open_cursor(state, session_id, &open.stored_media_id)?;
-            let (cursor, state_message, messages) = open_stored_media(state, open)?;
-            reservation.commit(cursor)?;
-            let notifications = terminal_stored_media_notification(&state_message);
-            Ok(StoredMediaDispatch {
-                result: Some(control_ok::Result::StoredMediaState(state_message)),
-                messages,
-                notifications,
-            })
-        }
+        Some(stored_media_command::Action::Open(open)) => open_cursor(state, session_id, open),
         Some(stored_media_command::Action::Seek(seek)) => {
             let (state_message, messages) = seek_stored_media(state, session_id, seek)?;
             let notifications = terminal_stored_media_notification(&state_message);
@@ -212,6 +201,25 @@ pub(super) fn dispatch(
             "stored media command has no action",
         )),
     }
+}
+
+fn open_cursor(
+    state: &ServerState,
+    session_id: SessionId,
+    open: proto::OpenStoredMedia,
+) -> Result<StoredMediaDispatch, ControlCommandError> {
+    validate_client_id(&open.stored_media_id, "stored media cursor ID")?;
+    let reservation = super::session_lifecycle::admit(state, session_id, || {
+        reserve_open_cursor(state, session_id, &open.stored_media_id)
+    })?;
+    let (cursor, state_message, messages) = open_stored_media(state, open)?;
+    reservation.commit(cursor)?;
+    let notifications = terminal_stored_media_notification(&state_message);
+    Ok(StoredMediaDispatch {
+        result: Some(control_ok::Result::StoredMediaState(state_message)),
+        messages,
+        notifications,
+    })
 }
 
 fn query_timeline(

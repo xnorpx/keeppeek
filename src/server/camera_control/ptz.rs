@@ -40,6 +40,7 @@ pub(in crate::server) fn handle_ptz(
             "another PTZ command is in progress",
         )
     })?;
+    super::super::camera_access::for_session(state, session_id)?;
     let camera = if matches!(action, proto::ptz_command::Action::Stop(_)) {
         owners
             .get(&command.source_id)

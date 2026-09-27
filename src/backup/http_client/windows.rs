@@ -1,4 +1,4 @@
-//! Creates export files with a protected Windows DACL before writing private bytes.
+//! Creates files with a protected Windows DACL before writing private bytes.
 
 use std::{
     fs::File,
@@ -11,7 +11,7 @@ use std::{
 };
 use windows::{
     Win32::{
-        Foundation::{GENERIC_WRITE, HANDLE, HLOCAL, LocalFree},
+        Foundation::{GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL, LocalFree},
         Security::{
             self,
             Authorization::{
@@ -65,7 +65,7 @@ pub(super) fn create_private(path: &Path) -> io::Result<File> {
     let handle = unsafe {
         CreateFileW(
             PCWSTR(filename.as_ptr()),
-            GENERIC_WRITE.0,
+            GENERIC_READ.0 | GENERIC_WRITE.0,
             FILE_SHARE_READ,
             Some(&attributes),
             CREATE_NEW,
@@ -346,4 +346,4 @@ fn current_user_sid() -> io::Result<String> {
 
 #[cfg(test)]
 #[path = "windows_tests.rs"]
-mod tests;
+pub mod tests;

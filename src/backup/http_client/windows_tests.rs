@@ -74,7 +74,7 @@ fn dacl(file: &File) -> String {
     unsafe { text.to_string() }.unwrap()
 }
 
-fn assert_private(file: &File) {
+pub fn assert_private(file: &File) {
     let descriptor = dacl(file);
     assert!(
         descriptor.starts_with("D:P"),

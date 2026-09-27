@@ -289,6 +289,7 @@ fn put(
         .list_credentials()
         .into_iter()
         .map(|credential| credential.id.to_string())
+        .chain(super::authentication::identity_ids(state))
         .collect();
     candidate
         .validate_viewer_identities(&known_credential_ids)

@@ -20,13 +20,29 @@ mod manager;
 mod restore;
 
 pub use create::{CreateBundleOptions, create_bundle};
+pub(crate) use http_client::create_private_file;
+#[cfg(all(test, windows))]
+pub(crate) use http_client::windows::tests::assert_private;
 pub use http_client::{BackupClientError, BackupHttpClient};
 pub use manager::BackupManager;
+pub(crate) use manager::ConfigurationApply;
 pub use restore::{
     RestorePlanOptions, StageRestoreOptions, active_restore, current_restore, mark_restore_healthy,
     plan_restore, recover_pending_restore, request_restore_rollback, stage_restore,
     target_revision,
 };
+pub(crate) use restore::{inspect_configuration_candidate, stage_restore_with_configuration};
+
+/// A native restore candidate resolved against the archive's secrets.
+pub(crate) struct NativeConfigurationCandidate {
+    pub(crate) configuration: crate::config::Config,
+}
+
+impl std::fmt::Debug for NativeConfigurationCandidate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("NativeConfigurationCandidate([redacted])")
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct ServiceError {
@@ -1060,20 +1076,57 @@ fn validate_native_configuration_bundle<R: Read + Seek>(
 }
 
 fn validate_native_configuration(config: &[u8], secrets: &[u8]) -> anyhow::Result<()> {
-    let directory = std::env::temp_dir().join(format!(
-        "keeppeek-config-inspection-{}",
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::create_dir(&directory)?;
-    let config_path = directory.join(create::CONFIG_MEMBER_PATH);
-    let result = (|| {
-        crate::config::write_private_file(&config_path, config)?;
-        crate::config::write_private_file(&directory.join(create::SECRETS_MEMBER_PATH), secrets)?;
-        let root = toml::from_str::<toml::Table>(std::str::from_utf8(config)?)?;
-        crate::config::validate_configuration_table(&config_path, &root)
-    })();
-    let _ = std::fs::remove_dir_all(directory);
-    result
+    validated_native_configuration(config, secrets).map(|_| ())
+}
+
+fn validated_native_configuration(
+    config: &[u8],
+    secrets: &[u8],
+) -> anyhow::Result<crate::config::Config> {
+    let maximum_bytes = BackupSection::RuntimeConfig.maximum_document_bytes();
+    anyhow::ensure!(
+        u64::try_from(config.len())? <= maximum_bytes
+            && u64::try_from(secrets.len())? <= maximum_bytes,
+        "native configuration exceeds the document limit"
+    );
+    let files = NativeInspectionFiles::new(config, secrets)?;
+    let root = toml::from_str::<toml::Table>(std::str::from_utf8(config)?)?;
+    crate::config::validated_configuration_table(
+        &files.directory.join(create::CONFIG_MEMBER_PATH),
+        &root,
+    )
+}
+
+struct NativeInspectionFiles {
+    directory: std::path::PathBuf,
+}
+
+impl NativeInspectionFiles {
+    fn new(config: &[u8], secrets: &[u8]) -> std::io::Result<Self> {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-config-inspection-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&directory)?;
+        let files = Self { directory };
+        // ponytail: Reuse the protected file creator instead of duplicating platform ACL logic.
+        for (name, bytes) in [
+            (create::CONFIG_MEMBER_PATH, config),
+            (create::SECRETS_MEMBER_PATH, secrets),
+        ] {
+            let mut file = create_private_file(&files.directory.join(name))?;
+            std::io::Write::write_all(&mut file, bytes)?;
+        }
+        Ok(files)
+    }
+}
+
+impl Drop for NativeInspectionFiles {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.directory) {
+            tracing::warn!(error_kind = ?error.kind(), "configuration inspection cleanup failed");
+        }
+    }
 }
 
 fn validate_json_section(
@@ -1394,6 +1447,40 @@ mod tests {
     use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
     const RUNTIME_CONFIG_PATH: &str = "config/runtime.toml";
+
+    #[test]
+    fn native_inspection_config_and_secrets_are_private_and_removed() {
+        let files =
+            NativeInspectionFiles::new(b"host = '127.0.0.1'", b"PASSWORD = 'synthetic'").unwrap();
+        let directory = files.directory.clone();
+        for name in [create::CONFIG_MEMBER_PATH, create::SECRETS_MEMBER_PATH] {
+            let file = std::fs::File::open(directory.join(name)).unwrap();
+            #[cfg(windows)]
+            assert_private(&file);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+            }
+        }
+        drop(files);
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn native_inspection_cleanup_runs_on_validation_error() {
+        let mut directory = None;
+        let result = (|| -> anyhow::Result<()> {
+            let files = NativeInspectionFiles::new(b"[invalid", b"PASSWORD = 'synthetic'")?;
+            directory = Some(files.directory.clone());
+            let _ = crate::config::load_configuration_table(
+                &files.directory.join(create::CONFIG_MEMBER_PATH),
+            )?;
+            Ok(())
+        })();
+        assert!(result.is_err());
+        assert!(!directory.unwrap().exists());
+    }
 
     #[test]
     fn inspects_a_versioned_bundle_and_verifies_its_section() {

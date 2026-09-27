@@ -25,6 +25,8 @@ members = [
 ]
 
 [workspace.dependencies]
+oauth2 = { version = "=5.0.0", default-features = false }
+jsonwebtoken = { version = "=11.1.0", default-features = false, features = ["aws_lc_rs"] }
 cap-fs-ext = { version = "=4.0.3", default-features = false, features = [
   "std",
 ] }
@@ -118,6 +120,8 @@ harness = false
 test = false
 
 [dependencies]
+oauth2 = { workspace = true }
+jsonwebtoken = { workspace = true }
 cap-fs-ext = { workspace = true }
 cap-std = { workspace = true }
 mime = { workspace = true }
@@ -209,6 +213,7 @@ str0m = { version = "0.23.0", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+rustls = { version = "=0.23.45", default-features = false, features = ["std", "tls12", "aws_lc_rs"] }
 test-hikvision = { workspace = true }
 rcgen = { version = "0.14", default-features = false, features = [
   "aws_lc_rs",

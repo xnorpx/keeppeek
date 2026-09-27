@@ -221,12 +221,34 @@ pub fn plan_restore(options: RestorePlanOptions<'_>) -> anyhow::Result<backup_pr
 pub fn stage_restore(
     options: StageRestoreOptions<'_>,
 ) -> anyhow::Result<backup_proto::RestoreRecord> {
+    stage_restore_inner(options, None)
+}
+
+/// Stages a native candidate with only its external identity directory changed.
+///
+/// The caller must authorize the identity change and serialize configuration updates.
+/// Archive secrets and all other transformed settings remain authoritative.
+pub fn stage_restore_with_configuration(
+    options: StageRestoreOptions<'_>,
+    admitted: &toml::Table,
+) -> anyhow::Result<backup_proto::RestoreRecord> {
+    stage_restore_inner(options, Some(admitted))
+}
+
+fn stage_restore_inner(
+    options: StageRestoreOptions<'_>,
+    admitted: Option<&toml::Table>,
+) -> anyhow::Result<backup_proto::RestoreRecord> {
     validate_stage_request(&options)?;
     let journal_path = restore_journal_path(options.target_config_path);
     if journal_path.exists() {
         anyhow::bail!("another restore journal is already active");
     }
     let manifest = super::inspect_bundle(std::fs::File::open(options.bundle_path)?)?;
+    anyhow::ensure!(
+        admitted.is_none() || manifest.format_version() == super::FORMAT_VERSION,
+        "configuration overrides require a current native archive"
+    );
     let selected = options
         .plan
         .selected_sections
@@ -241,6 +263,7 @@ pub fn stage_restore(
         &manifest,
         &selected,
         &restore_id,
+        admitted,
     )?;
     let mut journal = RestoreJournal {
         version: RESTORE_JOURNAL_VERSION,
@@ -513,39 +536,82 @@ fn prepare_targets(
     manifest: &BackupManifest,
     selected: &[BackupSection],
     restore_id: &str,
+    admitted: Option<&toml::Table>,
+) -> anyhow::Result<(Vec<RestoreJournalTarget>, Vec<TargetPreparation>)> {
+    if manifest.format_version() == super::FORMAT_VERSION {
+        return prepare_native_targets(
+            bundle_path,
+            target_config_path,
+            plan,
+            manifest,
+            restore_id,
+            admitted,
+        );
+    }
+    prepare_legacy_targets(
+        bundle_path,
+        target_config_path,
+        plan,
+        manifest,
+        selected,
+        restore_id,
+    )
+}
+
+fn prepare_native_targets(
+    bundle_path: &Path,
+    target_config_path: &Path,
+    plan: &backup_proto::RestorePlan,
+    manifest: &BackupManifest,
+    restore_id: &str,
+    admitted: Option<&toml::Table>,
 ) -> anyhow::Result<(Vec<RestoreJournalTarget>, Vec<TargetPreparation>)> {
     let mut archive = ZipArchive::new(std::fs::File::open(bundle_path)?)?;
     let mut targets = Vec::new();
     let mut preparations = Vec::new();
-    if manifest.format_version() == super::FORMAT_VERSION {
-        let config_directory = mapping_target(plan, BackupPathKind::ConfigDirectory)?;
-        let expected_config = config_directory.join(
-            target_config_path
-                .file_name()
-                .unwrap_or_else(|| std::ffi::OsStr::new(super::create::CONFIG_MEMBER_PATH)),
-        );
-        let canonical_config = canonical_target_path(target_config_path)?;
-        if expected_config != canonical_config {
-            anyhow::bail!("config directory mapping does not match the target configuration");
-        }
-        let (config, secrets) =
-            restored_native_configuration(&mut archive, manifest, target_config_path)?;
-        push_bytes_target(
-            &mut targets,
-            &mut preparations,
-            &canonical_config,
-            config,
-            restore_id,
-        )?;
-        push_bytes_target(
-            &mut targets,
-            &mut preparations,
-            &config::secrets_path(&canonical_config),
-            secrets,
-            restore_id,
-        )?;
-        return Ok((targets, preparations));
+    let config_directory = mapping_target(plan, BackupPathKind::ConfigDirectory)?;
+    let expected_config = config_directory.join(
+        target_config_path
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new(super::create::CONFIG_MEMBER_PATH)),
+    );
+    let canonical_config = canonical_target_path(target_config_path)?;
+    if expected_config != canonical_config {
+        anyhow::bail!("config directory mapping does not match the target configuration");
     }
+    let (mut config, secrets) =
+        restored_native_configuration(&mut archive, manifest, target_config_path)?;
+    if let Some(admitted) = admitted {
+        config = admitted_native_configuration(&config, &secrets, admitted)?;
+    }
+    push_bytes_target(
+        &mut targets,
+        &mut preparations,
+        &canonical_config,
+        config,
+        restore_id,
+    )?;
+    push_bytes_target(
+        &mut targets,
+        &mut preparations,
+        &config::secrets_path(&canonical_config),
+        secrets,
+        restore_id,
+    )?;
+    Ok((targets, preparations))
+}
+
+fn prepare_legacy_targets(
+    bundle_path: &Path,
+    target_config_path: &Path,
+    plan: &backup_proto::RestorePlan,
+    manifest: &BackupManifest,
+    selected: &[BackupSection],
+    restore_id: &str,
+) -> anyhow::Result<(Vec<RestoreJournalTarget>, Vec<TargetPreparation>)> {
+    let mut archive = ZipArchive::new(std::fs::File::open(bundle_path)?)?;
+    let mut targets = Vec::new();
+    let mut preparations = Vec::new();
     if selected
         .iter()
         .any(|section| is_configuration_section(*section))
@@ -617,6 +683,53 @@ fn prepare_targets(
         anyhow::bail!("restore plan maps multiple sections to one target");
     }
     Ok((targets, preparations))
+}
+
+/// Inspects the exact native configuration that restore would stage on this target.
+///
+/// The caller must serialize configuration updates while inspecting or consuming this snapshot.
+pub fn inspect_configuration_candidate(
+    bundle_path: &Path,
+    target_config_path: &Path,
+) -> anyhow::Result<super::NativeConfigurationCandidate> {
+    let mut file = std::fs::File::open(bundle_path)?;
+    let manifest = super::inspect_bundle(&mut file)?;
+    anyhow::ensure!(
+        manifest.format_version() == super::FORMAT_VERSION,
+        "configuration candidates require a current native archive"
+    );
+    let mut archive = ZipArchive::new(file)?;
+    let (config_bytes, secrets_bytes) =
+        restored_native_configuration(&mut archive, &manifest, target_config_path)?;
+    let configuration = super::validated_native_configuration(&config_bytes, &secrets_bytes)?;
+    Ok(super::NativeConfigurationCandidate { configuration })
+}
+
+fn admitted_native_configuration(
+    config: &[u8],
+    secrets: &[u8],
+    admitted: &toml::Table,
+) -> anyhow::Result<Vec<u8>> {
+    let mut expected = toml::from_str::<toml::Table>(std::str::from_utf8(config)?)?;
+    // ponytail: compare complete tables; only identity admission may alter the native restore.
+    match admitted.get(crate::access::identities::SECTION) {
+        Some(identities) => {
+            expected.insert(
+                crate::access::identities::SECTION.into(),
+                identities.clone(),
+            );
+        }
+        None => {
+            expected.remove(crate::access::identities::SECTION);
+        }
+    }
+    anyhow::ensure!(
+        &expected == admitted,
+        "admitted configuration differs outside external_identities"
+    );
+    let bytes = toml::to_string_pretty(admitted)?.into_bytes();
+    super::validate_native_configuration(&bytes, secrets)?;
+    Ok(bytes)
 }
 
 fn restored_native_configuration<R: Read + Seek>(
@@ -991,11 +1104,10 @@ fn recording_path_routes(
 }
 
 fn write_staged_bytes(target: &RestoreJournalTarget, bytes: &[u8]) -> anyhow::Result<()> {
-    config::write_private_file(&target.staged, bytes)?;
-    std::fs::File::options()
-        .write(true)
-        .open(&target.staged)?
-        .sync_all()?;
+    let mut file = super::create_private_file(&target.staged)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
     let actual = hash_file(
         &target.staged,
         super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes,
@@ -1966,6 +2078,191 @@ mod tests {
     use super::*;
     use crate::backup;
     use std::io::Cursor;
+
+    #[test]
+    fn native_candidate_resolves_archive_secrets_and_preserves_target_storage() {
+        let (directory, bundle_path, target_config, _) = activatable_fixture("candidate-secrets");
+        let source_config = directory.join("source/config.toml");
+        std::fs::write(&source_config,
+            "host = '{secret:FIXTURE_SECRET}'\n[storage]\nlong_term_max_gb = 10\nlong_term_path = 'source-media'\n").unwrap();
+        std::fs::write(
+            &target_config,
+            "[storage]\nlong_term_max_gb = 20\nlong_term_path = '{secret:FIXTURE_SECRET}'\n",
+        )
+        .unwrap();
+        let (bundle, _) = backup::create_bundle(
+            Cursor::new(Vec::new()),
+            backup::CreateBundleOptions {
+                config_path: &source_config,
+                sections: &[],
+                created_at_unix_ms: 1_788_000_000_000,
+            },
+        )
+        .unwrap();
+        std::fs::write(&bundle_path, bundle.into_inner()).unwrap();
+        let original = std::fs::read(&target_config).unwrap();
+        let candidate =
+            backup::inspect_configuration_candidate(&bundle_path, &target_config).unwrap();
+        assert_eq!(candidate.configuration.host, "source-value");
+        assert_eq!(
+            candidate.configuration.source["storage"]["long_term_path"].as_str(),
+            Some("target-value")
+        );
+        let raw = toml::to_string(&candidate.configuration.source).unwrap();
+        assert!(raw.contains("{secret:FIXTURE_SECRET}"));
+        assert!(!raw.contains("source-media"));
+        assert_eq!(std::fs::read(&target_config).unwrap(), original);
+        assert_eq!(
+            format!("{candidate:?}"),
+            "NativeConfigurationCandidate([redacted])"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn native_candidate_rejects_malformed_and_legacy_archives() {
+        let (directory, bundle_path, target_config, _) = activatable_fixture("candidate-malformed");
+        for bytes in [b"not a ZIP".to_vec(), legacy_runtime_bundle()] {
+            std::fs::write(&bundle_path, bytes).unwrap();
+            assert!(backup::inspect_configuration_candidate(&bundle_path, &target_config).is_err());
+            assert!(!restore_journal_path(&target_config).exists());
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn native_candidate_rejects_invalid_configuration_and_unresolved_archive_secrets() {
+        let (directory, bundle_path, target_config, _) = activatable_fixture("candidate-invalid");
+        for (configuration, secrets) in [
+            ("host = 3", ""),
+            ("host = '{secret:MISSING_CANDIDATE_TEST_SECRET}'", ""),
+            ("", "invalid_key = 'invalid secret key'"),
+        ] {
+            let source_config = directory.join("source/config.toml");
+            std::fs::write(&source_config, configuration).unwrap();
+            std::fs::write(config::secrets_path(&source_config), secrets).unwrap();
+            let (archive, _) = backup::create_bundle(
+                Cursor::new(Vec::new()),
+                backup::CreateBundleOptions {
+                    config_path: &source_config,
+                    sections: &[],
+                    created_at_unix_ms: 1_788_000_000_000,
+                },
+            )
+            .unwrap();
+            std::fs::write(&bundle_path, archive.into_inner()).unwrap();
+            assert!(backup::inspect_configuration_candidate(&bundle_path, &target_config).is_err());
+            assert!(!restore_journal_path(&target_config).exists());
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn native_candidate_override_stages_admitted_identity_and_original_archive_secrets() {
+        use crate::access::{AccessRole, CameraAccess, external::Grant, identities};
+        let (directory, bundle_path, target_config, plan) =
+            activatable_fixture("candidate-identity");
+        let candidate =
+            backup::inspect_configuration_candidate(&bundle_path, &target_config).unwrap();
+        let mut admitted = candidate.configuration.source;
+        let mut identities = identities::Directory::default();
+        let identity = identities
+            .provision(identities::IdentityInput {
+                provider_id: "company",
+                namespace: "proxy:company",
+                subject: "alice",
+                display_name: "Alice",
+                grant: Grant {
+                    role: AccessRole::Administrator,
+                    camera_access: CameraAccess::unrestricted(),
+                },
+                now_ms: 1,
+            })
+            .unwrap();
+        admitted.insert(
+            identities::SECTION.into(),
+            toml::Value::try_from(identities).unwrap(),
+        );
+        let original = std::fs::read(&target_config).unwrap();
+        backup::stage_restore_with_configuration(
+            StageRestoreOptions {
+                bundle_path: &bundle_path,
+                target_config_path: &target_config,
+                plan: &plan,
+                now_unix_ms: plan.created_at_unix_ms + 1,
+            },
+            &admitted,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&target_config).unwrap(), original);
+        assert_staged_configuration_private(&target_config);
+        recover_pending_restore(&target_config, plan.created_at_unix_ms + 2).unwrap();
+        let restored = config::load_configuration_table(&target_config).unwrap();
+        assert_eq!(restored, admitted);
+        assert_eq!(
+            identities::Directory::from_root(&restored).unwrap().records[0].id,
+            identity.id
+        );
+        assert_eq!(
+            std::fs::read(config::secrets_path(&target_config)).unwrap(),
+            std::fs::read(directory.join("source/secrets.toml")).unwrap()
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn assert_staged_configuration_private(config_path: &Path) {
+        let journal = load_journal(&restore_journal_path(config_path)).unwrap();
+        for path in [config_path.to_owned(), config::secrets_path(config_path)] {
+            let path = canonical_target_path(&path).unwrap();
+            let target = journal
+                .targets
+                .iter()
+                .find(|target| target.target == path)
+                .unwrap();
+            let file = std::fs::File::open(&target.staged).unwrap();
+            #[cfg(windows)]
+            backup::assert_private(&file);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+            }
+        }
+    }
+
+    #[test]
+    fn native_candidate_override_rejects_other_changes_and_invalid_identities_before_staging() {
+        let (directory, bundle_path, target_config, plan) =
+            activatable_fixture("candidate-rejected");
+        let candidate =
+            backup::inspect_configuration_candidate(&bundle_path, &target_config).unwrap();
+        let original = std::fs::read(&target_config).unwrap();
+        for (field, value) in [
+            ("host", toml::Value::String("different-host".into())),
+            (
+                "external_identities",
+                toml::Value::String("invalid directory".into()),
+            ),
+        ] {
+            let mut admitted = candidate.configuration.source.clone();
+            admitted.insert(field.into(), value);
+            assert!(
+                backup::stage_restore_with_configuration(
+                    StageRestoreOptions {
+                        bundle_path: &bundle_path,
+                        target_config_path: &target_config,
+                        plan: &plan,
+                        now_unix_ms: plan.created_at_unix_ms + 1,
+                    },
+                    &admitted
+                )
+                .is_err()
+            );
+            assert!(!restore_journal_path(&target_config).exists());
+            assert_eq!(std::fs::read(&target_config).unwrap(), original);
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

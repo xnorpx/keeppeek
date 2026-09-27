@@ -18,7 +18,153 @@ servers:
         default: "8081"
 security:
   - BearerCredential: []
+  - BrowserSession: []
 paths:
+  /auth/session:
+    get:
+      operationId: authenticationSession
+      summary: Discover sign-in methods and the current browser identity
+      security: []
+      description: >-
+        Same-origin browser bootstrap. External authentication requires an exact
+        configured HTTPS origin. An anonymous response can set a separate
+        __Host-keeppeek-login cookie; trusted-proxy evidence can provision an
+        identity. Configured trusted-local administration is unchanged. No
+        candidate-plan parameter is accepted. All authentication responses use
+        Cache-Control no-store and Referrer-Policy no-referrer.
+      responses:
+        "200":
+          description: Sanitized identity, methods, and browser-bound CSRF token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthenticationSession"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /auth/login:
+    post:
+      operationId: authenticationLogin
+      summary: Start OIDC sign-in or prepared Administrator verification
+      security: []
+      description: >-
+        Requires exact same-origin Origin and CSRF binding. Normal sign-in uses
+        the anonymous login cookie. Candidate verification uses the one-use
+        challenge prepared through protobuf on a live Administrator connection.
+        Bearer headers cannot carry candidate evidence. Verification never
+        replaces the authenticated browser cookie or activates candidate settings.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [provider_id, csrf_token]
+              properties:
+                provider_id:
+                  type: string
+                  maxLength: 64
+                csrf_token:
+                  type: string
+                  maxLength: 128
+                return_path:
+                  type: string
+                  description: Validated same-origin relative path; defaults to /.
+                candidate_plan_id:
+                  type: string
+                  format: uuid
+                  description: Verification ID from the prepared protobuf receipt.
+      responses:
+        "303":
+          $ref: "#/components/responses/AuthenticationRedirect"
+        "204":
+          description: Candidate trusted-proxy evidence was verified without issuing a session.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Candidate verification is stale, unavailable, or already consumed.
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /auth/callback:
+    get:
+      operationId: authenticationCallback
+      summary: Complete the one-use OIDC code flow
+      security: []
+      description: >-
+        Validates the transaction cookie, state, provider, origin, nonce, PKCE,
+        and ID token before provisioning a browser identity. Candidate callbacks
+        record proof only for the original live control connection. Provider
+        code, state, and tokens are never application bearer credentials and must
+        not be logged. The response redirects to the validated saved return path.
+      parameters:
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: code
+          in: query
+          schema:
+            type: string
+        - name: error
+          in: query
+          schema:
+            type: string
+        - name: iss
+          in: query
+          schema:
+            type: string
+      responses:
+        "303":
+          $ref: "#/components/responses/AuthenticationRedirect"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Candidate verification or its parent session is unavailable.
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /auth/logout:
+    post:
+      operationId: authenticationLogout
+      summary: Revoke the browser session and dependent control connections
+      security: []
+      description: >-
+        Requires exact same-origin Origin and the CSRF token bound to the current
+        browser or anonymous login cookie. Local revocation completes before any
+        optional provider logout redirect. Clears both host-only cookies.
+      parameters:
+        - $ref: "#/components/parameters/BrowserCsrf"
+      responses:
+        "204":
+          description: Browser session revoked and cookies cleared.
+        "303":
+          $ref: "#/components/responses/AuthenticationRedirect"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /create:
     post:
       operationId: create
@@ -32,8 +178,11 @@ paths:
         offerer. This API does not renegotiate SDP. KeepPeek runs ICE Lite,
         always answers the client offer, and does not use trickle ICE. The
         offer need not contain ICE candidates.
+        Cookie-authenticated requests require exact same-origin Origin and
+        X-KeepPeek-CSRF. Combining a session cookie and bearer is rejected.
       parameters:
         - $ref: "#/components/parameters/GzipContentEncoding"
+        - $ref: "#/components/parameters/BrowserCsrf"
       requestBody:
         required: true
         content:
@@ -93,7 +242,9 @@ paths:
         Only the authenticated principal and effective address that created the
         session can delete it. Unknown and previously deleted IDs are idempotent
         success responses; a known session owned by another caller returns 404.
+        Cookie-authenticated requests require exact same-origin Origin and CSRF.
       parameters:
+        - $ref: "#/components/parameters/BrowserCsrf"
         - name: Prefer
           in: header
           required: false
@@ -237,6 +388,14 @@ paths:
           $ref: "#/components/responses/Unavailable"
 components:
   parameters:
+    BrowserCsrf:
+      name: X-KeepPeek-CSRF
+      in: header
+      required: false
+      description: Required for cookie-authenticated mutations; returned by same-origin browser bootstrap.
+      schema:
+        type: string
+        maxLength: 128
     GzipContentEncoding:
       name: Content-Encoding
       in: header
@@ -272,16 +431,35 @@ components:
         type: string
         const: gzip
   securitySchemes:
+    BrowserSession:
+      type: apiKey
+      in: cookie
+      name: __Host-keeppeek-session
+      description: >-
+        Opaque server-owned browser session, Secure, HttpOnly, SameSite=Lax,
+        host-only, Path=/. Never combine with a bearer credential. Mutations
+        require exact same-origin Origin and X-KeepPeek-CSRF. Proxy identities
+        also require corroborating assertions from the configured immediate peer.
     BearerCredential:
       type: http
       scheme: bearer
       bearerFormat: UUID
       description: >-
         A named random UUID credential assigned Administrator or User. Required
-        for every policy-classified remote peer. Configured local networks act
+        for remote peers when bearer authentication is enabled. Configured local networks act
         as Administrator without a credential. Forwarded clients are resolved
         only through the exact trusted-proxy contract.
   responses:
+    AuthenticationRedirect:
+      description: >-
+        Redirect to the configured identity provider or validated saved return
+        path. May set or clear the host-only Secure HttpOnly SameSite=Lax cookies.
+        Uses Cache-Control no-store and Referrer-Policy no-referrer.
+      headers:
+        Location:
+          required: true
+          schema:
+            type: string
     BadRequest:
       description: Bad Request. The request could not be accepted, or validation failed.
       content:
@@ -302,7 +480,7 @@ components:
             $ref: "#/components/schemas/Status"
     Unauthorized:
       description: >-
-        A remote request has no active, unexpired Bearer credential. The
+        A remote request has no active credential or browser identity. The
         response does not distinguish unknown, disabled, expired, or revoked
         credentials.
       content:
@@ -316,7 +494,7 @@ components:
           schema:
             $ref: "#/components/schemas/Status"
     Forbidden:
-      description: The authenticated User role cannot perform this Administrator operation.
+      description: The role, mapping, Origin, or CSRF policy rejects this operation.
       content:
         application/json:
           schema:
@@ -346,6 +524,46 @@ components:
           schema:
             $ref: "#/components/schemas/Status"
   schemas:
+    AuthenticationSession:
+      type: object
+      additionalProperties: false
+      required: [local, bearer_enabled, methods, identity, csrf_token]
+      properties:
+        local:
+          type: boolean
+        bearer_enabled:
+          type: boolean
+        csrf_token:
+          type: [string, "null"]
+        methods:
+          type: array
+          maxItems: 4
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, name, kind]
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              kind:
+                type: string
+                enum: [oidc, proxy]
+        identity:
+          type: [object, "null"]
+          additionalProperties: false
+          required: [id, display_name, role]
+          properties:
+            id:
+              type: string
+            display_name:
+              type: string
+            provider_id:
+              type: string
+            role:
+              type: string
+              enum: [administrator, user]
     CreateRequest:
       type: object
       additionalProperties: false

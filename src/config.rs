@@ -91,6 +91,9 @@ pub struct Config {
     #[serde(default)]
     pub access: AccessConfig,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) external_auth: Option<crate::access::external::Config>,
+
     #[serde(default)]
     pub direct_card: DirectCardConfig,
 
@@ -915,6 +918,7 @@ impl Default for Config {
             port: default_port(),
             access_key: AccessKey::unset(),
             access: AccessConfig::default(),
+            external_auth: None,
             direct_card: DirectCardConfig::default(),
             storage: StorageToml::default(),
             battery_wake: BatteryWakeConfig::default(),
@@ -1677,6 +1681,13 @@ fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
 }
 
 pub(crate) fn validate_configuration_table(path: &Path, root: &toml::Table) -> anyhow::Result<()> {
+    validated_configuration_table(path, root).map(|_| ())
+}
+
+pub(crate) fn validated_configuration_table(
+    path: &Path,
+    root: &toml::Table,
+) -> anyhow::Result<Config> {
     let secrets = load_secrets(path)?;
     let config = config_from_table(root, &secrets)?;
     config.access.validate()?;
@@ -1691,7 +1702,7 @@ pub(crate) fn validate_configuration_table(path: &Path, root: &toml::Table) -> a
     crate::server::validate_peek_layout_configuration(root)?;
     crate::server::validate_template_configuration(root)?;
     cameras_from_table(root, &secrets)?;
-    Ok(())
+    Ok(config)
 }
 
 pub(crate) fn cameras_from_configuration_table(
@@ -1703,6 +1714,8 @@ pub(crate) fn cameras_from_configuration_table(
 }
 
 fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Config> {
+    crate::access::external::validate_source(root)?;
+    crate::access::identities::Directory::from_root(root)?;
     if let Some(sources) = root
         .get("isapi_callbacks")
         .and_then(|value| value.get("sources"))
@@ -1721,6 +1734,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     let mut runtime = root.clone();
     for section in [
         "access_credentials",
+        "external_identities",
         "notifications",
         "peek_layouts",
         "configuration_templates",
@@ -1731,6 +1745,9 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     resolve_toml_secret_references(&mut resolved, secrets)?;
     let mut config: Config = resolved.try_into()?;
     config.storage.validate_pre_recording_budgets()?;
+    if let Some(external_auth) = &config.external_auth {
+        external_auth.validate()?;
+    }
     if let Some(callbacks) = &config.isapi_callbacks {
         callbacks.validate()?;
     }
@@ -1927,6 +1944,8 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
     matches!(
         namespace,
         "access"
+            | "external_auth"
+            | "external_identities"
             | "access_credentials"
             | "storage"
             | "battery_wake"

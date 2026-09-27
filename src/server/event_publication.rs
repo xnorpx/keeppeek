@@ -123,6 +123,12 @@ enum CommitPreparation {
     Pending(Box<PendingCommit>),
 }
 
+type CommitOutcome = (
+    proto::EventPublicationState,
+    Option<CommittedPublication>,
+    Option<TimelineEvent>,
+);
+
 impl Registry {
     fn start(
         &self,
@@ -302,14 +308,7 @@ impl Registry {
         session_id: SessionId,
         request: proto::CommitEventPublication,
         now_ms: u64,
-    ) -> Result<
-        (
-            proto::EventPublicationState,
-            Option<CommittedPublication>,
-            Option<TimelineEvent>,
-        ),
-        ControlCommandError,
-    > {
+    ) -> Result<CommitOutcome, ControlCommandError> {
         validate_path_id(&request.publication_id, "event publication ID")?;
         let wait_ms =
             commit_wait_timeout_ms(&request.publication_id, request.wait_timeout.as_ref())?;
@@ -329,6 +328,32 @@ impl Registry {
             .commit
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.require_pending_commit(&key)?;
+        // Teardown also needs the commit lock; nonblocking admission avoids reversing its locks.
+        let mut pending = Some(pending);
+        let result = super::session_lifecycle::admit(state, session_id, || {
+            self.commit_pending(state, &key, pending.take().expect("commit runs once"))
+        });
+        if let Some(pending) = pending {
+            self.finish_failed_commit(
+                &key,
+                pending.attachment_bytes,
+                result
+                    .as_ref()
+                    .is_err_and(|error| error._http_status == 409),
+                super::unix_time_ms(),
+            );
+        }
+        result
+    }
+
+    fn commit_pending(
+        &self,
+        state: &ServerState,
+        key: &(SessionId, String),
+        pending: PendingCommit,
+    ) -> Result<CommitOutcome, ControlCommandError> {
+        let publication_id = &key.1;
         let PendingCommit {
             event,
             attachment_channel,
@@ -337,89 +362,26 @@ impl Registry {
             started_at,
         } = pending;
         if super::unix_time_ms() >= expires_at_ms {
-            self.finish_failed_commit(&key, attachment_bytes, false, super::unix_time_ms());
+            self.finish_failed_commit(key, attachment_bytes, false, super::unix_time_ms());
             return Err(publication_error(
-                &request.publication_id,
+                publication_id,
                 &event.event_id,
                 proto::EventPublicationErrorCode::Expired,
                 None,
                 "event publication expired",
             ));
         }
-        let commit_result =
-            (|| -> Result<(TimelineEvent, PublishedImageCommit), (ControlCommandError, bool)> {
-                validate_event_identity(state, &request.publication_id, &event)
-                    .map_err(|error| (error, false))?;
-                validate_revision(state, &request.publication_id, &event)
-                    .map_err(|error| (error, false))?;
-                let timeline_event = timeline_event(&event).map_err(|error| (error, false))?;
-                let store = state.events.as_ref().ok_or_else(|| {
-                    (
-                        publication_error(
-                            &request.publication_id,
-                            &event.event_id,
-                            proto::EventPublicationErrorCode::StorageUnavailable,
-                            None,
-                            "event storage is unavailable",
-                        ),
-                        true,
-                    )
-                })?;
-                match store.commit_published_image(
-                    &request.publication_id,
-                    timeline_event.clone(),
-                    &attachment_bytes,
-                ) {
-                    Ok(outcome) => Ok((timeline_event, outcome)),
-                    Err(PublishedImageCommitError::Invalid(_)) => Err((
-                        publication_error(
-                            &request.publication_id,
-                            &event.event_id,
-                            proto::EventPublicationErrorCode::AttachmentInvalid,
-                            None,
-                            "event attachment is not a valid JPEG",
-                        ),
-                        false,
-                    )),
-                    Err(PublishedImageCommitError::Conflict(current_revision)) => Err((
-                        publication_error(
-                            &request.publication_id,
-                            &event.event_id,
-                            proto::EventPublicationErrorCode::RevisionConflict,
-                            current_revision,
-                            "event publication revision conflicts with durable state",
-                        ),
-                        false,
-                    )),
-                    Err(PublishedImageCommitError::Storage(_)) => {
-                        if let Err(error) =
-                            validate_revision(state, &request.publication_id, &event)
-                        {
-                            return Err((error, false));
-                        }
-                        Err((
-                            publication_error(
-                                &request.publication_id,
-                                &event.event_id,
-                                proto::EventPublicationErrorCode::StorageUnavailable,
-                                None,
-                                "event publication could not be stored",
-                            ),
-                            true,
-                        ))
-                    }
-                }
-            })();
+        let commit_result = store_publication(state, publication_id, &event, &attachment_bytes);
         let (timeline_event, outcome) = match commit_result {
             Ok(result) => result,
             Err((error, retryable)) => {
-                self.finish_failed_commit(&key, attachment_bytes, retryable, super::unix_time_ms());
+                self.finish_failed_commit(key, attachment_bytes, retryable, super::unix_time_ms());
                 return Err(error);
             }
         };
         let publication = self.finish_successful_commit(
-            &key,
-            &request.publication_id,
+            key,
+            publication_id,
             &event,
             attachment_channel,
             expires_at_ms,
@@ -516,6 +478,25 @@ impl Registry {
             };
             current_ms = super::unix_time_ms();
         }
+    }
+
+    fn require_pending_commit(&self, key: &(SessionId, String)) -> Result<(), ControlCommandError> {
+        let publications = self
+            .inner
+            .publications
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if publications
+            .get(key)
+            .is_some_and(|publication| publication.status == PublicationStatus::Committing)
+        {
+            return Ok(());
+        }
+        Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "publication was cancelled before commit",
+        ))
     }
 
     fn finish_failed_commit(
@@ -881,33 +862,38 @@ fn dispatch_inner(
 ) -> Result<Dispatch, ControlCommandError> {
     let mut committed = None;
     let mut mqtt_retry = None;
-    let publication =
-        match command.action {
-            Some(event_publication_command::Action::Start(request)) => state
+    let publication = match command.action {
+        Some(event_publication_command::Action::Start(request)) => {
+            super::session_lifecycle::admit(state, session_id, || {
+                state
+                    .event_publications
+                    .start(state, session_id, request, super::unix_time_ms())
+            })?
+        }
+        Some(event_publication_command::Action::Commit(request)) => {
+            let (publication, committed_publication, retry) = state.event_publications.commit(
+                state,
+                session_id,
+                request,
+                super::unix_time_ms(),
+            )?;
+            committed = committed_publication;
+            mqtt_retry = retry;
+            publication
+        }
+        Some(event_publication_command::Action::Abort(request)) => {
+            state
                 .event_publications
-                .start(state, session_id, request, super::unix_time_ms())?,
-            Some(event_publication_command::Action::Commit(request)) => {
-                let (publication, committed_publication, retry) = state.event_publications.commit(
-                    state,
-                    session_id,
-                    request,
-                    super::unix_time_ms(),
-                )?;
-                committed = committed_publication;
-                mqtt_retry = retry;
-                publication
-            }
-            Some(event_publication_command::Action::Abort(request)) => state
-                .event_publications
-                .abort(session_id, request, super::unix_time_ms())?,
-            None => {
-                return Err(ControlCommandError::new(
-                    proto::ErrorCode::InvalidRequest,
-                    400,
-                    "event publication command has no action",
-                ));
-            }
-        };
+                .abort(session_id, request, super::unix_time_ms())?
+        }
+        None => {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "event publication command has no action",
+            ));
+        }
+    };
     Ok(Dispatch {
         result: proto::ok::Result::EventPublicationState(publication),
         committed,
@@ -1515,6 +1501,62 @@ fn validate_attachments(
     Ok(())
 }
 
+fn store_publication(
+    state: &ServerState,
+    publication_id: &str,
+    event: &proto::Event,
+    attachment_bytes: &[u8],
+) -> Result<(TimelineEvent, PublishedImageCommit), (ControlCommandError, bool)> {
+    validate_event_identity(state, publication_id, event).map_err(|error| (error, false))?;
+    validate_revision(state, publication_id, event).map_err(|error| (error, false))?;
+    let timeline_event = timeline_event(event).map_err(|error| (error, false))?;
+    let store = state
+        .events
+        .as_ref()
+        .expect("revision validation requires an event store");
+    let outcome = store
+        .commit_published_image(publication_id, timeline_event.clone(), attachment_bytes)
+        .map_err(|error| publication_storage_error(state, publication_id, event, error))?;
+    Ok((timeline_event, outcome))
+}
+
+fn publication_storage_error(
+    state: &ServerState,
+    publication_id: &str,
+    event: &proto::Event,
+    error: PublishedImageCommitError,
+) -> (ControlCommandError, bool) {
+    let (code, revision, message, retryable) = match error {
+        PublishedImageCommitError::Invalid(_) => (
+            proto::EventPublicationErrorCode::AttachmentInvalid,
+            None,
+            "event attachment is not a valid JPEG",
+            false,
+        ),
+        PublishedImageCommitError::Conflict(revision) => (
+            proto::EventPublicationErrorCode::RevisionConflict,
+            revision,
+            "event publication revision conflicts with durable state",
+            false,
+        ),
+        PublishedImageCommitError::Storage(_) => {
+            if let Err(error) = validate_revision(state, publication_id, event) {
+                return (error, false);
+            }
+            (
+                proto::EventPublicationErrorCode::StorageUnavailable,
+                None,
+                "event publication could not be stored",
+                true,
+            )
+        }
+    };
+    (
+        publication_error(publication_id, &event.event_id, code, revision, message),
+        retryable,
+    )
+}
+
 fn validate_revision(
     state: &ServerState,
     publication_id: &str,
@@ -2035,6 +2077,144 @@ mod tests {
         assert_eq!(invalidated.reserved_bytes, 0);
         drop(publications);
         assert_eq!(registry.metrics_snapshot().aborts, 1);
+    }
+
+    #[test]
+    fn prepared_publication_cannot_resume_after_session_cleanup() {
+        let registry = Registry::default();
+        let key = (SessionId::from_u64(7), "publication-1".to_owned());
+        let mut publication = staged_publication();
+        publication.status = PublicationStatus::Committing;
+        registry
+            .inner
+            .publications
+            .lock()
+            .unwrap()
+            .insert(key.clone(), publication);
+        assert!(registry.require_pending_commit(&key).is_ok());
+        registry.close_session(key.0);
+        let _commit = registry.inner.commit.lock().unwrap();
+        assert!(registry.require_pending_commit(&key).is_err());
+    }
+
+    fn commit_race_state(
+        directory: &std::path::Path,
+    ) -> (ServerState, crate::storage::RecordingCatalog) {
+        let mut state = super::super::tests::media_test_state();
+        let catalog =
+            crate::storage::RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+        state.events = Some(
+            crate::storage::events::EventStore::new(
+                catalog.handle(),
+                &directory.join("thumbnails"),
+                0,
+            )
+            .unwrap(),
+        );
+        state.api_session_owners.lock().unwrap().insert(
+            SessionId::from_u64(7),
+            super::super::tests::local_test_session(),
+        );
+        state.webrtc.live().publish(
+            crate::webrtc::Source {
+                camera_ip: "127.0.0.1".parse().unwrap(),
+                stream: crate::keeppeek::StreamKind::Sub,
+            },
+            crate::storage::VideoCodec::H264,
+            true,
+            Instant::now(),
+            None,
+            bytes::Bytes::from_static(&[0, 0, 0, 1]),
+        );
+        (state, catalog)
+    }
+
+    fn complete_publication(state: &ServerState) -> StagedPublication {
+        let mut publication = staged_publication();
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .encode_image(&image::DynamicImage::new_rgb8(2, 2))
+            .unwrap();
+        publication.event.source_id = "127.0.0.1".into();
+        publication.event.source_session_id = Some(
+            proto_camera_source_session(&state.camera_entries()[0].info, &state.webrtc)
+                .unwrap()
+                .source_session_id,
+        );
+        publication.event.event_type = "person".into();
+        publication.event.media_kind = Some(proto::MediaKind::Video as i32);
+        publication.event.origin = proto::EventOrigin::Keeppeek as i32;
+        publication.event.start_time = Some(millis_timestamp(1_000));
+        publication.event.attachments[0].byte_len = Some(jpeg.len() as u64);
+        publication.expires_at_ms = super::super::unix_time_ms() + 30_000;
+        publication.reserved_bytes = jpeg.len() as u64;
+        publication.attachment_bytes = jpeg;
+        publication.chunk_count = Some(1);
+        publication.next_chunk_index = 1;
+        publication
+    }
+
+    #[test]
+    fn commit_rechecks_session_after_waiting_for_the_durable_write_lock() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-commit-race-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let (state, catalog) = commit_race_state(&directory);
+        let registry = &state.event_publications;
+        let key = (SessionId::from_u64(7), "publication-1".to_owned());
+        registry
+            .inner
+            .publications
+            .lock()
+            .unwrap()
+            .insert(key.clone(), complete_publication(&state));
+        let guard = registry.inner.commit.lock().unwrap();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                registry.commit(
+                    &state,
+                    key.0,
+                    proto::CommitEventPublication {
+                        publication_id: key.1.clone(),
+                        wait_timeout: None,
+                    },
+                    super::super::unix_time_ms(),
+                )
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while registry.inner.publications.lock().unwrap()[&key].status
+                != PublicationStatus::Committing
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "commit did not reach the write lock"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            state.api_session_owners.lock().unwrap()[&key.0]
+                .lifecycle
+                .closed
+                .store(true, Ordering::Release);
+            drop(guard);
+            let result = worker.join().unwrap();
+            assert!(
+                matches!(result, Err(error) if error._http_status == 401),
+                "a closed session must not finish its pending durable publication"
+            );
+        });
+        assert!(
+            state
+                .events
+                .as_ref()
+                .unwrap()
+                .event_by_id("event-1")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(registry.metrics_snapshot().commits, 0);
+        drop(state);
+        drop(catalog);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

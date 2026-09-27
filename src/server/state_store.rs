@@ -1016,10 +1016,12 @@ fn watch(
             &namespace,
             &watch_id,
         )?;
-        state
-            .state_store_watches
-            .register(session_id, namespace.clone(), key_prefix, watch_id.clone())
-            .map_err(|error| registry_error(error, &namespace, &watch_id))?;
+        super::session_lifecycle::admit(state, session_id, || {
+            state
+                .state_store_watches
+                .register(session_id, namespace.clone(), key_prefix, watch_id.clone())
+                .map_err(|error| registry_error(error, &namespace, &watch_id))
+        })?;
         proto::StateStoreResult {
             result: Some(state_store_result::Result::Watch(message)),
         }
@@ -2130,6 +2132,7 @@ mod tests {
             .insert(
                 session,
                 ApiSessionRecord {
+                    lifecycle: Default::default(),
                     principal: local_principal(),
                     classification: ClientClassification {
                         peer_address: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -2225,6 +2228,7 @@ mod tests {
         let state = ServerState::empty();
         let principal = local_principal();
         let session = SessionId::from_u64(4242);
+        admin_session(&state, session);
         {
             let mut registry = lock_registry(&state);
             registry
@@ -2396,6 +2400,7 @@ mod tests {
         let dir = TempDir::new();
         let mut state = ServerState::empty();
         attach_durable(&mut state, &dir);
+        admin_session(&state, SessionId::from_u64(4245));
         {
             let mut registry = lock_registry(&state);
             let mut durable = lock_durable(&state).expect("durable must be attached");
@@ -2549,6 +2554,7 @@ mod tests {
     fn watch_accepts_full_size_snapshot_with_valid_documents() {
         let state = ServerState::empty();
         let session = SessionId::from_u64(4247);
+        admin_session(&state, session);
         {
             let mut registry = lock_registry(&state);
             for index in 0..MAX_WATCH_SNAPSHOT_ENTRIES {
@@ -2606,6 +2612,7 @@ mod tests {
     fn sweeper_overflow_terminates_every_watch() {
         let state = ServerState::empty();
         let session = SessionId::from_u64(4244);
+        admin_session(&state, session);
         {
             let mut registry = lock_registry(&state);
             for namespace_no in 0..5 {

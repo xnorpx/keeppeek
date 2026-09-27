@@ -138,13 +138,15 @@ impl Registry {
         request: proto::SubscribeEvents,
     ) -> Result<proto::SubscriptionResult, ControlCommandError> {
         let result = super::camera_access::for_session(state, session_id).and_then(|policy| {
-            self.subscribe_scoped_with_clock(
-                state,
-                session_id,
-                request,
-                &policy,
-                super::unix_time_ms,
-            )
+            super::session_lifecycle::admit(state, session_id, || {
+                self.subscribe_scoped_with_clock(
+                    state,
+                    session_id,
+                    request,
+                    &policy,
+                    super::unix_time_ms,
+                )
+            })
         });
         if result.is_err() {
             self.rejections.fetch_add(1, Ordering::Relaxed);
@@ -645,7 +647,7 @@ fn queue_capabilities(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&session_id)
-        .map(|session| super::proto_access_session(session_id, session));
+        .map(|session| super::proto_access_session(state, session_id, session));
     let notification = proto::Notification {
         event: Some(proto::notification::Event::InitialCapabilities(
             super::connection_capabilities(snapshot.clone(), session_id, access_session),

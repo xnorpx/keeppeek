@@ -510,6 +510,11 @@ fn hikvision_ptz_stops_after_an_uncertain_movement_acknowledgement() {
     state.probe_hikvision_capabilities(config.ip);
     let handler = test_control_handler(state.clone());
     let owner = SessionId::from_u64(960);
+    state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .insert(owner, local_test_session());
     let command = || proto::PtzCommand {
         source_id: "127.0.0.1".to_owned(),
         action: Some(proto::ptz_command::Action::Continuous(
@@ -543,6 +548,11 @@ fn hikvision_ptz_disconnect_stops_the_original_control_target_after_replacement(
     state.probe_hikvision_capabilities(config.ip);
     let handler = test_control_handler(state.clone());
     let owner = SessionId::from_u64(961);
+    state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .insert(owner, local_test_session());
     handler
         .handle_ptz(
             owner,
@@ -580,6 +590,11 @@ fn hikvision_failed_refresh_preserves_verified_capabilities_and_stop() {
     state.probe_hikvision_capabilities(config.ip);
     let handler = test_control_handler(state.clone());
     let owner = SessionId::from_u64(970);
+    state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .insert(owner, local_test_session());
     handler
         .handle_ptz(
             owner,
@@ -675,6 +690,11 @@ fn hikvision_ptz_reboot_required_stop_keeps_cleanup_responsibility() {
     state.probe_hikvision_capabilities(config.ip);
     let handler = test_control_handler(state.clone());
     let owner = SessionId::from_u64(980);
+    state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .insert(owner, local_test_session());
     handler
         .handle_ptz(
             owner,
@@ -712,6 +732,11 @@ fn hikvision_ptz_uncertain_preset_acknowledgement_triggers_a_safety_stop() {
     let fake = test_hikvision::FakeHikvision::builder().start().unwrap();
     let config: CameraConfig = toml::from_str(&format!("ip='127.0.0.1'\nmanufacturer='Hikvision'\nusername='test'\npassword='test'\nhttp_port={}\n", fake.address().port())).unwrap();
     let state = ServerState::empty();
+    state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .insert(SessionId::from_u64(981), local_test_session());
     state.upsert_camera(camera_entry(&config, None));
     state.probe_hikvision_capabilities(config.ip);
     let handler = test_control_handler(state.clone());

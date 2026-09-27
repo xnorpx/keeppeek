@@ -15,6 +15,14 @@ pub(super) fn for_principal(
     state: &ServerState,
     principal: &ApiPrincipal,
 ) -> Result<CameraAccess, ControlCommandError> {
+    if principal.credential_binding().is_some()
+        && !super::authentication::bearer_allowed(
+            state,
+            i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+        )
+    {
+        return Err(denied());
+    }
     let policy = match principal.credential_binding() {
         Some((id, revision)) => state
             .access_manager
@@ -27,7 +35,7 @@ pub(super) fn for_principal(
         None if principal.is_local() && principal.role == AccessRole::Administrator => {
             Ok(CameraAccess::unrestricted())
         }
-        None => Err(denied()),
+        None => super::authentication::camera_policy(state, principal).ok_or_else(denied),
     }?;
     Ok(resolve_groups(state, policy))
 }
@@ -64,10 +72,11 @@ pub(super) fn invalidate_group_sessions(state: &ServerState, groups: &[String]) 
         .collect::<Vec<_>>();
     let now = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
     for (session_id, principal) in sessions {
-        let Some((id, revision)) = principal.credential_binding() else {
-            continue;
+        let policy = match principal.credential_binding() {
+            Some((id, revision)) => state.access_manager.camera_access(id, revision, now),
+            None => super::authentication::camera_policy(state, &principal),
         };
-        let Some(policy) = state.access_manager.camera_access(id, revision, now) else {
+        let Some(policy) = policy else {
             continue;
         };
         if policy.group_ids.iter().any(|group| groups.contains(group)) {
@@ -118,6 +127,10 @@ pub(super) fn for_session(
         let session = owners.get(&session_id).ok_or_else(denied)?;
         let now = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
         if now >= session.absolute_expires_at_ms
+            || session
+                .lifecycle
+                .closed
+                .load(std::sync::atomic::Ordering::Acquire)
             || session.last_activity.elapsed() >= state.api_session_policy.idle_timeout
         {
             return Err(denied());

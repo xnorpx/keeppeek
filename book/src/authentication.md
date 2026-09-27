@@ -7,7 +7,9 @@ itself through a cloud relay. Access depends on two decisions:
 2. If not, which remote credential and role does the client have?
 
 Local clients use KeepPeek as **Administrator** without signing in. Remote clients must sign in
-with a named Bearer credential assigned either the **Administrator** or **User** role.
+with a named bearer credential or an explicitly configured OIDC/identity-proxy method,
+assigned either the **Administrator** or **User** role. External methods are opt-in;
+they do not change the trusted-local policy.
 
 > Treat local network configuration as an authentication boundary. Any device in a configured
 > local range receives Administrator access.
@@ -31,7 +33,8 @@ KeepPeek classifies the effective client address before checking a credential.
 
 - **Local:** the address is in `access.local_networks`. The client becomes Administrator without a
   sign-in screen.
-- **Remote:** every other address. The client must provide an active, unexpired Bearer credential.
+- **Remote:** every other address. The client must provide an active, unexpired bearer credential
+  or use an explicitly configured external authentication method.
 - **Unknown or malformed:** treated as remote and denied without a valid credential.
 
 The default local networks include IPv4 and IPv6 loopback, RFC 1918 private networks, IPv4 and IPv6
@@ -65,6 +68,24 @@ A VPN can use either policy:
 - Leave it out when each VPN client should sign in with an individual credential and role.
 
 Restart KeepPeek after changing the network policy.
+
+## External sign-in
+
+Administrators configure providers, exact origins, explicit role/camera mappings,
+identities, and browser-session revocation under **Settings → Access**. Browser
+cookies are secure, HTTP-only, host-only, and bound to one allowed origin. Provider
+tokens never reach the application UI. Sign-out revokes dependent connections;
+restart invalidates all external browser sessions.
+
+Provider secrets remain references into `secrets.toml`. Changing the last usable
+remote Administrator path requires fresh proof against the exact proposed
+configuration and explicit confirmation on the original control connection.
+The same protection applies to configuration ZIP restore. An unavailable provider,
+stale proof, or failed write cannot activate the candidate.
+
+See the [field reference](configuration-reference.md#external-authentication-configuration)
+and [deployment and recovery guide](https://github.com/xnorpx/keeppeek/blob/main/docs/external-authentication-operations.md)
+for TLS, reverse-proxy header sanitation, mixed-mode deadlines, and troubleshooting.
 
 ## Roles
 

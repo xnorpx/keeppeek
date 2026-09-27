@@ -71,7 +71,11 @@ fn accept_request(listener: &TcpListener) -> TcpStream {
     let deadline = Instant::now() + FIXTURE_TIMEOUT;
     while Instant::now() < deadline {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                // Windows can inherit the listener's nonblocking mode on accepted sockets.
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));
             }

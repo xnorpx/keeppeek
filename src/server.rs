@@ -83,6 +83,13 @@ use std::{
 use url::Url;
 use uuid::Uuid;
 
+mod authentication;
+#[cfg(test)]
+mod authentication_benchmarks;
+#[cfg(test)]
+mod authentication_browser_fixture;
+#[cfg(test)]
+mod bearer_benchmarks;
 mod camera_access;
 mod camera_control;
 mod camera_discovery;
@@ -101,6 +108,7 @@ mod peek_layouts;
 pub(crate) mod recording_coverage;
 mod recording_maintenance;
 mod runtime_configuration;
+mod session_lifecycle;
 pub(crate) mod state_store;
 #[cfg(test)]
 mod state_store_crash;
@@ -771,7 +779,7 @@ impl ControlRequestHandler for ServerControlHandler {
                         .handle_notification_rules(session_id, command)
                         .map(Some),
                     Some(control_request::Command::ConfigurationCommand(command)) => {
-                        configuration::dispatch_as(&self.state, &principal, command).map(Some)
+                        self.handle_configuration(session_id, &principal, command)
                     }
                     Some(control_request::Command::EventWorkflowCommand(command)) => {
                         event_workflow::dispatch(&self.state, &principal, command).map(Some)
@@ -896,8 +904,6 @@ impl ControlRequestHandler for ServerControlHandler {
     }
 
     fn session_closed(&self, session_id: SessionId) {
-        self.state.talkback.stop_for_session(session_id);
-        self.state.webrtc.disarm_talkback(session_id);
         close_api_session(&self.state, session_id);
     }
 
@@ -1179,6 +1185,16 @@ impl ControlRequestHandler for ServerControlHandler {
 }
 
 fn handle_talkback(
+    server_state: &ServerState,
+    session_id: SessionId,
+    command: proto::TalkbackCommand,
+) -> Result<proto::Notification, ControlCommandError> {
+    session_lifecycle::admit(server_state, session_id, || {
+        update_talkback(server_state, session_id, command)
+    })
+}
+
+fn update_talkback(
     server_state: &ServerState,
     session_id: SessionId,
     command: proto::TalkbackCommand,
@@ -1682,6 +1698,15 @@ fn privacy_override_active(
 }
 
 impl ServerControlHandler {
+    fn handle_configuration(
+        &self,
+        session_id: SessionId,
+        principal: &ApiPrincipal,
+        command: proto::ConfigurationCommand,
+    ) -> Result<Option<control_ok::Result>, ControlCommandError> {
+        configuration::dispatch_as(&self.state, session_id, principal, command).map(Some)
+    }
+
     const fn new(state: ServerState, router_tx: FacadeSender<RouterMessage>) -> Self {
         Self { state, router_tx }
     }
@@ -1730,6 +1755,10 @@ impl ServerControlHandler {
                 last_activity_at_ms: 0,
                 absolute_expires_at_ms: i64::MAX,
                 credential_expires_at_ms: None,
+                authentication: Some(proto::AccessAuthentication {
+                    method: proto::AccessAuthenticationMethod::TrustedLocal as i32,
+                    ..Default::default()
+                }),
             })
         } else {
             self.state
@@ -1737,7 +1766,7 @@ impl ServerControlHandler {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(&session_id)
-                .map(|session| proto_access_session(session_id, session))
+                .map(|session| proto_access_session(&self.state, session_id, session))
         }
     }
 
@@ -1759,61 +1788,30 @@ impl ServerControlHandler {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(session) = sessions.get_mut(&session_id) else {
             drop(sessions);
-            self.state
-                .access_metrics
-                .authorization_denials
-                .fetch_add(1, Ordering::Relaxed);
-            record_access_audit(
-                &self.state,
-                now_ms,
-                None,
-                None,
-                "command_denied",
-                Some(&session_id.to_string()),
-                "unknown_session",
-                ClientClassificationReason::UnknownSession,
-            );
-            return Err((
-                ControlCommandError::new(
-                    proto::ErrorCode::Rejected,
-                    401,
-                    "API session is unavailable",
-                ),
-                false,
-            ));
+            return Err(self.unknown_api_session(session_id, now_ms));
         };
         let credential_active =
-            session
-                .principal
-                .credential_binding()
-                .is_none_or(|(id, revision)| {
-                    self.state
-                        .access_manager
-                        .credential_is_active(id, revision, now_ms)
-                });
+            authentication::active(&self.state, &session.principal, now_at, now_ms);
         let expired = now_ms >= session.absolute_expires_at_ms
+            || session.lifecycle.closed.load(Ordering::Acquire)
             || now_at.saturating_duration_since(session.last_activity)
                 >= self.state.api_session_policy.idle_timeout
             || !credential_active;
         if expired {
-            let session = sessions
-                .remove(&session_id)
-                .expect("expired session must still be present");
+            let session = session.clone();
+            session.lifecycle.closed.store(true, Ordering::Release);
             drop(sessions);
-            self.state
-                .access_metrics
-                .sessions_revoked_or_expired
-                .fetch_add(1, Ordering::Relaxed);
-            record_access_audit(
-                &self.state,
-                now_ms,
-                Some(&session.principal.id()),
-                Some(session.principal.role),
-                "command_denied",
-                Some(&session_id.to_string()),
-                "expired_or_revoked_session",
-                session.classification.reason,
-            );
+            return Err(self.expired_api_session(session_id, &session, now_ms));
+        }
+        if !session.principal.role.permits(required_role) {
+            let principal = session.principal.clone();
+            let classification = session.classification;
+            drop(sessions);
+            return Err(self.insufficient_api_role(&principal, classification, operation, now_ms));
+        }
+        session.last_activity = now_at;
+        session.last_activity_at_ms = now_ms;
+        if !authentication::touch(&self.state, &session.principal, now_at) {
             return Err((
                 ControlCommandError::new(
                     proto::ErrorCode::Rejected,
@@ -1823,36 +1821,98 @@ impl ServerControlHandler {
                 true,
             ));
         }
-        if !session.principal.role.permits(required_role) {
-            let principal = session.principal.clone();
-            let classification = session.classification;
-            drop(sessions);
-            self.state
-                .access_metrics
-                .authorization_denials
-                .fetch_add(1, Ordering::Relaxed);
-            record_access_audit(
-                &self.state,
-                now_ms,
-                Some(&principal.id()),
-                Some(principal.role),
-                "command_denied",
-                Some(operation),
-                "insufficient_role",
-                classification.reason,
-            );
-            return Err((
-                ControlCommandError::new(
-                    proto::ErrorCode::Rejected,
-                    403,
-                    "Administrator role is required for this operation",
-                ),
-                false,
-            ));
-        }
-        session.last_activity = now_at;
-        session.last_activity_at_ms = now_ms;
         Ok(session.principal.clone())
+    }
+
+    fn unknown_api_session(
+        &self,
+        session_id: SessionId,
+        now_ms: i64,
+    ) -> (ControlCommandError, bool) {
+        self.state
+            .access_metrics
+            .authorization_denials
+            .fetch_add(1, Ordering::Relaxed);
+        record_access_audit(
+            &self.state,
+            now_ms,
+            None,
+            None,
+            "command_denied",
+            Some(&session_id.to_string()),
+            "unknown_session",
+            ClientClassificationReason::UnknownSession,
+        );
+        (
+            ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                401,
+                "API session is unavailable",
+            ),
+            false,
+        )
+    }
+
+    fn expired_api_session(
+        &self,
+        session_id: SessionId,
+        session: &ApiSessionRecord,
+        now_ms: i64,
+    ) -> (ControlCommandError, bool) {
+        close_api_session(&self.state, session_id);
+        self.state
+            .access_metrics
+            .sessions_revoked_or_expired
+            .fetch_add(1, Ordering::Relaxed);
+        record_access_audit(
+            &self.state,
+            now_ms,
+            Some(&session.principal.id()),
+            Some(session.principal.role),
+            "command_denied",
+            Some(&session_id.to_string()),
+            "expired_or_revoked_session",
+            session.classification.reason,
+        );
+        (
+            ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                401,
+                "API session expired or was revoked",
+            ),
+            true,
+        )
+    }
+
+    fn insufficient_api_role(
+        &self,
+        principal: &ApiPrincipal,
+        classification: ClientClassification,
+        operation: &'static str,
+        now_ms: i64,
+    ) -> (ControlCommandError, bool) {
+        self.state
+            .access_metrics
+            .authorization_denials
+            .fetch_add(1, Ordering::Relaxed);
+        record_access_audit(
+            &self.state,
+            now_ms,
+            Some(&principal.id()),
+            Some(principal.role),
+            "command_denied",
+            Some(operation),
+            "insufficient_role",
+            classification.reason,
+        );
+        (
+            ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                403,
+                "Administrator role is required for this operation",
+            ),
+            false,
+        )
     }
 
     fn handle_publish_event(
@@ -3109,7 +3169,9 @@ impl ServerControlHandler {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .iter()
-                    .map(|(session_id, session)| proto_access_session(*session_id, session))
+                    .map(|(session_id, session)| {
+                        proto_access_session(&self.state, *session_id, session)
+                    })
                     .collect();
                 Ok((
                     control_ok::Result::AccessSessionResult(proto::AccessSessionResult {
@@ -3120,46 +3182,7 @@ impl ServerControlHandler {
                 ))
             }
             Some(server_command::Action::RevokeAccessSession(request)) => {
-                let current = self.current_access_session(session_id)?;
-                let target_session_id = request
-                    .session_id
-                    .parse::<u64>()
-                    .map(SessionId::from_u64)
-                    .map_err(|_| {
-                        ControlCommandError::new(
-                            proto::ErrorCode::InvalidRequest,
-                            400,
-                            "session ID is invalid",
-                        )
-                    })?;
-                let removed = self
-                    .state
-                    .api_session_owners
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&target_session_id);
-                record_access_audit(
-                    &self.state,
-                    now_ms,
-                    Some(&principal.id()),
-                    Some(principal.role),
-                    "session_revoke",
-                    Some(&target_session_id.to_string()),
-                    if removed.is_some() {
-                        "success"
-                    } else {
-                        "not_found"
-                    },
-                    classification,
-                );
-                let sessions = removed.map(|_| vec![target_session_id]).unwrap_or_default();
-                Ok((
-                    control_ok::Result::AccessSessionResult(proto::AccessSessionResult {
-                        current: Some(current),
-                        sessions: Vec::new(),
-                    }),
-                    close_api_sessions_action(self.state.webrtc.clone(), sessions),
-                ))
+                self.revoke_access_session(session_id, principal, request, classification, now_ms)
             }
             Some(server_command::Action::ListAccessAudit(request)) => Ok((
                 control_ok::Result::AccessAuditResult(proto::AccessAuditResult {
@@ -3173,12 +3196,67 @@ impl ServerControlHandler {
                 }),
                 Box::new(|| {}),
             )),
+            Some(server_command::Action::ExternalAuthentication(command)) => Ok((
+                authentication::admin::dispatch(
+                    &self.state,
+                    session_id,
+                    principal,
+                    classification,
+                    command,
+                )?,
+                Box::new(|| {}),
+            )),
             None => Err(ControlCommandError::new(
                 proto::ErrorCode::InvalidRequest,
                 400,
                 "server command has no action",
             )),
         }
+    }
+
+    fn revoke_access_session(
+        &self,
+        session_id: SessionId,
+        principal: &ApiPrincipal,
+        request: proto::RevokeAccessSession,
+        classification: ClientClassificationReason,
+        now_ms: i64,
+    ) -> Result<(control_ok::Result, PostSendAction), ControlCommandError> {
+        let current = self.current_access_session(session_id)?;
+        let target_session_id = request
+            .session_id
+            .parse::<u64>()
+            .map(SessionId::from_u64)
+            .map_err(|_| {
+                ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "session ID is invalid",
+                )
+            })?;
+        let removed = session_lifecycle::close(&self.state, target_session_id);
+        record_access_audit(
+            &self.state,
+            now_ms,
+            Some(&principal.id()),
+            Some(principal.role),
+            "session_revoke",
+            Some(&target_session_id.to_string()),
+            if removed.is_some() {
+                "success"
+            } else {
+                "not_found"
+            },
+            classification,
+        );
+        let sessions = removed.map(|_| vec![target_session_id]).unwrap_or_default();
+        Ok((
+            control_ok::Result::AccessSessionResult(proto::AccessSessionResult {
+                current: Some(current),
+                sessions: Vec::new(),
+            }),
+            close_api_sessions_action(self.state.webrtc.clone(), sessions),
+        ))
     }
 
     fn require_local_administrator(
@@ -3211,6 +3289,10 @@ impl ServerControlHandler {
                 last_activity_at_ms: 0,
                 absolute_expires_at_ms: i64::MAX,
                 credential_expires_at_ms: None,
+                authentication: Some(proto::AccessAuthentication {
+                    method: proto::AccessAuthenticationMethod::TrustedLocal as i32,
+                    ..Default::default()
+                }),
             });
         }
         self.state
@@ -3218,7 +3300,7 @@ impl ServerControlHandler {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&session_id)
-            .map(|session| proto_access_session(session_id, session))
+            .map(|session| proto_access_session(&self.state, session_id, session))
             .ok_or_else(|| {
                 ControlCommandError::new(
                     proto::ErrorCode::Rejected,
@@ -3286,7 +3368,7 @@ impl ServerControlHandler {
     }
 
     fn remove_credential_sessions(&self, credential_id: Uuid) -> Vec<SessionId> {
-        let mut sessions = self
+        let sessions = self
             .state
             .api_session_owners
             .lock()
@@ -3301,9 +3383,13 @@ impl ServerControlHandler {
                     .then_some(*session_id)
             })
             .collect::<Vec<_>>();
-        let revoked_set = revoked.iter().copied().collect::<HashSet<_>>();
-        sessions.retain(|session_id, _| !revoked_set.contains(session_id));
+        for id in &revoked {
+            sessions[id].lifecycle.closed.store(true, Ordering::Release);
+        }
         drop(sessions);
+        for id in &revoked {
+            close_api_session(&self.state, *id);
+        }
         self.state
             .access_metrics
             .sessions_revoked_or_expired
@@ -6079,6 +6165,16 @@ fn register_event_search_task(
     session_id: SessionId,
     group: &str,
 ) -> Result<Arc<AtomicBool>, ControlCommandError> {
+    session_lifecycle::admit(state, session_id, || {
+        insert_event_search_task(state, session_id, group)
+    })
+}
+
+fn insert_event_search_task(
+    state: &ServerState,
+    session_id: SessionId,
+    group: &str,
+) -> Result<Arc<AtomicBool>, ControlCommandError> {
     let mut tasks = state
         .event_search_tasks
         .lock()
@@ -8803,7 +8899,15 @@ fn default_profile_summaries() -> Vec<ProfileSummary> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ApiPrincipalIdentity {
     Local(IpAddr),
-    Credential { id: Uuid, revision: u64 },
+    Credential {
+        id: Uuid,
+        revision: u64,
+    },
+    External {
+        id: Uuid,
+        revision: u64,
+        browser: Uuid,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -8839,7 +8943,8 @@ impl ApiPrincipal {
     fn id(&self) -> String {
         match self.identity {
             ApiPrincipalIdentity::Local(_) => "local-administrator".to_owned(),
-            ApiPrincipalIdentity::Credential { id, .. } => id.to_string(),
+            ApiPrincipalIdentity::Credential { id, .. }
+            | ApiPrincipalIdentity::External { id, .. } => id.to_string(),
         }
     }
 
@@ -8847,9 +8952,30 @@ impl ApiPrincipal {
         matches!(self.identity, ApiPrincipalIdentity::Local(_))
     }
 
+    fn same_identity(&self, other: &Self) -> bool {
+        match (&self.identity, &other.identity) {
+            (ApiPrincipalIdentity::Local(left), ApiPrincipalIdentity::Local(right)) => {
+                left == right
+            }
+            (
+                ApiPrincipalIdentity::Credential { id: left, .. },
+                ApiPrincipalIdentity::Credential { id: right, .. },
+            )
+            | (
+                ApiPrincipalIdentity::External { id: left, .. },
+                ApiPrincipalIdentity::External { id: right, .. },
+            ) => left == right,
+            _ => false,
+        }
+    }
+
+    fn owns_session(&self, other: &Self) -> bool {
+        self.identity == other.identity
+    }
+
     const fn credential_binding(&self) -> Option<(Uuid, u64)> {
         match self.identity {
-            ApiPrincipalIdentity::Local(_) => None,
+            ApiPrincipalIdentity::Local(_) | ApiPrincipalIdentity::External { .. } => None,
             ApiPrincipalIdentity::Credential { id, revision } => Some((id, revision)),
         }
     }
@@ -8857,6 +8983,7 @@ impl ApiPrincipal {
 
 #[derive(Clone)]
 struct ApiSessionRecord {
+    lifecycle: Arc<session_lifecycle::Lifecycle>,
     principal: ApiPrincipal,
     classification: ClientClassification,
     created_at_ms: i64,
@@ -8876,8 +9003,7 @@ struct ApiSessionPolicy {
 }
 
 struct HttpStreamCancellation {
-    credential_id: Uuid,
-    credential_revision: u64,
+    principal: ApiPrincipal,
     cancelled: Weak<AtomicBool>,
 }
 
@@ -8921,7 +9047,11 @@ fn proto_issued_credential(credential: IssuedCredential) -> proto::AccessCredent
     }
 }
 
-fn proto_access_session(session_id: SessionId, session: &ApiSessionRecord) -> proto::AccessSession {
+fn proto_access_session(
+    state: &ServerState,
+    session_id: SessionId,
+    session: &ApiSessionRecord,
+) -> proto::AccessSession {
     proto::AccessSession {
         session_id: session_id.to_string(),
         principal_id: session.principal.id(),
@@ -8933,6 +9063,7 @@ fn proto_access_session(session_id: SessionId, session: &ApiSessionRecord) -> pr
         last_activity_at_ms: session.last_activity_at_ms,
         absolute_expires_at_ms: session.absolute_expires_at_ms,
         credential_expires_at_ms: session.principal.credential_expires_at_ms,
+        authentication: authentication::session_metadata(state, &session.principal),
     }
 }
 
@@ -9184,6 +9315,9 @@ pub struct ServerState {
     port: u16,
     access_key: Arc<RwLock<AccessKey>>,
     access_manager: AccessManager,
+    authentication: Arc<Mutex<authentication::Registry>>,
+    oidc_cache: Arc<Mutex<crate::access::oidc::Cache>>,
+    oidc_issuer_budgets: crate::access::oidc::IssuerBudgets,
     privacy: Arc<PrivacyRegistry>,
     privacy_sources: Arc<RwLock<BTreeMap<String, PrivacySource>>>,
     privacy_epochs: Arc<Mutex<HashMap<IpAddr, u64>>>,
@@ -9332,6 +9466,12 @@ impl ServerState {
             port: config.port,
             access_key: Arc::new(RwLock::new(config.access_key)),
             access_manager,
+            authentication: Arc::new(Mutex::new(authentication::Registry::new(
+                config,
+                initial_session_policy(config),
+            ))),
+            oidc_cache: Arc::new(Mutex::new(crate::access::oidc::Cache::default())),
+            oidc_issuer_budgets: crate::access::oidc::IssuerBudgets::default(),
             privacy,
             privacy_sources: Arc::new(RwLock::new(privacy_sources)),
             privacy_epochs: Arc::new(Mutex::new(HashMap::new())),
@@ -9922,11 +10062,7 @@ fn privacy_denial_target(
 }
 
 fn close_api_session(state: &ServerState, session_id: SessionId) {
-    let closed_session = state
-        .api_session_owners
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(&session_id);
+    let closed_session = session_lifecycle::close(state, session_id);
     if let Some(session) = closed_session {
         record_access_audit(
             state,
@@ -9939,13 +10075,6 @@ fn close_api_session(state: &ServerState, session_id: SessionId) {
             session.classification.reason,
         );
     }
-    event_search::close_session(state, session_id);
-    state.state_store_watches.close_session(session_id);
-    state.event_publications.close_session(session_id);
-    state.event_subscriptions.close_session(session_id);
-    state.camera_discovery_tasks.close_session(session_id);
-    stored_media::close_session(state, session_id);
-    camera_control::close_session(state, session_id);
 }
 
 fn close_api_sessions_action(webrtc: WebRtc, sessions: Vec<SessionId>) -> PostSendAction {
@@ -9965,7 +10094,11 @@ fn cancel_http_streams_for_credential(state: &ServerState, credential_id: Uuid) 
         let Some(cancelled) = stream.cancelled.upgrade() else {
             return false;
         };
-        if stream.credential_id == credential_id {
+        if stream
+            .principal
+            .credential_binding()
+            .is_some_and(|(id, _)| id == credential_id)
+        {
             cancelled.store(true, Ordering::Release);
             return false;
         }
@@ -10566,39 +10699,32 @@ fn expire_api_sessions(state: &ServerState) {
     let now_at = Instant::now();
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
     let expired = {
-        let mut sessions = state
+        let sessions = state
             .api_session_owners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let expired = sessions
             .iter()
             .filter_map(|(session_id, session)| {
-                let result =
-                    if now_ms >= session.absolute_expires_at_ms {
-                        Some("absolute_expiry")
-                    } else if now_at.saturating_duration_since(session.last_activity)
-                        >= state.api_session_policy.idle_timeout
-                    {
-                        Some("idle_expiry")
-                    } else if !session.principal.credential_binding().is_none_or(
-                        |(id, revision)| {
-                            state
-                                .access_manager
-                                .credential_is_active(id, revision, now_ms)
-                        },
-                    ) {
-                        Some("credential_inactive")
-                    } else {
-                        None
-                    }?;
+                let result = if session.lifecycle.closed.load(Ordering::Acquire) {
+                    Some("session_closed")
+                } else if now_ms >= session.absolute_expires_at_ms {
+                    Some("absolute_expiry")
+                } else if now_at.saturating_duration_since(session.last_activity)
+                    >= state.api_session_policy.idle_timeout
+                {
+                    Some("idle_expiry")
+                } else if !authentication::active(state, &session.principal, now_at, now_ms) {
+                    Some("identity_inactive")
+                } else {
+                    None
+                }?;
                 Some((*session_id, session.clone(), result))
             })
             .collect::<Vec<_>>();
-        let expired_ids = expired
-            .iter()
-            .map(|(session_id, _, _)| *session_id)
-            .collect::<HashSet<_>>();
-        sessions.retain(|session_id, _| !expired_ids.contains(session_id));
+        for (_, session, _) in &expired {
+            session.lifecycle.closed.store(true, Ordering::Release);
+        }
         expired
     };
     for (session_id, session, result) in expired {
@@ -10616,8 +10742,19 @@ fn expire_api_sessions(state: &ServerState) {
             result,
             session.classification.reason,
         );
+        close_api_session(state, session_id);
         state.webrtc.request_api_session_close(session_id);
     }
+    expire_http_streams(state, now_at, now_ms);
+    state
+        .configuration_plans
+        .restore_proofs
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .expire(now_at, now_ms);
+}
+
+fn expire_http_streams(state: &ServerState, now_at: Instant, now_ms: i64) {
     let mut streams = state
         .http_stream_cancellations
         .lock()
@@ -10626,11 +10763,7 @@ fn expire_api_sessions(state: &ServerState) {
         let Some(cancelled) = stream.cancelled.upgrade() else {
             return false;
         };
-        if !state.access_manager.credential_is_active(
-            stream.credential_id,
-            stream.credential_revision,
-            now_ms,
-        ) {
+        if !authentication::active(state, &stream.principal, now_at, now_ms) {
             cancelled.store(true, Ordering::Release);
             return false;
         }
@@ -10654,6 +10787,9 @@ fn handle_request(
     state: &ServerState,
 ) -> Response {
     let request_path = request.url();
+    if let Some(response) = authentication::handle(request, state) {
+        return response;
+    }
     if request_path == "/api/backups" || request_path.starts_with("/api/backups/") {
         return service_error(404, "not found");
     }
@@ -10774,7 +10910,18 @@ fn config_apply(
         );
     };
     backup_json_result(state, identity, "config_apply", None, 202, || {
-        backup_manager(state)?.apply_configuration(body, content_length, unix_time_ms())
+        backup_manager(state)?.apply_configuration_authorized(
+            body,
+            content_length,
+            unix_time_ms(),
+            |context| {
+                authentication::verification::restore::authorize_upload(
+                    state,
+                    &identity.principal,
+                    context,
+                )
+            },
+        )
     })
 }
 
@@ -10940,7 +11087,9 @@ fn api_request_origin(request: &Request, state: &ServerState) -> Result<Option<S
     let Some(origin) = request.header("Origin") else {
         return Ok(None);
     };
-    if request_origin(request).as_deref() == Some(origin) || state.allowed_origins.contains(origin)
+    if request_origin(request).as_deref() == Some(origin)
+        || state.allowed_origins.contains(origin)
+        || authentication::allows_origin(request, state, origin)
     {
         return Ok(Some(origin.to_owned()));
     }
@@ -10978,6 +11127,32 @@ fn api_principal(
         .network_access
         .classify(request.remote_addr().ip(), request.headers());
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+    validate_api_authentication_transport(request, state, &classification, now_ms)?;
+    if classification.local {
+        return Ok(AuthenticatedApiRequest {
+            principal: ApiPrincipal::local(classification.effective_address),
+            classification,
+        });
+    }
+    if let Some(principal) = authentication::http_principal(request, state, now_ms)? {
+        state
+            .access_metrics
+            .authentication_successes
+            .fetch_add(1, Ordering::Relaxed);
+        return Ok(AuthenticatedApiRequest {
+            principal,
+            classification,
+        });
+    }
+    authenticate_api_bearer(request, state, classification, now_ms)
+}
+
+fn validate_api_authentication_transport(
+    request: &Request,
+    state: &ServerState,
+    classification: &ClientClassification,
+    now_ms: i64,
+) -> Result<(), Response> {
     if request_has_credential_query(request) {
         state
             .access_metrics
@@ -10999,10 +11174,7 @@ fn api_principal(
         ));
     }
     if classification.local {
-        return Ok(AuthenticatedApiRequest {
-            principal: ApiPrincipal::local(classification.effective_address),
-            classification,
-        });
+        return Ok(());
     }
     let trusted_proxy = matches!(
         classification.reason,
@@ -11029,6 +11201,15 @@ fn api_principal(
             "remote access requires HTTPS or a configured trusted proxy",
         ));
     }
+    Ok(())
+}
+
+fn authenticate_api_bearer(
+    request: &Request,
+    state: &ServerState,
+    classification: ClientClassification,
+    now_ms: i64,
+) -> Result<AuthenticatedApiRequest, Response> {
     let authorizations = request
         .headers()
         .filter_map(|(name, value)| name.eq_ignore_ascii_case("Authorization").then_some(value))
@@ -11128,39 +11309,9 @@ fn create_api_session(
     state: &ServerState,
     identity: AuthenticatedApiRequest,
 ) -> Response {
-    if request.header("Content-Encoding") != Some("gzip") {
-        return api_status(415, "create request must use gzip content encoding");
-    }
-    let Some(body) = request.data() else {
-        return api_status(400, "missing create request body");
-    };
-    let mut decoded = Vec::new();
-    let decoded_result = GzDecoder::new(body)
-        .take(MAX_CREATE_BODY_BYTES + 1)
-        .read_to_end(&mut decoded);
-    if decoded_result.is_err() {
-        return api_status(400, "create request body is not valid gzip");
-    }
-    if decoded.len() as u64 > MAX_CREATE_BODY_BYTES {
-        return api_status(400, "create request body exceeds 4 MiB");
-    }
-    let create: CreateRequest = match serde_json::from_slice(&decoded) {
-        Ok(create) => create,
-        Err(error) => return api_status(400, &format!("invalid create request JSON: {error}")),
-    };
-    if create.offer.sdp_type != "offer" || create.offer.sdp.is_empty() {
-        return api_status(400, "create request must contain a nonempty SDP offer");
-    }
-    let (sdp, ignored_ice_candidates) = filter_unusable_ipv4_ice_candidates(&create.offer.sdp);
-    if ignored_ice_candidates > 0 {
-        tracing::debug!(
-            ignored_ice_candidates,
-            "ignored unusable IPv4 ICE candidates in SDP offer"
-        );
-    }
-    let offer = match str0m::change::SdpOffer::from_sdp_string(&sdp) {
+    let offer = match decode_api_offer(request) {
         Ok(offer) => offer,
-        Err(error) => return api_status(400, &format!("invalid SDP offer: {error}")),
+        Err(response) => return response,
     };
     let session = match state.webrtc.accept_api_offer(offer) {
         Ok(session) => session,
@@ -11173,57 +11324,111 @@ fn create_api_session(
             sdp: session.answer.to_sdp_string(),
         },
     };
-    let json = match serde_json::to_vec(&response) {
-        Ok(json) => json,
-        Err(error) => {
+    let compressed = match encode_api_session_response(&response) {
+        Ok(compressed) => compressed,
+        Err(response) => {
             state.webrtc.close_api_session(session.id);
-            return api_status(500, &format!("unable to encode create response: {error}"));
+            return response;
         }
     };
+    remove_stale_api_sessions(state);
+    if let Err(response) = register_api_session(state, &identity, session.id) {
+        return response;
+    }
+    Response::from_data("application/json", compressed)
+        .with_status_code(201)
+        .with_additional_header("Content-Encoding", "gzip")
+}
+
+fn decode_api_offer(request: &Request) -> Result<str0m::change::SdpOffer, Response> {
+    if request.header("Content-Encoding") != Some("gzip") {
+        return Err(api_status(
+            415,
+            "create request must use gzip content encoding",
+        ));
+    }
+    let Some(body) = request.data() else {
+        return Err(api_status(400, "missing create request body"));
+    };
+    let mut decoded = Vec::new();
+    let decoded_result = GzDecoder::new(body)
+        .take(MAX_CREATE_BODY_BYTES + 1)
+        .read_to_end(&mut decoded);
+    if decoded_result.is_err() {
+        return Err(api_status(400, "create request body is not valid gzip"));
+    }
+    if decoded.len() as u64 > MAX_CREATE_BODY_BYTES {
+        return Err(api_status(400, "create request body exceeds 4 MiB"));
+    }
+    let create: CreateRequest = match serde_json::from_slice(&decoded) {
+        Ok(create) => create,
+        Err(error) => {
+            return Err(api_status(
+                400,
+                &format!("invalid create request JSON: {error}"),
+            ));
+        }
+    };
+    if create.offer.sdp_type != "offer" || create.offer.sdp.is_empty() {
+        return Err(api_status(
+            400,
+            "create request must contain a nonempty SDP offer",
+        ));
+    }
+    let (sdp, ignored_ice_candidates) = filter_unusable_ipv4_ice_candidates(&create.offer.sdp);
+    if ignored_ice_candidates > 0 {
+        tracing::debug!(
+            ignored_ice_candidates,
+            "ignored unusable IPv4 ICE candidates in SDP offer"
+        );
+    }
+    str0m::change::SdpOffer::from_sdp_string(&sdp)
+        .map_err(|error| api_status(400, &format!("invalid SDP offer: {error}")))
+}
+
+fn encode_api_session_response(response: &CreateResponse) -> Result<Vec<u8>, Response> {
+    let json = serde_json::to_vec(response)
+        .map_err(|error| api_status(500, &format!("unable to encode create response: {error}")))?;
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     if let Err(error) = encoder.write_all(&json) {
-        state.webrtc.close_api_session(session.id);
-        return api_status(500, &format!("unable to compress create response: {error}"));
+        return Err(api_status(
+            500,
+            &format!("unable to compress create response: {error}"),
+        ));
     }
-    let compressed = match encoder.finish() {
-        Ok(compressed) => compressed,
-        Err(error) => {
-            state.webrtc.close_api_session(session.id);
-            return api_status(500, &format!("unable to compress create response: {error}"));
-        }
-    };
+    encoder
+        .finish()
+        .map_err(|error| api_status(500, &format!("unable to compress create response: {error}")))
+}
+
+fn remove_stale_api_sessions(state: &ServerState) {
     let active_sessions = state.webrtc.active_api_session_ids();
+    let stale = state
+        .api_session_owners
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .keys()
+        .filter(|id| !active_sessions.contains(id))
+        .copied()
+        .collect::<Vec<_>>();
+    for id in stale {
+        close_api_session(state, id);
+    }
+}
+
+fn register_api_session(
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+    session_id: SessionId,
+) -> Result<(), Response> {
     let mut owners = state
         .api_session_owners
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    owners.retain(|session_id, _| active_sessions.contains(session_id));
-    let principal_sessions = owners
-        .values()
-        .filter(|owner| owner.principal.identity == identity.principal.identity)
-        .count();
-    let address_sessions = owners
-        .values()
-        .filter(|owner| {
-            owner.classification.effective_address == identity.classification.effective_address
-        })
-        .count();
-    if principal_sessions >= state.api_session_policy.max_per_principal
-        || address_sessions >= state.api_session_policy.max_per_address
-    {
+    if api_session_limit_reached(state, identity, &owners) {
         drop(owners);
-        state.webrtc.close_api_session(session.id);
-        record_access_audit(
-            state,
-            i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
-            Some(&identity.principal.id()),
-            Some(identity.principal.role),
-            "session_create",
-            None,
-            "session_limit",
-            identity.classification.reason,
-        );
-        return api_status(429, "API session limit reached");
+        state.webrtc.close_api_session(session_id);
+        return Err(api_session_limit_response(state, identity));
     }
     let now_at = Instant::now();
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
@@ -11235,9 +11440,18 @@ fn create_api_session(
             .credential_expires_at_ms
             .unwrap_or(i64::MAX),
     );
+    if !authentication::active(state, &identity.principal, now_at, now_ms) {
+        drop(owners);
+        state.webrtc.close_api_session(session_id);
+        return Err(api_status(
+            401,
+            "authentication expired during session creation",
+        ));
+    }
     owners.insert(
-        session.id,
+        session_id,
         ApiSessionRecord {
+            lifecycle: Arc::default(),
             principal: identity.principal.clone(),
             classification: identity.classification,
             created_at_ms: now_ms,
@@ -11257,13 +11471,44 @@ fn create_api_session(
         Some(&identity.principal.id()),
         Some(identity.principal.role),
         "session_create",
-        Some(&session.id.to_string()),
+        Some(&session_id.to_string()),
         "success",
         identity.classification.reason,
     );
-    Response::from_data("application/json", compressed)
-        .with_status_code(201)
-        .with_additional_header("Content-Encoding", "gzip")
+    Ok(())
+}
+
+fn api_session_limit_reached(
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+    owners: &HashMap<SessionId, ApiSessionRecord>,
+) -> bool {
+    let principal_sessions = owners
+        .values()
+        .filter(|owner| owner.principal.same_identity(&identity.principal))
+        .count();
+    let address_sessions = owners
+        .values()
+        .filter(|owner| {
+            owner.classification.effective_address == identity.classification.effective_address
+        })
+        .count();
+    principal_sessions >= state.api_session_policy.max_per_principal
+        || address_sessions >= state.api_session_policy.max_per_address
+}
+
+fn api_session_limit_response(state: &ServerState, identity: &AuthenticatedApiRequest) -> Response {
+    record_access_audit(
+        state,
+        i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+        Some(&identity.principal.id()),
+        Some(identity.principal.role),
+        "session_create",
+        None,
+        "session_limit",
+        identity.classification.reason,
+    );
+    api_status(429, "API session limit reached")
 }
 
 fn delete_api_session(
@@ -11271,8 +11516,16 @@ fn delete_api_session(
     state: &ServerState,
     identity: AuthenticatedApiRequest,
 ) -> Response {
+    let delete = match decode_delete_request(request) {
+        Ok(delete) => delete,
+        Err(response) => return response,
+    };
+    delete_owned_api_session(request, state, identity, delete)
+}
+
+fn decode_delete_request(request: &Request) -> Result<DeleteRequest, Response> {
     let Some(body) = request.data() else {
-        return api_status(400, "missing delete request body");
+        return Err(api_status(400, "missing delete request body"));
     };
     let mut encoded = Vec::new();
     if body
@@ -11280,15 +11533,21 @@ fn delete_api_session(
         .read_to_end(&mut encoded)
         .is_err()
     {
-        return api_status(400, "unable to read delete request body");
+        return Err(api_status(400, "unable to read delete request body"));
     }
     if encoded.len() as u64 > MAX_DELETE_BODY_BYTES {
-        return api_status(413, "delete request body exceeds 16 KiB");
+        return Err(api_status(413, "delete request body exceeds 16 KiB"));
     }
-    let delete: DeleteRequest = match serde_json::from_slice(&encoded) {
-        Ok(delete) => delete,
-        Err(error) => return api_status(400, &format!("invalid delete request JSON: {error}")),
-    };
+    serde_json::from_slice(&encoded)
+        .map_err(|error| api_status(400, &format!("invalid delete request JSON: {error}")))
+}
+
+fn delete_owned_api_session(
+    request: &Request,
+    state: &ServerState,
+    identity: AuthenticatedApiRequest,
+    delete: DeleteRequest,
+) -> Response {
     let return_representation = request
         .header("Prefer")
         .is_some_and(|value| value.eq_ignore_ascii_case("return=representation"));
@@ -11297,7 +11556,7 @@ fn delete_api_session(
     };
     let session_id = SessionId::from_u64(session_id);
     let owned_session = {
-        let mut owners = state
+        let owners = state
             .api_session_owners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -11310,13 +11569,13 @@ fn delete_api_session(
                 };
             }
             Some(owner)
-                if owner.principal != identity.principal
+                if !owner.principal.owns_session(&identity.principal)
                     || owner.classification.effective_address
                         != identity.classification.effective_address =>
             {
                 None
             }
-            Some(_) => owners.remove(&session_id),
+            Some(owner) => Some(owner.clone()),
         }
     };
     let Some(owned_session) = owned_session else {
@@ -11332,6 +11591,7 @@ fn delete_api_session(
         );
         return api_status(404, "WebRTC session not found");
     };
+    close_api_session(state, session_id);
     record_access_audit(
         state,
         i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
@@ -11342,6 +11602,14 @@ fn delete_api_session(
         "success",
         owned_session.classification.reason,
     );
+    close_deleted_session_response(state, session_id, return_representation)
+}
+
+fn close_deleted_session_response(
+    state: &ServerState,
+    session_id: SessionId,
+    return_representation: bool,
+) -> Response {
     if return_representation {
         state.webrtc.close_api_session(session_id);
         return Response::text("deleted").with_status_code(200);
@@ -11461,15 +11729,8 @@ fn log_stream(
     let Some(logging) = &state.logging else {
         return service_error(503, "logging service is unavailable");
     };
-    let after = match optional_query_u64(request, "after") {
-        Ok(Some(after)) => Some(after),
-        Ok(None) => match request.header("Last-Event-ID") {
-            Some(last_event_id) => match last_event_id.parse::<u64>() {
-                Ok(last_event_id) => Some(last_event_id),
-                Err(_) => return service_error(400, "Last-Event-ID must be an unsigned integer"),
-            },
-            None => None,
-        },
+    let after = match log_stream_cursor(request) {
+        Ok(after) => after,
         Err(response) => return response,
     };
     let tail = match query_usize(
@@ -11490,17 +11751,24 @@ fn log_stream(
             return service_error(503, "log streaming is shutting down");
         }
     };
-    if let Some((credential_id, credential_revision)) = identity.principal.credential_binding() {
+    if !identity.principal.is_local() {
         let cancelled = Arc::new(AtomicBool::new(false));
-        state
+        let mut streams = state
             .http_stream_cancellations
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(HttpStreamCancellation {
-                credential_id,
-                credential_revision,
-                cancelled: Arc::downgrade(&cancelled),
-            });
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !authentication::active(
+            state,
+            &identity.principal,
+            Instant::now(),
+            i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+        ) {
+            return api_status(401, "authentication expired during stream creation");
+        }
+        streams.push(HttpStreamCancellation {
+            principal: identity.principal.clone(),
+            cancelled: Arc::downgrade(&cancelled),
+        });
         stream = stream.with_cancellation(cancelled);
     }
     Response {
@@ -11516,6 +11784,22 @@ fn log_stream(
         data: ResponseBody::from_reader(stream),
         upgrade: None,
     }
+}
+
+fn log_stream_cursor(request: &Request) -> Result<Option<u64>, Response> {
+    optional_query_u64(request, "after")?.map_or_else(
+        || {
+            request
+                .header("Last-Event-ID")
+                .map(|value| {
+                    value.parse::<u64>().map_err(|_| {
+                        service_error(400, "Last-Event-ID must be an unsigned integer")
+                    })
+                })
+                .transpose()
+        },
+        |after| Ok(Some(after)),
+    )
 }
 
 fn optional_query_u64(request: &Request, name: &str) -> Result<Option<u64>, Response> {
@@ -12509,23 +12793,22 @@ fn discover_camera_settings(
     subnets: Vec<u8>,
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
-    task: Option<&camera_discovery::TaskHandle>,
+    task: &camera_discovery::TaskHandle,
 ) -> Result<Vec<DiscoveredCameraSettings>, ControlCommandError> {
+    let cancelled = task.cancellation_token();
     let discovered = match if networks.is_empty() {
-        crate::cameras::discover(Some(Duration::from_secs(5)), &subnets)
+        crate::cameras::discover_with_progress(
+            Some(Duration::from_secs(5)),
+            &subnets,
+            &cancelled,
+            |cameras| task.update(cameras),
+        )
     } else {
-        let cancelled = task
-            .map(camera_discovery::TaskHandle::cancellation_token)
-            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
         crate::cameras::discover_on_networks_with_progress(
             Some(Duration::from_secs(5)),
             &networks,
             &cancelled,
-            |cameras| {
-                if let Some(task) = task {
-                    task.update(cameras);
-                }
-            },
+            |cameras| task.update(cameras),
         )
     } {
         Ok(discovered) => discovered,
@@ -14251,6 +14534,7 @@ mod tests {
     ) -> ApiSessionRecord {
         let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
         ApiSessionRecord {
+            lifecycle: Arc::default(),
             principal,
             classification: ClientClassification {
                 peer_address: address,
@@ -14269,7 +14553,7 @@ mod tests {
         }
     }
 
-    fn local_test_session() -> ApiSessionRecord {
+    pub(super) fn local_test_session() -> ApiSessionRecord {
         test_session_record(
             ApiPrincipal::local(IpAddr::V4(Ipv4Addr::LOCALHOST)),
             IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -14317,7 +14601,7 @@ mod tests {
         )
     }
 
-    fn media_test_state() -> ServerState {
+    pub(super) fn media_test_state() -> ServerState {
         let config = CameraConfig {
             events: Default::default(),
             ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -15364,6 +15648,82 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_session_revokers_wait_for_admitted_work_and_cleanup() {
+        let state = ServerState::empty();
+        let id = SessionId::from_u64(805);
+        let session = local_test_session();
+        let lifecycle = session.lifecycle.clone();
+        state.api_session_owners.lock().unwrap().insert(id, session);
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let (closed_tx, closed_rx) = std::sync::mpsc::sync_channel(2);
+        std::thread::scope(|scope| {
+            let state_ref = &state;
+            let registration = scope.spawn(move || {
+                session_lifecycle::admit(state_ref, id, move || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    state_ref
+                        .state_store_watches
+                        .register(id, "service/test/".into(), String::new(), "watch".into())
+                        .unwrap();
+                    Ok(())
+                })
+            });
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let state_ref = &state;
+            let first_closed = closed_tx.clone();
+            scope.spawn(move || {
+                close_api_session(state_ref, id);
+                first_closed.send(()).unwrap();
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !lifecycle.closed.load(Ordering::Acquire) && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(lifecycle.closed.load(Ordering::Acquire));
+            assert!(state.api_session_owners.lock().unwrap().contains_key(&id));
+            assert!(camera_access::for_session(&state, id).is_err());
+            scope.spawn(move || {
+                expire_api_sessions(state_ref);
+                closed_tx.send(()).unwrap();
+            });
+            assert!(closed_rx.try_recv().is_err());
+            release_tx.send(()).unwrap();
+            registration.join().unwrap().unwrap();
+            for _ in 0..2 {
+                closed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+        });
+        assert!(!state.state_store_watches.owns_watch(id, "watch"));
+        assert!(!state.api_session_owners.lock().unwrap().contains_key(&id));
+        assert!(register_event_search_task(&state, id, "late").is_err());
+    }
+
+    #[test]
+    fn revoked_session_cannot_register_late_event_search_work() {
+        let state = ServerState::empty();
+        let session_id = SessionId::from_u64(804);
+        state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(session_id, local_test_session());
+        let task = register_event_search_task(&state, session_id, "before").unwrap();
+        close_api_session(&state, session_id);
+        assert!(task.load(Ordering::Acquire));
+        let error = register_event_search_task(&state, session_id, "after").unwrap_err();
+        assert_eq!(error._http_status, 401);
+        assert!(
+            !state
+                .event_search_tasks
+                .lock()
+                .unwrap()
+                .contains_key(&(session_id, "after".into()))
+        );
+    }
+
+    #[test]
     fn session_reaper_closes_idle_and_absolute_expiry_but_keeps_active_sessions() {
         let mut state = ServerState::empty();
         state.api_session_policy.idle_timeout = Duration::from_secs(1);
@@ -15381,9 +15741,23 @@ mod tests {
             (absolute_id, absolute),
             (active_id, local_test_session()),
         ]);
+        for session_id in [idle_id, absolute_id, active_id] {
+            state
+                .state_store_watches
+                .register(
+                    session_id,
+                    "service/test/".into(),
+                    String::new(),
+                    "watch".into(),
+                )
+                .unwrap();
+        }
 
         expire_api_sessions(&state);
 
+        assert!(!state.state_store_watches.owns_watch(idle_id, "watch"));
+        assert!(!state.state_store_watches.owns_watch(absolute_id, "watch"));
+        assert!(state.state_store_watches.owns_watch(active_id, "watch"));
         let sessions = state.api_session_owners.lock().unwrap();
         assert!(!sessions.contains_key(&idle_id));
         assert!(!sessions.contains_key(&absolute_id));
@@ -19305,6 +19679,11 @@ mod tests {
     fn event_search_tasks_are_bounded_per_session() {
         let state = ServerState::empty();
         let session_id = SessionId::from_u64(91);
+        state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(session_id, local_test_session());
         let mut tokens = Vec::new();
         for index in 0..MAX_EVENT_SEARCH_TASKS_PER_SESSION {
             tokens.push(
@@ -19364,12 +19743,10 @@ mod tests {
         let owner_task = state
             .camera_discovery_tasks
             .start(owner, "shared-discovery")
-            .unwrap()
             .unwrap();
         let other_task = state
             .camera_discovery_tasks
             .start(other, "shared-discovery")
-            .unwrap()
             .unwrap();
 
         let response = test_control_handler(state).handle_for_session(
@@ -19408,15 +19785,18 @@ mod tests {
         let state = ServerState::empty();
         let owner = SessionId::from_u64(94);
         let other = SessionId::from_u64(95);
+        {
+            let mut sessions = state.api_session_owners.lock().unwrap();
+            sessions.insert(owner, local_test_session());
+            sessions.insert(other, local_test_session());
+        }
         let owner_task = state
             .camera_discovery_tasks
             .start(owner, "shared-discovery")
-            .unwrap()
             .unwrap();
         let other_task = state
             .camera_discovery_tasks
             .start(other, "shared-discovery")
-            .unwrap()
             .unwrap();
 
         test_control_handler(state.clone()).session_closed(owner);

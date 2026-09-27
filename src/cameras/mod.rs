@@ -567,10 +567,21 @@ pub fn discover(
     duration: Option<Duration>,
     extra_subnets: &[u8],
 ) -> anyhow::Result<Vec<DiscoveredCamera>> {
+    discover_with_progress(duration, extra_subnets, &AtomicBool::new(false), |_| {})
+}
+
+pub(crate) fn discover_with_progress(
+    duration: Option<Duration>,
+    extra_subnets: &[u8],
+    cancelled: &AtomicBool,
+    mut on_progress: impl FnMut(&[DiscoveredCamera]),
+) -> anyhow::Result<Vec<DiscoveredCamera>> {
+    if cancelled.load(Ordering::Acquire) {
+        return Ok(Vec::new());
+    }
     let targets = network::scan_networks(extra_subnets)?;
     let listeners = network::local_networks()?;
-    let cancelled = AtomicBool::new(false);
-    discover_scoped(duration, &targets, &listeners, &cancelled, &mut |_| {})
+    discover_scoped(duration, &targets, &listeners, cancelled, &mut on_progress)
 }
 
 pub(crate) fn discover_on_networks_with_progress(
@@ -579,6 +590,9 @@ pub(crate) fn discover_on_networks_with_progress(
     cancelled: &AtomicBool,
     mut on_progress: impl FnMut(&[DiscoveredCamera]),
 ) -> anyhow::Result<Vec<DiscoveredCamera>> {
+    if cancelled.load(Ordering::Acquire) {
+        return Ok(Vec::new());
+    }
     let targets = network::requested_networks(networks);
     let listeners = network::local_networks_in(&targets)?;
     discover_scoped(duration, &targets, &listeners, cancelled, &mut on_progress)
@@ -1570,6 +1584,29 @@ fn merge_reolink_profiles(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_discovery_skips_default_and_explicit_network_work() {
+        let cancelled = AtomicBool::new(true);
+        let duration = Some(Duration::from_secs(5));
+        assert!(
+            discover_with_progress(duration, &[1], &cancelled, |_| panic!(
+                "cancelled discovery reported progress"
+            ))
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            discover_on_networks_with_progress(
+                duration,
+                &["192.168.1.0/24".parse().unwrap()],
+                &cancelled,
+                |_| panic!("cancelled discovery reported progress")
+            )
+            .unwrap()
+            .is_empty()
+        );
+    }
 
     fn advertised_service(namespace: &str, endpoint: &str) -> devicemgmt::Service {
         devicemgmt::Service {

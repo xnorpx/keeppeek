@@ -200,6 +200,93 @@ Type: `DirectCardConfig`, section `[direct_card]`.
 | ----------------- | ------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `allowed_origins` | `Vec<String>` | `[]`    | Unique canonical exact HTTP(S) origins, such as `"https://ha.example"`. No credentials, path, query, fragment, wildcard, or trailing slash. |
 
+## External authentication configuration
+
+Type: `access::external::Config`, optional section `[external_auth]`. Configured
+OIDC providers use browser authorization-code login with PKCE. Configured identity
+proxies use exact assertions from their immediate trusted transport peer. Both
+methods use revocable browser sessions and the existing server-side camera grants.
+Omitting the section preserves existing local and bearer behavior.
+
+| Field                        | Type            | Default  | Validation                                                                                                          |
+| ---------------------------- | --------------- | -------- | ------------------------------------------------------------------------------------------------------------------- |
+| `allowed_origins`            | `Vec<String>`   | Required | 1–16 unique canonical exact HTTPS origins, without credentials, path, query, fragment, wildcard, or trailing slash. |
+| `providers`                  | `Vec<Provider>` | Required | 1–4 providers with unique IDs.                                                                                      |
+| `bearer_enabled`             | `bool`          | `false`  | Mixed mode requires an explicit transition deadline.                                                                |
+| `bearer_transition_until_ms` | Optional `i64`  | Absent   | Positive Unix milliseconds; present if and only if `bearer_enabled` is true.                                        |
+
+Each `[[external_auth.providers]]` has `id`, `name`, `mappings`, and a `method`
+table. IDs contain 1–64 ASCII letters, digits, underscores, or hyphens. Names
+contain 1–64 bytes without control characters and cannot be whitespace-only.
+At least one mapping is required per provider; there are at most 128 across all
+providers. Unknown fields are rejected.
+
+Each `[[external_auth.providers.mappings]]` contains `claim` (1–64 bytes), `value`
+(1–256 bytes), and `role` (`administrator` or `user`). Claim names and values cannot
+be whitespace-only or contain control characters. User mappings require an explicit
+`camera_access` table using the existing `all_cameras`, `camera_ids`, and `group_ids`
+fields and limits, with at most 128 camera and group IDs combined per external
+identity policy. Set `all_cameras` and `camera_ids` explicitly; `group_ids` defaults
+to an empty list. With `all_cameras = false`, empty camera and group lists grant
+no cameras. Administrator mappings must
+omit `camera_access` because Administrators are unrestricted. Unmapped identities
+and identities matching multiple rules are denied. Mapping claims must be strings
+or lists of at most 128 strings, each at most 256 bytes; the claims object is limited
+to 16 KiB serialized JSON.
+
+For `[external_auth.providers.method]` with `kind = "oidc"`:
+
+| Field                | Type              | Default      | Validation                                                                                                                                                          |
+| -------------------- | ----------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `issuer`             | `String`          | Required     | HTTPS URL without user-info, query, or fragment.                                                                                                                    |
+| `client_id`          | `String`          | Required     | 1–256 bytes, nonblank, no control characters.                                                                                                                       |
+| `client_secret`      | Optional `String` | Absent       | Complete `{secret:KEY}` or `{secret:KEY\|url}` reference; resolved value is nonblank, at most 4,096 bytes, without control characters. Inline secrets are rejected. |
+| `redirect_uri`       | `String`          | Required     | Allowed HTTPS origin with exactly `/auth/callback`, no query or fragment.                                                                                           |
+| `scopes`             | `Vec<String>`     | `["openid"]` | At most 16 unique OAuth scope tokens of 1–64 bytes; must include `openid`.                                                                                          |
+| `display_name_claim` | `String`          | `"name"`     | 1–64 bytes, nonblank, no control characters.                                                                                                                        |
+| `endpoint_origins`   | `Vec<String>`     | `[]`         | At most 16 unique canonical HTTPS origins for additional provider endpoints.                                                                                        |
+| `private_networks`   | `Vec<IpNet>`      | `[]`         | At most 64 explicitly permitted private issuer networks.                                                                                                            |
+| `logout_uri`         | Optional `String` | Absent       | HTTPS URL without user-info, query, or fragment.                                                                                                                    |
+
+All external-authentication URLs are limited to 2,048 bytes. A configured URL does
+not authorize arbitrary discovery redirects or other network destinations.
+
+For `[external_auth.providers.method]` with `kind = "proxy"`:
+
+| Field            | Type              | Default  | Validation                                                                           |
+| ---------------- | ----------------- | -------- | ------------------------------------------------------------------------------------ |
+| `trusted_peers`  | `Vec<IpNet>`      | Required | 1–64 immediate transport-peer CIDRs, independent of forwarded-client classification. |
+| `subject_header` | `String`          | Required | Exact identity assertion header.                                                     |
+| `role_header`    | `String`          | Required | Exact role assertion header; values still require explicit mapping.                  |
+| `name_header`    | Optional `String` | Absent   | Optional display metadata header.                                                    |
+| `secret_header`  | Optional `String` | Absent   | Present if and only if `shared_secret` is present.                                   |
+| `shared_secret`  | Optional `String` | Absent   | Same reference and resolved-value rules as `client_secret`.                          |
+
+Header names are distinct ignoring ASCII case, at most 64 ASCII letters, digits,
+or hyphens, start with `X-`, and cannot start with `X-Forwarded-`. Secret references
+remain unchanged in `config.toml`; only the runtime copy resolves them. Existing
+configuration validation rejects invalid candidates before the atomic writer runs.
+
+Trusted peer networks from different identity proxy providers must not overlap.
+KeepPeek checks the immediate peer after normalizing IPv4-mapped IPv6 addresses;
+configure IPv4 CIDRs for those peers.
+
+### Durable external identities
+
+`[external_identities]` has `version = 1` and at most 1,024 `records`. Each record
+contains `id` (non-nil UUID), `provider_id`, `subject_fingerprint` (64 lowercase
+hexadecimal characters), `display_name`, `role`, `camera_access`, positive
+`revision`, `enabled`, and nonnegative `created_at_ms`. Provider and display names
+are nonblank, at most 64 bytes, and contain no control characters. Subject
+fingerprints and IDs are unique. Administrator camera access is unrestricted.
+
+The optional `admission_policy_fingerprint` is a 64-character lowercase hexadecimal
+digest of the resolved provider policy at successful authentication. KeepPeek
+updates it after ordinary or replacement-Administrator authentication. An absent
+or stale digest cannot count as a retained Administrator path; the identity must
+authenticate under the current policy first. Legacy records remain readable and
+still trigger lockout protection. Raw subjects, claims, and tokens are not stored.
+
 ## Camera defaults and camera entries
 
 Source: [camera types](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs) and
