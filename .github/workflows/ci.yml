@@ -559,6 +559,35 @@ jobs:
         run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Build shared Playwright binaries and fixtures
         run: bun run test:e2e:prepare
+      - name: Build shared authentication browser fixture
+        # ponytail: Reuse the test executable so shards need no Rust build.
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/e2e-authentication
+          messages="$RUNNER_TEMP/authentication-fixture-build.jsonl"
+          build_status=0
+          cargo test --locked --release --lib issue123_browser_fixture --no-run --message-format=json \
+            | head -c 16777217 > "$messages" || build_status=$?
+          if [ "$(wc -c < "$messages")" -gt 16777216 ]; then
+            echo "Authentication fixture Cargo JSON exceeds 16 MiB" >&2
+            exit 1
+          fi
+          jq -r 'select(.reason == "compiler-message") | .message.rendered // empty' "$messages" >&2
+          test "$build_status" -eq 0
+          executable=$(jq -ers --arg manifest "$GITHUB_WORKSPACE/Cargo.toml" '
+            [.[] | select(.reason == "compiler-artifact"
+              and .manifest_path == $manifest
+              and .target.name == "keeppeek"
+              and .target.kind == ["lib"]
+              and .profile.test == true
+              and (.executable | type == "string" and length > 0)) | .executable]
+            | if length == 1 then .[0] else error("Expected exactly one KeepPeek lib-test executable") end
+          ' "$messages")
+          test -f "$executable"
+          test -x "$executable"
+          cp -- "$executable" target/e2e-authentication/keeppeek-authentication-fixture
       - name: Upload shared Playwright binaries and fixtures
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -566,6 +595,7 @@ jobs:
           path: |
             target/release/keeppeek
             target/release/test_camera
+            target/e2e-authentication/keeppeek-authentication-fixture
             target/e2e-mixed-codec
             target/home-assistant-card/dist
           if-no-files-found: error
@@ -599,8 +629,10 @@ jobs:
           path: target
       - name: Restore executable permissions
         working-directory: .
-        run: chmod +x target/release/keeppeek target/release/test_camera
+        run: chmod +x target/release/keeppeek target/release/test_camera target/e2e-authentication/keeppeek-authentication-fixture
       - name: Run Playwright shard
+        env:
+          KEEPPEEK_AUTH_E2E_BINARY: ${{ github.workspace }}/target/e2e-authentication/keeppeek-authentication-fixture
         run: bun run test:e2e:run -- --shard=${{ matrix.shard }}/4
       - name: Upload UI test reports
         if: always()
