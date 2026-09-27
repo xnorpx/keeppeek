@@ -363,7 +363,6 @@ export class LivePeer {
 		this.#sourceSessionByCamera = {};
 		this.#trackEventByMid = {};
 		this.#capabilities = null;
-		const controlOpened = waitForDataChannel(controlChannel);
 		controlChannel.onmessage = (event) => this.receiveControl(event);
 		controlChannel.onclose = () => this.failPending('WebRTC control channel closed.');
 		reliableChannel.onmessage = (event) => this.receiveMediaData(event);
@@ -452,7 +451,8 @@ export class LivePeer {
 				type: session.answer.type as RTCSdpType,
 				sdp: session.answer.sdp
 			});
-			if (controlChannel.readyState !== 'open') await controlOpened;
+			// ponytail: Start the opening timeout only after signaling succeeds.
+			await waitForDataChannel(controlChannel);
 			await this.waitForCapabilities();
 			await Promise.all(
 				localTracks
