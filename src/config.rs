@@ -1475,6 +1475,15 @@ pub fn update_settings_with_migration(
     settings: &Config,
     migration: Option<&StorageMigration>,
 ) -> anyhow::Result<Config> {
+    update_settings_with_volume_draft(path, settings, migration, None)
+}
+
+pub(crate) fn update_settings_with_volume_draft(
+    path: &Path,
+    settings: &Config,
+    migration: Option<&StorageMigration>,
+    volumes: Option<&crate::storage::volumes::VolumeConfiguration<String>>,
+) -> anyhow::Result<Config> {
     let text = std::fs::read_to_string(path)?;
     let mut root: toml::Table = toml::from_str(&text)?;
     let secrets = load_secrets(path)?;
@@ -1581,7 +1590,11 @@ pub fn update_settings_with_migration(
         "cleanup_hysteresis_gb".to_owned(),
         toml::Value::Integer(i64::try_from(settings.storage.cleanup_hysteresis_gb)?),
     );
-    storage_volumes::persist(storage, settings.storage.named_volumes.as_ref(), &secrets)?;
+    if let Some(volumes) = volumes {
+        storage_volumes::persist(storage, Some(volumes), &secrets)?;
+    } else {
+        storage_volumes::persist(storage, settings.storage.named_volumes.as_ref(), &secrets)?;
+    }
     match migration {
         Some(migration) => {
             migration.validate()?;
@@ -1742,6 +1755,14 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     }
     config.source = root.clone();
     Ok(config)
+}
+
+pub(crate) fn validate_volume_configuration(
+    path: &Path,
+    configuration: &crate::storage::volumes::VolumeConfiguration<String>,
+) -> anyhow::Result<()> {
+    let secrets = load_secrets(path)?;
+    storage_volumes::validate_with_secrets(configuration, &secrets)
 }
 
 fn merge_preserving_secret_references(existing: &mut toml::Value, next: toml::Value) {

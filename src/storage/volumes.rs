@@ -91,8 +91,8 @@ pub enum VolumeState {
 /// Persistent destination settings; roots must not be disclosed to media clients.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Volume {
-    pub id: VolumeId,
+pub struct Volume<I = VolumeId> {
+    pub id: I,
     pub root: PathBuf,
     pub roles: Vec<VolumeRole>,
     #[serde(default)]
@@ -115,7 +115,7 @@ pub struct Volume {
     pub groups: Vec<String>,
 }
 
-impl fmt::Debug for Volume {
+impl<I: fmt::Debug> fmt::Debug for Volume<I> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Volume")
@@ -139,13 +139,13 @@ pub enum PlacementStrategy {
 /// A source override wins over a group override, which wins over the role default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PlacementRule {
+pub struct PlacementRule<I = VolumeId> {
     pub role: VolumeRole,
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
     pub group: Option<String>,
-    pub candidates: Vec<VolumeId>,
+    pub candidates: Vec<I>,
     #[serde(default)]
     pub strategy: PlacementStrategy,
     /// False restricts selection to the first candidate, even if it is unavailable.
@@ -154,13 +154,23 @@ pub struct PlacementRule {
 }
 
 /// Named destinations and their bounded selection rules, stored together in `config.toml`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VolumeConfiguration {
+/// String IDs retain secret references in editable drafts; placement requires resolved `VolumeId`s.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, bound(deserialize = "I: Deserialize<'de>"))]
+pub struct VolumeConfiguration<I = VolumeId> {
     #[serde(default)]
-    pub volumes: Vec<Volume>,
+    pub volumes: Vec<Volume<I>>,
     #[serde(default)]
-    pub placement: Vec<PlacementRule>,
+    pub placement: Vec<PlacementRule<I>>,
+}
+
+impl<I> Default for VolumeConfiguration<I> {
+    fn default() -> Self {
+        Self {
+            volumes: Vec::new(),
+            placement: Vec::new(),
+        }
+    }
 }
 
 /// Observed mount availability, independent of operator intent.

@@ -1228,6 +1228,37 @@ Implementations ignore unknown protobuf fields, unknown control-envelope bodies,
 types, unknown payload IDs, unknown enum values, and unknown `Message` or nested message
 subtypes when their runtime supports doing so. Unknown source events are not protocol errors.
 
+## Named storage volumes
+
+`RuntimeStorageConfiguration.named_volumes` (field 18) carries a
+`StorageVolumeConfiguration` through the existing Administrator-only runtime settings
+commands. Omission preserves the current section for older clients. A present empty
+message explicitly clears drafts. Named-volume updates require a nonempty current
+configuration revision. Older updates that omit the field retain their existing revision
+behavior. Atomic whole-candidate persistence applies.
+
+The configuration contains at most 32 volumes and 256 placement rules. Volume IDs use
+1–64 lowercase ASCII letters, digits, `_`, or `-`; the `legacy-` prefix is reserved.
+Roots are absolute paths or supported secret references. String fields, including IDs,
+candidate IDs, and source/group selectors, preserve supported secret references in
+requests, persistence, and responses. Validation applies to resolved values; responses
+do not return those private values. Priority fits `u16`; byte caps
+are positive when present, and byte thresholds fit signed TOML 64-bit integers. Source
+and group allowlists each contain at most 256 distinct selectors of at most 256 bytes.
+
+Roles are active, archive, export, thumbnail, and metadata. States are enabled, read-only,
+draining, and disabled. Strategies are priority and free-space. Unknown and unspecified
+enum values are rejected on writes. Rules select one source, one group, or the role
+default, in that precedence order, with 1–8 distinct candidate IDs. A failed override
+does not fall through to a broader rule. Fallback must be explicit. With fallback off,
+only the first candidate is eligible. With fallback on, ranking considers all eligible
+candidates and breaks ties by ID. Metadata placement has one global candidate and no fallback.
+
+This increment accepts only disabled drafts. It does not advertise a live-volume
+capability or enable writing, draining, or moving media. These operations require durable
+locations and verified recovery before activation. Model limits and lexical validation
+are documented in the configuration reference; they do not prove filesystem confinement.
+
 ## Event pre-recording
 
 Clients must require `keeppeek.recording.pre-roll.v1` before offering event-only

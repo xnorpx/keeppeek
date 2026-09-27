@@ -337,6 +337,11 @@ The optional section has two arrays: `volumes` (at most 32) and `placement` (at 
 Both default to empty. Ordinary settings updates that omit `named_volumes` preserve the section.
 An explicit empty section clears drafts. Unknown fields in this section and its entries are rejected.
 
+Administrator runtime settings carry these drafts in the optional protobuf `named_volumes`
+field. Updates that include it require the current configuration revision. String fields,
+including IDs, roots, selectors, and candidate IDs, support existing secret references.
+Validation uses resolved values; saved settings and responses retain the references.
+
 Each `[[storage.named_volumes.volumes]]` entry has these fields:
 
 | Field                 | Type           | Default   | Meaning                                                                                                                                                                                                                                                                  |

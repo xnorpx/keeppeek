@@ -17,44 +17,76 @@ pub(super) fn validate(configuration: Option<&VolumeConfiguration>) -> anyhow::R
     Ok(())
 }
 
-pub(super) fn persist(
+pub(super) fn persist<I: serde::Serialize>(
     storage: &mut toml::Table,
-    configuration: Option<&VolumeConfiguration>,
+    configuration: Option<&VolumeConfiguration<I>>,
     secrets: &Secrets,
 ) -> anyhow::Result<()> {
     let Some(configuration) = configuration else {
         return Ok(());
     };
-    validate(Some(configuration))?;
+    validate_with_secrets(configuration, secrets)?;
     let mut next = toml::Value::try_from(configuration)?;
     if let Some(existing) = storage.get("named_volumes")
         && (!configuration.volumes.is_empty() || !configuration.placement.is_empty())
     {
         let mut resolved = existing.clone();
         resolve_toml_secret_references(&mut resolved, secrets)?;
-        preserve_references(&mut next, existing, &resolved);
+        let mut next_resolved = next.clone();
+        resolve_toml_secret_references(&mut next_resolved, secrets)?;
+        preserve_references(&mut next, &next_resolved, existing, &resolved);
     }
     storage.insert("named_volumes".to_owned(), next);
     Ok(())
 }
 
-fn preserve_references(next: &mut toml::Value, raw: &toml::Value, resolved: &toml::Value) {
-    if next == resolved {
+pub(super) fn validate_with_secrets<I: serde::Serialize>(
+    configuration: &VolumeConfiguration<I>,
+    secrets: &Secrets,
+) -> anyhow::Result<()> {
+    let mut value = toml::Value::try_from(configuration)?;
+    resolve_toml_secret_references(&mut value, secrets)?;
+    let resolved = value.try_into()?;
+    validate(Some(&resolved))
+}
+
+fn preserve_references(
+    next: &mut toml::Value,
+    next_resolved: &toml::Value,
+    raw: &toml::Value,
+    resolved: &toml::Value,
+) {
+    if next.is_str() && next == next_resolved && next_resolved == resolved {
         *next = raw.clone();
         return;
     }
-    match (next, raw, resolved) {
-        (toml::Value::Table(next), toml::Value::Table(raw), toml::Value::Table(resolved)) => {
+    match (next, next_resolved, raw, resolved) {
+        (
+            toml::Value::Table(next),
+            toml::Value::Table(next_resolved),
+            toml::Value::Table(raw),
+            toml::Value::Table(resolved),
+        ) => {
             for (key, value) in next {
-                if let (Some(raw), Some(resolved)) = (raw.get(key), resolved.get(key)) {
-                    preserve_references(value, raw, resolved);
+                if let (Some(next_resolved), Some(raw), Some(resolved)) =
+                    (next_resolved.get(key), raw.get(key), resolved.get(key))
+                {
+                    preserve_references(value, next_resolved, raw, resolved);
                 }
             }
         }
-        (toml::Value::Array(next), toml::Value::Array(raw), toml::Value::Array(resolved)) => {
-            for value in next {
-                if let Some(index) = resolved.iter().position(|old| same_entry(value, old)) {
-                    preserve_references(value, &raw[index], &resolved[index]);
+        (
+            toml::Value::Array(next),
+            toml::Value::Array(next_resolved),
+            toml::Value::Array(raw),
+            toml::Value::Array(resolved),
+        ) => {
+            for (value, next_resolved) in next.iter_mut().zip(next_resolved) {
+                if let Some(index) = resolved
+                    .iter()
+                    .position(|old| same_entry(next_resolved, old))
+                {
+                    preserve_references(value, next_resolved, &raw[index], &resolved[index]);
                 }
             }
         }
@@ -78,6 +110,108 @@ fn same_entry(next: &toml::Value, old: &toml::Value) -> bool {
 mod tests {
     use crate::config::{Config, load_config, update_settings, write_private_file};
     use crate::storage::volumes::{VolumeConfiguration, VolumeState};
+
+    fn reordered_secret_draft(directory: &std::path::Path) -> VolumeConfiguration<String> {
+        let text = r#"
+            [[storage.named_volumes.volumes]]
+            id = "{secret:REORDER_ID_ONE}"
+            root = "{secret:REORDER_ROOT_ONE}"
+            roles = ["archive"]
+            state = "disabled"
+            sources = ["{secret:REORDER_SOURCE_ONE}"]
+            [[storage.named_volumes.volumes]]
+            id = "{secret:REORDER_ID_TWO}"
+            root = "{secret:REORDER_ROOT_TWO}"
+            roles = ["archive"]
+            state = "disabled"
+            sources = ["{secret:REORDER_SOURCE_TWO}"]
+            [[storage.named_volumes.placement]]
+            role = "archive"
+            source = "{secret:REORDER_SOURCE_ONE}"
+            candidates = ["{secret:REORDER_ID_ONE}", "{secret:REORDER_ID_TWO}"]
+            [[storage.named_volumes.placement]]
+            role = "archive"
+            source = "{secret:REORDER_SOURCE_TWO}"
+            candidates = ["{secret:REORDER_ID_ONE}", "{secret:REORDER_ID_TWO}"]
+        "#;
+        let mut secrets = toml::Table::new();
+        for (key, value) in [
+            ("REORDER_ID_ONE", "disk-one"),
+            ("REORDER_ID_TWO", "disk-two"),
+            ("REORDER_SOURCE_ONE", "front"),
+            ("REORDER_SOURCE_TWO", "rear"),
+        ] {
+            secrets.insert(key.into(), value.into());
+        }
+        for (key, name) in [("REORDER_ROOT_ONE", "one"), ("REORDER_ROOT_TWO", "two")] {
+            secrets.insert(
+                key.into(),
+                directory.join(name).to_string_lossy().as_ref().into(),
+            );
+        }
+        write_private_file(
+            &directory.join("secrets.toml"),
+            toml::to_string(&secrets).unwrap().as_bytes(),
+        )
+        .unwrap();
+        write_private_file(&directory.join("config.toml"), text.as_bytes()).unwrap();
+        let root: toml::Table = toml::from_str(text).unwrap();
+        root["storage"]["named_volumes"].clone().try_into().unwrap()
+    }
+
+    #[test]
+    fn named_volume_reordered_draft_preserves_references_and_explicit_replacements() {
+        use crate::config::update_settings_with_volume_draft;
+
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-volumes-reorder-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+        let mut next = reordered_secret_draft(&directory);
+        let settings = load_config(&path).unwrap();
+        next.volumes.reverse();
+        next.placement.reverse();
+        for rule in &mut next.placement {
+            rule.candidates.reverse();
+        }
+        next.volumes[0].root = directory.join("replacement");
+        next.volumes[0].sources[0] = "rear".into();
+        next.volumes[1].root = directory.join("one");
+        next.placement[0].source = Some("rear".into());
+        next.placement[0].candidates[0] = "disk-two".into();
+        next.placement[0].allow_fallback = true;
+        update_settings_with_volume_draft(&path, &settings, None, Some(&next)).unwrap();
+
+        let mut expected = next;
+        expected.volumes[0].sources[0] = "{secret:REORDER_SOURCE_TWO}".into();
+        expected.volumes[1].root = "{secret:REORDER_ROOT_ONE}".into();
+        expected.placement[0].source = Some("{secret:REORDER_SOURCE_TWO}".into());
+        expected.placement[0].candidates[0] = "{secret:REORDER_ID_TWO}".into();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let persisted: toml::Table = toml::from_str(&text).unwrap();
+        let actual: VolumeConfiguration<String> = persisted["storage"]["named_volumes"]
+            .clone()
+            .try_into()
+            .unwrap();
+        assert_eq!(actual, expected);
+        let loaded = load_config(&path).unwrap();
+        let volumes = loaded.storage.named_volumes.as_ref().unwrap();
+        assert_eq!(volumes.volumes[0].id.as_str(), "disk-two");
+        assert_eq!(volumes.volumes[0].root, directory.join("replacement"));
+        assert_eq!(volumes.volumes[1].root, directory.join("one"));
+        assert_eq!(volumes.placement[0].source.as_deref(), Some("rear"));
+        assert_eq!(volumes.placement[0].candidates[0].as_str(), "disk-two");
+
+        write_private_file(&directory.join("secrets.toml"), b"").unwrap();
+        let empty = VolumeConfiguration::<String>::default();
+        update_settings_with_volume_draft(&path, &loaded, None, Some(&empty)).unwrap();
+        assert_eq!(
+            load_config(&path).unwrap().storage.named_volumes,
+            Some(VolumeConfiguration::default())
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     fn draft() -> VolumeConfiguration {
         let mut root = toml::Table::new();
