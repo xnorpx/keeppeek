@@ -4,6 +4,9 @@
 
 ### Added
 
+- Add event-only recording and opt-in, bounded pre-event history for event-boost, with
+  camera setup/edit controls, shared defaults/templates, storage memory limits, and
+  requested/available history diagnostics (#172). Existing cameras keep pre-recording disabled.
 - Add server-persisted per-dashboard live-wall shape, fit, gap, and corner-radius controls with
   editable appearance presets, bounded Smart/Continuous streaming, explicit paused-frame freshness,
   and opt-in visibility-aware display wake lock with preview, save, reset, and diagnostics.

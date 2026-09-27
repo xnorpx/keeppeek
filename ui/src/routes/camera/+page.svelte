@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { useCapabilityState } from '$lib/capability-context';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { onMount, tick } from 'svelte';
@@ -39,6 +40,10 @@
 	});
 	const livePeer = useLivePeer();
 	const controlClient = useControlClient();
+	const serverCapabilities = useCapabilityState();
+	let preRecordingSupported = $derived(
+		serverCapabilities.supports('keeppeek.recording.pre-roll.v1')
+	);
 
 	let details = $state.raw<CameraDetailsResponse | null>(null);
 	let cameraSettings = $state.raw<CameraSettings | null>(null);
@@ -579,6 +584,7 @@
 				<div id="configuration" class="p-3">
 					{#if cameraSettings}
 						<CameraConfigurationEditor
+							{preRecordingSupported}
 							camera={cameraSettings}
 							saving={savingConfiguration}
 							error={configurationError}
@@ -661,6 +667,7 @@
 					{#if editingConfiguration && cameraSettings}
 						<div id="configuration">
 							<CameraConfigurationEditor
+								{preRecordingSupported}
 								camera={cameraSettings}
 								saving={savingConfiguration}
 								error={configurationError}

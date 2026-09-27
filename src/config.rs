@@ -2,7 +2,7 @@ pub use crate::access::AccessKey;
 use crate::{
     access,
     cameras::{
-        CameraBackend, CameraConfig, CameraRecordingMode, CameraTransport,
+        CameraBackend, CameraConfig, CameraRecordingMode, CameraTransport, EventRecordingStream,
         default_event_recording_duration_secs,
     },
     event_forwarder::config::{EventForwarderConfig, MQTT_PASSWORD_SECRET, MqttForwarderConfig},
@@ -71,6 +71,10 @@ pub struct CameraCredentialDefaults {
     pub recording_mode: Option<CameraRecordingMode>,
     #[serde(default)]
     pub event_recording_duration_secs: Option<u64>,
+    #[serde(default)]
+    pub event_pre_recording_duration_secs: Option<u64>,
+    #[serde(default)]
+    pub event_recording_stream: Option<EventRecordingStream>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -544,10 +548,39 @@ pub struct StorageToml {
 
     #[serde(default = "default_cleanup_hysteresis_gb")]
     pub cleanup_hysteresis_gb: u64,
+    #[serde(default = "default_pre_recording_stream_max_bytes")]
+    pub pre_recording_stream_max_bytes: u64,
+    #[serde(default = "default_pre_recording_global_max_bytes")]
+    pub pre_recording_global_max_bytes: u64,
+}
+
+pub const fn default_pre_recording_stream_max_bytes() -> u64 {
+    64 * 1024 * 1024
+}
+pub const fn default_pre_recording_global_max_bytes() -> u64 {
+    256 * 1024 * 1024
 }
 
 impl StorageToml {
+    fn validate_pre_recording_budgets(&self) -> anyhow::Result<()> {
+        if self.pre_recording_stream_max_bytes == 0
+            || self.pre_recording_global_max_bytes == 0
+            || self.pre_recording_stream_max_bytes > self.pre_recording_global_max_bytes
+        {
+            anyhow::bail!(
+                "pre-recording budgets must be nonzero and the stream budget must not exceed the global budget"
+            );
+        }
+        i64::try_from(self.pre_recording_global_max_bytes).map_err(|_| {
+            anyhow::anyhow!("pre-recording budget exceeds the configuration integer limit")
+        })?;
+        usize::try_from(self.pre_recording_global_max_bytes)
+            .map_err(|_| anyhow::anyhow!("pre-recording budget exceeds this platform limit"))?;
+        Ok(())
+    }
+
     pub(crate) fn validate_safety_thresholds(&self) -> anyhow::Result<()> {
+        self.validate_pre_recording_budgets()?;
         if self
             .maximum_used_percent
             .is_some_and(|percent| !(1..=99).contains(&percent))
@@ -861,6 +894,8 @@ impl Default for StorageToml {
             warning_free_gb: default_warning_free_gb(),
             critical_free_gb: default_critical_free_gb(),
             cleanup_hysteresis_gb: default_cleanup_hysteresis_gb(),
+            pre_recording_stream_max_bytes: default_pre_recording_stream_max_bytes(),
+            pre_recording_global_max_bytes: default_pre_recording_global_max_bytes(),
         }
     }
 }
@@ -1695,6 +1730,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     let mut resolved = toml::Value::Table(runtime);
     resolve_toml_secret_references(&mut resolved, secrets)?;
     let mut config: Config = resolved.try_into()?;
+    config.storage.validate_pre_recording_budgets()?;
     if let Some(callbacks) = &config.isapi_callbacks {
         callbacks.validate()?;
     }
@@ -1782,31 +1818,12 @@ fn cameras_from_table(
             let configured = cam_value
                 .as_table()
                 .ok_or_else(|| anyhow::anyhow!("camera {cam_name} is not a configuration table"))?;
-            if !configured.contains_key("backend")
-                && let Some(backend) = defaults.backend
-            {
-                config.backend = backend;
-            }
-            if !configured.contains_key("transport")
-                && let Some(transport) = defaults.transport
-            {
-                config.transport = transport;
-            }
-            if !configured.contains_key("record_generic_motion_events")
-                && let Some(record_generic_motion_events) = defaults.record_generic_motion_events
-            {
-                config.record_generic_motion_events = record_generic_motion_events;
-            }
-            if !configured.contains_key("recording_mode")
-                && let Some(recording_mode) = defaults.recording_mode
-            {
-                config.recording_mode = recording_mode;
-            }
-            if !configured.contains_key("event_recording_duration_secs")
-                && let Some(event_recording_duration_secs) = defaults.event_recording_duration_secs
-            {
-                config.event_recording_duration_secs = event_recording_duration_secs;
-            }
+            apply_camera_policy_defaults(&mut config, configured, &defaults);
+            validate_event_recording_policy(
+                config.recording_mode,
+                config.event_pre_recording_duration_secs,
+                config.event_recording_duration_secs,
+            )?;
             cameras.push(config);
         }
 
@@ -1814,6 +1831,46 @@ fn cameras_from_table(
     }
 
     Ok(result)
+}
+
+fn apply_camera_policy_defaults(
+    config: &mut CameraConfig,
+    configured: &toml::Table,
+    defaults: &CameraCredentialDefaults,
+) {
+    if !configured.contains_key("backend")
+        && let Some(backend) = defaults.backend
+    {
+        config.backend = backend;
+    }
+    if !configured.contains_key("transport")
+        && let Some(transport) = defaults.transport
+    {
+        config.transport = transport;
+    }
+    if !configured.contains_key("record_generic_motion_events")
+        && let Some(value) = defaults.record_generic_motion_events
+    {
+        config.record_generic_motion_events = value;
+    }
+    if !configured.contains_key("recording_mode")
+        && let Some(mode) = defaults.recording_mode
+    {
+        config.recording_mode = mode;
+    }
+    if !configured.contains_key("event_recording_duration_secs")
+        && let Some(seconds) = defaults.event_recording_duration_secs
+    {
+        config.event_recording_duration_secs = seconds;
+    }
+    if !configured.contains_key("event_pre_recording_duration_secs") {
+        config.event_pre_recording_duration_secs = defaults
+            .event_pre_recording_duration_secs
+            .unwrap_or_default();
+    }
+    if !configured.contains_key("event_recording_stream") {
+        config.event_recording_stream = defaults.event_recording_stream.unwrap_or_default();
+    }
 }
 
 /// Loads resolved shared camera credentials from `[camera_defaults]` in `config.toml`.
@@ -1833,7 +1890,37 @@ fn camera_defaults_from_table(
     };
     let mut resolved = defaults.clone();
     resolve_toml_secret_references(&mut resolved, secrets)?;
-    resolved.try_into().map_err(Into::into)
+    let defaults: CameraCredentialDefaults = resolved.try_into()?;
+    validate_event_recording_policy(
+        defaults.recording_mode.unwrap_or_default(),
+        defaults
+            .event_pre_recording_duration_secs
+            .unwrap_or_default(),
+        defaults
+            .event_recording_duration_secs
+            .unwrap_or_else(default_event_recording_duration_secs),
+    )?;
+    Ok(defaults)
+}
+
+fn validate_event_recording_policy(
+    mode: CameraRecordingMode,
+    pre: u64,
+    post: u64,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        pre <= 30,
+        "event pre-recording duration must be between 0 and 30 seconds"
+    );
+    if mode == CameraRecordingMode::EventOnly
+        || (mode == CameraRecordingMode::EventBoost && pre > 0)
+    {
+        anyhow::ensure!(
+            (1..=3600).contains(&post),
+            "event recording duration must be between 1 and 3600 seconds"
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn is_reserved_section(namespace: &str) -> bool {
@@ -2081,6 +2168,11 @@ pub fn set_camera_manufacturer(
 }
 
 pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<String> {
+    validate_event_recording_policy(
+        config.recording_mode,
+        config.event_pre_recording_duration_secs,
+        config.event_recording_duration_secs,
+    )?;
     let text = std::fs::read_to_string(path)?;
     let mut root: toml::Table = toml::from_str(&text)?;
     let secrets = load_secrets(path)?;
@@ -2121,6 +2213,8 @@ pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<Strin
         "record_generic_motion_events",
         "recording_mode",
         "event_recording_duration_secs",
+        "event_pre_recording_duration_secs",
+        "event_recording_stream",
     ];
     for key in MANAGED_CAMERA_KEYS {
         camera.remove(*key);
@@ -2174,6 +2268,15 @@ fn camera_policy_matches_default(
                 == defaults.record_generic_motion_events.unwrap_or_default()
         }
         "recording_mode" => config.recording_mode == defaults.recording_mode.unwrap_or_default(),
+        "event_pre_recording_duration_secs" => {
+            config.event_pre_recording_duration_secs
+                == defaults
+                    .event_pre_recording_duration_secs
+                    .unwrap_or_default()
+        }
+        "event_recording_stream" => {
+            config.event_recording_stream == defaults.event_recording_stream.unwrap_or_default()
+        }
         "event_recording_duration_secs" => {
             config.event_recording_duration_secs
                 == defaults
@@ -2880,6 +2983,119 @@ mod tests {
     }
 
     #[test]
+    fn pre_recording_configuration_inherits_round_trips_and_rejects_invalid_values() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-preroll-config-{}", rand::random::<u64>()));
+        let path = directory.join("config.toml");
+        let text = r#"
+            [camera_defaults]
+            event_pre_recording_duration_secs = 12
+            event_recording_stream = "sub"
+            [cameras.front]
+            ip = "192.0.2.10"
+            username = "user"
+            password = "password"
+            recording_mode = "event-only"
+            [cameras.back]
+            ip = "192.0.2.11"
+            username = "user"
+            password = "password"
+            event_pre_recording_duration_secs = 0
+            event_recording_stream = "main"
+        "#;
+        write_private_file(&path, text.as_bytes()).unwrap();
+        let cameras = load_cameras(&path).unwrap();
+        let front = cameras["cameras"]
+            .iter()
+            .find(|camera| camera.ip.to_string() == "192.0.2.10")
+            .unwrap();
+        let back = cameras["cameras"]
+            .iter()
+            .find(|camera| camera.ip.to_string() == "192.0.2.11")
+            .unwrap();
+        assert_eq!(front.event_pre_recording_duration_secs, 12);
+        assert_eq!(front.event_recording_stream, EventRecordingStream::Sub);
+        assert_eq!(front.recording_mode, CameraRecordingMode::EventOnly);
+        assert_eq!(back.event_pre_recording_duration_secs, 0);
+        assert_eq!(back.event_recording_stream, EventRecordingStream::Main);
+        let roundtrip: CameraConfig = toml::from_str(&toml::to_string(front).unwrap()).unwrap();
+        assert_eq!(roundtrip.event_pre_recording_duration_secs, 12);
+        assert_eq!(roundtrip.event_recording_stream, EventRecordingStream::Sub);
+        for invalid in [
+            text.replace("= 12", "= 31"),
+            text.replace("= 12", "= -1"),
+            text.replace("= \"sub\"", "= \"invalid\""),
+        ] {
+            write_private_file(&path, invalid.as_bytes()).unwrap();
+            assert!(load_cameras(&path).is_err());
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn pre_recording_storage_budgets_have_compatible_defaults_and_validate() {
+        let original: StorageToml = toml::from_str("").unwrap();
+        assert_eq!(original.pre_recording_stream_max_bytes, 67_108_864);
+        assert_eq!(original.pre_recording_global_max_bytes, 268_435_456);
+        assert!(original.validate_safety_thresholds().is_ok());
+        for (stream, global) in [(0, 100), (100, 0), (101, 100), (1, u64::MAX)] {
+            let storage = StorageToml {
+                pre_recording_stream_max_bytes: stream,
+                pre_recording_global_max_bytes: global,
+                ..original.clone()
+            };
+            assert!(storage.validate_safety_thresholds().is_err());
+        }
+        let restored: StorageToml = toml::from_str(&toml::to_string(&original).unwrap()).unwrap();
+        assert_eq!(
+            restored.pre_recording_stream_max_bytes,
+            original.pre_recording_stream_max_bytes
+        );
+    }
+
+    #[test]
+    fn event_recording_rejects_invalid_effective_post_duration_before_persistence() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-invalid-event-post-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+        let valid = "[camera_defaults]\nusername='user'\npassword='password'\n[cameras.front]\nip='192.0.2.10'\nrecording_mode='event-only'\nevent_recording_duration_secs=60\n";
+        for invalid in [
+            valid.replace("=60", "=0"),
+            valid.replace("=60", "=3601"),
+            valid
+                .replace(
+                    "[camera_defaults]",
+                    "[camera_defaults]\nevent_recording_duration_secs=0",
+                )
+                .replace("event_recording_duration_secs=60\n", ""),
+            valid
+                .replace("event-only", "event-boost")
+                .replace("=60", "=0\nevent_pre_recording_duration_secs=1"),
+        ] {
+            write_private_file(&path, invalid.as_bytes()).unwrap();
+            assert!(load_cameras(&path).is_err());
+        }
+        write_private_file(&path, valid.as_bytes()).unwrap();
+        let mut camera = load_cameras(&path)
+            .unwrap()
+            .remove("cameras")
+            .unwrap()
+            .remove(0);
+        camera.event_recording_duration_secs = 0;
+        let before = std::fs::read(&path).unwrap();
+        assert!(upsert_camera(&path, &camera).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let legacy = valid
+            .replace("event-only", "event-boost")
+            .replace("=60", "=0");
+        write_private_file(&path, legacy.as_bytes()).unwrap();
+        assert!(load_cameras(&path).is_ok());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn camera_policy_defaults_flow_to_fields_without_overrides() {
         let directory = std::env::temp_dir().join(format!(
             "keeppeek-camera-defaults-{}",
@@ -3338,6 +3554,8 @@ mod tests {
                 warning_free_gb: 12,
                 critical_free_gb: 8,
                 cleanup_hysteresis_gb: 2,
+                pre_recording_stream_max_bytes: default_pre_recording_stream_max_bytes(),
+                pre_recording_global_max_bytes: default_pre_recording_global_max_bytes(),
             },
             ..Config::default()
         };
@@ -3793,6 +4011,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: Default::default(),
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
 
         assert_eq!(upsert_camera(&path, &config).unwrap(), "existing");

@@ -134,6 +134,37 @@
 				onswitchtotcp={switchToTcp}
 			/>
 		</div>
+		{#if evidence.camera.pre_recording}
+			{@const pre = evidence.camera.pre_recording}
+			<section
+				class="m-4 space-y-3 rounded-md border border-hairline bg-surface p-4"
+				aria-labelledby="pre-recording-health-heading"
+			>
+				<h2 id="pre-recording-health-heading" class="text-sm font-semibold">Pre-recording</h2>
+				<dl class="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+					<div>
+						<dt class="text-text-muted">Requested history</dt>
+						<dd>{pre.requested_ms / 1000}s</dd>
+					</div>
+					<div>
+						<dt class="text-text-muted">Available history</dt>
+						<dd>{pre.available_ms / 1000}s</dd>
+					</div>
+					<div>
+						<dt class="text-text-muted">Retained memory</dt>
+						<dd>{(pre.retained_bytes / 1_048_576).toFixed(1)} MiB</dd>
+					</div>
+					<div>
+						<dt class="text-text-muted">Stream</dt>
+						<dd>{pre.selected_stream}</dd>
+					</div>
+				</dl>
+				<p class="text-sm">{pre.reason}{pre.active ? ' / Event recording active' : ''}</p>
+				<p class="text-xs text-text-muted">
+					Available history is held in memory. Pending replay is not yet saved video.
+				</p>
+			</section>
+		{/if}
 	{:else}
 		<section
 			class="grid min-h-80 place-items-center rounded-md border border-hairline bg-surface p-6 text-center"

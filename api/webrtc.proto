@@ -387,6 +387,8 @@ message UpdateCameraConfiguration {
   optional CameraRecordingMode recording_mode = 14;
   optional uint32 event_recording_duration_secs = 15;
   string expected_configuration_revision = 16;
+  optional uint32 event_pre_recording_duration_secs = 17;
+  optional EventRecordingStream event_recording_stream = 18;
 }
 
 message ConfigurationCommand {
@@ -490,6 +492,8 @@ message CameraConfigurationPatch {
   OptionalBoolUpdate record_generic_motion_events = 13;
   OptionalCameraRecordingModeUpdate recording_mode = 14;
   OptionalUint32Update event_recording_duration_secs = 15;
+  OptionalUint32Update event_pre_recording_duration_secs = 16;
+  OptionalEventRecordingStreamUpdate event_recording_stream = 17;
 }
 
 message CameraDefaultPatch {
@@ -500,6 +504,8 @@ message CameraDefaultPatch {
   OptionalBoolUpdate record_generic_motion_events = 5;
   OptionalCameraRecordingModeUpdate recording_mode = 6;
   OptionalUint32Update event_recording_duration_secs = 7;
+  OptionalUint32Update event_pre_recording_duration_secs = 8;
+  OptionalEventRecordingStreamUpdate event_recording_stream = 9;
 }
 
 message CameraTemplateValues {
@@ -512,6 +518,8 @@ message CameraTemplateValues {
   optional bool record_generic_motion_events = 7;
   optional CameraRecordingMode recording_mode = 8;
   optional uint32 event_recording_duration_secs = 9;
+  optional uint32 event_pre_recording_duration_secs = 10;
+  optional EventRecordingStream event_recording_stream = 11;
 }
 
 message OptionalCameraBackendUpdate {
@@ -598,6 +606,10 @@ message CameraDefaultValues {
   optional uint32 configured_event_recording_duration_secs = 11;
   uint32 effective_event_recording_duration_secs = 12;
   PrivacySchedule privacy = 13;
+  optional uint32 configured_event_pre_recording_duration_secs = 14;
+  uint32 effective_event_pre_recording_duration_secs = 15;
+  optional EventRecordingStream configured_event_recording_stream = 16;
+  EventRecordingStream effective_event_recording_stream = 17;
 }
 
 message CameraEffectiveConfiguration {
@@ -612,6 +624,8 @@ message CameraEffectiveConfiguration {
   EffectiveUint32Value event_recording_duration_secs = 9;
   PrivacySchedule privacy = 10;
   PrivacyStatus privacy_status = 11;
+  EffectiveUint32Value event_pre_recording_duration_secs = 12;
+  EffectiveEventRecordingStreamValue event_recording_stream = 13;
 }
 
 message EffectiveSecretValue {
@@ -847,6 +861,7 @@ enum CameraRecordingMode {
   CAMERA_RECORDING_MODE_BOTH = 3;
   CAMERA_RECORDING_MODE_EVENT_BOOST = 4;
   CAMERA_RECORDING_MODE_OFF = 5;
+  CAMERA_RECORDING_MODE_EVENT_ONLY = 6;
 }
 
 enum CameraTransport {
@@ -1292,6 +1307,8 @@ message RuntimeStorageConfiguration {
   optional uint64 warning_free_gb = 13;
   optional uint64 critical_free_gb = 14;
   optional uint64 cleanup_hysteresis_gb = 15;
+  optional uint64 pre_recording_stream_max_bytes = 16;
+  optional uint64 pre_recording_global_max_bytes = 17;
 }
 
 message LoggingCommand {
@@ -2752,6 +2769,8 @@ message CameraSettings {
   bool record_generic_motion_events = 16;
   CameraRecordingMode recording_mode = 17;
   uint32 event_recording_duration_secs = 18;
+  uint32 event_pre_recording_duration_secs = 19;
+  EventRecordingStream event_recording_stream = 20;
 }
 
 message RuntimeConfigurationResult {
@@ -2835,6 +2854,7 @@ message CameraHealthSnapshot {
   string detail = 16;
   CameraHealthDimensionsSnapshot dimensions = 17;
   PrivacyStatus privacy = 18;
+  PreRecordingDiagnostics pre_recording = 19;
 }
 
 message CameraHealthDimensionsSnapshot {
@@ -3691,4 +3711,50 @@ enum EventImageFilter {
   EVENT_IMAGE_FILTER_ANY = 0;
   EVENT_IMAGE_FILTER_WITH_IMAGE = 1;
   EVENT_IMAGE_FILTER_WITHOUT_IMAGE = 2;
+}
+
+
+enum EventRecordingStream {
+  EVENT_RECORDING_STREAM_UNSPECIFIED = 0;
+  EVENT_RECORDING_STREAM_SUB = 1;
+  EVENT_RECORDING_STREAM_MAIN = 2;
+}
+message OptionalEventRecordingStreamUpdate {
+  oneof value {
+    EventRecordingStream set = 1;
+    bool clear = 2;
+  }
+}
+message EffectiveEventRecordingStreamValue {
+  optional EventRecordingStream configured_default = 1;
+  optional EventRecordingStream camera_override = 2;
+  EventRecordingStream effective = 3;
+  ConfigurationValueSource source = 4;
+  bool runtime_applied = 5;
+  optional string warning = 6;
+}
+enum PreRecordingReason {
+  PRE_RECORDING_REASON_UNSPECIFIED = 0;
+  PRE_RECORDING_REASON_DISABLED = 1;
+  PRE_RECORDING_REASON_STARTUP = 2;
+  PRE_RECORDING_REASON_MISSING_KEYFRAME = 3;
+  PRE_RECORDING_REASON_DURATION_EVICTION = 4;
+  PRE_RECORDING_REASON_PER_STREAM_PRESSURE = 5;
+  PRE_RECORDING_REASON_GLOBAL_PRESSURE = 6;
+  PRE_RECORDING_REASON_READY = 7;
+  PRE_RECORDING_REASON_PENDING_REPLAY = 8;
+  PRE_RECORDING_REASON_MALFORMED_ORDER = 9;
+  PRE_RECORDING_REASON_DISCONTINUITY = 10;
+  PRE_RECORDING_REASON_PRIVACY = 11;
+  PRE_RECORDING_REASON_STORAGE_PAUSE = 12;
+  PRE_RECORDING_REASON_WRITER_FAILURE = 13;
+}
+message PreRecordingDiagnostics {
+  bool enabled = 1;
+  bool active = 2;
+  EventRecordingStream selected_stream = 3;
+  uint64 requested_ms = 4;
+  uint64 available_ms = 5;
+  uint64 retained_bytes = 6;
+  PreRecordingReason reason = 7;
 }

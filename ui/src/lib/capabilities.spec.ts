@@ -10,6 +10,7 @@ import {
 describe('server capability contract', () => {
 	it('contains the exact capability identifiers without duplicates', () => {
 		expect(serverCapabilityIds).toEqual([
+			'keeppeek.recording.pre-roll.v1',
 			'keeppeek.recording-maintenance.v1',
 			'keeppeek.event-workflow.v1',
 			'keeppeek.backup.v1',

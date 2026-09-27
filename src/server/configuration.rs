@@ -1284,6 +1284,20 @@ fn apply_camera_patch(
         patch.event_recording_duration_secs.as_ref(),
         issues,
     );
+    apply_u32_update(
+        table,
+        "event_pre_recording_duration_secs",
+        patch.event_pre_recording_duration_secs.as_ref(),
+        0,
+        30,
+        issues,
+    );
+    apply_event_recording_stream_update(
+        table,
+        "event_recording_stream",
+        patch.event_recording_stream.as_ref(),
+        issues,
+    );
 }
 
 fn apply_default_patch(
@@ -1325,6 +1339,20 @@ fn apply_default_patch(
         table,
         "event_recording_duration_secs",
         patch.event_recording_duration_secs.as_ref(),
+        issues,
+    );
+    apply_u32_update(
+        table,
+        "event_pre_recording_duration_secs",
+        patch.event_pre_recording_duration_secs.as_ref(),
+        0,
+        30,
+        issues,
+    );
+    apply_event_recording_stream_update(
+        table,
+        "event_recording_stream",
+        patch.event_recording_stream.as_ref(),
         issues,
     );
 }
@@ -1371,6 +1399,17 @@ fn apply_template_values(table: &mut toml::Table, values: &StoredTemplateValues)
         "event_recording_duration_secs",
         values.event_recording_duration_secs.map(u64::from),
     );
+    insert_optional_integer(
+        table,
+        "event_pre_recording_duration_secs",
+        values.event_pre_recording_duration_secs.map(u64::from),
+    );
+    if let Some(value) = values.event_recording_stream {
+        table.insert(
+            "event_recording_stream".to_owned(),
+            toml::Value::String(event_recording_stream_name(value).to_owned()),
+        );
+    }
 }
 
 fn apply_string_update<F>(
@@ -1559,6 +1598,40 @@ fn apply_recording_mode_update(
     }
 }
 
+fn apply_event_recording_stream_update(
+    table: &mut toml::Table,
+    key: &str,
+    update: Option<&proto::OptionalEventRecordingStreamUpdate>,
+    issues: &mut Vec<proto::ConfigurationIssue>,
+) {
+    let Some(update) = update else { return };
+    match update.value {
+        Some(proto::optional_event_recording_stream_update::Value::Set(value)) => {
+            if let Some(value) = event_recording_stream_from_proto(value) {
+                table.insert(
+                    key.to_owned(),
+                    toml::Value::String(event_recording_stream_name(value).to_owned()),
+                );
+            } else {
+                issues.push(configuration_issue(
+                    key,
+                    "enum_value_invalid",
+                    "Event recording stream contains an unsupported value.",
+                ));
+            }
+        }
+        Some(proto::optional_event_recording_stream_update::Value::Clear(true)) => {
+            table.remove(key);
+        }
+        Some(proto::optional_event_recording_stream_update::Value::Clear(false)) | None => issues
+            .push(configuration_issue(
+                key,
+                "patch_operation_invalid",
+                "The patch must set or clear this field.",
+            )),
+    }
+}
+
 fn apply_bool_update(
     table: &mut toml::Table,
     key: &str,
@@ -1635,6 +1708,14 @@ fn camera_patch_fields(patch: &proto::CameraConfigurationPatch) -> Vec<String> {
             patch.event_recording_duration_secs.is_some(),
             "event_recording_duration_secs",
         ),
+        (
+            patch.event_pre_recording_duration_secs.is_some(),
+            "event_pre_recording_duration_secs",
+        ),
+        (
+            patch.event_recording_stream.is_some(),
+            "event_recording_stream",
+        ),
     ]
     .into_iter()
     .filter(|(present, _)| *present)
@@ -1656,6 +1737,14 @@ fn default_patch_fields(patch: &proto::CameraDefaultPatch) -> Vec<String> {
         (
             patch.event_recording_duration_secs.is_some(),
             "event_recording_duration_secs",
+        ),
+        (
+            patch.event_pre_recording_duration_secs.is_some(),
+            "event_pre_recording_duration_secs",
+        ),
+        (
+            patch.event_recording_stream.is_some(),
+            "event_recording_stream",
         ),
     ]
     .into_iter()
@@ -1680,6 +1769,14 @@ fn template_fields(values: &StoredTemplateValues) -> Vec<String> {
         (
             values.event_recording_duration_secs.is_some(),
             "event_recording_duration_secs",
+        ),
+        (
+            values.event_pre_recording_duration_secs.is_some(),
+            "event_pre_recording_duration_secs",
+        ),
+        (
+            values.event_recording_stream.is_some(),
+            "event_recording_stream",
         ),
     ]
     .into_iter()
@@ -1819,6 +1916,10 @@ fn effective_field_changed(left: &CameraConfig, right: &CameraConfig, field: &st
             left.record_generic_motion_events != right.record_generic_motion_events
         }
         "recording_mode" => left.recording_mode != right.recording_mode,
+        "event_pre_recording_duration_secs" => {
+            left.event_pre_recording_duration_secs != right.event_pre_recording_duration_secs
+        }
+        "event_recording_stream" => left.event_recording_stream != right.event_recording_stream,
         "event_recording_duration_secs" => {
             left.event_recording_duration_secs != right.event_recording_duration_secs
         }
@@ -1873,6 +1974,10 @@ fn effective_field_value(config: &CameraConfig, field: &str, secret: bool) -> St
         "record_generic_motion_events" => config.record_generic_motion_events.to_string(),
         "recording_mode" => camera_recording_mode_name(config.recording_mode).to_owned(),
         "event_recording_duration_secs" => config.event_recording_duration_secs.to_string(),
+        "event_pre_recording_duration_secs" => config.event_pre_recording_duration_secs.to_string(),
+        "event_recording_stream" => {
+            event_recording_stream_name(config.event_recording_stream).to_owned()
+        }
         _ => "not configured".to_owned(),
     }
 }
@@ -1902,6 +2007,7 @@ const fn camera_recording_mode_name(value: CameraRecordingMode) -> &'static str 
         CameraRecordingMode::Main => "main",
         CameraRecordingMode::Both => "both",
         CameraRecordingMode::EventBoost => "event-boost",
+        CameraRecordingMode::EventOnly => "event-only",
     }
 }
 
@@ -2236,6 +2342,10 @@ struct StoredTemplateValues {
     recording_mode: Option<CameraRecordingMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     event_recording_duration_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    event_pre_recording_duration_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    event_recording_stream: Option<crate::cameras::EventRecordingStream>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2294,6 +2404,10 @@ impl StoredTemplate {
                     .recording_mode
                     .and_then(camera_recording_mode_from_proto),
                 event_recording_duration_secs: values.event_recording_duration_secs,
+                event_pre_recording_duration_secs: values.event_pre_recording_duration_secs,
+                event_recording_stream: values
+                    .event_recording_stream
+                    .and_then(event_recording_stream_from_proto),
             },
             created_at_ms,
             updated_at_ms,
@@ -2316,6 +2430,11 @@ impl StoredTemplate {
                 record_generic_motion_events: self.values.record_generic_motion_events,
                 recording_mode: self.values.recording_mode.map(proto_camera_recording_mode),
                 event_recording_duration_secs: self.values.event_recording_duration_secs,
+                event_pre_recording_duration_secs: self.values.event_pre_recording_duration_secs,
+                event_recording_stream: self
+                    .values
+                    .event_recording_stream
+                    .map(proto_event_recording_stream),
             }),
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,
@@ -2465,6 +2584,7 @@ fn camera_recording_mode_from_proto(value: i32) -> Option<CameraRecordingMode> {
         Ok(proto::CameraRecordingMode::Main) => Some(CameraRecordingMode::Main),
         Ok(proto::CameraRecordingMode::Both) => Some(CameraRecordingMode::Both),
         Ok(proto::CameraRecordingMode::EventBoost) => Some(CameraRecordingMode::EventBoost),
+        Ok(proto::CameraRecordingMode::EventOnly) => Some(CameraRecordingMode::EventOnly),
         Ok(proto::CameraRecordingMode::Unspecified) | Err(_) => None,
     }
 }
@@ -2491,6 +2611,7 @@ const fn proto_camera_recording_mode(value: CameraRecordingMode) -> i32 {
         CameraRecordingMode::Main => proto::CameraRecordingMode::Main as i32,
         CameraRecordingMode::Both => proto::CameraRecordingMode::Both as i32,
         CameraRecordingMode::EventBoost => proto::CameraRecordingMode::EventBoost as i32,
+        CameraRecordingMode::EventOnly => proto::CameraRecordingMode::EventOnly as i32,
     }
 }
 
@@ -2570,6 +2691,21 @@ fn validate_template(
             "Event recording duration must be between 1 and 3600 seconds.",
         ));
     }
+    if values
+        .event_pre_recording_duration_secs
+        .is_some_and(|value| value > 30)
+    {
+        issues.push(configuration_issue(
+            "event_pre_recording_duration_secs",
+            "duration_out_of_range",
+            "Event pre-recording duration must be between 0 and 30 seconds.",
+        ));
+    }
+    validate_template_enum::<proto::EventRecordingStream>(
+        values.event_recording_stream,
+        "event_recording_stream",
+        &mut issues,
+    );
     validate_template_enum::<proto::CameraBackend>(values.backend, "backend", &mut issues);
     validate_template_enum::<proto::CameraTransport>(values.transport, "transport", &mut issues);
     validate_template_enum::<proto::CameraRecordingMode>(
@@ -2586,6 +2722,8 @@ fn validate_template(
         && values.record_generic_motion_events.is_none()
         && values.recording_mode.is_none()
         && values.event_recording_duration_secs.is_none()
+        && values.event_pre_recording_duration_secs.is_none()
+        && values.event_recording_stream.is_none()
     {
         issues.push(configuration_issue(
             "values",
@@ -2649,6 +2787,21 @@ fn configuration_snapshot(state: &ServerState) -> anyhow::Result<proto::Configur
     let revision = configuration_revision(&root, &templates)?;
     let raw_defaults = root.get("camera_defaults").and_then(toml::Value::as_table);
     let defaults_proto = proto::CameraDefaultValues {
+        configured_event_pre_recording_duration_secs: defaults
+            .event_pre_recording_duration_secs
+            .and_then(|value| u32::try_from(value).ok()),
+        effective_event_pre_recording_duration_secs: u32::try_from(
+            defaults
+                .event_pre_recording_duration_secs
+                .unwrap_or_default(),
+        )
+        .unwrap_or(u32::MAX),
+        configured_event_recording_stream: defaults
+            .event_recording_stream
+            .map(proto_event_recording_stream),
+        effective_event_recording_stream: proto_event_recording_stream(
+            defaults.event_recording_stream.unwrap_or_default(),
+        ),
         username_configured: raw_defaults
             .and_then(|table| table.get("username"))
             .and_then(toml::Value::as_str)
@@ -2908,6 +3061,12 @@ fn proto_effective_camera(
     let transport_override = configured_value::<CameraTransport>(&camera.configured, "transport");
     let generic_motion_override =
         configured_value::<bool>(&camera.configured, "record_generic_motion_events");
+    let pre_duration_override =
+        configured_value::<u64>(&camera.configured, "event_pre_recording_duration_secs");
+    let event_stream_override = configured_value::<crate::cameras::EventRecordingStream>(
+        &camera.configured,
+        "event_recording_stream",
+    );
     let recording_mode_override =
         configured_value::<CameraRecordingMode>(&camera.configured, "recording_mode");
     let event_duration_override =
@@ -2946,6 +3105,11 @@ fn proto_effective_camera(
         model,
         record_generic_motion_events: camera.config.record_generic_motion_events,
         recording_mode: proto_camera_recording_mode(camera.config.recording_mode),
+        event_pre_recording_duration_secs: u32::try_from(
+            camera.config.event_pre_recording_duration_secs,
+        )
+        .unwrap_or(u32::MAX),
+        event_recording_stream: proto_event_recording_stream(camera.config.event_recording_stream),
         event_recording_duration_secs: u32::try_from(camera.config.event_recording_duration_secs)
             .unwrap_or(u32::MAX),
     };
@@ -3039,6 +3203,43 @@ fn proto_effective_camera(
             }),
             warning: runtime_warning(live.as_ref().is_some_and(|live| {
                 live.event_recording_duration_secs == camera.config.event_recording_duration_secs
+            })),
+        }),
+        event_pre_recording_duration_secs: Some(proto::EffectiveUint32Value {
+            configured_default: defaults
+                .event_pre_recording_duration_secs
+                .and_then(|value| u32::try_from(value).ok()),
+            camera_override: pre_duration_override.and_then(|value| u32::try_from(value).ok()),
+            effective: u32::try_from(camera.config.event_pre_recording_duration_secs)
+                .unwrap_or(u32::MAX),
+            source: configured_source(
+                pre_duration_override.is_some(),
+                defaults.event_pre_recording_duration_secs.is_some(),
+            ),
+            runtime_applied: live.as_ref().is_some_and(|live| {
+                live.event_pre_recording_duration_secs
+                    == camera.config.event_pre_recording_duration_secs
+            }),
+            warning: runtime_warning(live.as_ref().is_some_and(|live| {
+                live.event_pre_recording_duration_secs
+                    == camera.config.event_pre_recording_duration_secs
+            })),
+        }),
+        event_recording_stream: Some(proto::EffectiveEventRecordingStreamValue {
+            configured_default: defaults
+                .event_recording_stream
+                .map(proto_event_recording_stream),
+            camera_override: event_stream_override.map(proto_event_recording_stream),
+            effective: proto_event_recording_stream(camera.config.event_recording_stream),
+            source: configured_source(
+                event_stream_override.is_some(),
+                defaults.event_recording_stream.is_some(),
+            ),
+            runtime_applied: live.as_ref().is_some_and(|live| {
+                live.event_recording_stream == camera.config.event_recording_stream
+            }),
+            warning: runtime_warning(live.as_ref().is_some_and(|live| {
+                live.event_recording_stream == camera.config.event_recording_stream
             })),
         }),
         privacy: state
@@ -3222,9 +3423,161 @@ fn configuration_domains(state: &ServerState) -> Vec<proto::ConfigurationDomain>
     .collect()
 }
 
+fn event_recording_stream_from_proto(value: i32) -> Option<crate::cameras::EventRecordingStream> {
+    match proto::EventRecordingStream::try_from(value) {
+        Ok(proto::EventRecordingStream::Sub) => Some(crate::cameras::EventRecordingStream::Sub),
+        Ok(proto::EventRecordingStream::Main) => Some(crate::cameras::EventRecordingStream::Main),
+        _ => None,
+    }
+}
+const fn proto_event_recording_stream(value: crate::cameras::EventRecordingStream) -> i32 {
+    match value {
+        crate::cameras::EventRecordingStream::Sub => proto::EventRecordingStream::Sub as i32,
+        crate::cameras::EventRecordingStream::Main => proto::EventRecordingStream::Main as i32,
+    }
+}
+const fn event_recording_stream_name(value: crate::cameras::EventRecordingStream) -> &'static str {
+    match value {
+        crate::cameras::EventRecordingStream::Sub => "sub",
+        crate::cameras::EventRecordingStream::Main => "main",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pre_recording_patch(seconds: u32, stream: i32) -> proto::CameraDefaultPatch {
+        proto::CameraDefaultPatch {
+            event_pre_recording_duration_secs: Some(proto::OptionalUint32Update {
+                value: Some(proto::optional_uint32_update::Value::Set(seconds)),
+            }),
+            event_recording_stream: Some(proto::OptionalEventRecordingStreamUpdate {
+                value: Some(proto::optional_event_recording_stream_update::Value::Set(
+                    stream,
+                )),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pre_recording_patch_preserves_omissions_and_rejects_invalid_values() {
+        let mut table: toml::Table = toml::from_str(
+            "event_pre_recording_duration_secs = 12\nevent_recording_stream = \"sub\"\n",
+        )
+        .unwrap();
+        let original = table.clone();
+        let mut issues = Vec::new();
+        apply_default_patch(
+            &mut table,
+            &proto::CameraDefaultPatch::default(),
+            &mut issues,
+        );
+        assert_eq!(table, original);
+        let patch = pre_recording_patch(30, proto::EventRecordingStream::Main as i32);
+        apply_default_patch(&mut table, &patch, &mut issues);
+        assert!(issues.is_empty());
+        assert_eq!(
+            table["event_pre_recording_duration_secs"].as_integer(),
+            Some(30)
+        );
+        assert_eq!(table["event_recording_stream"].as_str(), Some("main"));
+        for value in [0, 99] {
+            let before = table.clone();
+            issues.clear();
+            apply_default_patch(&mut table, &pre_recording_patch(31, value), &mut issues);
+            assert_eq!(issues.len(), 2);
+            assert_eq!(table, before);
+        }
+        let clear = proto::CameraDefaultPatch {
+            event_pre_recording_duration_secs: Some(proto::OptionalUint32Update {
+                value: Some(proto::optional_uint32_update::Value::Clear(true)),
+            }),
+            event_recording_stream: Some(proto::OptionalEventRecordingStreamUpdate {
+                value: Some(proto::optional_event_recording_stream_update::Value::Clear(
+                    true,
+                )),
+            }),
+            ..Default::default()
+        };
+        issues.clear();
+        apply_default_patch(&mut table, &clear, &mut issues);
+        assert!(issues.is_empty());
+        assert!(!table.contains_key("event_pre_recording_duration_secs"));
+        assert!(!table.contains_key("event_recording_stream"));
+    }
+
+    #[test]
+    fn pre_recording_wire_roundtrip_preserves_legacy_omissions() {
+        use prost::Message as _;
+        let legacy = proto::UpdateCameraConfiguration::default();
+        let decoded =
+            proto::UpdateCameraConfiguration::decode(legacy.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded.event_pre_recording_duration_secs, None);
+        assert_eq!(decoded.event_recording_stream, None);
+        let update = proto::UpdateCameraConfiguration {
+            recording_mode: Some(proto::CameraRecordingMode::EventOnly as i32),
+            event_pre_recording_duration_secs: Some(30),
+            event_recording_stream: Some(proto::EventRecordingStream::Sub as i32),
+            ..Default::default()
+        };
+        let decoded =
+            proto::UpdateCameraConfiguration::decode(update.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded, update);
+        assert_eq!(
+            camera_recording_mode_from_proto(decoded.recording_mode.unwrap()),
+            Some(CameraRecordingMode::EventOnly)
+        );
+        assert_eq!(
+            event_recording_stream_from_proto(decoded.event_recording_stream.unwrap()),
+            Some(crate::cameras::EventRecordingStream::Sub)
+        );
+        assert_eq!(event_recording_stream_from_proto(0), None);
+        assert_eq!(event_recording_stream_from_proto(99), None);
+    }
+
+    #[test]
+    fn pre_recording_only_template_round_trips_and_validates() {
+        let template = proto::ConfigurationTemplate {
+            name: "Event history".to_owned(),
+            values: Some(proto::CameraTemplateValues {
+                event_pre_recording_duration_secs: Some(30),
+                event_recording_stream: Some(proto::EventRecordingStream::Sub as i32),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let stored =
+            StoredTemplate::from_proto(template.clone(), "history".to_owned(), 1, 0, 0).unwrap();
+        let restored: StoredTemplate = toml::from_str(&toml::to_string(&stored).unwrap()).unwrap();
+        assert_eq!(restored.to_proto().values, template.values);
+        let mut table = toml::Table::new();
+        apply_template_values(&mut table, &restored.values);
+        assert_eq!(
+            table["event_pre_recording_duration_secs"].as_integer(),
+            Some(30)
+        );
+        assert_eq!(table["event_recording_stream"].as_str(), Some("sub"));
+        let mut invalid = template;
+        invalid
+            .values
+            .as_mut()
+            .unwrap()
+            .event_pre_recording_duration_secs = Some(31);
+        invalid.values.as_mut().unwrap().event_recording_stream = Some(99);
+        let issues = validate_template(invalid).unwrap_err();
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.field == "event_pre_recording_duration_secs")
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.field == "event_recording_stream")
+        );
+    }
 
     const CONTROL_MESSAGE_BUDGET_BYTES: usize = 64 * 1_024;
 

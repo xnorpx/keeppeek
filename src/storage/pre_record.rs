@@ -21,7 +21,7 @@ struct Budget {
 }
 
 impl Budget {
-    fn new(max_bytes: usize, max_frames: usize) -> Self {
+    const fn new(max_bytes: usize, max_frames: usize) -> Self {
         Self {
             bytes: AtomicUsize::new(0),
             frames: AtomicUsize::new(0),
@@ -107,6 +107,8 @@ struct StreamHistory {
     discontinuous: bool,
     last_received_at: Option<Instant>,
     reason: HistoryReason,
+    continuous: bool,
+    released: VecDeque<BufferedFrame>,
 }
 
 impl StreamHistory {
@@ -177,15 +179,23 @@ impl StreamHistory {
     }
 
     fn evict_oldest(&mut self) -> bool {
-        let evicted = self.gops.pop_front().is_some();
+        let evicted = self.gops.pop_front();
+        let present = evicted.is_some();
+        if self.continuous
+            && let Some(gop) = evicted
+        {
+            self.released.extend(gop.frames);
+        }
         if self.gops.is_empty() {
             self.awaiting_keyframe = true;
         }
-        evicted
+        present
     }
 
     fn discard_open(&mut self) {
-        if !self.awaiting_keyframe {
+        if self.continuous {
+            while self.evict_oldest() {}
+        } else if !self.awaiting_keyframe {
             self.gops.pop_back();
         }
         self.awaiting_keyframe = true;
@@ -223,6 +233,7 @@ impl PreRecordBuffers {
         }
         if let Some(history) = self.stream_mut(source, stream) {
             history.gops.clear();
+            history.released.clear();
             history.awaiting_keyframe = true;
             history.discontinuous = false;
             history.last_received_at = None;
@@ -243,6 +254,8 @@ impl PreRecordBuffers {
                 discontinuous: false,
                 last_received_at: None,
                 reason: HistoryReason::Startup,
+                continuous: false,
+                released: VecDeque::new(),
             },
         );
         self.stream_count += 1;
@@ -253,13 +266,24 @@ impl PreRecordBuffers {
         self.streams.get_mut(source)?.get_mut(stream)
     }
 
+    #[cfg(test)]
     pub(super) fn push(&mut self, source: &str, stream: &str, frame: RecordingFrame, now: Instant) {
+        let _ = self.push_owned(source, stream, frame, now);
+    }
+
+    pub(super) fn push_owned(
+        &mut self,
+        source: &str,
+        stream: &str,
+        frame: RecordingFrame,
+        now: Instant,
+    ) -> Result<(), RecordingFrame> {
         let global_limit = self.global_budget.max_bytes;
         let Some(history) = self.stream_mut(source, stream) else {
-            return;
+            return Err(frame);
         };
         if !history.admit(&frame, now, global_limit) {
-            return;
+            return Err(frame);
         }
         let bytes = frame.byte_len();
         let keyframe = frame.is_video_keyframe();
@@ -267,22 +291,22 @@ impl PreRecordBuffers {
             self.stream_mut(source, stream)
                 .expect("configured stream remains registered")
                 .reason = HistoryReason::GlobalPressure;
-            return;
+            return Err(frame);
         }
         let global_budget = Arc::clone(&self.global_budget);
         let history = self
             .stream_mut(source, stream)
             .expect("configured stream remains registered");
         if history.awaiting_keyframe && !keyframe {
-            return;
+            return Err(frame);
         }
         if !history.budget.acquire(bytes) {
-            return;
+            return Err(frame);
         }
         if !global_budget.acquire(bytes) {
             history.budget.release(bytes);
             history.discard_open();
-            return;
+            return Err(frame);
         }
         let received_at = frame.received_at;
         let retained = BufferedFrame {
@@ -307,6 +331,62 @@ impl PreRecordBuffers {
             history.awaiting_keyframe = false;
         } else if let Some(gop) = history.gops.back_mut() {
             gop.frames.push(retained);
+        }
+        Ok(())
+    }
+
+    pub(super) fn set_continuous(&mut self, source: &str, stream: &str, continuous: bool) {
+        if let Some(history) = self.stream_mut(source, stream) {
+            history.continuous = continuous;
+        }
+    }
+
+    pub(super) fn clear_source(&mut self, source: &str) {
+        if let Some(streams) = self.streams.get_mut(source) {
+            for history in streams.values_mut() {
+                history.gops.clear();
+                history.released.clear();
+                history.awaiting_keyframe = true;
+                history.discontinuous = false;
+                history.last_received_at = None;
+                history.reason = HistoryReason::Startup;
+            }
+        }
+    }
+
+    pub(super) fn clear_stream(&mut self, source: &str, stream: &str) {
+        if let Some(history) = self.stream_mut(source, stream) {
+            history.gops.clear();
+            history.released.clear();
+            history.awaiting_keyframe = true;
+            history.discontinuous = false;
+            history.last_received_at = None;
+            history.reason = HistoryReason::Startup;
+        }
+    }
+
+    pub(super) fn remove_source(&mut self, source: &str) {
+        if let Some(streams) = self.streams.remove(source) {
+            self.stream_count -= streams.len();
+        }
+    }
+
+    pub(super) fn next_released(&mut self) -> Option<(String, String, BufferedFrame)> {
+        for (source, streams) in &mut self.streams {
+            for (stream, history) in streams {
+                if let Some(frame) = history.released.pop_front() {
+                    return Some((source.clone(), stream.clone(), frame));
+                }
+            }
+        }
+        None
+    }
+
+    pub(super) fn expire(&mut self, now: Instant) {
+        for streams in self.streams.values_mut() {
+            for history in streams.values_mut() {
+                history.expire(now);
+            }
         }
     }
 
@@ -367,8 +447,19 @@ impl PreRecordBuffers {
         frames
     }
 
+    #[cfg(any(test, feature = "event-preroll-benchmark-current"))]
     pub(super) fn bytes(&self) -> usize {
         self.global_budget.bytes.load(Ordering::Relaxed)
+    }
+
+    #[cfg(feature = "event-preroll-benchmark-current")]
+    pub(super) fn max_stream_bytes(&self) -> usize {
+        self.streams
+            .values()
+            .flat_map(|streams| streams.values())
+            .map(|history| history.budget.bytes.load(Ordering::Relaxed))
+            .max()
+            .unwrap_or(0)
     }
 
     pub(super) fn snapshot(
@@ -419,6 +510,9 @@ impl PreRecordBuffers {
 }
 
 impl BufferedFrame {
+    pub(super) const fn frame(&self) -> &RecordingFrame {
+        &self.frame
+    }
     pub(super) fn into_frame(self) -> RecordingFrame {
         let mut frame = self.frame;
         let data = match &mut frame.frame {

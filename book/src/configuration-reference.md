@@ -207,15 +207,17 @@ the camera loader in [configuration](https://github.com/xnorpx/keeppeek/blob/mai
 
 Type: `CameraCredentialDefaults`, section `[camera_defaults]`.
 
-| Field                           | Type                           | Default or inheritance                                        |
-| ------------------------------- | ------------------------------ | ------------------------------------------------------------- |
-| `username`                      | `String`                       | Empty string; accepts secret references.                      |
-| `password`                      | `String`                       | Empty string; accepts secret references.                      |
-| `backend`                       | Optional `CameraBackend`       | No shared override; camera model defaults to `"auto"`.        |
-| `transport`                     | Optional `CameraTransport`     | No shared override; camera model defaults to `"tcp"`.         |
-| `record_generic_motion_events`  | Optional `bool`                | No shared override; camera model defaults to `false`.         |
-| `recording_mode`                | Optional `CameraRecordingMode` | No shared override; camera model defaults to `"event-boost"`. |
-| `event_recording_duration_secs` | Optional `u64`                 | No shared override; camera model defaults to `60` seconds.    |
+| Field                               | Type                            | Default or inheritance                                                      |
+| ----------------------------------- | ------------------------------- | --------------------------------------------------------------------------- |
+| `username`                          | `String`                        | Empty string; accepts secret references.                                    |
+| `password`                          | `String`                        | Empty string; accepts secret references.                                    |
+| `backend`                           | Optional `CameraBackend`        | No shared override; camera model defaults to `"auto"`.                      |
+| `transport`                         | Optional `CameraTransport`      | No shared override; camera model defaults to `"tcp"`.                       |
+| `record_generic_motion_events`      | Optional `bool`                 | No shared override; camera model defaults to `false`.                       |
+| `recording_mode`                    | Optional `CameraRecordingMode`  | No shared override; camera model defaults to `"event-boost"`.               |
+| `event_recording_duration_secs`     | Optional `u64`                  | No shared override; camera model defaults to `60` seconds.                  |
+| `event_pre_recording_duration_secs` | Optional `u64`                  | No shared override; camera model defaults to `0`; range `0..30` seconds.    |
+| `event_recording_stream`            | Optional `EventRecordingStream` | No shared override; camera model defaults to `"main"`; `"main"` or `"sub"`. |
 
 Username and password fall back to their shared defaults when the per-camera resolved value is
 empty, including when the field is omitted. The other shared defaults apply only when the
@@ -223,25 +225,27 @@ per-camera field is absent. Ports and RTSP URLs are not fields of `CameraCredent
 
 Type: `CameraConfig`, section `[<namespace>.<camera-key>]`, usually `[cameras.front_door]`.
 
-| Field                           | Type                  | Default                           | Meaning                                                                                                                         |
-| ------------------------------- | --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `ip`                            | `IpAddr`              | Required                          | Camera IP address, not a DNS hostname.                                                                                          |
-| `name`                          | Optional `String`     | Camera table key                  | The loader replaces this value with the table key. Use `display_name` to change the UI label without changing storage identity. |
-| `display_name`                  | Optional `String`     | Falls back to `name`              | Human-readable camera label.                                                                                                    |
-| `manufacturer`                  | Optional `String`     | No override                       | Nonempty trimmed value takes precedence over discovery.                                                                         |
-| `username`                      | `String`              | Shared default or empty           | Camera username; literal or secret reference.                                                                                   |
-| `password`                      | `String`              | Shared default or empty           | Camera password; literal or secret reference.                                                                                   |
-| `onvif_port`                    | Optional `u16`        | `8000` when unset                 | ONVIF service port. Typed configuration operations require `1..65535`.                                                          |
-| `http_port`                     | Optional `u16`        | `80` when unset                   | Direct camera HTTP control port; typed operations require `1..65535`.                                                           |
-| `main_rtsp_url`                 | Optional `String`     | Discover stream                   | Explicit main-stream RTSP URL takes precedence over ONVIF discovery. Blank values are not explicit URLs.                        |
-| `sub_rtsp_url`                  | Optional `String`     | Discover stream                   | Explicit sub-stream RTSP URL. Use URL-escaped references in credential components.                                              |
-| `uid`                           | Optional `String`     | None                              | Reolink P2P UID for direct BCUDP discovery.                                                                                     |
-| `backend`                       | `CameraBackend`       | Shared default or `"auto"`        | `"auto"`, `"retina"`, or `"reo-proto"`.                                                                                         |
-| `transport`                     | `CameraTransport`     | Shared default or `"tcp"`         | `"tcp"` or `"udp"`.                                                                                                             |
-| `record_generic_motion_events`  | `bool`                | Shared default or `false`         | Opt in to supported generic motion events.                                                                                      |
-| `recording_mode`                | `CameraRecordingMode` | Shared default or `"event-boost"` | `"off"`, `"sub"`, `"main"`, `"both"`, or `"event-boost"`.                                                                       |
-| `event_recording_duration_secs` | `u64`                 | Shared default or `60`            | Event-triggered recording duration; typed configuration operations use `1..3600` seconds.                                       |
-| `events`                        | `EventConfig`         | Defaults below                    | Camera-native event policy, independent of video backend; configured through the file.                                          |
+| Field                               | Type                   | Default                           | Meaning                                                                                                                                         |
+| ----------------------------------- | ---------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ip`                                | `IpAddr`               | Required                          | Camera IP address, not a DNS hostname.                                                                                                          |
+| `name`                              | Optional `String`      | Camera table key                  | The loader replaces this value with the table key. Use `display_name` to change the UI label without changing storage identity.                 |
+| `display_name`                      | Optional `String`      | Falls back to `name`              | Human-readable camera label.                                                                                                                    |
+| `manufacturer`                      | Optional `String`      | No override                       | Nonempty trimmed value takes precedence over discovery.                                                                                         |
+| `username`                          | `String`               | Shared default or empty           | Camera username; literal or secret reference.                                                                                                   |
+| `password`                          | `String`               | Shared default or empty           | Camera password; literal or secret reference.                                                                                                   |
+| `onvif_port`                        | Optional `u16`         | `8000` when unset                 | ONVIF service port. Typed configuration operations require `1..65535`.                                                                          |
+| `http_port`                         | Optional `u16`         | `80` when unset                   | Direct camera HTTP control port; typed operations require `1..65535`.                                                                           |
+| `main_rtsp_url`                     | Optional `String`      | Discover stream                   | Explicit main-stream RTSP URL takes precedence over ONVIF discovery. Blank values are not explicit URLs.                                        |
+| `sub_rtsp_url`                      | Optional `String`      | Discover stream                   | Explicit sub-stream RTSP URL. Use URL-escaped references in credential components.                                                              |
+| `uid`                               | Optional `String`      | None                              | Reolink P2P UID for direct BCUDP discovery.                                                                                                     |
+| `backend`                           | `CameraBackend`        | Shared default or `"auto"`        | `"auto"`, `"retina"`, or `"reo-proto"`.                                                                                                         |
+| `transport`                         | `CameraTransport`      | Shared default or `"tcp"`         | `"tcp"` or `"udp"`.                                                                                                                             |
+| `record_generic_motion_events`      | `bool`                 | Shared default or `false`         | Opt in to supported generic motion events.                                                                                                      |
+| `recording_mode`                    | `CameraRecordingMode`  | Shared default or `"event-boost"` | `"off"`, `"sub"`, `"main"`, `"both"`, `"event-boost"`, or `"event-only"`.                                                                       |
+| `event_recording_duration_secs`     | `u64`                  | Shared default or `60`            | Event-triggered recording duration; typed operations and TOML loading for event-only or pre-roll-enabled event-boost require `1..3600` seconds. |
+| `event_pre_recording_duration_secs` | `u64`                  | Shared default or `0`             | Range `0..30` seconds; `0` disables pre-roll allocation.                                                                                        |
+| `event_recording_stream`            | `EventRecordingStream` | Shared default or `"main"`        | `"main"` or `"sub"`; selects the event-only recording stream. EventBoost always boosts to main.                                                 |
+| `events`                            | `EventConfig`          | Defaults below                    | Camera-native event policy, independent of video backend; configured through the file.                                                          |
 
 These are stored configuration types, not promises that every camera supports every backend,
 transport, or recording capability. Discovery results such as `CameraCapabilities`, `CameraPorts`,
@@ -289,23 +293,25 @@ becomes `recordings.db` under the effective long-term directory; the thumbnail d
 to `.event-thumbnails` under that same directory. See
 [StorageConfig::from_toml](https://github.com/xnorpx/keeppeek/blob/main/src/storage/engine.rs).
 
-| Field                    | Type              | Default                 | Meaning                                                  |
-| ------------------------ | ----------------- | ----------------------- | -------------------------------------------------------- |
-| `medium_term_path`       | Optional `String` | Runtime-selected        | Medium-term recording directory.                         |
-| `long_term_path`         | Optional `String` | Runtime-selected        | Long-term recording directory.                           |
-| `recording_catalog_path` | Optional `String` | Runtime-selected        | Recording catalog path.                                  |
-| `event_thumbnail_path`   | Optional `String` | Runtime-selected        | Event-thumbnail directory.                               |
-| `event_thumbnail_max_mb` | `u64`             | `1024`                  | Thumbnail storage budget, in MiB.                        |
-| `short_term_secs`        | `u64`             | `120`                   | Short-term retention, in seconds.                        |
-| `medium_term_secs`       | `u64`             | `1800`                  | Medium-term retention, in seconds.                       |
-| `flush_interval_secs`    | `u64`             | `60`                    | Recording flush interval, in seconds.                    |
-| `write_buffer_bytes`     | `usize`           | `8192`                  | Recording write-buffer size, in bytes.                   |
-| `long_term_max_gb`       | `u64`             | `1024`                  | Long-term storage budget, in GiB.                        |
-| `minimum_free_gb`        | `u64`             | `10`                    | Minimum-free-space safety threshold, in GiB.             |
-| `maximum_used_percent`   | Optional `u8`     | No percentage threshold | When set, `1..99`; filesystem-used percentage threshold. |
-| `warning_free_gb`        | `u64`             | `20`                    | Warning-free-space threshold, in GiB.                    |
-| `critical_free_gb`       | `u64`             | `10`                    | Critical-free-space threshold, in GiB.                   |
-| `cleanup_hysteresis_gb`  | `u64`             | `5`                     | Cleanup recovery margin, in GiB.                         |
+| Field                            | Type              | Default                 | Meaning                                                                                                                                                       |
+| -------------------------------- | ----------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `medium_term_path`               | Optional `String` | Runtime-selected        | Medium-term recording directory.                                                                                                                              |
+| `long_term_path`                 | Optional `String` | Runtime-selected        | Long-term recording directory.                                                                                                                                |
+| `recording_catalog_path`         | Optional `String` | Runtime-selected        | Recording catalog path.                                                                                                                                       |
+| `event_thumbnail_path`           | Optional `String` | Runtime-selected        | Event-thumbnail directory.                                                                                                                                    |
+| `event_thumbnail_max_mb`         | `u64`             | `1024`                  | Thumbnail storage budget, in MiB.                                                                                                                             |
+| `short_term_secs`                | `u64`             | `120`                   | Short-term retention, in seconds.                                                                                                                             |
+| `medium_term_secs`               | `u64`             | `1800`                  | Medium-term retention, in seconds.                                                                                                                            |
+| `flush_interval_secs`            | `u64`             | `60`                    | Recording flush interval, in seconds.                                                                                                                         |
+| `write_buffer_bytes`             | `usize`           | `8192`                  | Recording write-buffer size, in bytes.                                                                                                                        |
+| `long_term_max_gb`               | `u64`             | `1024`                  | Long-term storage budget, in GiB.                                                                                                                             |
+| `minimum_free_gb`                | `u64`             | `10`                    | Minimum-free-space safety threshold, in GiB.                                                                                                                  |
+| `maximum_used_percent`           | Optional `u8`     | No percentage threshold | When set, `1..99`; filesystem-used percentage threshold.                                                                                                      |
+| `warning_free_gb`                | `u64`             | `20`                    | Warning-free-space threshold, in GiB.                                                                                                                         |
+| `critical_free_gb`               | `u64`             | `10`                    | Critical-free-space threshold, in GiB.                                                                                                                        |
+| `cleanup_hysteresis_gb`          | `u64`             | `5`                     | Cleanup recovery margin, in GiB.                                                                                                                              |
+| `pre_recording_stream_max_bytes` | `u64`             | `67108864` (64 MiB)     | Positive encoded-byte limit per candidate stream; must not exceed the global limit.                                                                           |
+| `pre_recording_global_max_bytes` | `u64`             | `268435456` (256 MiB)   | Positive encoded-byte limit across all candidate streams, including pending replay; must fit the platform address space and TOML signed 64-bit integer range. |
 
 The effective critical threshold is the greater of `critical_free_gb` and `minimum_free_gb`.
 If `warning_free_gb` is zero while the effective critical threshold is nonzero, the warning
@@ -612,17 +618,19 @@ Type: `StoredTemplate`, array `[[configuration_templates.templates]]`.
 
 Type: `StoredTemplateValues`, nested `values` table. Every field is optional and omitted when unset.
 
-| Field                           | Type                  | Rule                                                       |
-| ------------------------------- | --------------------- | ---------------------------------------------------------- |
-| `username_secret_reference`     | `String`              | A complete valid secret reference, not an inline username. |
-| `password_secret_reference`     | `String`              | A complete valid secret reference, not an inline password. |
-| `onvif_port`                    | `u16`                 | `1..65535`.                                                |
-| `http_port`                     | `u16`                 | `1..65535`.                                                |
-| `backend`                       | `CameraBackend`       | `"auto"`, `"retina"`, or `"reo-proto"`.                    |
-| `transport`                     | `CameraTransport`     | `"tcp"` or `"udp"`.                                        |
-| `record_generic_motion_events`  | `bool`                | Generic motion-event preference.                           |
-| `recording_mode`                | `CameraRecordingMode` | `"off"`, `"sub"`, `"main"`, `"both"`, or `"event-boost"`.  |
-| `event_recording_duration_secs` | `u32`                 | `1..3600` seconds.                                         |
+| Field                               | Type                   | Rule                                                                      |
+| ----------------------------------- | ---------------------- | ------------------------------------------------------------------------- |
+| `username_secret_reference`         | `String`               | A complete valid secret reference, not an inline username.                |
+| `password_secret_reference`         | `String`               | A complete valid secret reference, not an inline password.                |
+| `onvif_port`                        | `u16`                  | `1..65535`.                                                               |
+| `http_port`                         | `u16`                  | `1..65535`.                                                               |
+| `backend`                           | `CameraBackend`        | `"auto"`, `"retina"`, or `"reo-proto"`.                                   |
+| `transport`                         | `CameraTransport`      | `"tcp"` or `"udp"`.                                                       |
+| `record_generic_motion_events`      | `bool`                 | Generic motion-event preference.                                          |
+| `recording_mode`                    | `CameraRecordingMode`  | `"off"`, `"sub"`, `"main"`, `"both"`, `"event-boost"`, or `"event-only"`. |
+| `event_recording_duration_secs`     | `u32`                  | `1..3600` seconds.                                                        |
+| `event_pre_recording_duration_secs` | `u32`                  | `0..30` seconds.                                                          |
+| `event_recording_stream`            | `EventRecordingStream` | `"main"` or `"sub"`.                                                      |
 
 The template writer enforces a 16 KiB serialized document limit. The legacy
 `configuration-templates.json` is imported into this section and removed. Template references stay
@@ -791,3 +799,22 @@ of borrowed paths, not another TOML section.
 For an upgrade from separate legacy stores, follow
 [What startup migrates](./upgrades-and-migrations.md#what-startup-migrates). For retention of runtime
 and recording data, see [Backup and restore](./backup-and-restore.md#what-survives-a-restart).
+
+### Event recording pre-roll
+
+`event-only` stores only accepted event windows from the selected main or sub stream.
+`event-boost` keeps continuous sub recording and uses main quality during event
+windows. A nonzero `event_pre_recording_duration_secs` enables bounded encoded
+history for these modes. EventBoost then delays persistence by up to the selected
+duration so an event can replace pending sub coverage with main coverage. A crash
+can lose this uncommitted window. With zero pre-roll, existing recording modes
+keep their immediate admission behavior.
+
+Changes persist in `config.toml` through the existing atomic writer. Camera
+changes use the existing source restart path when available; otherwise the
+response reports that a restart is required. Memory-budget changes require an
+application restart. Omitted updates retain existing values; cleared camera
+values inherit camera defaults. These settings contain no credentials. Existing supported secret references
+in camera credentials and URLs remain preserved. Whole-GOP eviction can shorten coverage under duration or memory
+pressure; health diagnostics report available coverage and the reason. Privacy,
+stream discontinuities and storage failures invalidate optional history.

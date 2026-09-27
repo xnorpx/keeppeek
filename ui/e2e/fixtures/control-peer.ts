@@ -17,6 +17,7 @@ import {
 	CameraStreamVerificationSchema,
 	CameraBackend as ProtoCameraBackend,
 	CameraRecordingMode as ProtoCameraRecordingMode,
+	EventRecordingStream as ProtoEventRecordingStream,
 	CameraConfigurationResultSchema,
 	CameraDeviceCapabilitiesSchema,
 	CameraInfoSchema,
@@ -25,6 +26,8 @@ import {
 	CameraManufacturerResultSchema,
 	CameraSettingsSchema,
 	CameraHealthSnapshotSchema,
+	PreRecordingDiagnosticsSchema,
+	PreRecordingReason,
 	CameraHealthDimensionsSnapshotSchema,
 	AccessKeyResultSchema,
 	AccessRole as ProtoAccessRole,
@@ -3185,6 +3188,25 @@ function protoHealthSnapshot(health: HealthFixture) {
 		}),
 		cameras: (health.cameras ?? []).map((camera) =>
 			create(CameraHealthSnapshotSchema, {
+				preRecording: camera.pre_recording
+					? create(PreRecordingDiagnosticsSchema, {
+							enabled: camera.pre_recording.enabled,
+							active: camera.pre_recording.active,
+							selectedStream:
+								camera.pre_recording.selected_stream === 'sub'
+									? ProtoEventRecordingStream.SUB
+									: ProtoEventRecordingStream.MAIN,
+							requestedMs: fixtureBigInt(camera.pre_recording.requested_ms),
+							availableMs: fixtureBigInt(camera.pre_recording.available_ms),
+							retainedBytes: fixtureBigInt(camera.pre_recording.retained_bytes),
+							reason:
+								PreRecordingReason[
+									(camera.pre_recording.reason ?? 'unspecified')
+										.toUpperCase()
+										.replaceAll(' ', '_') as keyof typeof PreRecordingReason
+								]
+						})
+					: undefined,
 				id: camera.id ?? '',
 				ip: camera.ip ?? '',
 				name: camera.name ?? camera.id ?? '',
@@ -3438,8 +3460,15 @@ function cameraUpdate(
 						? 'main'
 						: update.recordingMode === ProtoCameraRecordingMode.BOTH
 							? 'both'
-							: 'event-boost';
+							: update.recordingMode === ProtoCameraRecordingMode.EVENT_ONLY
+								? 'event-only'
+								: 'event-boost';
 	}
+	if (update.eventPreRecordingDurationSecs !== undefined)
+		result.event_pre_recording_duration_secs = update.eventPreRecordingDurationSecs;
+	if (update.eventRecordingStream !== undefined)
+		result.event_recording_stream =
+			update.eventRecordingStream === ProtoEventRecordingStream.SUB ? 'sub' : 'main';
 	if (update.eventRecordingDurationSecs !== undefined) {
 		result.event_recording_duration_secs = update.eventRecordingDurationSecs;
 	}
@@ -3494,8 +3523,15 @@ function protoCameraSettings(camera: CameraSettings) {
 						? ProtoCameraRecordingMode.MAIN
 						: camera.recording_mode === 'both'
 							? ProtoCameraRecordingMode.BOTH
-							: ProtoCameraRecordingMode.EVENT_BOOST,
+							: camera.recording_mode === 'event-only'
+								? ProtoCameraRecordingMode.EVENT_ONLY
+								: ProtoCameraRecordingMode.EVENT_BOOST,
 		eventRecordingDurationSecs: camera.event_recording_duration_secs,
+		eventPreRecordingDurationSecs: camera.event_pre_recording_duration_secs ?? 0,
+		eventRecordingStream:
+			camera.event_recording_stream === 'sub'
+				? ProtoEventRecordingStream.SUB
+				: ProtoEventRecordingStream.MAIN,
 		health: camera.health ?? undefined,
 		model: camera.model ?? undefined
 	});
@@ -3657,7 +3693,14 @@ function protoConfigurationTemplate(template: ConfigurationTemplate) {
 				template.values.recording_mode === undefined
 					? undefined
 					: protoCameraRecordingMode(template.values.recording_mode),
-			eventRecordingDurationSecs: template.values.event_recording_duration_secs
+			eventRecordingDurationSecs: template.values.event_recording_duration_secs,
+			eventPreRecordingDurationSecs: template.values.event_pre_recording_duration_secs,
+			eventRecordingStream:
+				template.values.event_recording_stream === undefined
+					? undefined
+					: template.values.event_recording_stream === 'sub'
+						? ProtoEventRecordingStream.SUB
+						: ProtoEventRecordingStream.MAIN
 		}),
 		createdAtMs: BigInt(template.created_at_ms),
 		updatedAtMs: BigInt(template.updated_at_ms)

@@ -1,8 +1,10 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { tick, untrack } from 'svelte';
+	import EventRecordingFields from './EventRecordingFields.svelte';
 	import type {
 		CameraBackend,
 		CameraRecordingMode,
+		EventRecordingStream,
 		CameraSettings,
 		CameraSettingsUpdate,
 		CameraTransport
@@ -28,18 +30,29 @@
 		recordGenericMotionEvents: boolean;
 		recordingMode: CameraRecordingMode;
 		eventRecordingDurationSeconds: string;
+		eventPreRecordingDurationSeconds: string;
+		eventRecordingStream: EventRecordingStream;
 	};
 
 	type Props = {
 		camera: CameraSettings;
+		preRecordingSupported?: boolean;
 		saving?: boolean;
 		error?: string | null;
 		oncancel: () => void;
 		onsave: (update: CameraSettingsUpdate) => void | Promise<void>;
 	};
 
-	let { camera, saving = false, error = null, oncancel, onsave }: Props = $props();
+	let {
+		camera,
+		preRecordingSupported = false,
+		saving = false,
+		error = null,
+		oncancel,
+		onsave
+	}: Props = $props();
 	let form = $state<Form>(untrack(() => formFromCamera(camera)));
+	let errorSummary = $state<HTMLParagraphElement>();
 	let validationError = $state<string | null>(null);
 
 	const selectClass =
@@ -60,7 +73,9 @@
 			transport: value.transport,
 			recordGenericMotionEvents: value.record_generic_motion_events,
 			recordingMode: value.recording_mode,
-			eventRecordingDurationSeconds: value.event_recording_duration_secs.toString()
+			eventRecordingDurationSeconds: value.event_recording_duration_secs.toString(),
+			eventPreRecordingDurationSeconds: (value.event_pre_recording_duration_secs ?? 0).toString(),
+			eventRecordingStream: value.event_recording_stream ?? 'main'
 		};
 	}
 
@@ -86,6 +101,15 @@
 		return duration;
 	}
 
+	function parsePreDuration(): number {
+		const value = form.eventPreRecordingDurationSeconds.trim();
+		const seconds = Number(value);
+		if (!/^\d+$/.test(value) || !Number.isInteger(seconds) || seconds < 0 || seconds > 30) {
+			throw new Error('Pre-recording duration must be a whole number from 0 to 30 seconds.');
+		}
+		return seconds;
+	}
+
 	function updateFromForm(): CameraSettingsUpdate {
 		const update: CameraSettingsUpdate = {
 			display_name: form.displayName.trim() || null,
@@ -98,9 +122,18 @@
 			record_generic_motion_events: form.recordGenericMotionEvents,
 			recording_mode: form.recordingMode,
 			event_recording_duration_secs:
-				form.recordingMode === 'event-boost'
+				form.recordingMode === 'event-boost' || form.recordingMode === 'event-only'
 					? parseEventDuration()
-					: camera.event_recording_duration_secs
+					: camera.event_recording_duration_secs,
+			...(preRecordingSupported
+				? {
+						event_pre_recording_duration_secs:
+							form.recordingMode === 'event-boost' || form.recordingMode === 'event-only'
+								? parsePreDuration()
+								: (camera.event_pre_recording_duration_secs ?? 0),
+						event_recording_stream: form.eventRecordingStream
+					}
+				: {})
 		};
 		if (form.username) update.username = form.username;
 		if (form.password) update.password = form.password;
@@ -109,7 +142,7 @@
 		return update;
 	}
 
-	function submit(event: SubmitEvent): void {
+	async function submit(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
 		if (saving) return;
 		validationError = null;
@@ -117,6 +150,8 @@
 			void onsave(updateFromForm());
 		} catch (cause) {
 			validationError = cause instanceof Error ? cause.message : 'Camera configuration is invalid.';
+			await tick();
+			errorSummary?.focus();
 		}
 	}
 </script>
@@ -250,24 +285,24 @@
 							bind:value={form.recordingMode}
 						>
 							<option value="event-boost">Sub, switch to main on events (recommended)</option>
+							{#if preRecordingSupported}<option value="event-only">Events only</option>{/if}
 							<option value="sub">Sub only</option>
 							<option value="main">Main only</option>
 							<option value="both">Main + sub</option>
 							<option value="off">Don't record</option>
 						</select>
 					</label>
-					{#if form.recordingMode === 'event-boost'}
-						<label class="grid gap-1.5 text-sm font-medium" for="camera-config-event-duration">
-							Main recording after an event (seconds)
-							<Input
-								id="camera-config-event-duration"
-								bind:value={form.eventRecordingDurationSeconds}
-								inputmode="numeric"
-								autocomplete="off"
-							/>
-						</label>
-					{/if}
 				</div>
+				<EventRecordingFields
+					{preRecordingSupported}
+					mode={form.recordingMode}
+					duration={form.eventRecordingDurationSeconds}
+					preDuration={form.eventPreRecordingDurationSeconds}
+					stream={form.eventRecordingStream}
+					onduration={(value) => (form.eventRecordingDurationSeconds = value)}
+					onpre={(value) => (form.eventPreRecordingDurationSeconds = value)}
+					onstream={(value) => (form.eventRecordingStream = value)}
+				/>
 				<label class="flex items-start gap-3 rounded-sm border border-hairline bg-raised p-3">
 					<input
 						type="checkbox"
@@ -291,7 +326,9 @@
 	</fieldset>
 
 	{#if validationError || error}
-		<p class="mx-4 text-sm text-destructive" role="alert">{validationError ?? error}</p>
+		<p bind:this={errorSummary} tabindex="-1" class="mx-4 text-sm text-destructive" role="alert">
+			{validationError ?? error}
+		</p>
 	{/if}
 	<footer class="mt-4 flex flex-wrap justify-end gap-2 border-t border-hairline px-4 py-4">
 		<Button type="button" variant="outline" onclick={oncancel} disabled={saving}>Cancel</Button>

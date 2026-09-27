@@ -203,6 +203,10 @@ fn proto_health_totals(totals: HealthTotals) -> proto::HealthTotalsSnapshot {
 
 fn proto_camera_health(state: &ServerState, camera: CameraHealth) -> proto::CameraHealthSnapshot {
     let camera_id = camera.id.clone();
+    let pre_recording = state
+        .recording_health
+        .pre_recording(&camera.ip)
+        .map(proto_pre_recording);
     let (active, epoch, error) = match state.privacy.decision(&camera_id, chrono::Utc::now()) {
         Ok((active, epoch)) => (active, epoch, None),
         Err(error) => (true, u64::MAX, Some(error.to_string())),
@@ -243,6 +247,7 @@ fn proto_camera_health(state: &ServerState, camera: CameraHealth) -> proto::Came
             .collect(),
         detail: camera.detail,
         dimensions: Some(proto_camera_health_dimensions(camera.dimensions)),
+        pre_recording,
         privacy: Some(super::privacy_status(
             state.privacy.schedule(&camera_id).as_ref(),
             active,
@@ -250,6 +255,88 @@ fn proto_camera_health(state: &ServerState, camera: CameraHealth) -> proto::Came
             source,
             error,
         )),
+    }
+}
+
+const fn proto_pre_recording(
+    status: crate::storage::event_recording::PreRecordStatus,
+) -> proto::PreRecordingDiagnostics {
+    use crate::storage::event_recording::PreRecordReason as Reason;
+    let reason = match status.reason {
+        Reason::Disabled => proto::PreRecordingReason::Disabled,
+        Reason::Startup => proto::PreRecordingReason::Startup,
+        Reason::MissingKeyframe => proto::PreRecordingReason::MissingKeyframe,
+        Reason::DurationEviction => proto::PreRecordingReason::DurationEviction,
+        Reason::PerStreamPressure => proto::PreRecordingReason::PerStreamPressure,
+        Reason::GlobalPressure => proto::PreRecordingReason::GlobalPressure,
+        Reason::Ready => proto::PreRecordingReason::Ready,
+        Reason::PendingReplay => proto::PreRecordingReason::PendingReplay,
+        Reason::MalformedOrder => proto::PreRecordingReason::MalformedOrder,
+        Reason::Discontinuity => proto::PreRecordingReason::Discontinuity,
+        Reason::Privacy => proto::PreRecordingReason::Privacy,
+        Reason::StoragePause => proto::PreRecordingReason::StoragePause,
+        Reason::WriterFailure => proto::PreRecordingReason::WriterFailure,
+    };
+    proto::PreRecordingDiagnostics {
+        enabled: status.enabled,
+        active: status.active,
+        selected_stream: match status.selected_stream {
+            crate::cameras::EventRecordingStream::Main => proto::EventRecordingStream::Main as i32,
+            crate::cameras::EventRecordingStream::Sub => proto::EventRecordingStream::Sub as i32,
+        },
+        requested_ms: status.requested_ms,
+        available_ms: status.available_ms,
+        retained_bytes: status.retained_bytes,
+        reason: reason as i32,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn pre_recording_health_wire_preserves_server_coverage_and_failure_reasons() {
+    use crate::cameras::EventRecordingStream;
+    use crate::storage::event_recording::{PreRecordReason as Reason, PreRecordStatus};
+    use prost::Message;
+
+    let reasons = [
+        Reason::Disabled,
+        Reason::Startup,
+        Reason::MissingKeyframe,
+        Reason::DurationEviction,
+        Reason::PerStreamPressure,
+        Reason::GlobalPressure,
+        Reason::Ready,
+        Reason::PendingReplay,
+        Reason::MalformedOrder,
+        Reason::Discontinuity,
+        Reason::Privacy,
+        Reason::StoragePause,
+        Reason::WriterFailure,
+    ];
+    for (index, reason) in reasons.into_iter().enumerate() {
+        let status = PreRecordStatus {
+            enabled: true,
+            active: false,
+            selected_stream: EventRecordingStream::Sub,
+            requested_ms: 30_000,
+            available_ms: 4_000,
+            retained_bytes: 12_345,
+            reason,
+        };
+        let bytes = proto_pre_recording(status).encode_to_vec();
+        let decoded = proto::PreRecordingDiagnostics::decode(bytes.as_slice()).unwrap();
+        assert!(decoded.enabled);
+        assert!(!decoded.active);
+        assert_eq!(
+            decoded.selected_stream,
+            proto::EventRecordingStream::Sub as i32
+        );
+        assert_eq!(
+            (decoded.requested_ms, decoded.available_ms),
+            (30_000, 4_000)
+        );
+        assert_eq!(decoded.retained_bytes, 12_345);
+        assert_eq!(decoded.reason, i32::try_from(index + 1).unwrap());
     }
 }
 

@@ -29,6 +29,8 @@
 		recordGenericMotionEvents: false,
 		recordingMode: 'event-boost',
 		eventRecordingDurationSeconds: '60',
+		eventPreRecordingDurationSeconds: '0',
+		eventRecordingStream: 'main',
 		discoveryEvidence: 'ONVIF · DS-2CD2387G2'
 	} satisfies CameraWizardDraft;
 

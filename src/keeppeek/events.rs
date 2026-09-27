@@ -48,6 +48,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: Default::default(),
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         }
     }
 

@@ -229,6 +229,8 @@ struct CameraSettingsUpdate {
     record_generic_motion_events: Option<bool>,
     recording_mode: Option<CameraRecordingMode>,
     event_recording_duration_secs: Option<u64>,
+    event_pre_recording_duration_secs: Option<u64>,
+    event_recording_stream: Option<crate::cameras::EventRecordingStream>,
 }
 
 #[derive(Deserialize)]
@@ -258,6 +260,8 @@ struct RuntimeStorageSettingsUpdate {
     warning_free_gb: u64,
     critical_free_gb: u64,
     cleanup_hysteresis_gb: u64,
+    pre_recording_stream_max_bytes: u64,
+    pre_recording_global_max_bytes: u64,
 }
 
 #[derive(Serialize)]
@@ -278,6 +282,8 @@ struct CameraSettings {
     record_generic_motion_events: bool,
     recording_mode: String,
     event_recording_duration_secs: u64,
+    event_pre_recording_duration_secs: u64,
+    event_recording_stream: crate::cameras::EventRecordingStream,
     health: Option<String>,
     model: Option<String>,
 }
@@ -1297,6 +1303,7 @@ fn server_capabilities(
     if state.camera_config_path.is_some() {
         capability_ids.push(peek_layouts::CAPABILITY_ID.to_owned());
         capability_ids.push(CONFIGURATION_CAPABILITY_ID.to_owned());
+        capability_ids.push("keeppeek.recording.pre-roll.v1".to_owned());
     }
     if state.backup_manager.is_some() {
         capability_ids.push("keeppeek.backup.v1".to_owned());
@@ -2728,6 +2735,8 @@ impl ServerControlHandler {
             record_generic_motion_events: false,
             recording_mode: Default::default(),
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
         let (camera, onvif_error) = if request.query_onvif.unwrap_or(true) {
             match probe_onvif_camera(&config) {
@@ -8079,6 +8088,8 @@ fn proto_runtime_configuration_result(
                 warning_free_gb: Some(config.storage.warning_free_gb),
                 critical_free_gb: Some(config.storage.critical_free_gb),
                 cleanup_hysteresis_gb: Some(config.storage.cleanup_hysteresis_gb),
+                pre_recording_stream_max_bytes: Some(config.storage.pre_recording_stream_max_bytes),
+                pre_recording_global_max_bytes: Some(config.storage.pre_recording_global_max_bytes),
             }),
             camera_count: config.camera_count.try_into().unwrap_or(u64::MAX),
             recording_estimate: Some(proto::RecordingCapacityEstimate {
@@ -8445,7 +8456,14 @@ fn proto_camera_settings(camera: CameraSettings) -> proto::CameraSettings {
             "main" => proto::CameraRecordingMode::Main as i32,
             "both" => proto::CameraRecordingMode::Both as i32,
             "event-boost" => proto::CameraRecordingMode::EventBoost as i32,
+            "event-only" => proto::CameraRecordingMode::EventOnly as i32,
             _ => proto::CameraRecordingMode::Sub as i32,
+        },
+        event_pre_recording_duration_secs: u32::try_from(camera.event_pre_recording_duration_secs)
+            .unwrap_or(u32::MAX),
+        event_recording_stream: match camera.event_recording_stream {
+            crate::cameras::EventRecordingStream::Sub => proto::EventRecordingStream::Sub as i32,
+            crate::cameras::EventRecordingStream::Main => proto::EventRecordingStream::Main as i32,
         },
         event_recording_duration_secs: u32::try_from(camera.event_recording_duration_secs)
             .unwrap_or(u32::MAX),
@@ -8473,6 +8491,8 @@ fn camera_settings_update_from_proto(
         record_generic_motion_events: update.record_generic_motion_events,
         recording_mode: optional_camera_recording_mode(update.recording_mode)?,
         event_recording_duration_secs: update.event_recording_duration_secs.map(u64::from),
+        event_pre_recording_duration_secs: update.event_pre_recording_duration_secs.map(u64::from),
+        event_recording_stream: optional_event_recording_stream(update.event_recording_stream)?,
     })
 }
 
@@ -8565,6 +8585,7 @@ fn optional_camera_recording_mode(
             Ok(proto::CameraRecordingMode::Main) => Ok(CameraRecordingMode::Main),
             Ok(proto::CameraRecordingMode::Both) => Ok(CameraRecordingMode::Both),
             Ok(proto::CameraRecordingMode::EventBoost) => Ok(CameraRecordingMode::EventBoost),
+            Ok(proto::CameraRecordingMode::EventOnly) => Ok(CameraRecordingMode::EventOnly),
             Ok(proto::CameraRecordingMode::Unspecified) | Err(_) => Err(ControlCommandError::new(
                 proto::ErrorCode::InvalidRequest,
                 400,
@@ -10294,6 +10315,8 @@ fn sanitized_config(
             warning_free_gb: config.storage.warning_free_gb,
             critical_free_gb: config.storage.critical_free_gb,
             cleanup_hysteresis_gb: config.storage.cleanup_hysteresis_gb,
+            pre_recording_stream_max_bytes: config.storage.pre_recording_stream_max_bytes,
+            pre_recording_global_max_bytes: config.storage.pre_recording_global_max_bytes,
         },
         camera_count,
         recording_estimate: recording_capacity_estimate(
@@ -10334,7 +10357,7 @@ fn camera_configuration_revision(state: &ServerState) -> Result<String, ControlC
 
 fn recording_mode_includes_stream(mode: CameraRecordingMode, stream: &str) -> bool {
     match mode {
-        CameraRecordingMode::Off => false,
+        CameraRecordingMode::Off | CameraRecordingMode::EventOnly => false,
         CameraRecordingMode::Sub | CameraRecordingMode::EventBoost => stream == "sub",
         CameraRecordingMode::Main => stream == "main",
         CameraRecordingMode::Both => matches!(stream, "main" | "sub"),
@@ -12456,9 +12479,12 @@ fn camera_settings_entry(
             CameraRecordingMode::Main => "main",
             CameraRecordingMode::Both => "both",
             CameraRecordingMode::EventBoost => "event-boost",
+            CameraRecordingMode::EventOnly => "event-only",
         }
         .to_owned(),
         event_recording_duration_secs: configuration.event_recording_duration_secs,
+        event_pre_recording_duration_secs: configuration.event_pre_recording_duration_secs,
+        event_recording_stream: configuration.event_recording_stream,
         health,
         model: camera.and_then(|camera| camera.info.model.clone()),
     }
@@ -12718,6 +12744,8 @@ fn save_runtime_settings(
             warning_free_gb: update.storage.warning_free_gb,
             critical_free_gb: update.storage.critical_free_gb,
             cleanup_hysteresis_gb: update.storage.cleanup_hysteresis_gb,
+            pre_recording_stream_max_bytes: update.storage.pre_recording_stream_max_bytes,
+            pre_recording_global_max_bytes: update.storage.pre_recording_global_max_bytes,
         },
         ..Config::default()
     };
@@ -13085,6 +13113,24 @@ fn save_camera_settings(
             .recording_mode
             .or_else(|| existing_config.as_ref().map(|camera| camera.recording_mode))
             .unwrap_or_default(),
+        event_pre_recording_duration_secs: update
+            .event_pre_recording_duration_secs
+            .or_else(|| {
+                existing_config
+                    .as_ref()
+                    .map(|camera| camera.event_pre_recording_duration_secs)
+            })
+            .or(credential_defaults.event_pre_recording_duration_secs)
+            .unwrap_or_default(),
+        event_recording_stream: update
+            .event_recording_stream
+            .or_else(|| {
+                existing_config
+                    .as_ref()
+                    .map(|camera| camera.event_recording_stream)
+            })
+            .or(credential_defaults.event_recording_stream)
+            .unwrap_or_default(),
         event_recording_duration_secs: update
             .event_recording_duration_secs
             .or_else(|| {
@@ -13094,6 +13140,13 @@ fn save_camera_settings(
             })
             .unwrap_or(60),
     };
+    if config.event_pre_recording_duration_secs > 30 {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event pre-recording duration must be between 0 and 30 seconds",
+        ));
+    }
     if config.event_recording_duration_secs == 0 || config.event_recording_duration_secs > 3_600 {
         return Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
@@ -13177,9 +13230,12 @@ fn save_camera_settings(
             CameraRecordingMode::Main => "main",
             CameraRecordingMode::Both => "both",
             CameraRecordingMode::EventBoost => "event-boost",
+            CameraRecordingMode::EventOnly => "event-only",
         }
         .to_owned(),
         event_recording_duration_secs: config.event_recording_duration_secs,
+        event_pre_recording_duration_secs: config.event_pre_recording_duration_secs,
+        event_recording_stream: config.event_recording_stream,
         health,
         model: existing
             .as_ref()
@@ -13595,6 +13651,22 @@ fn service_error(status: u16, message: &str) -> Response {
         error: message.to_owned(),
     })
     .with_status_code(status)
+}
+
+fn optional_event_recording_stream(
+    value: Option<i32>,
+) -> Result<Option<crate::cameras::EventRecordingStream>, ControlCommandError> {
+    value
+        .map(|value| match proto::EventRecordingStream::try_from(value) {
+            Ok(proto::EventRecordingStream::Sub) => Ok(crate::cameras::EventRecordingStream::Sub),
+            Ok(proto::EventRecordingStream::Main) => Ok(crate::cameras::EventRecordingStream::Main),
+            _ => Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "event recording stream is invalid",
+            )),
+        })
+        .transpose()
 }
 
 #[cfg(test)]
@@ -14264,6 +14336,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: Default::default(),
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
         let mut state = ServerState::empty();
         state.cameras = Arc::new(RwLock::new(vec![camera_entry(&config, None)]));
@@ -14379,6 +14453,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: CameraRecordingMode::Off,
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
         let config = Config::default();
         let storage = StorageConfig::default();
@@ -14470,6 +14546,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: CameraRecordingMode::Both,
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
         let config = Config::default();
         let storage = StorageConfig::default();
@@ -21434,6 +21512,10 @@ mod tests {
                                 record_generic_motion_events: None,
                                 recording_mode: Some(proto::CameraRecordingMode::Off as i32),
                                 event_recording_duration_secs: Some(90),
+                                event_pre_recording_duration_secs: Some(12),
+                                event_recording_stream: Some(
+                                    proto::EventRecordingStream::Sub as i32,
+                                ),
                                 expected_configuration_revision: String::new(),
                             },
                         )),
@@ -21462,6 +21544,11 @@ mod tests {
             proto::CameraRecordingMode::Off as i32
         );
         assert_eq!(camera.event_recording_duration_secs, 90);
+        assert_eq!(camera.event_pre_recording_duration_secs, 12);
+        assert_eq!(
+            camera.event_recording_stream,
+            proto::EventRecordingStream::Sub as i32
+        );
         let persisted = crate::config::load_cameras(&config_path).unwrap();
         assert_eq!(persisted["cameras"][0].password, "preserved-secret");
         assert_eq!(
@@ -21469,6 +21556,14 @@ mod tests {
             CameraRecordingMode::Off
         );
         assert_eq!(persisted["cameras"][0].event_recording_duration_secs, 90);
+        assert_eq!(
+            persisted["cameras"][0].event_pre_recording_duration_secs,
+            12
+        );
+        assert_eq!(
+            persisted["cameras"][0].event_recording_stream,
+            crate::cameras::EventRecordingStream::Sub
+        );
         let raw = std::fs::read_to_string(&config_path).unwrap();
         assert!(raw.contains("password = \"{secret:GATE_PASSWORD}\""));
         assert!(raw.contains("sub_rtsp_url = \"rtsp://{secret:GATE_HOST}/sub\""));
@@ -21560,6 +21655,8 @@ mod tests {
                                 record_generic_motion_events: None,
                                 recording_mode: None,
                                 event_recording_duration_secs: None,
+                                event_pre_recording_duration_secs: None,
+                                event_recording_stream: None,
                                 expected_configuration_revision: String::new(),
                             },
                         )),
@@ -21647,6 +21744,8 @@ mod tests {
                 warning_free_gb: 12,
                 critical_free_gb: 8,
                 cleanup_hysteresis_gb: 2,
+                pre_recording_stream_max_bytes: 33_554_432,
+                pre_recording_global_max_bytes: 134_217_728,
                 ..StorageToml::default()
             },
             ..Config::default()
@@ -21665,7 +21764,7 @@ mod tests {
             RecordingDemand::new(Duration::ZERO),
             WebRtc::new(),
         )
-        .with_camera_config_path(config_path);
+        .with_camera_config_path(config_path.clone());
         let handler = test_control_handler(state);
         let storage_update = |safety: Option<u64>| proto::RuntimeStorageConfiguration {
             medium_term_path: recordings.to_string_lossy().into_owned(),
@@ -21689,6 +21788,8 @@ mod tests {
             warning_free_gb: safety,
             critical_free_gb: safety,
             cleanup_hysteresis_gb: safety,
+            pre_recording_stream_max_bytes: None,
+            pre_recording_global_max_bytes: None,
         };
         let update = |request_id, revision: String, storage| proto::Request {
             request_id,
@@ -21721,6 +21822,27 @@ mod tests {
         assert_eq!(preserved_storage.warning_free_gb, Some(12));
         assert_eq!(preserved_storage.critical_free_gb, Some(8));
         assert_eq!(preserved_storage.cleanup_hysteresis_gb, Some(2));
+        assert_eq!(
+            preserved_storage.pre_recording_stream_max_bytes,
+            Some(33_554_432)
+        );
+        assert_eq!(
+            preserved_storage.pre_recording_global_max_bytes,
+            Some(134_217_728)
+        );
+        let before = std::fs::read(&config_path).unwrap();
+        let mut invalid_budget = storage_update(None);
+        invalid_budget.pre_recording_global_max_bytes = Some(0);
+        let rejected = handler.handle(update(
+            89,
+            preserved.configuration_revision.clone(),
+            invalid_budget,
+        ));
+        assert!(matches!(
+            rejected.response.result,
+            Some(control_response::Result::Error(_))
+        ));
+        assert_eq!(std::fs::read(&config_path).unwrap(), before);
 
         let disabled = handler.handle(update(
             87,
@@ -22814,6 +22936,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: CameraRecordingMode::Main,
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
         let camera_configs = HashMap::from([
             (
@@ -23006,6 +23130,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: Default::default(),
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
 
@@ -23101,6 +23227,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: Default::default(),
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config.clone()])]);
         let state = ServerState::new(
@@ -23263,6 +23391,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: Default::default(),
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
         let state = ServerState::new(
@@ -23401,6 +23531,8 @@ mod tests {
                 record_generic_motion_events: false,
                 recording_mode: Default::default(),
                 event_recording_duration_secs: 60,
+                event_pre_recording_duration_secs: 0,
+                event_recording_stream: Default::default(),
             },
             groups: vec!["cameras".to_owned()],
             battery_uid: None,
@@ -23453,6 +23585,8 @@ mod tests {
             record_generic_motion_events: false,
             recording_mode: CameraRecordingMode::Main,
             event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
         };
         let camera_configs = HashMap::from([
             ("Exterior".to_owned(), vec![front.clone()]),
@@ -23766,6 +23900,55 @@ mod tests {
     }
 
     #[test]
+    fn new_camera_omissions_inherit_pre_recording_defaults_without_overrides() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-new-camera-preroll-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+        crate::config::write_private_file(&path, b"[camera_defaults]\nusername='operator'\npassword='password'\nevent_pre_recording_duration_secs=12\nevent_recording_stream='sub'\n[cameras]\n").unwrap();
+        let state = ServerState::empty().with_camera_config_path(path.clone());
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = std::thread::spawn(move || {
+            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
+        });
+        let saved = save_camera_settings(
+            CameraSettingsUpdate {
+                recording_mode: Some(CameraRecordingMode::EventOnly),
+                ..CameraSettingsUpdate::default()
+            },
+            &router_tx,
+            &state,
+            "192.0.2.77",
+        )
+        .unwrap();
+        assert_eq!(saved.camera.event_pre_recording_duration_secs, 12);
+        assert_eq!(
+            saved.camera.event_recording_stream,
+            crate::cameras::EventRecordingStream::Sub
+        );
+        let loaded = crate::config::load_cameras(&path).unwrap();
+        assert_eq!(loaded["cameras"][0].event_pre_recording_duration_secs, 12);
+        assert_eq!(
+            loaded["cameras"][0].event_recording_stream,
+            crate::cameras::EventRecordingStream::Sub
+        );
+        let table = crate::config::load_configuration_table(&path).unwrap();
+        let camera = table["cameras"]
+            .as_table()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .as_table()
+            .unwrap();
+        assert!(!camera.contains_key("event_pre_recording_duration_secs"));
+        assert!(!camera.contains_key("event_recording_stream"));
+        assert_eq!(router_thread.join().unwrap(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn runtime_camera_starts_and_restarts_without_process_restart() {
         let directory =
             std::env::temp_dir().join(format!("keeppeek-runtime-camera-{}", rand::random::<u64>()));
@@ -23935,6 +24118,10 @@ mod tests {
                     warning_free_gb: 12,
                     critical_free_gb: 8,
                     cleanup_hysteresis_gb: 2,
+                    pre_recording_stream_max_bytes:
+                        crate::config::default_pre_recording_stream_max_bytes(),
+                    pre_recording_global_max_bytes:
+                        crate::config::default_pre_recording_global_max_bytes(),
                 },
                 move_existing_recordings: false,
             },
@@ -24026,6 +24213,10 @@ mod tests {
                     warning_free_gb: 12,
                     critical_free_gb: 8,
                     cleanup_hysteresis_gb: 2,
+                    pre_recording_stream_max_bytes:
+                        crate::config::default_pre_recording_stream_max_bytes(),
+                    pre_recording_global_max_bytes:
+                        crate::config::default_pre_recording_global_max_bytes(),
                 },
                 move_existing_recordings: false,
             },
@@ -24089,6 +24280,10 @@ mod tests {
                     warning_free_gb: 7,
                     critical_free_gb: 8,
                     cleanup_hysteresis_gb: 2,
+                    pre_recording_stream_max_bytes:
+                        crate::config::default_pre_recording_stream_max_bytes(),
+                    pre_recording_global_max_bytes:
+                        crate::config::default_pre_recording_global_max_bytes(),
                 },
                 move_existing_recordings: false,
             },
@@ -24132,6 +24327,10 @@ mod tests {
                     warning_free_gb: 0,
                     critical_free_gb: 0,
                     cleanup_hysteresis_gb: 0,
+                    pre_recording_stream_max_bytes:
+                        crate::config::default_pre_recording_stream_max_bytes(),
+                    pre_recording_global_max_bytes:
+                        crate::config::default_pre_recording_global_max_bytes(),
                 },
                 move_existing_recordings: false,
             },
@@ -24174,6 +24373,10 @@ mod tests {
                     warning_free_gb: 0,
                     critical_free_gb: 0,
                     cleanup_hysteresis_gb: 0,
+                    pre_recording_stream_max_bytes:
+                        crate::config::default_pre_recording_stream_max_bytes(),
+                    pre_recording_global_max_bytes:
+                        crate::config::default_pre_recording_global_max_bytes(),
                 },
                 move_existing_recordings: false,
             },
@@ -24253,6 +24456,10 @@ mod tests {
                     warning_free_gb: 0,
                     critical_free_gb: 0,
                     cleanup_hysteresis_gb: 0,
+                    pre_recording_stream_max_bytes:
+                        crate::config::default_pre_recording_stream_max_bytes(),
+                    pre_recording_global_max_bytes:
+                        crate::config::default_pre_recording_global_max_bytes(),
                 },
                 move_existing_recordings: true,
             },
@@ -24365,6 +24572,10 @@ mod tests {
                     warning_free_gb: 0,
                     critical_free_gb: 0,
                     cleanup_hysteresis_gb: 0,
+                    pre_recording_stream_max_bytes:
+                        crate::config::default_pre_recording_stream_max_bytes(),
+                    pre_recording_global_max_bytes:
+                        crate::config::default_pre_recording_global_max_bytes(),
                 },
                 move_existing_recordings: true,
             },

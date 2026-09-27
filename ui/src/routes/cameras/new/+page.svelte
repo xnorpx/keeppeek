@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { useCapabilityState } from '$lib/capability-context';
+	import EventRecordingFields from '$lib/components/EventRecordingFields.svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
@@ -81,6 +83,10 @@
 	let saved = $state.raw<CameraSettingsUpdateResponse | null>(null);
 	let mobileViewport = $state(false);
 	const controlClient = useControlClient();
+	const serverCapabilities = useCapabilityState();
+	let preRecordingSupported = $derived(
+		serverCapabilities.supports('keeppeek.recording.pre-roll.v1')
+	);
 	let currentStep = $derived(cameraWizardSteps[stepIndex]);
 	let manualAddressError = $derived(manualCameraAddressError(manualAddress));
 	let manualAddressValid = $derived(manualAddress.trim().length > 0 && manualAddressError === null);
@@ -605,7 +611,7 @@
 		}
 		let update;
 		try {
-			update = cameraWizardUpdate(draft);
+			update = cameraWizardUpdate(draft, preRecordingSupported);
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Camera configuration is invalid.';
 			return;
@@ -732,6 +738,7 @@
 	{:else}
 		{#if mobileViewport}
 			<MobileAddCameraWizard
+				{preRecordingSupported}
 				stage={mobileStage}
 				{draft}
 				{discovered}
@@ -1169,8 +1176,9 @@
 													recordingMode: event.currentTarget
 														.value as CameraWizardDraft['recordingMode']
 												})}
-											><option value="event-boost">Sub, main on events</option><option value="sub"
-												>Sub only</option
+											>{#if preRecordingSupported}<option value="event-only">Events only</option
+												>{/if}<option value="event-boost">Sub, main on events</option><option
+												value="sub">Sub only</option
 											><option value="main">Main only</option><option value="both"
 												>Main + sub</option
 											><option value="off">Don't record</option></select
@@ -1186,19 +1194,16 @@
 										</p>
 									</div>
 								</div>
-								{#if draft.recordingMode === 'event-boost'}<label
-										class="grid gap-1.5 text-xs font-medium"
-										>Main recording after an event (seconds)<input
-											class="h-10 rounded-sm border border-hairline bg-raised px-3 font-mono text-xs"
-											value={draft.eventRecordingDurationSeconds}
-											oninput={(event) =>
-												updateDraft({ eventRecordingDurationSeconds: event.currentTarget.value })}
-										/></label
-									>
-									<p class="text-xs leading-5 text-text-muted">
-										Substream GOPs are stored normally, main begins on an event keyframe, and
-										recording returns to sub after this window.
-									</p>{/if}
+								<EventRecordingFields
+									{preRecordingSupported}
+									mode={draft.recordingMode}
+									duration={draft.eventRecordingDurationSeconds}
+									preDuration={draft.eventPreRecordingDurationSeconds}
+									stream={draft.eventRecordingStream}
+									onduration={(value) => updateDraft({ eventRecordingDurationSeconds: value })}
+									onpre={(value) => updateDraft({ eventPreRecordingDurationSeconds: value })}
+									onstream={(value) => updateDraft({ eventRecordingStream: value })}
+								/>
 								<label
 									class="flex items-start gap-3 rounded-sm border border-hairline bg-raised p-3"
 								>

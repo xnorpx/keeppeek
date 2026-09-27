@@ -4,6 +4,7 @@
 
 	type Props = {
 		draft: PolicyPatchDraft;
+		preRecordingSupported?: boolean;
 		includeCredentials?: boolean;
 		includePorts?: boolean;
 		clearLabel?: string;
@@ -11,6 +12,7 @@
 
 	let {
 		draft = $bindable(),
+		preRecordingSupported = false,
 		includeCredentials = false,
 		includePorts = true,
 		clearLabel = 'Use inherited value'
@@ -213,6 +215,7 @@
 					<option value="main">Main</option>
 					<option value="both">Both</option>
 					<option value="event-boost">Event boost</option>
+					{#if preRecordingSupported}<option value="event-only">Events only</option>{/if}
 				</select>
 			</label>
 		</div>
@@ -269,4 +272,52 @@
 			</select>
 		</label>
 	</div>
+	{#if preRecordingSupported}
+		<div class="grid gap-3 sm:grid-cols-2">
+			<div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_150px] sm:items-end">
+				<label class="grid gap-1 text-sm font-medium"
+					>Pre-recording duration
+					<select
+						class={selectClass}
+						bind:value={draft.event_pre_recording_duration_secs_operation}
+					>
+						<option value="unchanged">No change</option><option value="set">Set seconds</option
+						><option value="clear">{clearLabel}</option>
+					</select>
+				</label>
+				<label class="grid gap-1 text-sm font-medium"
+					>Pre-recording seconds
+					<Input
+						inputmode="numeric"
+						bind:value={draft.event_pre_recording_duration_secs}
+						disabled={draft.event_pre_recording_duration_secs_operation !== 'set'}
+					/>
+				</label>
+			</div>
+			<div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_150px] sm:items-end">
+				<label class="grid gap-1 text-sm font-medium"
+					>Event recording stream
+					<select class={selectClass} bind:value={draft.event_recording_stream_operation}>
+						<option value="unchanged">No change</option><option value="set">Set stream</option
+						><option value="clear">{clearLabel}</option>
+					</select>
+				</label>
+				<label class="grid gap-1 text-sm font-medium"
+					>Event stream value
+					<select
+						class={selectClass}
+						bind:value={draft.event_recording_stream}
+						disabled={draft.event_recording_stream_operation !== 'set'}
+					>
+						<option value="main">Main</option><option value="sub">Sub</option>
+					</select>
+				</label>
+			</div>
+			<p class="text-xs text-text-muted sm:col-span-2">
+				Pre-recording supports 0 to 30 seconds in event modes. Event boost uses main video and
+				delays saving continuous video by this duration; a crash can lose unsaved video. The event
+				stream applies to Events only.
+			</p>
+		</div>
+	{/if}
 </div>

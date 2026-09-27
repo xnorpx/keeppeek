@@ -3,6 +3,7 @@ import type {
 	CameraConfigurationPatch,
 	CameraDefaultPatch,
 	CameraRecordingMode,
+	EventRecordingStream,
 	CameraTransport,
 	ConfigurationPatchValue
 } from './types';
@@ -28,6 +29,10 @@ export type PolicyPatchDraft = {
 	recording_mode: CameraRecordingMode;
 	event_recording_duration_secs_operation: PatchOperation;
 	event_recording_duration_secs: string;
+	event_pre_recording_duration_secs_operation: PatchOperation;
+	event_pre_recording_duration_secs: string;
+	event_recording_stream_operation: PatchOperation;
+	event_recording_stream: EventRecordingStream;
 };
 
 export function emptyPolicyPatchDraft(): PolicyPatchDraft {
@@ -49,7 +54,11 @@ export function emptyPolicyPatchDraft(): PolicyPatchDraft {
 		recording_mode_operation: 'unchanged',
 		recording_mode: 'event-boost',
 		event_recording_duration_secs_operation: 'unchanged',
-		event_recording_duration_secs: '60'
+		event_recording_duration_secs: '60',
+		event_pre_recording_duration_secs_operation: 'unchanged',
+		event_pre_recording_duration_secs: '0',
+		event_recording_stream_operation: 'unchanged',
+		event_recording_stream: 'main'
 	};
 }
 
@@ -63,7 +72,9 @@ export function policyPatchDraftDirty(draft: PolicyPatchDraft): boolean {
 		draft.transport_operation !== 'unchanged' ||
 		draft.record_generic_motion_events_operation !== 'unchanged' ||
 		draft.recording_mode_operation !== 'unchanged' ||
-		draft.event_recording_duration_secs_operation !== 'unchanged'
+		draft.event_recording_duration_secs_operation !== 'unchanged' ||
+		draft.event_pre_recording_duration_secs_operation !== 'unchanged' ||
+		draft.event_recording_stream_operation !== 'unchanged'
 	);
 }
 
@@ -88,6 +99,17 @@ export function cameraPolicyPatch(draft: PolicyPatchDraft): CameraConfigurationP
 			draft.record_generic_motion_events
 		),
 		recording_mode: valuePatch(draft.recording_mode_operation, draft.recording_mode),
+		event_pre_recording_duration_secs: numberPatch(
+			draft.event_pre_recording_duration_secs_operation,
+			draft.event_pre_recording_duration_secs,
+			'Pre-recording duration',
+			0,
+			30
+		),
+		event_recording_stream: valuePatch(
+			draft.event_recording_stream_operation,
+			draft.event_recording_stream
+		),
 		event_recording_duration_secs: numberPatch(
 			draft.event_recording_duration_secs_operation,
 			draft.event_recording_duration_secs,
@@ -107,7 +129,9 @@ export function defaultPolicyPatch(draft: PolicyPatchDraft): CameraDefaultPatch 
 		transport: cameraPatch.transport,
 		record_generic_motion_events: cameraPatch.record_generic_motion_events,
 		recording_mode: cameraPatch.recording_mode,
-		event_recording_duration_secs: cameraPatch.event_recording_duration_secs
+		event_recording_duration_secs: cameraPatch.event_recording_duration_secs,
+		event_pre_recording_duration_secs: cameraPatch.event_pre_recording_duration_secs,
+		event_recording_stream: cameraPatch.event_recording_stream
 	});
 }
 
@@ -140,7 +164,12 @@ function numberPatch(
 ): ConfigurationPatchValue<number> | undefined {
 	if (operation !== 'set') return valuePatch(operation, 0);
 	const number = Number(value);
-	if (!Number.isSafeInteger(number) || number < minimum || number > maximum) {
+	if (
+		!/^\d+$/.test(value.trim()) ||
+		!Number.isSafeInteger(number) ||
+		number < minimum ||
+		number > maximum
+	) {
 		throw new Error(`${label} must be a whole number between ${minimum} and ${maximum}.`);
 	}
 	return { operation: 'set', value: number };

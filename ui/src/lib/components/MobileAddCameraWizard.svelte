@@ -1,4 +1,5 @@
 <script lang="ts">
+	import EventRecordingFields from '$lib/components/EventRecordingFields.svelte';
 	import type { CameraWizardDraft } from '$lib/camera-wizard';
 	import CameraCatalogEvidence from '$lib/components/CameraCatalogEvidence.svelte';
 	import CameraOnboardingEvidence from '$lib/components/CameraOnboardingEvidence.svelte';
@@ -25,6 +26,7 @@
 
 	type Props = {
 		stage: MobileCameraWizardStage;
+		preRecordingSupported?: boolean;
 		draft: CameraWizardDraft;
 		discovered: readonly DiscoveredCameraSettings[];
 		discoveryNetworks?: readonly CameraDiscoveryNetwork[];
@@ -71,6 +73,7 @@
 
 	let {
 		stage,
+		preRecordingSupported = false,
 		draft,
 		discovered,
 		discoveryNetworks = [],
@@ -328,7 +331,7 @@
 			</div>
 		</div>
 	{:else if stage === 'streams'}
-		<div class="flex h-[660px] shrink-0 flex-col gap-[14px] overflow-hidden p-4">
+		<div class="flex h-[660px] shrink-0 flex-col gap-[14px] overflow-y-auto p-4">
 			{#if hasCatalogStreamHints}
 				<button
 					type="button"
@@ -404,26 +407,24 @@
 						})}
 				>
 					<option value="event-boost">Sub, switch to main on events</option>
-					<option value="sub">Sub only</option>
+					{#if preRecordingSupported}<option value="event-only">Events only</option>{/if}<option
+						value="sub">Sub only</option
+					>
 					<option value="main">Main only</option>
 					<option value="both">Main + sub</option>
 					<option value="off">Don't record</option>
 				</select>
 			</label>
-			{#if draft.recordingMode === 'event-boost'}
-				<label
-					class="flex min-h-[58px] shrink-0 flex-col gap-[5px] font-mono text-2xs leading-3 text-text-faint"
-				>
-					MAIN AFTER EVENT · SECONDS
-					<input
-						class="h-10 rounded-sm border border-hairline-strong bg-raised px-3 text-xs text-text"
-						value={draft.eventRecordingDurationSeconds}
-						inputmode="numeric"
-						oninput={(event) =>
-							onupdate?.({ eventRecordingDurationSeconds: event.currentTarget.value })}
-					/>
-				</label>
-			{/if}
+			<EventRecordingFields
+				{preRecordingSupported}
+				mode={draft.recordingMode}
+				duration={draft.eventRecordingDurationSeconds}
+				preDuration={draft.eventPreRecordingDurationSeconds}
+				stream={draft.eventRecordingStream}
+				onduration={(value) => onupdate?.({ eventRecordingDurationSeconds: value })}
+				onpre={(value) => onupdate?.({ eventPreRecordingDurationSeconds: value })}
+				onstream={(value) => onupdate?.({ eventRecordingStream: value })}
+			/>
 			<div
 				class="flex h-[62px] shrink-0 gap-3 rounded-sm border border-activity/40 bg-activity/10 p-3"
 			>
@@ -436,7 +437,7 @@
 			</div>
 		</div>
 	{:else}
-		<div class="flex h-[660px] shrink-0 flex-col gap-[14px] overflow-hidden p-4">
+		<div class="flex h-[660px] shrink-0 flex-col gap-[14px] overflow-y-auto p-4">
 			<label
 				class="flex h-[76px] shrink-0 flex-col gap-[5px] font-mono text-2xs leading-3 text-text-faint"
 			>

@@ -850,3 +850,40 @@ test('renders Board 25 mobile review and writes only from the final action', asy
 		}
 	]);
 });
+
+test('sets event-only pre-recording during mobile setup', async ({ page }) => {
+	await page.setViewportSize({ width: 320, height: 844 });
+	const controls = await mockControlPeer(page, {
+		capabilityIds: ['keeppeek.recording.pre-roll.v1'],
+		discoveredCameras: [discoveredCamera],
+		cameraUpdateResult: {
+			camera: {
+				...savedCamera,
+				recording_mode: 'event-only',
+				event_pre_recording_duration_secs: 5,
+				event_recording_stream: 'sub'
+			},
+			restart_required: true
+		}
+	});
+	await reachMobileStreams(page);
+	const streams = page.locator('[data-mobile-camera-wizard="streams"]');
+	await streams
+		.getByRole('combobox', { name: 'RECORDING MODE', exact: true })
+		.selectOption('event-only');
+	await streams.getByLabel('Pre-recording duration (seconds)').fill('5');
+	await streams
+		.getByRole('combobox', { name: 'Event recording stream', exact: true })
+		.selectOption('sub');
+	await streams.getByRole('button', { name: 'Review', exact: true }).click();
+	const review = page.locator('[data-mobile-camera-wizard="review"]');
+	await expect(review).toBeVisible();
+	expect(controls.cameraUpdates).toEqual([]);
+	await review.getByRole('button', { name: 'Save camera', exact: true }).click();
+	await expect(page.getByRole('region', { name: 'Camera saved' })).toBeVisible();
+	expect(controls.cameraUpdates[0]?.update).toMatchObject({
+		recording_mode: 'event-only',
+		event_pre_recording_duration_secs: 5,
+		event_recording_stream: 'sub'
+	});
+});

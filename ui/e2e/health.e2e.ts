@@ -3,6 +3,54 @@ import type { Locator } from '@playwright/test';
 import { canonicalStaleCamera, canonicalStaleHealth } from './fixtures/canonical-health';
 import { mockControlPeer, type HealthFixture } from './fixtures/control-peer';
 
+for (const width of [320, 1440]) {
+	test(`renders server pre-recording diagnostics at ${width}px`, async ({ page }) => {
+		await page.setViewportSize({ width, height: 900 });
+		const errors: string[] = [];
+		page.on('pageerror', (error) => errors.push(error.message));
+		await mockControlPeer(page, {
+			cameras: [canonicalStaleCamera],
+			health: {
+				...canonicalStaleHealth,
+				cameras: canonicalStaleHealth.cameras?.map((camera) => ({
+					...camera,
+					pre_recording: {
+						enabled: true,
+						active: false,
+						selected_stream: 'sub',
+						requested_ms: 30_000,
+						available_ms: 4_000,
+						retained_bytes: 1_048_576,
+						reason: 'global pressure'
+					}
+				}))
+			}
+		});
+		await page.goto('/system-health/camera/front-door');
+		const diagnostics = page.getByRole('region', { name: 'Pre-recording', exact: true });
+		for (const [label, value] of [
+			['Requested history', '30s'],
+			['Available history', '4s'],
+			['Retained memory', '1.0 MiB'],
+			['Stream', 'sub']
+		]) {
+			await expect(
+				diagnostics.locator('div').filter({ has: page.getByText(label, { exact: true }) })
+			).toContainText(value);
+		}
+		await expect(diagnostics).toContainText('global pressure');
+		await expect(diagnostics).toContainText('Pending replay is not yet saved video');
+		await expect(diagnostics).not.toContainText('Event recording active');
+		expect(
+			await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+		).toBe(true);
+		expect(errors).toEqual([]);
+		await diagnostics.screenshot({
+			path: test.info().outputPath('event-pre-recording-diagnostics.png')
+		});
+	});
+}
+
 const healthSnapshot: HealthFixture = {
 	status: 'degraded',
 	health_contract_version: 1,

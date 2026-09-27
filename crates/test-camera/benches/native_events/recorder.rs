@@ -315,6 +315,8 @@ fn storage_config(root: &Path) -> StorageConfig {
         recording_catalog_path: root.join("recordings.db"),
         event_thumbnail_path: root.join("thumbnails"),
         event_thumbnail_max_bytes: 1024 * 1024,
+        pre_recording_stream_max_bytes: 64 * 1024 * 1024,
+        pre_recording_global_max_bytes: 256 * 1024 * 1024,
         short_term_duration: Duration::ZERO,
         medium_term_duration: Duration::from_secs(30),
         flush_interval: Duration::ZERO,

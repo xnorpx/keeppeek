@@ -67,10 +67,37 @@ Each camera has one recording policy:
 | `main`        | Records the main stream continuously.                                                                     |
 | `both`        | Records main and sub independently.                                                                       |
 | `event-boost` | Records the substream normally, switches to main at a keyframe after an event, then returns to substream. |
+| `event-only`  | Records the selected main or sub stream only for accepted events, including available pre-event history.  |
 
 `event-boost` is the default. It writes one logical recording rather than recording main and sub
 at the same time. Transitions happen only at keyframes, so the stored file remains seekable. A new
 event extends the configured main-stream interval.
+
+Event-only and event-boost can retain up to 30 seconds of encoded pre-event media in memory.
+Pre-recording defaults to zero, preserving existing camera behavior. Choose the duration in
+camera setup or the camera editor. Event-only also lets you choose main or sub. Repeated events
+extend the post-event window. Event-only excludes frames at or after its deadline.
+
+With event-boost pre-recording enabled, KeepPeek delays the continuous substream by at most the
+selected duration so available main-stream history can replace that interval in one recording.
+A crash can lose this uncommitted interval. Memory pressure releases continuous sub media and
+shortens optional history. Disable pre-recording to restore the existing immediate admission path.
+
+The requested interval is a ceiling, not a guarantee. Recordings begin at a retained, decodable
+keyframe. Startup, missing keyframes, long GOPs, and byte limits can shorten the interval. Camera
+health reports the requested and available history, retained bytes, and the current reason.
+Pending replay means media is queued; it does not prove a successful disk or catalog commit.
+Use Recording integrity and playback to inspect committed evidence. Audio packets crossing the
+selected video boundary are omitted without re-encoding.
+
+The default limits are 64 MiB per buffered stream and 256 MiB globally. Administrators can change
+them in advanced storage settings. History is not saved across restart. Privacy activation,
+reconnect, and storage pause discard stale history; recording resumes from a valid keyframe.
+See the [configuration reference](configuration-reference.md) for persisted fields and limits.
+
+Before downgrading to a version without event-only support, change affected cameras to a supported
+policy and set pre-recording to zero. Save a configuration backup first. Existing committed media
+does not need conversion or deletion, and disabling pre-recording does not remove it.
 
 Choose a browser-compatible H.264 substream even when the main evidence stream is H.265. KeepPeek
 stores the camera's encoded media without re-encoding it, so browser support still determines which

@@ -8,6 +8,9 @@ import {
 	CameraDefaultPatchSchema,
 	CameraIdListSchema,
 	CameraRecordingMode as ProtoCameraRecordingMode,
+	EventRecordingStream as ProtoEventRecordingStream,
+	OptionalEventRecordingStreamUpdateSchema,
+	type EffectiveEventRecordingStreamValue,
 	CameraTemplateValuesSchema,
 	CameraTransport as ProtoCameraTransport,
 	ConfigurationActivationStatus,
@@ -61,6 +64,7 @@ import type {
 	CameraDefaultValues,
 	CameraEffectiveConfiguration,
 	CameraRecordingMode,
+	EventRecordingStream,
 	CameraSettings,
 	CameraTransport,
 	ConfigurationApplyResult,
@@ -403,7 +407,9 @@ function protoCameraPatch(patch: CameraConfigurationPatch) {
 		transport: transportPatch(patch.transport),
 		recordGenericMotionEvents: booleanPatch(patch.record_generic_motion_events),
 		recordingMode: recordingModePatch(patch.recording_mode),
-		eventRecordingDurationSecs: numberPatch(patch.event_recording_duration_secs)
+		eventRecordingDurationSecs: numberPatch(patch.event_recording_duration_secs),
+		eventPreRecordingDurationSecs: numberPatch(patch.event_pre_recording_duration_secs),
+		eventRecordingStream: eventStreamPatch(patch.event_recording_stream)
 	});
 }
 
@@ -415,8 +421,28 @@ function protoDefaultPatch(patch: CameraDefaultPatch) {
 		transport: transportPatch(patch.transport),
 		recordGenericMotionEvents: booleanPatch(patch.record_generic_motion_events),
 		recordingMode: recordingModePatch(patch.recording_mode),
-		eventRecordingDurationSecs: numberPatch(patch.event_recording_duration_secs)
+		eventRecordingDurationSecs: numberPatch(patch.event_recording_duration_secs),
+		eventPreRecordingDurationSecs: numberPatch(patch.event_pre_recording_duration_secs),
+		eventRecordingStream: eventStreamPatch(patch.event_recording_stream)
 	});
+}
+
+function eventStreamPatch(value: ConfigurationPatchValue<EventRecordingStream> | undefined) {
+	if (!value) return undefined;
+	return create(OptionalEventRecordingStreamUpdateSchema, {
+		value:
+			value.operation === 'clear'
+				? { case: 'clear', value: true }
+				: { case: 'set', value: protoEventStream(value.value) }
+	});
+}
+
+function protoEventStream(value: EventRecordingStream): ProtoEventRecordingStream {
+	return value === 'sub' ? ProtoEventRecordingStream.SUB : ProtoEventRecordingStream.MAIN;
+}
+
+function eventStream(value: ProtoEventRecordingStream): EventRecordingStream {
+	return value === ProtoEventRecordingStream.SUB ? 'sub' : 'main';
 }
 
 function stringPatch(value: ConfigurationPatchValue<string> | undefined) {
@@ -496,7 +522,12 @@ function protoTemplate(template: ConfigurationTemplate) {
 			recordingMode: template.values.recording_mode
 				? protoRecordingMode(template.values.recording_mode)
 				: undefined,
-			eventRecordingDurationSecs: template.values.event_recording_duration_secs
+			eventRecordingDurationSecs: template.values.event_recording_duration_secs,
+			eventPreRecordingDurationSecs: template.values.event_pre_recording_duration_secs,
+			eventRecordingStream:
+				template.values.event_recording_stream === undefined
+					? undefined
+					: protoEventStream(template.values.event_recording_stream)
 		}),
 		createdAtMs: BigInt(template.created_at_ms),
 		updatedAtMs: BigInt(template.updated_at_ms)
@@ -559,6 +590,14 @@ function cameraDefaults(defaults: ProtoCameraDefaultValues): CameraDefaultValues
 		effective_recording_mode: cameraRecordingMode(defaults.effectiveRecordingMode),
 		configured_event_recording_duration_secs: defaults.configuredEventRecordingDurationSecs ?? null,
 		effective_event_recording_duration_secs: defaults.effectiveEventRecordingDurationSecs,
+		configured_event_pre_recording_duration_secs:
+			defaults.configuredEventPreRecordingDurationSecs ?? null,
+		effective_event_pre_recording_duration_secs: defaults.effectiveEventPreRecordingDurationSecs,
+		configured_event_recording_stream:
+			defaults.configuredEventRecordingStream === undefined
+				? null
+				: eventStream(defaults.configuredEventRecordingStream),
+		effective_event_recording_stream: eventStream(defaults.effectiveEventRecordingStream),
 		privacy: defaults.privacy ? privacySchedule(defaults.privacy) : null
 	};
 }
@@ -594,6 +633,12 @@ function cameraEffectiveConfiguration(
 			camera.eventRecordingDurationSecs,
 			(value: number) => value
 		),
+		event_pre_recording_duration_secs: camera.eventPreRecordingDurationSecs
+			? effectiveValue(camera.eventPreRecordingDurationSecs, (value: number) => value)
+			: undefined,
+		event_recording_stream: camera.eventRecordingStream
+			? effectiveValue(camera.eventRecordingStream, eventStream)
+			: undefined,
 		privacy: camera.privacy ? privacySchedule(camera.privacy) : null,
 		privacy_status: camera.privacyStatus
 			? privacyStatus(camera.privacyStatus)
@@ -666,7 +711,8 @@ function effectiveValue<TProto, TValue>(
 		| EffectiveCameraTransportValue
 		| EffectiveCameraRecordingModeValue
 		| ProtoEffectiveBoolValue
-		| EffectiveUint32Value,
+		| EffectiveUint32Value
+		| EffectiveEventRecordingStreamValue,
 	map: (value: TProto) => TValue
 ): EffectiveConfigurationValue<TValue> {
 	const typed = value as typeof value & {
@@ -707,7 +753,12 @@ function configurationTemplate(template: ProtoConfigurationTemplate): Configurat
 				template.values.recordingMode === undefined
 					? undefined
 					: cameraRecordingMode(template.values.recordingMode),
-			event_recording_duration_secs: template.values.eventRecordingDurationSecs
+			event_recording_duration_secs: template.values.eventRecordingDurationSecs,
+			event_pre_recording_duration_secs: template.values.eventPreRecordingDurationSecs,
+			event_recording_stream:
+				template.values.eventRecordingStream === undefined
+					? undefined
+					: eventStream(template.values.eventRecordingStream)
 		},
 		created_at_ms: Number(template.createdAtMs),
 		updated_at_ms: Number(template.updatedAtMs)
@@ -832,6 +883,7 @@ function cameraTransport(transport: ProtoCameraTransport): CameraTransport {
 }
 
 function protoRecordingMode(mode: CameraRecordingMode): ProtoCameraRecordingMode {
+	if (mode === 'event-only') return ProtoCameraRecordingMode.EVENT_ONLY;
 	if (mode === 'off') return ProtoCameraRecordingMode.OFF;
 	if (mode === 'sub') return ProtoCameraRecordingMode.SUB;
 	if (mode === 'main') return ProtoCameraRecordingMode.MAIN;
@@ -840,6 +892,7 @@ function protoRecordingMode(mode: CameraRecordingMode): ProtoCameraRecordingMode
 }
 
 function cameraRecordingMode(mode: ProtoCameraRecordingMode): CameraRecordingMode {
+	if (mode === ProtoCameraRecordingMode.EVENT_ONLY) return 'event-only';
 	if (mode === ProtoCameraRecordingMode.OFF) return 'off';
 	if (mode === ProtoCameraRecordingMode.SUB) return 'sub';
 	if (mode === ProtoCameraRecordingMode.MAIN) return 'main';
@@ -865,6 +918,8 @@ function cameraSettings(camera: ProtoCameraSettings): CameraSettings {
 		record_generic_motion_events: camera.recordGenericMotionEvents,
 		recording_mode: cameraRecordingMode(camera.recordingMode),
 		event_recording_duration_secs: camera.eventRecordingDurationSecs || 60,
+		event_pre_recording_duration_secs: camera.eventPreRecordingDurationSecs,
+		event_recording_stream: eventStream(camera.eventRecordingStream),
 		health: (camera.health ?? null) as CameraSettings['health'],
 		model: camera.model ?? null
 	};

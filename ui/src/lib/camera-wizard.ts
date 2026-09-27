@@ -2,6 +2,7 @@ import type {
 	CameraBackend,
 	CameraCatalogCamera,
 	CameraRecordingMode,
+	EventRecordingStream,
 	CameraCatalogStreamHints,
 	CameraStreamProbeResult,
 	CameraSettingsUpdate,
@@ -28,6 +29,8 @@ export type CameraWizardDraft = {
 	recordGenericMotionEvents: boolean;
 	recordingMode: CameraRecordingMode;
 	eventRecordingDurationSeconds: string;
+	eventPreRecordingDurationSeconds: string;
+	eventRecordingStream: EventRecordingStream;
 	discoveryEvidence: string | null;
 };
 
@@ -48,6 +51,8 @@ export function emptyCameraWizardDraft(): CameraWizardDraft {
 		recordGenericMotionEvents: false,
 		recordingMode: 'event-boost',
 		eventRecordingDurationSeconds: '60',
+		eventPreRecordingDurationSeconds: '0',
+		eventRecordingStream: 'main',
 		discoveryEvidence: null
 	};
 }
@@ -208,9 +213,10 @@ export function validateCameraWizardStep(
 	}
 	if (step === 'recording') {
 		if (!draft.displayName.trim()) return 'Camera name is required.';
-		if (draft.recordingMode === 'event-boost') {
+		if (draft.recordingMode === 'event-boost' || draft.recordingMode === 'event-only') {
 			try {
 				parseWholeNumber(draft.eventRecordingDurationSeconds, 'Event recording duration', 1, 3_600);
+				parseWholeNumber(draft.eventPreRecordingDurationSeconds, 'Pre-recording duration', 0, 30);
 			} catch (cause) {
 				return cause instanceof Error ? cause.message : 'Event recording duration is invalid.';
 			}
@@ -230,11 +236,13 @@ export function cameraStreamVerificationError(
 	const required =
 		draft.recordingMode === 'event-boost' || draft.recordingMode === 'both'
 			? (['main', 'sub'] as const)
-			: draft.recordingMode === 'sub'
-				? (['sub'] as const)
-				: draft.recordingMode === 'main'
-					? (['main'] as const)
-					: ([] as const);
+			: draft.recordingMode === 'event-only'
+				? [draft.eventRecordingStream]
+				: draft.recordingMode === 'sub'
+					? (['sub'] as const)
+					: draft.recordingMode === 'main'
+						? (['main'] as const)
+						: ([] as const);
 	if (required.length === 0 && verified.size === 0) {
 		return 'Verify at least one camera stream before saving a camera with recording off.';
 	}
@@ -245,7 +253,10 @@ export function cameraStreamVerificationError(
 	return null;
 }
 
-export function cameraWizardUpdate(draft: CameraWizardDraft): CameraSettingsUpdate {
+export function cameraWizardUpdate(
+	draft: CameraWizardDraft,
+	preRecordingSupported = true
+): CameraSettingsUpdate {
 	for (const step of cameraWizardSteps.slice(0, 4)) {
 		const error = validateCameraWizardStep(step, draft);
 		if (error) throw new Error(error);
@@ -263,6 +274,17 @@ export function cameraWizardUpdate(draft: CameraWizardDraft): CameraSettingsUpda
 		transport: draft.transport,
 		record_generic_motion_events: draft.recordGenericMotionEvents,
 		recording_mode: draft.recordingMode,
+		...(preRecordingSupported
+			? {
+					event_pre_recording_duration_secs: parseWholeNumber(
+						draft.eventPreRecordingDurationSeconds,
+						'Pre-recording duration',
+						0,
+						30
+					),
+					event_recording_stream: draft.eventRecordingStream
+				}
+			: {}),
 		event_recording_duration_secs: parseWholeNumber(
 			draft.eventRecordingDurationSeconds,
 			'Event recording duration',
@@ -274,6 +296,7 @@ export function cameraWizardUpdate(draft: CameraWizardDraft): CameraSettingsUpda
 
 function recordingModeLabel(mode: CameraRecordingMode): string {
 	if (mode === 'event-boost') return 'event boost';
+	if (mode === 'event-only') return 'event-only recording';
 	if (mode === 'both') return 'main + sub recording';
 	if (mode === 'main') return 'main-only recording';
 	if (mode === 'sub') return 'sub-only recording';

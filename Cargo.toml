@@ -71,6 +71,8 @@ categories = ["multimedia::video", "network-programming"]
 ignored = ["pbjson"]
 
 [features]
+event-preroll-benchmark = []
+event-preroll-benchmark-current = ["event-preroll-benchmark"]
 event-keyframe-benchmark = []
 macos-test-aws-crypto = ["dep:str0m-aws-lc-rs"]
 
@@ -92,6 +94,12 @@ test = false
 [[bin]]
 name = "keeppeek-camera"
 path = "src/bin/keeppeek_camera/main.rs"
+
+[[bench]]
+name = "event_preroll"
+harness = false
+required-features = ["event-preroll-benchmark"]
+test = false
 
 [[bench]]
 name = "event_keyframe_lookup"

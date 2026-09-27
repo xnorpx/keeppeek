@@ -1227,3 +1227,45 @@ remain defined and readable; removed field numbers and names are reserved rather
 Implementations ignore unknown protobuf fields, unknown control-envelope bodies, unknown event
 types, unknown payload IDs, unknown enum values, and unknown `Message` or nested message
 subtypes when their runtime supports doing so. Unknown source events are not protocol errors.
+
+## Event pre-recording
+
+Clients must require `keeppeek.recording.pre-roll.v1` before offering event-only
+mode or sending pre-recording settings. Older servers omit this capability.
+
+`CameraRecordingMode.EVENT_ONLY` (`6`) records accepted event windows only.
+`EventRecordingStream` selects `SUB` (`1`) or `MAIN` (`2`, effective default).
+Unknown and `UNSPECIFIED` values are rejected on writes. `event_pre_recording_duration_secs`
+is bounded to `0..30`, defaults to `0`, and enables no history allocation when zero.
+The existing post-event duration remains `1..3600` seconds with default `60`.
+
+Camera updates, default and camera patches, templates, effective configuration,
+and camera settings expose `event_pre_recording_duration_secs` and
+`event_recording_stream`. Optional values preserve existing settings when omitted.
+Patch wrappers support set or clear; clear restores inheritance. Effective values
+report configured defaults, overrides, source and runtime application status.
+Existing field numbers and older client behavior are unchanged.
+
+`RuntimeStorageConfiguration.pre_recording_stream_max_bytes` defaults to 64 MiB;
+`pre_recording_global_max_bytes` defaults to 256 MiB. Both must be positive,
+representable on the server platform and as a TOML signed 64-bit integer, and the per-stream limit must not exceed
+the global limit. Omitted runtime updates preserve current budgets. Writes use
+existing Administrator authorization, revision checks, whole-candidate validation,
+and atomic configuration persistence. Camera changes use the existing source restart path when available; otherwise
+the response reports that a restart is required. Memory-budget changes require
+an application restart.
+
+`CameraHealthSnapshot.pre_recording` reports typed `PreRecordingDiagnostics`:
+enabled and active state, selected stream, requested and available milliseconds,
+retained encoded bytes, and a bounded `PreRecordingReason`. Reasons distinguish
+startup, missing keyframes, duration eviction, per-stream and global pressure,
+ready history, pending replay, disabled history, malformed order, stream
+discontinuity, privacy, storage pause, and writer failure. Pending replay is not
+committed coverage. The diagnostic contains no media, credentials or host paths
+and follows existing camera read filtering.
+
+For EventBoost, enabled pre-roll introduces an opt-in persistence horizon of up
+to the requested duration; a crash can lose that pending horizon. Event-only uses
+an exclusive post-event endpoint. Replay starts with a decodable keyframe and
+includes only complete audio packets inside video coverage. Repeated events
+extend the current deadline. The hard history ceiling is 30 seconds.
