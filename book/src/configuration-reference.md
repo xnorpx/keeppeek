@@ -325,6 +325,62 @@ storage paths on apply; it does not move a recording archive. See
 [storage migration](./upgrades-and-migrations.md#move-storage-deliberately) and
 [recording archive recovery](./recording-archive-recovery.md).
 
+### Named-volume drafts
+
+`[storage.named_volumes]` stores bounded volume and placement definitions in the existing
+configuration. These definitions are drafts: this build accepts only volumes with
+`state = "disabled"`. Activation, multi-volume writes, drain, and migration are unavailable.
+KeepPeek rejects other states during configuration loading and before settings are written.
+Legacy recording paths retain their behavior; draft changes do not move media or probe disks.
+
+The optional section has two arrays: `volumes` (at most 32) and `placement` (at most 256).
+Both default to empty. Ordinary settings updates that omit `named_volumes` preserve the section.
+An explicit empty section clears drafts. Unknown fields in this section and its entries are rejected.
+
+Administrator runtime settings carry these drafts in the optional protobuf `named_volumes`
+field. Updates that include it require the current configuration revision. String fields,
+including IDs, roots, selectors, and candidate IDs, support existing secret references.
+Validation uses resolved values; saved settings and responses retain the references.
+
+Each `[[storage.named_volumes.volumes]]` entry has these fields:
+
+| Field                 | Type           | Default   | Meaning                                                                                                                                                                                                                                                                  |
+| --------------------- | -------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`                  | String         | Required  | 1–64 lowercase ASCII letters, digits, `_` or `-`; `legacy-` is reserved.                                                                                                                                                                                                 |
+| `root`                | Path string    | Required  | Absolute UTF-8 directory path, at most 4096 bytes and 64 components; no traversal, control characters, duplicate or nested roots. Windows requires a local drive path and rejects device names and reserved characters.                                                  |
+| `roles`               | Role array     | Required  | 1–5 distinct values: `active`, `archive`, `export`, `thumbnail`, `metadata`. At most one volume can have the metadata role.                                                                                                                                              |
+| `state`               | State          | `enabled` | Drafts must explicitly select `disabled`. The model also represents `enabled`, `read_only`, and `draining`, which this build rejects.                                                                                                                                    |
+| `priority`            | `u16`          | `0`       | Smaller values rank first for priority placement.                                                                                                                                                                                                                        |
+| `capacity_bytes`      | Optional `u64` | No cap    | Positive owned-data byte cap.                                                                                                                                                                                                                                            |
+| `minimum_free_bytes`  | `u64`          | `0`       | Minimum filesystem free space to retain.                                                                                                                                                                                                                                 |
+| `critical_free_bytes` | `u64`          | `0`       | Placement retains the larger of minimum and critical free space.                                                                                                                                                                                                         |
+| `warning_free_bytes`  | `u64`          | `0`       | Must be at least both minimum and critical free space.                                                                                                                                                                                                                   |
+| `sources`, `groups`   | String arrays  | Empty     | At most 256 unique exact selectors each, 1–256 bytes without control or surrounding whitespace. Empty lists allow all sources. When either list is populated, matching either a source or a group permits placement. Metadata volumes cannot restrict sources or groups. |
+
+All byte thresholds must fit a signed TOML 64-bit integer. A root can use the existing
+`{secret:KEY}` or `{secret:KEY|url}` resolver; unchanged root references are preserved during
+settings updates. Paths are redacted from the volume model's debug output. Lexical validation
+does not establish filesystem identity, writability, or protection against path replacement.
+
+Each `[[storage.named_volumes.placement]]` entry contains:
+
+| Field             | Type            | Default    | Meaning                                                                                                                                 |
+| ----------------- | --------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `role`            | Role            | Required   | One of the roles above.                                                                                                                 |
+| `source`, `group` | Optional string | Absent     | Select either a source or a group, using the same string limits as volume allowlists. Absence selects the role default.                 |
+| `candidates`      | Volume ID array | Required   | 1–8 distinct configured volumes supporting the role.                                                                                    |
+| `strategy`        | Strategy        | `priority` | `priority` ranks smaller priorities first; `free_space` ranks usable free bytes after reserve and cap limits. Ties use volume ID order. |
+| `allow_fallback`  | Boolean         | `false`    | False limits selection to the first candidate. True permits ranking all eligible candidates in the explicit pool.                       |
+
+Source rules take precedence over group rules, which take precedence over role defaults. A failed
+override never falls through to a broader rule. Duplicate selectors for a role are invalid.
+Metadata placement requires one global candidate and forbids fallback. Selection is a pure proposal;
+it does not reserve capacity, authorize writes, or alter existing object locations.
+
+Source: [named-volume model](https://github.com/xnorpx/keeppeek/blob/main/src/storage/volumes.rs).
+Windows path validation follows the
+[Windows filename rules](https://learn.microsoft.com/windows/win32/fileio/naming-a-file).
+
 ## Battery wake
 
 Type: `BatteryWakeConfig`, section `[battery_wake]`. This is the Reolink wake middleman service,

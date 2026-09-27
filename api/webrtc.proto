@@ -1309,6 +1309,58 @@ message RuntimeStorageConfiguration {
   optional uint64 cleanup_hysteresis_gb = 15;
   optional uint64 pre_recording_stream_max_bytes = 16;
   optional uint64 pre_recording_global_max_bytes = 17;
+  StorageVolumeConfiguration named_volumes = 18;
+}
+
+message StorageVolumeConfiguration {
+  repeated StorageVolume volumes = 1;
+  repeated StoragePlacementRule placement = 2;
+}
+
+enum StorageVolumeRole {
+  STORAGE_VOLUME_ROLE_UNSPECIFIED = 0;
+  STORAGE_VOLUME_ROLE_ACTIVE = 1;
+  STORAGE_VOLUME_ROLE_ARCHIVE = 2;
+  STORAGE_VOLUME_ROLE_EXPORT = 3;
+  STORAGE_VOLUME_ROLE_THUMBNAIL = 4;
+  STORAGE_VOLUME_ROLE_METADATA = 5;
+}
+
+enum StorageVolumeState {
+  STORAGE_VOLUME_STATE_UNSPECIFIED = 0;
+  STORAGE_VOLUME_STATE_ENABLED = 1;
+  STORAGE_VOLUME_STATE_READ_ONLY = 2;
+  STORAGE_VOLUME_STATE_DRAINING = 3;
+  STORAGE_VOLUME_STATE_DISABLED = 4;
+}
+
+enum StoragePlacementStrategy {
+  STORAGE_PLACEMENT_STRATEGY_UNSPECIFIED = 0;
+  STORAGE_PLACEMENT_STRATEGY_PRIORITY = 1;
+  STORAGE_PLACEMENT_STRATEGY_FREE_SPACE = 2;
+}
+
+message StorageVolume {
+  string id = 1;
+  string root = 2;
+  repeated StorageVolumeRole roles = 3;
+  StorageVolumeState state = 4;
+  uint32 priority = 5;
+  optional uint64 capacity_bytes = 6;
+  uint64 minimum_free_bytes = 7;
+  uint64 warning_free_bytes = 8;
+  uint64 critical_free_bytes = 9;
+  repeated string sources = 10;
+  repeated string groups = 11;
+}
+
+message StoragePlacementRule {
+  StorageVolumeRole role = 1;
+  optional string source = 2;
+  optional string group = 3;
+  repeated string candidates = 4;
+  StoragePlacementStrategy strategy = 5;
+  bool allow_fallback = 6;
 }
 
 message LoggingCommand {

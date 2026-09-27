@@ -22,6 +22,7 @@ pub(crate) mod safety;
 pub mod search;
 pub mod segment;
 pub mod short_term;
+pub mod volumes;
 
 pub use catalog::{
     CatalogEventKeyframeLink, CatalogFragment, CatalogKeyframe, CatalogMediaFragment,
