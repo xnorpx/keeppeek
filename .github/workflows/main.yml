@@ -88,6 +88,7 @@ jobs:
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af # v2
         with:
           tool: cargo-llvm-cov
+      - uses: ./.github/actions/setup-ffmpeg
       - name: Generate Rust coverage
         run: |
           mkdir -p target/main-coverage/rust
@@ -215,6 +216,8 @@ jobs:
         if: matrix.os == 'windows-11-arm'
         with:
           tool: nextest
+      - uses: ./.github/actions/setup-ffmpeg
+        if: matrix.os != 'windows-latest'
       - name: Run platform Rust tests
         if: matrix.os != 'windows-latest'
         shell: bash
