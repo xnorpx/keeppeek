@@ -1,0 +1,13 @@
+optimization2.exe : sink 1080p-h264-gop1.mp4: cameras=1,3 warmups+30 runs
+At line:8 char:1
++ & target/event-preroll-binaries/optimization2.exe > target/preroll-op ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (sink 1080p-h264...warmups+30 runs:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+sink 1080p-h264-gop10.mp4: cameras=1,3 warmups+30 runs
+sink 1080p-h265-gop1.mp4: cameras=127,3 warmups+30 runs
+sink 1080p-h265-gop10.mp4: cameras=1,3 warmups+30 runs
+sink 2160p-h264-gop1.mp4: cameras=1,3 warmups+30 runs
+sink 2160p-h264-gop10.mp4: cameras=1,3 warmups+30 runs
+sink 2160p-h265-gop1.mp4: cameras=127,3 warmups+30 runs

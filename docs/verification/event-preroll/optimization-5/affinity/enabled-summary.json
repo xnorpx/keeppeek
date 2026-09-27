@@ -1,0 +1,1482 @@
+{
+  "affinity_mask_hex": "0x4",
+  "logical_cpu": 2,
+  "priority_class": "Normal (inherited, runtime verified)",
+  "order": [
+    "A",
+    "E",
+    "E",
+    "A",
+    "A",
+    "E"
+  ],
+  "qpc_frequency_hz": 10000000,
+  "A": "unchanged baseline executable",
+  "E": "candidate5 enabled",
+  "analysis": "Each block is a separate process pair with 30 contiguous measured runs per workload. Block-level dependence prevents treating the pooled 90 runs as independent. Per-block median ratios are descriptive.",
+  "local_activity": [
+    {
+      "block": 1,
+      "activity": "Implementation commit/push, no source edits or hooks",
+      "utc_window": "2026-09-27 00:11:20 to 00:11:40 UTC",
+      "command_seconds": 4.99,
+      "implementation_commit": "8a6525394ce3261ad54ea5a63b2cdcf179f6b9a3"
+    },
+    {
+      "activity": "YAML formatting validation near the end of the enabled window; exact timestamp not captured",
+      "command_seconds": 0.34
+    },
+    {
+      "activity": "CI-only commit/push while timings stopped",
+      "utc_window": "2026-09-27 00:27:48 to 00:27:54 UTC",
+      "commit": "2e9dd84"
+    }
+  ],
+  "blocks": [
+    {
+      "block": 1,
+      "order": "AE",
+      "rows": [
+        {
+          "fixture": "1080p-h264-gop1.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -66.66666666666667
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 7852612,
+          "peak_stream_bytes": 3926306,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h264-gop1.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.3,
+              "delta_percent": -25.0
+            }
+          },
+          "peak_history_bytes": 268435384,
+          "peak_stream_bytes": 2066388,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h264-gop10.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.19999999999999998,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -50.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.5,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -60.00000000000001
+            }
+          },
+          "peak_history_bytes": 7349084,
+          "peak_stream_bytes": 3674542,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h264-gop10.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.35,
+              "delta_percent": -12.5
+            }
+          },
+          "peak_history_bytes": 268434883,
+          "peak_stream_bytes": 6247221,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h265-gop1.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -75.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.5,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -60.00000000000001
+            }
+          },
+          "peak_history_bytes": 5030324,
+          "peak_stream_bytes": 2515162,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h265-gop1.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.3,
+              "delta_percent": -25.0
+            }
+          },
+          "peak_history_bytes": 268435420,
+          "peak_stream_bytes": 1722840,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h265-gop10.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.19999999999999998,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -50.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.5,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -60.00000000000001
+            }
+          },
+          "peak_history_bytes": 4868402,
+          "peak_stream_bytes": 2434201,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h265-gop10.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.39999999999999997,
+              "delta_percent": 0.0
+            }
+          },
+          "peak_history_bytes": 268434763,
+          "peak_stream_bytes": 4284294,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h264-gop1.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -66.66666666666667
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 20596888,
+          "peak_stream_bytes": 10298444,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h264-gop1.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.39999999999999997,
+              "delta_percent": 0.0
+            }
+          },
+          "peak_history_bytes": 268435375,
+          "peak_stream_bytes": 4050056,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h264-gop10.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.19999999999999998,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -50.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 20176008,
+          "peak_stream_bytes": 10088004,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h264-gop10.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.39999999999999997,
+              "delta_percent": 0.0
+            }
+          },
+          "peak_history_bytes": 268433586,
+          "peak_stream_bytes": 16752406,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h265-gop1.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -66.66666666666667
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 16654330,
+          "peak_stream_bytes": 8327165,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h265-gop1.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.3,
+              "delta_percent": -25.0
+            }
+          },
+          "peak_history_bytes": 268435351,
+          "peak_stream_bytes": 3274686,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h265-gop10.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.19999999999999998,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -50.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 16193236,
+          "peak_stream_bytes": 8096618,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h265-gop10.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.44999999999999996,
+              "delta_percent": 12.5
+            }
+          },
+          "peak_history_bytes": 268433813,
+          "peak_stream_bytes": 13867797,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "block": 2,
+      "order": "EA",
+      "rows": [
+        {
+          "fixture": "1080p-h264-gop1.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -66.66666666666667
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 7852612,
+          "peak_stream_bytes": 3926306,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h264-gop1.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.39999999999999997,
+              "delta_percent": 0.0
+            }
+          },
+          "peak_history_bytes": 268435384,
+          "peak_stream_bytes": 2066388,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h264-gop10.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.19999999999999998,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -50.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.5,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -60.00000000000001
+            }
+          },
+          "peak_history_bytes": 7349084,
+          "peak_stream_bytes": 3674542,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h264-gop10.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.3,
+              "delta_percent": -25.0
+            }
+          },
+          "peak_history_bytes": 268434883,
+          "peak_stream_bytes": 6247221,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h265-gop1.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -75.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.5,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -60.00000000000001
+            }
+          },
+          "peak_history_bytes": 5030324,
+          "peak_stream_bytes": 2515162,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h265-gop1.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.3,
+              "delta_percent": -25.0
+            }
+          },
+          "peak_history_bytes": 268435420,
+          "peak_stream_bytes": 1722840,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h265-gop10.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.19999999999999998,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -50.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.5,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -60.00000000000001
+            }
+          },
+          "peak_history_bytes": 4868402,
+          "peak_stream_bytes": 2434201,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h265-gop10.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.3,
+              "delta_percent": -25.0
+            }
+          },
+          "peak_history_bytes": 268434763,
+          "peak_stream_bytes": 4284294,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h264-gop1.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -66.66666666666667
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 20596888,
+          "peak_stream_bytes": 10298444,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h264-gop1.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.3,
+              "delta_percent": -25.0
+            }
+          },
+          "peak_history_bytes": 268435375,
+          "peak_stream_bytes": 4050056,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h264-gop10.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.19999999999999998,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -50.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 20176008,
+          "peak_stream_bytes": 10088004,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h264-gop10.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.39999999999999997,
+              "delta_percent": 0.0
+            }
+          },
+          "peak_history_bytes": 268433586,
+          "peak_stream_bytes": 16752406,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h265-gop1.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -66.66666666666667
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 16654330,
+          "peak_stream_bytes": 8327165,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h265-gop1.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.39999999999999997,
+              "delta_percent": 0.0
+            }
+          },
+          "peak_history_bytes": 268435351,
+          "peak_stream_bytes": 3274686,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h265-gop10.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.19999999999999998,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -50.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 16193236,
+          "peak_stream_bytes": 8096618,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h265-gop10.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.39999999999999997,
+              "delta_percent": 0.0
+            }
+          },
+          "peak_history_bytes": 268433813,
+          "peak_stream_bytes": 13867797,
+          "pending_channel_bytes": 0
+        }
+      ]
+    },
+    {
+      "block": 3,
+      "order": "AE",
+      "rows": [
+        {
+          "fixture": "1080p-h264-gop1.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -66.66666666666667
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 7852612,
+          "peak_stream_bytes": 3926306,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h264-gop1.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.39999999999999997,
+              "delta_percent": 0.0
+            }
+          },
+          "peak_history_bytes": 268435384,
+          "peak_stream_bytes": 2066388,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h264-gop10.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.19999999999999998,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -50.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.5,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -60.00000000000001
+            }
+          },
+          "peak_history_bytes": 7349084,
+          "peak_stream_bytes": 3674542,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h264-gop10.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.3,
+              "delta_percent": -25.0
+            }
+          },
+          "peak_history_bytes": 268434883,
+          "peak_stream_bytes": 6247221,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h265-gop1.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -75.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.5,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -60.00000000000001
+            }
+          },
+          "peak_history_bytes": 5030324,
+          "peak_stream_bytes": 2515162,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h265-gop1.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.25,
+              "delta_percent": -37.5
+            }
+          },
+          "peak_history_bytes": 268435420,
+          "peak_stream_bytes": 1722840,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h265-gop10.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.19999999999999998,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -50.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.5,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -60.00000000000001
+            }
+          },
+          "peak_history_bytes": 4868402,
+          "peak_stream_bytes": 2434201,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "1080p-h265-gop10.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.3,
+              "delta_percent": -25.0
+            }
+          },
+          "peak_history_bytes": 268434763,
+          "peak_stream_bytes": 4284294,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h264-gop1.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -66.66666666666667
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 20596888,
+          "peak_stream_bytes": 10298444,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h264-gop1.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 268435375,
+          "peak_stream_bytes": 4050056,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h264-gop10.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.19999999999999998,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -50.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 20176008,
+          "peak_stream_bytes": 10088004,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h264-gop10.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.3,
+              "delta_percent": -25.0
+            }
+          },
+          "peak_history_bytes": 268433586,
+          "peak_stream_bytes": 16752406,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h265-gop1.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -66.66666666666667
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 16654330,
+          "peak_stream_bytes": 8327165,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h265-gop1.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.39999999999999997,
+              "delta_percent": 0.0
+            }
+          },
+          "peak_history_bytes": 268435351,
+          "peak_stream_bytes": 3274686,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h265-gop10.mp4",
+          "cameras": 1,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.19999999999999998,
+              "enabled": 0.09999999999999999,
+              "delta_percent": -50.0
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -50.0
+            }
+          },
+          "peak_history_bytes": 16193236,
+          "peak_stream_bytes": 8096618,
+          "pending_channel_bytes": 0
+        },
+        {
+          "fixture": "2160p-h265-gop10.mp4",
+          "cameras": 127,
+          "metrics": {
+            "median_ingest_us": {
+              "baseline": 0.3,
+              "enabled": 0.19999999999999998,
+              "delta_percent": -33.333333333333336
+            },
+            "p95_ingest_us": {
+              "baseline": 0.39999999999999997,
+              "enabled": 0.39999999999999997,
+              "delta_percent": 0.0
+            }
+          },
+          "peak_history_bytes": 268433813,
+          "peak_stream_bytes": 13867797,
+          "pending_channel_bytes": 0
+        }
+      ]
+    }
+  ],
+  "aggregate_method": "Reported repeated-run point statistic uses ALL 90 runs: median of run medians and median of run p95s. Median-of-3-block statistics and paired-block spreads are also shown. No claim that 90 runs are statistically independent; no narrow pooled bootstrap confidence interval.",
+  "aggregate": [
+    {
+      "fixture": "1080p-h264-gop1.mp4",
+      "cameras": 1,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.3,
+          "enabled_median_of_blocks": 0.09999999999999999,
+          "aggregate_delta_percent": -66.66666666666667,
+          "paired_block_delta_percent": [
+            -66.66666666666667,
+            -66.66666666666667,
+            -66.66666666666667
+          ],
+          "baseline_all90_median": 0.3,
+          "enabled_all90_median": 0.09999999999999999,
+          "all90_delta_percent": -66.66666666666667
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -50.0,
+          "paired_block_delta_percent": [
+            -50.0,
+            -50.0,
+            -50.0
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -50.0
+        }
+      }
+    },
+    {
+      "fixture": "1080p-h264-gop1.mp4",
+      "cameras": 127,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.3,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -33.333333333333336,
+          "paired_block_delta_percent": [
+            -33.333333333333336,
+            -33.333333333333336,
+            -33.333333333333336
+          ],
+          "baseline_all90_median": 0.3,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -33.333333333333336
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.39999999999999997,
+          "aggregate_delta_percent": 0.0,
+          "paired_block_delta_percent": [
+            -25.0,
+            0.0,
+            0.0
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.39999999999999997,
+          "all90_delta_percent": 0.0
+        }
+      }
+    },
+    {
+      "fixture": "1080p-h264-gop10.mp4",
+      "cameras": 1,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.19999999999999998,
+          "enabled_median_of_blocks": 0.09999999999999999,
+          "aggregate_delta_percent": -50.0,
+          "paired_block_delta_percent": [
+            -50.0,
+            -50.0,
+            -50.0
+          ],
+          "baseline_all90_median": 0.19999999999999998,
+          "enabled_all90_median": 0.09999999999999999,
+          "all90_delta_percent": -50.0
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.5,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -60.00000000000001,
+          "paired_block_delta_percent": [
+            -60.00000000000001,
+            -60.00000000000001,
+            -60.00000000000001
+          ],
+          "baseline_all90_median": 0.5,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -60.00000000000001
+        }
+      }
+    },
+    {
+      "fixture": "1080p-h264-gop10.mp4",
+      "cameras": 127,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.3,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -33.333333333333336,
+          "paired_block_delta_percent": [
+            -33.333333333333336,
+            -33.333333333333336,
+            -33.333333333333336
+          ],
+          "baseline_all90_median": 0.3,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -33.333333333333336
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.3,
+          "aggregate_delta_percent": -25.0,
+          "paired_block_delta_percent": [
+            -12.5,
+            -25.0,
+            -25.0
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.3,
+          "all90_delta_percent": -25.0
+        }
+      }
+    },
+    {
+      "fixture": "1080p-h265-gop1.mp4",
+      "cameras": 1,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.09999999999999999,
+          "aggregate_delta_percent": -75.0,
+          "paired_block_delta_percent": [
+            -75.0,
+            -75.0,
+            -75.0
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.09999999999999999,
+          "all90_delta_percent": -75.0
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.5,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -60.00000000000001,
+          "paired_block_delta_percent": [
+            -60.00000000000001,
+            -60.00000000000001,
+            -60.00000000000001
+          ],
+          "baseline_all90_median": 0.5,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -60.00000000000001
+        }
+      }
+    },
+    {
+      "fixture": "1080p-h265-gop1.mp4",
+      "cameras": 127,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.3,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -33.333333333333336,
+          "paired_block_delta_percent": [
+            -33.333333333333336,
+            -33.333333333333336,
+            -33.333333333333336
+          ],
+          "baseline_all90_median": 0.3,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -33.333333333333336
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.3,
+          "aggregate_delta_percent": -25.0,
+          "paired_block_delta_percent": [
+            -25.0,
+            -25.0,
+            -37.5
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.3,
+          "all90_delta_percent": -25.0
+        }
+      }
+    },
+    {
+      "fixture": "1080p-h265-gop10.mp4",
+      "cameras": 1,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.19999999999999998,
+          "enabled_median_of_blocks": 0.09999999999999999,
+          "aggregate_delta_percent": -50.0,
+          "paired_block_delta_percent": [
+            -50.0,
+            -50.0,
+            -50.0
+          ],
+          "baseline_all90_median": 0.19999999999999998,
+          "enabled_all90_median": 0.09999999999999999,
+          "all90_delta_percent": -50.0
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.5,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -60.00000000000001,
+          "paired_block_delta_percent": [
+            -60.00000000000001,
+            -60.00000000000001,
+            -60.00000000000001
+          ],
+          "baseline_all90_median": 0.5,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -60.00000000000001
+        }
+      }
+    },
+    {
+      "fixture": "1080p-h265-gop10.mp4",
+      "cameras": 127,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.3,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -33.333333333333336,
+          "paired_block_delta_percent": [
+            -33.333333333333336,
+            -33.333333333333336,
+            -33.333333333333336
+          ],
+          "baseline_all90_median": 0.3,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -33.333333333333336
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.3,
+          "aggregate_delta_percent": -25.0,
+          "paired_block_delta_percent": [
+            0.0,
+            -25.0,
+            -25.0
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.3,
+          "all90_delta_percent": -25.0
+        }
+      }
+    },
+    {
+      "fixture": "2160p-h264-gop1.mp4",
+      "cameras": 1,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.3,
+          "enabled_median_of_blocks": 0.09999999999999999,
+          "aggregate_delta_percent": -66.66666666666667,
+          "paired_block_delta_percent": [
+            -66.66666666666667,
+            -66.66666666666667,
+            -66.66666666666667
+          ],
+          "baseline_all90_median": 0.3,
+          "enabled_all90_median": 0.09999999999999999,
+          "all90_delta_percent": -66.66666666666667
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -50.0,
+          "paired_block_delta_percent": [
+            -50.0,
+            -50.0,
+            -50.0
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -50.0
+        }
+      }
+    },
+    {
+      "fixture": "2160p-h264-gop1.mp4",
+      "cameras": 127,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.3,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -33.333333333333336,
+          "paired_block_delta_percent": [
+            -33.333333333333336,
+            -33.333333333333336,
+            -33.333333333333336
+          ],
+          "baseline_all90_median": 0.3,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -33.333333333333336
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.3,
+          "aggregate_delta_percent": -25.0,
+          "paired_block_delta_percent": [
+            0.0,
+            -25.0,
+            -50.0
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.3,
+          "all90_delta_percent": -25.0
+        }
+      }
+    },
+    {
+      "fixture": "2160p-h264-gop10.mp4",
+      "cameras": 1,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.19999999999999998,
+          "enabled_median_of_blocks": 0.09999999999999999,
+          "aggregate_delta_percent": -50.0,
+          "paired_block_delta_percent": [
+            -50.0,
+            -50.0,
+            -50.0
+          ],
+          "baseline_all90_median": 0.19999999999999998,
+          "enabled_all90_median": 0.09999999999999999,
+          "all90_delta_percent": -50.0
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -50.0,
+          "paired_block_delta_percent": [
+            -50.0,
+            -50.0,
+            -50.0
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -50.0
+        }
+      }
+    },
+    {
+      "fixture": "2160p-h264-gop10.mp4",
+      "cameras": 127,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.3,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -33.333333333333336,
+          "paired_block_delta_percent": [
+            -33.333333333333336,
+            -33.333333333333336,
+            -33.333333333333336
+          ],
+          "baseline_all90_median": 0.3,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -33.333333333333336
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.39999999999999997,
+          "aggregate_delta_percent": 0.0,
+          "paired_block_delta_percent": [
+            0.0,
+            0.0,
+            -25.0
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.39999999999999997,
+          "all90_delta_percent": 0.0
+        }
+      }
+    },
+    {
+      "fixture": "2160p-h265-gop1.mp4",
+      "cameras": 1,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.3,
+          "enabled_median_of_blocks": 0.09999999999999999,
+          "aggregate_delta_percent": -66.66666666666667,
+          "paired_block_delta_percent": [
+            -66.66666666666667,
+            -66.66666666666667,
+            -66.66666666666667
+          ],
+          "baseline_all90_median": 0.3,
+          "enabled_all90_median": 0.09999999999999999,
+          "all90_delta_percent": -66.66666666666667
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -50.0,
+          "paired_block_delta_percent": [
+            -50.0,
+            -50.0,
+            -50.0
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -50.0
+        }
+      }
+    },
+    {
+      "fixture": "2160p-h265-gop1.mp4",
+      "cameras": 127,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.3,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -33.333333333333336,
+          "paired_block_delta_percent": [
+            -33.333333333333336,
+            -33.333333333333336,
+            -33.333333333333336
+          ],
+          "baseline_all90_median": 0.3,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -33.333333333333336
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.39999999999999997,
+          "aggregate_delta_percent": 0.0,
+          "paired_block_delta_percent": [
+            -25.0,
+            0.0,
+            0.0
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.39999999999999997,
+          "all90_delta_percent": 0.0
+        }
+      }
+    },
+    {
+      "fixture": "2160p-h265-gop10.mp4",
+      "cameras": 1,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.19999999999999998,
+          "enabled_median_of_blocks": 0.09999999999999999,
+          "aggregate_delta_percent": -50.0,
+          "paired_block_delta_percent": [
+            -50.0,
+            -50.0,
+            -50.0
+          ],
+          "baseline_all90_median": 0.19999999999999998,
+          "enabled_all90_median": 0.09999999999999999,
+          "all90_delta_percent": -50.0
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -50.0,
+          "paired_block_delta_percent": [
+            -50.0,
+            -50.0,
+            -50.0
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -50.0
+        }
+      }
+    },
+    {
+      "fixture": "2160p-h265-gop10.mp4",
+      "cameras": 127,
+      "metrics": {
+        "median_ingest_us": {
+          "baseline_median_of_blocks": 0.3,
+          "enabled_median_of_blocks": 0.19999999999999998,
+          "aggregate_delta_percent": -33.333333333333336,
+          "paired_block_delta_percent": [
+            -33.333333333333336,
+            -33.333333333333336,
+            -33.333333333333336
+          ],
+          "baseline_all90_median": 0.3,
+          "enabled_all90_median": 0.19999999999999998,
+          "all90_delta_percent": -33.333333333333336
+        },
+        "p95_ingest_us": {
+          "baseline_median_of_blocks": 0.39999999999999997,
+          "enabled_median_of_blocks": 0.39999999999999997,
+          "aggregate_delta_percent": 0.0,
+          "paired_block_delta_percent": [
+            12.5,
+            0.0,
+            0.0
+          ],
+          "baseline_all90_median": 0.39999999999999997,
+          "enabled_all90_median": 0.39999999999999997,
+          "all90_delta_percent": 0.0
+        }
+      }
+    }
+  ]
+}

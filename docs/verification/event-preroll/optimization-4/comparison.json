@@ -1,0 +1,1922 @@
+[
+  {
+    "fixture": "1080p-h264-gop1.mp4",
+    "cameras": 1,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.3,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.39999999999999997,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.7
+        },
+        "result_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h264-gop1.mp4",
+    "cameras": 1,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -66.66666666666667,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.09999999999999999
+        },
+        "bootstrap95_delta_percent": [
+          -66.66666666666667,
+          -66.66666666666667
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.19999999999999998,
+        "delta_percent": -50.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.7
+        },
+        "result_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.19999999999999998,
+          "p75": 0.19999999999999998,
+          "maximum": 0.3
+        },
+        "bootstrap95_delta_percent": [
+          -50.0,
+          -50.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 7852612,
+    "peak_stream_bytes": 3926306,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h264-gop1.mp4",
+    "cameras": 127,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.3,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.39999999999999997,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.6
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h264-gop1.mp4",
+    "cameras": 127,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -66.66666666666667,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -66.66666666666667,
+          -66.66666666666667
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.3,
+        "delta_percent": -25.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.19999999999999998,
+          "p75": 0.3,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          -37.5,
+          -25.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 268435384,
+    "peak_stream_bytes": 2066388,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h264-gop10.mp4",
+    "cameras": 1,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.19999999999999998,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -50.0,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.19999999999999998,
+          "p75": 0.19999999999999998,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -50.0,
+          -50.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.5,
+        "result_us": 0.39999999999999997,
+        "delta_percent": -20.000000000000007,
+        "baseline_spread_us": {
+          "minimum": 0.5,
+          "p25": 0.5,
+          "p75": 0.5,
+          "maximum": 0.7999999999999999
+        },
+        "result_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.6
+        },
+        "bootstrap95_delta_percent": [
+          -20.000000000000007,
+          -20.000000000000007
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h264-gop10.mp4",
+    "cameras": 1,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.19999999999999998,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -50.0,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.19999999999999998,
+          "p75": 0.19999999999999998,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.09999999999999999
+        },
+        "bootstrap95_delta_percent": [
+          -50.0,
+          -50.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.5,
+        "result_us": 0.19999999999999998,
+        "delta_percent": -60.00000000000001,
+        "baseline_spread_us": {
+          "minimum": 0.5,
+          "p25": 0.5,
+          "p75": 0.5,
+          "maximum": 0.7999999999999999
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.19999999999999998,
+          "p75": 0.19999999999999998,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -60.00000000000001,
+          -60.00000000000001
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 7349084,
+    "peak_stream_bytes": 3674542,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h264-gop10.mp4",
+    "cameras": 127,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.3,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.5,
+        "delta_percent": 25.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.5,
+          "p25": 0.5,
+          "p75": 0.5,
+          "maximum": 0.5
+        },
+        "bootstrap95_delta_percent": [
+          25.0,
+          25.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": false,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h264-gop10.mp4",
+    "cameras": 127,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -66.66666666666667,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -66.66666666666667,
+          -66.66666666666667
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.3,
+        "delta_percent": -25.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.3,
+          "p75": 0.39999999999999997,
+          "maximum": 0.5
+        },
+        "bootstrap95_delta_percent": [
+          -25.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      }
+    },
+    "peak_history_bytes": 268434883,
+    "peak_stream_bytes": 6247221,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h265-gop1.mp4",
+    "cameras": 1,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.3,
+        "delta_percent": -25.0,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "bootstrap95_delta_percent": [
+          -25.0,
+          -25.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.5,
+        "result_us": 0.39999999999999997,
+        "delta_percent": -20.000000000000007,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.5,
+          "p75": 0.5,
+          "maximum": 0.7
+        },
+        "result_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          -20.000000000000007,
+          -20.000000000000007
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h265-gop1.mp4",
+    "cameras": 1,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -75.0,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.09999999999999999
+        },
+        "bootstrap95_delta_percent": [
+          -75.0,
+          -75.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.5,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -80.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.5,
+          "p75": 0.5,
+          "maximum": 0.7
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.19999999999999998,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -80.0,
+          -60.00000000000001
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 5030324,
+    "peak_stream_bytes": 2515162,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h265-gop1.mp4",
+    "cameras": 127,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.39999999999999997,
+        "delta_percent": 33.33333333333333,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          33.33333333333333,
+          33.33333333333333
+        ],
+        "budget_percent": 5,
+        "budget_pass": false,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.5,
+        "delta_percent": 25.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.7
+        },
+        "result_spread_us": {
+          "minimum": 0.5,
+          "p25": 0.5,
+          "p75": 0.5,
+          "maximum": 0.5
+        },
+        "bootstrap95_delta_percent": [
+          25.0,
+          25.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": false,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h265-gop1.mp4",
+    "cameras": 127,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -66.66666666666667,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -66.66666666666667,
+          -66.66666666666667
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.3,
+        "delta_percent": -25.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.7
+        },
+        "result_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.19999999999999998,
+          "p75": 0.3,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          -25.0,
+          -25.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 268435420,
+    "peak_stream_bytes": 1722840,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h265-gop10.mp4",
+    "cameras": 1,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.19999999999999998,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -50.0,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.19999999999999998,
+          "p75": 0.3,
+          "maximum": 0.6
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -66.66666666666667,
+          -50.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.5,
+        "result_us": 0.39999999999999997,
+        "delta_percent": -20.000000000000007,
+        "baseline_spread_us": {
+          "minimum": 0.5,
+          "p25": 0.5,
+          "p75": 0.8999999999999999,
+          "maximum": 1.1
+        },
+        "result_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          -55.55555555555556,
+          -20.000000000000007
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h265-gop10.mp4",
+    "cameras": 1,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.19999999999999998,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -50.0,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.19999999999999998,
+          "p75": 0.3,
+          "maximum": 0.6
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -66.66666666666667,
+          -50.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.5,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -80.0,
+        "baseline_spread_us": {
+          "minimum": 0.5,
+          "p25": 0.5,
+          "p75": 0.8999999999999999,
+          "maximum": 1.1
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          -88.88888888888889,
+          -80.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 4868402,
+    "peak_stream_bytes": 2434201,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h265-gop10.mp4",
+    "cameras": 127,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.3,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.5,
+        "delta_percent": 25.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.7
+        },
+        "result_spread_us": {
+          "minimum": 0.5,
+          "p25": 0.5,
+          "p75": 0.5,
+          "maximum": 0.6
+        },
+        "bootstrap95_delta_percent": [
+          25.0,
+          25.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": false,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "1080p-h265-gop10.mp4",
+    "cameras": 127,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -66.66666666666667,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -66.66666666666667,
+          -66.66666666666667
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.3,
+        "delta_percent": -25.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.7
+        },
+        "result_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.19999999999999998,
+          "p75": 0.39999999999999997,
+          "maximum": 0.5
+        },
+        "bootstrap95_delta_percent": [
+          -50.0,
+          -25.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 268434763,
+    "peak_stream_bytes": 4284294,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h264-gop1.mp4",
+    "cameras": 1,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.3,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.39999999999999997,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h264-gop1.mp4",
+    "cameras": 1,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -66.66666666666667,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.09999999999999999
+        },
+        "bootstrap95_delta_percent": [
+          -66.66666666666667,
+          -66.66666666666667
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -75.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.3
+        },
+        "bootstrap95_delta_percent": [
+          -75.0,
+          -75.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 20596888,
+    "peak_stream_bytes": 10298444,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h264-gop1.mp4",
+    "cameras": 127,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.39999999999999997,
+        "delta_percent": 33.33333333333333,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          33.33333333333333,
+          33.33333333333333
+        ],
+        "budget_percent": 5,
+        "budget_pass": false,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.5,
+        "delta_percent": 25.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.6
+        },
+        "result_spread_us": {
+          "minimum": 0.5,
+          "p25": 0.5,
+          "p75": 0.5,
+          "maximum": 0.6
+        },
+        "bootstrap95_delta_percent": [
+          25.0,
+          25.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": false,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h264-gop1.mp4",
+    "cameras": 127,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -66.66666666666667,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.19999999999999998,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -66.66666666666667,
+          -33.333333333333336
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.39999999999999997,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.6
+        },
+        "result_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.39999999999999997,
+          "maximum": 0.5
+        },
+        "bootstrap95_delta_percent": [
+          -25.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      }
+    },
+    "peak_history_bytes": 268435375,
+    "peak_stream_bytes": 4050056,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h264-gop10.mp4",
+    "cameras": 1,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.19999999999999998,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -50.0,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.19999999999999998,
+          "p75": 0.19999999999999998,
+          "maximum": 0.19999999999999998
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.3
+        },
+        "bootstrap95_delta_percent": [
+          -50.0,
+          -50.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.39999999999999997,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.5
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h264-gop10.mp4",
+    "cameras": 1,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.19999999999999998,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -50.0,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.19999999999999998,
+          "p75": 0.19999999999999998,
+          "maximum": 0.19999999999999998
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.09999999999999999
+        },
+        "bootstrap95_delta_percent": [
+          -50.0,
+          -50.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -75.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.09999999999999999
+        },
+        "bootstrap95_delta_percent": [
+          -75.0,
+          -75.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 20176008,
+    "peak_stream_bytes": 10088004,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h264-gop10.mp4",
+    "cameras": 127,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.3,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.7,
+        "delta_percent": 75.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.5
+        },
+        "result_spread_us": {
+          "minimum": 0.7,
+          "p25": 0.7,
+          "p75": 0.7,
+          "maximum": 0.7
+        },
+        "bootstrap95_delta_percent": [
+          75.0,
+          75.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": false,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h264-gop10.mp4",
+    "cameras": 127,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.15,
+        "delta_percent": -50.0,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.19999999999999998,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -66.66666666666667,
+          -33.333333333333336
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.39999999999999997,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.5
+        },
+        "result_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.3,
+          "p75": 0.39999999999999997,
+          "maximum": 0.5
+        },
+        "bootstrap95_delta_percent": [
+          -25.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      }
+    },
+    "peak_history_bytes": 268433586,
+    "peak_stream_bytes": 16752406,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h265-gop1.mp4",
+    "cameras": 1,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.3,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.39999999999999997,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h265-gop1.mp4",
+    "cameras": 1,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -66.66666666666667,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.09999999999999999
+        },
+        "bootstrap95_delta_percent": [
+          -66.66666666666667,
+          -66.66666666666667
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -75.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -75.0,
+          -75.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 16654330,
+    "peak_stream_bytes": 8327165,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h265-gop1.mp4",
+    "cameras": 127,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.3,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.39999999999999997,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.7
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h265-gop1.mp4",
+    "cameras": 127,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.15,
+        "delta_percent": -50.0,
+        "baseline_spread_us": {
+          "minimum": 0.3,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.19999999999999998,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -66.66666666666667,
+          -33.333333333333336
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.3,
+        "delta_percent": -25.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          -25.0,
+          -25.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 268435351,
+    "peak_stream_bytes": 3274686,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h265-gop10.mp4",
+    "cameras": 1,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.19999999999999998,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -50.0,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.19999999999999998,
+          "p75": 0.19999999999999998,
+          "maximum": 0.19999999999999998
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -50.0,
+          -50.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.39999999999999997,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.5
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h265-gop10.mp4",
+    "cameras": 1,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.19999999999999998,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -50.0,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.19999999999999998,
+          "p75": 0.19999999999999998,
+          "maximum": 0.19999999999999998
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.09999999999999999
+        },
+        "bootstrap95_delta_percent": [
+          -50.0,
+          -50.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -75.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -75.0,
+          -75.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      }
+    },
+    "peak_history_bytes": 16193236,
+    "peak_stream_bytes": 8096618,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h265-gop10.mp4",
+    "cameras": 127,
+    "mode": "disabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.3,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.39999999999999997,
+        "delta_percent": 0.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.5
+        },
+        "result_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.39999999999999997
+        },
+        "bootstrap95_delta_percent": [
+          0.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      }
+    },
+    "peak_history_bytes": 0,
+    "peak_stream_bytes": 0,
+    "history_instances": 0,
+    "maximum_pending_channel_bytes": 0
+  },
+  {
+    "fixture": "2160p-h265-gop10.mp4",
+    "cameras": 127,
+    "mode": "enabled",
+    "runs": 30,
+    "metrics": {
+      "median_ingest_us": {
+        "baseline_us": 0.3,
+        "result_us": 0.09999999999999999,
+        "delta_percent": -66.66666666666667,
+        "baseline_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.3,
+          "p75": 0.3,
+          "maximum": 0.3
+        },
+        "result_spread_us": {
+          "minimum": 0.09999999999999999,
+          "p25": 0.09999999999999999,
+          "p75": 0.09999999999999999,
+          "maximum": 0.19999999999999998
+        },
+        "bootstrap95_delta_percent": [
+          -66.66666666666667,
+          -66.66666666666667
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": false
+      },
+      "p95_ingest_us": {
+        "baseline_us": 0.39999999999999997,
+        "result_us": 0.3,
+        "delta_percent": -25.0,
+        "baseline_spread_us": {
+          "minimum": 0.39999999999999997,
+          "p25": 0.39999999999999997,
+          "p75": 0.39999999999999997,
+          "maximum": 0.5
+        },
+        "result_spread_us": {
+          "minimum": 0.19999999999999998,
+          "p25": 0.3,
+          "p75": 0.39999999999999997,
+          "maximum": 0.5
+        },
+        "bootstrap95_delta_percent": [
+          -25.0,
+          0.0
+        ],
+        "budget_percent": 5,
+        "budget_pass": true,
+        "disabled_indistinguishable": true
+      }
+    },
+    "peak_history_bytes": 268433813,
+    "peak_stream_bytes": 13867797,
+    "history_instances": 1,
+    "maximum_pending_channel_bytes": 0
+  }
+]

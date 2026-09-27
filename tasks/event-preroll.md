@@ -2,7 +2,7 @@
 
 Issue: https://github.com/xnorpx/keeppeek/issues/172
 
-Implementation base: `7ab761b`, branch `feat/172-event-preroll`.
+Implementation base: `e4f8289`, branch `feat/172-event-preroll`.
 The issue's AC-1 through AC-10 remain the completion contract. This plan records
 work and decisions; it does not claim acceptance evidence.
 
@@ -34,34 +34,35 @@ work and decisions; it does not claim acceptance evidence.
    shortened coverage. Event-only writes no samples at/after the exclusive
    post-event deadline; finalize the retained GOP prefix without extending the
    accepted recording window.
-3. Protected API scope must be approved for this task before edits: additive
+3. The owner approved the documented protected API scope with "ok finalize it"
+   after the proposal and remaining approval were presented: additive
    EventOnly mode, event stream selection, pre-roll duration, storage memory
    limits, and requested/available/reason diagnostics. Keep existing tags and
-   behavior. Prepare the concrete field map before asking for authorization.
+   behavior. The field map is in `docs/pre-recording-contract-proposal.md`.
 
 ## Ordered work and evidence
 
-- [ ] Record owner decisions and the exact additive API proposal.
+- [x] Record owner decisions and the exact additive API proposal.
 - [x] Establish regression fixtures for all five legacy recording modes.
-- [ ] Implement a pure GOP history primitive with duration, stream-byte, global-
+- [x] Implement a pure GOP history primitive with duration, stream-byte, global-
       byte, and metadata bounds. Cover open GOP accounting, malformed order,
       audio trimming, configuration epochs, and deterministic whole-GOP eviction.
-- [ ] Checkpoint: primitive invariants and independent design review pass.
-- [ ] Integrate event-only with the existing admission and writer owners. Prove
+- [x] Checkpoint: primitive invariants and independent design review pass.
+- [x] Integrate event-only with the existing admission and writer owners. Prove
       idle creates no files/rows and overlapping events write each frame once.
-- [ ] Integrate the approved EventBoost commit horizon. Prove one recording,
+- [x] Integrate the approved EventBoost commit horizon. Prove one recording,
       monotonic frame order, continuous sub coverage, and pressure fallback.
-- [ ] Checkpoint: real H.264/H.265 output decodes; privacy, pause, reconnect,
+- [x] Checkpoint: real H.264/H.265 output decodes; privacy, pause, reconnect,
       shutdown, writer failure, and event storms preserve safety.
-- [ ] Extend configuration/default/template/backup validation and the approved
+- [x] Extend configuration/default/template/backup validation and the approved
       API. Prove old configuration compatibility and atomic invalid-write failure.
-- [ ] Add accessible editor/setup controls and server-owned diagnostics, with
+- [x] Add accessible editor/setup controls and server-owned diagnostics, with
       desktop/mobile browser, keyboard, and save/reload/restart evidence.
-- [ ] Measure disabled/enabled ingest and flush behavior over at least 30 release
+- [x] Measure disabled/enabled ingest and flush behavior over at least 30 release
       runs at 1080p/4K and 127-source pressure. Report median/p95, bytes, and the
       issue's 5% enabled ingest budget against the same-host baseline.
-- [ ] Synchronize operator/configuration documentation and rollback guidance.
-- [ ] Run the canonical Windows check, relevant slow real-media tests, review,
+- [x] Synchronize operator/configuration documentation and rollback guidance.
+- [x] Run the canonical Windows check, relevant slow real-media tests, review,
       and final acceptance table before opening the sole implementing PR.
 
 ## Work checkpoint
@@ -99,15 +100,43 @@ issue's runtime, UI, real-camera, or performance qualification.
 (`target/preroll-checkpoint-clippy.log`), as did Rust/Markdown formatting and
 `git diff --check`.
 
-The buffer and receive-clock append entry point remain test-only. Decoder/session
-epochs, active-window audio handling, bounded replay scheduling, runtime
-integration, configuration, API, UI, and performance evidence remain unfinished.
-No issue acceptance criterion is marked complete. No PR has been opened, and no
-protected API source has changed.
+Runtime integration, configuration, the approved additive API, and UI controls
+are implemented. Integrated qualification and independent review are in progress.
+The first combined storage run passed 257 tests, failed two new regressions, and
+left one pre-existing benchmark ignored. H.264 and H.265 event-only clips with AAC
+decoded independently and matched catalog assertions. The failed EventBoost
+transition exposed pending AAC incorrectly extending the switch boundary; the
+fix retains the video coverage boundary and drops crossing pending packets.
+The other failure was a legacy-writer fixture that had not enabled direct writes.
+Both corrected cases pass in the final combined run: 270 storage tests passed
+with one pre-existing ignored benchmark (`target/preroll-channel-layout-storage.log`).
+This includes a 1,001-event exact-frame/catalog oracle and concurrent configuration
+ordering. Decoder epochs now retain fixed-size fingerprints instead of unbudgeted
+parameter copies, and oversized H.265 parameters return an error instead of
+panicking. Both memory/parser regressions were observed failing before the fix.
+No PR has been opened.
 
-The EventBoost persistence-delay decision is approved. The additive API proposal
-is in `docs/pre-recording-contract-proposal.md`; its protected edits also require
-current-task approval. Existing generic task plans were preserved.
+The UI passed 48 focused tests, 18 compatibility tests, and five final browser flows
+covering mobile setup, editing, save/reload, keyboard, validation focus, and server
+diagnostics. Reviewed screenshots are stored with the acceptance evidence. The
+canonical Windows check passed on 2026-09-27 UTC: 2,674 Rust tests, 650 UI unit/component tests and 271 browser tests; existing skips are documented in the acceptance report. All eight extended Main CI jobs passed.
+
+Release performance qualification is complete: all 16 enabled/disabled aggregate
+workloads pass the 5% budget across 90 retained runs per mode. All eight actual
+writer workloads pass 30 runs each, including 127-camera pressure. The report
+retains one enabled process-pair miss, earlier uncontrolled failures, and the
+100 ns timer limitation. Independent review recalculated the raw aggregates and
+verified all 1,802 source hashes against implementation commit `8a652539`.
+The full results are in `docs/pre-recording-performance.md`.
+
+The explicit slow storage pipeline run used `KEEPPEEK_RUN_SLOW_TESTS=1` and
+passed all four tests. It ingested 570 frames, inspected six MP4 outputs in each
+pipeline path, verified medium-to-long-term movement, and exercised retention.
+The command and output are in `target/preroll-slow-storage.log`; these tests did
+not take their disabled-by-default early return.
+
+The EventBoost persistence-delay decision and additive API proposal are approved.
+Existing generic task plans were preserved.
 
 ## Constraints
 
