@@ -12,7 +12,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::state_store::{Registry, StoredEntry};
-    use super::super::state_store_durable::DurableStore;
+    use super::super::state_store_durable::{DurableStore, NamespaceExport};
     use prost_types::{Duration, Struct, Value, value::Kind};
     use std::collections::{BTreeMap, BTreeSet};
     use std::io::Write;
@@ -245,6 +245,156 @@ mod tests {
         panic!("round {round} never reached {KILL_AFTER_ACKS} acks before the kill deadline");
     }
 
+    fn assert_recovered_commits(namespace: &NamespaceExport, acked: &[Ack]) {
+        let max_acked = acked.iter().map(|ack| ack.revision).max().unwrap_or(0);
+        assert!(
+            namespace.revision >= max_acked && namespace.revision <= max_acked + u64::from(ROUNDS),
+            "the counter must cover every ack with room for at most one unacked commit per round"
+        );
+        let acked_keys: BTreeSet<&str> = acked.iter().map(|ack| ack.key.as_str()).collect();
+        let present_keys: BTreeSet<&str> = namespace
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_str())
+            .collect();
+        let extras: Vec<&&str> = present_keys.difference(&acked_keys).collect();
+        assert!(
+            extras.len() <= ROUNDS as usize,
+            "at most one unacked commit per round may have slipped in: {extras:?}"
+        );
+        for ack in acked {
+            let entry: &StoredEntry = namespace
+                .entries
+                .iter()
+                .find(|entry| entry.key == ack.key)
+                .expect("every acked commit must be present");
+            assert_eq!(entry.revision, ack.revision);
+            assert_eq!(entry.value, media_intent_value(&ack.role));
+            assert_eq!(entry.expires_ms.is_some(), ack.lease, "key {}", ack.key);
+        }
+    }
+
+    fn recovered_unacked_lease() -> (NamespaceExport, Vec<Ack>) {
+        let dir = std::env::temp_dir().join(format!("keeppeek-unacked-{}", uuid::Uuid::new_v4()));
+        let db = dir.join("state-store.db");
+        let now = 1_787_000_000_000;
+        let mut store = DurableStore::open(&db, now).expect("fixture store must open");
+        let mut acked = Vec::new();
+        for index in 0..3 {
+            let key = format!("commit-{index}");
+            let role = role_for(index);
+            let lease = index > 0;
+            let entry = store
+                .put(
+                    NAMESPACE,
+                    &key,
+                    SCHEMA,
+                    Some(media_intent_value(role)),
+                    None,
+                    lease.then(|| ttl(LEASE_TTL_MS)),
+                    OWNER,
+                    true,
+                    now,
+                )
+                .expect("fixture commit must succeed");
+            // Stop after the final durable commit, before its acknowledgement.
+            if index < 2 {
+                acked.push(Ack {
+                    key,
+                    revision: entry.revision,
+                    role: role.to_owned(),
+                    lease,
+                });
+            }
+        }
+        drop(store);
+        let reopened = DurableStore::open(&db, now).expect("fixture store must reopen");
+        let namespace = reopened
+            .export(now)
+            .expect("fixture must export")
+            .into_iter()
+            .find(|namespace| namespace.namespace == NAMESPACE)
+            .expect("fixture namespace must survive");
+        drop(reopened);
+        std::fs::remove_dir_all(&dir).expect("fixture scratch directory must be removed");
+        (namespace, acked)
+    }
+
+    #[test]
+    fn recovery_accepts_committed_lease_without_acknowledgement() {
+        let (namespace, acked) = recovered_unacked_lease();
+        assert_eq!(namespace.entries.len(), 3);
+        assert_eq!(acked.len(), 2);
+        assert_recovered_commits(&namespace, &acked);
+    }
+
+    #[test]
+    fn recovery_rejects_missing_or_changed_acknowledged_entries() {
+        let (namespace, acked) = recovered_unacked_lease();
+        for ack in &acked {
+            for corruption in ["missing", "revision", "value", "lease kind"] {
+                let mut damaged = namespace.clone();
+                let index = damaged
+                    .entries
+                    .iter()
+                    .position(|entry| entry.key == ack.key)
+                    .expect("fixture must contain the acknowledged entry");
+                match corruption {
+                    "missing" => {
+                        damaged.entries.remove(index);
+                    }
+                    "revision" => damaged.entries[index].revision += 1,
+                    "value" => damaged.entries[index].value = Struct::default(),
+                    "lease kind" => {
+                        damaged.entries[index].expires_ms = (!ack.lease).then_some(LEASE_TTL_MS);
+                    }
+                    _ => unreachable!("all fixture corruptions must be handled"),
+                }
+                assert!(
+                    std::panic::catch_unwind(|| assert_recovered_commits(&damaged, &acked))
+                        .is_err(),
+                    "{corruption} for {} must not be hidden by an unacked lease",
+                    ack.key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_retains_unacknowledged_commit_and_revision_bounds() {
+        let (mut namespace, acked) = recovered_unacked_lease();
+        let unacked = namespace
+            .entries
+            .iter()
+            .find(|entry| entry.key == "commit-2")
+            .expect("fixture must contain the unacknowledged lease")
+            .clone();
+        for index in 1..ROUNDS {
+            let mut extra = unacked.clone();
+            extra.key = format!("unacked-{index}");
+            extra.revision += u64::from(index);
+            namespace.entries.push(extra);
+        }
+        let max_acked = acked.iter().map(|ack| ack.revision).max().expect("acks");
+        namespace.revision = max_acked + u64::from(ROUNDS);
+        assert_recovered_commits(&namespace, &acked);
+        for revision in [max_acked - 1, namespace.revision + 1] {
+            let mut damaged = namespace.clone();
+            damaged.revision = revision;
+            assert!(
+                std::panic::catch_unwind(|| assert_recovered_commits(&damaged, &acked)).is_err(),
+                "out-of-bounds namespace revision {revision} must fail"
+            );
+        }
+        let mut extra = unacked;
+        extra.key = "one-too-many".to_owned();
+        namespace.entries.push(extra);
+        assert!(
+            std::panic::catch_unwind(|| assert_recovered_commits(&namespace, &acked)).is_err(),
+            "more than one unacknowledged commit per round must fail"
+        );
+    }
+
     #[test]
     fn durable_kill_restart_preserves_acked_commits() {
         if let Ok(mode) = std::env::var("KEEPPEEK_CRASH_MODE") {
@@ -294,7 +444,6 @@ mod tests {
             acked.len() >= ROUNDS as usize * KILL_AFTER_ACKS,
             "every round must ack before its kill"
         );
-        let max_acked = acked.iter().map(|ack| ack.revision).max().unwrap_or(0);
         let export = {
             let reopened = DurableStore::open(&db, now_ms()).expect("killed store must reopen");
             reopened
@@ -305,43 +454,7 @@ mod tests {
             .iter()
             .find(|namespace| namespace.namespace == NAMESPACE)
             .expect("reopen must restore the namespace");
-        assert!(
-            namespace.revision >= max_acked && namespace.revision <= max_acked + u64::from(ROUNDS),
-            "the counter must cover every ack with room for at most one unacked commit per round"
-        );
-        let acked_keys: BTreeSet<&str> = acked.iter().map(|ack| ack.key.as_str()).collect();
-        let present_keys: BTreeSet<&str> = namespace
-            .entries
-            .iter()
-            .map(|entry| entry.key.as_str())
-            .collect();
-        let extras: Vec<&&str> = present_keys.difference(&acked_keys).collect();
-        assert!(
-            extras.len() <= ROUNDS as usize,
-            "at most one unacked commit per round may have slipped in: {extras:?}"
-        );
-        for ack in &acked {
-            if ack.lease {
-                continue;
-            }
-            let entry: StoredEntry = namespace
-                .entries
-                .iter()
-                .find(|entry| entry.key == ack.key)
-                .expect("every acked commit must be present")
-                .clone();
-            assert_eq!(entry.revision, ack.revision);
-            assert_eq!(entry.value, media_intent_value(&ack.role));
-        }
-        assert_eq!(
-            namespace
-                .entries
-                .iter()
-                .filter(|entry| entry.expires_ms.is_some())
-                .count(),
-            acked.iter().filter(|ack| ack.lease).count(),
-            "leases killed before expiry must recover intact"
-        );
+        assert_recovered_commits(namespace, &acked);
         let mut registry = Registry::default();
         registry.import_namespace(
             NAMESPACE.to_owned(),
