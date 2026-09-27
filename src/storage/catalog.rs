@@ -29,6 +29,7 @@ use std::{
     time::Duration,
 };
 
+pub mod locations;
 pub mod maintenance;
 pub mod workflow;
 
@@ -351,6 +352,11 @@ struct LegacyRecording {
 }
 
 enum Command {
+    VolumeLocation {
+        request: locations::Request,
+        deadline: std::time::Instant,
+        reply: SyncSender<anyhow::Result<locations::Reply>>,
+    },
     RecoverDeletions {
         archive: super::long_term::inspection::Archive,
         deadline: std::time::Instant,
@@ -1453,6 +1459,23 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
     let intent_epoch = maintenance::jobs::Epoch::new();
     while let Ok(command) = rx.recv() {
         match command {
+            Command::VolumeLocation {
+                request,
+                deadline,
+                reply,
+            } => {
+                let result = pollster::block_on(locations::execute(&connection, request, deadline));
+                let fatal = result
+                    .as_ref()
+                    .is_err_and(|error| error.is::<locations::FatalTransaction>());
+                let _ = reply.send(result);
+                if fatal {
+                    tracing::error!(
+                        "volume catalog transaction state is unknown; stopping catalog writer"
+                    );
+                    break;
+                }
+            }
             Command::RecoverDeletions {
                 archive,
                 deadline,
@@ -1910,6 +1933,8 @@ async fn legacy_recordings_without_keyframes(
                                         )
              FROM recording_files AS r
              WHERE NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
+               AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations
+                   WHERE kind = 'recording' AND object_id = r.id AND state != 'cancelled')
              ORDER BY r.started_at_ms, r.id",
             (),
         )
@@ -2711,6 +2736,7 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     backfill_recording_coverage(connection).await?;
     workflow::initialize(connection).await?;
     maintenance::jobs::initialize(connection).await?;
+    locations::initialize(connection).await?;
     Ok(())
 }
 

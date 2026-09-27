@@ -122,3 +122,32 @@ Length or container metadata alone does not prove that a copied file has the sam
 - The pure placement review requires Windows device-name rejection, boundary tests, source/group
   precedence and allowlists, cap-aware ranking, and explicit semantics for disabled fallback.
 - Cross-model review was offered. No external CLI review has been authorized or run.
+
+## Catalog ledger increment
+
+`catalog::locations` now serializes immutable root bindings, bounded allocation reservations,
+and initial authoritative object publication through the existing catalog actor. Migration 3 adds
+the ledger without backfilling or changing legacy recording paths. A reservation is not permission
+to open a file: the runtime owner still must pin and validate the configured root and enforce the
+current policy before opening its destination.
+
+Capacity evidence includes the root and filesystem identities, a five-second lifetime, and the
+catalog revision read before the probe. Each mutation and catalog reopening invalidates earlier
+observations. Durable reservations debit shared filesystem space, and per-volume counters keep
+admission work bounded by 37 bindings rather than the number of recorded objects. Publication
+requires the owner's verified file identity, size, and SHA-256 digest; pending allocations do not
+appear as readable locations. Publication converts the reservation to owned bytes atomically.
+
+Exact operation retries preserve intent across reopening. Changed intent, stale observations,
+foreign root evidence, disabled bindings, unsafe relative keys, colliding destinations, and signed
+integer overflow are rejected. Failed mutations roll back; if clean transaction state cannot be
+established, the catalog writer stops instead of processing unrelated writes in an uncertain
+transaction.
+
+Fifteen focused `volume_ledger` tests cover these boundaries, competing callers, publication limits,
+restart persistence, transaction cleanup, and maintenance conflicts by ID and destination path.
+Published recordings reject legacy identity, size, path, and finalized-state changes. Legacy startup
+backfill excludes volume-owned rows so replacing a file cannot silently replace captured evidence.
+This is still an internal catalog increment: production registration/backfill, growing writers,
+authorized move transitions, reader leases, artifact owners, metadata handoff, and Administrator
+operations remain outstanding.
