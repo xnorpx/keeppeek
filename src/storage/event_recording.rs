@@ -83,7 +83,7 @@ impl QueuedEventFrame {
         max_frames: usize,
     ) -> Result<Self, RecordingFrame> {
         if frames_counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
                 count.checked_add(1).filter(|count| *count <= max_frames)
             })
             .is_err()
@@ -92,7 +92,7 @@ impl QueuedEventFrame {
         }
         let bytes = frame.byte_len();
         if bytes_counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
                 count.checked_add(bytes).filter(|count| *count <= max_bytes)
             })
             .is_err()

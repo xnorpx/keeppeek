@@ -537,12 +537,12 @@ struct PendingEventReservation {
 impl Drop for PendingEventReservation {
     fn drop(&mut self) {
         self.pending_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 current.checked_sub(self.bytes)
             })
             .expect("pending event byte reservation must balance exactly");
         self.pending_count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 current.checked_sub(1)
             })
             .expect("pending event count reservation must balance exactly");
