@@ -53,9 +53,9 @@ impl Manager {
         } else {
             Some(self.pin_cancellation_source(&job)?)
         };
-        let root = self
-            .inner
-            .root(self.cancellation_volume(&job.destination.volume, job.destination.generation)?)?;
+        let root = self.inner.writable_root(
+            self.cancellation_volume(&job.destination.volume, job.destination.generation)?,
+        )?;
         let evidence = match &job.cancellation {
             Some(evidence) => evidence.clone(),
             None => {

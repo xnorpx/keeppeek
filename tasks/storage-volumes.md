@@ -205,6 +205,12 @@ different directory at the same path stays unavailable. Disabled volumes are nev
 recovery. Once bound, roots remain pinned for this runtime; this increment does not replace a
 lost filesystem handle or apply live configuration changes.
 
+Copy recovery, publication, source retirement, cancellation cleanup, and receipt cleanup require
+a volume that permits changes to existing objects. ReadOnly and Disabled states preserve files
+and pending journal work for a later writable configuration. A read-only source may still supply
+a copy, and an already published destination remains readable. Draining permits existing work;
+separating new admission from reservation growth in the durable ledger remains outstanding.
+
 Playback, scrub, event-search, and export workers retain reader leases for their actual file-use
 lifetime. Leases also cover legacy aliases of named paths. After publication, new readers cannot
 resolve an alias of the retired source. Existing readers finish before its retirement.

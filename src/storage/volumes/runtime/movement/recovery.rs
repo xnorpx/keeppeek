@@ -44,7 +44,7 @@ impl Manager {
         cancelled: &impl Fn() -> bool,
     ) -> anyhow::Result<()> {
         let index = self.move_volume(&job.destination.volume, job.destination.generation)?;
-        let root = self.inner.root(index)?;
+        let root = self.inner.writable_root(index)?;
         let temporary = format!("{}.tmp", job.id);
         let source_index = self.move_volume(&job.source.volume, job.source.generation)?;
         let input = self.inner.root(source_index)?.open_owned(
@@ -90,7 +90,7 @@ impl Manager {
         cancelled: &impl Fn() -> bool,
     ) -> anyhow::Result<()> {
         let index = self.move_volume(&job.destination.volume, job.destination.generation)?;
-        let root = self.inner.root(index)?;
+        let root = self.inner.writable_root(index)?;
         let evidence = destination_evidence(job)?;
         if job.phase == "verified" {
             check_work(deadline, cancelled)?;

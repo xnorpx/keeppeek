@@ -2,6 +2,24 @@ use super::*;
 use crate::storage::volumes::runtime::movement_tests::fixture;
 
 #[test]
+fn read_only_source_cannot_be_retired_until_writable() -> anyhow::Result<()> {
+    let fixture = fixture()?;
+    fixture.manager.resume_move(&fixture.job_id, || false)?;
+    let configuration = fixture.manager.inner.configuration.clone();
+    let mut read_only = configuration.clone();
+    read_only.volumes[0].state = crate::storage::volumes::VolumeState::ReadOnly;
+    let manager = Manager::new(read_only, fixture.catalog.handle())?;
+    assert!(manager.retire_move(&fixture.job_id).is_err());
+    assert!(fixture.source_path.exists());
+    assert!(fixture.destination.path.exists());
+    let manager = Manager::new(configuration, fixture.catalog.handle())?;
+    assert!(manager.retire_move(&fixture.job_id)?);
+    assert!(!fixture.source_path.exists());
+    fixture.catalog.shutdown();
+    Ok(())
+}
+
+#[test]
 fn retirement_removes_only_the_verified_old_copy_and_retries_after_restart() -> anyhow::Result<()> {
     let fixture = fixture()?;
     let target = fixture.destination.path.clone();

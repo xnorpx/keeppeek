@@ -4,6 +4,28 @@ use super::super::{
 };
 use super::*;
 
+#[test]
+fn read_only_destination_keeps_cancelled_copy_until_writable() -> anyhow::Result<()> {
+    let fixture = fixture()?;
+    let mut output = staged(&fixture)?;
+    output.write_all(&[7; 8])?;
+    drop(output);
+    let configuration = fixture.manager.inner.configuration.clone();
+    let mut read_only = configuration.clone();
+    read_only.volumes[1].state = VolumeState::ReadOnly;
+    let manager = Manager::new(read_only, fixture.catalog.handle())?;
+    assert!(manager.cancel_move(&fixture.job_id).is_err());
+    assert_eq!(
+        std::fs::read(fixture.destination.path.with_extension("tmp"))?,
+        [7; 8]
+    );
+    let manager = Manager::new(configuration, fixture.catalog.handle())?;
+    manager.cancel_move(&fixture.job_id)?;
+    assert_cancelled(&fixture)?;
+    fixture.catalog.shutdown();
+    Ok(())
+}
+
 fn staged(fixture: &Fixture) -> anyhow::Result<ReservedFile> {
     let old = &fixture.destination;
     let reservation = Reservation {
