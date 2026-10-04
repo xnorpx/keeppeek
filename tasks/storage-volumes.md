@@ -28,6 +28,11 @@ The acceptance criteria and ordered slices in issue #129 remain authoritative.
   and thumbnail references. Cleanup filters by volume and never treats offline as absent.
 - Bootstrap fences the metadata handoff so the retained old catalog cannot open as a second
   writer. Rollback requires a stopped process and a verified authority transition.
+- The first named binding or metadata handoff installs a generated-column format sentinel.
+  These catalogs require the new binary, including for backup inspection and restoration.
+  Turso 0.7.2 rejects their schema when generated columns are disabled. The builders in the
+  checked repository revisions `103dbf7` and issue base `26ef522` leave that option disabled;
+  this is a tested downgrade barrier for those builds, not a promise about arbitrary forks.
 
 ## Ordered implementation and evidence
 
@@ -170,3 +175,40 @@ final/intermediate links. Windows pins prevent directory renames; Unix tests ren
 replacement detection. This is an inspection primitive, not writer integration or permission
 to enable a configured volume. Runtime ownership, recovery, and Administrator operations
 listed above still must be implemented before activation.
+
+## Writer and movement integration
+
+The runtime now selects and reserves a root before file creation, grows its reservation before
+each bounded write, and accounts for synchronized materialized bytes separately from outstanding
+physical reservations. Recording finalization and authoritative location publication share one
+catalog transaction. A failed writer cannot publish or accept a buffered write replay.
+
+The move journal reserves a non-readable destination under the same stable object identity.
+The worker copies in 64 KiB chunks, verifies SHA-256 through pinned handles, synchronizes and
+renames without replacement, and switches the catalog location transactionally. Restart resumes
+only the captured temporary identity and rechecks the full result. Source retirement waits for
+reader leases and retains a verified destination handle while moving the old source through a
+private quarantine. Durable receipts distinguish a completed removal from unexplained absence.
+Cancellation uses the same removal receipts and releases destination capacity only after cleanup.
+
+The background worker has a 64-item wakeup queue, 64-job scan pages, at most 4096 pending jobs,
+three attempts per scan, and a 60-second rescan interval. Admission precedes the wakeup, so queue
+overflow does not discard a committed job. The application joins the actual worker before closing
+the catalog. Finalized named recordings request archive placement without performing a copy in
+the recording writer. Rejected admission still leaves the source intact; automatic reevaluation
+of a finalized object whose initial archive admission failed remains outstanding.
+
+Playback, scrub, event-search, and export workers retain reader leases for their actual file-use
+lifetime. Leases also cover legacy aliases of named paths. After publication, new readers cannot
+resolve an alias of the retired source. Existing readers finish before its retirement.
+
+Catalog authority leases protect both database workers and surviving reader/move workers.
+Validated backup imports, compaction, and legacy path migration use explicit authority transitions;
+named-root restore remains rejected until root ownership transfer is implemented. Interrupted
+operations preserve ambiguous files. These changes are internal integration, not activation:
+configuration still accepts only Disabled named-volume drafts.
+
+Remaining before activation: legacy bindings/backfill, export and thumbnail owner integration,
+per-volume retention and drain, live policy changes and volume recovery, named metadata relocation,
+Administrator operations and UI, and final performance/platform evidence. Focused test logs are
+under `target/129-*-nextest.log`; failed intermediate runs must not be presented as final evidence.

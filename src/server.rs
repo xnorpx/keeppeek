@@ -3955,29 +3955,36 @@ fn spawn_export_worker(
             let worker_path = monitor_path.clone();
             let worker_attempt_directory = worker_path.parent().map(Path::to_path_buf);
             let worker_job_id = monitor_job_id.clone();
+            let worker_catalog = monitor_state.catalog.clone();
             let estimated_bytes = export_estimated_bytes(&fragments).max(1);
             let worker = std::thread::Builder::new()
                 .name(format!("export-worker-{worker_job_id}"))
                 .spawn(move || {
-                    let result = crate::storage::playback::export_fragment_ranges_with_progress(
-                        &fragments,
-                        end_ms,
-                        &worker_path,
-                        || {
-                            let _ = events.try_send(ExportWorkerEvent::Heartbeat);
-                            worker_cancel.load(Ordering::Acquire)
-                        },
-                        |bytes| {
-                            let _ = events.try_send(ExportWorkerEvent::Progress {
-                                per_mille: 200u32.saturating_add(
-                                    u32::try_from(bytes.saturating_mul(650) / estimated_bytes)
-                                        .unwrap_or(650)
-                                        .min(650),
-                                ),
-                                bytes,
-                            });
-                        },
-                    )
+                    let result = (|| {
+                        let catalog = worker_catalog
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("recording catalog is unavailable"))?;
+                        let _reader_leases = catalog.lease_media_fragments(&fragments)?;
+                        crate::storage::playback::export_fragment_ranges_with_progress(
+                            &fragments,
+                            end_ms,
+                            &worker_path,
+                            || {
+                                let _ = events.try_send(ExportWorkerEvent::Heartbeat);
+                                worker_cancel.load(Ordering::Acquire)
+                            },
+                            |bytes| {
+                                let _ = events.try_send(ExportWorkerEvent::Progress {
+                                    per_mille: 200u32.saturating_add(
+                                        u32::try_from(bytes.saturating_mul(650) / estimated_bytes)
+                                            .unwrap_or(650)
+                                            .min(650),
+                                    ),
+                                    bytes,
+                                });
+                            },
+                        )
+                    })()
                     .and_then(|artifact| {
                         let _ = events.send(ExportWorkerEvent::Progress {
                             per_mille: 900,
@@ -5419,13 +5426,14 @@ fn stored_media_batch(
             "stored media time is out of range",
         )
     })?;
-    let selected = catalog
-        .media_fragments_in_range(
+    let (selected, _selected_lease) = catalog
+        .leased_media_fragments_in_range(
             request.recording_stream_id,
             request.requested_time_ms,
             lookup_end,
         )
-        .map_err(|error| stored_catalog_error("locate stored media fragment", error))?
+        .map_err(|error| stored_catalog_error("locate stored media fragment", error))?;
+    let selected = selected
         .into_iter()
         .max_by_key(|fragment| fragment.start_ms)
         .ok_or_else(|| {
@@ -5445,8 +5453,12 @@ fn stored_media_batch(
     let delivery_end = request
         .end_time_ms
         .map_or(buffer_end, |end_time_ms| end_time_ms.min(buffer_end));
-    let mut fragments = catalog
-        .media_fragments_in_range(request.recording_stream_id, selected.start_ms, delivery_end)
+    let (mut fragments, _fragment_leases) = catalog
+        .leased_media_fragments_in_range(
+            request.recording_stream_id,
+            selected.start_ms,
+            delivery_end,
+        )
         .map_err(|error| stored_catalog_error("query stored media fragments", error))?;
     if fragments.is_empty() {
         fragments.push(selected.clone());
@@ -5472,8 +5484,8 @@ fn encode_stored_media_keyframe(
             "recording catalog is unavailable",
         )
     })?;
-    let location = catalog
-        .resolve_media_object(
+    let (location, _location_lease) = catalog
+        .leased_resolve_media_object(
             request.source_id,
             request.stream_id,
             Some(request.recording_stream_id),
@@ -5586,8 +5598,8 @@ fn stored_media_continuation_batch(
             "recording catalog is unavailable",
         ));
     };
-    let fragments = catalog
-        .media_fragments_in_range(recording_stream_id, start_time_ms, end_time_ms)
+    let (fragments, _fragment_leases) = catalog
+        .leased_media_fragments_in_range(recording_stream_id, start_time_ms, end_time_ms)
         .map_err(|error| stored_catalog_error("refill stored media fragments", error))?;
     let Some(fragment_time_ms) = fragments.first().map(|fragment| fragment.start_ms) else {
         return Ok(None);
@@ -6602,6 +6614,7 @@ fn fetch_event_search_media(
 }
 
 struct ResolvedEventSearchMediaObject {
+    _reader_lease: Option<crate::storage::catalog::readers::LeaseSet>,
     object_id: String,
     event_id: String,
     event_revision: u64,
@@ -6695,8 +6708,8 @@ fn stream_event_search_media(
         let legacy_recording_stream_id = camera
             .as_ref()
             .map(|camera| format!("{}/{}", camera.recording_label, stored_stream_id));
-        let location = catalog
-            .resolve_media_object(
+        let (location, location_lease) = catalog
+            .leased_resolve_media_object(
                 &object.source_id,
                 stored_stream_id,
                 legacy_recording_stream_id.as_deref(),
@@ -6762,6 +6775,7 @@ fn stream_event_search_media(
             ));
         }
         objects.push(ResolvedEventSearchMediaObject {
+            _reader_lease: Some(location_lease),
             object_id: object.object_id.clone(),
             event_id: String::new(),
             event_revision: 0,
@@ -6930,6 +6944,7 @@ fn resolve_event_search_attachment(
         ));
     }
     Ok(ResolvedEventSearchMediaObject {
+        _reader_lease: None,
         object_id: object.object_id.clone(),
         event_id: event.id,
         event_revision: event.revision,
@@ -9754,11 +9769,13 @@ impl ServerState {
     }
 
     fn upsert_camera(&self, mut entry: CameraEntry) {
+        let source_ip = entry.configuration.ip;
         let mut cameras = self
             .cameras
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let changed_groups;
+        let volume_groups;
         if let Some(existing) = cameras
             .iter_mut()
             .find(|camera| camera.info.id == entry.info.id)
@@ -9766,6 +9783,7 @@ impl ServerState {
             if entry.groups.is_empty() {
                 entry.groups.clone_from(&existing.groups);
             }
+            volume_groups = entry.groups.clone();
             changed_groups = if entry.groups == existing.groups {
                 Vec::new()
             } else {
@@ -9778,14 +9796,32 @@ impl ServerState {
             };
             *existing = entry;
         } else {
+            volume_groups = entry.groups.clone();
             changed_groups = entry.groups.clone();
             cameras.push(entry);
+        }
+        if let Err(error) = self.update_volume_groups(source_ip, Some(volume_groups)) {
+            tracing::error!(ip = %source_ip, %error, "named recording group registry is unavailable; recording remains fail-closed");
         }
         cameras.sort_unstable_by(|left, right| left.info.id.cmp(&right.info.id));
         drop(cameras);
         if !changed_groups.is_empty() {
             camera_access::invalidate_group_sessions(self, &changed_groups);
         }
+    }
+
+    fn update_volume_groups(&self, ip: IpAddr, groups: Option<Vec<String>>) -> anyhow::Result<()> {
+        let mut registry = self
+            .storage_config
+            .volume_groups
+            .write()
+            .map_err(|_| anyhow::anyhow!("volume group registry unavailable"))?;
+        if let Some(groups) = groups {
+            registry.insert(ip.to_string(), groups);
+        } else {
+            registry.remove(&ip.to_string());
+        }
+        Ok(())
     }
 
     fn camera_info(&self, camera: &CameraEntry) -> CameraInfo {
@@ -13607,6 +13643,10 @@ fn start_runtime_camera(
         return None;
     }
     let groups = runtime_camera_groups(config_path, camera.config.ip)?;
+    if let Err(error) = state.update_volume_groups(camera.config.ip, Some(groups.clone())) {
+        tracing::error!(ip = %camera.config.ip, %error, "camera cannot start with an unavailable volume group registry");
+        return None;
+    }
     let runtime_result = if restart {
         runtime.restart_camera(camera.clone())
     } else {
@@ -13684,6 +13724,13 @@ fn delete_camera_settings(
             if let Some(runtime) = &state.camera_runtime {
                 runtime.stop_camera(ip).map_err(|_| ControlCommandError::new(proto::ErrorCode::Unavailable, 503, "camera configuration was removed but its runtime stop could not be confirmed"))?;
             }
+            state.update_volume_groups(ip, None).map_err(|_| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Unavailable,
+                    503,
+                    "camera was removed but its volume group registry is unavailable",
+                )
+            })?;
             camera_configuration_revision(state)
         }
         Err(error) => Err(ControlCommandError::new(
@@ -17318,6 +17365,66 @@ mod tests {
     }
 
     #[test]
+    fn camera_group_updates_reach_the_shared_volume_registry() {
+        let state = media_test_state();
+        let shared = state.storage_config.clone().volume_groups;
+        let mut camera = state.camera("127.0.0.1").unwrap();
+        camera.groups = vec!["outdoor".to_owned()];
+        state.upsert_camera(camera.clone());
+        assert_eq!(shared.read().unwrap()["127.0.0.1"], ["outdoor"]);
+        camera.groups.clear();
+        state.upsert_camera(camera.clone());
+        assert_eq!(shared.read().unwrap()["127.0.0.1"], ["outdoor"]);
+        camera.groups = vec!["indoor".to_owned()];
+        state.upsert_camera(camera);
+        assert_eq!(shared.read().unwrap()["127.0.0.1"], ["indoor"]);
+    }
+
+    #[test]
+    fn camera_deletion_removes_only_its_shared_volume_groups() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-volume-groups-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("config.toml");
+        crate::config::write_private_file(&path, b"[cameras]\n").unwrap();
+        let state = media_test_state().with_camera_config_path(path.clone());
+        let mut camera = state.camera("127.0.0.1").unwrap();
+        crate::config::upsert_camera(&path, &camera.configuration).unwrap();
+        camera.groups = vec!["outdoor".to_owned()];
+        state.upsert_camera(camera);
+        state
+            .update_volume_groups("127.0.0.2".parse().unwrap(), Some(vec!["retained".into()]))
+            .unwrap();
+        let shared = state.storage_config.clone().volume_groups;
+        assert!(shared.read().unwrap().contains_key("127.0.0.1"));
+        delete_camera_settings(&state, "127.0.0.1", "").unwrap();
+        let groups = shared.read().unwrap();
+        assert!(!groups.contains_key("127.0.0.1"));
+        assert_eq!(groups["127.0.0.2"], ["retained"]);
+        drop(groups);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn poisoned_volume_group_registry_rejects_updates() {
+        let state = media_test_state();
+        let shared = state.storage_config.volume_groups.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = shared.write().unwrap();
+                panic!("poison the synthetic group registry");
+            })
+            .join()
+            .is_err()
+        );
+        assert!(
+            state
+                .update_volume_groups("127.0.0.1".parse().unwrap(), Some(vec!["outdoor".into()]))
+                .is_err()
+        );
+        assert!(state.storage_config.volume_groups.read().is_err());
+    }
+
+    #[test]
     fn camera_group_changes_cancel_existing_user_work() {
         let state = media_test_state();
         state.cameras.write().unwrap()[0].groups = vec!["outdoor".to_owned()];
@@ -19095,24 +19202,72 @@ mod tests {
 
     #[test]
     fn event_search_queries_and_fetches_encoded_media_objects() {
-        let directory =
-            std::env::temp_dir().join(format!("keeppeek-event-search-{}", rand::random::<u64>()));
-        let catalog = RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+        check_event_search_queries_and_fetches_encoded_media_objects(false);
+    }
+
+    #[test]
+    fn named_event_search_readers_hold_leases_through_cancellation_delivery() {
+        check_event_search_queries_and_fetches_encoded_media_objects(true);
+    }
+
+    fn check_event_search_queries_and_fetches_encoded_media_objects(named: bool) {
+        let (directory, catalog, manager) = if named {
+            let (directory, catalog, manager) =
+                crate::storage::volumes::runtime::tests::fixture(2 * 1024 * 1024).unwrap();
+            (directory, catalog, Some(manager))
+        } else {
+            let directory = std::env::temp_dir()
+                .join(format!("keeppeek-event-search-{}", rand::random::<u64>()));
+            let catalog = RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+            (directory, catalog, None)
+        };
         let handle = catalog.handle();
         let started_at = Instant::now();
-        let mut writer =
-            crate::storage::medium_term::MediumTermWriter::create_with_catalog_identity(
-                &directory,
-                crate::storage::RecordingStreamIdentity::new(
-                    "127.0.0.1",
-                    "sub",
-                    "archived-front-door",
-                ),
-                started_at,
-                8 * 1024,
-                handle.clone(),
-            )
-            .unwrap();
+        let mut writer = manager.as_ref().map_or_else(
+            || {
+                crate::storage::medium_term::MediumTermWriter::create_with_catalog_identity(
+                    &directory,
+                    crate::storage::RecordingStreamIdentity::new(
+                        "127.0.0.1",
+                        "sub",
+                        "archived-front-door",
+                    ),
+                    started_at,
+                    8 * 1024,
+                    handle.clone(),
+                )
+                .unwrap()
+            },
+            |manager| {
+                let id = uuid::Uuid::new_v4().to_string();
+                let reservation = manager
+                    .reserve(
+                        crate::storage::volumes::VolumeRole::Active,
+                        "127.0.0.1",
+                        &[],
+                        crate::storage::catalog::locations::Object {
+                            kind: crate::storage::catalog::locations::Kind::Recording,
+                            id: id.clone(),
+                        },
+                        8192,
+                    )
+                    .unwrap()
+                    .unwrap();
+                crate::storage::medium_term::MediumTermWriter::create_with_reservation(
+                    reservation,
+                    id,
+                    crate::storage::RecordingStreamIdentity::new(
+                        "127.0.0.1",
+                        "sub",
+                        "archived-front-door",
+                    ),
+                    started_at,
+                    8192,
+                    handle.clone(),
+                )
+                .unwrap()
+            },
+        );
         let frame_payload = bytes::Bytes::from_static(&[
             0, 0, 0, 8, 0x67, 0x42, 0x00, 0x1f, 0xe5, 0x88, 0x68, 0x40, 0, 0, 0, 4, 0x68, 0xce,
             0x3c, 0x80, 0, 0, 0, 1, 0x65,
@@ -19673,12 +19828,33 @@ mod tests {
             },
             &cancelled,
             |message| {
+                assert_eq!(
+                    handler
+                        .state
+                        .catalog
+                        .as_ref()
+                        .unwrap()
+                        .reader_leases()
+                        .conflicts(&fragments[0].recording_id, &fragments[0].path)
+                        .unwrap(),
+                    named
+                );
                 cancelled_messages.push(message);
                 cancelled.store(true, Ordering::Release);
                 Ok(())
             },
         )
         .unwrap();
+        assert!(
+            !handler
+                .state
+                .catalog
+                .as_ref()
+                .unwrap()
+                .reader_leases()
+                .conflicts(&fragments[0].recording_id, &fragments[0].path)
+                .unwrap()
+        );
         assert_eq!(cancelled_messages.len(), 1);
         assert!(matches!(
             cancelled_messages[0].message.message,
@@ -19691,6 +19867,7 @@ mod tests {
 
         drop(handler);
         catalog.shutdown();
+        drop(manager);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

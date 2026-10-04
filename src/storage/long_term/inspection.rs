@@ -23,7 +23,7 @@ const INSPECTION_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(in crate::storage) mod container;
 mod inventory;
-mod removal;
+pub(in crate::storage) mod removal;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::storage) struct Identity {

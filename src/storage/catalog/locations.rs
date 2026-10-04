@@ -8,6 +8,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod growth;
+mod materialization;
+pub mod moves;
+pub use materialization::Materialization;
 mod ownership;
 pub use ownership::{Location, Publication};
 
@@ -92,6 +96,22 @@ pub struct Allocation {
     pub capacity: Capacity,
 }
 
+/// Ensures a pending writer owns at least this many bytes before writing them.
+#[derive(Debug, Clone)]
+pub struct Growth {
+    pub operation: String,
+    pub bytes: u64,
+    pub capacity: Capacity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Usage {
+    pub volume: String,
+    pub filesystem: String,
+    pub allocated_bytes: u64,
+    pub reserved_bytes: u64,
+}
+
 impl fmt::Debug for Allocation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Allocation")
@@ -108,7 +128,15 @@ pub enum Request {
     Bind(Binding),
     Revision,
     Reserve(Allocation),
+    Grow(Growth),
+    Materialize(Materialization),
+    BeginMove(moves::Intent),
+    Move(String),
+    Moves(moves::Page),
+    AdvanceMove(moves::Step),
+    Usage,
     Publish(Publication),
+    Finalize(Publication),
     Lookup(Object),
 }
 
@@ -118,6 +146,9 @@ pub enum Reply {
     Revision(u64),
     Reserved { operation: String, bytes: u64 },
     Location(Option<Location>),
+    Usage(Vec<Usage>),
+    Move(Box<moves::Job>),
+    Moves(Vec<moves::Job>),
 }
 
 impl RecordingCatalogHandle {
@@ -154,9 +185,11 @@ impl RecordingCatalogHandle {
 }
 
 pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result<()> {
+    materialization::migrate(connection).await?;
     connection
         .execute_batch(include_str!("locations/schema.sql"))
         .await?;
+    moves::initialize(connection).await?;
     // A sample from a previous actor lifetime must never authorize another allocation.
     bump_revision(connection).await?;
     connection.execute("INSERT OR IGNORE INTO catalog_schema_migrations (version, applied_at_ms) VALUES (3, ?1)", [super::current_unix_time_ms()]).await?;
@@ -173,12 +206,67 @@ fn identifier(value: &str) -> anyhow::Result<()> {
 
 fn validate(request: &Request) -> anyhow::Result<()> {
     match request {
-        Request::Revision => {}
-        Request::Publish(publication) => {
-            identifier(&publication.operation)?;
-            identifier(&publication.file_identity)?;
-            anyhow::ensure!(publication.bytes > 0, "empty media publication");
-            to_i64(publication.bytes, "publication bytes")?;
+        Request::Revision | Request::Usage => {}
+        Request::Move(id) => identifier(id)?,
+        Request::Moves(page) => {
+            anyhow::ensure!((1..=64).contains(&page.limit), "invalid move page size");
+            if let Some(after) = &page.after {
+                identifier(after)?;
+            }
+        }
+        Request::AdvanceMove(step) => {
+            identifier(step.id())?;
+            if let moves::Step::Verified(evidence) | moves::Step::Retired(evidence) = step {
+                validate_publication(evidence)?;
+            }
+            if let moves::Step::CancellationVerified {
+                evidence:
+                    moves::Cancellation::File {
+                        relative_key,
+                        bytes,
+                        file_identity,
+                        ..
+                    },
+                ..
+            } = step
+            {
+                validate_key(relative_key)?;
+                identifier(file_identity)?;
+                to_i64(*bytes, "cancelled copy bytes")?;
+            }
+        }
+        Request::BeginMove(intent) => {
+            identifier(&intent.id)?;
+            identifier(&intent.object.id)?;
+            anyhow::ensure!(intent.expected_revision > 0, "invalid source revision");
+            to_i64(intent.expected_revision, "source revision")?;
+            anyhow::ensure!(
+                intent.destination.operation == intent.id
+                    && intent.destination.object.id == intent.id
+                    && intent.destination.object.kind == intent.object.kind
+                    && intent.object.id != intent.id,
+                "invalid move destination identity"
+            );
+            validate_allocation(&intent.destination)?;
+        }
+        Request::Materialize(materialized) => {
+            identifier(&materialized.operation)?;
+            identifier(&materialized.file_identity)?;
+            to_i64(materialized.bytes, "materialized bytes")?;
+        }
+        Request::Grow(growth) => {
+            identifier(&growth.operation)?;
+            anyhow::ensure!(growth.bytes > 0, "invalid allocation growth");
+            to_i64(growth.bytes, "allocation growth")?;
+            identifier(&growth.capacity.filesystem)?;
+            identifier(&growth.capacity.root_identity)?;
+            to_i64(
+                growth.capacity.available_bytes,
+                "filesystem available bytes",
+            )?;
+        }
+        Request::Publish(publication) | Request::Finalize(publication) => {
+            validate_publication(publication)?;
         }
         Request::Lookup(object) => identifier(&object.id)?,
         Request::Bind(binding) => {
@@ -194,24 +282,7 @@ fn validate(request: &Request) -> anyhow::Result<()> {
             }
             crate::storage::volumes::validation::comparison_root(&binding.root)?;
         }
-        Request::Reserve(allocation) => {
-            identifier(&allocation.operation)?;
-            identifier(&allocation.object.id)?;
-            identifier(&allocation.volume)?;
-            identifier(&allocation.capacity.filesystem)?;
-            identifier(&allocation.capacity.root_identity)?;
-            validate_key(&allocation.relative_key)?;
-            anyhow::ensure!(
-                allocation.bytes > 0 && allocation.generation > 0,
-                "invalid allocation"
-            );
-            to_i64(allocation.bytes, "allocation bytes")?;
-            to_i64(allocation.generation, "volume generation")?;
-            to_i64(
-                allocation.capacity.available_bytes,
-                "filesystem available bytes",
-            )?;
-        }
+        Request::Reserve(allocation) => validate_allocation(allocation)?,
     }
     Ok(())
 }
@@ -269,7 +340,21 @@ pub(super) async fn execute(
         let reply = match request {
             Request::Bind(binding) => bind(connection, &binding).await?,
             Request::Reserve(allocation) => reserve(connection, &allocation).await?,
+            Request::Grow(growth) => growth::grow(connection, &growth).await?,
+            Request::BeginMove(intent) => {
+                Reply::Move(Box::new(moves::begin(connection, &intent).await?))
+            }
+            Request::Move(id) => Reply::Move(Box::new(moves::load(connection, &id).await?)),
+            Request::Moves(page) => Reply::Moves(moves::page(connection, &page).await?),
+            Request::AdvanceMove(step) => {
+                Reply::Move(Box::new(moves::advance(connection, &step).await?))
+            }
+            Request::Materialize(materialized) => {
+                materialization::checkpoint(connection, &materialized).await?
+            }
+            Request::Usage => growth::usage(connection).await?,
             Request::Publish(publication) => ownership::publish(connection, &publication).await?,
+            Request::Finalize(publication) => ownership::finalize(connection, &publication).await?,
             Request::Lookup(object) => ownership::lookup(connection, &object).await?,
             Request::Revision => unreachable!("read returned before transaction"),
         };
@@ -336,6 +421,9 @@ async fn bump_revision(connection: &turso::Connection) -> anyhow::Result<()> {
 }
 
 async fn bind(connection: &turso::Connection, binding: &Binding) -> anyhow::Result<Reply> {
+    if !binding.id.starts_with("legacy-") {
+        super::authority::install_format_barrier(connection).await?;
+    }
     let root = binding.root.to_str().expect("validated UTF-8 root");
     let generation = to_i64(binding.generation, "volume generation")?;
     let mut rows = connection.query("SELECT generation, root, filesystem, root_identity FROM storage_volume_bindings WHERE id = ?1", [binding.id.as_str()]).await?;
@@ -375,7 +463,7 @@ async fn reserve(connection: &turso::Connection, allocation: &Allocation) -> any
         capacity.ledger_revision == revision(connection).await?,
         "volume observation superseded"
     );
-    let destination_path = admission(connection, allocation).await?;
+    let destination_path = admission(connection, allocation, true).await?;
     connection.execute("INSERT INTO storage_volume_allocations (operation, kind, object_id, volume_id, generation, relative_key, bytes, intent_bytes, state, destination_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'reserved', ?8)", turso::params![allocation.operation.clone(), allocation.object.kind.as_str(), allocation.object.id.clone(), allocation.volume.clone(), to_i64(allocation.generation, "volume generation")?, allocation.relative_key.clone(), to_i64(allocation.bytes, "allocation bytes")?, destination_path]).await?;
     bump_revision(connection).await?;
     Ok(Reply::Reserved {
@@ -388,7 +476,7 @@ async fn retry(
     connection: &turso::Connection,
     allocation: &Allocation,
 ) -> anyhow::Result<Option<Reply>> {
-    let mut rows = connection.query("SELECT kind, object_id, volume_id, generation, relative_key, intent_bytes, state FROM storage_volume_allocations WHERE operation = ?1", [allocation.operation.as_str()]).await?;
+    let mut rows = connection.query("SELECT kind, object_id, volume_id, generation, relative_key, intent_bytes, state, bytes FROM storage_volume_allocations WHERE operation = ?1", [allocation.operation.as_str()]).await?;
     let Some(row) = rows.next().await? else {
         return Ok(None);
     };
@@ -407,13 +495,14 @@ async fn retry(
     );
     Ok(Some(Reply::Reserved {
         operation: allocation.operation.clone(),
-        bytes: allocation.bytes,
+        bytes: to_u64(row.get::<i64>(7)?, "allocation bytes")?,
     }))
 }
 
 async fn admission(
     connection: &turso::Connection,
     allocation: &Allocation,
+    new_allocation: bool,
 ) -> anyhow::Result<String> {
     let mut rows = connection.query("SELECT generation, writable, limit_bytes, minimum_free_bytes, filesystem, root_identity, root FROM storage_volume_bindings WHERE id = ?1", [allocation.volume.as_str()]).await?;
     let row = rows
@@ -449,7 +538,7 @@ async fn admission(
         "filesystem reserved bytes",
     )?;
     anyhow::ensure!(
-        total.get::<i64>(2)? < MAX_PENDING_ALLOCATIONS,
+        !new_allocation || total.get::<i64>(2)? < MAX_PENDING_ALLOCATIONS,
         "pending allocation limit reached"
     );
     let minimum = to_u64(row.get::<i64>(3)?, "volume reserve")?;
@@ -477,4 +566,42 @@ async fn admission(
 }
 
 #[cfg(test)]
+mod finalize_tests;
+#[cfg(test)]
+mod growth_tests;
+#[cfg(test)]
+mod materialization_tests;
+#[cfg(test)]
+mod move_recording_tests;
+#[cfg(test)]
+mod moves_tests;
+#[cfg(test)]
 mod tests;
+
+fn validate_publication(publication: &Publication) -> anyhow::Result<()> {
+    identifier(&publication.operation)?;
+    identifier(&publication.file_identity)?;
+    anyhow::ensure!(publication.bytes > 0, "empty media publication");
+    to_i64(publication.bytes, "publication bytes")?;
+    Ok(())
+}
+
+fn validate_allocation(allocation: &Allocation) -> anyhow::Result<()> {
+    identifier(&allocation.operation)?;
+    identifier(&allocation.object.id)?;
+    identifier(&allocation.volume)?;
+    identifier(&allocation.capacity.filesystem)?;
+    identifier(&allocation.capacity.root_identity)?;
+    validate_key(&allocation.relative_key)?;
+    anyhow::ensure!(
+        allocation.bytes > 0 && allocation.generation > 0,
+        "invalid allocation"
+    );
+    to_i64(allocation.bytes, "allocation bytes")?;
+    to_i64(allocation.generation, "volume generation")?;
+    to_i64(
+        allocation.capacity.available_bytes,
+        "filesystem available bytes",
+    )?;
+    Ok(())
+}

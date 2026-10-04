@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS storage_volume_allocations (
     destination_path TEXT NOT NULL COLLATE NOCASE UNIQUE,
     bytes INTEGER NOT NULL CHECK (bytes > 0),
     intent_bytes INTEGER NOT NULL CHECK (intent_bytes > 0),
+    materialized_bytes INTEGER NOT NULL DEFAULT 0 CHECK (typeof(materialized_bytes) = 'integer' AND materialized_bytes >= 0 AND materialized_bytes <= bytes),
     state TEXT NOT NULL CHECK (state IN ('reserved', 'published', 'cancelled')),
     file_identity TEXT,
     digest BLOB,
@@ -42,11 +43,12 @@ CREATE INDEX IF NOT EXISTS storage_volume_maintenance_path
     ON recording_maintenance_claims(replace(path, char(92), '/') COLLATE NOCASE) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS storage_volume_cleanup_path
     ON recording_files(replace(path, char(92), '/') COLLATE NOCASE) WHERE cleanup_pending = 1;
-CREATE TRIGGER IF NOT EXISTS storage_volume_allocation_insert
+DROP TRIGGER IF EXISTS storage_volume_allocation_insert;
+CREATE TRIGGER storage_volume_allocation_insert
 AFTER INSERT ON storage_volume_allocations BEGIN
     UPDATE storage_volume_bindings
         SET allocated_bytes = allocated_bytes + CASE WHEN NEW.state != 'cancelled' THEN NEW.bytes ELSE 0 END,
-            reserved_bytes = reserved_bytes + CASE WHEN NEW.state = 'reserved' THEN NEW.bytes ELSE 0 END
+            reserved_bytes = reserved_bytes + CASE WHEN NEW.state = 'reserved' THEN NEW.bytes - NEW.materialized_bytes ELSE 0 END
         WHERE id = NEW.volume_id;
     UPDATE storage_volume_ledger
         SET pending_count = pending_count + CASE WHEN NEW.state = 'reserved' THEN 1 ELSE 0 END
@@ -85,26 +87,28 @@ WHEN EXISTS (SELECT 1 FROM storage_volume_allocations
     WHERE kind = 'recording' AND state != 'cancelled'
         AND (object_id = OLD.id OR destination_path = replace(OLD.path, char(92), '/') COLLATE NOCASE))
 BEGIN SELECT RAISE(ABORT, 'volume ownership requires volume maintenance'); END;
-CREATE TRIGGER IF NOT EXISTS storage_volume_allocation_update
+DROP TRIGGER IF EXISTS storage_volume_allocation_update;
+CREATE TRIGGER storage_volume_allocation_update
 AFTER UPDATE ON storage_volume_allocations BEGIN
     UPDATE storage_volume_bindings
         SET allocated_bytes = allocated_bytes - CASE WHEN OLD.state != 'cancelled' THEN OLD.bytes ELSE 0 END,
-            reserved_bytes = reserved_bytes - CASE WHEN OLD.state = 'reserved' THEN OLD.bytes ELSE 0 END
+            reserved_bytes = reserved_bytes - CASE WHEN OLD.state = 'reserved' THEN OLD.bytes - OLD.materialized_bytes ELSE 0 END
         WHERE id = OLD.volume_id;
     UPDATE storage_volume_bindings
         SET allocated_bytes = allocated_bytes + CASE WHEN NEW.state != 'cancelled' THEN NEW.bytes ELSE 0 END,
-            reserved_bytes = reserved_bytes + CASE WHEN NEW.state = 'reserved' THEN NEW.bytes ELSE 0 END
+            reserved_bytes = reserved_bytes + CASE WHEN NEW.state = 'reserved' THEN NEW.bytes - NEW.materialized_bytes ELSE 0 END
         WHERE id = NEW.volume_id;
     UPDATE storage_volume_ledger
         SET pending_count = pending_count - CASE WHEN OLD.state = 'reserved' THEN 1 ELSE 0 END
             + CASE WHEN NEW.state = 'reserved' THEN 1 ELSE 0 END
         WHERE singleton = 1;
 END;
-CREATE TRIGGER IF NOT EXISTS storage_volume_allocation_delete
+DROP TRIGGER IF EXISTS storage_volume_allocation_delete;
+CREATE TRIGGER storage_volume_allocation_delete
 AFTER DELETE ON storage_volume_allocations BEGIN
     UPDATE storage_volume_bindings
         SET allocated_bytes = allocated_bytes - CASE WHEN OLD.state != 'cancelled' THEN OLD.bytes ELSE 0 END,
-            reserved_bytes = reserved_bytes - CASE WHEN OLD.state = 'reserved' THEN OLD.bytes ELSE 0 END
+            reserved_bytes = reserved_bytes - CASE WHEN OLD.state = 'reserved' THEN OLD.bytes - OLD.materialized_bytes ELSE 0 END
         WHERE id = OLD.volume_id;
     UPDATE storage_volume_ledger
         SET pending_count = pending_count - CASE WHEN OLD.state = 'reserved' THEN 1 ELSE 0 END

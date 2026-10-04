@@ -1,6 +1,89 @@
 use super::*;
 use crate::storage::catalog::{RecordingCatalog, tests::test_dir};
 
+#[test]
+fn volume_ledger_growth_reserves_only_delta_and_survives_retries_and_restart() {
+    let root = test_dir("volume-ledger-growth");
+    let path = root.join("catalog.db");
+    let catalog = RecordingCatalog::open(&path).unwrap();
+    let handle = catalog.handle();
+    handle
+        .volume_location(Request::Bind(binding(&root, "primary", "disk")))
+        .unwrap();
+    let allocation = reserve(
+        "growing",
+        "primary",
+        handle.volume_ledger_revision().unwrap(),
+        70,
+    );
+    handle
+        .volume_location(Request::Reserve(allocation.clone()))
+        .unwrap();
+    let mut growth = Growth {
+        operation: "growing".into(),
+        bytes: 80,
+        capacity: allocation.capacity.clone(),
+    };
+    assert!(
+        handle
+            .volume_location(Request::Grow(growth.clone()))
+            .is_err()
+    );
+    growth.capacity.ledger_revision = handle.volume_ledger_revision().unwrap();
+    let expected = Reply::Reserved {
+        operation: "growing".into(),
+        bytes: 80,
+    };
+    assert_growth_retries(&handle, growth.clone(), allocation, &expected);
+    let revision = handle.volume_ledger_revision().unwrap();
+    growth.bytes = 95;
+    growth.capacity.ledger_revision = revision;
+    assert!(
+        handle
+            .volume_location(Request::Grow(growth.clone()))
+            .is_err()
+    );
+    assert_eq!(handle.volume_ledger_revision().unwrap(), revision);
+    assert_growth_usage(&handle);
+    catalog.shutdown();
+    let catalog = RecordingCatalog::open(&path).unwrap();
+    let handle = catalog.handle();
+    growth.bytes = 80;
+    assert_eq!(
+        handle.volume_location(Request::Grow(growth)).unwrap(),
+        expected
+    );
+    assert_growth_usage(&handle);
+    catalog.shutdown();
+}
+
+fn assert_growth_retries(
+    handle: &RecordingCatalogHandle,
+    growth: Growth,
+    allocation: Allocation,
+    expected: &Reply,
+) {
+    for request in [
+        Request::Grow(growth.clone()),
+        Request::Grow(growth),
+        Request::Reserve(allocation),
+    ] {
+        assert_eq!(&handle.volume_location(request).unwrap(), expected);
+    }
+}
+
+fn assert_growth_usage(handle: &RecordingCatalogHandle) {
+    assert_eq!(
+        handle.volume_location(Request::Usage).unwrap(),
+        Reply::Usage(vec![Usage {
+            volume: "primary".into(),
+            filesystem: "disk".into(),
+            allocated_bytes: 80,
+            reserved_bytes: 80
+        }])
+    );
+}
+
 fn binding(root: &std::path::Path, id: &str, filesystem: &str) -> Binding {
     Binding {
         id: id.to_owned(),
@@ -267,7 +350,11 @@ fn volume_ledger_competing_callers_cannot_spend_one_probe_twice() {
 #[test]
 fn volume_ledger_rollback_recovers_active_and_already_clean_transactions() {
     pollster::block_on(async {
-        let database = turso::Builder::new_local(":memory:").build().await.unwrap();
+        let database = turso::Builder::new_local(":memory:")
+            .experimental_generated_columns(true)
+            .build()
+            .await
+            .unwrap();
         let connection = database.connect().unwrap();
         rollback(&connection).await.unwrap();
         connection.execute_batch("CREATE TABLE rollback_probe (value INTEGER); BEGIN IMMEDIATE; INSERT INTO rollback_probe VALUES (1)").await.unwrap();
@@ -373,13 +460,21 @@ fn assert_publication_survives_reopen(
 #[test]
 fn volume_ledger_maintenance_conflicts_are_symmetric() {
     pollster::block_on(async {
-        let database = turso::Builder::new_local(":memory:").build().await.unwrap();
+        let database = turso::Builder::new_local(":memory:")
+            .experimental_generated_columns(true)
+            .build()
+            .await
+            .unwrap();
         let connection = database.connect().unwrap();
         super::super::initialize_schema(&connection).await.unwrap();
         let root = test_dir("volume-ledger-maintenance-fence");
-        bind(&connection, &binding(&root, "primary", "disk"))
-            .await
-            .unwrap();
+        execute(
+            &connection,
+            Request::Bind(binding(&root, "primary", "disk")),
+            Instant::now() + BUSY_TIMEOUT,
+        )
+        .await
+        .unwrap();
         let revision = revision(&connection).await.unwrap();
         let first = reserve("one", "primary", revision, 10);
         super::reserve(&connection, &first).await.unwrap();
@@ -470,13 +565,21 @@ fn assert_published_recording_fences(handle: &RecordingCatalogHandle, root: &std
 #[test]
 fn volume_ledger_path_conflicts_do_not_depend_on_recording_identity() {
     pollster::block_on(async {
-        let database = turso::Builder::new_local(":memory:").build().await.unwrap();
+        let database = turso::Builder::new_local(":memory:")
+            .experimental_generated_columns(true)
+            .build()
+            .await
+            .unwrap();
         let connection = database.connect().unwrap();
         super::super::initialize_schema(&connection).await.unwrap();
         let root = test_dir("volume-ledger-path-fence");
-        bind(&connection, &binding(&root, "primary", "disk"))
-            .await
-            .unwrap();
+        execute(
+            &connection,
+            Request::Bind(binding(&root, "primary", "disk")),
+            Instant::now() + BUSY_TIMEOUT,
+        )
+        .await
+        .unwrap();
         let revision = super::revision(&connection).await.unwrap();
         let first = reserve("one", "primary", revision, 10);
         super::reserve(&connection, &first).await.unwrap();
@@ -518,13 +621,21 @@ fn volume_ledger_path_conflicts_do_not_depend_on_recording_identity() {
 #[test]
 fn volume_ledger_cleanup_path_conflicts_are_symmetric_and_preserve_rows() {
     pollster::block_on(async {
-        let database = turso::Builder::new_local(":memory:").build().await.unwrap();
+        let database = turso::Builder::new_local(":memory:")
+            .experimental_generated_columns(true)
+            .build()
+            .await
+            .unwrap();
         let connection = database.connect().unwrap();
         super::super::initialize_schema(&connection).await.unwrap();
         let root = test_dir("volume-ledger-cleanup-fence");
-        bind(&connection, &binding(&root, "primary", "disk"))
-            .await
-            .unwrap();
+        execute(
+            &connection,
+            Request::Bind(binding(&root, "primary", "disk")),
+            Instant::now() + BUSY_TIMEOUT,
+        )
+        .await
+        .unwrap();
         let insert_recording = "INSERT INTO recording_files (id, stream_id, started_at_ms, path, init_offset, init_len, finalized, file_bytes, cleanup_pending) VALUES (?1, 'camera', 1, ?2, 0, 1, 1, 10, ?3)";
         let first_path = root
             .join("primary/camera/one.mp4")
@@ -636,13 +747,21 @@ fn volume_ledger_publication_rejects_wrong_path_and_unfinalized_recordings() {
 #[test]
 fn volume_ledger_pending_cleanup_cannot_change_into_a_reserved_path() {
     pollster::block_on(async {
-        let database = turso::Builder::new_local(":memory:").build().await.unwrap();
+        let database = turso::Builder::new_local(":memory:")
+            .experimental_generated_columns(true)
+            .build()
+            .await
+            .unwrap();
         let connection = database.connect().unwrap();
         super::super::initialize_schema(&connection).await.unwrap();
         let root = test_dir("volume-ledger-cleanup-path-change");
-        bind(&connection, &binding(&root, "primary", "disk"))
-            .await
-            .unwrap();
+        execute(
+            &connection,
+            Request::Bind(binding(&root, "primary", "disk")),
+            Instant::now() + BUSY_TIMEOUT,
+        )
+        .await
+        .unwrap();
         let insert = "INSERT INTO recording_files (id, stream_id, started_at_ms, path, init_offset, init_len, finalized, file_bytes, cleanup_pending) VALUES ('old', 'camera', 1, 'old.mp4', 0, 1, 1, 10, 1)";
         connection.execute(insert, ()).await.unwrap();
         let revision = super::revision(&connection).await.unwrap();

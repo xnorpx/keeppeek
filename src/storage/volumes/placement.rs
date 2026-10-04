@@ -15,13 +15,22 @@ impl VolumeConfiguration {
         request: &PlacementRequest<'_>,
         observations: &[VolumeObservation],
     ) -> anyhow::Result<PlacementDecision> {
+        self.place_with_groups(request, &[request.group], observations)
+    }
+
+    pub(super) fn place_with_groups(
+        &self,
+        request: &PlacementRequest<'_>,
+        groups: &[&str],
+        observations: &[VolumeObservation],
+    ) -> anyhow::Result<PlacementDecision> {
         self.validate()?;
         anyhow::ensure!(
             request.required_bytes > 0,
             "placement must request at least one byte"
         );
         validate_observations(observations)?;
-        let Some(rule) = self.matching_rule(request) else {
+        let Some(rule) = self.matching_rule(request, groups) else {
             return Ok(PlacementDecision {
                 selected: None,
                 rejected: Vec::new(),
@@ -43,7 +52,7 @@ impl VolumeConfiguration {
             let observation = observations
                 .iter()
                 .find(|observation| observation.id == *id);
-            match eligibility(volume, request, observation) {
+            match eligibility(volume, request, groups, observation) {
                 Ok(available) => eligible.push((volume, available)),
                 Err(reason) => rejected.push(RejectedVolume {
                     id: id.clone(),
@@ -64,7 +73,11 @@ impl VolumeConfiguration {
         })
     }
 
-    fn matching_rule(&self, request: &PlacementRequest<'_>) -> Option<&PlacementRule> {
+    pub(super) fn matching_rule(
+        &self,
+        request: &PlacementRequest<'_>,
+        groups: &[&str],
+    ) -> Option<&PlacementRule> {
         self.placement
             .iter()
             .filter(|rule| {
@@ -76,14 +89,15 @@ impl VolumeConfiguration {
                     && rule
                         .group
                         .as_deref()
-                        .is_none_or(|group| group == request.group)
+                        .is_none_or(|group| groups.contains(&group))
             })
             .max_by_key(|rule| {
-                if rule.source.is_some() {
+                let rank = if rule.source.is_some() {
                     2
                 } else {
                     u8::from(rule.group.is_some())
-                }
+                };
+                (rank, std::cmp::Reverse(rule.group.as_deref().unwrap_or("")))
             })
     }
 }
@@ -111,6 +125,7 @@ fn validate_observations(observations: &[VolumeObservation]) -> anyhow::Result<(
 fn eligibility(
     volume: &Volume,
     request: &PlacementRequest<'_>,
+    groups: &[&str],
     observation: Option<&VolumeObservation>,
 ) -> Result<u64, RejectionReason> {
     match volume.state {
@@ -124,7 +139,10 @@ fn eligibility(
     }
     if (!volume.sources.is_empty() || !volume.groups.is_empty())
         && !volume.sources.iter().any(|source| source == request.source)
-        && !volume.groups.iter().any(|group| group == request.group)
+        && !volume
+            .groups
+            .iter()
+            .any(|group| groups.contains(&group.as_str()))
     {
         return Err(RejectionReason::SourceDenied);
     }

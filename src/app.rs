@@ -144,9 +144,30 @@ pub fn run(
         None
     };
 
-    let storage_config = StorageConfig::from_toml(&cfg.storage);
+    let mut storage_config = StorageConfig::from_toml(&cfg.storage);
     let recording_catalog = open_recording_catalog(&storage_config)?;
     let catalog_handle = recording_catalog.handle();
+    storage_config.initialize_named_volumes(catalog_handle.clone())?;
+    let volume_worker = storage_config
+        .volume_runtime
+        .as_ref()
+        .map(|manager| crate::storage::volumes::runtime::worker::Worker::start((**manager).clone()))
+        .transpose()?;
+    storage_config.volume_mover = volume_worker.as_ref().map(|worker| worker.handle());
+    {
+        let mut groups = storage_config
+            .volume_groups
+            .write()
+            .map_err(|_| anyhow::anyhow!("volume group registry unavailable"))?;
+        for (group, cameras) in &camera_configs {
+            for camera in cameras {
+                groups
+                    .entry(camera.ip.to_string())
+                    .or_default()
+                    .push(group.clone());
+            }
+        }
+    }
     for camera in cameras.values() {
         let source_id = camera.config.ip.to_string();
         let recording_label = camera
@@ -398,7 +419,9 @@ pub fn run(
     notification_runtime.shutdown();
     tracing::info!("flushing and finalizing all recordings...");
     storage_engine.shutdown();
+    let mover_shutdown = volume_worker.map_or(Ok(()), |worker| worker.shutdown());
     recording_catalog.shutdown();
+    mover_shutdown?;
     tracing::info!("all recordings saved");
 
     if let Some(error) = startup_error {

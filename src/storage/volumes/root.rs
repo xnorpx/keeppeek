@@ -7,6 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod file;
+mod retirement;
+pub use file::OwnedFile;
+
 /// An opened directory and the identity that a binding must retain.
 pub struct Root {
     path: PathBuf,
