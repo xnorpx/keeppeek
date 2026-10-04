@@ -52,7 +52,7 @@ describe('control client system mapping', () => {
 			},
 			recordingEstimate: {}
 		});
-		let sent: Request['command'];
+		let sent: Request['command'] | undefined;
 		const client = new SystemControlClient(async (command) => {
 			sent = command;
 			return {

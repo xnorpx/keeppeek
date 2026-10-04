@@ -8,6 +8,7 @@ use std::{
 };
 
 mod file;
+mod legacy;
 mod retirement;
 pub use file::OwnedFile;
 

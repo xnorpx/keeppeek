@@ -639,6 +639,10 @@ impl MediumTermWriter {
         self.frames_written
     }
 
+    pub(crate) const fn is_named(&self) -> bool {
+        self.named_volume
+    }
+
     pub fn active_path(&self) -> &Path {
         &self.path
     }

@@ -117,7 +117,9 @@ fn run(manager: Manager, receiver: Receiver<()>, cancelled: &AtomicBool) {
     // This worker runs until shutdown; each turn handles one wakeup and one journal item.
     while !cancelled.load(Ordering::Acquire) {
         let mut worked = false;
-        if receiver.try_recv().is_ok() {
+        if receiver.try_recv().is_ok()
+            || manager.inner.rescan_requested.swap(false, Ordering::AcqRel)
+        {
             scan.next = Instant::now();
             worked = true;
         }
@@ -158,6 +160,12 @@ fn process(manager: &Manager, id: &str, cancelled: &AtomicBool) {
 }
 
 fn execute(manager: &Manager, id: &str, cancelled: &AtomicBool) -> anyhow::Result<()> {
+    if manager.recover_pending_image(id)? {
+        return Ok(());
+    }
+    if manager.finish_recording_retirement(id)? {
+        return Ok(());
+    }
     if manager.finish_export_retirement(id)? {
         return Ok(());
     }
@@ -224,6 +232,7 @@ impl Scan {
                 return Ok(None);
             }
             manager.recover_roots()?;
+            manager.check_recording_pressure();
             self.seen = 0;
             self.active = true;
         }

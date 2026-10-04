@@ -122,6 +122,7 @@ fn destination_fixture(
         path: secondary.join(&key),
         key,
         bytes: source.bytes,
+        _writer_lease: None,
     })
 }
 

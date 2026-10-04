@@ -12,6 +12,7 @@ use std::{
 /// An owned leaf whose parent and file handles remain pinned.
 pub struct OwnedFile {
     root: Root,
+    binding: Option<Root>,
     key: String,
     file: File,
     identity: String,
@@ -55,6 +56,7 @@ impl Root {
         let file = self.directory.open_with(key, &options)?.into_std();
         let identity = file_identity(&file)?;
         let owned = OwnedFile {
+            binding: None,
             root: Self {
                 path: self.path.clone(),
                 directory: self.directory.try_clone()?,
@@ -98,6 +100,7 @@ impl Root {
             "owned file identity changed"
         );
         let owned = OwnedFile {
+            binding: None,
             root: Self {
                 path: self.path.clone(),
                 directory: self.directory.try_clone()?,
@@ -137,7 +140,8 @@ impl Root {
     ) -> anyhow::Result<OwnedFile> {
         validate_key(key)?;
         anyhow::ensure!(
-            (key.ends_with(".tmp") || key.ends_with(".mp4")) && minimum_bytes <= maximum_bytes,
+            (key.ends_with(".tmp") || key.ends_with(".mp4") || key.ends_with(".jpg"))
+                && minimum_bytes <= maximum_bytes,
             "invalid writable recovery range"
         );
         self.revalidate()?;
@@ -166,6 +170,7 @@ impl Root {
             "recovery file length is outside its reservation"
         );
         let owned = OwnedFile {
+            binding: None,
             root: Self {
                 path: self.path.clone(),
                 directory: self.directory.try_clone()?,
@@ -182,6 +187,26 @@ impl Root {
 }
 
 impl OwnedFile {
+    pub(super) fn inspected_legacy(
+        root: Root,
+        binding: Root,
+        key: String,
+        file: File,
+    ) -> anyhow::Result<Self> {
+        let identity = file_identity(&file)?;
+        let expected_bytes = Some(file.metadata()?.len());
+        let owned = Self {
+            root,
+            binding: Some(binding),
+            key,
+            file,
+            identity,
+            expected_bytes,
+        };
+        owned.revalidate()?;
+        Ok(owned)
+    }
+
     /// Publishes staged media under a new UUID name without replacing another entry.
     /// The writable handle closes on success and failure; errors never trigger file deletion.
     ///
@@ -300,6 +325,10 @@ impl OwnedFile {
     /// # Errors
     /// Rejects changed roots, unsafe permissions, links, or replaced files.
     pub(crate) fn revalidate(&self) -> anyhow::Result<()> {
+        if let Some(binding) = &self.binding {
+            binding.revalidate()?;
+            validate_owner(&binding.directory, 0o022)?;
+        }
         self.root.revalidate()?;
         validate_owner(&self.root.directory, 0o022)?;
         anyhow::ensure!(

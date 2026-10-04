@@ -23,6 +23,30 @@ impl MovePreview {
 }
 
 impl Manager {
+    /// Reports whether new objects use named admission, including unavailable roots.
+    pub(crate) fn uses_named_policy(
+        &self,
+        role: super::super::VolumeRole,
+        source: &str,
+        groups: &[&str],
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(
+            groups.len() <= super::super::RULES_MAX,
+            "too many source groups"
+        );
+        let request = PlacementRequest {
+            role,
+            source,
+            group: "",
+            required_bytes: 0,
+        };
+        Ok(self
+            .inner
+            .configuration
+            .matching_rule(&request, groups)
+            .is_some())
+    }
+
     /// Returns the immutable configuration used by active writers and move admission.
     pub fn configuration(&self) -> &VolumeConfiguration {
         &self.inner.configuration

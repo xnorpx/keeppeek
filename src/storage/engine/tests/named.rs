@@ -7,6 +7,8 @@ use crate::storage::{
     },
 };
 
+mod failure_isolation;
+
 fn named_fixture() -> anyhow::Result<(PathBuf, RecordingCatalog, StorageConfig)> {
     let (root, catalog, manager) = runtime::tests::fixture(8 * MEBIBYTE_BYTES)?;
     let mut config = storage_config("named-worker-unused");

@@ -165,6 +165,7 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
 }
 
 pub(super) async fn begin(connection: &turso::Connection, intent: &Intent) -> anyhow::Result<Job> {
+    super::recordings::ensure_active(connection, &intent.object).await?;
     super::images::retirement::ensure_not_retiring(connection, &intent.object).await?;
     super::export_cleanup::ensure_active(connection, &intent.object).await?;
     let mut existing = connection.query("SELECT kind, object_id, source_revision, destination_operation FROM storage_volume_moves WHERE id = ?1", [intent.id.as_str()]).await?;

@@ -35,6 +35,7 @@ fn staged(fixture: &Fixture) -> anyhow::Result<ReservedFile> {
         key: old.key.clone(),
         path: old.path.clone(),
         bytes: old.bytes,
+        _writer_lease: None,
     };
     let file = fixture
         .manager

@@ -2247,6 +2247,8 @@ async fn claim_cleanup_candidate(
                 "SELECT id, path, file_bytes, cleanup_pending
                  FROM recording_files
                  WHERE finalized = 1 AND protected = 0
+                   AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
+                       AND (a.object_id=recording_files.id OR a.destination_path=replace(recording_files.path,char(92),'/') COLLATE NOCASE))
                    AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims
                                    WHERE recording_id = recording_files.id AND active = 1)
                  ORDER BY cleanup_pending DESC, started_at_ms, id
@@ -2300,6 +2302,8 @@ async fn pending_cleanup_candidate(
             "SELECT id, path, file_bytes
              FROM recording_files
              WHERE finalized = 1 AND protected = 0 AND cleanup_pending = 1
+               AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
+                   AND (a.object_id=recording_files.id OR a.destination_path=replace(recording_files.path,char(92),'/') COLLATE NOCASE))
              ORDER BY started_at_ms, id
              LIMIT 1",
             (),
