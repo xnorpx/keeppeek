@@ -29,6 +29,18 @@ impl std::fmt::Debug for LegacyPaths {
 }
 
 impl LegacyPaths {
+    pub(crate) fn effective(storage: &crate::storage::StorageConfig) -> anyhow::Result<Self> {
+        use std::path::absolute;
+        Ok(Self {
+            active_root: absolute(&storage.medium_term_path)?,
+            archive_root: absolute(&storage.long_term_path)?,
+            thumbnail_root: absolute(&storage.event_thumbnail_path)?,
+            export_root: absolute(storage.long_term_path.join(".exports"))?,
+            catalog_path: absolute(&storage.recording_catalog_path)?,
+            export_history_path: absolute(storage.long_term_path.join(".exports/history.json"))?,
+        })
+    }
+
     /// Keeps media roots fixed while named placement changes independently.
     pub(crate) fn ensure_same_media_roots(&self, effective: &Self) -> anyhow::Result<()> {
         for (captured, current) in [

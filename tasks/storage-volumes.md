@@ -504,3 +504,11 @@ their fixes. All 30 event-storage tests passed (`target/129-thumbnail-recovery-g
 This handles missing-directory startup; durable legacy root identity binding and migration
 remain required before activation.
 Strict workspace/all-target Clippy passed (`target/129-thumbnail-recovery-clippy.log`).
+
+Ordinary settings now check captured paths under configuration coordination before migration
+preparation, directory probes, or persistence. Media-root changes and catalog-path changes require
+the separate confirmed workflow; unrelated settings changes still succeed. The regression
+first reproduced an accepted changed path, then passed all eight path/migration-flag variants
+without creating directories or changing saved settings. All ten volume API tests and three
+application startup tests passed (`target/129-captured-settings-green.log`,
+`target/129-captured-settings-startup.log`).

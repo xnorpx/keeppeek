@@ -64,7 +64,7 @@ fn open_recording_catalog(storage_config: &StorageConfig) -> anyhow::Result<Reco
         catalog::locations::{Reply, Request},
         volumes::VolumeState,
     };
-    let paths = effective_legacy_paths(storage_config)?;
+    let paths = crate::storage::catalog::locations::legacy::LegacyPaths::effective(storage_config)?;
     let capture = storage_config
         .named_volumes
         .as_ref()
@@ -101,20 +101,6 @@ fn open_recording_catalog(storage_config: &StorageConfig) -> anyhow::Result<Reco
         }
     }
     Ok(catalog)
-}
-
-fn effective_legacy_paths(
-    storage: &StorageConfig,
-) -> anyhow::Result<crate::storage::catalog::locations::legacy::LegacyPaths> {
-    use std::path::absolute;
-    Ok(crate::storage::catalog::locations::legacy::LegacyPaths {
-        active_root: absolute(&storage.medium_term_path)?,
-        archive_root: absolute(&storage.long_term_path)?,
-        thumbnail_root: absolute(&storage.event_thumbnail_path)?,
-        export_root: absolute(storage.long_term_path.join(".exports"))?,
-        catalog_path: absolute(&storage.recording_catalog_path)?,
-        export_history_path: absolute(storage.long_term_path.join(".exports/history.json"))?,
-    })
 }
 
 /// Runs KeepPeek until shutdown and reports whether configuration requested a restart.

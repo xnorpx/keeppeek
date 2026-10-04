@@ -12745,6 +12745,27 @@ fn save_runtime_settings(
         ));
     }
     let next_storage_config = StorageConfig::from_toml(&settings.storage);
+    let _config_update = state
+        .config_update
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !update.expected_configuration_revision.is_empty() {
+        let current = config::load_config(config_path).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                format!("unable to verify current settings revision: {error}"),
+            )
+        })?;
+        if configuration_revision(&current) != update.expected_configuration_revision {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                409,
+                "runtime configuration changed after this editor was opened; reload before applying the draft",
+            ));
+        }
+    }
+    storage_volumes::settings::validate_captured_paths(state, &next_storage_config)?;
     let migration = if update.move_existing_recordings {
         match StorageMigration::between_with_metadata(
             StorageMigrationPaths::new(
@@ -12850,26 +12871,6 @@ fn save_runtime_settings(
             400,
             "destination filesystem cannot hold indexed recordings and critical headroom",
         ));
-    }
-    let _config_update = state
-        .config_update
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !update.expected_configuration_revision.is_empty() {
-        let current = config::load_config(config_path).map_err(|error| {
-            ControlCommandError::new(
-                proto::ErrorCode::Internal,
-                500,
-                format!("unable to verify current settings revision: {error}"),
-            )
-        })?;
-        if configuration_revision(&current) != update.expected_configuration_revision {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "runtime configuration changed after this editor was opened; reload before applying the draft",
-            ));
-        }
     }
     let saved = match config::update_settings_with_volume_draft(
         config_path,
