@@ -21,6 +21,7 @@ use std::{
 
 const GROWTH_BYTES: u64 = 1_048_576;
 
+mod archive;
 mod cancellation;
 mod movement;
 #[cfg(test)]
@@ -87,22 +88,6 @@ impl std::fmt::Debug for ReservedFile {
 }
 
 impl Manager {
-    /// Reserves an archive copy before it enters the bounded worker queue.
-    ///
-    /// # Errors
-    /// Refuses stale ownership or a policy without an available destination.
-    pub fn schedule_move(
-        &self,
-        job_id: &str,
-        object: Object,
-        request: &PlacementRequest<'_>,
-        groups: &[&str],
-    ) -> anyhow::Result<bool> {
-        Ok(self
-            .reserve_move(job_id, object, request, groups)?
-            .is_some())
-    }
-
     /// Copies an owned object to its resolved destination and publishes its stable identity.
     /// The old copy remains owned until a separate reader-aware retirement completes.
     ///
@@ -386,7 +371,7 @@ impl Manager {
             .iter()
             .position(|volume| volume.id == selected)
             .expect("placement selects configured volume");
-        self.reserve_on_volume(index, object, key, required_bytes)
+        self.reserve_on_volume(index, object, key, &request, groups)
             .map(Some)
     }
 
@@ -395,21 +380,35 @@ impl Manager {
         index: usize,
         object: Object,
         key: String,
-        required_bytes: u64,
+        placement: &PlacementRequest<'_>,
+        groups: &[&str],
     ) -> anyhow::Result<Reservation> {
         let volume = &self.inner.configuration.volumes[index];
         let root = self.inner.root(index)?;
         let capacity = root.capacity(self.inner.catalog.volume_ledger_revision()?)?;
         let operation = uuid::Uuid::new_v4().to_string();
-        let request = Request::Reserve(Allocation {
+        let allocation = Allocation {
             operation: operation.clone(),
             object,
             volume: volume.id.to_string(),
             generation: 1,
             relative_key: key.clone(),
-            bytes: required_bytes,
+            bytes: placement.required_bytes,
             capacity,
-        });
+        };
+        let request = if placement.role == VolumeRole::Active
+            && let Some(policy) = self.archive_policy(placement.source, groups)
+        {
+            Request::ReserveArchive(
+                allocation,
+                crate::storage::catalog::locations::archives::Intent {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    policy,
+                },
+            )
+        } else {
+            Request::Reserve(allocation)
+        };
         let reply = self
             .inner
             .catalog

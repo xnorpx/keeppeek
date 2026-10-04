@@ -521,12 +521,7 @@ impl WriterWorker {
             let result = writer.discard_pending().and_then(|()| writer.finalize());
             match result {
                 Ok(path) if path.exists() => {
-                    if let Err(error) = self.move_to_long_term_for_source(
-                        &key,
-                        &path,
-                        &id,
-                        Some(&pipeline.identity.source_id),
-                    ) {
+                    if let Err(error) = self.move_to_long_term(&key, &path, &id) {
                         self.health.note_failure(&key, &error.to_string());
                     }
                 }
@@ -604,14 +599,9 @@ impl WriterWorker {
             return;
         };
         let id = writer.recording_id().to_owned();
-        let result = writer.finalize_before(end).and_then(|path| {
-            self.move_to_long_term_for_source(
-                &identity.storage_key,
-                &path,
-                &id,
-                Some(&identity.source_id),
-            )
-        });
+        let result = writer
+            .finalize_before(end)
+            .and_then(|path| self.move_to_long_term(&identity.storage_key, &path, &id));
         if let Err(error) = result {
             self.health
                 .note_failure(&identity.storage_key, &error.to_string());

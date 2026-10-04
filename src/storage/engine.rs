@@ -1305,16 +1305,6 @@ impl WriterWorker {
         path: &Path,
         recording_id: &str,
     ) -> std::io::Result<PathBuf> {
-        self.move_to_long_term_for_source(camera_id, path, recording_id, None)
-    }
-
-    fn move_to_long_term_for_source(
-        &self,
-        camera_id: &str,
-        path: &Path,
-        recording_id: &str,
-        source_id: Option<&str>,
-    ) -> std::io::Result<PathBuf> {
         if self.config.volume_runtime.is_some() {
             use super::catalog::locations::{Kind, Object, Reply, Request};
             if let Some(catalog) = &self.catalog
@@ -1328,7 +1318,9 @@ impl WriterWorker {
                     Reply::Location(Some(_))
                 )
             {
-                self.schedule_named_archive(camera_id, recording_id, source_id)?;
+                if let Some(mover) = &self.config.volume_mover {
+                    mover.scan().map_err(std::io::Error::other)?;
+                }
                 return Ok(path.to_path_buf());
             }
         }
@@ -1371,55 +1363,6 @@ impl WriterWorker {
             self.enforce_storage_limit(StorageCleanupTrigger::SegmentFinalized);
         }
         Ok(destination)
-    }
-
-    fn schedule_named_archive(
-        &self,
-        camera_id: &str,
-        recording_id: &str,
-        source_id: Option<&str>,
-    ) -> std::io::Result<()> {
-        use super::{
-            catalog::locations::{Kind, Object},
-            volumes::{PlacementRequest, VolumeRole},
-        };
-        let (Some(manager), Some(mover)) = (&self.config.volume_runtime, &self.config.volume_mover)
-        else {
-            return Ok(());
-        };
-        let source = source_id
-            .or_else(|| {
-                self.pipelines
-                    .get(camera_id)
-                    .map(|pipeline| pipeline.identity.source_id.as_str())
-            })
-            .ok_or_else(|| std::io::Error::other("archive source identity is unavailable"))?;
-        let groups = self
-            .config
-            .volume_groups
-            .read()
-            .map_err(|_| std::io::Error::other("volume group registry unavailable"))?
-            .get(source)
-            .cloned()
-            .unwrap_or_default();
-        let groups = groups.iter().map(String::as_str).collect::<Vec<_>>();
-        mover
-            .schedule(
-                manager,
-                Object {
-                    kind: Kind::Recording,
-                    id: recording_id.to_owned(),
-                },
-                &PlacementRequest {
-                    role: VolumeRole::Archive,
-                    source,
-                    group: "",
-                    required_bytes: 0,
-                },
-                &groups,
-            )
-            .map_err(std::io::Error::other)?;
-        Ok(())
     }
 
     fn pipeline_for(&mut self, identity: RecordingStreamIdentity) -> &mut CameraPipeline {
