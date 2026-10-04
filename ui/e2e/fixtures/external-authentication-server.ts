@@ -189,14 +189,13 @@ function startTlsProxy(port: number, endpoints: Manifest): ProtocolChild {
 function startRustFixture(origin: string): ProtocolChild {
 	// A precompiled binary keeps build-lock waits outside the browser runtime deadline.
 	const executable = process.env.KEEPPEEK_AUTH_E2E_BINARY;
+	if (!executable)
+		throw new Error('Run bun run test:e2e:run to prepare the authentication fixture.');
 	const testArgs = ['issue123_browser_fixture', '--ignored', '--nocapture', '--test-threads=1'];
-	return new ProtocolChild(
-		executable || 'cargo',
-		executable
-			? testArgs
-			: ['test', '--locked', '--lib', 'issue123_browser_fixture', '--', ...testArgs.slice(1)],
-		{ ...process.env, KEEPPEEK_AUTH_E2E_ORIGIN: origin }
-	);
+	return new ProtocolChild(executable, testArgs, {
+		...process.env,
+		KEEPPEEK_AUTH_E2E_ORIGIN: origin
+	});
 }
 
 export async function startAuthenticationFixture() {
