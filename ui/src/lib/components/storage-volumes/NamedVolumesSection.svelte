@@ -8,6 +8,7 @@
 	import VolumeDraftEditor from './VolumeDraftEditor.svelte';
 	import VolumeOperations from './VolumeOperations.svelte';
 	import MoveJobs from './MoveJobs.svelte';
+	import VolumeDrainControl from './VolumeDrainControl.svelte';
 	let {
 		config,
 		controller,
@@ -123,13 +124,27 @@
 							bytes · Available: {volume.availableBytes?.toString() ??
 								'Unknown'}{volume.availableBytes === undefined ? '' : ' bytes'}
 						</p>
+						{#if volume.configuredDraining}<p class="text-xs text-text-muted">
+								Draining from saved configuration.
+							</p>{/if}
+						{#if volume.operatorDraining}<p class="text-xs text-text-muted">
+								Operator drain is active.
+							</p>{/if}
 					</div>
+					<VolumeDrainControl
+						{volume}
+						revision={status.configurationRevision}
+						{controller}
+						onchange={(updated) => (status = updated)}
+						disabled={disabled || busy || editing || !status.runtimeAvailable}
+					/>
 					<Button
 						type="button"
 						size="sm"
 						variant="outline"
 						disabled={busy}
-						onclick={() => probe(volume.volumeId)}>Probe {volume.volumeId}</Button
+						aria-label={`Probe ${volume.volumeId}`}
+						onclick={() => probe(volume.volumeId)}>Probe</Button
 					>
 				</li>
 			{/each}

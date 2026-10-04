@@ -54,6 +54,67 @@ function fixture(): SanitizedConfig {
 }
 
 describe('named volume settings', () => {
+	it('confirms operator drain and keeps configured drain visible after clearing it', async () => {
+		await page.viewport(320, 844);
+		const volumeId = 'a'.repeat(64);
+		const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+		let draining = false;
+		const storageVolumes = vi
+			.fn<VolumeController['storageVolumes']>()
+			.mockImplementation(async (request) => {
+				if (request.action.case === 'moves')
+					return create(StorageVolumeResultSchema, { result: { case: 'jobs', value: {} } });
+				if (request.action.case === 'setDraining') draining = request.action.value.draining;
+				return create(StorageVolumeResultSchema, {
+					result: {
+						case: 'volumes',
+						value: {
+							configurationRevision: 'revision-one',
+							runtimeAvailable: true,
+							volumes: [
+								{
+									volumeId,
+									online: true,
+									configuredDraining: true,
+									operatorDraining: draining
+								}
+							]
+						}
+					}
+				});
+			});
+		try {
+			const { container } = await render(NamedVolumesSection, {
+				config: fixture(),
+				controller: { storageVolumes, updateRuntimeConfiguration: vi.fn() },
+				onsaved: vi.fn()
+			});
+			await page.getByRole('button', { name: `Stop new writes to ${volumeId}` }).click();
+			expect(
+				storageVolumes.mock.calls.filter(([request]) => request.action.case === 'setDraining')
+			).toHaveLength(0);
+			expect(container.scrollWidth).toBeLessThanOrEqual(320);
+			confirm.mockReturnValue(true);
+			await page.getByRole('button', { name: `Stop new writes to ${volumeId}` }).click();
+			await expect.element(page.getByText('Operator drain is active.')).toBeVisible();
+			const mutation = storageVolumes.mock.calls.find(
+				([request]) => request.action.case === 'setDraining'
+			)?.[0];
+			expect(mutation?.action).toMatchObject({
+				case: 'setDraining',
+				value: {
+					volumeId,
+					draining: true,
+					expectedConfigurationRevision: 'revision-one'
+				}
+			});
+			await page.getByRole('button', { name: `Clear operator drain for ${volumeId}` }).click();
+			await expect.element(page.getByText('Operator drain is active.')).not.toBeInTheDocument();
+			await expect.element(page.getByText('Draining from saved configuration.')).toBeVisible();
+		} finally {
+			confirm.mockRestore();
+		}
+	});
 	it('confirms persisted removal after renaming and preserves cancelled edits', async () => {
 		const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
 		try {

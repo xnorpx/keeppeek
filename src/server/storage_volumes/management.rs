@@ -47,6 +47,7 @@ pub(in crate::server) fn dispatch(
         Some(Action::Moves(request)) => Wire::Jobs(moves::list(state, request)?),
         Some(Action::GetMove(request)) => Wire::Job(moves::get(state, &request.job_id)?),
         Some(Action::CancelMove(request)) => Wire::Job(moves::cancel(state, &request.job_id)?),
+        Some(Action::SetDraining(request)) => Wire::Volumes(set_draining(state, request)?),
         None => {
             return Err(error(
                 proto::ErrorCode::InvalidRequest,
@@ -92,6 +93,30 @@ fn manager(state: &ServerState) -> Result<&Manager> {
         }
     }
     Ok(manager)
+}
+
+fn set_draining(
+    state: &ServerState,
+    request: proto::SetStorageVolumeDraining,
+) -> Result<proto::StorageVolumeList> {
+    let _config = state.config_update.try_lock().map_err(|_| {
+        error(
+            proto::ErrorCode::Rejected,
+            409,
+            "configuration is changing; refresh and retry",
+        )
+    })?;
+    if request.expected_configuration_revision != camera_configuration_revision(state)? {
+        return Err(error(
+            proto::ErrorCode::Rejected,
+            409,
+            "configuration changed; refresh and retry",
+        ));
+    }
+    manager(state)?
+        .set_draining(&request.volume_id, request.draining)
+        .map_err(failure)?;
+    list(state)
 }
 
 fn catalog(state: &ServerState, request: Request) -> Result<Reply> {
@@ -150,6 +175,11 @@ fn list(state: &ServerState) -> Result<proto::StorageVolumeList> {
                         available_bytes: observation.filter(|_| online).map(|o| o.available_bytes),
                         owned_bytes: usage.map_or(0, |u| u.allocated_bytes),
                         reserved_bytes: usage.map_or(0, |u| u.reserved_bytes),
+                        configured_draining: usage.map_or(
+                            volume.state == crate::storage::volumes::VolumeState::Draining,
+                            |u| u.configured_draining,
+                        ),
+                        operator_draining: usage.is_some_and(|u| u.operator_draining),
                     }
                 })
                 .collect()

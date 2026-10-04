@@ -18,6 +18,7 @@ fn volume_operations_require_administrator_before_reading_storage() {
         Action::Moves(Default::default()),
         Action::GetMove(Default::default()),
         Action::CancelMove(Default::default()),
+        Action::SetDraining(Default::default()),
     ];
     for action in actions {
         let command = proto::StorageVolumeCommand {
@@ -34,6 +35,61 @@ fn volume_operations_require_administrator_before_reading_storage() {
         let rejected = dispatch(&state, &principal, command).unwrap_err();
         assert_eq!(rejected._http_status, 403);
     }
+}
+
+#[test]
+fn operator_drain_requires_current_revision_and_reports_independent_state() {
+    let (root, catalog, manager, mut state, _) = export_storage_tests::setup(16 * 1024 * 1024);
+    state.storage_config.named_volumes = Some(manager.configuration().clone());
+    state.config.storage.named_volumes = Some(
+        toml::Value::try_from(manager.configuration())
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
+    let principal = ApiPrincipal::local("127.0.0.1".parse().unwrap());
+    let command = |revision: String, draining| proto::StorageVolumeCommand {
+        action: Some(proto::storage_volume_command::Action::SetDraining(
+            proto::SetStorageVolumeDraining {
+                volume_id: "primary".into(),
+                draining,
+                expected_configuration_revision: revision,
+            },
+        )),
+    };
+    let before = catalog.handle().volume_ledger_revision().unwrap();
+    assert_eq!(
+        dispatch(&state, &principal, command("stale".into(), true))
+            .unwrap_err()
+            ._http_status,
+        409
+    );
+    assert_eq!(catalog.handle().volume_ledger_revision().unwrap(), before);
+    for draining in [true, true, false] {
+        let proto::ok::Result::StorageVolumeResult(result) = dispatch(
+            &state,
+            &principal,
+            command(camera_configuration_revision(&state).unwrap(), draining),
+        )
+        .unwrap() else {
+            panic!("missing volume result")
+        };
+        let Some(proto::storage_volume_result::Result::Volumes(result)) = result.result else {
+            panic!("missing volume status")
+        };
+        let volume = result
+            .volumes
+            .iter()
+            .find(|volume| volume.volume_id == "primary")
+            .unwrap();
+        assert_eq!(volume.operator_draining, draining);
+        assert!(!volume.configured_draining);
+        assert!(volume.online);
+    }
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 fn preview_request(state: &ServerState) -> proto::PreviewStorageMove {

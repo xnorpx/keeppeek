@@ -47,6 +47,7 @@ impl Names {
             Some(Action::Probe(value)) => Some(&mut value.volume_id),
             Some(Action::Objects(value)) => Some(&mut value.volume_id),
             Some(Action::PreviewMove(value)) => Some(&mut value.destination_volume_id),
+            Some(Action::SetDraining(value)) => Some(&mut value.volume_id),
             _ => None,
         };
         if let Some(id) = id {

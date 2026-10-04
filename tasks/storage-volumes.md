@@ -480,3 +480,17 @@ commands, UI, and bulk migration are not yet complete.
 The broader storage regression run passed 540 tests with one existing ignored test
 (`target/129-operational-drain-regressions.log`).
 Strict workspace/all-target Clippy also passed (`target/129-operational-drain-clippy.log`).
+
+The administrator API and UI now expose confirmed operator drain and clearing. Commands require
+the current configuration revision and return refreshed status. Configured and operator drain
+remain separate, including after clearing; root health remains independent. Secret-reference
+volume IDs retain the existing resolution and redaction behavior. All nine volume API tests
+and three focused browser tests passed (`target/129-drain-api-green.log`,
+`target/129-drain-ui-green.log`). Bulk evacuation and activation remain unfinished.
+
+The canonical Windows gate passed this control checkpoint: 3,146 Rust tests, strict Clippy,
+409 Bun tests, 251 browser tests, 57 compatibility tests, and 280 E2E tests with two existing
+skips (`target/129-drain-controls-check.log`). A subsequent 320-pixel regression exposed long
+volume IDs overflowing action buttons. Short visible labels retain full accessible names;
+all three focused browser tests passed (`target/129-drain-mobile-green.log`). Final acceptance
+still requires the remaining migration, removal, metadata, and activation work and a final gate.
