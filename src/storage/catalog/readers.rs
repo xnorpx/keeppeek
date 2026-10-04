@@ -410,6 +410,8 @@ async fn owned_locations(
             "SELECT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind = 'recording' AND a.state != 'cancelled' AND (a.object_id = r.id OR a.destination_path = replace(r.path, char(92), '/') COLLATE NOCASE))
              FROM recording_files r WHERE r.id = ?1 AND r.path = ?2 AND r.cleanup_pending = 0
              AND NOT EXISTS (SELECT 1 FROM storage_recording_retirements WHERE recording_id = r.id AND complete = 0)
+             AND NOT EXISTS (SELECT 1 FROM storage_recording_recovery q JOIN storage_volume_allocations a ON a.operation=q.operation
+                 WHERE q.complete=0 AND (q.recording_id=r.id OR a.destination_path=replace(r.path,char(92),'/') COLLATE NOCASE))
              AND NOT EXISTS (SELECT 1 FROM storage_volume_moves m JOIN storage_volume_allocations source ON source.operation = m.source_operation
                  WHERE m.phase IN ('published','retiring','complete') AND source.destination_path = replace(r.path, char(92), '/') COLLATE NOCASE)
              AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE (recording_id = r.id OR replace(path, char(92), '/') = replace(r.path, char(92), '/') COLLATE NOCASE) AND active = 1)",

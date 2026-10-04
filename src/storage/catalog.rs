@@ -1475,7 +1475,21 @@ fn run_catalog(
                 deadline,
                 reply,
             } => {
-                let result = pollster::block_on(locations::execute(&connection, request, deadline));
+                let result = pollster::block_on(async {
+                    if let locations::Request::RecordingRecovery(
+                        locations::recording_recovery::Action::Begin(pending, _),
+                    ) = &request
+                    {
+                        readers::ensure_recording_idle(
+                            &connection,
+                            &readers,
+                            &pending.recording,
+                            &pending.path,
+                        )
+                        .await?;
+                    }
+                    locations::execute(&connection, request, deadline).await
+                });
                 let fatal = result
                     .as_ref()
                     .is_err_and(|error| error.is::<locations::FatalTransaction>());

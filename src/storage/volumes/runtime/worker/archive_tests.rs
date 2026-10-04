@@ -72,7 +72,17 @@ fn frame(start: Instant, milliseconds: u64) -> crate::storage::RecordingFrame {
 fn archive_request_survives_offline_destination_restart_and_default_change() -> anyhow::Result<()> {
     let (path, catalog, manager, mut configuration) = fixture()?;
     let (object, writer) = writer(&manager)?;
-    assert_eq!(Scan::new().next(&manager)?, None);
+    let recovery = Scan::new()
+        .next(&manager)?
+        .expect("active reservation is scanned for recovery");
+    assert!(execute(&manager, &recovery, &AtomicBool::new(false)).is_err());
+    assert_eq!(
+        manager
+            .inner
+            .catalog
+            .volume_location(Request::Lookup(object.clone()))?,
+        Reply::Location(None)
+    );
     let source_path = writer.finalize()?;
     let original = std::fs::read(&source_path)?;
     let id = Scan::new()
