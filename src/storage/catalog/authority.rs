@@ -11,7 +11,11 @@ use std::{
 
 use crate::storage::long_term::inspection::removal::sync_directory;
 
+mod metadata;
 mod snapshot;
+#[cfg(test)]
+pub use metadata::transfer as transfer_metadata;
+pub use metadata::{TransferCheck, transfer_checked as transfer_metadata_checked};
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS recording_catalog_authority (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -62,6 +66,19 @@ struct Record {
 }
 
 impl Lease {
+    pub(crate) fn require_root(
+        &self,
+        root: &crate::storage::volumes::root::Root,
+    ) -> anyhow::Result<()> {
+        root.matches_directory(&self.directory)?;
+        self.revalidate()
+    }
+    pub(crate) fn require_existing(&self) -> anyhow::Result<()> {
+        self.revalidate()?;
+        anyhow::ensure!(self.file.is_some(), "managed catalog is unavailable");
+        Ok(())
+    }
+
     pub(crate) fn sync(&self) -> anyhow::Result<()> {
         self.revalidate()?;
         sync_directory(&self.directory)?;

@@ -37,14 +37,6 @@ impl VolumeConfiguration {
             );
             roots.push(root);
         }
-        anyhow::ensure!(
-            self.volumes
-                .iter()
-                .filter(|volume| volume.roles.contains(&VolumeRole::Metadata))
-                .count()
-                <= 1,
-            "only one metadata volume can be configured"
-        );
         for (index, rule) in self.placement.iter().enumerate() {
             self.validate_rule(rule)?;
             anyhow::ensure!(

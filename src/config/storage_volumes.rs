@@ -1,11 +1,14 @@
-use crate::storage::volumes::{VolumeConfiguration, VolumeState};
+use crate::storage::volumes::{VolumeConfiguration, VolumeRole, VolumeState};
 
 use super::{Secrets, resolve_toml_secret_references};
 
 #[cfg(test)]
 mod migration_tests;
 
-pub(super) fn validate(configuration: Option<&VolumeConfiguration>) -> anyhow::Result<()> {
+pub(super) fn validate(
+    configuration: Option<&VolumeConfiguration>,
+    metadata: Option<&super::MetadataBinding>,
+) -> anyhow::Result<()> {
     let Some(configuration) = configuration else {
         return Ok(());
     };
@@ -14,7 +17,10 @@ pub(super) fn validate(configuration: Option<&VolumeConfiguration>) -> anyhow::R
         configuration
             .volumes
             .iter()
-            .all(|volume| volume.state == VolumeState::Disabled),
+            .all(|volume| volume.state == VolumeState::Disabled
+                || (metadata.is_some_and(|owner| owner.volume_id == volume.id)
+                    && volume.state == VolumeState::Enabled
+                    && volume.roles == [VolumeRole::Metadata])),
         "named storage volumes must remain disabled until durable placement is available"
     );
     Ok(())
@@ -28,7 +34,13 @@ pub(super) fn persist<I: serde::Serialize>(
     let Some(configuration) = configuration else {
         return Ok(());
     };
-    validate_with_secrets(configuration, secrets)?;
+    let mut metadata = storage.get("metadata").cloned();
+    if let Some(value) = &mut metadata {
+        resolve_toml_secret_references(value, secrets)?;
+    }
+    let metadata: Option<super::MetadataBinding> =
+        metadata.map(toml::Value::try_into).transpose()?;
+    validate_with_secrets(configuration, secrets, metadata.as_ref())?;
     let mut next = toml::Value::try_from(configuration)?;
     if let Some(existing) = storage.get("named_volumes")
         && (!configuration.volumes.is_empty() || !configuration.placement.is_empty())
@@ -46,11 +58,12 @@ pub(super) fn persist<I: serde::Serialize>(
 pub(super) fn validate_with_secrets<I: serde::Serialize>(
     configuration: &VolumeConfiguration<I>,
     secrets: &Secrets,
+    metadata: Option<&super::MetadataBinding>,
 ) -> anyhow::Result<()> {
     let mut value = toml::Value::try_from(configuration)?;
     resolve_toml_secret_references(&mut value, secrets)?;
     let resolved = value.try_into()?;
-    validate(Some(&resolved))
+    validate(Some(&resolved), metadata)
 }
 
 fn preserve_references(

@@ -16,6 +16,36 @@ struct Snapshot {
 }
 
 impl Lease {
+    pub(super) fn completed_snapshot_handoff(
+        &self,
+        connection: &turso::Connection,
+        destination: &mut Self,
+    ) -> anyhow::Result<bool> {
+        let mut rows = pollster::block_on(connection.query(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='recording_catalog_snapshot'",
+            (),
+        ))?;
+        if pollster::block_on(rows.next())?.is_none() {
+            return Ok(false);
+        }
+        drop(rows);
+        let mut rows = pollster::block_on(connection.query(
+            "SELECT 1 FROM recording_catalog_snapshot WHERE source_identity=?1",
+            [self.file_identity()?],
+        ))?;
+        if pollster::block_on(rows.next())?.is_none() {
+            return Ok(false);
+        }
+        drop(rows);
+        let complete = self
+            .snapshot_record(connection, destination)?
+            .is_some_and(|snapshot| snapshot.digest.is_some());
+        if complete && destination.file.is_some() {
+            return destination.completed_authority(connection, self);
+        }
+        Ok(false)
+    }
+
     /// Resumes only the captured output leaf. An unknown existing file is never reset.
     pub fn snapshot_into(
         &self,

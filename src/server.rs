@@ -8856,6 +8856,32 @@ impl PersistedExportJobRecord {
         }
     }
 
+    fn messages(&self) -> anyhow::Result<(proto::CreateExportJob, proto::ExportJob)> {
+        let request =
+            proto::CreateExportJob::decode(URL_SAFE_NO_PAD.decode(&self.request)?.as_slice())?;
+        let job = proto::ExportJob::decode(URL_SAFE_NO_PAD.decode(&self.job)?.as_slice())?;
+        anyhow::ensure!(
+            request.job_id == job.job_id
+                && safe_export_job_id(&job.job_id)
+                && safe_export_job_id(&self.artifact_id),
+            "persisted export job identity is invalid"
+        );
+        let status = proto::ExportJobStatus::try_from(job.status)?;
+        anyhow::ensure!(
+            status != proto::ExportJobStatus::Unspecified,
+            "persisted export job status is invalid"
+        );
+        if status == proto::ExportJobStatus::Ready {
+            anyhow::ensure!(
+                job.file_name
+                    .as_deref()
+                    .is_some_and(safe_export_path_component),
+                "ready export has an invalid file name"
+            );
+        }
+        Ok((request, job))
+    }
+
     fn into_record(
         self,
         export_root: &Path,
@@ -8863,15 +8889,7 @@ impl PersistedExportJobRecord {
         catalog: Option<&RecordingCatalogHandle>,
         legacy_offline: bool,
     ) -> anyhow::Result<ExportJobRecord> {
-        let request =
-            proto::CreateExportJob::decode(URL_SAFE_NO_PAD.decode(self.request)?.as_slice())?;
-        let job = proto::ExportJob::decode(URL_SAFE_NO_PAD.decode(self.job)?.as_slice())?;
-        anyhow::ensure!(
-            request.job_id == job.job_id
-                && safe_export_job_id(&job.job_id)
-                && safe_export_job_id(&self.artifact_id),
-            "persisted export job identity is invalid"
-        );
+        let (request, job) = self.messages()?;
         let mut record = ExportJobRecord {
             requester_id: self.requester_id,
             artifact_id: self.artifact_id,
@@ -8903,10 +8921,12 @@ fn safe_export_path_component(value: &str) -> bool {
 }
 
 fn export_history_path(storage: &StorageConfig) -> PathBuf {
-    storage
-        .long_term_path
-        .join(".exports")
-        .join(EXPORT_HISTORY_FILE)
+    storage.metadata_history_path.clone().unwrap_or_else(|| {
+        storage
+            .long_term_path
+            .join(".exports")
+            .join(EXPORT_HISTORY_FILE)
+    })
 }
 
 fn load_export_jobs(
@@ -8929,16 +8949,43 @@ fn load_export_jobs(
         "export history exceeds {MAX_EXPORT_HISTORY_BYTES} bytes"
     );
     let bytes = std::fs::read(history_path)?;
+    restore_export_history(&bytes, export_root, catalog, legacy_offline)
+}
+
+fn parse_export_history(bytes: &[u8]) -> anyhow::Result<PersistedExportHistory> {
     anyhow::ensure!(
         u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_EXPORT_HISTORY_BYTES,
         "export history exceeds {MAX_EXPORT_HISTORY_BYTES} bytes"
     );
-    let history: PersistedExportHistory = serde_json::from_slice(&bytes)?;
+    let history: PersistedExportHistory = serde_json::from_slice(bytes)?;
     anyhow::ensure!(
         history.version == EXPORT_HISTORY_VERSION,
         "unsupported export history version {}",
         history.version
     );
+    let mut jobs = HashSet::new();
+    let mut artifacts = HashSet::new();
+    for record in &history.jobs {
+        let (_, job) = record.messages()?;
+        anyhow::ensure!(
+            jobs.insert(job.job_id) && artifacts.insert(&record.artifact_id),
+            "export history contains duplicate ownership"
+        );
+    }
+    Ok(history)
+}
+
+pub(crate) fn validate_export_history_snapshot(bytes: &[u8]) -> anyhow::Result<()> {
+    parse_export_history(bytes).map(|_| ())
+}
+
+fn restore_export_history(
+    bytes: &[u8],
+    export_root: &Path,
+    catalog: Option<&RecordingCatalogHandle>,
+    legacy_offline: bool,
+) -> anyhow::Result<HashMap<String, ExportJobRecord>> {
+    let history = parse_export_history(bytes)?;
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
     let mut jobs = HashMap::new();
     for persisted in history.jobs {
@@ -8971,6 +9018,11 @@ fn persist_export_jobs(
     history_path: &Path,
     jobs: &HashMap<String, ExportJobRecord>,
 ) -> anyhow::Result<()> {
+    config::write_private_file_atomically(history_path, &export_history_bytes(jobs)?)?;
+    Ok(())
+}
+
+fn export_history_bytes(jobs: &HashMap<String, ExportJobRecord>) -> anyhow::Result<Vec<u8>> {
     let mut records = jobs.values().collect::<Vec<_>>();
     records.sort_unstable_by(|left, right| left.job.job_id.cmp(&right.job.job_id));
     let history = PersistedExportHistory {
@@ -8980,9 +9032,7 @@ fn persist_export_jobs(
             .map(PersistedExportJobRecord::from_record)
             .collect(),
     };
-    let serialized = serde_json::to_vec(&history)?;
-    config::write_private_file_atomically(history_path, &serialized)?;
-    Ok(())
+    Ok(serde_json::to_vec(&history)?)
 }
 
 #[derive(Clone)]
@@ -12715,9 +12765,20 @@ fn save_runtime_settings(
             .storage_config
             .long_term_path
             .join(".event-thumbnails");
-    let recording_catalog_path = (!recording_catalog_is_default
-        || Path::new(&recording_catalog_path) != state.storage_config.recording_catalog_path)
-        .then_some(recording_catalog_path);
+    let recording_catalog_path = if state.storage_config.metadata.is_some() {
+        if Path::new(&recording_catalog_path) != state.storage_config.recording_catalog_path {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                409,
+                "Managed metadata requires a confirmed relocation",
+            ));
+        }
+        None
+    } else {
+        (!recording_catalog_is_default
+            || Path::new(&recording_catalog_path) != state.storage_config.recording_catalog_path)
+            .then_some(recording_catalog_path)
+    };
     let event_thumbnail_path = (!event_thumbnail_is_default
         || Path::new(&event_thumbnail_path) != state.storage_config.event_thumbnail_path)
         .then_some(event_thumbnail_path);
@@ -12726,7 +12787,12 @@ fn save_runtime_settings(
         port: update.port,
         storage: StorageToml {
             medium_term_path: Some(medium_term_path),
-            named_volumes: None,
+            metadata: state.storage_config.metadata.clone(),
+            named_volumes: state
+                .storage_config
+                .metadata
+                .as_ref()
+                .and_then(|_| state.storage_config.named_volumes.clone()),
             long_term_path: Some(long_term_path),
             recording_catalog_path,
             event_thumbnail_path,

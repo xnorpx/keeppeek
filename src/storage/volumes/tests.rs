@@ -465,7 +465,7 @@ fn volume_configuration_rejects_duplicate_roles_candidates_and_invalid_metadata_
     assert!(config.validate().is_err());
     config.volumes[0].sources.clear();
     config.volumes[1].roles.push(VolumeRole::Metadata);
-    assert!(config.validate().is_err());
+    assert!(config.validate().is_ok());
     config.volumes[1].roles.pop();
     let mut metadata = config.placement[0].clone();
     metadata.role = VolumeRole::Metadata;

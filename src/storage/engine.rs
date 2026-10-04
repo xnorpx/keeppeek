@@ -44,6 +44,8 @@ const QUEUED_MEDIA_BYTES_CAPACITY: usize = 64 * 1_048_576;
 
 #[derive(Clone)]
 pub struct StorageConfig {
+    pub metadata: Option<crate::config::MetadataBinding>,
+    pub metadata_history_path: Option<PathBuf>,
     pub named_volumes: Option<super::volumes::VolumeConfiguration>,
     pub volume_runtime: Option<Arc<super::volumes::runtime::Manager>>,
     pub volume_mover: Option<super::volumes::runtime::worker::Handle>,
@@ -74,6 +76,23 @@ impl Default for StorageConfig {
 }
 
 impl StorageConfig {
+    pub(crate) fn metadata_root(&self) -> anyhow::Result<super::volumes::root::Root> {
+        let binding = self
+            .metadata
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("metadata binding is unavailable"))?;
+        let parent = self
+            .recording_catalog_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("metadata parent is unavailable"))?;
+        let root = super::volumes::root::Root::open(parent)?;
+        anyhow::ensure!(
+            *root.identity() == binding.root_identity(),
+            "metadata root changed"
+        );
+        Ok(root)
+    }
+
     pub fn from_toml(toml: &StorageToml) -> Self {
         let default_root = crate::config::config_dir().join("recordings");
         let medium_term_path = toml
@@ -86,17 +105,24 @@ impl StorageConfig {
             .as_deref()
             .map(PathBuf::from)
             .unwrap_or(default_root);
-        let recording_catalog_path = toml
+        let mut recording_catalog_path = toml
             .recording_catalog_path
             .as_deref()
             .map(PathBuf::from)
             .unwrap_or_else(|| long_term_path.join("recordings.db"));
+        let metadata_history_path = toml.metadata.as_ref().map(|binding| {
+            let (catalog, history) = binding.paths(toml).expect("validated metadata binding");
+            recording_catalog_path = catalog;
+            history
+        });
         let event_thumbnail_path = toml
             .event_thumbnail_path
             .as_deref()
             .map(PathBuf::from)
             .unwrap_or_else(|| long_term_path.join(".event-thumbnails"));
         Self {
+            metadata: toml.metadata.clone(),
+            metadata_history_path,
             named_volumes: toml.named_volumes.clone(),
             volume_runtime: None,
             volume_mover: None,
@@ -1567,6 +1593,8 @@ mod tests {
             .join("test-output")
             .join(name);
         StorageConfig {
+            metadata: None,
+            metadata_history_path: None,
             named_volumes: None,
             volume_runtime: None,
             volume_mover: None,

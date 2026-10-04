@@ -74,7 +74,17 @@ fn open_recording_catalog(storage_config: &StorageConfig) -> anyhow::Result<Reco
                 .iter()
                 .any(|volume| volume.state != VolumeState::Disabled)
         });
-    let catalog = if capture {
+    let catalog = if let Some(binding) = &storage_config.metadata {
+        let bytes = storage_config
+            .metadata_root()?
+            .read_history(&binding.history_file)?;
+        crate::server::validate_export_history_snapshot(&bytes)?;
+        RecordingCatalog::open_managed(
+            &storage_config.recording_catalog_path,
+            &binding.authority(),
+            &binding.root_identity(),
+        )?
+    } else if capture {
         RecordingCatalog::open_with_legacy_paths(&storage_config.recording_catalog_path, &paths)?
     } else {
         RecordingCatalog::open(&storage_config.recording_catalog_path)?
