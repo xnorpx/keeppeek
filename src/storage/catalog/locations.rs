@@ -20,6 +20,7 @@ pub mod recording_recovery;
 pub mod recordings;
 pub use materialization::Materialization;
 mod ownership;
+mod removal;
 pub use ownership::{Location, Publication};
 
 const MAX_BINDINGS: i64 = 37;
@@ -139,6 +140,7 @@ pub enum Request {
     LegacyPaths,
     LegacyInventory(legacy::inventory::Action),
     Bind(Binding),
+    EnsureRemovable(String),
     SetDraining {
         volume: String,
         generation: u64,
@@ -272,6 +274,7 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     recording_recovery::initialize(connection).await?;
     legacy::initialize(connection).await?;
     legacy::inventory::initialize(connection).await?;
+    removal::initialize(connection).await?;
     // A sample from a previous actor lifetime must never authorize another allocation.
     bump_revision(connection).await?;
     connection.execute("INSERT OR IGNORE INTO catalog_schema_migrations (version, applied_at_ms) VALUES (3, ?1)", [super::current_unix_time_ms()]).await?;
@@ -295,6 +298,7 @@ fn validate(request: &Request) -> anyhow::Result<()> {
         Request::RegisterLegacyPaths(paths) => paths.validate()?,
         Request::LegacyInventory(action) => action.validate()?,
         Request::Move(id)
+        | Request::EnsureRemovable(id)
         | Request::FindMove(id)
         | Request::ImageRetirement(id)
         | Request::PendingImage(id)
@@ -506,6 +510,7 @@ async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::R
         Request::LegacyPaths => Reply::LegacyPaths(legacy::load(connection).await?.map(Box::new)),
         Request::LegacyInventory(action) => legacy::inventory::dispatch(connection, action).await?,
         Request::Bind(binding) => bind(connection, &binding).await?,
+        Request::EnsureRemovable(volume) => removal::check(connection, &volume).await?,
         Request::SetDraining {
             volume,
             generation,
@@ -818,6 +823,8 @@ mod materialization_tests;
 mod move_recording_tests;
 #[cfg(test)]
 mod moves_tests;
+#[cfg(test)]
+mod removal_tests;
 #[cfg(test)]
 mod tests;
 

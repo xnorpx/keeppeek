@@ -12766,6 +12766,11 @@ fn save_runtime_settings(
         }
     }
     storage_volumes::settings::validate_captured_paths(state, &next_storage_config)?;
+    storage_volumes::settings::validate_removals(
+        state,
+        config_path,
+        update.storage.named_volumes.as_ref(),
+    )?;
     let migration = if update.move_existing_recordings {
         match StorageMigration::between_with_metadata(
             StorageMigrationPaths::new(

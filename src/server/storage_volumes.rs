@@ -549,4 +549,283 @@ mod tests {
         catalog.shutdown();
         std::fs::remove_dir_all(directory).unwrap();
     }
+    #[test]
+    fn settings_removal_rejects_unbound_enabled_runtime_until_restart() {
+        use crate::storage::{
+            catalog::locations::{Reply, Request},
+            volumes::runtime::Manager,
+        };
+        let (directory, mut handler, catalog, saved) = bound_secret_volume_fixture(false);
+        let configuration = crate::config::load_config(&directory.join("config.toml"))
+            .unwrap()
+            .storage
+            .named_volumes
+            .unwrap();
+        let mut running = configuration.clone();
+        running.volumes[0].state = VolumeState::Enabled;
+        handler.state.storage_config.volume_runtime = Some(std::sync::Arc::new(
+            Manager::new(running, catalog.handle()).unwrap(),
+        ));
+        assert_eq!(
+            catalog.handle().volume_location(Request::Usage).unwrap(),
+            Reply::Usage(vec![])
+        );
+        let before = std::fs::read(directory.join("config.toml")).unwrap();
+        let error = dispatch(&handler, explicit_volume_clear(saved.clone())).unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::Rejected as i32);
+        assert_eq!(
+            std::fs::read(directory.join("config.toml")).unwrap(),
+            before
+        );
+        // A restarted disabled runtime cannot later recover this root for admission.
+        handler.state.storage_config.volume_runtime = Some(std::sync::Arc::new(
+            Manager::new(configuration, catalog.handle()).unwrap(),
+        ));
+        dispatch(&handler, explicit_volume_clear(saved)).unwrap();
+        assert!(!directory.join("unopened-volume").exists());
+        drop(handler);
+        catalog.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn bound_secret_volume_fixture(
+        bind: bool,
+    ) -> (
+        PathBuf,
+        ServerControlHandler,
+        crate::storage::RecordingCatalog,
+        proto::SanitizedRuntimeConfiguration,
+    ) {
+        use crate::storage::catalog::locations::{Binding, Request};
+        use proto::runtime_configuration_command::Action;
+        let (directory, handler, catalog) = fixture();
+        crate::config::write_private_file(
+            &directory.join("secrets.toml"),
+            b"REMOVAL_VOLUME_ID='resolved-volume'\n",
+        )
+        .unwrap();
+        let root = directory.join("unopened-volume");
+        let mut current =
+            dispatch(&handler, Action::Get(proto::GetRuntimeConfiguration {})).unwrap();
+        current.storage.as_mut().unwrap().named_volumes = Some(proto::StorageVolumeConfiguration {
+            volumes: vec![proto::StorageVolume {
+                id: "{secret:REMOVAL_VOLUME_ID}".into(),
+                root: root.to_string_lossy().into_owned(),
+                roles: vec![proto::StorageVolumeRole::Export as i32],
+                state: proto::StorageVolumeState::Disabled as i32,
+                ..Default::default()
+            }],
+            placement: vec![],
+        });
+        let saved = dispatch(&handler, update(current)).unwrap();
+        assert_eq!(
+            saved
+                .storage
+                .as_ref()
+                .unwrap()
+                .named_volumes
+                .as_ref()
+                .unwrap()
+                .volumes[0]
+                .id,
+            "{secret:REMOVAL_VOLUME_ID}"
+        );
+        if bind {
+            catalog
+                .handle()
+                .volume_location(Request::Bind(Binding {
+                    id: "resolved-volume".into(),
+                    generation: 1,
+                    root: root.clone(),
+                    filesystem: "disk".into(),
+                    root_identity: "bound-root".into(),
+                    writable: true,
+                    draining: false,
+                    limit_bytes: Some(100),
+                    minimum_free_bytes: 0,
+                }))
+                .unwrap();
+        }
+        assert!(!root.exists());
+        (directory, handler, catalog, saved)
+    }
+
+    fn explicit_volume_clear(
+        mut config: proto::SanitizedRuntimeConfiguration,
+    ) -> proto::runtime_configuration_command::Action {
+        config.storage.as_mut().unwrap().named_volumes = Some(Default::default());
+        update(config)
+    }
+
+    fn drain_secret_volume(catalog: &crate::storage::RecordingCatalog) {
+        use crate::storage::catalog::locations::{Reply, Request};
+        assert_eq!(
+            catalog
+                .handle()
+                .volume_location(Request::SetDraining {
+                    volume: "resolved-volume".into(),
+                    generation: 1,
+                    draining: true,
+                })
+                .unwrap(),
+            Reply::Bound
+        );
+    }
+
+    #[test]
+    fn settings_removal_resolves_secret_ids_requires_drain_and_retains_binding() {
+        use crate::storage::catalog::locations::{Reply, Request};
+        let (directory, handler, catalog, saved) = bound_secret_volume_fixture(true);
+        let mut omitted = saved.clone();
+        omitted.port = 9099;
+        omitted.storage.as_mut().unwrap().named_volumes = None;
+        let preserved = dispatch(&handler, update(omitted)).unwrap();
+        assert_eq!(
+            preserved.storage.as_ref().unwrap().named_volumes,
+            saved.storage.as_ref().unwrap().named_volumes
+        );
+        let before = std::fs::read(directory.join("config.toml")).unwrap();
+        let revision = catalog.handle().volume_ledger_revision().unwrap();
+        let error = dispatch(&handler, explicit_volume_clear(preserved.clone())).unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::Rejected as i32);
+        assert_eq!(
+            std::fs::read(directory.join("config.toml")).unwrap(),
+            before
+        );
+        assert_eq!(catalog.handle().volume_ledger_revision().unwrap(), revision);
+        drain_secret_volume(&catalog);
+        let usage = catalog.handle().volume_location(Request::Usage).unwrap();
+        let cleared = dispatch(&handler, explicit_volume_clear(preserved)).unwrap();
+        assert!(
+            cleared
+                .storage
+                .unwrap()
+                .named_volumes
+                .unwrap()
+                .volumes
+                .is_empty()
+        );
+        assert_eq!(
+            catalog.handle().volume_location(Request::Usage).unwrap(),
+            usage
+        );
+        let Reply::Usage(usage) = usage else {
+            panic!("volume usage missing")
+        };
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].volume, "resolved-volume");
+        assert!(usage[0].operator_draining);
+        assert!(!directory.join("unopened-volume").exists());
+        drop(handler);
+        catalog.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn settings_removal_rejects_drained_volume_with_reserved_export() {
+        use crate::storage::catalog::locations::{Allocation, Capacity, Kind, Object, Request};
+        let (directory, handler, catalog, saved) = bound_secret_volume_fixture(true);
+        let handle = catalog.handle();
+        handle
+            .volume_location(Request::Reserve(Allocation {
+                operation: "pending-export".into(),
+                object: Object {
+                    kind: Kind::Export,
+                    id: "pending-export".into(),
+                },
+                volume: "resolved-volume".into(),
+                generation: 1,
+                relative_key: "pending-export.mp4".into(),
+                bytes: 10,
+                capacity: Capacity {
+                    ledger_revision: handle.volume_ledger_revision().unwrap(),
+                    observed_at: std::time::Instant::now(),
+                    available_bytes: 1000,
+                    filesystem: "disk".into(),
+                    root_identity: "bound-root".into(),
+                },
+            }))
+            .unwrap();
+        drain_secret_volume(&catalog);
+        let before = std::fs::read(directory.join("config.toml")).unwrap();
+        let usage = handle.volume_location(Request::Usage).unwrap();
+        let revision = handle.volume_ledger_revision().unwrap();
+        let error = dispatch(&handler, explicit_volume_clear(saved)).unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::Rejected as i32);
+        assert_eq!(
+            std::fs::read(directory.join("config.toml")).unwrap(),
+            before
+        );
+        assert_eq!(handle.volume_location(Request::Usage).unwrap(), usage);
+        assert_eq!(handle.volume_ledger_revision().unwrap(), revision);
+        assert!(!directory.join("unopened-volume").exists());
+        drop(handle);
+        drop(handler);
+        catalog.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn settings_removal_rejects_disabled_unbound_candidate_in_running_archive_rule() {
+        use crate::storage::{
+            catalog::locations::{Reply, Request},
+            volumes::{
+                PlacementRule, PlacementStrategy, VolumeRole, VolumeState, runtime::Manager,
+            },
+        };
+        let (directory, mut handler, catalog, saved) = bound_secret_volume_fixture(false);
+        let configuration = crate::config::load_config(&directory.join("config.toml"))
+            .unwrap()
+            .storage
+            .named_volumes
+            .unwrap();
+        let mut running = configuration.clone();
+        let candidate = running.volumes[0].id.clone();
+        assert_eq!(running.volumes[0].state, VolumeState::Disabled);
+        running.volumes[0].roles = vec![VolumeRole::Archive];
+        running.placement.push(PlacementRule {
+            role: VolumeRole::Archive,
+            source: None,
+            group: None,
+            candidates: vec![candidate],
+            strategy: PlacementStrategy::Priority,
+            allow_fallback: false,
+        });
+        handler.state.storage_config.volume_runtime = Some(std::sync::Arc::new(
+            Manager::new(running, catalog.handle()).unwrap(),
+        ));
+        assert_eq!(
+            catalog.handle().volume_location(Request::Usage).unwrap(),
+            Reply::Usage(vec![])
+        );
+        let before = std::fs::read(directory.join("config.toml")).unwrap();
+        let revision = catalog.handle().volume_ledger_revision().unwrap();
+        let error = dispatch(&handler, explicit_volume_clear(saved.clone())).unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::Rejected as i32);
+        assert_eq!(
+            std::fs::read(directory.join("config.toml")).unwrap(),
+            before
+        );
+        assert_eq!(catalog.handle().volume_ledger_revision().unwrap(), revision);
+        assert_eq!(
+            catalog.handle().volume_location(Request::Usage).unwrap(),
+            Reply::Usage(vec![])
+        );
+        handler.state.storage_config.volume_runtime = Some(std::sync::Arc::new(
+            Manager::new(configuration, catalog.handle()).unwrap(),
+        ));
+        let cleared = dispatch(&handler, explicit_volume_clear(saved)).unwrap();
+        assert!(
+            cleared
+                .storage
+                .unwrap()
+                .named_volumes
+                .unwrap()
+                .volumes
+                .is_empty()
+        );
+        assert!(!directory.join("unopened-volume").exists());
+        drop(handler);
+        catalog.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

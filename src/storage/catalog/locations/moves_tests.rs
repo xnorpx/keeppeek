@@ -526,3 +526,133 @@ fn empty_cancellation_requires_no_captured_file_and_a_durable_cancel_request() {
     );
     catalog.shutdown();
 }
+
+fn drain_removal_receipt_volume(handle: &RecordingCatalogHandle, volume: &str) {
+    assert_eq!(
+        handle
+            .volume_location(Request::SetDraining {
+                volume: volume.into(),
+                generation: 1,
+                draining: true,
+            })
+            .unwrap(),
+        Reply::Bound
+    );
+}
+
+fn assert_zero_usage_removal_guard(handle: &RecordingCatalogHandle, volume: &str, allowed: bool) {
+    let before = handle.volume_location(Request::Usage).unwrap();
+    let Reply::Usage(usage) = &before else {
+        panic!("usage reply missing")
+    };
+    let usage = usage.iter().find(|usage| usage.volume == volume).unwrap();
+    assert_eq!(usage.allocated_bytes, 0);
+    assert_eq!(usage.reserved_bytes, 0);
+    assert!(usage.operator_draining);
+    let revision = handle.volume_ledger_revision().unwrap();
+    let result = handle.volume_location(Request::EnsureRemovable(volume.into()));
+    if allowed {
+        assert_eq!(result.unwrap(), Reply::Bound);
+    } else {
+        assert!(result.is_err());
+    }
+    assert_eq!(handle.volume_ledger_revision().unwrap(), revision);
+    assert_eq!(handle.volume_location(Request::Usage).unwrap(), before);
+}
+
+#[test]
+fn cancelled_destination_definition_waits_for_receipt_acknowledgement() {
+    let path = test_dir("remove-cancelled-destination-receipt").join("catalog.db");
+    let (catalog, intent, source) = fixture(&path);
+    let handle = catalog.handle();
+    handle
+        .volume_location(Request::BeginMove(intent.clone()))
+        .unwrap();
+    drain_removal_receipt_volume(&handle, "destination");
+    for step in [
+        moves::Step::Cancel(intent.id.clone()),
+        moves::Step::CancellationVerified {
+            id: intent.id.clone(),
+            evidence: moves::Cancellation::Empty,
+        },
+        moves::Step::Cancelled(intent.id.clone()),
+    ] {
+        handle.volume_location(Request::AdvanceMove(step)).unwrap();
+    }
+    assert_zero_usage_removal_guard(&handle, "destination", false);
+    drop(handle);
+    catalog.shutdown();
+    let catalog = RecordingCatalog::open(&path).unwrap();
+    let handle = catalog.handle();
+    assert_zero_usage_removal_guard(&handle, "destination", false);
+    let done = acknowledge_and_assert_pending_cleanup(&handle, &intent.id);
+    assert_zero_usage_removal_guard(&handle, "destination", true);
+    assert_eq!(
+        handle.volume_location(Request::Move(intent.id)).unwrap(),
+        done
+    );
+    assert_eq!(
+        handle
+            .volume_location(Request::Lookup(intent.object))
+            .unwrap(),
+        Reply::Location(Some(source))
+    );
+    drop(handle);
+    catalog.shutdown();
+}
+
+#[test]
+fn retired_source_definition_waits_for_receipt_acknowledgement() {
+    let path = test_dir("remove-retired-source-receipt").join("catalog.db");
+    let (catalog, intent, source) = fixture(&path);
+    let handle = catalog.handle();
+    handle
+        .volume_location(Request::BeginMove(intent.clone()))
+        .unwrap();
+    drain_removal_receipt_volume(&handle, "source");
+    let retired = Publication {
+        operation: intent.id.clone(),
+        bytes: source.bytes,
+        file_identity: source.file_identity,
+        digest: source.digest,
+    };
+    for step in [
+        moves::Step::Verified(Publication {
+            file_identity: "copy".into(),
+            ..retired.clone()
+        }),
+        moves::Step::FilePublished(intent.id.clone()),
+        moves::Step::Publish(intent.id.clone()),
+        moves::Step::Retiring(intent.id.clone()),
+        moves::Step::Retired(retired),
+    ] {
+        handle.volume_location(Request::AdvanceMove(step)).unwrap();
+    }
+    assert_zero_usage_removal_guard(&handle, "source", false);
+    let destination = handle
+        .volume_location(Request::Lookup(intent.object.clone()))
+        .unwrap();
+    let Reply::Location(Some(location)) = &destination else {
+        panic!("destination missing")
+    };
+    assert_eq!(location.volume, "destination");
+    drop(handle);
+    catalog.shutdown();
+    let catalog = RecordingCatalog::open(&path).unwrap();
+    let handle = catalog.handle();
+    assert_zero_usage_removal_guard(&handle, "source", false);
+    let done = acknowledge_and_assert_pending_cleanup(&handle, &intent.id);
+    assert_zero_usage_removal_guard(&handle, "source", true);
+    assert_eq!(
+        handle.volume_location(Request::Move(intent.id)).unwrap(),
+        done
+    );
+    assert_eq!(
+        handle
+            .volume_location(Request::Lookup(intent.object))
+            .unwrap(),
+        destination
+    );
+    drop(handle);
+    catalog.shutdown();
+}

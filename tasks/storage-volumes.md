@@ -512,3 +512,15 @@ first reproduced an accepted changed path, then passed all eight path/migration-
 without creating directories or changing saved settings. All ten volume API tests and three
 application startup tests passed (`target/129-captured-settings-green.log`,
 `target/129-captured-settings-startup.log`).
+
+Settings removal now requires a drained, empty binding with no pending cleanup receipts. Checks
+run under configuration coordination before probes or persistence and resolve secret-reference
+IDs. Runtime-enabled volumes require operator drain; unbound offline roots must be disabled and
+restarted first. Running archive rules require a policy edit and restart before removal, and
+captured pending archive intent blocks removal even before destination allocation. Inspection
+streams at most 1,024 pending policies and rejects a larger backlog. Removal preserves immutable
+bindings, acknowledged history, and files. All 25 selected volume API, removal, receipt-restart,
+and startup tests passed (`target/129-removal-complete-green.log`); the two archive regressions
+first reproduced unsafe acceptance. Strict workspace/all-target Clippy passed
+(`target/129-removal-clippy.log`). Independent review found no further blocker in this guard.
+Bulk evacuation, confirmed legacy migration, metadata relocation, and activation remain open.
