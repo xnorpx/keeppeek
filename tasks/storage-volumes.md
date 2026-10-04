@@ -192,7 +192,8 @@ private quarantine. Durable receipts distinguish a completed removal from unexpl
 Cancellation uses the same removal receipts and releases destination capacity only after cleanup.
 
 The background worker has a 64-item wakeup queue, 64-job scan pages, at most 4096 pending jobs,
-three attempts per scan, and a 60-second rescan interval. Admission precedes the wakeup, so queue
+one attempt per wakeup or scan, and a 60-second rescan interval. Failed jobs wait for the next
+scan without per-job retry sleeps that delay other volumes. Admission precedes the wakeup, so queue
 overflow does not discard a committed job. The application joins the actual worker before closing
 the catalog. Finalized named recordings request archive placement without performing a copy in
 the recording writer. Rejected admission still leaves the source intact; automatic reevaluation
