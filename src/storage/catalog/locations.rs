@@ -14,6 +14,7 @@ mod growth;
 pub mod images;
 mod materialization;
 pub mod moves;
+pub mod objects;
 pub use materialization::Materialization;
 mod ownership;
 pub use ownership::{Location, Publication};
@@ -137,6 +138,7 @@ pub enum Request {
     Materialize(Materialization),
     BeginMove(moves::Intent),
     Move(String),
+    FindMove(String),
     Moves(moves::Page),
     PendingMoves(moves::Page),
     Archive(String),
@@ -146,6 +148,8 @@ pub enum Request {
     Publish(Publication),
     Finalize(Publication),
     Lookup(Object),
+    Objects(objects::Page),
+    ObjectSource(Object),
     CommitImages(Box<images::Commit>),
     Image { event: String, attachment: String },
     ImageRetirement(String),
@@ -164,11 +168,15 @@ pub enum Reply {
     Location(Option<Location>),
     Usage(Vec<Usage>),
     Move(Box<moves::Job>),
+    OptionalMove(Option<Box<moves::Job>>),
+    Objects(Vec<Location>),
+    ObjectSource(Option<String>),
     Moves(Vec<moves::Job>),
     PendingMoves(Vec<String>),
     Archive(Option<Box<archives::Job>>),
     ImageRetirement(Option<Box<images::retirement::Retirement>>),
     ExportCleanup(Option<Box<export_cleanup::Job>>),
+    ExportOwned(bool),
 }
 
 impl RecordingCatalogHandle {
@@ -238,6 +246,7 @@ fn validate(request: &Request) -> anyhow::Result<()> {
     match request {
         Request::Revision | Request::Usage => {}
         Request::Move(id)
+        | Request::FindMove(id)
         | Request::ImageRetirement(id)
         | Request::ImageRetirementAcknowledged(id) => identifier(id)?,
         Request::Archive(id) => identifier(id)?,
@@ -280,7 +289,8 @@ fn validate(request: &Request) -> anyhow::Result<()> {
         | Request::ImageRetired(publication) => {
             validate_publication(publication)?;
         }
-        Request::Lookup(object) => identifier(&object.id)?,
+        Request::Lookup(object) | Request::ObjectSource(object) => identifier(&object.id)?,
+        Request::Objects(page) => page.validate()?,
         Request::CommitImages(commit) => commit.validate()?,
         Request::Image { event, attachment } => {
             identifier(event)?;
@@ -437,6 +447,11 @@ async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::R
             Reply::Move(Box::new(archives::begin_move(connection, &intent).await?))
         }
         Request::Move(id) => Reply::Move(Box::new(moves::load(connection, &id).await?)),
+        Request::Objects(page) => Reply::Objects(objects::page(connection, &page).await?),
+        Request::ObjectSource(object) => {
+            Reply::ObjectSource(objects::source(connection, &object).await?)
+        }
+        Request::FindMove(id) => Reply::OptionalMove(moves::find(connection, &id).await?),
         Request::Moves(page) => Reply::Moves(moves::page(connection, &page).await?),
         Request::PendingMoves(page) => {
             Reply::PendingMoves(archives::pending(connection, &page).await?)

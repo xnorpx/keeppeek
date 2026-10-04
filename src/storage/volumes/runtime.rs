@@ -29,6 +29,7 @@ mod export_move_tests;
 mod export_tests;
 mod exports;
 mod images;
+pub mod management;
 mod movement;
 #[cfg(test)]
 mod movement_tests;
@@ -94,6 +95,25 @@ impl std::fmt::Debug for ReservedFile {
 }
 
 impl Manager {
+    pub(crate) fn open_owned(
+        &self,
+        location: &crate::storage::catalog::locations::Location,
+    ) -> anyhow::Result<OwnedFile> {
+        anyhow::ensure!(location.generation == 1, "owned volume generation changed");
+        let index = self
+            .inner
+            .configuration
+            .volumes
+            .iter()
+            .position(|volume| volume.id.as_str() == location.volume)
+            .ok_or_else(|| anyhow::anyhow!("owned volume is not configured"))?;
+        self.inner.root(index)?.open_owned(
+            &location.relative_key,
+            &location.file_identity,
+            location.bytes,
+        )
+    }
+
     /// Resolves an owned file through its recorded volume and validates its identity.
     ///
     /// # Errors
@@ -625,8 +645,15 @@ impl ReservedFile {
     /// # Errors
     /// Rejects changed files, unavailable roots, or failed synchronization.
     pub fn evidence(&mut self) -> anyhow::Result<Publication> {
+        self.evidence_with_progress(|_| Ok(()))
+    }
+
+    pub(crate) fn evidence_with_progress(
+        &mut self,
+        progress: impl FnMut(u64) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Publication> {
         anyhow::ensure!(!self.failed, "failed writer cannot publish");
-        let (bytes, file_identity, digest) = self.file.evidence()?;
+        let (bytes, file_identity, digest) = self.file.evidence_with_progress(progress)?;
         let publication = Publication {
             operation: self.reservation.operation.clone(),
             bytes,

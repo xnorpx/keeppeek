@@ -2039,6 +2039,10 @@ export class ControlClient {
 		return this.#system.getRuntimeConfiguration();
 	}
 
+	async storageVolumes(command: import('./proto/webrtc_pb').StorageVolumeCommand) {
+		return this.#system.storageVolumes(command);
+	}
+
 	async probeStorage(path: string): Promise<StorageWriteProbe> {
 		return this.#system.probeStorage(path);
 	}

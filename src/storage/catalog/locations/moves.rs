@@ -15,6 +15,22 @@ pub struct Page {
     pub include_terminal: bool,
 }
 
+pub(super) async fn find(
+    connection: &turso::Connection,
+    id: &str,
+) -> anyhow::Result<Option<Box<Job>>> {
+    let mut rows = connection
+        .query("SELECT 1 FROM storage_volume_moves WHERE id = ?1", [id])
+        .await?;
+    let exists = rows.next().await?.is_some();
+    drop(rows);
+    if exists {
+        Ok(Some(Box::new(load(connection, id).await?)))
+    } else {
+        Ok(None)
+    }
+}
+
 pub(super) async fn page(connection: &turso::Connection, page: &Page) -> anyhow::Result<Vec<Job>> {
     let mut rows = connection
         .query(

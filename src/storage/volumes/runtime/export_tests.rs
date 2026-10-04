@@ -2,6 +2,41 @@ use super::{Kind, Manager, Object, Reply, Request, Reservation, VolumeRole, test
 use crate::storage::catalog::RecordingCatalog;
 use std::{fs, io::Write};
 
+#[test]
+fn export_verification_reports_bounded_progress_and_obeys_cancellation() -> anyhow::Result<()> {
+    let (root, catalog, manager) = fixture(1_048_576)?;
+    let (object, reservation) = reserve(&manager, 131_072)?;
+    let mut writer = reservation.open()?;
+    writer.write_all(&vec![7; 131_072])?;
+    let mut reports = Vec::new();
+    assert!(
+        writer
+            .evidence_with_progress(|bytes| {
+                reports.push(bytes);
+                anyhow::ensure!(bytes < 65_536, "cancelled during verification");
+                Ok(())
+            })
+            .is_err()
+    );
+    assert_eq!(reports, [0, 65_536]);
+    assert_eq!(
+        catalog.handle().volume_location(Request::Lookup(object))?,
+        Reply::Location(None)
+    );
+    reports.clear();
+    let evidence = writer.evidence_with_progress(|bytes| {
+        reports.push(bytes);
+        Ok(())
+    })?;
+    assert_eq!(reports, [0, 65_536, 131_072]);
+    writer.publish(evidence)?;
+    drop(writer);
+    drop(manager);
+    catalog.shutdown();
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 fn reserve(manager: &Manager, bytes: u64) -> anyhow::Result<(Object, Reservation)> {
     let object = Object {
         kind: Kind::Export,
