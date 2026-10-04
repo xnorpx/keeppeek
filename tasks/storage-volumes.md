@@ -269,3 +269,13 @@ when the publication reply was lost. No directory scan grants ownership of unrel
 This increment does not enable named volumes. Recovery of crashes or failures before image
 sealing, legacy root backfill, notification image-location refresh, per-volume retention,
 exports, migration management, and Administrator UI remain outstanding. The PR stays draft.
+
+## Export writer prerequisite
+
+The MP4 exporter now shares one remux implementation between legacy files and an empty
+`Write + Seek` sink. A reserved volume file can receive the output directly, including reservation
+growth and capacity refusal. The file adapter keeps its temporary-file publication behavior and
+discards buffered bytes after failure. Sink callers own synchronization, location publication,
+and cleanup. Tests cover byte-equivalent output, cancellation, invalid sinks, final-flush failure,
+and a real capacity-limited reserved file. Export job placement, history recovery, downloads,
+and expiry are not connected to named volumes by this prerequisite alone.
