@@ -51,5 +51,36 @@ fn normalize_missing(root: &Path) -> anyhow::Result<PathBuf> {
             Err(error) => return Err(error.into()),
         }
     }
+    #[cfg(windows)]
+    {
+        // The validated local drive may itself be offline; retain its canonical prefix.
+        Ok(PathBuf::from(format!(r"\\?\{}", root.display())))
+    }
+    #[cfg(not(windows))]
     anyhow::bail!("thumbnail root has no available ancestor")
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn offline_drive_retains_its_lexical_root_without_creating_it() -> anyhow::Result<()> {
+    let drive = (b'D'..=b'Z')
+        .find(|drive| {
+            PathBuf::from(format!("{}:\\", char::from(*drive)))
+                .canonicalize()
+                .is_err_and(|error| error.kind() == ErrorKind::NotFound)
+        })
+        .expect("test requires an unavailable drive letter");
+    let root = PathBuf::from(format!(
+        "{}:\\keeppeek-offline-{}",
+        char::from(drive),
+        uuid::Uuid::new_v4()
+    ));
+    comparison_root(&root)?;
+    let normalized = normalize_missing(&root)?;
+    assert_eq!(
+        normalized,
+        PathBuf::from(format!(r"\\?\{}", root.display()))
+    );
+    assert!(!root.exists());
+    Ok(())
 }
