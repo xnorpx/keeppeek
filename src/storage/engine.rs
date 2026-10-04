@@ -221,7 +221,7 @@ impl StorageCommandSender {
         let media_bytes = frame.byte_len();
         if self
             .queued_media_bytes
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
                 queued
                     .checked_add(media_bytes)
                     .filter(|total| *total <= self.media_bytes_capacity)

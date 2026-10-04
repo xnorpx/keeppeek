@@ -44,7 +44,7 @@ pub(super) struct OptionalMainSlot(Arc<AtomicUsize>);
 impl OptionalMainSlot {
     fn reserve(tx: &StorageCommandSender) -> Result<Self, ()> {
         tx.optional_main_slots
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |slots| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |slots| {
                 slots
                     .checked_add(1)
                     .filter(|total| *total <= tx.command_capacity / 2)
