@@ -10,6 +10,7 @@ async fn fixture(connection: &turso::Connection) -> anyhow::Result<Publication> 
         filesystem: "disk".into(),
         root_identity: "root".into(),
         writable: true,
+        draining: false,
         limit_bytes: Some(100),
         minimum_free_bytes: 0,
     };

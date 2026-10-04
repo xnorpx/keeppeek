@@ -130,6 +130,7 @@ fn authority_format_gate_named_binding_reopens_and_legacy_remains_compatible() {
             filesystem: "fixture-disk".into(),
             root_identity: "fixture-root".into(),
             writable: true,
+            draining: false,
             limit_bytes: None,
             minimum_free_bytes: 0,
         }))

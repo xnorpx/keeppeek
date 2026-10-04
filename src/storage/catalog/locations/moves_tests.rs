@@ -168,6 +168,7 @@ fn fixture(path: &std::path::Path) -> (RecordingCatalog, moves::Intent, Location
                 filesystem: "disk".into(),
                 root_identity: volume.into(),
                 writable: true,
+                draining: false,
                 limit_bytes: Some(100),
                 minimum_free_bytes: 10,
             }))

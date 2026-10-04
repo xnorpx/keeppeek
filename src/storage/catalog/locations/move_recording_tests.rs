@@ -44,6 +44,7 @@ async fn fixture(connection: &turso::Connection) -> anyhow::Result<(moves::Inten
                 filesystem: "disk".into(),
                 root_identity: volume.into(),
                 writable: true,
+                draining: false,
                 limit_bytes: Some(200),
                 minimum_free_bytes: 0,
             }),
