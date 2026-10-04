@@ -147,6 +147,9 @@ pub(super) fn eligibility(
         return Err(RejectionReason::SourceDenied);
     }
     let observation = observation.ok_or(RejectionReason::MissingObservation)?;
+    if observation.draining {
+        return Err(RejectionReason::Draining);
+    }
     match observation.health {
         VolumeHealth::Online => {}
         VolumeHealth::Offline => return Err(RejectionReason::Offline),

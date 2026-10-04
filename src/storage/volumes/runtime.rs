@@ -598,6 +598,10 @@ impl Inner {
                 Ok(VolumeObservation {
                     id: volume.id.clone(),
                     health,
+                    draining: usage
+                        .iter()
+                        .find(|item| item.volume == volume.id.as_str())
+                        .is_some_and(|item| item.configured_draining || item.operator_draining),
                     total_bytes: u64::MAX,
                     available_bytes,
                     owned_bytes,

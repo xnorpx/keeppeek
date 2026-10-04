@@ -118,6 +118,8 @@ pub struct Usage {
     pub filesystem: String,
     pub allocated_bytes: u64,
     pub reserved_bytes: u64,
+    pub configured_draining: bool,
+    pub operator_draining: bool,
 }
 
 impl fmt::Debug for Allocation {
@@ -137,6 +139,11 @@ pub enum Request {
     LegacyPaths,
     LegacyInventory(legacy::inventory::Action),
     Bind(Binding),
+    SetDraining {
+        volume: String,
+        generation: u64,
+        draining: bool,
+    },
     Revision,
     Reserve(Allocation),
     ReserveArchive(Allocation, archives::Intent),
@@ -148,7 +155,10 @@ pub enum Request {
     Moves(moves::Page),
     PendingMoves(moves::Page),
     Archive(String),
-    CompleteArchive { id: String, source: Location },
+    CompleteArchive {
+        id: String,
+        source: Location,
+    },
     AdvanceMove(moves::Step),
     Usage,
     LegacyRecordingBytes,
@@ -160,7 +170,10 @@ pub enum Request {
     RecordingRetention(recordings::Action),
     RecordingRecovery(recording_recovery::Action),
     CommitImages(Box<images::Commit>),
-    Image { event: String, attachment: String },
+    Image {
+        event: String,
+        attachment: String,
+    },
     ImageRetirement(String),
     ImageRetired(Publication),
     ImageAbandoned(Publication),
@@ -242,6 +255,13 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
         "storage_volume_bindings",
         "draining",
         "INTEGER NOT NULL DEFAULT 0 CHECK (draining IN (0, 1))",
+    )
+    .await?;
+    super::ensure_column(
+        connection,
+        "storage_volume_bindings",
+        "operator_draining",
+        "INTEGER NOT NULL DEFAULT 0 CHECK (operator_draining IN (0, 1))",
     )
     .await?;
     moves::initialize(connection).await?;
@@ -333,6 +353,13 @@ fn validate(request: &Request) -> anyhow::Result<()> {
             identifier(attachment)?;
         }
         Request::Bind(binding) => validate_binding(binding)?,
+        Request::SetDraining {
+            volume, generation, ..
+        } => {
+            identifier(volume)?;
+            anyhow::ensure!(*generation > 0, "invalid volume generation");
+            to_i64(*generation, "volume generation")?;
+        }
         Request::Reserve(allocation) => validate_allocation(allocation)?,
         Request::ReserveArchive(allocation, intent) => {
             validate_allocation(allocation)?;
@@ -479,6 +506,11 @@ async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::R
         Request::LegacyPaths => Reply::LegacyPaths(legacy::load(connection).await?.map(Box::new)),
         Request::LegacyInventory(action) => legacy::inventory::dispatch(connection, action).await?,
         Request::Bind(binding) => bind(connection, &binding).await?,
+        Request::SetDraining {
+            volume,
+            generation,
+            draining,
+        } => set_draining(connection, &volume, generation, draining).await?,
         Request::Reserve(allocation) => reserve(connection, &allocation).await?,
         Request::ReserveArchive(allocation, intent) => {
             archives::reserve(connection, &allocation, &intent).await?
@@ -623,6 +655,34 @@ async fn bind(connection: &turso::Connection, binding: &Binding) -> anyhow::Resu
     Ok(Reply::Bound)
 }
 
+async fn set_draining(
+    connection: &turso::Connection,
+    volume: &str,
+    generation: u64,
+    draining: bool,
+) -> anyhow::Result<Reply> {
+    let generation = to_i64(generation, "volume generation")?;
+    let mut rows = connection.query(
+        "SELECT operator_draining FROM storage_volume_bindings WHERE id = ?1 AND generation = ?2",
+        turso::params![volume, generation],
+    ).await?;
+    let current = rows
+        .next()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("volume generation is not bound"))?;
+    let current = current.get::<i64>(0)? != 0;
+    drop(rows);
+    if current != draining {
+        let changed = connection.execute(
+            "UPDATE storage_volume_bindings SET operator_draining = ?3 WHERE id = ?1 AND generation = ?2",
+            turso::params![volume, generation, i64::from(draining)],
+        ).await?;
+        anyhow::ensure!(changed == 1, "volume generation changed");
+        bump_revision(connection).await?;
+    }
+    Ok(Reply::Bound)
+}
+
 async fn reserve(connection: &turso::Connection, allocation: &Allocation) -> anyhow::Result<Reply> {
     export_cleanup::ensure_active(connection, &allocation.object).await?;
     if let Some(reply) = retry(connection, allocation).await? {
@@ -679,7 +739,7 @@ async fn admission(
     allocation: &Allocation,
     new_allocation: bool,
 ) -> anyhow::Result<String> {
-    let mut rows = connection.query("SELECT generation, writable, limit_bytes, minimum_free_bytes, filesystem, root_identity, root, draining FROM storage_volume_bindings WHERE id = ?1", [allocation.volume.as_str()]).await?;
+    let mut rows = connection.query("SELECT generation, writable, limit_bytes, minimum_free_bytes, filesystem, root_identity, root, (draining OR operator_draining) FROM storage_volume_bindings WHERE id = ?1", [allocation.volume.as_str()]).await?;
     let row = rows
         .next()
         .await?
@@ -746,6 +806,8 @@ async fn admission(
 
 #[cfg(test)]
 mod archives_tests;
+#[cfg(test)]
+mod drain_tests;
 #[cfg(test)]
 mod finalize_tests;
 #[cfg(test)]

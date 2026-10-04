@@ -189,6 +189,8 @@ pub enum VolumeHealth {
 pub struct VolumeObservation {
     pub id: VolumeId,
     pub health: VolumeHealth,
+    /// Configured or operational drain; independent of filesystem availability.
+    pub draining: bool,
     pub total_bytes: u64,
     pub available_bytes: u64,
     pub owned_bytes: u64,

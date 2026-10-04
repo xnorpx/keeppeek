@@ -468,3 +468,15 @@ confirmed adoption or enable named volumes.
 All 29 migration regressions and three application startup regressions passed
 (`target/129-migration-complete-green.log`, `target/129-application-capture-green.log`).
 Independent review found no remaining blocker in this capture and migration guard.
+
+Operational drain now has a separate persisted catalog flag. Configuration rebinding and root
+recovery preserve it. New allocations refuse either configured or operational drain, while
+already admitted writers may open, grow, publish, and recover. Placement observations include
+effective drain so an explicitly allowed fallback can select another volume. Repeating the
+same operation does not invalidate otherwise current capacity observations. Six new behavior
+tests cover these cases, including catalog restart and clearing an operator drain while the
+configured drain remains. This is the admission boundary for bulk drain; administrator
+commands, UI, and bulk migration are not yet complete.
+The broader storage regression run passed 540 tests with one existing ignored test
+(`target/129-operational-drain-regressions.log`).
+Strict workspace/all-target Clippy also passed (`target/129-operational-drain-clippy.log`).

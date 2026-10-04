@@ -91,6 +91,8 @@ fn assert_checkpoint_usage(handle: &RecordingCatalogHandle, allocated: u64, rese
             filesystem: "disk".into(),
             allocated_bytes: allocated,
             reserved_bytes: reserved,
+            configured_draining: false,
+            operator_draining: false,
         }])
     );
 }
