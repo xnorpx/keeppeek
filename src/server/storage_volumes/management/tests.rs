@@ -256,3 +256,486 @@ fn preview_rejects_configuration_changes_and_in_progress_edits() {
     drop(initial);
     catalog.shutdown();
 }
+
+fn metadata_api_config(path: &std::path::Path, config: &crate::config::Config) {
+    let volume = &config.storage.named_volumes.as_ref().unwrap().volumes[0];
+    let mut secrets = toml::Table::new();
+    secrets.insert("METADATA_API_ID".into(), volume.id.as_str().into());
+    secrets.insert(
+        "METADATA_API_ROOT".into(),
+        volume.root.to_str().unwrap().into(),
+    );
+    crate::config::write_private_file(
+        &path.with_file_name("secrets.toml"),
+        toml::to_string(&secrets).unwrap().as_bytes(),
+    )
+    .unwrap();
+    let mut raw = toml::Value::try_from(config).unwrap();
+    raw["storage"]["named_volumes"]["volumes"][0]["id"] = "{secret:METADATA_API_ID}".into();
+    raw["storage"]["named_volumes"]["volumes"][0]["root"] = "{secret:METADATA_API_ROOT}".into();
+    crate::config::write_private_file(path, toml::to_string(&raw).unwrap().as_bytes()).unwrap();
+}
+
+fn metadata_api_root(path: &std::path::Path) {
+    std::fs::create_dir(path).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    #[cfg(windows)]
+    assert!(
+        std::process::Command::new("powershell.exe")
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/.github/scripts/protect-test-directory.ps1"
+            ))
+            .arg("-Directory")
+            .arg(path)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+fn metadata_api_fixture() -> (
+    std::path::PathBuf,
+    crate::storage::RecordingCatalog,
+    ServerState,
+) {
+    let (root, catalog, manager, mut state, _) = export_storage_tests::setup(16 * 1024 * 1024);
+    let mut volumes = manager.configuration().clone();
+    volumes.volumes.truncate(1);
+    volumes.placement.clear();
+    volumes.volumes[0].root = root.join("metadata-target");
+    metadata_api_root(&volumes.volumes[0].root);
+    volumes.volumes[0].id =
+        crate::storage::volumes::VolumeId::parse("private-metadata-owner").unwrap();
+    volumes.volumes[0].roles = vec![crate::storage::volumes::VolumeRole::Metadata];
+    volumes.volumes[0].state = crate::storage::volumes::VolumeState::Disabled;
+    volumes.volumes[0].capacity_bytes = None;
+    let mut config = crate::config::Config::default();
+    config.storage.medium_term_path = Some(root.join("recordings").to_str().unwrap().into());
+    config.storage.long_term_path = Some(root.join("legacy").to_str().unwrap().into());
+    config.storage.event_thumbnail_path = Some(root.join("thumbnails").to_str().unwrap().into());
+    config.storage.recording_catalog_path = Some(root.join("catalog.db").to_str().unwrap().into());
+    config.storage.named_volumes = Some(volumes);
+    let path = root.join("config.toml");
+    metadata_api_config(&path, &config);
+    let config = crate::config::load_config(&path).unwrap();
+    state.storage_config = crate::storage::StorageConfig::from_toml(&config.storage);
+    state.storage_config.named_volumes = None;
+    state.config = crate::server::sanitized_config(&config, &state.storage_config, 0, &[]);
+    state.camera_config_path = Some(path);
+    let history = root.join("legacy/.exports/history.json");
+    std::fs::create_dir_all(history.parent().unwrap()).unwrap();
+    std::fs::write(&history, b"{\"version\":1,\"jobs\":[]}\n").unwrap();
+    state.export_history_path = Some(Arc::new(history));
+    let paths =
+        crate::storage::catalog::locations::legacy::LegacyPaths::effective(&state.storage_config)
+            .unwrap();
+    catalog
+        .handle()
+        .volume_location(Request::RegisterLegacyPaths(Box::new(paths)))
+        .unwrap();
+    drop(manager);
+    (root, catalog, state)
+}
+
+fn metadata_api_admin() -> ApiPrincipal {
+    let mut principal = ApiPrincipal::local("127.0.0.1".parse().unwrap());
+    principal.identity = crate::server::ApiPrincipalIdentity::Credential {
+        id: uuid::Uuid::new_v4(),
+        revision: 1,
+    };
+    principal
+}
+
+fn metadata_api_call(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    action: proto::storage_volume_command::Action,
+) -> Result<proto::storage_volume_result::Result> {
+    let proto::ok::Result::StorageVolumeResult(result) = dispatch(
+        state,
+        principal,
+        proto::StorageVolumeCommand {
+            action: Some(action),
+        },
+    )?
+    else {
+        panic!("missing storage volume response");
+    };
+    Ok(result.result.expect("missing metadata response"))
+}
+
+fn metadata_api_preview(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+) -> proto::StorageMetadataPreview {
+    let proto::storage_volume_result::Result::MetadataPreview(preview) = metadata_api_call(
+        state,
+        principal,
+        proto::storage_volume_command::Action::PreviewMetadata(proto::PreviewStorageMetadata {
+            destination_volume_id: "{secret:METADATA_API_ID}".into(),
+        }),
+    )
+    .unwrap() else {
+        panic!("missing metadata preview")
+    };
+    preview
+}
+
+fn metadata_api_confirm(
+    preview: &proto::StorageMetadataPreview,
+) -> proto::storage_volume_command::Action {
+    proto::storage_volume_command::Action::ConfirmMetadata(proto::ConfirmStorageMetadata {
+        preview_token: preview.preview_token.clone(),
+        expected_configuration_revision: preview.configuration_revision.clone(),
+    })
+}
+
+fn metadata_api_status(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+) -> proto::StorageMetadataStatus {
+    let proto::storage_volume_result::Result::Metadata(status) = metadata_api_call(
+        state,
+        principal,
+        proto::storage_volume_command::Action::Metadata(proto::GetStorageMetadata {}),
+    )
+    .unwrap() else {
+        panic!("missing metadata status")
+    };
+    status
+}
+
+#[test]
+fn metadata_api_actions_require_administrator_before_accessing_storage() {
+    use proto::storage_volume_command::Action;
+    let state = ServerState::empty();
+    let mut principal = metadata_api_admin();
+    principal.role = crate::access::AccessRole::User;
+    for action in [
+        Action::PreviewMetadata(Default::default()),
+        Action::ConfirmMetadata(Default::default()),
+        Action::Metadata(Default::default()),
+        Action::CancelMetadata(Default::default()),
+    ] {
+        assert_eq!(
+            metadata_api_call(&state, &principal, action)
+                .unwrap_err()
+                ._http_status,
+            403
+        );
+    }
+}
+
+#[test]
+fn metadata_confirmation_is_principal_bound_and_requires_current_revision() {
+    let (root, catalog, state) = metadata_api_fixture();
+    let administrator = metadata_api_admin();
+    let preview = metadata_api_preview(&state, &administrator);
+    let before = std::fs::read(root.join("config.toml")).unwrap();
+    let authority = catalog.handle().metadata_info().unwrap().authority;
+    let other = metadata_api_admin();
+    assert_ne!(administrator.id(), other.id());
+    assert_eq!(
+        metadata_api_call(&state, &other, metadata_api_confirm(&preview))
+            .unwrap_err()
+            ._http_status,
+        409
+    );
+    assert_eq!(std::fs::read(root.join("config.toml")).unwrap(), before);
+    for revision in [String::new(), "stale".to_owned()] {
+        let mut stale = preview.clone();
+        stale.configuration_revision = revision;
+        assert_eq!(
+            metadata_api_call(&state, &administrator, metadata_api_confirm(&stale))
+                .unwrap_err()
+                ._http_status,
+            409
+        );
+        assert_eq!(std::fs::read(root.join("config.toml")).unwrap(), before);
+    }
+    assert_eq!(
+        catalog.handle().metadata_info().unwrap().authority,
+        authority
+    );
+    assert!(
+        metadata_api_status(&state, &administrator)
+            .pending_volume_id
+            .is_none()
+    );
+    drop(state);
+    catalog.shutdown();
+}
+
+#[test]
+fn metadata_confirmation_only_stages_restart_and_preserves_secret_identifiers() {
+    let (root, catalog, state) = metadata_api_fixture();
+    let administrator = metadata_api_admin();
+    let before = std::fs::read(root.join("config.toml")).unwrap();
+    let source_history = std::fs::read(root.join("legacy/.exports/history.json")).unwrap();
+    let info = catalog.handle().metadata_info().unwrap();
+    let preview = metadata_api_preview(&state, &administrator);
+    assert_eq!(std::fs::read(root.join("config.toml")).unwrap(), before);
+    assert_eq!(preview.destination_volume_id, "{secret:METADATA_API_ID}");
+    assert!(preview.required_bytes >= info.snapshot_bytes);
+    assert!(
+        preview.expires_in_seconds > 0 && preview.restart_required && preview.requires_downtime
+    );
+    metadata_api_call(&state, &administrator, metadata_api_confirm(&preview)).unwrap();
+    let status = metadata_api_status(&state, &administrator);
+    assert_ne!(
+        status.configuration_revision,
+        preview.configuration_revision
+    );
+    assert_eq!(status.current_volume_id, None);
+    assert_eq!(
+        status.pending_volume_id.as_deref(),
+        Some("{secret:METADATA_API_ID}")
+    );
+    assert!(status.restart_required);
+    assert_eq!(
+        catalog.handle().metadata_info().unwrap().authority,
+        info.authority
+    );
+    assert!(catalog.handle().stats().is_ok());
+    assert!(root.join("catalog.db").is_file());
+    assert_eq!(
+        std::fs::read(root.join("legacy/.exports/history.json")).unwrap(),
+        source_history
+    );
+    assert!(
+        std::fs::read_dir(root.join("metadata-target"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    let text = std::fs::read_to_string(root.join("config.toml")).unwrap();
+    let saved: toml::Table = toml::from_str(&text).unwrap();
+    assert_eq!(
+        saved["storage"]["metadata_pending"]["target"]["volume_id"].as_str(),
+        Some("{secret:METADATA_API_ID}")
+    );
+    assert!(!text.contains("private-metadata-owner"));
+    for bytes in [preview.encode_to_vec(), status.encode_to_vec()] {
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("private-metadata-owner"));
+        assert!(!text.contains(root.to_str().unwrap()));
+    }
+    drop(state);
+    catalog.shutdown();
+}
+
+#[test]
+fn durable_metadata_pending_survives_registry_loss_and_cancel_requires_current_revision() {
+    use proto::storage_volume_command::Action;
+    let (root, catalog, state) = metadata_api_fixture();
+    let administrator = metadata_api_admin();
+    let authority = catalog.handle().metadata_info().unwrap().authority;
+    let preview = metadata_api_preview(&state, &administrator);
+    metadata_api_call(&state, &administrator, metadata_api_confirm(&preview)).unwrap();
+    let mut fresh = crate::server::tests::media_test_state();
+    fresh.storage_config = state.storage_config.clone();
+    fresh.config = state.config.clone();
+    fresh.camera_config_path = state.camera_config_path.clone();
+    fresh.export_history_path = state.export_history_path.clone();
+    fresh.catalog = Some(catalog.handle());
+    let status = metadata_api_status(&fresh, &administrator);
+    assert_ne!(
+        status.configuration_revision,
+        preview.configuration_revision
+    );
+    let pending_revision = status.configuration_revision.clone();
+    assert_eq!(
+        status.pending_volume_id.as_deref(),
+        Some("{secret:METADATA_API_ID}")
+    );
+    assert!(status.restart_required);
+    let before = std::fs::read(root.join("config.toml")).unwrap();
+    let stale = Action::CancelMetadata(proto::CancelStorageMetadata {
+        expected_configuration_revision: preview.configuration_revision,
+    });
+    assert_eq!(
+        metadata_api_call(&fresh, &administrator, stale)
+            .unwrap_err()
+            ._http_status,
+        409
+    );
+    assert_eq!(std::fs::read(root.join("config.toml")).unwrap(), before);
+    metadata_api_call(
+        &fresh,
+        &administrator,
+        Action::CancelMetadata(proto::CancelStorageMetadata {
+            expected_configuration_revision: status.configuration_revision,
+        }),
+    )
+    .unwrap();
+    let cancelled = metadata_api_status(&fresh, &administrator);
+    assert_ne!(cancelled.configuration_revision, pending_revision);
+    assert!(cancelled.pending_volume_id.is_none() && !cancelled.restart_required);
+    assert_eq!(cancelled.current_volume_id, status.current_volume_id);
+    let saved: toml::Table =
+        toml::from_str(&std::fs::read_to_string(root.join("config.toml")).unwrap()).unwrap();
+    assert!(saved["storage"].get("metadata_pending").is_none());
+    assert_eq!(
+        catalog.handle().metadata_info().unwrap().authority,
+        authority
+    );
+    assert!(
+        std::fs::read_dir(root.join("metadata-target"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    drop(fresh);
+    drop(state);
+    catalog.shutdown();
+}
+
+#[test]
+fn metadata_preview_refuses_unhealthy_history_and_existing_legacy_migration() {
+    for unhealthy_history in [true, false] {
+        let (root, catalog, mut state) = metadata_api_fixture();
+        let path = root.join("config.toml");
+        if unhealthy_history {
+            state.export_history_error = Some(Arc::from("history recovery failed"));
+        } else {
+            let mut config: toml::Table =
+                toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            config.insert(
+                "storage_migration".into(),
+                toml::Value::Table(toml::Table::new()),
+            );
+            crate::config::write_private_file(&path, toml::to_string(&config).unwrap().as_bytes())
+                .unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        let authority = catalog.handle().metadata_info().unwrap().authority;
+        let action =
+            proto::storage_volume_command::Action::PreviewMetadata(proto::PreviewStorageMetadata {
+                destination_volume_id: "{secret:METADATA_API_ID}".into(),
+            });
+        assert!(metadata_api_call(&state, &metadata_api_admin(), action).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            catalog.handle().metadata_info().unwrap().authority,
+            authority
+        );
+        assert!(
+            std::fs::read_dir(root.join("metadata-target"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        drop(state);
+        catalog.shutdown();
+    }
+}
+
+#[test]
+fn metadata_api_confirmation_activates_on_restart_with_latest_history_and_online_owner() {
+    let (root, catalog, state) = metadata_api_fixture();
+    let administrator = metadata_api_admin();
+    let before = catalog.handle().metadata_info().unwrap().authority;
+    let recording_files = catalog.handle().stats().unwrap().recording_files;
+    let preview = metadata_api_preview(&state, &administrator);
+    metadata_api_call(&state, &administrator, metadata_api_confirm(&preview)).unwrap();
+    let source = state.storage_config.recording_catalog_path.clone();
+    let source_history = state.export_history_path.as_ref().unwrap().as_ref().clone();
+    let latest = b"{\n  \"jobs\": [],\n  \"version\": 1\n}\n";
+    crate::config::write_private_file_atomically(&source_history, latest).unwrap();
+    let path = root.join("config.toml");
+    drop(state);
+    catalog.shutdown();
+    let mut raw: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let secrets = crate::config::load_secrets(&path).unwrap();
+    crate::config::metadata::pending::apply(&path, &mut raw, &secrets).unwrap();
+    assert!(raw["storage"].get("metadata_pending").is_none());
+    let config = crate::config::load_config(&path).unwrap();
+    let binding = config.storage.metadata.as_ref().unwrap();
+    assert_eq!(binding.volume_id.as_str(), "private-metadata-owner");
+    assert_eq!(binding.catalog_id, before.catalog_id);
+    assert_eq!(binding.generation, before.generation + 1);
+    let (destination, history) = binding.paths(&config.storage).unwrap();
+    assert_ne!(destination, source);
+    assert_eq!(std::fs::read(&source_history).unwrap(), latest);
+    assert_eq!(std::fs::read(&history).unwrap(), latest);
+    assert!(source.is_file());
+    assert!(crate::storage::RecordingCatalog::open(&source).is_err());
+    let reopened = crate::storage::RecordingCatalog::open_managed(
+        &destination,
+        &binding.authority(),
+        &binding.root_identity(),
+    )
+    .unwrap();
+    assert_eq!(
+        reopened.handle().metadata_info().unwrap().authority,
+        binding.authority()
+    );
+    assert_eq!(
+        reopened.handle().stats().unwrap().recording_files,
+        recording_files
+    );
+    let manager = Manager::new(
+        config.storage.named_volumes.clone().unwrap(),
+        reopened.handle(),
+    )
+    .unwrap();
+    let observations = manager.observations().unwrap();
+    let owner = observations
+        .iter()
+        .find(|volume| volume.id == binding.volume_id)
+        .unwrap();
+    assert_eq!(owner.health, crate::storage::volumes::VolumeHealth::Online);
+    drop(manager);
+    reopened.shutdown();
+}
+
+#[test]
+fn cancelled_metadata_preview_token_cannot_restage_the_old_handoff() {
+    let (root, catalog, state) = metadata_api_fixture();
+    let administrator = metadata_api_admin();
+    let authority = catalog.handle().metadata_info().unwrap().authority;
+    let preview = metadata_api_preview(&state, &administrator);
+    metadata_api_call(&state, &administrator, metadata_api_confirm(&preview)).unwrap();
+    let pending = metadata_api_status(&state, &administrator);
+    metadata_api_call(
+        &state,
+        &administrator,
+        proto::storage_volume_command::Action::CancelMetadata(proto::CancelStorageMetadata {
+            expected_configuration_revision: pending.configuration_revision,
+        }),
+    )
+    .unwrap();
+    let before = std::fs::read(root.join("config.toml")).unwrap();
+    assert_eq!(
+        metadata_api_call(&state, &administrator, metadata_api_confirm(&preview))
+            .unwrap_err()
+            ._http_status,
+        409
+    );
+    assert_eq!(std::fs::read(root.join("config.toml")).unwrap(), before);
+    assert!(
+        metadata_api_status(&state, &administrator)
+            .pending_volume_id
+            .is_none()
+    );
+    assert_eq!(
+        catalog.handle().metadata_info().unwrap().authority,
+        authority
+    );
+    assert!(
+        std::fs::read_dir(root.join("metadata-target"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    let fresh = metadata_api_preview(&state, &administrator);
+    assert_ne!(fresh.preview_token, preview.preview_token);
+    drop(state);
+    catalog.shutdown();
+}

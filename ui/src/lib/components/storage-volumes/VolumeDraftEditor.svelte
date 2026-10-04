@@ -75,8 +75,9 @@
 	aria-label="Named volume draft"
 >
 	<p id="volume-activation-note" class="text-sm text-text-muted">
-		New volumes are saved as disabled drafts. Activation is unavailable in this build. Saving this
-		draft does not move files or change the active storage destinations.
+		New volumes are saved as disabled drafts. Media activation is unavailable in this build;
+		metadata uses the separate confirmed restart workflow. Saving this draft does not move files or
+		change the active storage destinations.
 	</p>
 	<fieldset disabled={saving} class="space-y-4">
 		{#each draft.volumes as _, index (index)}<VolumeFields
@@ -95,7 +96,8 @@
 		<h4 class="text-sm font-medium">Placement policies</h4>
 		<p class="text-xs text-text-muted">
 			Changing a default only affects future placement. Existing files keep their catalog location.
-			Metadata migration and bulk drain are not available here.
+			Use the catalog and export history controls for metadata relocation. Bulk drain is not
+			available here.
 		</p>
 		{#each draft.placement as _, index (index)}<PlacementFields
 				bind:value={draft.placement[index]}

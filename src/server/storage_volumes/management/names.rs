@@ -46,6 +46,7 @@ impl Names {
         let id = match &mut action {
             Some(Action::Probe(value)) => Some(&mut value.volume_id),
             Some(Action::Objects(value)) => Some(&mut value.volume_id),
+            Some(Action::PreviewMetadata(value)) => Some(&mut value.destination_volume_id),
             Some(Action::PreviewMove(value)) => Some(&mut value.destination_volume_id),
             Some(Action::SetDraining(value)) => Some(&mut value.volume_id),
             _ => None,
@@ -92,6 +93,15 @@ impl Names {
     pub(super) fn response(&self, result: &mut proto::storage_volume_result::Result) {
         use proto::storage_volume_result::Result as Wire;
         match result {
+            Wire::MetadataPreview(value) => self.redact(&mut value.destination_volume_id),
+            Wire::Metadata(value) => {
+                if let Some(id) = &mut value.current_volume_id {
+                    self.redact(id);
+                }
+                if let Some(id) = &mut value.pending_volume_id {
+                    self.redact(id);
+                }
+            }
             Wire::Volumes(value) => {
                 for volume in &mut value.volumes {
                     self.redact(&mut volume.volume_id);

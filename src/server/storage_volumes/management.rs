@@ -11,6 +11,7 @@ use crate::{
     },
 };
 use prost::Message as _;
+mod metadata;
 mod moves;
 mod names;
 pub(in crate::server) use moves::Registry;
@@ -34,6 +35,14 @@ pub(in crate::server) fn dispatch(
     use proto::storage_volume_result::Result as Wire;
     let names = names::Names::load(state)?;
     let mut result = match names.resolve(command.action)? {
+        Some(Action::PreviewMetadata(request)) => {
+            Wire::MetadataPreview(metadata::preview(state, &principal.id(), request)?)
+        }
+        Some(Action::ConfirmMetadata(request)) => {
+            Wire::Metadata(metadata::confirm(state, &principal.id(), request)?)
+        }
+        Some(Action::Metadata(_)) => Wire::Metadata(metadata::status(state)?),
+        Some(Action::CancelMetadata(request)) => Wire::Metadata(metadata::cancel(state, request)?),
         Some(Action::List(_)) => Wire::Volumes(list(state)?),
         Some(Action::Probe(request)) => Wire::Probe(probe(state, &request.volume_id)?),
         Some(Action::Placement(request)) => Wire::Placement(placement(state, request)?),

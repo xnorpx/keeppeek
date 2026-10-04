@@ -18,7 +18,7 @@ export const volumeRoles = [
 	{ value: Role.ARCHIVE, label: 'Archive' },
 	{ value: Role.EXPORT, label: 'Exports' },
 	{ value: Role.THUMBNAIL, label: 'Thumbnails' },
-	{ value: Role.METADATA, label: 'Metadata (draft only)' }
+	{ value: Role.METADATA, label: 'Metadata' }
 ] as const;
 export type VolumeDraft = Omit<
 	StorageVolume,

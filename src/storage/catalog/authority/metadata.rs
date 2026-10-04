@@ -27,6 +27,11 @@ impl TransferCheck<'_> {
                 .is_some(),
             "metadata handoff requires captured legacy paths"
         );
+        let binding =
+            crate::storage::catalog::locations::Binding::metadata(self.volume, self.destination);
+        pollster::block_on(crate::storage::catalog::locations::check_binding(
+            connection, &binding,
+        ))?;
         Ok(())
     }
 

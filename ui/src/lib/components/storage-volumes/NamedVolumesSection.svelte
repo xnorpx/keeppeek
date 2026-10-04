@@ -1,25 +1,45 @@
 <script lang="ts">
 	import { create } from '@bufbuild/protobuf';
 	import { onMount } from 'svelte';
-	import { StorageVolumeCommandSchema, type StorageVolumeList } from '$lib/proto/webrtc_pb';
+	import {
+		StorageVolumeCommandSchema,
+		StorageVolumeRole,
+		StorageVolumeState,
+		type StorageVolumeList
+	} from '$lib/proto/webrtc_pb';
 	import type { SanitizedConfig, SettingsConfigUpdateResponse } from '$lib/types';
 	import type { VolumeController } from '$lib/storage-volumes';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import VolumeDraftEditor from './VolumeDraftEditor.svelte';
 	import VolumeOperations from './VolumeOperations.svelte';
 	import MoveJobs from './MoveJobs.svelte';
+	import MetadataControl from './MetadataControl.svelte';
 	import VolumeDrainControl from './VolumeDrainControl.svelte';
 	let {
 		config,
 		controller,
 		onsaved,
-		disabled = false
+		disabled = false,
+		onpendingchange
 	}: {
 		config: SanitizedConfig;
 		controller: VolumeController;
 		onsaved: (result: SettingsConfigUpdateResponse) => void;
 		disabled?: boolean;
+		onpendingchange?: (pending: boolean) => void;
 	} = $props();
+	let metadataVolumes = $derived(
+		(config.storage.named_volumes?.volumes ?? [])
+			.filter(
+				(volume) =>
+					volume.state === StorageVolumeState.DISABLED &&
+					volume.roles.length === 1 &&
+					volume.roles[0] === StorageVolumeRole.METADATA &&
+					!volume.sources.length &&
+					!volume.groups.length
+			)
+			.map((volume) => volume.id)
+	);
 	let status = $state<StorageVolumeList | null>(null);
 	let busy = $state(false);
 	let editing = $state(false);
@@ -158,6 +178,12 @@
 			onsaved={saved}
 			oncancel={() => (editing = false)}
 		/>{/if}
+	<MetadataControl
+		{controller}
+		{onpendingchange}
+		volumes={metadataVolumes}
+		disabled={disabled || editing}
+	/>
 	{#if status?.runtimeAvailable}
 		<VolumeOperations {controller} volumes={status.volumes.map((v) => v.volumeId)} />
 		<MoveJobs {controller} />

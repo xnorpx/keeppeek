@@ -1410,6 +1410,24 @@ definitions; successful removal retains immutable catalog bindings and completed
 - `cancel_move`: request cancellation through the same journal. Cancellation does not imply
   rollback of an already published destination; inspect the returned job state.
 
+- `preview_metadata`: inspect a disabled metadata-only destination without camera restrictions.
+  Returns a conservative snapshot/history byte bound and explicit restart/downtime requirements.
+  The preview belongs to its Administrator, expires after 300 seconds, and does not copy files.
+- `confirm_metadata`: stage that preview in `config.toml` using its unchanged revision. Catalog
+  and export history move together during the next service startup, before workers start.
+  Current files remain authoritative until that stopped handoff; old source files are retained.
+- `metadata`: report the current metadata volume, optional pending destination, restart requirement,
+  and metadata configuration revision. An absent current volume means legacy metadata paths.
+- `cancel_metadata`: remove a pending plan using the latest metadata status revision. Cancellation
+  is available only while the running source remains authoritative, before restarting the service.
+
+Metadata revisions include the pending handoff; use the revision from metadata preview/status,
+not the general settings revision. Confirmation rechecks persisted history, capacity, authority,
+and root identity. Pending state survives server restart and freezes storage-setting changes.
+After a completed transfer, returning to a previous metadata volume uses a new preview and
+confirmation with a new authority generation; it never reactivates the retained old catalog.
+Unknown, changed, or historically conflicting roots fail without changing their bindings.
+
 All responses are limited to 48 KiB. Volume IDs preserve configured secret references, and object
 responses omit physical paths and file identities. Configuration changes, changed object locations,
 unavailable capacity, or conflicting work reject confirmation. If settings differ from the running

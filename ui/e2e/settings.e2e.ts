@@ -980,7 +980,7 @@ test('uses the browser hostname after a wildcard host changes port', async ({ pa
 
 	await page.goto('/settings');
 	await page.getByRole('button', { name: 'Edit server' }).click();
-	await page.getByLabel('Port').fill('3201');
+	await page.getByLabel('Port', { exact: true }).fill('3201');
 	await page.getByRole('button', { name: 'Save server settings' }).click();
 	await page.getByRole('button', { name: 'Apply changes' }).click();
 
@@ -1034,4 +1034,71 @@ test('keeps confirmed settings visible and locked while a WebRTC update is apply
 	await expect(applying).toHaveCount(0);
 	await expect(page.getByText('Server settings saved.', { exact: true })).toBeVisible();
 	await expect(page.getByText('3201', { exact: true })).toBeVisible();
+});
+
+function metadataRuntimeConfiguration() {
+	return {
+		host: '0.0.0.0',
+		port: 3000,
+		camera_count: 0,
+		storage,
+		recording_estimate: recordingEstimate
+	};
+}
+
+test('restores metadata restart action on mount and removes it after cancellation', async ({
+	page
+}) => {
+	const controls = await mockControlPeer(page, {
+		runtimeConfiguration: metadataRuntimeConfiguration(),
+		metadataPendingVolumeId: '{secret:METADATA_VOLUME}'
+	});
+	await page.goto('/settings');
+	await expect(page.getByText(/Metadata move pending:/)).toBeVisible();
+	await expect(
+		page.getByRole('button', { name: 'Restart and move storage', exact: true })
+	).toBeVisible();
+	await page.getByRole('button', { name: 'Cancel pending metadata move' }).click();
+	await expect(page.getByText(/Metadata move pending:/)).toHaveCount(0);
+	await expect(
+		page.getByRole('button', { name: 'Restart and move storage', exact: true })
+	).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toHaveCount(0);
+	expect(controls.restarts).toBe(0);
+});
+
+test('metadata cancellation preserves a separately staged server restart', async ({ page }) => {
+	const initial = metadataRuntimeConfiguration();
+	const controls = await mockControlPeer(page, {
+		runtimeConfiguration: initial,
+		metadataPendingVolumeId: 'metadata-destination',
+		runtimeUpdateResult: { config: { ...initial, port: 3201 }, restart_required: true }
+	});
+	await page.goto('/settings');
+	await expect(
+		page.getByRole('button', { name: 'Restart and move storage', exact: true })
+	).toBeVisible();
+	await page.getByRole('button', { name: 'Edit server' }).click();
+	await page.getByLabel('Port', { exact: true }).fill('3201');
+	await page.getByRole('button', { name: 'Save server settings' }).click();
+	await expect.poll(() => controls.runtimeUpdates.length).toBe(1);
+	await page.getByRole('button', { name: 'Cancel pending metadata move' }).click();
+	await expect(page.getByText(/Metadata move pending:/)).toHaveCount(0);
+	await expect(
+		page.getByRole('button', { name: 'Restart and move storage', exact: true })
+	).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeVisible();
+	expect(controls.restarts).toBe(0);
+});
+
+test('the metadata restart action calls the existing server restart command', async ({ page }) => {
+	const controls = await mockControlPeer(page, {
+		runtimeConfiguration: metadataRuntimeConfiguration(),
+		metadataPendingVolumeId: 'metadata-destination'
+	});
+	// Keep this test focused on command dispatch rather than restart polling/navigation.
+	await page.route('**/metrics', (route) => route.fulfill({ status: 503, body: 'Restarting' }));
+	await page.goto('/settings');
+	await page.getByRole('button', { name: 'Restart and move storage', exact: true }).click();
+	await expect.poll(() => controls.restarts).toBe(1);
 });

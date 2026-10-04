@@ -1355,7 +1355,34 @@ message StorageVolumeCommand {
     GetStorageMove get_move = 8;
     CancelStorageMove cancel_move = 9;
     SetStorageVolumeDraining set_draining = 10;
+    PreviewStorageMetadata preview_metadata = 11;
+    ConfirmStorageMetadata confirm_metadata = 12;
+    GetStorageMetadata metadata = 13;
+    CancelStorageMetadata cancel_metadata = 14;
   }
+}
+// Metadata confirmation stages an offline transfer at the next service restart.
+message PreviewStorageMetadata { string destination_volume_id = 1; }
+message ConfirmStorageMetadata {
+  string preview_token = 1;
+  string expected_configuration_revision = 2;
+}
+message GetStorageMetadata {}
+message CancelStorageMetadata { string expected_configuration_revision = 1; }
+message StorageMetadataPreview {
+  string preview_token = 1;
+  string configuration_revision = 2;
+  string destination_volume_id = 3;
+  uint64 required_bytes = 4;
+  uint32 expires_in_seconds = 5;
+  bool restart_required = 6;
+  bool requires_downtime = 7;
+}
+message StorageMetadataStatus {
+  string configuration_revision = 1;
+  optional string current_volume_id = 2;
+  optional string pending_volume_id = 3;
+  bool restart_required = 4;
 }
 message ListStorageVolumes {}
 message ProbeStorageVolume { string volume_id = 1; }
@@ -1444,6 +1471,8 @@ message StorageVolumeResult {
     StorageMovePreview preview = 5;
     StorageMoveJob job = 6;
     StorageMoveList jobs = 7;
+    StorageMetadataPreview metadata_preview = 8;
+    StorageMetadataStatus metadata = 9;
   }
 }
 

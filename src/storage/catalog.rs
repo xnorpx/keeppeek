@@ -356,6 +356,9 @@ struct LegacyRecording {
 }
 
 enum Command {
+    MetadataInfo {
+        reply: SyncSender<anyhow::Result<authority::MetadataInfo>>,
+    },
     ReadLease {
         request: readers::Request,
         reply: SyncSender<anyhow::Result<readers::Reply>>,
@@ -659,8 +662,7 @@ impl RecordingCatalog {
         let thread = std::thread::Builder::new()
             .name("recording-catalog".to_owned())
             .spawn(move || {
-                let _lease = writer_lease;
-                run_catalog(connection, rx, readers);
+                run_catalog(connection, rx, readers, &writer_lease);
             })?;
         let search_thread = std::thread::Builder::new()
             .name("recording-catalog-search".to_owned())
@@ -1486,6 +1488,16 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    pub(crate) fn metadata_info(&self) -> anyhow::Result<authority::MetadataInfo> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .try_send(Command::MetadataInfo { reply })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable or busy"))?;
+        response
+            .recv_timeout(BUSY_TIMEOUT)
+            .map_err(|_| anyhow::anyhow!("recording catalog metadata query timed out"))?
+    }
+
     pub fn stats(&self) -> anyhow::Result<CatalogStats> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
@@ -1520,10 +1532,20 @@ fn run_catalog(
     connection: turso::Connection,
     rx: Receiver<Command>,
     readers: Arc<readers::Registry>,
+    lease: &authority::Lease,
 ) {
     let intent_epoch = maintenance::jobs::Epoch::new();
     while let Ok(command) = rx.recv() {
         match command {
+            Command::MetadataInfo { reply } => {
+                let result = lease.verify(&connection).and_then(|authority| {
+                    Ok(authority::MetadataInfo {
+                        authority,
+                        snapshot_bytes: crate::backup::database::snapshot_size_limit(&connection)?,
+                    })
+                });
+                let _ = reply.send(result);
+            }
             Command::ReadLease { request, reply } => {
                 let _ = reply.send(pollster::block_on(readers::execute(
                     &connection,

@@ -1,5 +1,5 @@
 pub use crate::access::AccessKey;
-mod metadata;
+pub(crate) mod metadata;
 mod storage_volumes;
 use crate::{
     access,
@@ -23,7 +23,7 @@ use url::Url;
 const DEFAULT_CONFIG_NAME: &str = "config.toml";
 const DEFAULT_SECRETS_NAME: &str = "secrets.toml";
 const ACCESS_KEY_SECRET: &str = "KEEPPEEK_ACCESS_KEY";
-const STORAGE_MIGRATION_SECTION: &str = "storage_migration";
+pub(crate) const STORAGE_MIGRATION_SECTION: &str = "storage_migration";
 const DEFAULT_SECRETS_TEMPLATE: &str = r#"# Keep this file private. KeepPeek creates it with owner-only permissions.
 # It is a flat string-to-string map. Reference values from config.toml with
 # {secret:KEY}; use {secret:KEY|url} for percent-encoded URL components.

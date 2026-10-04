@@ -52,6 +52,25 @@ pub struct Binding {
     pub minimum_free_bytes: u64,
 }
 
+impl Binding {
+    pub(crate) fn metadata(
+        volume: &crate::storage::volumes::Volume,
+        root: &crate::storage::volumes::root::Root,
+    ) -> Self {
+        Self {
+            id: volume.id.to_string(),
+            generation: 1,
+            root: volume.root.clone(),
+            filesystem: root.identity().filesystem.clone(),
+            root_identity: root.identity().directory.clone(),
+            writable: true,
+            draining: false,
+            limit_bytes: volume.capacity_bytes,
+            minimum_free_bytes: volume.minimum_free_bytes.max(volume.critical_free_bytes),
+        }
+    }
+}
+
 impl fmt::Debug for Binding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Binding")
@@ -140,6 +159,7 @@ pub enum Request {
     LegacyPaths,
     LegacyInventory(legacy::inventory::Action),
     Bind(Binding),
+    CheckBinding(Binding),
     EnsureRemovable(String),
     SetDraining {
         volume: String,
@@ -356,7 +376,7 @@ fn validate(request: &Request) -> anyhow::Result<()> {
             identifier(event)?;
             identifier(attachment)?;
         }
-        Request::Bind(binding) => validate_binding(binding)?,
+        Request::Bind(binding) | Request::CheckBinding(binding) => validate_binding(binding)?,
         Request::SetDraining {
             volume, generation, ..
         } => {
@@ -510,6 +530,10 @@ async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::R
         Request::LegacyPaths => Reply::LegacyPaths(legacy::load(connection).await?.map(Box::new)),
         Request::LegacyInventory(action) => legacy::inventory::dispatch(connection, action).await?,
         Request::Bind(binding) => bind(connection, &binding).await?,
+        Request::CheckBinding(binding) => {
+            check_binding(connection, &binding).await?;
+            Reply::Bound
+        }
         Request::EnsureRemovable(volume) => removal::check(connection, &volume).await?,
         Request::SetDraining {
             volume,
@@ -631,10 +655,12 @@ async fn bump_revision(connection: &turso::Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn bind(connection: &turso::Connection, binding: &Binding) -> anyhow::Result<Reply> {
-    if !binding.id.starts_with("legacy-") {
-        super::authority::install_format_barrier(connection).await?;
-    }
+/// Checks immutable identity without installing or changing a binding.
+pub(crate) async fn check_binding(
+    connection: &turso::Connection,
+    binding: &Binding,
+) -> anyhow::Result<()> {
+    validate_binding(binding)?;
     let root = binding.root.to_str().expect("validated UTF-8 root");
     let generation = to_i64(binding.generation, "volume generation")?;
     let mut rows = connection.query("SELECT generation, root, filesystem, root_identity FROM storage_volume_bindings WHERE id = ?1", [binding.id.as_str()]).await?;
@@ -655,6 +681,24 @@ async fn bind(connection: &turso::Connection, binding: &Binding) -> anyhow::Resu
             "volume binding limit reached"
         );
     }
+    let mut aliases = connection.query(
+        "SELECT 1 FROM storage_volume_bindings WHERE filesystem=?1 AND root_identity=?2 AND id<>?3 LIMIT 1",
+        turso::params![binding.filesystem.as_str(), binding.root_identity.as_str(), binding.id.as_str()],
+    ).await?;
+    anyhow::ensure!(
+        aliases.next().await?.is_none(),
+        "volume root is already bound to another identity"
+    );
+    Ok(())
+}
+
+async fn bind(connection: &turso::Connection, binding: &Binding) -> anyhow::Result<Reply> {
+    check_binding(connection, binding).await?;
+    if !binding.id.starts_with("legacy-") {
+        super::authority::install_format_barrier(connection).await?;
+    }
+    let root = binding.root.to_str().expect("validated UTF-8 root");
+    let generation = to_i64(binding.generation, "volume generation")?;
     connection.execute("INSERT INTO storage_volume_bindings (id, generation, root, filesystem, root_identity, writable, limit_bytes, minimum_free_bytes, draining) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(id) DO UPDATE SET writable = excluded.writable, limit_bytes = excluded.limit_bytes, minimum_free_bytes = excluded.minimum_free_bytes, draining = excluded.draining", turso::params![binding.id.clone(), generation, root, binding.filesystem.clone(), binding.root_identity.clone(), i64::from(binding.writable), binding.limit_bytes.map(|v| to_i64(v, "volume limit")).transpose()?, to_i64(binding.minimum_free_bytes, "volume reserve")?, i64::from(binding.draining)]).await?;
     bump_revision(connection).await?;
     Ok(Reply::Bound)
