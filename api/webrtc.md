@@ -1382,6 +1382,11 @@ the management UI must be qualified before configuration activation.
   configuration revision, and whether the running volume configuration matches saved settings.
 - `probe`: inspect one configured root without creating directories or media files. An unavailable
   root reports offline; this is a capacity probe, not a write-permission guarantee.
+- `set_draining`: set or clear the operational drain flag using the current configuration revision.
+  The flag persists across restarts and configuration rebinding. Setting it immediately blocks
+  new placements; existing writers and admitted moves may finish. Clearing it does not override
+  configured draining or read-only state. The response is a refreshed volume list, with separate
+  `configured_draining` and `operator_draining` status fields. This command does not migrate objects.
 - `placement`: evaluate a prospective role/source/byte allocation without reserving it. Camera
   groups come from server configuration. Rejections explain state, role, source, or capacity limits.
 - `objects`: list at most 64 authoritative objects on one volume, ordered by kind and object ID.

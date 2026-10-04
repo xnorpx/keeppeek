@@ -1354,6 +1354,7 @@ message StorageVolumeCommand {
     ListStorageMoves moves = 7;
     GetStorageMove get_move = 8;
     CancelStorageMove cancel_move = 9;
+    SetStorageVolumeDraining set_draining = 10;
   }
 }
 message ListStorageVolumes {}
@@ -1383,12 +1384,20 @@ message ConfirmStorageMove {
 message ListStorageMoves { string after_job_id = 1; }
 message GetStorageMove { string job_id = 1; }
 message CancelStorageMove { string job_id = 1; }
+// Stops new placements. Existing writers and moves retain their reservations.
+message SetStorageVolumeDraining {
+  string volume_id = 1;
+  bool draining = 2;
+  string expected_configuration_revision = 3;
+}
 message StorageVolumeStatus {
   string volume_id = 1;
   bool online = 2;
   optional uint64 available_bytes = 3;
   uint64 owned_bytes = 4;
   uint64 reserved_bytes = 5;
+  bool configured_draining = 6;
+  bool operator_draining = 7;
 }
 message StorageVolumeList {
   string configuration_revision = 1;

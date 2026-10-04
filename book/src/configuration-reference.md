@@ -440,7 +440,10 @@ inputs. Removing a saved volume definition requires confirmation. Root probes in
 configured roots without creating directories; a successful probe does not establish write
 permission. Activation, bulk drain, legacy adoption, and metadata relocation remain unavailable
 in this draft build. Individual move preview, confirmation, status, and cancellation appear only
-when a volume runtime is available.
+when a volume runtime is available. The same runtime controls let administrators stop new
+writes to a volume or clear that operator drain, after confirmation. Already admitted writes
+finish normally. Clearing an operator drain does not override a draining or read-only saved
+configuration. Operator drain survives restart and does not itself move existing media.
 
 Each `[[storage.named_volumes.volumes]]` entry has these fields:
 
