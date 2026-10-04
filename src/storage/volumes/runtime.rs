@@ -454,7 +454,8 @@ fn bind_opened_root(
         root: volume.root.clone(),
         filesystem: root.identity().filesystem.clone(),
         root_identity: root.identity().directory.clone(),
-        writable: volume.state == VolumeState::Enabled,
+        writable: matches!(volume.state, VolumeState::Enabled | VolumeState::Draining),
+        draining: volume.state == VolumeState::Draining,
         limit_bytes: volume.capacity_bytes,
         minimum_free_bytes: volume.minimum_free_bytes.max(volume.critical_free_bytes),
     }))?;

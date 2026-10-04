@@ -18,6 +18,7 @@ fn catalog(limit_bytes: Option<u64>) -> RecordingCatalog {
                 filesystem: "shared-disk".into(),
                 root_identity: format!("root-{id}"),
                 writable: true,
+                draining: false,
                 limit_bytes,
                 minimum_free_bytes: 0,
             }))

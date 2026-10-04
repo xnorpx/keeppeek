@@ -2,6 +2,112 @@ use super::*;
 use crate::storage::catalog::{RecordingCatalog, tests::test_dir};
 
 #[test]
+fn draining_binding_survives_restart_and_allows_only_existing_growth() {
+    let root = test_dir("volume-draining-reopen");
+    let path = root.join("catalog.db");
+    let catalog = RecordingCatalog::open(&path).unwrap();
+    let handle = catalog.handle();
+    let mut initial = binding(&root, "primary", "disk");
+    handle
+        .volume_location(Request::Bind(initial.clone()))
+        .unwrap();
+    let allocation = reserve(
+        "existing",
+        "primary",
+        handle.volume_ledger_revision().unwrap(),
+        10,
+    );
+    handle
+        .volume_location(Request::Reserve(allocation))
+        .unwrap();
+    initial.draining = true;
+    handle.volume_location(Request::Bind(initial)).unwrap();
+    catalog.shutdown();
+    let catalog = RecordingCatalog::open(&path).unwrap();
+    let handle = catalog.handle();
+    let next = reserve(
+        "new",
+        "primary",
+        handle.volume_ledger_revision().unwrap(),
+        10,
+    );
+    assert!(
+        handle
+            .volume_location(Request::Reserve(next.clone()))
+            .is_err()
+    );
+    assert_eq!(
+        handle
+            .volume_location(Request::Grow(Growth {
+                operation: "existing".into(),
+                bytes: 20,
+                capacity: next.capacity,
+            }))
+            .unwrap(),
+        Reply::Reserved {
+            operation: "existing".into(),
+            bytes: 20
+        }
+    );
+    catalog.shutdown();
+}
+
+#[test]
+fn old_bindings_gain_draining_state_without_changing_write_permissions() {
+    pollster::block_on(async {
+        let database = turso::Builder::new_local(":memory:")
+            .experimental_generated_columns(true)
+            .build()
+            .await
+            .unwrap();
+        let connection = database.connect().unwrap();
+        let old_schema = include_str!("schema.sql")
+            .split("CREATE TABLE IF NOT EXISTS storage_volume_allocations")
+            .next()
+            .unwrap()
+            .lines()
+            .filter(|line| !line.contains("draining INTEGER"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        connection.execute_batch(&old_schema).await.unwrap();
+        connection.execute_batch("INSERT INTO storage_volume_bindings (id, generation, root, filesystem, root_identity, writable, minimum_free_bytes) VALUES ('legacy-active', 1, '/active', 'disk', 'active', 1, 0), ('legacy-archive', 1, '/archive', 'disk', 'archive', 0, 0)").await.unwrap();
+        super::super::initialize_schema(&connection).await.unwrap();
+        let mut rows = connection
+            .query(
+                "SELECT writable, draining FROM storage_volume_bindings ORDER BY id",
+                (),
+            )
+            .await
+            .unwrap();
+        for writable in [1_i64, 0] {
+            let row = rows.next().await.unwrap().unwrap();
+            assert_eq!(row.get::<i64>(0).unwrap(), writable);
+            assert_eq!(row.get::<i64>(1).unwrap(), 0);
+        }
+        drop(rows);
+        connection
+            .execute(
+                "UPDATE storage_volume_bindings SET draining = 1 WHERE writable = 1",
+                (),
+            )
+            .await
+            .unwrap();
+        super::super::initialize_schema(&connection).await.unwrap();
+        let mut rows = connection
+            .query(
+                "SELECT draining FROM storage_volume_bindings WHERE id = 'legacy-active'",
+                (),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            1
+        );
+    });
+}
+
+#[test]
 fn volume_ledger_growth_reserves_only_delta_and_survives_retries_and_restart() {
     let root = test_dir("volume-ledger-growth");
     let path = root.join("catalog.db");
@@ -92,6 +198,7 @@ fn binding(root: &std::path::Path, id: &str, filesystem: &str) -> Binding {
         filesystem: filesystem.to_owned(),
         root_identity: format!("root-{id}"),
         writable: true,
+        draining: false,
         limit_bytes: Some(100),
         minimum_free_bytes: 10,
     }

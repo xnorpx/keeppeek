@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS storage_volume_bindings (
     filesystem TEXT NOT NULL,
     root_identity TEXT NOT NULL,
     writable INTEGER NOT NULL CHECK (writable IN (0, 1)),
+    draining INTEGER NOT NULL DEFAULT 0 CHECK (draining IN (0, 1)),
     limit_bytes INTEGER CHECK (limit_bytes > 0),
     minimum_free_bytes INTEGER NOT NULL CHECK (minimum_free_bytes >= 0),
     allocated_bytes INTEGER NOT NULL DEFAULT 0 CHECK (typeof(allocated_bytes) = 'integer' AND allocated_bytes >= 0),

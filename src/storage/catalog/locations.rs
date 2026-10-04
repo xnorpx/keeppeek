@@ -39,6 +39,7 @@ pub struct Binding {
     pub filesystem: String,
     pub root_identity: String,
     pub writable: bool,
+    pub draining: bool,
     pub limit_bytes: Option<u64>,
     pub minimum_free_bytes: u64,
 }
@@ -189,6 +190,13 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     connection
         .execute_batch(include_str!("locations/schema.sql"))
         .await?;
+    super::ensure_column(
+        connection,
+        "storage_volume_bindings",
+        "draining",
+        "INTEGER NOT NULL DEFAULT 0 CHECK (draining IN (0, 1))",
+    )
+    .await?;
     moves::initialize(connection).await?;
     // A sample from a previous actor lifetime must never authorize another allocation.
     bump_revision(connection).await?;
@@ -444,7 +452,7 @@ async fn bind(connection: &turso::Connection, binding: &Binding) -> anyhow::Resu
             "volume binding limit reached"
         );
     }
-    connection.execute("INSERT INTO storage_volume_bindings (id, generation, root, filesystem, root_identity, writable, limit_bytes, minimum_free_bytes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(id) DO UPDATE SET writable = excluded.writable, limit_bytes = excluded.limit_bytes, minimum_free_bytes = excluded.minimum_free_bytes", turso::params![binding.id.clone(), generation, root, binding.filesystem.clone(), binding.root_identity.clone(), i64::from(binding.writable), binding.limit_bytes.map(|v| to_i64(v, "volume limit")).transpose()?, to_i64(binding.minimum_free_bytes, "volume reserve")?]).await?;
+    connection.execute("INSERT INTO storage_volume_bindings (id, generation, root, filesystem, root_identity, writable, limit_bytes, minimum_free_bytes, draining) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(id) DO UPDATE SET writable = excluded.writable, limit_bytes = excluded.limit_bytes, minimum_free_bytes = excluded.minimum_free_bytes, draining = excluded.draining", turso::params![binding.id.clone(), generation, root, binding.filesystem.clone(), binding.root_identity.clone(), i64::from(binding.writable), binding.limit_bytes.map(|v| to_i64(v, "volume limit")).transpose()?, to_i64(binding.minimum_free_bytes, "volume reserve")?, i64::from(binding.draining)]).await?;
     bump_revision(connection).await?;
     Ok(Reply::Bound)
 }
@@ -504,7 +512,7 @@ async fn admission(
     allocation: &Allocation,
     new_allocation: bool,
 ) -> anyhow::Result<String> {
-    let mut rows = connection.query("SELECT generation, writable, limit_bytes, minimum_free_bytes, filesystem, root_identity, root FROM storage_volume_bindings WHERE id = ?1", [allocation.volume.as_str()]).await?;
+    let mut rows = connection.query("SELECT generation, writable, limit_bytes, minimum_free_bytes, filesystem, root_identity, root, draining FROM storage_volume_bindings WHERE id = ?1", [allocation.volume.as_str()]).await?;
     let row = rows
         .next()
         .await?
@@ -513,6 +521,10 @@ async fn admission(
         to_u64(row.get::<i64>(0)?, "volume generation")? == allocation.generation
             && row.get::<i64>(1)? == 1,
         "volume is not writable at this generation"
+    );
+    anyhow::ensure!(
+        !new_allocation || row.get::<i64>(7)? == 0,
+        "volume is draining"
     );
     let filesystem = row.get::<String>(4)?;
     anyhow::ensure!(

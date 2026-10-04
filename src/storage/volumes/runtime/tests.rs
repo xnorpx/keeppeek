@@ -78,6 +78,35 @@ fn object() -> Object {
 }
 
 #[test]
+fn draining_volume_finishes_existing_growth_but_rejects_new_reservations() -> anyhow::Result<()> {
+    let (_, catalog, manager) = fixture(2 * GROWTH_BYTES)?;
+    let mut writer = manager
+        .reserve(VolumeRole::Export, "camera", &[], object(), 8)?
+        .expect("initial reservation")
+        .open()?;
+    writer.write_all(&[1; 8])?;
+    let mut configuration = manager.inner.configuration.clone();
+    configuration.volumes[0].state = VolumeState::Draining;
+    let draining = Manager::new(configuration, catalog.handle())?;
+    assert!(
+        draining
+            .reserve(VolumeRole::Export, "camera", &[], object(), 8)
+            .is_err()
+    );
+    assert!(
+        manager
+            .reserve(VolumeRole::Export, "camera", &[], object(), 8)
+            .is_err()
+    );
+    writer.write_all(&[2])?;
+    let evidence = writer.evidence()?;
+    assert_eq!(evidence.bytes, 9);
+    writer.publish(evidence)?;
+    catalog.shutdown();
+    Ok(())
+}
+
+#[test]
 fn offline_root_recovers_without_restarting_the_manager() -> anyhow::Result<()> {
     let (path, catalog, original) = fixture(GROWTH_BYTES)?;
     let mut configuration = original.inner.configuration.clone();

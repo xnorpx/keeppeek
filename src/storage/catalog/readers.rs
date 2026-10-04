@@ -428,6 +428,7 @@ mod tests {
                 filesystem: "readers-fs".into(),
                 root_identity: "readers-root".into(),
                 writable: true,
+                draining: false,
                 limit_bytes: Some(4096),
                 minimum_free_bytes: 0,
             }))
@@ -836,6 +837,7 @@ mod tests {
                 filesystem: "readers-fs".into(),
                 root_identity: "destination-root".into(),
                 writable: true,
+                draining: false,
                 limit_bytes: Some(4096),
                 minimum_free_bytes: 0,
             }))
