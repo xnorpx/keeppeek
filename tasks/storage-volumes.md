@@ -494,3 +494,13 @@ skips (`target/129-drain-controls-check.log`). A subsequent 320-pixel regression
 volume IDs overflowing action buttons. Short visible labels retain full accessible names;
 all three focused browser tests passed (`target/129-drain-mobile-green.log`). Final acceptance
 still requires the remaining migration, removal, metadata, and activation work and a final gate.
+
+Captured thumbnail startup now leaves a missing media directory absent and preserves image
+references and byte metadata, even under a pruning quota. The original directory can return
+without recreating the event store; thumbnail and native attachment reads recover, including
+Windows ASCII case variants. Online-root containment and uncaptured creation/retention remain
+unchanged. Both directory recreation and case-variant recovery had failing regressions before
+their fixes. All 30 event-storage tests passed (`target/129-thumbnail-recovery-green.log`).
+This handles missing-directory startup; durable legacy root identity binding and migration
+remain required before activation.
+Strict workspace/all-target Clippy passed (`target/129-thumbnail-recovery-clippy.log`).
