@@ -1,10 +1,7 @@
 //! Runs bounded durable move jobs outside the recording writer.
 
 use super::Manager;
-use crate::storage::{
-    catalog::locations::{Object, Reply, Request, moves::Page},
-    volumes::PlacementRequest,
-};
+use crate::storage::catalog::locations::{Reply, Request, moves::Page};
 use std::{
     collections::VecDeque,
     sync::{
@@ -20,9 +17,12 @@ const QUEUE_CAPACITY: usize = 64;
 const SCAN_LIMIT: usize = 4_096;
 const SCAN_INTERVAL: Duration = Duration::from_secs(60);
 
+#[cfg(test)]
+mod archive_tests;
+
 #[derive(Clone)]
 pub struct Handle {
-    sender: SyncSender<String>,
+    sender: SyncSender<()>,
 }
 
 impl std::fmt::Debug for Handle {
@@ -32,32 +32,21 @@ impl std::fmt::Debug for Handle {
 }
 
 impl Handle {
-    /// Reserves the move durably before issuing a bounded worker wakeup.
+    /// Wakes the journal scan after a recording finalizes its durable archive request.
     ///
     /// # Errors
-    /// Rejects unavailable placement or a stopped worker. Queue overflow remains journaled.
-    pub fn schedule(
-        &self,
-        manager: &Manager,
-        object: Object,
-        request: &PlacementRequest<'_>,
-        groups: &[&str],
-    ) -> anyhow::Result<bool> {
-        let id = uuid::Uuid::new_v4().to_string();
-        if !manager.schedule_move(&id, object, request, groups)? {
-            return Ok(false);
-        }
-        match self.sender.try_send(id) {
+    /// Returns an error if the worker stopped; queued work remains in the catalog.
+    pub fn scan(&self) -> anyhow::Result<()> {
+        match self.sender.try_send(()) {
             Ok(()) => {}
-            Err(TrySendError::Full(id)) => tracing::debug!(
-                job_id = id,
-                "move wakeup queue full; journal scan will recover it"
-            ),
+            Err(TrySendError::Full(_)) => {
+                tracing::debug!("move wakeup queue full; journal scan will recover it");
+            }
             Err(TrySendError::Disconnected(_)) => {
                 anyhow::bail!("move worker stopped; admitted job remains journaled")
             }
         }
-        Ok(true)
+        Ok(())
     }
 }
 
@@ -123,13 +112,13 @@ impl Drop for Worker {
     }
 }
 
-fn run(manager: Manager, receiver: Receiver<String>, cancelled: &AtomicBool) {
+fn run(manager: Manager, receiver: Receiver<()>, cancelled: &AtomicBool) {
     let mut scan = Scan::new();
     // This worker runs until shutdown; each turn handles one wakeup and one journal item.
     while !cancelled.load(Ordering::Acquire) {
         let mut worked = false;
-        if let Ok(id) = receiver.try_recv() {
-            process(&manager, &id, cancelled);
+        if receiver.try_recv().is_ok() {
+            scan.next = Instant::now();
             worked = true;
         }
         if cancelled.load(Ordering::Acquire) {
@@ -148,7 +137,7 @@ fn run(manager: Manager, receiver: Receiver<String>, cancelled: &AtomicBool) {
         }
         if !worked {
             match receiver.recv_timeout(Duration::from_millis(250)) {
-                Ok(id) => process(&manager, &id, cancelled),
+                Ok(()) => scan.next = Instant::now(),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -169,6 +158,9 @@ fn process(manager: &Manager, id: &str, cancelled: &AtomicBool) {
 }
 
 fn execute(manager: &Manager, id: &str, cancelled: &AtomicBool) -> anyhow::Result<()> {
+    if !manager.admit_archive(id)? {
+        return Ok(());
+    }
     let Reply::Move(job) = manager
         .inner
         .catalog
@@ -226,7 +218,6 @@ impl Scan {
                 return Ok(None);
             }
             manager.recover_roots()?;
-            self.after = None;
             self.seen = 0;
             self.active = true;
         }
@@ -237,11 +228,15 @@ impl Scan {
             self.defer();
             return Ok(None);
         }
-        let Reply::Moves(jobs) = manager.inner.catalog.volume_location(Request::Moves(Page {
-            after: self.after.clone(),
-            limit: QUEUE_CAPACITY as u16,
-            include_terminal: false,
-        }))?
+        let Reply::PendingMoves(jobs) =
+            manager
+                .inner
+                .catalog
+                .volume_location(Request::PendingMoves(Page {
+                    after: self.after.clone(),
+                    limit: QUEUE_CAPACITY as u16,
+                    include_terminal: false,
+                }))?
         else {
             anyhow::bail!("invalid move scan reply");
         };
@@ -250,12 +245,13 @@ impl Scan {
             "move scan exceeded its page budget"
         );
         if jobs.is_empty() {
+            self.after = None;
             self.defer();
             return Ok(None);
         }
-        self.after = jobs.last().map(|job| job.id.clone());
+        self.after = jobs.last().cloned();
         self.seen += jobs.len();
-        self.pending.extend(jobs.into_iter().map(|job| job.id));
+        self.pending.extend(jobs);
         Ok(self.pending.pop_front())
     }
 }
@@ -316,6 +312,23 @@ mod tests {
         assert_eq!(scan.next(&fixture.manager)?, None);
         assert!(!scan.active);
         assert!(scan.next > Instant::now());
+        fixture.catalog.shutdown();
+        Ok(())
+    }
+
+    #[test]
+    fn scan_budget_resumes_after_its_cursor_before_wrapping() -> anyhow::Result<()> {
+        let fixture = fixture()?;
+        let mut scan = Scan::new();
+        assert_eq!(scan.next(&fixture.manager)?, Some(fixture.job_id.clone()));
+        scan.seen = SCAN_LIMIT;
+        assert_eq!(scan.next(&fixture.manager)?, None);
+        assert_eq!(scan.after, Some(fixture.job_id.clone()));
+        scan.next = Instant::now();
+        assert_eq!(scan.next(&fixture.manager)?, None);
+        assert_eq!(scan.after, None);
+        scan.next = Instant::now();
+        assert_eq!(scan.next(&fixture.manager)?, Some(fixture.job_id));
         fixture.catalog.shutdown();
         Ok(())
     }

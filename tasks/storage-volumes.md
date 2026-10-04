@@ -191,13 +191,22 @@ reader leases and retains a verified destination handle while moving the old sou
 private quarantine. Durable receipts distinguish a completed removal from unexplained absence.
 Cancellation uses the same removal receipts and releases destination capacity only after cleanup.
 
-The background worker has a 64-item wakeup queue, 64-job scan pages, at most 4096 pending jobs,
-one attempt per wakeup or scan, and a 60-second rescan interval. Failed jobs wait for the next
+The background worker has a 64-item wakeup queue, 64-job scan pages, at most 4096 admitted moves,
+one attempt per scan, and a 60-second rescan interval. Failed jobs wait for the next
 scan without per-job retry sleeps that delay other volumes. Admission precedes the wakeup, so queue
 overflow does not discard a committed job. The application joins the actual worker before closing
-the catalog. Finalized named recordings request archive placement without performing a copy in
-the recording writer. Rejected admission still leaves the source intact; automatic reevaluation
-of a finalized object whose initial archive admission failed remains outstanding.
+the catalog. A recording reservation stores its matching archive rule, candidate settings, source,
+and groups in the same transaction, before creating the recording file. Finalization makes that
+request runnable through its published allocation; the writer only wakes the existing scan.
+Each recording can retain one archive request with at most 128 KiB of captured policy. Waiting
+requests do not consume the 4096 admitted-move budget or prevent new recordings during an archive
+outage. Each scan processes at most 4096 entries in 64-entry pages and resumes its cursor on the
+next pass before wrapping to the beginning. Full or unavailable destinations leave the request and source
+intact for another pass, including after restart. Later default-policy changes do not reinterpret
+the captured request; current destination states, roles, roots, and write limits still constrain
+admission. Move admission acknowledges the request in the same transaction as its destination
+reservation. A rejected reservation rolls back both changes. If the sole permitted destination
+already owns the recording, completing the request needs no additional capacity or media copy.
 
 The same scan retries up to 32 roots that were unavailable when the runtime started. It opens
 and synchronizes roots outside the admission lock, then checks the durable binding before making

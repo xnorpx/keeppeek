@@ -122,7 +122,7 @@ fn validate_observations(observations: &[VolumeObservation]) -> anyhow::Result<(
     Ok(())
 }
 
-fn eligibility(
+pub(super) fn eligibility(
     volume: &Volume,
     request: &PlacementRequest<'_>,
     groups: &[&str],

@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub mod archives;
 mod growth;
 mod materialization;
 pub mod moves;
@@ -129,11 +130,15 @@ pub enum Request {
     Bind(Binding),
     Revision,
     Reserve(Allocation),
+    ReserveArchive(Allocation, archives::Intent),
     Grow(Growth),
     Materialize(Materialization),
     BeginMove(moves::Intent),
     Move(String),
     Moves(moves::Page),
+    PendingMoves(moves::Page),
+    Archive(String),
+    CompleteArchive { id: String, source: Location },
     AdvanceMove(moves::Step),
     Usage,
     Publish(Publication),
@@ -150,6 +155,8 @@ pub enum Reply {
     Usage(Vec<Usage>),
     Move(Box<moves::Job>),
     Moves(Vec<moves::Job>),
+    PendingMoves(Vec<String>),
+    Archive(Option<Box<archives::Job>>),
 }
 
 impl RecordingCatalogHandle {
@@ -198,6 +205,7 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     )
     .await?;
     moves::initialize(connection).await?;
+    archives::initialize(connection).await?;
     // A sample from a previous actor lifetime must never authorize another allocation.
     bump_revision(connection).await?;
     connection.execute("INSERT OR IGNORE INTO catalog_schema_migrations (version, applied_at_ms) VALUES (3, ?1)", [super::current_unix_time_ms()]).await?;
@@ -216,47 +224,20 @@ fn validate(request: &Request) -> anyhow::Result<()> {
     match request {
         Request::Revision | Request::Usage => {}
         Request::Move(id) => identifier(id)?,
-        Request::Moves(page) => {
+        Request::Archive(id) => identifier(id)?,
+        Request::CompleteArchive { id, source } => {
+            identifier(id)?;
+            identifier(&source.object.id)?;
+            anyhow::ensure!(source.revision > 0, "invalid archive source revision");
+        }
+        Request::Moves(page) | Request::PendingMoves(page) => {
             anyhow::ensure!((1..=64).contains(&page.limit), "invalid move page size");
             if let Some(after) = &page.after {
                 identifier(after)?;
             }
         }
-        Request::AdvanceMove(step) => {
-            identifier(step.id())?;
-            if let moves::Step::Verified(evidence) | moves::Step::Retired(evidence) = step {
-                validate_publication(evidence)?;
-            }
-            if let moves::Step::CancellationVerified {
-                evidence:
-                    moves::Cancellation::File {
-                        relative_key,
-                        bytes,
-                        file_identity,
-                        ..
-                    },
-                ..
-            } = step
-            {
-                validate_key(relative_key)?;
-                identifier(file_identity)?;
-                to_i64(*bytes, "cancelled copy bytes")?;
-            }
-        }
-        Request::BeginMove(intent) => {
-            identifier(&intent.id)?;
-            identifier(&intent.object.id)?;
-            anyhow::ensure!(intent.expected_revision > 0, "invalid source revision");
-            to_i64(intent.expected_revision, "source revision")?;
-            anyhow::ensure!(
-                intent.destination.operation == intent.id
-                    && intent.destination.object.id == intent.id
-                    && intent.destination.object.kind == intent.object.kind
-                    && intent.object.id != intent.id,
-                "invalid move destination identity"
-            );
-            validate_allocation(&intent.destination)?;
-        }
+        Request::AdvanceMove(step) => validate_step(step)?,
+        Request::BeginMove(intent) => validate_move(intent)?,
         Request::Materialize(materialized) => {
             identifier(&materialized.operation)?;
             identifier(&materialized.file_identity)?;
@@ -277,21 +258,72 @@ fn validate(request: &Request) -> anyhow::Result<()> {
             validate_publication(publication)?;
         }
         Request::Lookup(object) => identifier(&object.id)?,
-        Request::Bind(binding) => {
-            identifier(&binding.id)?;
-            identifier(&binding.filesystem)?;
-            identifier(&binding.root_identity)?;
-            anyhow::ensure!(binding.generation > 0, "invalid volume generation");
-            to_i64(binding.generation, "volume generation")?;
-            to_i64(binding.minimum_free_bytes, "volume reserve")?;
-            if let Some(limit) = binding.limit_bytes {
-                anyhow::ensure!(limit > 0, "invalid volume limit");
-                to_i64(limit, "volume limit")?;
-            }
-            crate::storage::volumes::validation::comparison_root(&binding.root)?;
-        }
+        Request::Bind(binding) => validate_binding(binding)?,
         Request::Reserve(allocation) => validate_allocation(allocation)?,
+        Request::ReserveArchive(allocation, intent) => {
+            validate_allocation(allocation)?;
+            intent.validate()?;
+            anyhow::ensure!(
+                allocation.object.kind == Kind::Recording
+                    && allocation.object.id != intent.id
+                    && allocation.operation != intent.id,
+                "archive requires a recording"
+            );
+        }
     }
+    Ok(())
+}
+
+fn validate_step(step: &moves::Step) -> anyhow::Result<()> {
+    identifier(step.id())?;
+    if let moves::Step::Verified(evidence) | moves::Step::Retired(evidence) = step {
+        validate_publication(evidence)?;
+    }
+    if let moves::Step::CancellationVerified {
+        evidence:
+            moves::Cancellation::File {
+                relative_key,
+                bytes,
+                file_identity,
+                ..
+            },
+        ..
+    } = step
+    {
+        validate_key(relative_key)?;
+        identifier(file_identity)?;
+        to_i64(*bytes, "cancelled copy bytes")?;
+    }
+    Ok(())
+}
+
+fn validate_move(intent: &moves::Intent) -> anyhow::Result<()> {
+    identifier(&intent.id)?;
+    identifier(&intent.object.id)?;
+    anyhow::ensure!(intent.expected_revision > 0, "invalid source revision");
+    to_i64(intent.expected_revision, "source revision")?;
+    anyhow::ensure!(
+        intent.destination.operation == intent.id
+            && intent.destination.object.id == intent.id
+            && intent.destination.object.kind == intent.object.kind
+            && intent.object.id != intent.id,
+        "invalid move destination identity"
+    );
+    validate_allocation(&intent.destination)
+}
+
+fn validate_binding(binding: &Binding) -> anyhow::Result<()> {
+    identifier(&binding.id)?;
+    identifier(&binding.filesystem)?;
+    identifier(&binding.root_identity)?;
+    anyhow::ensure!(binding.generation > 0, "invalid volume generation");
+    to_i64(binding.generation, "volume generation")?;
+    to_i64(binding.minimum_free_bytes, "volume reserve")?;
+    if let Some(limit) = binding.limit_bytes {
+        anyhow::ensure!(limit > 0, "invalid volume limit");
+        to_i64(limit, "volume limit")?;
+    }
+    crate::storage::volumes::validation::comparison_root(&binding.root)?;
     Ok(())
 }
 
@@ -348,12 +380,24 @@ pub(super) async fn execute(
         let reply = match request {
             Request::Bind(binding) => bind(connection, &binding).await?,
             Request::Reserve(allocation) => reserve(connection, &allocation).await?,
+            Request::ReserveArchive(allocation, intent) => {
+                archives::reserve(connection, &allocation, &intent).await?
+            }
             Request::Grow(growth) => growth::grow(connection, &growth).await?,
             Request::BeginMove(intent) => {
-                Reply::Move(Box::new(moves::begin(connection, &intent).await?))
+                Reply::Move(Box::new(archives::begin_move(connection, &intent).await?))
             }
             Request::Move(id) => Reply::Move(Box::new(moves::load(connection, &id).await?)),
             Request::Moves(page) => Reply::Moves(moves::page(connection, &page).await?),
+            Request::PendingMoves(page) => {
+                Reply::PendingMoves(archives::pending(connection, &page).await?)
+            }
+            Request::Archive(id) => {
+                Reply::Archive(archives::load(connection, &id).await?.map(Box::new))
+            }
+            Request::CompleteArchive { id, source } => {
+                archives::complete(connection, &id, &source).await?
+            }
             Request::AdvanceMove(step) => {
                 Reply::Move(Box::new(moves::advance(connection, &step).await?))
             }
@@ -577,6 +621,8 @@ async fn admission(
         .replace('\\', "/"))
 }
 
+#[cfg(test)]
+mod archives_tests;
 #[cfg(test)]
 mod finalize_tests;
 #[cfg(test)]
