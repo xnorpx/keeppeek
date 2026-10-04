@@ -23,5 +23,9 @@
 		"svelte": "5.56.9",
 		"typescript": "6.0.3",
 		"vite": "6.4.3"
+	},
+	"//": "ponytail: Loki only uses tempy.file(); 0.6.0 avoids del and vulnerable braces (GHSA-vfj7-8cjw-p6xm). Remove this override when Loki's dependency chain is fixed.",
+	"overrides": {
+		"tempy": "0.6.0"
 	}
 }
