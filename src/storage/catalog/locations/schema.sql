@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS storage_volume_allocations (
 );
 CREATE INDEX IF NOT EXISTS storage_volume_allocation_volume
     ON storage_volume_allocations(volume_id, state);
+CREATE INDEX IF NOT EXISTS storage_volume_object_page
+    ON storage_volume_allocations(volume_id, state, kind, object_id);
 CREATE INDEX IF NOT EXISTS storage_volume_maintenance_path
     ON recording_maintenance_claims(replace(path, char(92), '/') COLLATE NOCASE) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS storage_volume_cleanup_path

@@ -1,6 +1,7 @@
 //! Maps Administrator volume settings without disclosing resolved secrets.
 
 use crate::{api::proto, config::Config, storage::volumes::*};
+pub(super) mod management;
 
 macro_rules! enum_bridge {
     ($from:ident, $to:ident, $model:ident, $wire:ident, [$($variant:ident),+]) => {

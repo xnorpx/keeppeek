@@ -243,7 +243,7 @@ named-root restore remains rejected until root ownership transfer is implemented
 operations preserve ambiguous files. These changes are internal integration, not activation:
 configuration still accepts only Disabled named-volume drafts.
 
-Remaining before activation: legacy bindings/backfill, export owner integration, incomplete-image recovery,
+Remaining before activation: legacy bindings/backfill, incomplete-image recovery,
 per-volume retention and drain, live policy changes and mounted-volume recovery, named metadata relocation,
 Administrator operations and UI, and final performance/platform evidence. Focused test logs are
 under `target/129-*-nextest.log`; failed intermediate runs must not be presented as final evidence.
@@ -268,7 +268,7 @@ when the publication reply was lost. No directory scan grants ownership of unrel
 
 This increment does not enable named volumes. Recovery of crashes or failures before image
 sealing, legacy root backfill, notification image-location refresh, per-volume retention,
-exports, migration management, and Administrator UI remain outstanding. The PR stays draft.
+migration management, and Administrator UI remain outstanding. The PR stays draft.
 
 ## Export writer prerequisite
 
@@ -293,5 +293,33 @@ Retirement refuses new readers and waits for existing readers and admitted moves
 offline roots keep their cleanup intent for a later pass. Existing compact artifact UUIDs retain
 their catalog spelling, while file-removal receipts use the allocation operation ID.
 
-This is the cleanup and reader prerequisite. Server export jobs, history recovery, downloads,
-and expiry still need to adopt these operations before export placement is complete.
+Server export jobs now reserve the matching named volume before opening a writer. Matched
+capacity failures do not create a legacy export. The actual worker holds its artifact lease
+through publication and closes its file before releasing that lease. Verification reports
+progress and observes cancellation through the existing monitor.
+
+Downloads resolve the current catalog location and read through its pinned file handle, with
+a reader lease and the existing browser size bound. A stale checksum failure cannot mutate or
+retire a newer retry. Restart recovery runs after catalog attachment, preserves Ready jobs on
+unavailable volumes, and admits interrupted-attempt cleanup before changing history. Expiry,
+retry, and history pruning admit cleanup before forgetting an attempt. Invalid history remains
+untouched and disables export creation until recovery succeeds on restart.
+
+## Export integration and operator move API
+
+Server exports now use named placement end to end. Seven server regressions cover verified MP4
+publication/download, quota refusal, offline recovery, interrupted cleanup, malformed history,
+retry fencing, and downloads after the old moved file is removed.
+
+The Administrator-only storage command family exposes status, a non-mutating configured-root
+probe, placement preview, bounded object/job pages, and preview/confirm/cancel for individual moves.
+Confirmations reuse the existing durable journal and worker. Previews bind the requesting actor,
+configuration revision, authoritative object location, and server-derived camera groups. Stale
+configuration or a pending runtime restart rejects admission. Secret-based volume IDs retain their
+references on the wire. The browser control client preserves named settings and exact byte limits.
+
+Validation for this increment: 147 focused export, image, runtime, and protocol tests passed;
+strict workspace/all-target Clippy passed; five system-client tests passed; Svelte check reported
+zero errors and warnings. Full canonical Windows validation remains a final acceptance gate.
+Activation remains disabled. Bulk drain, legacy adoption, named recording retention, incomplete
+image recovery, metadata relocation, management screens, and final benchmarks remain outstanding.

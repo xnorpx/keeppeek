@@ -1370,10 +1370,39 @@ does not fall through to a broader rule. Fallback must be explicit. With fallbac
 only the first candidate is eligible. With fallback on, ranking considers all eligible
 candidates and breaks ties by ID. Metadata placement has one global candidate and no fallback.
 
-This increment accepts only disabled drafts. It does not advertise a live-volume
-capability or enable writing, draining, or moving media. These operations require durable
-locations and verified recovery before activation. Model limits and lexical validation
-are documented in the configuration reference; they do not prove filesystem confinement.
+Configuration still accepts only disabled drafts and does not advertise a live-volume
+capability. The internal runtime now places recordings, exports, and event images and
+journals verified moves. Legacy backfill, retention, draining, metadata relocation, and
+the management UI must be qualified before configuration activation.
+
+`StorageVolumeCommand` (request field 29) is Administrator-only. Responses use
+`Ok.storage_volume_result` (field 43). The operations are:
+
+- `list`: configured volumes with online status, available bytes, owned bytes, reservations,
+  configuration revision, and whether the running volume configuration matches saved settings.
+- `probe`: inspect one configured root without creating directories or media files. An unavailable
+  root reports offline; this is a capacity probe, not a write-permission guarantee.
+- `placement`: evaluate a prospective role/source/byte allocation without reserving it. Camera
+  groups come from server configuration. Rejections explain state, role, source, or capacity limits.
+- `objects`: list at most 64 authoritative objects on one volume, ordered by kind and object ID.
+  Use `next_after` for another page. Pending writers and retired move sources are excluded.
+- `preview_move`: capture one owned object, destination, byte count, and configuration revision.
+  The server resolves camera ownership and group eligibility; clients cannot supply those claims.
+- `confirm_move`: submit the preview token and unchanged configuration revision. Tokens belong
+  to the requesting Administrator, expire after 300 seconds, and are limited to 64 per server.
+  The token is also the durable job ID. Admission precedes notification of the existing move worker.
+- `moves` and `get_move`: inspect durable job state. History pages contain at most 16 jobs and
+  return `next_after_job_id`. Phases are `reserved`, `verified`, `file_published`, `published`,
+  `retiring`, `complete`, and `cancelled`.
+- `cancel_move`: request cancellation through the same journal. Cancellation does not imply
+  rollback of an already published destination; inspect the returned job state.
+
+All responses are limited to 48 KiB. Volume IDs preserve configured secret references, and object
+responses omit physical paths and file identities. Configuration changes, changed object locations,
+unavailable capacity, or conflicting work reject confirmation. If settings differ from the running
+Manager configuration, placement and new move admission require a restart. A repeated confirmation
+with its original unexpired token returns the same admitted job. After a timeout or restart, query
+that job ID before preparing another move. A preview never changes default placement or moves data.
 
 ## Event pre-recording
 

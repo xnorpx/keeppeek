@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf';
 import { timestampFromDate } from '@bufbuild/protobuf/wkt';
 import { describe, expect, it } from 'vitest';
-import { numeric, serverHealth } from './control-client-system';
+import { numeric, serverHealth, SystemControlClient } from './control-client-system';
 import {
 	CameraHealthSnapshotSchema,
 	PreRecordingDiagnosticsSchema,
@@ -19,6 +19,15 @@ import {
 	SystemHealthSnapshotSchema,
 	WebRtcHealthSnapshotSchema
 } from './proto/webrtc_pb';
+import {
+	RuntimeConfigurationResultSchema,
+	SanitizedRuntimeConfigurationSchema,
+	StorageVolumeCommandSchema,
+	StorageVolumeResultSchema,
+	StorageVolumeRole,
+	StorageVolumeState
+} from './proto/webrtc_pb';
+import type { Request } from './proto/webrtc_pb';
 import type { RecordingEvent } from './types';
 
 const unusedEventMapper = (): RecordingEvent => {
@@ -26,6 +35,58 @@ const unusedEventMapper = (): RecordingEvent => {
 };
 
 describe('control client system mapping', () => {
+	it('preserves named-volume references and exact byte limits through settings updates', async () => {
+		const config = create(SanitizedRuntimeConfigurationSchema, {
+			storage: {
+				namedVolumes: {
+					volumes: [
+						{
+							id: 'archive',
+							root: '{secret:ARCHIVE}',
+							roles: [StorageVolumeRole.ARCHIVE],
+							state: StorageVolumeState.DISABLED,
+							capacityBytes: 9_000_000_000_000_000_000n
+						}
+					]
+				}
+			},
+			recordingEstimate: {}
+		});
+		let sent: Request['command'];
+		const client = new SystemControlClient(async (command) => {
+			sent = command;
+			return {
+				case: 'runtimeConfigurationResult',
+				value: create(RuntimeConfigurationResultSchema, { config })
+			};
+		}, unusedEventMapper);
+		const mapped = await client.getRuntimeConfiguration();
+		await client.updateRuntimeConfiguration({
+			...mapped,
+			expected_configuration_revision: 'revision',
+			move_existing_recordings: false
+		});
+		expect(sent?.case).toBe('runtimeConfigurationCommand');
+		if (sent?.case !== 'runtimeConfigurationCommand' || sent.value.action.case !== 'update')
+			throw new Error('Expected settings update');
+		expect(sent.value.action.value.storage?.namedVolumes).toEqual(config.storage?.namedVolumes);
+	});
+
+	it('routes volume commands through the control channel and rejects unrelated responses', async () => {
+		const command = create(StorageVolumeCommandSchema, { action: { case: 'list', value: {} } });
+		const response = create(StorageVolumeResultSchema, {
+			result: { case: 'volumes', value: { runtimeAvailable: false } }
+		});
+		const client = new SystemControlClient(async (sent) => {
+			expect(sent).toEqual({ case: 'storageVolumeCommand', value: command });
+			return { case: 'storageVolumeResult', value: response };
+		}, unusedEventMapper);
+		expect(await client.storageVolumes(command)).toEqual(response);
+		const invalid = new SystemControlClient(async () => ({ case: undefined }), unusedEventMapper);
+		await expect(invalid.storageVolumes(command)).rejects.toThrow(
+			'unexpected storage volume response'
+		);
+	});
 	it('normalizes known and future health values without weakening the response contract', () => {
 		const health = serverHealth(
 			create(ServerHealthSnapshotSchema, {

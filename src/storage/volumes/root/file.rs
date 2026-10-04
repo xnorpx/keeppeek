@@ -245,15 +245,23 @@ impl OwnedFile {
     /// # Errors
     /// Rejects replacement, extra links, concurrent mutation, or failed synchronization.
     pub fn evidence(&mut self) -> anyhow::Result<(u64, String, [u8; 32])> {
+        self.evidence_with_progress(|_| Ok(()))
+    }
+
+    pub(crate) fn evidence_with_progress(
+        &mut self,
+        mut progress: impl FnMut(u64) -> anyhow::Result<()>,
+    ) -> anyhow::Result<(u64, String, [u8; 32])> {
         let deadline = Instant::now() + Duration::from_secs(60);
         anyhow::ensure!(
             self.expected_bytes.is_none(),
             "read-only files cannot establish write durability"
         );
         self.revalidate()?;
+        progress(0)?;
         self.file.sync_all()?;
         self.root.sync()?;
-        self.inspect_until(deadline)
+        self.inspect_until(deadline, &mut progress)
     }
 
     /// Hashes the pinned file without establishing write durability, preserving its cursor.
@@ -262,15 +270,19 @@ impl OwnedFile {
     /// # Errors
     /// Rejects replacement, changed length, extra links, or mutation during verification.
     pub fn inspect_evidence(&mut self) -> anyhow::Result<(u64, String, [u8; 32])> {
-        self.inspect_until(Instant::now() + Duration::from_secs(60))
+        self.inspect_until(Instant::now() + Duration::from_secs(60), &mut |_| Ok(()))
     }
 
-    fn inspect_until(&mut self, deadline: Instant) -> anyhow::Result<(u64, String, [u8; 32])> {
+    fn inspect_until(
+        &mut self,
+        deadline: Instant,
+        progress: &mut impl FnMut(u64) -> anyhow::Result<()>,
+    ) -> anyhow::Result<(u64, String, [u8; 32])> {
         self.revalidate()?;
         let before = self.file.metadata()?;
         let position = self.file.stream_position()?;
         self.file.rewind()?;
-        let digest = hash(&mut self.file, before.len(), deadline);
+        let digest = hash_with_progress(&mut self.file, before.len(), deadline, progress);
         self.file.seek(SeekFrom::Start(position))?;
         let digest = digest?;
         self.revalidate()?;
@@ -351,6 +363,15 @@ pub(super) fn file_options() -> OpenOptions {
 }
 
 pub(super) fn hash(file: &mut File, bytes: u64, deadline: Instant) -> anyhow::Result<[u8; 32]> {
+    hash_with_progress(file, bytes, deadline, &mut |_| Ok(()))
+}
+
+fn hash_with_progress(
+    file: &mut File,
+    bytes: u64,
+    deadline: Instant,
+    progress: &mut impl FnMut(u64) -> anyhow::Result<()>,
+) -> anyhow::Result<[u8; 32]> {
     let mut remaining = bytes;
     let mut hasher = Sha256::new();
     // ponytail: A fixed buffer and initial length bound memory and stop concurrent growth.
@@ -361,6 +382,7 @@ pub(super) fn hash(file: &mut File, bytes: u64, deadline: Instant) -> anyhow::Re
         file.read_exact(&mut buffer[..amount])?;
         hasher.update(&buffer[..amount]);
         remaining -= amount as u64;
+        progress(bytes - remaining)?;
     }
     Ok(hasher.finalize().into())
 }
