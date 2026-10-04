@@ -4,6 +4,12 @@ pub(in crate::server) fn persist(
     state: &ServerState,
     jobs: &HashMap<String, ExportJobRecord>,
 ) -> anyhow::Result<()> {
+    if let Some(binding) = &state.storage_config.metadata {
+        return state
+            .storage_config
+            .metadata_root()?
+            .replace_history(&binding.history_file, &export_history_bytes(jobs)?);
+    }
     if let Some(path) = &state.export_history_path {
         crate::storage::volumes::legacy::ensure_export_history_available(
             state.catalog.as_ref(),
@@ -80,8 +86,7 @@ pub(in crate::server) fn restore(state: &mut ServerState) {
     let Some(path) = &state.export_history_path else {
         return;
     };
-    let export_root = state.storage_config.long_term_path.join(".exports");
-    match load_export_jobs(path, &export_root, state.catalog.as_ref()).and_then(|jobs| {
+    match load(state, path).and_then(|jobs| {
         persist(state, &jobs)?;
         Ok(jobs)
     }) {
@@ -94,6 +99,22 @@ pub(in crate::server) fn restore(state: &mut ServerState) {
             state.export_history_error = Some(Arc::from(error.to_string()));
         }
     }
+}
+
+fn load(state: &ServerState, path: &Path) -> anyhow::Result<HashMap<String, ExportJobRecord>> {
+    let export_root = state.storage_config.long_term_path.join(".exports");
+    if let Some(binding) = &state.storage_config.metadata {
+        let bytes = state
+            .storage_config
+            .metadata_root()?
+            .read_history(&binding.history_file)?;
+        let offline = crate::storage::volumes::legacy::export_root_offline(
+            state.catalog.as_ref(),
+            &export_root,
+        )?;
+        return restore_export_history(&bytes, &export_root, state.catalog.as_ref(), offline);
+    }
+    load_export_jobs(path, &export_root, state.catalog.as_ref())
 }
 
 pub(in crate::server) fn expire(state: &ServerState) {

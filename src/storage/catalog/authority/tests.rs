@@ -499,3 +499,230 @@ fn authority_parent_symlink_alias_shares_lease_but_leaf_symlink_is_rejected() {
     assert!(Lease::acquire(&original.join("linked.db")).is_err());
     drop(lease);
 }
+
+fn metadata_transfer_fixture() -> PathBuf {
+    use super::super::locations::{Binding, Request, legacy::LegacyPaths};
+    let root = fixture();
+    let catalog_path = root.join("source.db");
+    let catalog = super::super::RecordingCatalog::open(&catalog_path).unwrap();
+    catalog
+        .handle()
+        .volume_location(Request::Bind(Binding {
+            id: "named-media".into(),
+            generation: 1,
+            root: root.join("media"),
+            filesystem: "fixture-disk".into(),
+            root_identity: "fixture-root".into(),
+            writable: true,
+            draining: false,
+            limit_bytes: Some(4096),
+            minimum_free_bytes: 0,
+        }))
+        .unwrap();
+    let storage = crate::storage::StorageConfig {
+        medium_term_path: root.join("active"),
+        long_term_path: root.join("archive"),
+        event_thumbnail_path: root.join("thumbnails"),
+        recording_catalog_path: catalog_path,
+        ..Default::default()
+    };
+    catalog
+        .handle()
+        .volume_location(Request::RegisterLegacyPaths(Box::new(
+            LegacyPaths::effective(&storage).unwrap(),
+        )))
+        .unwrap();
+    catalog.shutdown();
+    std::fs::write(
+        root.join("source-history.json"),
+        b"{\"version\":1,\"jobs\":[]}\n",
+    )
+    .unwrap();
+    root
+}
+
+fn transfer_metadata_fixture(root: &Path) -> anyhow::Result<()> {
+    super::transfer_metadata(
+        &root.join("source.db"),
+        &root.join("destination.db"),
+        &root.join("source-history.json"),
+        &root.join("destination-history.json"),
+    )
+}
+
+fn metadata_ownership(
+    path: &Path,
+) -> (
+    super::super::locations::Reply,
+    super::super::locations::Reply,
+) {
+    use super::super::locations::Request;
+    let catalog = super::super::RecordingCatalog::open(path).unwrap();
+    let usage = catalog.handle().volume_location(Request::Usage).unwrap();
+    let paths = catalog
+        .handle()
+        .volume_location(Request::LegacyPaths)
+        .unwrap();
+    catalog.shutdown();
+    (usage, paths)
+}
+
+#[test]
+fn metadata_transfer_retains_source_and_moves_named_catalog_authority_with_history() {
+    let root = metadata_transfer_fixture();
+    let source = root.join("source.db");
+    let destination = root.join("destination.db");
+    let ownership = metadata_ownership(&source);
+    let history = std::fs::read(root.join("source-history.json")).unwrap();
+    assert!(super::transfer_legacy(&source, &destination).is_err());
+    assert!(!destination.exists());
+    assert_eq!(metadata_ownership(&source), ownership);
+    transfer_metadata_fixture(&root).unwrap();
+    assert!(source.is_file());
+    assert_eq!(
+        std::fs::read(root.join("source-history.json")).unwrap(),
+        history
+    );
+    assert_eq!(
+        std::fs::read(root.join("destination-history.json")).unwrap(),
+        history
+    );
+    assert!(super::super::RecordingCatalog::open(&source).is_err());
+    assert_eq!(metadata_ownership(&destination), ownership);
+}
+
+#[test]
+fn metadata_transfer_refuses_live_source_before_creating_destination_files() {
+    let root = metadata_transfer_fixture();
+    let source = root.join("source.db");
+    let ownership = metadata_ownership(&source);
+    let lease = Lease::acquire(&source).unwrap();
+    assert!(transfer_metadata_fixture(&root).is_err());
+    assert!(!root.join("destination.db").exists());
+    assert!(!root.join("destination-history.json").exists());
+    drop(lease);
+    assert_eq!(metadata_ownership(&source), ownership);
+}
+
+#[test]
+fn metadata_transfer_preflights_conflicting_history_before_fencing_source() {
+    let root = metadata_transfer_fixture();
+    let source = root.join("source.db");
+    let ownership = metadata_ownership(&source);
+    let original = std::fs::read(root.join("source-history.json")).unwrap();
+    let destination_history = root.join("destination-history.json");
+    let unrelated = b"{\"version\":1,\"jobs\":[],\"unrelated\":true}\n";
+    std::fs::write(&destination_history, unrelated).unwrap();
+    assert!(transfer_metadata_fixture(&root).is_err());
+    assert_eq!(std::fs::read(&destination_history).unwrap(), unrelated);
+    assert!(!root.join("destination.db").exists());
+    assert_eq!(
+        std::fs::read(root.join("source-history.json")).unwrap(),
+        original
+    );
+    assert_eq!(metadata_ownership(&source), ownership);
+}
+
+#[test]
+fn metadata_transfer_exact_retry_preserves_updated_history_and_binds_history_paths() {
+    let root = metadata_transfer_fixture();
+    transfer_metadata_fixture(&root).unwrap();
+    let destination = root.join("destination.db");
+    let ownership = metadata_ownership(&destination);
+    let (lease, connection, before) = database(&destination);
+    drop(connection);
+    drop(lease);
+    transfer_metadata_fixture(&root).unwrap();
+    let (lease, connection, after) = database(&destination);
+    assert_eq!(after, before);
+    drop(connection);
+    drop(lease);
+    let history = root.join("destination-history.json");
+    let changed = b"{\"version\":1,\"jobs\":[],\"changed\":true}\n";
+    std::fs::write(&history, changed).unwrap();
+    transfer_metadata_fixture(&root).unwrap();
+    assert_eq!(std::fs::read(&history).unwrap(), changed);
+    let (lease, connection, current) = database(&destination);
+    assert_eq!(current, before);
+    drop(connection);
+    drop(lease);
+    let source_history = root.join("source-history.json");
+    let alternate_source = root.join("alternate-source-history.json");
+    let alternate_destination = root.join("alternate-destination-history.json");
+    std::fs::copy(&source_history, &alternate_source).unwrap();
+    for (from, to) in [
+        (&alternate_source, &history),
+        (&source_history, &alternate_destination),
+    ] {
+        assert!(super::transfer_metadata(&root.join("source.db"), &destination, from, to).is_err());
+        assert!(!alternate_destination.exists());
+        assert_eq!(std::fs::read(&history).unwrap(), changed);
+    }
+    assert_eq!(metadata_ownership(&destination), ownership);
+    assert!(super::super::RecordingCatalog::open(&root.join("source.db")).is_err());
+    assert!(root.join("source-history.json").is_file());
+}
+
+#[test]
+fn metadata_transfer_can_relocate_an_activated_destination_again() {
+    let root = metadata_transfer_fixture();
+    transfer_metadata_fixture(&root).unwrap();
+    let source = root.join("destination.db");
+    let history = root.join("destination-history.json");
+    let ownership = metadata_ownership(&source);
+    let current = b"{\"version\":1,\"jobs\":[],\"updated\":true}";
+    std::fs::write(&history, current).unwrap();
+    let destination = root.join("third.db");
+    let target_history = root.join("third-history.json");
+    super::transfer_metadata(&source, &destination, &history, &target_history).unwrap();
+    assert_eq!(std::fs::read(&target_history).unwrap(), current);
+    assert_eq!(std::fs::read(&history).unwrap(), current);
+    assert!(super::super::RecordingCatalog::open(&source).is_err());
+    assert_eq!(metadata_ownership(&destination), ownership);
+    super::transfer_metadata(&source, &destination, &history, &target_history).unwrap();
+}
+#[test]
+fn managed_catalog_open_requires_existing_authority_without_creating_a_leaf() {
+    let root = std::env::temp_dir().join(format!("keeppeek-managed-open-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let expected = Authority {
+        catalog_id: uuid::Uuid::new_v4().to_string(),
+        generation: 1,
+    };
+    let root_identity = crate::storage::volumes::root::Root::open(&root)
+        .unwrap()
+        .identity()
+        .clone();
+    let missing = root.join("missing.db");
+    assert!(
+        crate::storage::RecordingCatalog::open_managed(&missing, &expected, &root_identity)
+            .is_err()
+    );
+    assert!(!missing.exists());
+    let empty = root.join("empty.db");
+    std::fs::write(&empty, []).unwrap();
+    assert!(
+        crate::storage::RecordingCatalog::open_managed(&empty, &expected, &root_identity).is_err()
+    );
+    let valid = root.join("valid.db");
+    crate::storage::RecordingCatalog::open(&valid)
+        .unwrap()
+        .shutdown();
+    assert!(
+        crate::storage::RecordingCatalog::open_managed(&valid, &expected, &root_identity).is_err()
+    );
+    let (lease, connection, actual) = database(&valid);
+    drop(connection);
+    drop(lease);
+    let wrong_generation = Authority {
+        generation: actual.generation + 1,
+        ..actual.clone()
+    };
+    assert!(
+        crate::storage::RecordingCatalog::open_managed(&valid, &wrong_generation, &root_identity)
+            .is_err()
+    );
+    crate::storage::RecordingCatalog::open_managed(&valid, &actual, &root_identity)
+        .unwrap()
+        .shutdown();
+}

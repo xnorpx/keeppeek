@@ -459,13 +459,35 @@ trimming wait while that root is unavailable. If export history itself was unava
 restore the directory and restart to reload it. These recovery guards do not enable activation or
 replace the confirmed legacy migration workflow.
 
+`[storage.metadata]` is a server-managed binding, not an ordinary placement draft. It contains
+`volume_id`, `catalog_file`, `history_file`, `catalog_id`, `generation`, `filesystem`, and
+`root_identity`. The filenames use one shared canonical UUID with `catalog-<uuid>.db` and
+`exports-<uuid>.json`. The catalog ID is a UUID, generation is 1 through `i64::MAX`, and both
+filesystem identity strings contain 1–256 bytes without control characters. The volume must
+exist, have the metadata role, and be enabled; a legacy `recording_catalog_path` override is
+incompatible with this binding. Startup verifies the saved directory and catalog authority.
+It does not create an empty replacement catalog if the selected owner is unavailable.
+
+Ordinary settings cannot install, clear, disable, or relocate the metadata owner. Unrelated
+updates preserve its existing secret references. This draft permits an enabled metadata-only
+owner with a valid binding while other named-volume activation remains gated. The confirmed
+relocation controls are not yet available; do not construct or edit this binding manually.
+The internal `[storage.metadata_pending]` restart record contains a 32-byte source-configuration
+digest and the target binding. It retains the previous effective paths until a stopped transfer
+verifies both the catalog snapshot and copied export history, then atomically commits the new
+binding. Failed or interrupted transfers retain their source files and pending state for retry.
+Pending handoffs reject effective storage-setting changes while allowing unrelated settings saves.
+Startup rechecks available space, the byte cap, and the larger minimum/critical free-space reserve
+before fencing the source. Managed export history must already exist, fit within 8 MiB, and contain
+valid, uniquely owned jobs; missing or invalid history is preserved and reported unavailable.
+
 Each `[[storage.named_volumes.volumes]]` entry has these fields:
 
 | Field                 | Type           | Default   | Meaning                                                                                                                                                                                                                                                                  |
 | --------------------- | -------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `id`                  | String         | Required  | 1–64 lowercase ASCII letters, digits, `_` or `-`; `legacy-` is reserved.                                                                                                                                                                                                 |
 | `root`                | Path string    | Required  | Absolute UTF-8 directory path, at most 4096 bytes and 64 components; no traversal, control characters, duplicate or nested roots. Windows requires a local drive path and rejects device names and reserved characters.                                                  |
-| `roles`               | Role array     | Required  | 1–5 distinct values: `active`, `archive`, `export`, `thumbnail`, `metadata`. At most one volume can have the metadata role.                                                                                                                                              |
+| `roles`               | Role array     | Required  | 1–5 distinct values: `active`, `archive`, `export`, `thumbnail`, `metadata`. Only one bound metadata owner is active; other metadata-capable volumes can be relocation targets.                                                                                          |
 | `state`               | State          | `enabled` | Drafts must explicitly select `disabled`. The model also represents `enabled`, `read_only`, and `draining`, which this build rejects.                                                                                                                                    |
 | `priority`            | `u16`          | `0`       | Smaller values rank first for priority placement.                                                                                                                                                                                                                        |
 | `capacity_bytes`      | Optional `u64` | No cap    | Positive owned-data byte cap.                                                                                                                                                                                                                                            |

@@ -1,4 +1,5 @@
 pub use crate::access::AccessKey;
+mod metadata;
 mod storage_volumes;
 use crate::{
     access,
@@ -9,6 +10,7 @@ use crate::{
     event_forwarder::config::{EventForwarderConfig, MQTT_PASSWORD_SECRET, MqttForwarderConfig},
 };
 use ipnet::IpNet;
+pub use metadata::MetadataBinding;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -509,6 +511,8 @@ const fn default_battery_wake_stale_after_secs() -> u64 {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<MetadataBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub named_volumes: Option<crate::storage::volumes::VolumeConfiguration>,
     #[serde(default)]
     pub medium_term_path: Option<String>,
@@ -944,6 +948,7 @@ const fn default_cleanup_hysteresis_gb() -> u64 {
 impl Default for StorageToml {
     fn default() -> Self {
         Self {
+            metadata: None,
             named_volumes: None,
             medium_term_path: None,
             long_term_path: None,
@@ -1374,6 +1379,7 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
     let (mut cfg, mut merged, existing_config) = if path.exists() {
         let text = std::fs::read_to_string(&path)?;
         let mut root: toml::Table = toml::from_str(&text)?;
+        metadata::pending::apply(&path, &mut root, &secrets)?;
         apply_pending_storage_migration(&mut root)?;
         let cfg = config_from_table(&root, &secrets)?;
         (cfg, root, true)
@@ -1431,7 +1437,11 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
     }
 
     let text = toml::to_string_pretty(&merged)?;
-    write_private_file(&path, text.as_bytes())?;
+    if cfg.storage.metadata.is_some() {
+        write_private_file_atomically(&path, text.as_bytes())?;
+    } else {
+        write_private_file(&path, text.as_bytes())?;
+    }
 
     if !existing_config {
         tracing::info!("created default config at {}", path.display());
@@ -1550,6 +1560,19 @@ pub(crate) fn update_settings_with_volume_draft(
     let text = std::fs::read_to_string(path)?;
     let mut root: toml::Table = toml::from_str(&text)?;
     let secrets = load_secrets(path)?;
+    let mut previous_metadata = root
+        .get("storage")
+        .and_then(|storage| storage.get("metadata"))
+        .cloned();
+    if let Some(value) = &mut previous_metadata {
+        resolve_toml_secret_references(value, &secrets)?;
+    }
+    let previous_metadata: Option<MetadataBinding> =
+        previous_metadata.map(toml::Value::try_into).transpose()?;
+    anyhow::ensure!(
+        previous_metadata == settings.storage.metadata,
+        "metadata ownership requires a confirmed handoff"
+    );
     set_string_preserving_secret_reference(&mut root, "host", &settings.host, &secrets)?;
     root.insert(
         "port".to_owned(),
@@ -1673,6 +1696,11 @@ pub(crate) fn update_settings_with_volume_draft(
 
     let serialized = toml::to_string_pretty(&root)?;
     let updated = config_from_table(&root, &secrets)?;
+    metadata::pending::preserve_storage(&text, &root, &updated.storage, &secrets)?;
+    if updated.storage.metadata.is_some() {
+        let previous = load_config(path)?;
+        metadata::preserve_owner(&previous.storage, &updated.storage)?;
+    }
     write_private_file_atomically(path, serialized.as_bytes())?;
     Ok(updated)
 }
@@ -1822,10 +1850,14 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     resolve_toml_secret_references(&mut resolved, secrets)?;
     let mut config: Config = resolved.try_into()?;
     config.storage.validate_pre_recording_budgets()?;
+    metadata::validate(&config.storage)?;
+    storage_volumes::validate(
+        config.storage.named_volumes.as_ref(),
+        config.storage.metadata.as_ref(),
+    )?;
     if let Some(external_auth) = &config.external_auth {
         external_auth.validate()?;
     }
-    storage_volumes::validate(config.storage.named_volumes.as_ref())?;
     if let Some(callbacks) = &config.isapi_callbacks {
         callbacks.validate()?;
     }
@@ -1838,7 +1870,17 @@ pub(crate) fn validate_volume_configuration(
     configuration: &crate::storage::volumes::VolumeConfiguration<String>,
 ) -> anyhow::Result<()> {
     let secrets = load_secrets(path)?;
-    storage_volumes::validate_with_secrets(configuration, &secrets)
+    let root = load_configuration_table(path)?;
+    let metadata = if root
+        .get("storage")
+        .and_then(|storage| storage.get("metadata"))
+        .is_some()
+    {
+        config_from_table(&root, &secrets)?.storage.metadata
+    } else {
+        None
+    };
+    storage_volumes::validate_with_secrets(configuration, &secrets, metadata.as_ref())
 }
 
 fn merge_preserving_secret_references(existing: &mut toml::Value, next: toml::Value) {
@@ -2576,7 +2618,10 @@ fn sanitize_camera_key(name: &str) -> String {
 pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
     let filename = path
         .file_name()
@@ -2638,7 +2683,8 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
     }
     #[cfg(not(windows))]
     {
-        std::fs::rename(temporary, path)
+        std::fs::rename(temporary, path)?;
+        std::fs::File::open(parent)?.sync_all()
     }
 }
 
@@ -3652,6 +3698,7 @@ mod tests {
             port: 3200,
             storage: StorageToml {
                 named_volumes: None,
+                metadata: None,
                 medium_term_path: None,
                 long_term_path: None,
                 recording_catalog_path: Some("/metadata/recordings.db".to_owned()),

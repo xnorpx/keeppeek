@@ -41,6 +41,14 @@ impl std::fmt::Debug for Identity {
 }
 
 impl Root {
+    pub(crate) fn matches_directory(&self, directory: &Dir) -> anyhow::Result<()> {
+        self.revalidate()?;
+        anyhow::ensure!(
+            identity(directory)? == self.identity,
+            "metadata directory is outside its bound root"
+        );
+        Ok(())
+    }
     /// Opens each directory component without following symbolic links.
     /// The two-second deadline is cooperative; it cannot interrupt filesystem calls.
     ///

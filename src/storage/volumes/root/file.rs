@@ -1,4 +1,5 @@
 use super::Root;
+mod metadata;
 use crate::storage::long_term::inspection::removal::{sync_directory, validate_owner};
 use cap_fs_ext::{FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::OpenOptions;

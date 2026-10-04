@@ -595,7 +595,7 @@ enum SearchCommand {
 
 impl RecordingCatalog {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
-        Self::open_with_legacy_backfill(path, true, None)
+        Self::open_with_legacy_backfill(path, true, None, None)
     }
 
     /// Opens the catalog without inspecting legacy paths before explicit adoption.
@@ -603,7 +603,16 @@ impl RecordingCatalog {
     /// # Errors
     /// Returns catalog authority, schema, or worker startup errors.
     pub fn open_for_adoption(path: &Path) -> anyhow::Result<Self> {
-        Self::open_with_legacy_backfill(path, false, None)
+        Self::open_with_legacy_backfill(path, false, None, None)
+    }
+
+    /// Opens a relocated catalog without creating or adopting a replacement database.
+    pub(crate) fn open_managed(
+        path: &Path,
+        expected: &authority::Authority,
+        root_identity: &super::volumes::root::Identity,
+    ) -> anyhow::Result<Self> {
+        Self::open_with_legacy_backfill(path, true, None, Some((expected, root_identity)))
     }
 
     /// Captures the effective legacy roots before any startup reconciliation can run.
@@ -616,25 +625,21 @@ impl RecordingCatalog {
             paths.catalog_path == std::path::absolute(path)?,
             "legacy snapshot refers to a different catalog"
         );
-        Self::open_with_legacy_backfill(path, true, Some(paths))
+        Self::open_with_legacy_backfill(path, true, Some(paths), None)
     }
 
     fn open_with_legacy_backfill(
         path: &Path,
         legacy_backfill: bool,
         capture: Option<&locations::legacy::LegacyPaths>,
+        expected: Option<(&authority::Authority, &super::volumes::root::Identity)>,
     ) -> anyhow::Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut lease = authority::Lease::acquire(path)?;
-        let database = lease.database()?;
+        let (database, lease) = Self::bootstrap_database(path, expected)?;
         let lease = Arc::new(lease);
         let connection = database.connect()?;
         let search_connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
         search_connection.busy_timeout(BUSY_TIMEOUT)?;
-        lease.initialize(&connection)?;
         pollster::block_on(initialize_schema(&connection))?;
         if let Some(paths) = capture {
             pollster::block_on(locations::legacy::register(&connection, paths))?;
@@ -681,6 +686,45 @@ impl RecordingCatalog {
             maintenance,
             search_thread: Some(search_thread),
         })
+    }
+
+    fn bootstrap_database(
+        path: &Path,
+        expected: Option<(&authority::Authority, &super::volumes::root::Identity)>,
+    ) -> anyhow::Result<(turso::Database, authority::Lease)> {
+        if expected.is_none()
+            && let Some(parent) = path.parent()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let root = expected
+            .map(|(_, identity)| {
+                let root = super::volumes::root::Root::open(
+                    path.parent()
+                        .ok_or_else(|| anyhow::anyhow!("metadata parent is missing"))?,
+                )?;
+                anyhow::ensure!(root.identity() == identity, "managed metadata root changed");
+                Ok::<_, anyhow::Error>(root)
+            })
+            .transpose()?;
+        let mut lease = authority::Lease::acquire(path)?;
+        if let Some(root) = &root {
+            lease.require_root(root)?;
+            lease.require_existing()?;
+        }
+        let database = lease.database()?;
+        let connection = database.connect()?;
+        connection.busy_timeout(BUSY_TIMEOUT)?;
+        if let Some((expected, _)) = expected {
+            anyhow::ensure!(
+                lease.verify(&connection)? == *expected,
+                "managed catalog authority does not match configuration"
+            );
+        } else {
+            lease.initialize(&connection)?;
+        }
+        drop(connection);
+        Ok((database, lease))
     }
 
     pub fn handle(&self) -> RecordingCatalogHandle {

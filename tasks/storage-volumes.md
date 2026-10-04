@@ -538,3 +538,38 @@ failed; all 14 selected export/history tests then passed
 (`target/129-captured-export-complete-green.log`). Strict workspace/all-target Clippy passed
 (`target/129-captured-export-clippy.log`), and independent review found no further bounded-slice
 blocker. History unavailable at startup requires restoring its directory and restarting.
+
+Metadata handoff work now copies the bounded export history before activating the native catalog
+snapshot. The old catalog and history remain in place. Registered partial history copies resume;
+unknown replacements fail without being overwritten. Exact retries preserve later destination
+history updates, and an activated destination can itself become the next handoff source.
+The 28 catalog-authority tests passed, including partial-copy and pre-activation restart cases
+(`target/129-metadata-recovery-green.log`). Managed startup additionally requires an existing
+authority instead of creating an empty database (`target/129-managed-open-green.log`, 29 tests).
+
+The server-owned metadata binding resolves catalog and history filenames beneath one selected
+volume. Ordinary settings cannot install, remove, disable, or relocate that owner; unrelated saves
+preserve its secret references. Nine binding/configuration tests passed
+(`target/129-metadata-config-green.log`). Restart integration and root-identity checks are being
+qualified. These internal checkpoints do not complete metadata preview/confirmation, runtime
+history confinement, rollback UX, legacy adoption, bulk drain, activation, or final qualification.
+
+The restart backend now persists source/destination root identities and binds both catalog ID
+and generation. Repeated B-to-C-to-B relocations preserve the latest history. Pending handoffs
+freeze effective storage settings while preserving unrelated settings and raw secret references.
+Before fencing, startup validates the complete history envelope and decoded job/artifact ownership,
+and rechecks snapshot/history capacity against the cap and the larger minimum/critical reserve.
+Managed startup rejects missing or malformed history before opening catalog workers. Runtime history
+reads and atomic replacements use the pinned root; replaced roots, hard links, traversal, oversized
+history, and unknown staging files fail without overwriting other files. Unix configuration commits
+synchronize the parent directory, including relative filenames.
+
+Focused Windows qualification passed 23 configuration tests (`target/129-metadata-config-final.log`)
+and 29 authority, four confined-history, five startup, and 17 export-storage tests
+(`target/129-metadata-integration-final.log`). The broader metadata selection passed 87 tests before
+the final critical-reserve and relative-path cases (`target/129-metadata-backend-green.log`).
+Metadata preview/confirmation/status/cancellation and UI are still unimplemented; legacy adoption,
+bulk evacuation, general activation, and final platform/performance qualification remain open.
+
+Strict workspace/all-target Clippy passed after this backend checkpoint
+(`target/129-metadata-clippy-final.log`).

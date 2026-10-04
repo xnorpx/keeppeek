@@ -735,3 +735,186 @@ fn export_creation_does_not_recreate_captured_history_after_startup() {
     drop(manager);
     catalog.shutdown();
 }
+
+fn managed_history_fixture() -> (PathBuf, RecordingCatalog, Manager, ServerState) {
+    let (directory, catalog, manager) = fixture(16 * 1024 * 1024).unwrap();
+    let primary = &manager.configuration().volumes[0].root;
+    let identity = crate::storage::volumes::root::Root::open(primary)
+        .unwrap()
+        .identity()
+        .clone();
+    let handoff = uuid::Uuid::new_v4();
+    let binding = crate::config::MetadataBinding {
+        volume_id: manager.configuration().volumes[0].id.clone(),
+        catalog_file: format!("catalog-{handoff}.db"),
+        history_file: format!("exports-{handoff}.json"),
+        catalog_id: uuid::Uuid::new_v4().to_string(),
+        generation: 1,
+        filesystem: identity.filesystem,
+        root_identity: identity.directory,
+    };
+    let history = primary.join(&binding.history_file);
+    std::fs::write(&history, b"{\"version\":1,\"jobs\":[]}\n").unwrap();
+    let mut state = super::tests::media_test_state();
+    state.catalog = None;
+    state.storage_config.long_term_path = directory.join("legacy");
+    state.storage_config.recording_catalog_path = primary.join(&binding.catalog_file);
+    state.storage_config.metadata_history_path = Some(history.clone());
+    state.storage_config.metadata = Some(binding);
+    state.export_history_path = Some(Arc::new(history));
+    let legacy = state
+        .storage_config
+        .long_term_path
+        .join(".exports/history.json");
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    std::fs::write(legacy, b"unrelated legacy history").unwrap();
+    (directory, catalog, manager, state)
+}
+
+#[test]
+fn managed_export_history_restores_and_persists_only_at_its_bound_path() {
+    let (_directory, catalog, manager, mut state) = managed_history_fixture();
+    let history = state.storage_config.metadata_history_path.clone().unwrap();
+    let legacy = state
+        .storage_config
+        .long_term_path
+        .join(".exports/history.json");
+    export_storage::history::restore(&mut state);
+    assert!(state.export_history_error.is_none());
+    assert!(state.export_jobs.lock().unwrap().is_empty());
+    export_storage::history::persist(&state, &state.export_jobs.lock().unwrap()).unwrap();
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&history).unwrap()).unwrap();
+    assert_eq!(persisted["version"], 1);
+    assert_eq!(persisted["jobs"], serde_json::json!([]));
+    assert_eq!(std::fs::read(legacy).unwrap(), b"unrelated legacy history");
+    assert_eq!(state.export_history_path.as_deref(), Some(&history));
+    assert!(!state.storage_config.recording_catalog_path.exists());
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}
+
+#[test]
+fn missing_managed_export_history_disables_recovery_without_recreating_it() {
+    let (_directory, catalog, manager, mut state) = managed_history_fixture();
+    let history = state.storage_config.metadata_history_path.clone().unwrap();
+    std::fs::remove_file(&history).unwrap();
+    export_storage::history::restore(&mut state);
+    assert!(state.export_history_error.is_some());
+    assert!(!history.exists());
+    assert!(export_storage::history::persist(&state, &state.export_jobs.lock().unwrap()).is_err());
+    assert!(!history.exists());
+    let legacy = state
+        .storage_config
+        .long_term_path
+        .join(".exports/history.json");
+    assert_eq!(std::fs::read(legacy).unwrap(), b"unrelated legacy history");
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}
+
+#[test]
+fn replaced_managed_history_root_rejects_restore_and_persist_without_overwriting_either_file() {
+    let (directory, catalog, manager, mut state) = managed_history_fixture();
+    export_storage::history::restore(&mut state);
+    assert!(state.export_history_error.is_none());
+    let history = state.storage_config.metadata_history_path.clone().unwrap();
+    let original = std::fs::read(&history).unwrap();
+    let primary = history.parent().unwrap();
+    let retained = directory.join("retained-primary");
+    drop(manager);
+    std::fs::rename(primary, &retained).unwrap();
+    std::fs::create_dir(primary).unwrap();
+    let unrelated = b"{ \"jobs\": [], \"version\": 1 }\n";
+    std::fs::write(&history, unrelated).unwrap();
+    let replacement = crate::storage::volumes::root::Root::open(primary).unwrap();
+    assert_ne!(
+        *replacement.identity(),
+        state
+            .storage_config
+            .metadata
+            .as_ref()
+            .unwrap()
+            .root_identity()
+    );
+    drop(replacement);
+    export_storage::history::restore(&mut state);
+    assert!(state.export_history_error.is_some());
+    assert!(export_storage::history::persist(&state, &state.export_jobs.lock().unwrap()).is_err());
+    assert_eq!(std::fs::read(&history).unwrap(), unrelated);
+    assert_eq!(
+        std::fs::read(retained.join(history.file_name().unwrap())).unwrap(),
+        original
+    );
+    let legacy = state
+        .storage_config
+        .long_term_path
+        .join(".exports/history.json");
+    assert_eq!(std::fs::read(legacy).unwrap(), b"unrelated legacy history");
+    drop(state);
+    catalog.shutdown();
+}
+
+fn history_with_records(records: &[&ExportJobRecord]) -> Vec<u8> {
+    serde_json::to_vec(&PersistedExportHistory {
+        version: EXPORT_HISTORY_VERSION,
+        jobs: records
+            .iter()
+            .map(|record| PersistedExportJobRecord::from_record(record))
+            .collect(),
+    })
+    .unwrap()
+}
+
+#[test]
+fn history_snapshot_rejects_duplicate_job_and_artifact_ids_but_accepts_distinct_records() {
+    let (_root, catalog, manager, state) = captured_legacy_export();
+    let first = legacy_export_record(&state);
+    let mut second = first.clone();
+    second.request.job_id = "other-export".to_owned();
+    second.job.job_id = "other-export".to_owned();
+    second.artifact_id = uuid::Uuid::new_v4().to_string();
+    validate_export_history_snapshot(&history_with_records(&[&first, &second])).unwrap();
+    let mut duplicate_job = second.clone();
+    duplicate_job.request.job_id = first.request.job_id.clone();
+    duplicate_job.job.job_id = first.job.job_id.clone();
+    assert!(
+        validate_export_history_snapshot(&history_with_records(&[&first, &duplicate_job])).is_err()
+    );
+    let mut duplicate_artifact = second;
+    duplicate_artifact.artifact_id = first.artifact_id.clone();
+    assert!(
+        validate_export_history_snapshot(&history_with_records(&[&first, &duplicate_artifact]))
+            .is_err()
+    );
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}
+
+#[test]
+fn duplicate_export_history_is_rejected_before_reconciliation_can_remove_an_artifact() {
+    let (root, catalog, manager, mut state) = captured_legacy_export();
+    let original = legacy_export_record(&state);
+    let artifact = original.path.as_ref().unwrap();
+    let retained = std::fs::read(artifact).unwrap();
+    let mut failed = original.clone();
+    failed.job.status = proto::ExportJobStatus::Failed as i32;
+    let mut duplicate = original.clone();
+    duplicate.artifact_id = uuid::Uuid::new_v4().to_string();
+    let bytes = history_with_records(&[&failed, &duplicate]);
+    let history = root.join("duplicate-history.json");
+    std::fs::write(&history, &bytes).unwrap();
+    state.export_history_path = Some(Arc::new(history.clone()));
+    let recovered = recover_without_volumes(&state, catalog.handle());
+    assert!(recovered.export_history_error.is_some());
+    assert_eq!(std::fs::read(artifact).unwrap(), retained);
+    assert_eq!(std::fs::read(&history).unwrap(), bytes);
+    assert!(recovered.export_jobs.lock().unwrap().is_empty());
+    drop(recovered);
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}
