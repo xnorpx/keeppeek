@@ -391,3 +391,21 @@ IDs. Cancel preserves the draft; new unsaved rows remove directly. Four Chromium
 focused unit tests, clean Svelte checks, and the production UI build passed
 (`target/129-volume-ui-*.log`). Canonical Windows validation and the remaining acceptance work
 above are still required before activation or marking the PR ready.
+
+Full qualification exposed one older catalog assertion that expected legacy cleanup to error on
+named ownership. The assertion now expects no legacy candidate and retains the path/identity
+mutation fences. The same full run stopped after 1,237 passes and this failure; it is not a
+passing canonical gate (`target/129-checkpoint-check.log`).
+
+Startup adoption also needs a catalog open mode that defers both legacy file-size inspection and
+the legacy backfill worker. A regression demonstrated that normal backfill removes an unavailable
+legacy row before adoption can inspect it (`target/129-adoption-open-red.log`). The new explicit
+open mode preserves that row and its byte accounting. Normal legacy startup remains covered.
+All 42 selected catalog tests passed (`target/129-adoption-catalog-green.log`). The application
+adoption flow still needs to call this mode before media workers begin.
+
+The complete UI quality command passed 409 Bun tests, 250 browser tests, and 57 compatibility
+tests (`target/129-ui-quality.log`). CI exposed missing volume-status support in the shared
+Settings E2E control-peer fixture; its list response now represents an empty disabled runtime.
+All 14 affected logging/dashboard E2E tests then passed with browser-error assertions intact
+(`target/129-settings-e2e-green.log`). Independent review found no startup-mode regression.
