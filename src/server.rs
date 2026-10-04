@@ -3771,9 +3771,7 @@ fn create_export_job(
             downloaded_at_ms: None,
         },
     );
-    if let Some(history_path) = &state.export_history_path
-        && let Err(error) = persist_export_jobs(history_path, &jobs)
-    {
+    if let Err(error) = export_storage::history::persist(state, &jobs) {
         jobs.remove(&request.job_id);
         return Err(ControlCommandError::new(
             proto::ErrorCode::Unavailable,
@@ -4185,9 +4183,7 @@ fn persist_export_jobs_logged(
     jobs: &HashMap<String, ExportJobRecord>,
     transition: &str,
 ) {
-    if let Some(history_path) = &state.export_history_path
-        && let Err(error) = persist_export_jobs(history_path, jobs)
-    {
+    if let Err(error) = export_storage::history::persist(state, jobs) {
         tracing::warn!(%error, transition, "unable to persist export history");
     }
 }
@@ -4255,15 +4251,13 @@ fn cancel_export_job(
     record.completed_at_ms = Some(now_ms);
     let job = record.job.clone();
     let artifact_id = record.artifact_id.clone();
-    if let Some(history_path) = &state.export_history_path {
-        persist_export_jobs(history_path, &jobs).map_err(|error| {
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                format!("unable to persist export cancellation: {error}"),
-            )
-        })?;
-    }
+    export_storage::history::persist(state, &jobs).map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            format!("unable to persist export cancellation: {error}"),
+        )
+    })?;
     drop(jobs);
     let _ = cleanup_export_attempt_artifacts(state, job_id, &artifact_id);
     Ok(job)
@@ -4326,9 +4320,7 @@ fn retry_export_job(
         })?;
         let previous = record.clone();
         jobs.remove(job_id);
-        if let Some(history_path) = &state.export_history_path
-            && let Err(error) = persist_export_jobs(history_path, &jobs)
-        {
+        if let Err(error) = export_storage::history::persist(state, &jobs) {
             jobs.insert(job_id.to_owned(), previous);
             return Err(ControlCommandError::new(
                 proto::ErrorCode::Unavailable,
@@ -4421,6 +4413,7 @@ fn cleanup_export_attempt_artifacts(
     job_id: &str,
     artifact_id: &str,
 ) -> std::io::Result<()> {
+    export_storage::ensure_legacy_available(state).map_err(std::io::Error::other)?;
     if state.storage_config.volume_runtime.is_some()
         || export_storage::owned(state.catalog.as_ref(), artifact_id)
             .map_err(std::io::Error::other)?
@@ -8868,6 +8861,7 @@ impl PersistedExportJobRecord {
         export_root: &Path,
         now_ms: i64,
         catalog: Option<&RecordingCatalogHandle>,
+        legacy_offline: bool,
     ) -> anyhow::Result<ExportJobRecord> {
         let request =
             proto::CreateExportJob::decode(URL_SAFE_NO_PAD.decode(self.request)?.as_slice())?;
@@ -8891,7 +8885,13 @@ impl PersistedExportJobRecord {
             completed_at_ms: self.completed_at_ms,
             downloaded_at_ms: self.downloaded_at_ms,
         };
-        export_storage::history::recover(&mut record, export_root, catalog, now_ms)?;
+        export_storage::history::recover(
+            &mut record,
+            export_root,
+            catalog,
+            now_ms,
+            legacy_offline,
+        )?;
         Ok(record)
     }
 }
@@ -8914,9 +8914,14 @@ fn load_export_jobs(
     export_root: &Path,
     catalog: Option<&RecordingCatalogHandle>,
 ) -> anyhow::Result<HashMap<String, ExportJobRecord>> {
+    let legacy_offline =
+        crate::storage::volumes::legacy::export_root_offline(catalog, export_root)?;
     let metadata = match std::fs::metadata(history_path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::ensure!(!legacy_offline, "captured export history is unavailable");
+            return Ok(HashMap::new());
+        }
         Err(error) => return Err(error.into()),
     };
     anyhow::ensure!(
@@ -8937,8 +8942,12 @@ fn load_export_jobs(
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
     let mut jobs = HashMap::new();
     for persisted in history.jobs {
-        let record = persisted.into_record(export_root, now_ms, catalog)?;
+        let record = persisted.into_record(export_root, now_ms, catalog, legacy_offline)?;
         jobs.insert(record.job.job_id.clone(), record);
+    }
+    // ponytail: preserve the bounded history until cleanup can inspect the captured root.
+    if legacy_offline {
+        return Ok(jobs);
     }
     let retention_ms = i64::try_from(EXPORT_METADATA_RETENTION.as_millis()).unwrap_or(i64::MAX);
     let retained_after_ms = now_ms.saturating_sub(retention_ms);

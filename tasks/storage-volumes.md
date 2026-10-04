@@ -524,3 +524,17 @@ and startup tests passed (`target/129-removal-complete-green.log`); the two arch
 first reproduced unsafe acceptance. Strict workspace/all-target Clippy passed
 (`target/129-removal-clippy.log`). Independent review found no further blocker in this guard.
 Bulk evacuation, confirmed legacy migration, metadata relocation, and activation remain open.
+
+Captured legacy export recovery now preserves ready paths, checksums, and history while the
+artifact root is missing. Expiry and trimming defer until that root returns; an online root with
+a genuinely missing artifact retains the existing failed status. Missing colocated history is
+reported unavailable instead of recreated. Every production history write uses the same guarded
+wrapper, including writes after startup; separate available metadata remains writable. The legacy
+worker also rejects a root already missing at its check. These are missing-root checks, not the
+durable root binding needed to close disappearance/replacement races before activation.
+Five focused regressions exercise real MP4 exports, recovery, pruning, download after return,
+startup history absence, and runtime history/worker writes. The four changed behaviors first
+failed; all 14 selected export/history tests then passed
+(`target/129-captured-export-complete-green.log`). Strict workspace/all-target Clippy passed
+(`target/129-captured-export-clippy.log`), and independent review found no further bounded-slice
+blocker. History unavailable at startup requires restoring its directory and restarting.

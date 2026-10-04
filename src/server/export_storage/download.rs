@@ -177,8 +177,6 @@ fn downloaded(state: &ServerState, snapshot: &ExportJobRecord) -> Result<(), Con
         record.downloaded_at_ms = Some(now);
         record.updated_at_ms = now;
     }
-    if let Some(path) = &state.export_history_path {
-        persist_export_jobs(path, &jobs).map_err(unavailable)?;
-    }
+    history::persist(state, &jobs).map_err(unavailable)?;
     Ok(())
 }

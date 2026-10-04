@@ -453,6 +453,12 @@ the catalog's immutable binding and completed history and does not delete files.
 The removal check inspects up to 1,024 pending archive policies; finish a larger backlog before
 retrying removal.
 
+Captured legacy export roots are not recreated when unavailable. Ready exports keep their paths
+and checksums; downloads can resume when the original directory returns. Export expiry and history
+trimming wait while that root is unavailable. If export history itself was unavailable at startup,
+restore the directory and restart to reload it. These recovery guards do not enable activation or
+replace the confirmed legacy migration workflow.
+
 Each `[[storage.named_volumes.volumes]]` entry has these fields:
 
 | Field                 | Type           | Default   | Meaning                                                                                                                                                                                                                                                                  |
