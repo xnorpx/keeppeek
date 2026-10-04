@@ -327,5 +327,6 @@ fn storage_config(root: &Path) -> StorageConfig {
         warning_free_bytes: 0,
         critical_free_bytes: 0,
         cleanup_hysteresis_bytes: 0,
+        ..StorageConfig::default()
     }
 }
