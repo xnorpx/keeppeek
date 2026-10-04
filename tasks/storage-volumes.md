@@ -208,6 +208,11 @@ admission. Move admission acknowledges the request in the same transaction as it
 reservation. A rejected reservation rolls back both changes. If the sole permitted destination
 already owns the recording, completing the request needs no additional capacity or media copy.
 
+Event-image startup no longer deletes unindexed images or temporary files, and missing files keep
+their catalog references. The legacy thumbnail quota considers only catalog-referenced filenames
+in its configured root. This preserves unrelated files under a nonzero quota as well as during
+startup. Named thumbnail placement and durable per-object root ownership remain separate work.
+
 The same scan retries up to 32 roots that were unavailable when the runtime started. It opens
 and synchronizes roots outside the admission lock, then checks the durable binding before making
 the root available. An existing binding must retain its filesystem and directory identity; a

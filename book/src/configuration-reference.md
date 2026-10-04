@@ -412,6 +412,11 @@ storage paths on apply; it does not move a recording archive. See
 [storage migration](./upgrades-and-migrations.md#move-storage-deliberately) and
 [recording archive recovery](./recording-archive-recovery.md).
 
+`event_thumbnail_max_mb` applies to catalog-referenced image files in the configured thumbnail
+directory. Unindexed images and temporary files are excluded from this quota and are not removed
+at startup. Missing image files retain their catalog references so that restoring an unavailable
+thumbnail directory does not require rebuilding event metadata.
+
 ### Named-volume drafts
 
 `[storage.named_volumes]` stores bounded volume and placement definitions in the existing

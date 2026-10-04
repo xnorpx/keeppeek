@@ -109,6 +109,9 @@ and maintenance. It is not an exhaustive media scan or a replacement for a consi
   an unavailable mount.
 - Export work that was running becomes failed and retryable. Missing ready artifacts also become
   failed. Partial export artifacts are cleaned within the owned export area.
+- Event images retain their catalog references when the files are missing. Startup preserves
+  unindexed images and temporary files; thumbnail quota cleanup only removes catalog-referenced
+  images in the configured directory.
 - Maintenance recovery only settles outcomes supported by its retained identity and checkpoint
   evidence. Other interrupted objects remain failed and reserved for Administrator inspection or
   retry. Copying files can change their identity, so a restored checkpoint may properly refuse work.
