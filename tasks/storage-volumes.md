@@ -427,3 +427,9 @@ Durable plans resume after truncation or retirement and before catalog acknowled
 All 191 selected storage, catalog, reader, and container tests passed in 26.120 seconds
 (`target/129-recording-recovery-regressions-green.log`). This is focused evidence; full acceptance
 still requires the migration, management, metadata, activation, and final qualification work above.
+
+Export-history recovery now receives the artifact root separately from the history filename.
+Moving only the history file no longer marks ready legacy exports missing or redirects cleanup
+to the metadata directory. The regression failed before the change; all nine selected export
+history and named-export integration tests passed afterward (`target/129-export-metadata-root-green.log`).
+This separates the two paths for metadata handoff; it does not implement the handoff itself.
