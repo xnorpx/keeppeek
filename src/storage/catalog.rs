@@ -30,6 +30,7 @@ use std::{
 };
 
 pub(crate) mod authority;
+mod event_write;
 pub mod locations;
 pub mod maintenance;
 pub(crate) mod readers;
@@ -4124,160 +4125,7 @@ async fn insert_event(
     event: TimelineEvent,
     publication: Option<EventPublicationIdentity>,
 ) -> anyhow::Result<()> {
-    let mut event = event;
-    normalize_event_presentation(&mut event)?;
-    if event.kind.is_empty() {
-        anyhow::bail!("event kind must not be empty");
-    }
-    if event.revision == 0 {
-        anyhow::bail!("event revision must be greater than zero");
-    }
-    if event
-        .end_time_ms
-        .is_some_and(|end_time_ms| end_time_ms < event.start_time_ms)
-    {
-        anyhow::bail!("event end must not precede its start");
-    }
-    let bbox_json = event
-        .bbox
-        .map(|bbox| serde_json::to_string(&bbox))
-        .transpose()?;
-    let attachments_json = serde_json::to_string(&event.attachments)?;
-    let payload_json = event
-        .payload
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
-    let publication_id = publication
-        .as_ref()
-        .map(|identity| identity.publication_id.clone());
-    let publication_fingerprint = publication.map(|identity| identity.fingerprint);
-    connection.execute_batch("BEGIN IMMEDIATE").await?;
-    let result = async {
-        let existing = event_by_id(connection, &event.id).await?;
-        if let Some(existing) = &existing {
-            if event.revision <= existing.revision {
-                anyhow::bail!(
-                    "event revision {} does not exceed stored revision {}",
-                    event.revision,
-                    existing.revision
-                );
-            }
-            if event.camera_id != existing.camera_id || event.source != existing.source {
-                anyhow::bail!("event revision cannot change source identity");
-            }
-            connection
-                .execute(
-                    "UPDATE recording_events
-                     SET camera_id = ?2, stream = ?3, source = ?4, kind = ?5,
-                         start_time_ms = ?6, end_time_ms = ?7, confidence = ?8,
-                         bbox_json = ?9, zone = ?10, thumbnail_filename = ?11,
-                         revision = ?12, bbox_attachment_id = ?13,
-                         attachments_json = ?14, canonical_attachment_id = ?15,
-                         icon_key = ?16, rejected_icon_key = ?17,
-                         text = ?18, payload_json = ?19,
-                         publication_id = ?20, publication_fingerprint = ?21
-                     WHERE id = ?1",
-                    turso::params![
-                        event.id.clone(),
-                        event.camera_id.clone(),
-                        event.stream.clone(),
-                        event.source.as_str(),
-                        event.kind.clone(),
-                        event.start_time_ms,
-                        event.end_time_ms,
-                        event.confidence,
-                        bbox_json.clone(),
-                        event.zone.clone(),
-                        event.thumbnail_filename.clone(),
-                        to_i64(event.revision, "event revision")?,
-                        event.bbox_attachment_id.clone(),
-                        attachments_json.clone(),
-                        event.canonical_attachment_id.clone(),
-                        event.icon_key.clone(),
-                        event.rejected_icon_key.clone(),
-                        event.text.clone(),
-                        payload_json.clone(),
-                        publication_id.clone(),
-                        publication_fingerprint.clone(),
-                    ],
-                )
-                .await?;
-            replace_intrinsic_event_terms(
-                connection,
-                &event.id,
-                &event.kind,
-                event.text.as_deref(),
-            )
-            .await?;
-            record_event_search_mutation(connection, &event.id).await?;
-        } else {
-            if event.revision != 1 {
-                anyhow::bail!("new events must start at revision one");
-            }
-            connection
-                .execute(
-                    "INSERT INTO recording_events (
-                     id, camera_id, stream, source, kind, start_time_ms,
-                     end_time_ms, confidence, bbox_json, zone, thumbnail_filename,
-                     revision, bbox_attachment_id, attachments_json,
-                     canonical_attachment_id, icon_key, rejected_icon_key,
-                     text, payload_json, publication_id, publication_fingerprint
-                 ) VALUES (
-                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                     ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
-                 )",
-                    turso::params![
-                        event.id.clone(),
-                        event.camera_id.clone(),
-                        event.stream.clone(),
-                        event.source.as_str(),
-                        event.kind.clone(),
-                        event.start_time_ms,
-                        event.end_time_ms,
-                        event.confidence,
-                        bbox_json,
-                        event.zone,
-                        event.thumbnail_filename,
-                        to_i64(event.revision, "event revision")?,
-                        event.bbox_attachment_id,
-                        attachments_json,
-                        event.canonical_attachment_id,
-                        event.icon_key,
-                        event.rejected_icon_key.clone(),
-                        event.text.clone(),
-                        payload_json,
-                        publication_id,
-                        publication_fingerprint,
-                    ],
-                )
-                .await?;
-            replace_intrinsic_event_terms(
-                connection,
-                &event.id,
-                &event.kind,
-                event.text.as_deref(),
-            )
-            .await?;
-        }
-        reconcile_keyframes_for_event(
-            connection,
-            &event.id,
-            &event.camera_id,
-            event.stream.as_deref(),
-            event.start_time_ms,
-        )
-        .await?;
-        anyhow::Ok(())
-    }
-    .await;
-    match result {
-        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
-        Err(error) => {
-            let _ = connection.execute_batch("ROLLBACK").await;
-            Err(error)
-        }
-    }
+    event_write::insert(connection, event, publication).await
 }
 
 async fn replace_intrinsic_event_terms(
@@ -4550,6 +4398,7 @@ async fn attach_event_thumbnail(
             event.bbox_attachment_id = Some("thumbnail".to_owned());
         }
         let attachments_json = serde_json::to_string(&event.attachments)?;
+        locations::images::detach(connection, id).await?;
         connection
             .execute(
                 "UPDATE recording_events
@@ -4592,6 +4441,7 @@ async fn detach_event_thumbnail(connection: &turso::Connection, id: &str) -> any
         if changed == 0 {
             anyhow::bail!("event was not found");
         }
+        locations::images::detach(connection, id).await?;
         record_event_search_mutation(connection, id).await
     }
     .await;
@@ -4632,6 +4482,7 @@ async fn detach_event_thumbnail_file(
                 )
                 .await?;
             if changed == 1 {
+                locations::images::detach(connection, &event_id).await?;
                 record_event_search_mutation(connection, &event_id).await?;
             }
         }
@@ -4652,7 +4503,8 @@ async fn event_thumbnail_filenames(connection: &turso::Connection) -> anyhow::Re
         .query(
             "SELECT id, source, thumbnail_filename, attachments_json
              FROM recording_events
-             WHERE thumbnail_filename IS NOT NULL OR (source = 'camera' AND attachments_json LIKE '%isapi-%')
+             WHERE (thumbnail_filename IS NOT NULL OR (source = 'camera' AND attachments_json LIKE '%isapi-%'))
+             AND NOT EXISTS (SELECT 1 FROM storage_event_images i WHERE i.event_id=recording_events.id AND i.active=1)
              ORDER BY thumbnail_filename",
             (),
         )

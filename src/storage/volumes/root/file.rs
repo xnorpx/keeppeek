@@ -182,7 +182,7 @@ impl Root {
 }
 
 impl OwnedFile {
-    /// Publishes a staged MP4 under a new UUID name without replacing another entry.
+    /// Publishes staged media under a new UUID name without replacing another entry.
     /// The writable handle closes on success and failure; errors never trigger file deletion.
     ///
     /// # Errors
@@ -191,8 +191,8 @@ impl OwnedFile {
     pub fn publish_staged(mut self, target: &str) -> anyhow::Result<()> {
         validate_key(target)?;
         anyhow::ensure!(
-            target.ends_with(".mp4") && target != self.key,
-            "publication requires a new MP4 name"
+            (target.ends_with(".mp4") || target.ends_with(".jpg")) && target != self.key,
+            "publication requires a new media name"
         );
         anyhow::ensure!(
             self.expected_bytes.is_none(),

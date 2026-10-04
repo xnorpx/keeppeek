@@ -152,15 +152,36 @@ pub(super) enum Request {
         sequence: u64,
     },
     Snapshots(BTreeSet<Key>),
+    Image {
+        event: String,
+        attachment: String,
+        revision: u64,
+    },
 }
 
 pub(super) enum Reply {
     Fragments(Vec<CatalogMediaFragment>, LeaseSet),
     Object(Option<(CatalogMediaObjectLocation, LeaseSet)>),
     Snapshots(LeaseSet),
+    Image(Option<(super::locations::Location, LeaseSet)>),
 }
 
 impl RecordingCatalogHandle {
+    pub(crate) fn leased_event_image(
+        &self,
+        event: &super::TimelineEvent,
+        attachment: &str,
+    ) -> anyhow::Result<Option<(super::locations::Location, LeaseSet)>> {
+        match self.read_lease(Request::Image {
+            event: event.id.clone(),
+            attachment: attachment.to_owned(),
+            revision: event.revision,
+        })? {
+            Reply::Image(image) => Ok(image),
+            _ => anyhow::bail!("unexpected event image reader reply"),
+        }
+    }
+
     pub(crate) fn claim_volume_move(&self, job_id: &str) -> anyhow::Result<MoveLease> {
         self.readers.claim_move(job_id)
     }
@@ -257,6 +278,11 @@ pub(super) async fn execute(
     request: Request,
 ) -> anyhow::Result<Reply> {
     match request {
+        Request::Image {
+            event,
+            attachment,
+            revision,
+        } => image(connection, registry, &event, &attachment, revision).await,
         Request::Fragments { stream, start, end } => {
             let fragments =
                 super::media_fragments_in_range(connection, &stream, start, end).await?;
@@ -292,6 +318,47 @@ pub(super) async fn execute(
             Ok(Reply::Snapshots(registry.acquire(keys)?))
         }
     }
+}
+
+async fn image(
+    connection: &turso::Connection,
+    registry: &Arc<Registry>,
+    event: &str,
+    attachment: &str,
+    revision: u64,
+) -> anyhow::Result<Reply> {
+    let current = super::event_by_id(connection, event)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("event image owner disappeared"))?;
+    anyhow::ensure!(current.revision == revision, "event image owner changed");
+    anyhow::ensure!(
+        current.attachments.iter().any(|item| item.id == attachment),
+        "event attachment disappeared"
+    );
+    let Some(location) = super::locations::images::lookup(connection, event, attachment).await?
+    else {
+        return Ok(Reply::Image(None));
+    };
+    let mut rows = connection
+        .query(
+            "SELECT root FROM storage_volume_bindings WHERE id=?1 AND generation=?2",
+            turso::params![
+                location.volume.clone(),
+                super::to_i64(location.generation, "volume generation")?
+            ],
+        )
+        .await?;
+    let root = rows
+        .next()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("image volume binding disappeared"))?
+        .get::<String>(0)?;
+    let path = std::path::Path::new(&root).join(&location.relative_key);
+    let keys = BTreeSet::from([(
+        location.object.id.clone(),
+        path.to_string_lossy().into_owned(),
+    )]);
+    Ok(Reply::Image(Some((location, registry.acquire(keys)?))))
 }
 
 async fn owned_locations(

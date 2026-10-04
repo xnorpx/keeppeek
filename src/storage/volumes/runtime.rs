@@ -23,6 +23,7 @@ const GROWTH_BYTES: u64 = 1_048_576;
 
 mod archive;
 mod cancellation;
+mod images;
 mod movement;
 #[cfg(test)]
 mod movement_tests;
@@ -88,6 +89,34 @@ impl std::fmt::Debug for ReservedFile {
 }
 
 impl Manager {
+    /// Resolves an owned file through its recorded volume and validates its identity.
+    ///
+    /// # Errors
+    /// Rejects removed configuration, unavailable roots, and replaced files.
+    pub(crate) fn owned_path(
+        &self,
+        location: &super::super::catalog::locations::Location,
+    ) -> anyhow::Result<PathBuf> {
+        anyhow::ensure!(location.generation == 1, "owned volume generation changed");
+        let index = self
+            .inner
+            .configuration
+            .volumes
+            .iter()
+            .position(|volume| volume.id.as_str() == location.volume)
+            .ok_or_else(|| anyhow::anyhow!("owned volume is not configured"))?;
+        let root = self.inner.root(index)?;
+        let _file = root.open_owned(
+            &location.relative_key,
+            &location.file_identity,
+            location.bytes,
+        )?;
+        Ok(self.inner.configuration.volumes[index]
+            .root
+            .join(&location.relative_key)
+            .canonicalize()?)
+    }
+
     /// Copies an owned object to its resolved destination and publishes its stable identity.
     /// The old copy remains owned until a separate reader-aware retirement completes.
     ///
@@ -572,6 +601,20 @@ impl Reservation {
 }
 
 impl ReservedFile {
+    pub(crate) fn seal_image(&mut self) -> anyhow::Result<Publication> {
+        let evidence = self.evidence()?;
+        self.published.set(true);
+        Ok(evidence)
+    }
+
+    pub(crate) fn validate_sealed_image(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.published.get() && self.evidence.borrow().is_some(),
+            "image is not sealed"
+        );
+        self.file.revalidate()
+    }
+
     /// Synchronizes the pinned file and captures evidence for publication.
     ///
     /// # Errors

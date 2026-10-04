@@ -43,6 +43,28 @@ impl EventStore {
                     .clone_from(&previous.bbox_attachment_id);
             }
         }
+        if !images.is_empty() {
+            let named = images
+                .iter()
+                .map(|(id, bytes)| (id.clone(), bytes.as_ref()))
+                .collect::<Vec<_>>();
+            if self.commit_named_images(event.clone(), None, &named)? {
+                return self
+                    .catalog
+                    .event_by_id(&event.id)?
+                    .ok_or_else(|| anyhow::anyhow!("committed native event disappeared"));
+            }
+        }
+        self.commit_legacy_native_images(event, images, previous)
+    }
+
+    fn commit_legacy_native_images(
+        &self,
+        mut event: TimelineEvent,
+        images: &[(String, Arc<[u8]>)],
+        previous: Option<TimelineEvent>,
+    ) -> anyhow::Result<TimelineEvent> {
+        let previous = self.legacy_image_references(previous)?;
         let mut created = Vec::new();
         let result = (|| {
             for (id, bytes) in images {
@@ -107,6 +129,9 @@ impl EventStore {
         }
         if event.source != EventSource::Camera || !attachment_id.starts_with("isapi-") {
             return Ok(None);
+        }
+        if let Some(path) = self.named_image_path(event_id, attachment_id)? {
+            return Ok(Some(path));
         }
         let candidate = self
             .thumbnail_root
