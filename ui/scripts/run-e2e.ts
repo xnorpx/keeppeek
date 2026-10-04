@@ -16,16 +16,12 @@ const executable = process.env.KEEPPEEK_AUTH_E2E_BINARY ?? buildAuthenticationFi
 if (!existsSync(executable)) throw new Error('Authentication fixture executable is missing.');
 const arguments_ = process.argv.slice(2);
 if (arguments_[0] === '--') arguments_.shift();
-const child = spawnSync(
-	'bun',
-	['x', '--no-install', 'playwright', 'test', ...arguments_],
-	{
-		cwd: resolve(repositoryRoot, 'ui'),
-		env: { ...process.env, KEEPPEEK_AUTH_E2E_BINARY: executable },
-		stdio: 'inherit',
-		windowsHide: true
-	}
-);
+const child = spawnSync('bun', ['x', '--no-install', 'playwright', 'test', ...arguments_], {
+	cwd: resolve(repositoryRoot, 'ui'),
+	env: { ...process.env, KEEPPEEK_AUTH_E2E_BINARY: executable },
+	stdio: 'inherit',
+	windowsHide: true
+});
 if (child.error) throw child.error;
 process.exit(child.status ?? 1);
 
