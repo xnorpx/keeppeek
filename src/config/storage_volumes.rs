@@ -2,6 +2,9 @@ use crate::storage::volumes::{VolumeConfiguration, VolumeState};
 
 use super::{Secrets, resolve_toml_secret_references};
 
+#[cfg(test)]
+mod migration_tests;
+
 pub(super) fn validate(configuration: Option<&VolumeConfiguration>) -> anyhow::Result<()> {
     let Some(configuration) = configuration else {
         return Ok(());

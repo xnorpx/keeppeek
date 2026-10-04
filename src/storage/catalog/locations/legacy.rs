@@ -29,6 +29,22 @@ impl std::fmt::Debug for LegacyPaths {
 }
 
 impl LegacyPaths {
+    /// Keeps media roots fixed while named placement changes independently.
+    pub(crate) fn ensure_same_media_roots(&self, effective: &Self) -> anyhow::Result<()> {
+        for (captured, current) in [
+            (&self.active_root, &effective.active_root),
+            (&self.archive_root, &effective.archive_root),
+            (&self.export_root, &effective.export_root),
+            (&self.thumbnail_root, &effective.thumbnail_root),
+        ] {
+            anyhow::ensure!(
+                comparison_root(captured)? == comparison_root(current)?,
+                "captured legacy media roots changed; restore the original paths and use named placement or confirmed migration"
+            );
+        }
+        Ok(())
+    }
+
     /// Validates bounded absolute paths without probing or creating any directory.
     ///
     /// # Errors
@@ -77,7 +93,7 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
 
 /// First registration belongs to explicit adoption/activation, never draft loading.
 /// A later request returns the original snapshot, even when defaults have changed.
-pub(super) async fn register(
+pub(in crate::storage::catalog) async fn register(
     connection: &turso::Connection,
     requested: &LegacyPaths,
 ) -> anyhow::Result<LegacyPaths> {

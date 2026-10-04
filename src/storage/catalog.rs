@@ -595,7 +595,7 @@ enum SearchCommand {
 
 impl RecordingCatalog {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
-        Self::open_with_legacy_backfill(path, true)
+        Self::open_with_legacy_backfill(path, true, None)
     }
 
     /// Opens the catalog without inspecting legacy paths before explicit adoption.
@@ -603,10 +603,27 @@ impl RecordingCatalog {
     /// # Errors
     /// Returns catalog authority, schema, or worker startup errors.
     pub fn open_for_adoption(path: &Path) -> anyhow::Result<Self> {
-        Self::open_with_legacy_backfill(path, false)
+        Self::open_with_legacy_backfill(path, false, None)
     }
 
-    fn open_with_legacy_backfill(path: &Path, legacy_backfill: bool) -> anyhow::Result<Self> {
+    /// Captures the effective legacy roots before any startup reconciliation can run.
+    pub(crate) fn open_with_legacy_paths(
+        path: &Path,
+        paths: &locations::legacy::LegacyPaths,
+    ) -> anyhow::Result<Self> {
+        paths.validate()?;
+        anyhow::ensure!(
+            paths.catalog_path == std::path::absolute(path)?,
+            "legacy snapshot refers to a different catalog"
+        );
+        Self::open_with_legacy_backfill(path, true, Some(paths))
+    }
+
+    fn open_with_legacy_backfill(
+        path: &Path,
+        legacy_backfill: bool,
+        capture: Option<&locations::legacy::LegacyPaths>,
+    ) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -619,6 +636,9 @@ impl RecordingCatalog {
         search_connection.busy_timeout(BUSY_TIMEOUT)?;
         lease.initialize(&connection)?;
         pollster::block_on(initialize_schema(&connection))?;
+        if let Some(paths) = capture {
+            pollster::block_on(locations::legacy::register(&connection, paths))?;
+        }
         let legacy_recordings =
             pollster::block_on(prepare_startup_backfill(&connection, legacy_backfill))?;
 
