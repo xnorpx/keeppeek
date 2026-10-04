@@ -445,6 +445,14 @@ writes to a volume or clear that operator drain, after confirmation. Already adm
 finish normally. Clearing an operator drain does not override a draining or read-only saved
 configuration. Operator drain survives restart and does not itself move existing media.
 
+Removing a bound definition requires stopped writes, zero owned and reserved bytes, and completed
+cleanup receipts. An offline enabled runtime must be stopped through operator drain, or disabled
+and restarted before removing an unbound definition. Remove archive-policy references and restart
+before removing their destination; already captured archive work must finish first. Removal keeps
+the catalog's immutable binding and completed history and does not delete files.
+The removal check inspects up to 1,024 pending archive policies; finish a larger backlog before
+retrying removal.
+
 Each `[[storage.named_volumes.volumes]]` entry has these fields:
 
 | Field                 | Type           | Default   | Meaning                                                                                                                                                                                                                                                                  |

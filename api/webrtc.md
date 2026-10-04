@@ -1375,6 +1375,14 @@ capability. The internal runtime now places recordings, exports, and event image
 journals verified moves. Legacy backfill, retention, draining, metadata relocation, and
 the management UI must be qualified before configuration activation.
 
+An explicit configuration update cannot remove a bound volume until effective drain is set,
+owned/reserved bytes are zero, and cleanup receipts are acknowledged. Enabled running volumes
+require operator drain; unbound offline volumes require disabling and restarting first.
+Running archive rules and pending captured archive policies also block destination removal.
+Remove the running rule reference and restart, then finish captured work before retrying.
+These checks run before filesystem probes or configuration persistence. Omission still preserves
+definitions; successful removal retains immutable catalog bindings and completed history.
+
 `StorageVolumeCommand` (request field 29) is Administrator-only. Responses use
 `Ok.storage_volume_result` (field 43). The operations are:
 
