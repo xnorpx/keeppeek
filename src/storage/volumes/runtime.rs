@@ -16,7 +16,7 @@ use std::{
     cell::{Cell, RefCell},
     io::{self, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 const GROWTH_BYTES: u64 = 1_048_576;
@@ -37,7 +37,7 @@ pub struct Manager {
 struct Inner {
     configuration: VolumeConfiguration,
     catalog: RecordingCatalogHandle,
-    roots: Vec<Option<Arc<Root>>>,
+    roots: Vec<OnceLock<Root>>,
     admission: Mutex<()>,
 }
 
@@ -292,10 +292,14 @@ impl Manager {
             .volumes
             .iter()
             .map(|volume| {
+                let slot = OnceLock::new();
                 if volume.state == VolumeState::Disabled {
-                    return None;
+                    return slot;
                 }
-                bind_root(volume, &catalog).ok().map(Arc::new)
+                if let Ok(root) = bind_root(volume, &catalog) {
+                    slot.set(root).expect("new root slot is empty");
+                }
+                slot
             })
             .collect();
         Ok(Self {
@@ -306,6 +310,37 @@ impl Manager {
                 admission: Mutex::new(()),
             }),
         })
+    }
+
+    fn recover_roots(&self) -> anyhow::Result<()> {
+        // ponytail: Retry at most 32 startup-offline roots in the existing journal scan.
+        for (index, volume) in self.inner.configuration.volumes.iter().enumerate() {
+            let slot = &self.inner.roots[index];
+            if volume.state == VolumeState::Disabled || slot.get().is_some() {
+                continue;
+            }
+            let root = match open_root(volume) {
+                Ok(root) => root,
+                Err(_) => continue,
+            };
+            let _guard = self
+                .inner
+                .admission
+                .lock()
+                .map_err(|_| anyhow::anyhow!("volume admission unavailable"))?;
+            if slot.get().is_some() {
+                continue;
+            }
+            match bind_opened_root(volume, &root, &self.inner.catalog) {
+                Ok(()) => {
+                    slot.set(root)
+                        .expect("admission lock protects empty root slot");
+                    tracing::info!(volume_id = %volume.id, "storage volume recovered");
+                }
+                Err(_) => tracing::warn!(volume_id = %volume.id, "storage volume recovery refused"),
+            }
+        }
+        Ok(())
     }
 
     /// Reserves one configured destination; only an unmatched rule returns `None`.
@@ -395,10 +430,24 @@ impl Manager {
 }
 
 fn bind_root(volume: &Volume, catalog: &RecordingCatalogHandle) -> anyhow::Result<Root> {
+    let root = open_root(volume)?;
+    bind_opened_root(volume, &root, catalog)?;
+    Ok(root)
+}
+
+fn open_root(volume: &Volume) -> anyhow::Result<Root> {
     let root = Root::open(&volume.root)?;
     if volume.state == VolumeState::Enabled {
         root.sync()?;
     }
+    Ok(root)
+}
+
+fn bind_opened_root(
+    volume: &Volume,
+    root: &Root,
+    catalog: &RecordingCatalogHandle,
+) -> anyhow::Result<()> {
     catalog.volume_location(Request::Bind(Binding {
         id: volume.id.to_string(),
         generation: 1,
@@ -409,7 +458,7 @@ fn bind_root(volume: &Volume, catalog: &RecordingCatalogHandle) -> anyhow::Resul
         limit_bytes: volume.capacity_bytes,
         minimum_free_bytes: volume.minimum_free_bytes.max(volume.critical_free_bytes),
     }))?;
-    Ok(root)
+    Ok(())
 }
 
 fn object_key(role: VolumeRole, object: &Object) -> anyhow::Result<String> {
@@ -429,7 +478,7 @@ fn object_key(role: VolumeRole, object: &Object) -> anyhow::Result<String> {
 impl Inner {
     fn root(&self, index: usize) -> anyhow::Result<&Root> {
         self.roots[index]
-            .as_deref()
+            .get()
             .ok_or_else(|| anyhow::anyhow!("configured volume is offline"))
     }
 
