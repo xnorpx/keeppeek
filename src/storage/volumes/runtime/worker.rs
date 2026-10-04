@@ -107,7 +107,6 @@ impl Worker {
     fn stop(&mut self) -> anyhow::Result<()> {
         self.cancelled.store(true, Ordering::Release);
         if let Some(worker) = self.thread.take() {
-            worker.thread().unpark();
             worker
                 .join()
                 .map_err(|_| anyhow::anyhow!("volume move worker panicked"))?;
@@ -158,20 +157,14 @@ fn run(manager: Manager, receiver: Receiver<String>, cancelled: &AtomicBool) {
 }
 
 fn process(manager: &Manager, id: &str, cancelled: &AtomicBool) {
-    for attempt in 0..3 {
-        if cancelled.load(Ordering::Acquire) {
-            return;
-        }
-        match execute(manager, id, cancelled) {
-            Ok(()) => return,
-            Err(_) if cancelled.load(Ordering::Acquire) => return,
-            Err(error) => {
-                tracing::warn!(job_id = id, attempt, %error, "volume move attempt failed; journal retained");
-                if attempt < 2 {
-                    thread::park_timeout(Duration::from_secs(1_u64 << attempt));
-                }
-            }
-        }
+    if cancelled.load(Ordering::Acquire) {
+        return;
+    }
+    // ponytail: The periodic journal scan retries failures; this worker need not sleep per job.
+    if let Err(error) = execute(manager, id, cancelled)
+        && !cancelled.load(Ordering::Acquire)
+    {
+        tracing::warn!(job_id = id, %error, "volume move attempt failed; journal retained for next scan");
     }
 }
 
@@ -271,6 +264,49 @@ impl Scan {
 mod tests {
     use super::super::movement_tests::fixture;
     use super::*;
+
+    #[test]
+    fn failed_pass_retains_source_and_a_later_pass_completes() -> anyhow::Result<()> {
+        let fixture = fixture()?;
+        let mut configuration = fixture.manager.inner.configuration.clone();
+        configuration.volumes[1].state = crate::storage::volumes::VolumeState::ReadOnly;
+        let unavailable = Manager::new(configuration.clone(), fixture.catalog.handle())?;
+        let cancelled = AtomicBool::new(false);
+        process(&unavailable, &fixture.job_id, &cancelled);
+        assert!(fixture.source_path.exists());
+        assert!(!fixture.destination.path.exists());
+        let Reply::Move(job) = fixture
+            .catalog
+            .handle()
+            .volume_location(Request::Move(fixture.job_id.clone()))?
+        else {
+            anyhow::bail!("pending move disappeared");
+        };
+        assert_eq!(job.phase, "reserved");
+        assert_eq!(
+            fixture
+                .catalog
+                .handle()
+                .volume_location(Request::Lookup(fixture.source.object.clone()))?,
+            Reply::Location(Some(fixture.source.clone()))
+        );
+        configuration.volumes[1].state = crate::storage::volumes::VolumeState::Enabled;
+        let available = Manager::new(configuration, fixture.catalog.handle())?;
+        process(&available, &fixture.job_id, &cancelled);
+        let Reply::Location(Some(location)) = fixture
+            .catalog
+            .handle()
+            .volume_location(Request::Lookup(fixture.source.object.clone()))?
+        else {
+            anyhow::bail!("published location disappeared");
+        };
+        assert_eq!(location.volume, "secondary");
+        assert_eq!(location.digest, fixture.source.digest);
+        assert!(fixture.destination.path.exists());
+        assert!(!fixture.source_path.exists());
+        fixture.catalog.shutdown();
+        Ok(())
+    }
 
     #[test]
     fn journal_scan_recovers_jobs_without_any_queue_wakeup() -> anyhow::Result<()> {
