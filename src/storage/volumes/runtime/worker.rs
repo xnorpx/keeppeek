@@ -232,6 +232,7 @@ impl Scan {
             if Instant::now() < self.next {
                 return Ok(None);
             }
+            manager.recover_roots()?;
             self.after = None;
             self.seen = 0;
             self.active = true;

@@ -78,6 +78,73 @@ fn object() -> Object {
 }
 
 #[test]
+fn offline_root_recovers_without_restarting_the_manager() -> anyhow::Result<()> {
+    let (path, catalog, original) = fixture(GROWTH_BYTES)?;
+    let mut configuration = original.inner.configuration.clone();
+    configuration.volumes[0].root = path.join("late-volume");
+    configuration.volumes[0].id = VolumeId::parse("late")?;
+    configuration.placement = vec![rule(VolumeRole::Export, &["late"], false)];
+    let manager = Manager::new(configuration, catalog.handle())?;
+    assert!(
+        manager
+            .reserve(VolumeRole::Export, "camera", &[], object(), 8)
+            .is_err()
+    );
+    create_root(&path.join("late-volume"))?;
+    manager.recover_roots()?;
+    let reservation = manager.reserve(VolumeRole::Export, "camera", &[], object(), 8)?;
+    let mut writer = reservation.expect("recovered root accepts writes").open()?;
+    writer.write_all(&[1; 8])?;
+    assert_eq!(writer.evidence()?.bytes, 8);
+    catalog.shutdown();
+    Ok(())
+}
+
+#[test]
+fn offline_root_recovery_refuses_a_replacement_directory() -> anyhow::Result<()> {
+    let (path, catalog, original) = fixture(GROWTH_BYTES)?;
+    let configuration = original.inner.configuration.clone();
+    drop(original);
+    std::fs::rename(path.join("primary"), path.join("original"))?;
+    let manager = Manager::new(configuration, catalog.handle())?;
+    create_root(&path.join("primary"))?;
+    manager.recover_roots()?;
+    assert!(
+        manager
+            .reserve(VolumeRole::Export, "camera", &[], object(), 8)
+            .is_err()
+    );
+    assert!(path.join("original").is_dir());
+    std::fs::remove_dir(path.join("primary"))?;
+    std::fs::rename(path.join("original"), path.join("primary"))?;
+    manager.recover_roots()?;
+    assert!(
+        manager
+            .reserve(VolumeRole::Export, "camera", &[], object(), 8)?
+            .is_some()
+    );
+    catalog.shutdown();
+    Ok(())
+}
+
+#[test]
+fn root_recovery_does_not_activate_disabled_volumes() -> anyhow::Result<()> {
+    let (_, catalog, original) = fixture(GROWTH_BYTES)?;
+    let mut configuration = original.inner.configuration.clone();
+    configuration.volumes[0].state = VolumeState::Disabled;
+    let manager = Manager::new(configuration, catalog.handle())?;
+    manager.recover_roots()?;
+    assert!(manager.inner.root(0).is_err());
+    assert!(
+        manager
+            .reserve(VolumeRole::Export, "camera", &[], object(), 8)
+            .is_err()
+    );
+    catalog.shutdown();
+    Ok(())
+}
+
+#[test]
 fn writer_checkpoints_growth_and_rejects_sparse_seeks_and_unknown_ownership() -> anyhow::Result<()>
 {
     let (_, catalog, manager) = fixture(2 * GROWTH_BYTES)?;

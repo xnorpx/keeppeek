@@ -198,6 +198,13 @@ the catalog. Finalized named recordings request archive placement without perfor
 the recording writer. Rejected admission still leaves the source intact; automatic reevaluation
 of a finalized object whose initial archive admission failed remains outstanding.
 
+The same scan retries up to 32 roots that were unavailable when the runtime started. It opens
+and synchronizes roots outside the admission lock, then checks the durable binding before making
+the root available. An existing binding must retain its filesystem and directory identity; a
+different directory at the same path stays unavailable. Disabled volumes are never activated by
+recovery. Once bound, roots remain pinned for this runtime; this increment does not replace a
+lost filesystem handle or apply live configuration changes.
+
 Playback, scrub, event-search, and export workers retain reader leases for their actual file-use
 lifetime. Leases also cover legacy aliases of named paths. After publication, new readers cannot
 resolve an alias of the retired source. Existing readers finish before its retirement.
@@ -209,6 +216,6 @@ operations preserve ambiguous files. These changes are internal integration, not
 configuration still accepts only Disabled named-volume drafts.
 
 Remaining before activation: legacy bindings/backfill, export and thumbnail owner integration,
-per-volume retention and drain, live policy changes and volume recovery, named metadata relocation,
+per-volume retention and drain, live policy changes and mounted-volume recovery, named metadata relocation,
 Administrator operations and UI, and final performance/platform evidence. Focused test logs are
 under `target/129-*-nextest.log`; failed intermediate runs must not be presented as final evidence.
