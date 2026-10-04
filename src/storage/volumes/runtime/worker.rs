@@ -120,7 +120,7 @@ fn run(manager: Manager, receiver: Receiver<()>, cancelled: &AtomicBool) {
         if receiver.try_recv().is_ok()
             || manager.inner.rescan_requested.swap(false, Ordering::AcqRel)
         {
-            scan.next = Instant::now();
+            scan.wake();
             worked = true;
         }
         if cancelled.load(Ordering::Acquire) {
@@ -139,7 +139,7 @@ fn run(manager: Manager, receiver: Receiver<()>, cancelled: &AtomicBool) {
         }
         if !worked {
             match receiver.recv_timeout(Duration::from_millis(250)) {
-                Ok(()) => scan.next = Instant::now(),
+                Ok(()) => scan.wake(),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -210,6 +210,7 @@ struct Scan {
     seen: usize,
     next: Instant,
     active: bool,
+    rescan_after_pass: bool,
 }
 
 impl Scan {
@@ -220,7 +221,13 @@ impl Scan {
             seen: 0,
             next: Instant::now(),
             active: false,
+            rescan_after_pass: false,
         }
+    }
+
+    fn wake(&mut self) {
+        self.rescan_after_pass |= self.active || self.after.is_some();
+        self.next = Instant::now();
     }
 
     fn defer(&mut self) {
@@ -265,6 +272,10 @@ impl Scan {
         if jobs.is_empty() {
             self.after = None;
             self.defer();
+            // ponytail: Coalesce wakes without restarting a pass or starving later jobs.
+            if std::mem::take(&mut self.rescan_after_pass) {
+                self.next = Instant::now();
+            }
             return Ok(None);
         }
         self.after = jobs.last().cloned();
@@ -278,6 +289,20 @@ impl Scan {
 mod tests {
     use super::super::movement_tests::fixture;
     use super::*;
+
+    #[test]
+    fn wake_during_a_pass_revisits_work_before_periodic_delay() -> anyhow::Result<()> {
+        let fixture = fixture()?;
+        let mut scan = Scan::new();
+        assert_eq!(scan.next(&fixture.manager)?, Some(fixture.job_id.clone()));
+        // The job remains pending; a wake signals a state change behind the cursor.
+        scan.wake();
+        assert_eq!(scan.next(&fixture.manager)?, None);
+        assert_eq!(scan.after, None);
+        assert_eq!(scan.next(&fixture.manager)?, Some(fixture.job_id));
+        fixture.catalog.shutdown();
+        Ok(())
+    }
 
     #[test]
     fn failed_pass_retains_source_and_a_later_pass_completes() -> anyhow::Result<()> {
