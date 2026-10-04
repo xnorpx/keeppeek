@@ -19,9 +19,12 @@ const JPEG_QUALITY: u8 = 82;
 const PUBLISHED_IMAGE_DIMENSION_MAX: u32 = 8_192;
 const PUBLISHED_IMAGE_ALLOCATION_MAX: u64 = 64 * 1024 * 1024;
 
+mod legacy_root;
 mod native;
 mod placement;
 
+#[cfg(test)]
+mod captured_tests;
 #[cfg(test)]
 mod placement_tests;
 
@@ -29,6 +32,7 @@ mod placement_tests;
 pub struct EventStore {
     catalog: RecordingCatalogHandle,
     thumbnail_root: PathBuf,
+    thumbnail_root_was_offline: bool,
     max_thumbnail_bytes: u64,
     volume_storage: Option<std::sync::Arc<super::volumes::runtime::Manager>>,
     volume_mover: Option<super::volumes::runtime::worker::Handle>,
@@ -80,16 +84,19 @@ impl EventStore {
         thumbnail_root: &Path,
         max_thumbnail_bytes: u64,
     ) -> anyhow::Result<Self> {
-        fs::create_dir_all(thumbnail_root)?;
+        let (thumbnail_root, available) = legacy_root::prepare(&catalog, thumbnail_root)?;
         let store = Self {
             catalog,
-            thumbnail_root: thumbnail_root.canonicalize()?,
+            thumbnail_root,
+            thumbnail_root_was_offline: !available,
             max_thumbnail_bytes,
             volume_storage: None,
             volume_mover: None,
             volume_groups: Default::default(),
         };
-        store.enforce_thumbnail_limit()?;
+        if available {
+            store.enforce_thumbnail_limit()?;
+        }
         Ok(store)
     }
 
@@ -411,7 +418,11 @@ impl EventStore {
         let Ok(candidate) = candidate.canonicalize() else {
             return Ok(None);
         };
-        if !candidate.starts_with(&self.thumbnail_root) {
+        if !legacy_root::contains(
+            &self.thumbnail_root,
+            &candidate,
+            self.thumbnail_root_was_offline,
+        ) {
             return Ok(None);
         }
         Ok(Some(candidate))
