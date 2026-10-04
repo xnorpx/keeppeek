@@ -122,6 +122,8 @@ pub(super) async fn pending(
         UNION ALL
         SELECT operation FROM storage_image_retirements WHERE acknowledged=0
         UNION
+        SELECT object_id FROM storage_export_cleanup WHERE acknowledged=0
+        UNION
         SELECT i.object_id FROM storage_event_images i JOIN storage_volume_allocations a ON a.object_id=i.object_id AND a.kind='thumbnail'
             WHERE i.active=0 AND a.state='published'
             AND NOT EXISTS(SELECT 1 FROM storage_image_retirements r JOIN storage_volume_allocations retired ON retired.operation=r.operation WHERE retired.object_id=i.object_id AND retired.kind='thumbnail')

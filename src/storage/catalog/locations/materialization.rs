@@ -35,6 +35,11 @@ pub(super) async fn checkpoint(
 ) -> anyhow::Result<Reply> {
     super::moves::ensure_writable(connection, &materialized.operation).await?;
     super::images::retirement::ensure_writable(connection, &materialized.operation).await?;
+    if materialized.bytes == 0 {
+        super::export_cleanup::ensure_identity_capture(connection, &materialized.operation).await?;
+    } else {
+        super::export_cleanup::ensure_active_operation(connection, &materialized.operation).await?;
+    }
     let mut rows = connection.query(
         "SELECT bytes, materialized_bytes, file_identity, state FROM storage_volume_allocations WHERE operation = ?1",
         [materialized.operation.as_str()],

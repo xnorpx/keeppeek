@@ -23,6 +23,11 @@ const GROWTH_BYTES: u64 = 1_048_576;
 
 mod archive;
 mod cancellation;
+#[cfg(test)]
+mod export_move_tests;
+#[cfg(test)]
+mod export_tests;
+mod exports;
 mod images;
 mod movement;
 #[cfg(test)]

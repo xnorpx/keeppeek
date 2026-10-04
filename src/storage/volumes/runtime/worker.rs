@@ -158,6 +158,9 @@ fn process(manager: &Manager, id: &str, cancelled: &AtomicBool) {
 }
 
 fn execute(manager: &Manager, id: &str, cancelled: &AtomicBool) -> anyhow::Result<()> {
+    if manager.finish_export_retirement(id)? {
+        return Ok(());
+    }
     if manager.retire_unused_image(id)? {
         return Ok(());
     }

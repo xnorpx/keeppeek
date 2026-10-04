@@ -78,6 +78,49 @@ fn object() -> Object {
 }
 
 #[test]
+fn export_retirement_fences_a_worker_before_it_reserves() -> anyhow::Result<()> {
+    let (path, catalog, manager) = fixture(GROWTH_BYTES)?;
+    let object = object();
+    catalog
+        .handle()
+        .volume_location(Request::RetireExport(object.id.clone()))?;
+    assert!(
+        manager
+            .reserve(VolumeRole::Export, "camera", &[], object, 8)
+            .is_err()
+    );
+    drop(manager);
+    catalog.shutdown();
+    std::fs::remove_dir_all(path)?;
+    Ok(())
+}
+
+#[test]
+fn export_retirement_fences_an_open_writer_before_publication() -> anyhow::Result<()> {
+    let (path, catalog, manager) = fixture(GROWTH_BYTES)?;
+    let object = object();
+    let mut writer = manager
+        .reserve(VolumeRole::Export, "camera", &[], object.clone(), 8)?
+        .unwrap()
+        .open()?;
+    writer.write_all(&[1; 8])?;
+    let evidence = writer.evidence()?;
+    catalog
+        .handle()
+        .volume_location(Request::RetireExport(object.id.clone()))?;
+    assert!(writer.publish(evidence).is_err());
+    assert_eq!(
+        catalog.handle().volume_location(Request::Lookup(object))?,
+        Reply::Location(None)
+    );
+    drop(writer);
+    drop(manager);
+    catalog.shutdown();
+    std::fs::remove_dir_all(path)?;
+    Ok(())
+}
+
+#[test]
 fn draining_volume_finishes_existing_growth_but_rejects_new_reservations() -> anyhow::Result<()> {
     let (_, catalog, manager) = fixture(2 * GROWTH_BYTES)?;
     let mut writer = manager

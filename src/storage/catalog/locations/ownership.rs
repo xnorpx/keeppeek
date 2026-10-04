@@ -95,6 +95,7 @@ pub(super) async fn publish(
     publication: &Publication,
 ) -> anyhow::Result<Reply> {
     super::images::retirement::ensure_writable(connection, &publication.operation).await?;
+    super::export_cleanup::ensure_active_operation(connection, &publication.operation).await?;
     let mut moves = connection
         .query(
             "SELECT 1 FROM storage_volume_moves WHERE destination_operation = ?1 OR (source_operation = ?1 AND phase IN ('published','retiring','complete'))",
