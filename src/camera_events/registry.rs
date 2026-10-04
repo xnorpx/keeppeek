@@ -557,7 +557,7 @@ impl Slot {
         let size = input.bytes();
         if self
             .queued
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 current
                     .checked_add(size)
                     .filter(|next| *next <= QUEUED_BYTES_MAX)
