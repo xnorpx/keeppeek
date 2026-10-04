@@ -118,10 +118,12 @@ impl Manager {
                 return Ok(volume.id.clone());
             }
         }
-        configuration
-            .place_with_groups(&request, &groups, &observations)?
-            .selected
-            .ok_or_else(|| anyhow::anyhow!("archive policy has no writable destination"))
+        let decision = configuration.place_with_groups(&request, &groups, &observations)?;
+        let Some(selected) = decision.selected else {
+            self.request_pressure_retention(&decision.rejected, request.required_bytes);
+            anyhow::bail!("archive policy has no writable destination");
+        };
+        Ok(selected)
     }
 
     fn archive_configuration(&self, policy: &Policy) -> VolumeConfiguration {

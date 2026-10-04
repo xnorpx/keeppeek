@@ -12,9 +12,11 @@ pub mod archives;
 pub mod export_cleanup;
 mod growth;
 pub mod images;
+pub mod legacy;
 mod materialization;
 pub mod moves;
 pub mod objects;
+pub mod recordings;
 pub use materialization::Materialization;
 mod ownership;
 pub use ownership::{Location, Publication};
@@ -130,6 +132,8 @@ impl fmt::Debug for Allocation {
 
 #[derive(Debug, Clone)]
 pub enum Request {
+    RegisterLegacyPaths(Box<legacy::LegacyPaths>),
+    LegacyPaths,
     Bind(Binding),
     Revision,
     Reserve(Allocation),
@@ -145,16 +149,21 @@ pub enum Request {
     CompleteArchive { id: String, source: Location },
     AdvanceMove(moves::Step),
     Usage,
+    LegacyRecordingBytes,
     Publish(Publication),
     Finalize(Publication),
     Lookup(Object),
     Objects(objects::Page),
     ObjectSource(Object),
+    RecordingRetention(recordings::Action),
     CommitImages(Box<images::Commit>),
     Image { event: String, attachment: String },
     ImageRetirement(String),
     ImageRetired(Publication),
     ImageAbandoned(Publication),
+    PendingImage(String),
+    ImagePressure(String),
+    EmptyImageAbandoned(String),
     RetireExport(String),
     ExportCleanup(export_cleanup::Action),
     ImageRetirementAcknowledged(String),
@@ -162,19 +171,24 @@ pub enum Request {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
+    LegacyPaths(Option<Box<legacy::LegacyPaths>>),
     Bound,
     Revision(u64),
     Reserved { operation: String, bytes: u64 },
     Location(Option<Location>),
     Usage(Vec<Usage>),
+    Bytes(u64),
     Move(Box<moves::Job>),
     OptionalMove(Option<Box<moves::Job>>),
     Objects(Vec<Location>),
     ObjectSource(Option<String>),
+    RecordingRetirement(Option<Box<recordings::Job>>),
     Moves(Vec<moves::Job>),
     PendingMoves(Vec<String>),
     Archive(Option<Box<archives::Job>>),
     ImageRetirement(Option<Box<images::retirement::Retirement>>),
+    PendingImage(Option<Box<export_cleanup::Owned>>),
+    ImagePressure(bool),
     ExportCleanup(Option<Box<export_cleanup::Job>>),
     ExportOwned(bool),
 }
@@ -228,6 +242,8 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     archives::initialize(connection).await?;
     export_cleanup::initialize(connection).await?;
     images::initialize(connection).await?;
+    recordings::initialize(connection).await?;
+    legacy::initialize(connection).await?;
     // A sample from a previous actor lifetime must never authorize another allocation.
     bump_revision(connection).await?;
     connection.execute("INSERT OR IGNORE INTO catalog_schema_migrations (version, applied_at_ms) VALUES (3, ?1)", [super::current_unix_time_ms()]).await?;
@@ -244,16 +260,24 @@ fn identifier(value: &str) -> anyhow::Result<()> {
 
 fn validate(request: &Request) -> anyhow::Result<()> {
     match request {
-        Request::Revision | Request::Usage => {}
+        Request::Revision
+        | Request::Usage
+        | Request::LegacyRecordingBytes
+        | Request::LegacyPaths => {}
+        Request::RegisterLegacyPaths(paths) => paths.validate()?,
         Request::Move(id)
         | Request::FindMove(id)
         | Request::ImageRetirement(id)
+        | Request::PendingImage(id)
+        | Request::ImagePressure(id)
+        | Request::EmptyImageAbandoned(id)
         | Request::ImageRetirementAcknowledged(id) => identifier(id)?,
         Request::Archive(id) => identifier(id)?,
         Request::RetireExport(id) => {
             export_cleanup::validate_id(id)?;
         }
         Request::ExportCleanup(action) => action.validate()?,
+        Request::RecordingRetention(action) => action.validate()?,
         Request::CompleteArchive { id, source } => {
             identifier(id)?;
             identifier(&source.object.id)?;
@@ -283,11 +307,13 @@ fn validate(request: &Request) -> anyhow::Result<()> {
                 "filesystem available bytes",
             )?;
         }
-        Request::Publish(publication)
-        | Request::Finalize(publication)
-        | Request::ImageAbandoned(publication)
-        | Request::ImageRetired(publication) => {
+        Request::Publish(publication) | Request::Finalize(publication) => {
             validate_publication(publication)?;
+        }
+        Request::ImageAbandoned(evidence) | Request::ImageRetired(evidence) => {
+            identifier(&evidence.operation)?;
+            identifier(&evidence.file_identity)?;
+            to_i64(evidence.bytes, "retired image bytes")?;
         }
         Request::Lookup(object) | Request::ObjectSource(object) => identifier(&object.id)?,
         Request::Objects(page) => page.validate()?,
@@ -437,6 +463,10 @@ pub(super) async fn execute(
 
 async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::Result<Reply> {
     Ok(match request {
+        Request::RegisterLegacyPaths(paths) => {
+            Reply::LegacyPaths(Some(Box::new(legacy::register(connection, &paths).await?)))
+        }
+        Request::LegacyPaths => Reply::LegacyPaths(legacy::load(connection).await?.map(Box::new)),
         Request::Bind(binding) => bind(connection, &binding).await?,
         Request::Reserve(allocation) => reserve(connection, &allocation).await?,
         Request::ReserveArchive(allocation, intent) => {
@@ -484,8 +514,19 @@ async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::R
         Request::ImageAbandoned(evidence) => {
             images::retirement::abandon(connection, &evidence).await?
         }
+        Request::PendingImage(id) => Reply::PendingImage(
+            images::recovery::pending(connection, &id)
+                .await?
+                .map(Box::new),
+        ),
+        Request::EmptyImageAbandoned(id) => images::recovery::empty(connection, &id).await?,
+        Request::ImagePressure(volume) => {
+            Reply::ImagePressure(images::pressure::begin(connection, &volume).await?)
+        }
         Request::RetireExport(id) => export_cleanup::retire(connection, &id).await?,
         Request::ExportCleanup(action) => export_cleanup::dispatch(connection, action).await?,
+        Request::RecordingRetention(action) => recordings::dispatch(connection, action).await?,
+        Request::LegacyRecordingBytes => Reply::Bytes(recordings::legacy_bytes(connection).await?),
         Request::ImageRetirementAcknowledged(id) => {
             images::retirement::acknowledge(connection, &id).await?
         }

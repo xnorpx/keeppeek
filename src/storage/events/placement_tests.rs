@@ -10,6 +10,8 @@ use crate::storage::{
 use image::DynamicImage;
 use std::{fs, path::Path, path::PathBuf, sync::Arc};
 
+mod pressure;
+
 #[test]
 fn committed_image_retry_survives_event_close_and_rejects_changed_evidence() -> anyhow::Result<()> {
     use crate::storage::catalog::locations::{Kind, Object, Reply, Request, images};
@@ -145,6 +147,63 @@ fn store(catalog: &RecordingCatalog, config: &StorageConfig) -> anyhow::Result<E
         EventStore::new(catalog.handle(), &config.event_thumbnail_path, 0)?
             .with_volume_storage(config),
     )
+}
+
+#[test]
+fn named_image_pressure_waits_for_reader_and_reclaims_only_owned_image() -> anyhow::Result<()> {
+    use crate::storage::volumes::runtime::worker::Worker;
+    let jpeg = encode_jpeg(&DynamicImage::new_rgb8(24, 16))?;
+    let (_root, catalog, config) = fixture(2 * jpeg.len() as u64 + 10, true)?;
+    let events = store(&catalog, &config)?;
+    events.commit_published_image("pressure-first", image_event("old-image", &jpeg), &jpeg)?;
+    events.commit_published_image("pressure-other", image_event("other-image", &jpeg), &jpeg)?;
+    let other = events.thumbnail_path("front-door", "other-image")?.unwrap();
+    let old = events.event_by_id("old-image")?.unwrap();
+    let (path, lease) = events.leased_attachment_path(&old, "snapshot")?.unwrap();
+    let unrelated = config.event_thumbnail_path.join(path.file_name().unwrap());
+    fs::write(&unrelated, b"unrelated legacy file")?;
+    let worker = Worker::start(config.volume_runtime.as_ref().unwrap().as_ref().clone())?;
+    assert!(
+        events
+            .commit_published_image("pressure-next", image_event("next-image", &jpeg), &jpeg)
+            .is_err()
+    );
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    for _ in 0..3 {
+        assert!(
+            events
+                .commit_published_image("pressure-next", image_event("next-image", &jpeg), &jpeg)
+                .is_err()
+        );
+    }
+    assert_eq!(fs::read(&path)?, jpeg);
+    assert!(other.exists());
+    drop(lease);
+    for _ in 0..100 {
+        worker.handle().scan()?;
+        if !path.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    worker.shutdown()?;
+    assert!(
+        !path.exists(),
+        "volume pressure did not retire its oldest image"
+    );
+    assert!(events.thumbnail_path("front-door", "old-image").is_err());
+    assert_eq!(fs::read(unrelated)?, b"unrelated legacy file");
+    assert!(
+        other.exists(),
+        "repeated pressure must reuse its pending retirement"
+    );
+    assert_eq!(events.event_by_id("old-image")?.unwrap(), old);
+    events.commit_published_image("pressure-next", image_event("next-image", &jpeg), &jpeg)?;
+    assert!(events.thumbnail_path("front-door", "next-image")?.is_some());
+    drop(events);
+    drop(config);
+    catalog.shutdown();
+    Ok(())
 }
 
 #[test]
@@ -521,11 +580,46 @@ fn thumbnail_move_preserves_the_source_until_its_reader_releases() -> anyhow::Re
     let current = events.thumbnail_path("front-door", &event.id)?.unwrap();
     assert_eq!(current, destination_path);
     assert_eq!(fs::read(current)?, jpeg);
+    assert_moved_image_retirement(&catalog, &manager, &events, &event, &destination_path)?;
     drop(events);
     drop(manager);
     drop(config);
     catalog.shutdown();
     fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+fn assert_moved_image_retirement(
+    catalog: &RecordingCatalog,
+    manager: &Manager,
+    events: &EventStore,
+    event: &crate::storage::metadata::TimelineEvent,
+    path: &Path,
+) -> anyhow::Result<()> {
+    use crate::storage::catalog::locations::{Reply, Request};
+    assert_eq!(
+        catalog
+            .handle()
+            .volume_location(Request::ImagePressure("secondary".into()))?,
+        Reply::ImagePressure(true)
+    );
+    let Reply::Location(Some(location)) = catalog.handle().volume_location(Request::Image {
+        event: event.id.clone(),
+        attachment: "snapshot".into(),
+    })?
+    else {
+        anyhow::bail!("owned image location missing")
+    };
+    let Reply::ImageRetirement(Some(job)) = catalog
+        .handle()
+        .volume_location(Request::ImageRetirement(location.object.id))?
+    else {
+        anyhow::bail!("image retirement missing")
+    };
+    manager.retire_unused_image(&job.operation)?;
+    assert!(!path.exists());
+    assert!(events.thumbnail_path("front-door", &event.id).is_err());
+    assert_eq!(image_allocated_bytes(catalog)?, 0);
     Ok(())
 }
 

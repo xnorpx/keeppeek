@@ -323,3 +323,71 @@ strict workspace/all-target Clippy passed; five system-client tests passed; Svel
 zero errors and warnings. Full canonical Windows validation remains a final acceptance gate.
 Activation remains disabled. Bulk drain, legacy adoption, named recording retention, incomplete
 image recovery, metadata relocation, management screens, and final benchmarks remain outstanding.
+
+## Recording retention and interrupted image recovery
+
+Named-volume pressure now admits the oldest eligible finalized recording in that volume through
+the existing worker. Active and protected recordings, maintenance claims, and unfinished moves
+remain excluded. Existing readers finish before removal; new readers and protection changes are
+fenced after admission. Durable root receipts retain ownership across offline/read-only restarts,
+and the catalog keeps deletion coverage after removal. Legacy cleanup excludes named allocations
+and counts only legacy bytes against the legacy recording cap.
+
+Thumbnail reservations hold a writer lease from admission through file close. The worker recovers
+unopened, empty, and partial abandoned images, using captured identity and existing removal
+receipts. Empty-file evidence is separate from the positive reservation; quota is released only
+after confirmed removal. Unrelated files and unavailable roots remain untouched.
+
+Notification delivery resolves the current event attachment location at send time and holds its
+reader lease through the provider read. A moved image remains available after its old copy is
+removed; replaced event revisions cannot reuse a cached image path.
+
+The focused retention/recovery regression run passed 132 tests, including six recording-retention,
+four interrupted-image, and two notification-location tests. Evidence is in
+`target/129-retention-recovery-regressions.log`. The two recovery tests first failed with retained
+quota in `target/129-image-recovery-red.log`. Named activation remains disabled. Image-volume
+pressure, legacy adoption, drain/live management, metadata relocation, UI and final qualification
+remain open.
+
+## Image pressure, failure isolation, and management UI
+
+Image-volume pressure reuses the existing retirement worker after recording retention finds no
+eligible recording. One pending retirement per volume prevents repeated refused allocations from
+queuing unnecessary deletions. Event metadata remains intact; retained ownership evidence prevents
+an unavailable named image from resolving an unrelated legacy file. Named recording cameras no
+longer inherit an unrelated legacy-volume pause. Existing writer destinations remain authoritative
+across camera-group changes, and rotation cannot silently enter paused legacy storage.
+
+The Administrator settings screen now edits disabled volume and placement drafts, probes roots,
+and exposes individual move preview/confirmation and job inspection/cancellation. Exact integers,
+secret references, and dirty inputs survive the round trip. Bulk drain and metadata relocation
+remain explicitly unavailable. Focused UI build, type checks, and Chromium tests passed; the
+canonical Windows gate is still required at the final head.
+
+Legacy file inspection and retirement now support bounded nested catalog-known paths through
+pinned roots and parents. Retirement reuses existing receipts and binds the original root as well
+as the nested parent. This is a confinement prerequisite, not completed legacy adoption.
+
+The expanded storage/event/engine/reader/notification run passed 194 tests in 17.428 seconds
+(`target/129-storage-owner-regressions.log`). The image-pressure test first failed because no image
+was reclaimed (`target/129-image-pressure-red.log`). Protection-race qualification, strict linting,
+legacy adoption, bulk drain/live management, metadata relocation, activation, and final
+performance/platform evidence remain open.
+
+The next checkpoint closes the image protection race: catalog triggers reject both a protection
+upgrade and a late protected recording association once image retirement is admitted. The late
+association regression failed before the fix (`target/129-pressure-protection-red.log`). The
+expanded selection then passed 196 tests in 17.544 seconds
+(`target/129-storage-checkpoint-tests.log`), and strict workspace/all-target Clippy passed
+(`target/129-storage-checkpoint-clippy.log`). Independent review found no further issue in these
+pressure transitions or nested legacy retirement receipts.
+
+The catalog now stores one immutable snapshot of effective legacy media and metadata paths.
+Registering changed defaults returns the original snapshot; loading disabled drafts does not
+register it. This remains a migration prerequisite, not completed file adoption.
+
+Persisted volume definitions now require deletion confirmation, including after editing their
+IDs. Cancel preserves the draft; new unsaved rows remove directly. Four Chromium tests, eight
+focused unit tests, clean Svelte checks, and the production UI build passed
+(`target/129-volume-ui-*.log`). Canonical Windows validation and the remaining acceptance work
+above are still required before activation or marking the PR ready.

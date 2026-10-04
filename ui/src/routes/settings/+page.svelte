@@ -26,6 +26,7 @@
 	import PeekDashboardSettings from '$lib/components/PeekDashboardSettings.svelte';
 	import StorageRetentionSection from '$lib/components/StorageRetentionSection.svelte';
 	import StorageSettingsEditor from '$lib/components/StorageSettingsEditor.svelte';
+	import NamedVolumesSection from '$lib/components/storage-volumes/NamedVolumesSection.svelte';
 	import SettingsApplyingState from '$lib/components/SettingsApplyingState.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -496,6 +497,17 @@
 							onsave={saveStorageSettings}
 						/>
 					</div>
+				{/if}
+				{#if administrator}
+					<NamedVolumesSection
+						{config}
+						controller={controlClient}
+						disabled={savingRuntimeSettings || runtimeEditor !== null}
+						onsaved={(result) => {
+							config = result.config;
+							pendingRestart ||= result.restart_required;
+						}}
+					/>
 				{/if}
 			</div>
 

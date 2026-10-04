@@ -20,6 +20,13 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     );",
         )
         .await?;
+    super::super::super::ensure_column(
+        connection,
+        "storage_image_retirements",
+        "actual_bytes",
+        "INTEGER CHECK(actual_bytes IS NULL OR actual_bytes >= 0)",
+    )
+    .await?;
     Ok(())
 }
 
@@ -30,6 +37,20 @@ pub(in crate::storage::catalog::locations) async fn begin(
     if let Some(job) = load(connection, id).await? {
         return Ok(Some(job));
     }
+    let mut pending = connection
+        .query(
+            "SELECT r.operation FROM storage_image_retirements r
+        JOIN storage_volume_allocations a ON a.operation=r.operation
+        WHERE a.kind='thumbnail' AND a.object_id=?1",
+            [id],
+        )
+        .await?;
+    if let Some(row) = pending.next().await? {
+        let operation: String = row.get(0)?;
+        drop(pending);
+        return load(connection, &operation).await;
+    }
+    drop(pending);
     let mut rows = connection.query("SELECT a.operation FROM storage_volume_allocations a
         JOIN storage_volume_bindings b ON b.id=a.volume_id
         WHERE a.kind='thumbnail' AND a.object_id=?1 AND a.state='published' AND b.writable=1
@@ -53,11 +74,11 @@ pub(in crate::storage::catalog::locations) async fn begin(
     load(connection, &operation).await
 }
 
-async fn load(
+pub(super) async fn load(
     connection: &turso::Connection,
     operation: &str,
 ) -> anyhow::Result<Option<Retirement>> {
-    let mut rows = connection.query("SELECT a.object_id,a.volume_id,a.generation,a.relative_key,a.location_revision,a.bytes,a.file_identity,a.digest,r.complete,r.acknowledged,b.writable
+    let mut rows = connection.query("SELECT a.object_id,a.volume_id,a.generation,a.relative_key,a.location_revision,COALESCE(r.actual_bytes,a.bytes),a.file_identity,a.digest,r.complete,r.acknowledged,b.writable
         FROM storage_image_retirements r JOIN storage_volume_allocations a ON a.operation=r.operation JOIN storage_volume_bindings b ON b.id=a.volume_id WHERE r.operation=?1", [operation]).await?;
     let Some(row) = rows.next().await? else {
         return Ok(None);
@@ -125,11 +146,14 @@ pub(in crate::storage::catalog::locations) async fn abandon(
         "abandoned image evidence changed"
     );
     drop(rows);
-    connection.execute("UPDATE storage_volume_allocations SET bytes=?2,file_identity=?3,digest=?4,location_revision=1 WHERE operation=?1", turso::params![evidence.operation.clone(),super::super::to_i64(evidence.bytes,"image bytes")?,evidence.file_identity.clone(),evidence.digest.to_vec()]).await?;
+    connection.execute("UPDATE storage_volume_allocations SET file_identity=?2,digest=?3,location_revision=1 WHERE operation=?1", turso::params![evidence.operation.clone(),evidence.file_identity.clone(),evidence.digest.to_vec()]).await?;
     connection
         .execute(
-            "INSERT INTO storage_image_retirements(operation) VALUES (?1)",
-            [evidence.operation.as_str()],
+            "INSERT INTO storage_image_retirements(operation,actual_bytes) VALUES (?1,?2)",
+            turso::params![
+                evidence.operation.clone(),
+                super::super::to_i64(evidence.bytes, "image bytes")?
+            ],
         )
         .await?;
     bump_revision(connection).await?;
@@ -184,7 +208,7 @@ pub(in crate::storage::catalog::locations) async fn acknowledge(
     Ok(Reply::Bound)
 }
 
-pub(in crate::storage::catalog::locations) async fn ensure_not_retiring(
+pub(in crate::storage::catalog) async fn ensure_not_retiring(
     connection: &turso::Connection,
     object: &Object,
 ) -> anyhow::Result<()> {

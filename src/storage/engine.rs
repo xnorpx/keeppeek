@@ -905,6 +905,24 @@ impl WriterWorker {
         }
     }
 
+    fn cleanup_capacity(
+        &self,
+        catalog: &RecordingCatalogHandle,
+        capacity: Option<FilesystemCapacity>,
+    ) -> anyhow::Result<FilesystemCapacity> {
+        let recording_bytes = catalog.legacy_recording_bytes()?;
+        match capacity {
+            Some(mut capacity) => {
+                capacity.keeppeek_bytes = recording_bytes;
+                Ok(capacity)
+            }
+            None => Ok(filesystem_capacity(
+                &self.config.long_term_path,
+                recording_bytes,
+            )?),
+        }
+    }
+
     fn try_enforce_storage_limit(
         &self,
         trigger: StorageCleanupTrigger,
@@ -915,14 +933,7 @@ impl WriterWorker {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("recording catalog is unavailable for safe cleanup"))?;
         let injected_capacity = capacity.is_some();
-        let stats = catalog.stats()?;
-        let mut capacity = match capacity {
-            Some(mut capacity) => {
-                capacity.keeppeek_bytes = stats.recording_bytes;
-                capacity
-            }
-            None => filesystem_capacity(&self.config.long_term_path, stats.recording_bytes)?,
-        };
+        let mut capacity = self.cleanup_capacity(&catalog, capacity)?;
         let policy = self.config.safety_policy();
         let mut evaluation = policy.evaluate(capacity);
 
@@ -975,10 +986,23 @@ impl WriterWorker {
         }
 
         if !injected_capacity {
-            let stats = catalog.stats()?;
-            capacity = filesystem_capacity(&self.config.long_term_path, stats.recording_bytes)?;
+            capacity = filesystem_capacity(
+                &self.config.long_term_path,
+                catalog.legacy_recording_bytes()?,
+            )?;
         }
-        let recovered = policy.evaluate(capacity);
+        self.finish_storage_cleanup(trigger, reason, capacity, files_removed, bytes_removed)
+    }
+
+    fn finish_storage_cleanup(
+        &self,
+        trigger: StorageCleanupTrigger,
+        reason: StorageCleanupReason,
+        capacity: FilesystemCapacity,
+        files_removed: u64,
+        bytes_removed: u64,
+    ) -> anyhow::Result<()> {
+        let recovered = self.config.safety_policy().evaluate(capacity);
         self.safety.observe(trigger, capacity, recovered);
         if recovered.cleanup_required {
             anyhow::bail!("cleanup completed without restoring the configured recovery target");
@@ -1021,7 +1045,15 @@ impl WriterWorker {
 
     fn ingest(&mut self, identity: RecordingStreamIdentity, frame: RecordingFrame) {
         if self.safety.recording_paused() {
-            return;
+            match self.uses_named_storage(&identity) {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(error) => {
+                    self.health
+                        .note_failure(&identity.storage_key, &error.to_string());
+                    return;
+                }
+            }
         }
         let storage_key = identity.storage_key.clone();
         self.pipeline_for(identity);
@@ -1069,6 +1101,33 @@ impl WriterWorker {
         self.write_frame_to_pipeline(camera_id, frame, false)
     }
 
+    fn uses_named_storage(&self, identity: &RecordingStreamIdentity) -> anyhow::Result<bool> {
+        if let Some(writer) = self
+            .pipelines
+            .get(&identity.storage_key)
+            .and_then(|pipeline| pipeline.medium_term.as_ref())
+        {
+            return Ok(writer.is_named());
+        }
+        let Some(manager) = &self.config.volume_runtime else {
+            return Ok(false);
+        };
+        let registry = self
+            .config
+            .volume_groups
+            .read()
+            .map_err(|_| anyhow::anyhow!("volume group registry unavailable"))?;
+        let groups = registry
+            .get(&identity.source_id)
+            .map_or(&[][..], Vec::as_slice);
+        let groups = groups.iter().map(String::as_str).collect::<Vec<_>>();
+        manager.uses_named_policy(
+            super::volumes::VolumeRole::Active,
+            &identity.source_id,
+            &groups,
+        )
+    }
+
     fn write_frame_to_pipeline(
         &mut self,
         camera_id: &str,
@@ -1099,6 +1158,7 @@ impl WriterWorker {
                 self.catalog.as_ref(),
                 &pipeline.identity,
                 started_at,
+                self.safety.recording_paused(),
             )?;
             tracing::info!(
                 camera = camera_id,
@@ -1197,6 +1257,7 @@ impl WriterWorker {
                     self.catalog.as_ref(),
                     &pipeline.identity,
                     started_at,
+                    self.safety.recording_paused(),
                 )?;
                 tracing::info!(
                     camera = camera_id,
@@ -1261,6 +1322,7 @@ impl WriterWorker {
                     self.catalog.as_ref(),
                     &pipeline.identity,
                     started_at,
+                    self.safety.recording_paused(),
                 ) {
                     Ok(writer) => pipeline.medium_term = Some(writer),
                     Err(e) => {
@@ -1386,6 +1448,7 @@ fn create_medium_term_writer(
     catalog: Option<&RecordingCatalogHandle>,
     identity: &RecordingStreamIdentity,
     started_at: Instant,
+    legacy_paused: bool,
 ) -> std::io::Result<MediumTermWriter> {
     if let Some(manager) = &config.volume_runtime {
         let catalog =
@@ -1426,6 +1489,18 @@ fn create_medium_term_writer(
             );
         }
     }
+    if legacy_paused {
+        return Err(std::io::Error::other("legacy recording storage is paused"));
+    }
+    create_legacy_medium_term_writer(config, catalog, identity, started_at)
+}
+
+fn create_legacy_medium_term_writer(
+    config: &StorageConfig,
+    catalog: Option<&RecordingCatalogHandle>,
+    identity: &RecordingStreamIdentity,
+    started_at: Instant,
+) -> std::io::Result<MediumTermWriter> {
     catalog.map_or_else(
         || {
             MediumTermWriter::create(

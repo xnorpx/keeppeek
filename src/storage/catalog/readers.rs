@@ -364,6 +364,7 @@ async fn image(
     else {
         return Ok(Reply::Image(None));
     };
+    super::locations::images::retirement::ensure_not_retiring(connection, &location.object).await?;
     let lease = volume_lease(connection, registry, &location).await?;
     Ok(Reply::Image(Some((location, lease))))
 }
@@ -408,6 +409,7 @@ async fn owned_locations(
         let mut rows = connection.query(
             "SELECT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind = 'recording' AND a.state != 'cancelled' AND (a.object_id = r.id OR a.destination_path = replace(r.path, char(92), '/') COLLATE NOCASE))
              FROM recording_files r WHERE r.id = ?1 AND r.path = ?2 AND r.cleanup_pending = 0
+             AND NOT EXISTS (SELECT 1 FROM storage_recording_retirements WHERE recording_id = r.id AND complete = 0)
              AND NOT EXISTS (SELECT 1 FROM storage_volume_moves m JOIN storage_volume_allocations source ON source.operation = m.source_operation
                  WHERE m.phase IN ('published','retiring','complete') AND source.destination_path = replace(r.path, char(92), '/') COLLATE NOCASE)
              AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE (recording_id = r.id OR replace(path, char(92), '/') = replace(r.path, char(92), '/') COLLATE NOCASE) AND active = 1)",
@@ -454,6 +456,8 @@ pub(super) async fn ensure_cleanup_idle(
 ) -> anyhow::Result<()> {
     let mut rows = connection.query(
         "SELECT id, path FROM recording_files WHERE finalized = 1 AND protected = 0
+         AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
+             AND (a.object_id=recording_files.id OR a.destination_path=replace(recording_files.path,char(92),'/') COLLATE NOCASE))
          AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = recording_files.id AND active = 1)
          ORDER BY cleanup_pending DESC, started_at_ms, id LIMIT 1", ()).await?;
     if let Some(row) = rows.next().await? {
@@ -690,7 +694,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(fragments.len(), 1);
-        assert!(handle.claim_cleanup_candidate().is_err());
+        assert!(handle.claim_cleanup_candidate().unwrap().is_none());
         assert!(handle.delete_recording("reader-recording").is_err());
         assert!(
             handle

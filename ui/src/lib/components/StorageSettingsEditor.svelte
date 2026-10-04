@@ -451,6 +451,7 @@
 			expected_configuration_revision: config.configuration_revision,
 			move_existing_recordings: locationsChanged && migrationChoice === 'move',
 			storage: {
+				named_volumes: config.storage.named_volumes,
 				medium_term_path: draft.mediumTermPath.trim(),
 				long_term_path: draft.longTermPath.trim(),
 				recording_catalog_path: draft.recordingCatalogPath.trim(),

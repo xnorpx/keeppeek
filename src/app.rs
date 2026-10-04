@@ -233,6 +233,7 @@ pub fn run(
     let notification_runtime = NotificationRuntime::open_with_config_update(
         config_path,
         server_state.configuration_update_lock(),
+        Some(event_store.clone()),
     )?;
     let notification_handle = notification_runtime.handle();
     let notification_health = NotificationHealthMonitor::start(

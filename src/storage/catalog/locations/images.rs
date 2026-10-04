@@ -3,6 +3,8 @@
 use super::{Kind, Location, Object, Publication, Reply, ownership};
 use crate::storage::{catalog::EventPublicationIdentity, metadata::TimelineEvent};
 use sha2::{Digest, Sha256};
+pub(super) mod pressure;
+pub(super) mod recovery;
 pub mod retirement;
 
 #[derive(Debug, Clone)]
@@ -73,6 +75,7 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     );
     CREATE UNIQUE INDEX IF NOT EXISTS storage_event_image_current ON storage_event_images(event_id, attachment_id) WHERE active = 1;").await?;
     retirement::initialize(connection).await?;
+    pressure::initialize(connection).await?;
     Ok(())
 }
 
@@ -173,7 +176,10 @@ pub(in crate::storage::catalog) async fn lookup(
     let Reply::Location(location) = ownership::lookup(connection, &object).await? else {
         anyhow::bail!("invalid image location reply");
     };
-    Ok(location)
+    if location.is_some() {
+        return Ok(location);
+    }
+    pressure::retired_location(connection, &object.id).await
 }
 
 pub(in crate::storage::catalog) async fn reconcile(

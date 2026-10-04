@@ -28,11 +28,17 @@ mod export_move_tests;
 #[cfg(test)]
 mod export_tests;
 mod exports;
+mod image_recovery;
+#[cfg(test)]
+mod image_recovery_tests;
 mod images;
 pub mod management;
 mod movement;
 #[cfg(test)]
 mod movement_tests;
+mod recording_retention;
+#[cfg(test)]
+mod recording_retention_tests;
 mod retirement;
 pub mod worker;
 
@@ -47,6 +53,7 @@ struct Inner {
     catalog: RecordingCatalogHandle,
     roots: Vec<OnceLock<Root>>,
     admission: Mutex<()>,
+    rescan_requested: std::sync::atomic::AtomicBool,
 }
 
 /// Durable capacity ownership that has not yet created its file.
@@ -57,12 +64,14 @@ pub struct Reservation {
     key: String,
     path: PathBuf,
     bytes: u64,
+    _writer_lease: Option<crate::storage::catalog::readers::MoveLease>,
 }
 
 /// A fixed-volume writer that reserves capacity before extending its file.
 pub struct ReservedFile {
-    reservation: Reservation,
+    // Close the file before releasing the reservation's recovery fence.
     file: OwnedFile,
+    reservation: Reservation,
     evidence: RefCell<Option<Publication>>,
     published: Cell<bool>,
     failed: bool,
@@ -271,6 +280,7 @@ impl Manager {
                 path: volume.root.join(&key),
                 key,
                 bytes: source.bytes,
+                _writer_lease: None,
             },
         ))
     }
@@ -347,6 +357,7 @@ impl Manager {
                 catalog,
                 roots,
                 admission: Mutex::new(()),
+                rescan_requested: std::sync::atomic::AtomicBool::new(false),
             }),
         })
     }
@@ -415,9 +426,10 @@ impl Manager {
             self.inner
                 .configuration
                 .place_with_groups(&request, groups, &observations)?;
-        let selected = decision.selected.ok_or_else(|| {
-            anyhow::anyhow!("configured volume policy has no writable destination")
-        })?;
+        let Some(selected) = decision.selected else {
+            self.request_pressure_retention(&decision.rejected, required_bytes);
+            anyhow::bail!("configured volume policy has no writable destination");
+        };
         let index = self
             .inner
             .configuration
@@ -441,6 +453,9 @@ impl Manager {
         let root = self.inner.root(index)?;
         let capacity = root.capacity(self.inner.catalog.volume_ledger_revision()?)?;
         let operation = uuid::Uuid::new_v4().to_string();
+        let writer_lease = (object.kind == Kind::Thumbnail)
+            .then(|| self.inner.catalog.claim_volume_move(&operation))
+            .transpose()?;
         let allocation = Allocation {
             operation: operation.clone(),
             object,
@@ -478,6 +493,7 @@ impl Manager {
             path: volume.root.join(&key),
             key,
             bytes,
+            _writer_lease: writer_lease,
         })
     }
 }
@@ -733,7 +749,21 @@ impl ReservedFile {
         let first = self.request_growth(rounded);
         let bytes = match first {
             Ok(bytes) => bytes,
-            Err(_) => self.request_growth(needed)?,
+            Err(_) => match self.request_growth(needed) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    let manager = Manager {
+                        inner: Arc::clone(inner),
+                    };
+                    if let Err(cause) = manager.queue_recording_retention(
+                        &volume.id,
+                        needed.saturating_sub(self.reservation.bytes),
+                    ) {
+                        tracing::warn!(volume = %volume.id, %cause, "volume growth retention deferred");
+                    }
+                    return Err(error);
+                }
+            },
         };
         self.reservation.bytes = bytes;
         Ok(())

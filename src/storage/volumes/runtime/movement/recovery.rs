@@ -71,6 +71,7 @@ impl Manager {
                 .root
                 .join(&job.destination.relative_key),
             bytes: job.destination.bytes,
+            _writer_lease: None,
         };
         let mut output = ReservedFile {
             reservation,

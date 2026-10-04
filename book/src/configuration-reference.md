@@ -434,6 +434,14 @@ field. Updates that include it require the current configuration revision. Strin
 including IDs, roots, selectors, and candidate IDs, support existing secret references.
 Validation uses resolved values; saved settings and responses retain the references.
 
+Administrators can edit these drafts under **Settings → Storage → Named storage volumes**.
+Byte limits use exact whole-byte values. Refreshing status or a failed save preserves unsaved
+inputs. Removing a saved volume definition requires confirmation. Root probes inspect existing
+configured roots without creating directories; a successful probe does not establish write
+permission. Activation, bulk drain, legacy adoption, and metadata relocation remain unavailable
+in this draft build. Individual move preview, confirmation, status, and cancellation appear only
+when a volume runtime is available.
+
 Each `[[storage.named_volumes.volumes]]` entry has these fields:
 
 | Field                 | Type           | Default   | Meaning                                                                                                                                                                                                                                                                  |
