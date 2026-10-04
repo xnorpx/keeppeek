@@ -6,6 +6,20 @@ use crate::storage::catalog::{
 
 const COPY_BYTES: usize = 131_072;
 
+#[test]
+fn read_only_destination_cannot_resume_a_reserved_copy() -> anyhow::Result<()> {
+    let fixture = fixture()?;
+    let mut configuration = fixture.manager.inner.configuration.clone();
+    configuration.volumes[1].state = VolumeState::ReadOnly;
+    let manager = Manager::new(configuration, fixture.catalog.handle())?;
+    assert!(manager.resume_move(&fixture.job_id, || false).is_err());
+    assert!(!fixture.destination.path.exists());
+    assert!(!fixture.destination.path.with_extension("tmp").exists());
+    assert_source_authoritative(&fixture.catalog, &fixture.source)?;
+    fixture.catalog.shutdown();
+    Ok(())
+}
+
 pub(super) struct Fixture {
     pub(super) catalog: RecordingCatalog,
     pub(super) manager: Manager,

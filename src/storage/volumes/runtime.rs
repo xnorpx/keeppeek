@@ -476,6 +476,17 @@ fn object_key(role: VolumeRole, object: &Object) -> anyhow::Result<String> {
 }
 
 impl Inner {
+    fn writable_root(&self, index: usize) -> anyhow::Result<&Root> {
+        anyhow::ensure!(
+            matches!(
+                self.configuration.volumes[index].state,
+                VolumeState::Enabled | VolumeState::Draining
+            ),
+            "volume does not permit changes to existing objects"
+        );
+        self.root(index)
+    }
+
     fn root(&self, index: usize) -> anyhow::Result<&Root> {
         self.roots[index]
             .get()
@@ -544,7 +555,10 @@ impl Reservation {
     /// # Errors
     /// Rejects changed roots or conflicting leaves; ownership remains reserved on failure.
     pub fn open(self) -> anyhow::Result<ReservedFile> {
-        let file = self.inner.root(self.index)?.create_file(&self.key)?;
+        let file = self
+            .inner
+            .writable_root(self.index)?
+            .create_file(&self.key)?;
         let mut writer = ReservedFile {
             reservation: self,
             file,
@@ -694,6 +708,10 @@ impl Write for ReservedFile {
             return Err(io::Error::other("sealed or failed files cannot be changed"));
         }
         let result = (|| {
+            self.reservation
+                .inner
+                .writable_root(self.reservation.index)
+                .map_err(io::Error::other)?;
             self.file.revalidate().map_err(io::Error::other)?;
             if buffer.is_empty() {
                 return Ok(0);

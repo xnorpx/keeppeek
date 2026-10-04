@@ -28,9 +28,6 @@ impl Manager {
             return Ok(false);
         }
         let _destination = self.pin_retirement_destination(&job)?;
-        self.inner
-            .catalog
-            .volume_location(Request::AdvanceMove(Step::Retiring(job_id.into())))?;
         let index = self
             .inner
             .configuration
@@ -42,7 +39,11 @@ impl Manager {
             job.source.generation == 1,
             "source volume generation changed"
         );
-        self.inner.root(index)?.retire_owned(
+        let root = self.inner.writable_root(index)?;
+        self.inner
+            .catalog
+            .volume_location(Request::AdvanceMove(Step::Retiring(job_id.into())))?;
+        root.retire_owned(
             &job.source.relative_key,
             &job.source.file_identity,
             job.source.bytes,
@@ -76,7 +77,7 @@ impl Manager {
             job.source.generation == 1,
             "source volume generation changed"
         );
-        self.inner.root(index)?.acknowledge_retirement(
+        self.inner.writable_root(index)?.acknowledge_retirement(
             &job.source.relative_key,
             &job.source.file_identity,
             job.source.bytes,

@@ -42,7 +42,7 @@ impl Manager {
             &source.file_identity,
             source.bytes,
         )?;
-        let root = self.inner.root(destination.index)?;
+        let root = self.inner.writable_root(destination.index)?;
         let temporary = format!("{job_id}.tmp");
         let mut output = ReservedFile {
             file: root.create_file(&temporary)?,
@@ -65,7 +65,7 @@ impl Manager {
     ) -> anyhow::Result<()> {
         use std::io::{Seek, SeekFrom};
         let job_id = output.reservation.operation.clone();
-        let root = self.inner.root(output.reservation.index)?;
+        let root = self.inner.writable_root(output.reservation.index)?;
         let final_key = output.reservation.key.clone();
         let offset = output.file.file_mut().metadata()?.len();
         anyhow::ensure!(offset <= source.bytes, "move copy exceeds source length");
