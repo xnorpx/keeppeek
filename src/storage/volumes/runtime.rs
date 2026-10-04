@@ -36,6 +36,9 @@ pub mod management;
 mod movement;
 #[cfg(test)]
 mod movement_tests;
+mod recording_recovery;
+#[cfg(test)]
+mod recording_recovery_tests;
 mod recording_retention;
 #[cfg(test)]
 mod recording_retention_tests;
@@ -453,7 +456,7 @@ impl Manager {
         let root = self.inner.root(index)?;
         let capacity = root.capacity(self.inner.catalog.volume_ledger_revision()?)?;
         let operation = uuid::Uuid::new_v4().to_string();
-        let writer_lease = (object.kind == Kind::Thumbnail)
+        let writer_lease = matches!(object.kind, Kind::Thumbnail | Kind::Recording)
             .then(|| self.inner.catalog.claim_volume_move(&operation))
             .transpose()?;
         let allocation = Allocation {

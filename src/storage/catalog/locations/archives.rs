@@ -124,6 +124,11 @@ pub(super) async fn pending(
         UNION ALL
         SELECT operation FROM storage_recording_retirements WHERE acknowledged=0
         UNION ALL
+        SELECT operation FROM storage_recording_recovery WHERE mode='abandon' AND acknowledged=0
+        UNION ALL
+        SELECT a.operation FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state='reserved'
+            AND NOT EXISTS(SELECT 1 FROM storage_volume_moves m WHERE m.destination_operation=a.operation)
+        UNION ALL
         SELECT a.operation FROM storage_volume_allocations a WHERE a.kind='thumbnail' AND a.state='reserved'
             AND NOT EXISTS(SELECT 1 FROM storage_volume_moves m WHERE m.destination_operation=a.operation)
             AND NOT EXISTS(SELECT 1 FROM storage_image_retirements r WHERE r.operation=a.operation)

@@ -409,3 +409,21 @@ tests (`target/129-ui-quality.log`). CI exposed missing volume-status support in
 Settings E2E control-peer fixture; its list response now represents an empty disabled runtime.
 All 14 affected logging/dashboard E2E tests then passed with browser-error assertions intact
 (`target/129-settings-e2e-green.log`). Independent review found no startup-mode regression.
+
+The checkpoint at `6729cc7` passed the canonical Windows script with Rust 1.99.0,
+incremental compilation disabled, and slow tests enabled: 3,089 Rust tests, strict Clippy,
+formatting/dependency checks, the full UI quality suite, and 280 E2E tests passed (two E2E
+tests were skipped by their existing conditions). Evidence: `target/129-6729cc7-check.log`.
+This qualifies that checkpoint, not the later recording-recovery changes or the remaining
+migration, drain, metadata relocation, and activation acceptance work.
+
+Interrupted named recordings now recover through the existing catalog actor and worker.
+Recovery verifies a complete indexed fragment prefix, records its identity and digest before
+truncation, and publishes the surviving coverage and byte ownership together. Empty or
+initialization-only recordings use the existing retirement receipts. Unopened reservations
+release capacity only after confirming that no file exists. Live writers, readers, conflicting
+catalog paths, replaced files, and corrupt index evidence defer recovery without deleting data.
+Durable plans resume after truncation or retirement and before catalog acknowledgement.
+All 191 selected storage, catalog, reader, and container tests passed in 26.120 seconds
+(`target/129-recording-recovery-regressions-green.log`). This is focused evidence; full acceptance
+still requires the migration, management, metadata, activation, and final qualification work above.

@@ -187,6 +187,68 @@ impl Root {
 }
 
 impl OwnedFile {
+    /// Hashes a synchronized prefix without changing the owned file.
+    pub(crate) fn prefix_digest(&mut self, bytes: u64) -> anyhow::Result<[u8; 32]> {
+        self.revalidate()?;
+        anyhow::ensure!(
+            self.expected_bytes.is_none(),
+            "prefix recovery requires a writable file"
+        );
+        self.file.sync_all()?;
+        self.root.sync()?;
+        let before = self.file.metadata()?;
+        anyhow::ensure!(
+            bytes > 0 && bytes <= before.len(),
+            "invalid recovery prefix"
+        );
+        let position = self.file.stream_position()?;
+        self.file.rewind()?;
+        let digest = hash(
+            &mut self.file,
+            bytes,
+            Instant::now() + Duration::from_secs(60),
+        );
+        self.file.seek(SeekFrom::Start(position))?;
+        let digest = digest?;
+        self.revalidate()?;
+        let after = self.file.metadata()?;
+        anyhow::ensure!(
+            before.len() == after.len() && before.modified()? == after.modified()?,
+            "recording changed during prefix verification"
+        );
+        Ok(digest)
+    }
+
+    /// Applies a committed recovery plan, including a retry after the tail was removed.
+    pub(crate) fn retain_verified_prefix(
+        &mut self,
+        bytes: u64,
+        original: u64,
+        digest: [u8; 32],
+    ) -> anyhow::Result<()> {
+        self.revalidate()?;
+        let actual = self.file.metadata()?.len();
+        anyhow::ensure!(
+            bytes <= original && (actual == original || actual == bytes),
+            "recording recovery length changed"
+        );
+        anyhow::ensure!(
+            self.prefix_digest(bytes)? == digest,
+            "recording recovery prefix changed"
+        );
+        self.revalidate()?;
+        anyhow::ensure!(
+            self.file.metadata()?.len() == actual,
+            "recording recovery length changed during verification"
+        );
+        if actual != bytes {
+            self.file.set_len(bytes)?;
+        }
+        self.file.sync_all()?;
+        self.root.sync()?;
+        self.revalidate()
+    }
+
     pub(super) fn inspected_legacy(
         root: Root,
         binding: Root,

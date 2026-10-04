@@ -160,6 +160,9 @@ fn process(manager: &Manager, id: &str, cancelled: &AtomicBool) {
 }
 
 fn execute(manager: &Manager, id: &str, cancelled: &AtomicBool) -> anyhow::Result<()> {
+    if manager.recover_pending_recording(id)? {
+        return Ok(());
+    }
     if manager.recover_pending_image(id)? {
         return Ok(());
     }

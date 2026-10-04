@@ -16,6 +16,7 @@ pub mod legacy;
 mod materialization;
 pub mod moves;
 pub mod objects;
+pub mod recording_recovery;
 pub mod recordings;
 pub use materialization::Materialization;
 mod ownership;
@@ -156,6 +157,7 @@ pub enum Request {
     Objects(objects::Page),
     ObjectSource(Object),
     RecordingRetention(recordings::Action),
+    RecordingRecovery(recording_recovery::Action),
     CommitImages(Box<images::Commit>),
     Image { event: String, attachment: String },
     ImageRetirement(String),
@@ -183,6 +185,7 @@ pub enum Reply {
     Objects(Vec<Location>),
     ObjectSource(Option<String>),
     RecordingRetirement(Option<Box<recordings::Job>>),
+    PendingRecording(Option<Box<recording_recovery::Pending>>),
     Moves(Vec<moves::Job>),
     PendingMoves(Vec<String>),
     Archive(Option<Box<archives::Job>>),
@@ -243,6 +246,7 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     export_cleanup::initialize(connection).await?;
     images::initialize(connection).await?;
     recordings::initialize(connection).await?;
+    recording_recovery::initialize(connection).await?;
     legacy::initialize(connection).await?;
     // A sample from a previous actor lifetime must never authorize another allocation.
     bump_revision(connection).await?;
@@ -278,6 +282,7 @@ fn validate(request: &Request) -> anyhow::Result<()> {
         }
         Request::ExportCleanup(action) => action.validate()?,
         Request::RecordingRetention(action) => action.validate()?,
+        Request::RecordingRecovery(action) => action.validate()?,
         Request::CompleteArchive { id, source } => {
             identifier(id)?;
             identifier(&source.object.id)?;
@@ -526,6 +531,9 @@ async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::R
         Request::RetireExport(id) => export_cleanup::retire(connection, &id).await?,
         Request::ExportCleanup(action) => export_cleanup::dispatch(connection, action).await?,
         Request::RecordingRetention(action) => recordings::dispatch(connection, action).await?,
+        Request::RecordingRecovery(action) => {
+            recording_recovery::dispatch(connection, action).await?
+        }
         Request::LegacyRecordingBytes => Reply::Bytes(recordings::legacy_bytes(connection).await?),
         Request::ImageRetirementAcknowledged(id) => {
             images::retirement::acknowledge(connection, &id).await?
