@@ -146,3 +146,59 @@ fn uncaptured_thumbnail_root_is_created_and_accepts_images() -> anyhow::Result<(
     fs::remove_dir_all(root)?;
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn offline_alias_root_restores_reads_without_following_later_replacement() -> anyhow::Result<()> {
+    use std::os::unix::fs::symlink;
+    let temporary =
+        std::env::temp_dir().join(format!("keeppeek-image-alias-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(temporary.join("real"))?;
+    let root = temporary.canonicalize()?;
+    let real = root.join("real");
+    let alias = root.join("alias");
+    symlink(&real, &alias)?;
+    let images = real.join("thumbnails");
+    let offline = real.join("offline");
+    let catalog = RecordingCatalog::open(&root.join("catalog.db"))?;
+    let store = EventStore::new(catalog.handle(), &alias.join("thumbnails"), 0)?;
+    let jpeg = encode_jpeg(&DynamicImage::new_rgb8(16, 16))?;
+    store.commit_published_image("alias-image", image_event("retained", &jpeg), &jpeg)?;
+    native_attachment(&store, &images, &jpeg)?;
+    let event = store.event_by_id("retained")?.unwrap();
+    let filename = event.thumbnail_filename.as_ref().unwrap();
+    capture_thumbnail_root(&catalog, &alias)?;
+    drop(store);
+    fs::rename(&images, &offline)?;
+    let reopened = EventStore::new(catalog.handle(), &alias.join("thumbnails"), 1)?;
+    assert!(!images.exists());
+    assert_eq!(reopened.thumbnail_path("front-door", "retained")?, None);
+    fs::rename(&offline, &images)?;
+    let restored = reopened
+        .thumbnail_path("front-door", "retained")?
+        .expect("restored alias-root image must resolve");
+    assert_eq!(restored, images.join(filename).canonicalize()?);
+    assert_eq!(fs::read(&restored)?, jpeg);
+    let context = reopened
+        .attachment_path("front-door", "native", "isapi-context")?
+        .expect("restored noncanonical native image must resolve");
+    assert_eq!(fs::read(context)?, jpeg);
+    assert_eq!(reopened.event_by_id("retained")?, Some(event.clone()));
+    let outside = root.join("outside");
+    fs::create_dir(&outside)?;
+    fs::write(outside.join(filename), &jpeg)?;
+    fs::write(outside.join("native--isapi-context.jpg"), &jpeg)?;
+    fs::rename(&images, &offline)?;
+    symlink(&outside, &images)?;
+    assert_eq!(reopened.thumbnail_path("front-door", "retained")?, None);
+    assert_eq!(
+        reopened.attachment_path("front-door", "native", "isapi-context")?,
+        None
+    );
+    fs::remove_file(&images)?;
+    fs::remove_file(&alias)?;
+    drop(reopened);
+    catalog.shutdown();
+    fs::remove_dir_all(root)?;
+    Ok(())
+}

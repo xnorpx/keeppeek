@@ -573,3 +573,14 @@ bulk evacuation, general activation, and final platform/performance qualificatio
 
 Strict workspace/all-target Clippy passed after this backend checkpoint
 (`target/129-metadata-clippy-final.log`).
+
+CI at `ee0b7c8` exposed two macOS regressions. Offline thumbnail construction now resolves the
+nearest existing ancestor once, then retains the missing suffix; restored canonical paths match
+aliases such as `/var` without following later root replacements. A Unix symlink-alias regression
+covers both thumbnail readers and an outside-root replacement, but still requires Unix CI execution.
+The move worker coalesces wakeups received during a pass into an immediate next pass after cursor
+exhaustion, preserving progress through the current page and the scan budget. Its new deterministic
+regression first reproduced the lost wake. All 12 worker tests and 30 event-storage tests passed
+on Windows (`target/129-ci-worker-green.log`, `target/129-ci-events-green.log`), as did strict
+workspace/all-target Clippy (`target/129-ci-repairs-clippy.log`). Current-head platform CI remains
+required; these focused checks are not final acceptance evidence.

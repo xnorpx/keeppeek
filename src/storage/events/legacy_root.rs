@@ -37,13 +37,19 @@ pub(super) fn prepare(
     );
     match root.canonicalize() {
         Ok(root) => Ok((root, true)),
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            // ponytail: retain the missing root without creating directories or detaching references.
-            // Windows readers compare canonical child paths, which use the verbatim prefix.
-            #[cfg(windows)]
-            let root = PathBuf::from(format!("\\\\?\\{}", root.display()));
-            Ok((root, false))
-        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok((normalize_missing(&root)?, false)),
         Err(error) => Err(error.into()),
     }
+}
+
+fn normalize_missing(root: &Path) -> anyhow::Result<PathBuf> {
+    // ponytail: Resolve existing aliases once; keep the missing suffix without creating it.
+    for ancestor in root.ancestors().skip(1).take(256) {
+        match ancestor.canonicalize() {
+            Ok(canonical) => return Ok(canonical.join(root.strip_prefix(ancestor)?)),
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("thumbnail root has no available ancestor")
 }
