@@ -187,7 +187,7 @@ subtle = "2"
 zip = { version = "7.2.0", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "=1.1.4", features = ["process", "fs"] }
+rustix = { version = "=1.1.5", features = ["process", "fs"] }
 
 [target.'cfg(windows)'.dependencies]
 str0m = { version = "0.23.0", default-features = false, features = [
