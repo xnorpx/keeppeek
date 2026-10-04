@@ -64,10 +64,6 @@ export default defineConfig({
 		]
 	},
 	server: {
-		watch: {
-			// Cargo's embedded UI output is not an input to the running dev server.
-			ignored: ['**/.cargo-ui/**']
-		},
 		fs: {
 			allow: [uiRoot, ...fontSourceRoots]
 		},
