@@ -78,7 +78,6 @@ impl EventStore {
             thumbnail_root: thumbnail_root.canonicalize()?,
             max_thumbnail_bytes,
         };
-        store.reconcile_image_files()?;
         store.enforce_thumbnail_limit()?;
         Ok(store)
     }
@@ -330,45 +329,22 @@ impl EventStore {
         Ok(Some(candidate))
     }
 
-    fn reconcile_image_files(&self) -> anyhow::Result<()> {
-        let mut referenced = self
-            .catalog
-            .event_thumbnail_filenames()?
-            .into_iter()
-            .collect::<HashSet<_>>();
-        for entry in fs::read_dir(&self.thumbnail_root)? {
-            let entry = entry?;
-            let filename = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| anyhow::anyhow!("event image filename is not valid UTF-8"))?;
-            let metadata = entry.metadata()?;
-            if !metadata.is_file() {
-                continue;
-            }
-            let interrupted = filename.starts_with('.') && filename.ends_with(".tmp");
-            let orphaned = safe_image_filename(&filename) && !referenced.remove(&filename);
-            if interrupted || orphaned {
-                fs::remove_file(entry.path())?;
-            }
-        }
-        for filename in referenced {
-            self.catalog.detach_event_thumbnail_file(&filename)?;
-        }
-        Ok(())
-    }
-
     fn enforce_thumbnail_limit(&self) -> anyhow::Result<()> {
         if self.max_thumbnail_bytes == 0 {
             return Ok(());
         }
+        let referenced = self
+            .catalog
+            .event_thumbnail_filenames()?
+            .into_iter()
+            .collect::<HashSet<_>>();
         let mut thumbnails = fs::read_dir(&self.thumbnail_root)?
             .filter_map(Result::ok)
             .filter_map(|entry| {
                 let path = entry.path();
                 let filename = path.file_name()?.to_str()?.to_owned();
                 let metadata = entry.metadata().ok()?;
-                safe_image_filename(&filename).then_some((
+                (safe_image_filename(&filename) && referenced.contains(&filename)).then_some((
                     metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
                     filename,
                     path,
@@ -787,95 +763,120 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    fn image_event(id: &str, jpeg: &[u8]) -> TimelineEvent {
+        TimelineEvent {
+            id: id.to_owned(),
+            revision: 1,
+            camera_id: "front-door".to_owned(),
+            stream: Some("sub".to_owned()),
+            source: EventSource::KeepPeek,
+            kind: "person".to_owned(),
+            start_time_ms: 1_000,
+            end_time_ms: None,
+            confidence: None,
+            bbox: None,
+            bbox_attachment_id: Some("snapshot".to_owned()),
+            zone: None,
+            text: None,
+            payload: None,
+            attachments: vec![crate::storage::metadata::EventAttachment {
+                id: "snapshot".to_owned(),
+                attachment_type: "snapshot".to_owned(),
+                content_type: "image/jpeg".to_owned(),
+                byte_len: Some(jpeg.len() as u64),
+                ordinal: 0,
+                timestamp_ms: Some(1_000),
+                text: None,
+            }],
+            canonical_attachment_id: Some("snapshot".to_owned()),
+            icon_key: "person".to_owned(),
+            rejected_icon_key: None,
+            thumbnail_filename: None,
+        }
+    }
+
     #[test]
-    fn startup_reconciles_orphaned_and_missing_event_images() {
+    fn startup_preserves_unindexed_images_and_missing_references() {
         let root = std::env::temp_dir().join(format!(
-            "keeppeek-event-image-reconcile-{}",
-            rand::random::<u64>()
+            "keeppeek-image-preservation-{}",
+            uuid::Uuid::new_v4()
         ));
         let thumbnail_root = root.join("thumbnails");
         let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
         let events = catalog.handle();
         let store = EventStore::new(events.clone(), &thumbnail_root, 0).unwrap();
         let jpeg = encode_jpeg(&DynamicImage::new_rgb8(16, 16)).unwrap();
-        let attachment = crate::storage::metadata::EventAttachment {
-            id: "snapshot".to_owned(),
-            attachment_type: "snapshot".to_owned(),
-            content_type: "image/jpeg".to_owned(),
-            byte_len: Some(jpeg.len() as u64),
-            ordinal: 0,
-            timestamp_ms: Some(1_000),
-            text: None,
-        };
         store
             .commit_published_image(
                 "publication-retained",
-                TimelineEvent {
-                    id: "retained".to_owned(),
-                    revision: 1,
-                    camera_id: "front-door".to_owned(),
-                    stream: Some("sub".to_owned()),
-                    source: EventSource::KeepPeek,
-                    kind: "person".to_owned(),
-                    start_time_ms: 1_000,
-                    end_time_ms: None,
-                    confidence: None,
-                    bbox: None,
-                    bbox_attachment_id: Some("snapshot".to_owned()),
-                    zone: None,
-                    text: None,
-                    payload: None,
-                    attachments: vec![attachment.clone()],
-                    canonical_attachment_id: Some("snapshot".to_owned()),
-                    icon_key: "person".to_owned(),
-                    rejected_icon_key: None,
-                    thumbnail_filename: None,
-                },
+                image_event("retained", &jpeg),
                 &jpeg,
             )
             .unwrap();
-        events
-            .insert_event(TimelineEvent {
-                id: "missing".to_owned(),
-                revision: 1,
-                camera_id: "front-door".to_owned(),
-                stream: Some("sub".to_owned()),
-                source: EventSource::KeepPeek,
-                kind: "person".to_owned(),
-                start_time_ms: 2_000,
-                end_time_ms: None,
-                confidence: None,
-                bbox: None,
-                bbox_attachment_id: Some("snapshot".to_owned()),
-                zone: None,
-                text: None,
-                payload: None,
-                attachments: vec![attachment],
-                canonical_attachment_id: Some("snapshot".to_owned()),
-                icon_key: "person".to_owned(),
-                rejected_icon_key: None,
-                thumbnail_filename: Some("missing--r1.jpg".to_owned()),
-            })
-            .unwrap();
+        let mut missing = image_event("missing", &jpeg);
+        missing.thumbnail_filename = Some("missing--r1.jpg".to_owned());
+        events.insert_event(missing).unwrap();
         fs::write(thumbnail_root.join("orphan--r1.jpg"), &jpeg).unwrap();
         fs::write(thumbnail_root.join(".publication-interrupted.tmp"), &jpeg).unwrap();
         drop(store);
 
-        let reconciled = EventStore::new(events, &thumbnail_root, 0).unwrap();
+        let reopened = EventStore::new(events, &thumbnail_root, 0).unwrap();
+        for name in [
+            "retained--r1.jpg",
+            "orphan--r1.jpg",
+            ".publication-interrupted.tmp",
+        ] {
+            assert_eq!(fs::read(thumbnail_root.join(name)).unwrap(), jpeg);
+        }
+        let missing = reopened.event_by_id("missing").unwrap().unwrap();
+        assert_eq!(
+            missing.thumbnail_filename.as_deref(),
+            Some("missing--r1.jpg")
+        );
+        assert_eq!(missing.attachments.len(), 1);
+        assert_eq!(missing.canonical_attachment_id.as_deref(), Some("snapshot"));
+        drop(reopened);
+        catalog.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
 
-        assert!(thumbnail_root.join("retained--r1.jpg").exists());
-        assert!(!thumbnail_root.join("orphan--r1.jpg").exists());
-        assert!(!thumbnail_root.join(".publication-interrupted.tmp").exists());
+    #[test]
+    fn thumbnail_quota_preserves_unindexed_files() {
+        let root =
+            std::env::temp_dir().join(format!("keeppeek-image-quota-{}", uuid::Uuid::new_v4()));
+        let thumbnail_root = root.join("thumbnails");
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let store = EventStore::new(catalog.handle(), &thumbnail_root, 0).unwrap();
+        let jpeg = encode_jpeg(&DynamicImage::new_rgb8(16, 16)).unwrap();
+        store
+            .commit_published_image("publication-owned", image_event("owned", &jpeg), &jpeg)
+            .unwrap();
+        for name in [
+            "unindexed.jpg",
+            "unindexed--r1.jpg",
+            ".publication-active.tmp",
+        ] {
+            fs::write(thumbnail_root.join(name), &jpeg).unwrap();
+        }
+        drop(store);
+        let limited = EventStore::new(catalog.handle(), &thumbnail_root, 1).unwrap();
+        assert!(!thumbnail_root.join("owned--r1.jpg").exists());
         assert!(
-            reconciled
-                .event_by_id("missing")
+            limited
+                .event_by_id("owned")
                 .unwrap()
                 .unwrap()
                 .thumbnail_filename
                 .is_none()
         );
-
-        drop(reconciled);
+        for name in [
+            "unindexed.jpg",
+            "unindexed--r1.jpg",
+            ".publication-active.tmp",
+        ] {
+            assert_eq!(fs::read(thumbnail_root.join(name)).unwrap(), jpeg);
+        }
+        drop(limited);
         catalog.shutdown();
         fs::remove_dir_all(root).unwrap();
     }
