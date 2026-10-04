@@ -760,7 +760,7 @@ mod tests {
         let original = handle
             .media_fragments_in_range("camera/main", 1000, 3000)
             .unwrap();
-        let alias_path = original[0].path.replace('\\', "/");
+        let alias_path = alternate_separators(&original[0].path);
         insert_alias(&handle, &alias_path);
         let (_, lease) = handle
             .leased_media_fragments_in_range("alias/main", 1000, 3000)
@@ -787,6 +787,16 @@ mod tests {
         drop(handle);
         drop(catalog);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn alternate_separators(path: &str) -> String {
+        let alias = if path.contains('\\') {
+            path.replace('\\', "/")
+        } else {
+            path.replace('/', "\\")
+        };
+        assert_ne!(alias, path, "alias must remain a distinct catalog spelling");
+        alias
     }
 
     fn insert_alias(handle: &RecordingCatalogHandle, alias_path: &str) {
@@ -889,11 +899,7 @@ mod tests {
         let original = handle
             .media_fragments_in_range("camera/main", 1000, 3000)
             .unwrap();
-        let alias = if original[0].path.contains('\\') {
-            original[0].path.replace('\\', "/")
-        } else {
-            original[0].path.replace('/', "\\")
-        };
+        let alias = alternate_separators(&original[0].path);
         insert_alias(&handle, &alias);
         let (old_snapshots, old_lease) = handle
             .leased_media_fragments_in_range("alias/main", 1000, 3000)
