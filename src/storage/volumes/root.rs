@@ -11,6 +11,8 @@ mod file;
 mod legacy;
 mod retirement;
 pub use file::OwnedFile;
+#[cfg(test)]
+pub(in crate::storage::volumes) use file::tests::fixture as test_root;
 
 /// An opened directory and the identity that a binding must retain.
 pub struct Root {

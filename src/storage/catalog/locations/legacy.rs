@@ -7,6 +7,8 @@ use std::path::PathBuf;
 
 const SNAPSHOT_BYTES_MAX: usize = 32_768;
 
+pub mod inventory;
+
 /// Original effective paths, independent of later changes to placement defaults.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -113,3 +115,9 @@ pub(super) async fn load(connection: &turso::Connection) -> anyhow::Result<Optio
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod inventory_tests;
+
+#[cfg(test)]
+mod inventory_boundary_tests;

@@ -187,6 +187,19 @@ impl Root {
 }
 
 impl OwnedFile {
+    /// Reads the historical catalog identity from the same pinned handle.
+    pub(crate) fn catalog_identity(&self) -> anyhow::Result<String> {
+        self.revalidate()?;
+        #[cfg(windows)]
+        {
+            crate::storage::catalog::recording_handle_identity(&self.file)
+                .ok_or_else(|| anyhow::anyhow!("legacy catalog identity is unavailable"))
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(self.identity.clone())
+        }
+    }
     /// Hashes a synchronized prefix without changing the owned file.
     pub(crate) fn prefix_digest(&mut self, bytes: u64) -> anyhow::Result<[u8; 32]> {
         self.revalidate()?;
@@ -543,7 +556,7 @@ pub(super) mod tests {
     use std::io::Write;
     use std::path::PathBuf;
 
-    pub(in crate::storage::volumes::root) fn fixture() -> anyhow::Result<(PathBuf, Root)> {
+    pub(in crate::storage::volumes) fn fixture() -> anyhow::Result<(PathBuf, Root)> {
         let base = std::env::temp_dir();
         #[cfg(unix)]
         let base = std::fs::canonicalize(base)?;

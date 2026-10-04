@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
 
+pub mod legacy;
 mod placement;
 pub mod root;
 pub mod runtime;
