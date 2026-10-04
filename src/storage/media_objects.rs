@@ -52,6 +52,7 @@ impl EventKeyframeLookup {
         &self,
         location: EventKeyframeLocation,
     ) -> anyhow::Result<EncodedEventKeyframe> {
+        let _lease = self.catalog.lease_event_keyframe(&location)?;
         let end = location
             .byte_offset
             .checked_add(location.byte_len)
@@ -76,6 +77,57 @@ mod tests {
         CatalogFragment, CatalogKeyframe, CatalogRecording, RecordingCatalog,
         metadata::{EventSource, TimelineEvent},
     };
+
+    #[test]
+    fn cached_keyframe_refuses_a_retired_catalog_location() {
+        let root = std::env::temp_dir().join(format!("keeppeek-keyframe-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("original.mp4");
+        let replacement = root.join("replacement.mp4");
+        std::fs::write(&path, b"keyframe").unwrap();
+        std::fs::write(&replacement, b"keyframe").unwrap();
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        handle
+            .upsert_recording(CatalogRecording {
+                id: "recording".into(),
+                stream_id: "camera/main".into(),
+                source_id: Some("camera".into()),
+                logical_stream_id: Some("main".into()),
+                started_at_ms: 1,
+                ended_at_ms: Some(2),
+                path: path.to_string_lossy().into_owned(),
+                init_offset: 0,
+                init_len: 0,
+                finalized: true,
+            })
+            .unwrap();
+        let location = EventKeyframeLocation {
+            event_id: "event".into(),
+            stream_id: "main".into(),
+            event_time_ms: 1,
+            recording_id: "recording".into(),
+            fragment_sequence: 1,
+            fragment_start_ms: 1,
+            path: path.to_string_lossy().into_owned(),
+            byte_offset: 0,
+            byte_len: 8,
+        };
+        let lookup = EventKeyframeLookup::new(handle.clone());
+        assert_eq!(
+            lookup.read_location(location.clone()).unwrap().bytes,
+            b"keyframe"
+        );
+        handle
+            .update_recording_path("recording", &replacement, true)
+            .unwrap();
+        assert!(path.exists());
+        assert!(lookup.read_location(location).is_err());
+        drop(lookup);
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn lookup_resolves_and_reads_exact_keyframe_bytes() {
