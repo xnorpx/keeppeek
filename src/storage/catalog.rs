@@ -6089,13 +6089,17 @@ fn recording_file_identity(_path: &Path, metadata: &std::fs::Metadata) -> Option
 
 #[cfg(windows)]
 fn recording_file_identity(path: &Path, _metadata: &std::fs::Metadata) -> Option<String> {
+    recording_handle_identity(&std::fs::File::open(path).ok()?)
+}
+
+#[cfg(windows)]
+pub(crate) fn recording_handle_identity(file: &std::fs::File) -> Option<String> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
     };
 
-    let file = std::fs::File::open(path).ok()?;
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: `file` owns a valid handle for this call and `information` is writable storage.
     unsafe {

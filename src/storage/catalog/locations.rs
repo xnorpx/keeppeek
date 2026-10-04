@@ -135,6 +135,7 @@ impl fmt::Debug for Allocation {
 pub enum Request {
     RegisterLegacyPaths(Box<legacy::LegacyPaths>),
     LegacyPaths,
+    LegacyInventory(legacy::inventory::Action),
     Bind(Binding),
     Revision,
     Reserve(Allocation),
@@ -174,6 +175,8 @@ pub enum Request {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
     LegacyPaths(Option<Box<legacy::LegacyPaths>>),
+    LegacyReference(Option<Box<legacy::inventory::Reference>>),
+    LegacyReferences(Vec<legacy::inventory::Reference>),
     Bound,
     Revision(u64),
     Reserved { operation: String, bytes: u64 },
@@ -248,6 +251,7 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     recordings::initialize(connection).await?;
     recording_recovery::initialize(connection).await?;
     legacy::initialize(connection).await?;
+    legacy::inventory::initialize(connection).await?;
     // A sample from a previous actor lifetime must never authorize another allocation.
     bump_revision(connection).await?;
     connection.execute("INSERT OR IGNORE INTO catalog_schema_migrations (version, applied_at_ms) VALUES (3, ?1)", [super::current_unix_time_ms()]).await?;
@@ -269,6 +273,7 @@ fn validate(request: &Request) -> anyhow::Result<()> {
         | Request::LegacyRecordingBytes
         | Request::LegacyPaths => {}
         Request::RegisterLegacyPaths(paths) => paths.validate()?,
+        Request::LegacyInventory(action) => action.validate()?,
         Request::Move(id)
         | Request::FindMove(id)
         | Request::ImageRetirement(id)
@@ -472,6 +477,7 @@ async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::R
             Reply::LegacyPaths(Some(Box::new(legacy::register(connection, &paths).await?)))
         }
         Request::LegacyPaths => Reply::LegacyPaths(legacy::load(connection).await?.map(Box::new)),
+        Request::LegacyInventory(action) => legacy::inventory::dispatch(connection, action).await?,
         Request::Bind(binding) => bind(connection, &binding).await?,
         Request::Reserve(allocation) => reserve(connection, &allocation).await?,
         Request::ReserveArchive(allocation, intent) => {

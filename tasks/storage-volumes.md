@@ -433,3 +433,14 @@ Moving only the history file no longer marks ready legacy exports missing or red
 to the metadata directory. The regression failed before the change; all nine selected export
 history and named-export integration tests passed afterward (`target/129-export-metadata-root-green.log`).
 This separates the two paths for metadata handoff; it does not implement the handoff itself.
+
+Legacy recording inventory now records bounded pages of finalized catalog references separately
+from named allocations. Verification preserves the exact owner revision and rejects admitted
+cleanup, maintenance, named path aliases, replacement evidence, and delete/recreate reuse.
+Offline paths remain unresolved without filesystem creation or deletion. Physical verification
+uses captured roots and the existing pinned legacy reader. It checks existing catalog identity
+and size; Windows legacy and named identity formats come from the same file handle.
+Verified inventory continues to count toward legacy quota and remains eligible for legacy cleanup.
+The 63 selected legacy, location, and export-history regressions passed in 17.038 seconds
+(`target/129-legacy-inventory-regressions.log`). Root binding, startup integration, other legacy
+owners, and confirmed transfer into named ownership still remain before activation.
