@@ -663,7 +663,7 @@ fn assert_published_recording_fences(handle: &RecordingCatalogHandle, root: &std
             .update_recording_path("one", &root.join("other.mp4"), true)
             .is_err()
     );
-    assert!(handle.claim_cleanup_candidate().is_err());
+    assert!(handle.claim_cleanup_candidate().unwrap().is_none());
     let path = root.join("primary/camera/one.mp4");
     std::fs::write(&path, [43; 61]).unwrap();
     assert!(handle.update_recording_path("one", &path, true).is_err());

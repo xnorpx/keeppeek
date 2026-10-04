@@ -41,6 +41,7 @@ import {
 	AccessSessionResultSchema,
 	AccessSessionSchema,
 	CatalogHealthSnapshotSchema,
+	StorageVolumeResultSchema,
 	CameraTransport as ProtoCameraTransport,
 	CameraDefaultValuesSchema,
 	CameraEffectiveConfigurationSchema,
@@ -2449,6 +2450,17 @@ export async function mockControlPeer(
 				value: create(CameraConfigurationResultSchema, {
 					removed: true,
 					configurationRevision: cameraConfigurationRevision
+				})
+			});
+		}
+		if (
+			request.command.case === 'storageVolumeCommand' &&
+			request.command.value.action.case === 'list'
+		) {
+			return encodedOk(request.requestId, {
+				case: 'storageVolumeResult',
+				value: create(StorageVolumeResultSchema, {
+					result: { case: 'volumes', value: { runtimeAvailable: false, volumes: [] } }
 				})
 			});
 		}

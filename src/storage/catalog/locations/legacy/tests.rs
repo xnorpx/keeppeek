@@ -1,5 +1,40 @@
 use super::*;
 
+#[test]
+fn adoption_open_preserves_unavailable_legacy_rows_before_filesystem_reconciliation()
+-> anyhow::Result<()> {
+    use crate::storage::catalog::{CatalogRecording, RecordingCatalog};
+    let root = crate::storage::catalog::tests::test_dir("legacy-adoption-open");
+    let path = root.join("catalog.db");
+    let media = root.join("unavailable.mp4");
+    std::fs::write(&media, [42_u8; 16])?;
+    let catalog = RecordingCatalog::open(&path)?;
+    catalog.handle().upsert_recording(CatalogRecording {
+        id: "legacy".into(),
+        stream_id: "camera/main".into(),
+        source_id: Some("camera".into()),
+        logical_stream_id: Some("main".into()),
+        started_at_ms: 1,
+        ended_at_ms: Some(2),
+        path: media.to_string_lossy().into_owned(),
+        init_offset: 0,
+        init_len: 8,
+        finalized: true,
+    })?;
+    let before = catalog.handle().stats()?;
+    catalog.shutdown();
+    std::fs::remove_file(&media)?;
+    let mut catalog = RecordingCatalog::open_for_adoption(&path)?;
+    catalog.wait_for_maintenance();
+    let after = catalog.handle().stats()?;
+    assert_eq!(after.recording_files, before.recording_files);
+    assert_eq!(after.finalized_files, before.finalized_files);
+    assert_eq!(after.recording_bytes, before.recording_bytes);
+    assert!(!media.exists());
+    catalog.shutdown();
+    Ok(())
+}
+
 fn paths() -> LegacyPaths {
     let root =
         std::env::temp_dir().join(format!("keeppeek-legacy-offline-{}", uuid::Uuid::new_v4()));

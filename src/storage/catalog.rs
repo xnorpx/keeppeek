@@ -595,6 +595,18 @@ enum SearchCommand {
 
 impl RecordingCatalog {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
+        Self::open_with_legacy_backfill(path, true)
+    }
+
+    /// Opens the catalog without inspecting legacy paths before explicit adoption.
+    ///
+    /// # Errors
+    /// Returns catalog authority, schema, or worker startup errors.
+    pub fn open_for_adoption(path: &Path) -> anyhow::Result<Self> {
+        Self::open_with_legacy_backfill(path, false)
+    }
+
+    fn open_with_legacy_backfill(path: &Path, legacy_backfill: bool) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -607,12 +619,11 @@ impl RecordingCatalog {
         search_connection.busy_timeout(BUSY_TIMEOUT)?;
         lease.initialize(&connection)?;
         pollster::block_on(initialize_schema(&connection))?;
-        let legacy_recordings =
-            pollster::block_on(legacy_recordings_without_keyframes(&connection))?;
-        pollster::block_on(backfill_recording_file_sizes(
-            &connection,
-            &legacy_recordings,
-        ))?;
+        let legacy_recordings = if legacy_backfill {
+            pollster::block_on(prepare_legacy_backfill(&connection))?
+        } else {
+            Vec::new()
+        };
 
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (search_tx, search_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
@@ -1908,6 +1919,14 @@ fn run_search_catalog(connection: turso::Connection, rx: Receiver<SearchCommand>
             SearchCommand::Shutdown => break,
         }
     }
+}
+
+async fn prepare_legacy_backfill(
+    connection: &turso::Connection,
+) -> anyhow::Result<Vec<LegacyRecording>> {
+    let recordings = legacy_recordings_without_keyframes(connection).await?;
+    backfill_recording_file_sizes(connection, &recordings).await?;
+    Ok(recordings)
 }
 
 async fn legacy_recordings_without_keyframes(
