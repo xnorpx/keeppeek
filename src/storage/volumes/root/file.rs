@@ -370,7 +370,14 @@ impl OwnedFile {
     /// # Errors
     /// Rejects replacement, changed length, extra links, or mutation during verification.
     pub fn inspect_evidence(&mut self) -> anyhow::Result<(u64, String, [u8; 32])> {
-        self.inspect_until(Instant::now() + Duration::from_secs(60), &mut |_| Ok(()))
+        self.inspect_evidence_until(Instant::now() + Duration::from_secs(60))
+    }
+
+    pub(crate) fn inspect_evidence_until(
+        &mut self,
+        deadline: Instant,
+    ) -> anyhow::Result<(u64, String, [u8; 32])> {
+        self.inspect_until(deadline, &mut |_| Ok(()))
     }
 
     fn inspect_until(
@@ -556,7 +563,7 @@ pub(super) mod tests {
     use std::io::Write;
     use std::path::PathBuf;
 
-    pub(in crate::storage::volumes) fn fixture() -> anyhow::Result<(PathBuf, Root)> {
+    pub(in crate::storage) fn fixture() -> anyhow::Result<(PathBuf, Root)> {
         let base = std::env::temp_dir();
         #[cfg(unix)]
         let base = std::fs::canonicalize(base)?;
