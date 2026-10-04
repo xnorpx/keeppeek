@@ -18,6 +18,17 @@ struct Output {
     _lease: MoveLease,
 }
 
+pub(super) fn ensure_legacy_available(state: &ServerState) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !crate::storage::volumes::legacy::export_root_offline(
+            state.catalog.as_ref(),
+            &state.storage_config.long_term_path.join(".exports"),
+        )?,
+        "captured legacy export root is unavailable"
+    );
+    Ok(())
+}
+
 pub(super) fn owned(catalog: Option<&RecordingCatalogHandle>, id: &str) -> anyhow::Result<bool> {
     let Some(catalog) = catalog else {
         return Ok(false);
@@ -237,6 +248,7 @@ fn write(
         file.publish(evidence)?;
         Ok((artifact, checksum))
     } else {
+        ensure_legacy_available(state)?;
         let artifact = crate::storage::playback::export_fragment_ranges_with_progress(
             fragments, end_ms, path, cancelled, progress,
         )?;

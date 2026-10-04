@@ -515,3 +515,223 @@ fn downloaded_bytes(messages: Vec<OutboundDataMessage>) -> Vec<u8> {
     }
     bytes
 }
+
+fn captured_legacy_export() -> (PathBuf, RecordingCatalog, Manager, ServerState) {
+    let (root, catalog, manager, mut state, request) = setup(16 * 1024 * 1024);
+    state.storage_config.volume_runtime = None;
+    state.storage_config.medium_term_path = root.join("recordings");
+    state.storage_config.recording_catalog_path = root.join("catalog.db");
+    state.storage_config.event_thumbnail_path = root.join("legacy/.event-thumbnails");
+    create_export_job(&state, "owner", request).unwrap();
+    assert_eq!(
+        completed(&state).status,
+        proto::ExportJobStatus::Ready as i32
+    );
+    assert!(matches!(
+        catalog
+            .handle()
+            .volume_location(Request::Lookup(object(&state)))
+            .unwrap(),
+        Reply::Location(None)
+    ));
+    let paths =
+        crate::storage::catalog::locations::legacy::LegacyPaths::effective(&state.storage_config)
+            .unwrap();
+    catalog
+        .handle()
+        .volume_location(Request::RegisterLegacyPaths(Box::new(paths)))
+        .unwrap();
+    (root, catalog, manager, state)
+}
+
+fn legacy_export_record(state: &ServerState) -> ExportJobRecord {
+    state
+        .export_jobs
+        .lock()
+        .unwrap()
+        .get("named-export")
+        .unwrap()
+        .clone()
+}
+
+fn assert_legacy_export_retained(state: &ServerState, expected: &ExportJobRecord) {
+    let actual = legacy_export_record(state);
+    assert_eq!(actual.job.status, proto::ExportJobStatus::Ready as i32);
+    assert_eq!(actual.job, expected.job);
+    assert_eq!(actual.path, expected.path);
+    assert_eq!(actual.artifact_id, expected.artifact_id);
+    assert_eq!(actual.updated_at_ms, expected.updated_at_ms);
+    assert_eq!(actual.completed_at_ms, expected.completed_at_ms);
+}
+
+fn legacy_export_download() -> proto::DownloadExport {
+    proto::DownloadExport {
+        job_id: "named-export".to_owned(),
+        channel: proto::DataChannelKind::ReliableData as i32,
+    }
+}
+
+#[test]
+fn captured_offline_legacy_export_survives_recovery_expiry_and_pruning() {
+    let (root, catalog, manager, mut state) = captured_legacy_export();
+    let expected = legacy_export_record(&state);
+    let bytes = std::fs::read(expected.path.as_ref().unwrap()).unwrap();
+    persist_history(&mut state, &root);
+    let exports = state.storage_config.long_term_path.join(".exports");
+    let offline = root.join("offline-exports");
+    std::fs::rename(&exports, &offline).unwrap();
+    let mut recovered = recover_without_volumes(&state, catalog.handle());
+    assert!(recovered.export_history_error.is_none());
+    assert_legacy_export_retained(&recovered, &expected);
+    let error = download_export(&recovered, "owner", legacy_export_download()).unwrap_err();
+    assert_eq!(error.code, proto::ErrorCode::Unavailable);
+    assert_legacy_export_retained(&recovered, &expected);
+    {
+        let mut jobs = recovered.export_jobs.lock().unwrap();
+        let record = jobs.get_mut("named-export").unwrap();
+        record.updated_at_ms = 0;
+        record.completed_at_ms = Some(0);
+        record.job.expires_at = Some(millis_timestamp(0));
+    }
+    let aged = legacy_export_record(&recovered);
+    cleanup_expired_exports(&recovered);
+    assert_legacy_export_retained(&recovered, &aged);
+    persist_history(&mut recovered, &root);
+    let restarted = recover_without_volumes(&recovered, catalog.handle());
+    assert!(restarted.export_history_error.is_none());
+    assert_legacy_export_retained(&restarted, &aged);
+    assert!(!exports.exists());
+    let artifact = expected
+        .path
+        .as_ref()
+        .unwrap()
+        .strip_prefix(&exports)
+        .unwrap();
+    assert_eq!(std::fs::read(offline.join(artifact)).unwrap(), bytes);
+    std::fs::rename(&offline, &exports).unwrap();
+    let (_, messages) = download_export(&restarted, "owner", legacy_export_download()).unwrap();
+    assert_eq!(downloaded_bytes(messages), bytes);
+    drop(restarted);
+    drop(recovered);
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}
+
+#[test]
+fn captured_offline_export_history_is_not_recreated_and_recovers_after_return() {
+    let (root, catalog, manager, mut state) = captured_legacy_export();
+    let expected = legacy_export_record(&state);
+    let bytes = std::fs::read(expected.path.as_ref().unwrap()).unwrap();
+    let exports = state.storage_config.long_term_path.join(".exports");
+    persist_history(&mut state, &exports);
+    let history = std::fs::read(exports.join("history.json")).unwrap();
+    let offline = root.join("offline-exports");
+    std::fs::rename(&exports, &offline).unwrap();
+    let unavailable = recover_without_volumes(&state, catalog.handle());
+    assert!(unavailable.export_history_error.is_some());
+    cleanup_expired_exports(&unavailable);
+    assert!(!exports.exists());
+    assert_eq!(
+        std::fs::read(offline.join("history.json")).unwrap(),
+        history
+    );
+    std::fs::rename(&offline, &exports).unwrap();
+    let recovered = recover_without_volumes(&state, catalog.handle());
+    assert!(recovered.export_history_error.is_none());
+    assert_legacy_export_retained(&recovered, &expected);
+    let (_, messages) = download_export(&recovered, "owner", legacy_export_download()).unwrap();
+    assert_eq!(downloaded_bytes(messages), bytes);
+    drop(recovered);
+    drop(unavailable);
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}
+
+#[test]
+fn captured_online_export_root_still_reports_a_missing_artifact_as_failed() {
+    let (root, catalog, manager, mut state) = captured_legacy_export();
+    let expected = legacy_export_record(&state);
+    persist_history(&mut state, &root);
+    std::fs::remove_file(expected.path.as_ref().unwrap()).unwrap();
+    assert!(
+        state
+            .storage_config
+            .long_term_path
+            .join(".exports")
+            .is_dir()
+    );
+    let recovered = recover_without_volumes(&state, catalog.handle());
+    assert!(recovered.export_history_error.is_none());
+    let failed = legacy_export_record(&recovered);
+    assert_eq!(failed.job.status, proto::ExportJobStatus::Failed as i32);
+    assert!(failed.job.retryable);
+    assert!(failed.path.is_none());
+    drop(recovered);
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}
+
+#[test]
+fn legacy_export_worker_does_not_recreate_a_captured_offline_root() {
+    let (root, catalog, manager, state) = captured_legacy_export();
+    let original = legacy_export_record(&state);
+    let bytes = std::fs::read(original.path.as_ref().unwrap()).unwrap();
+    let exports = state.storage_config.long_term_path.join(".exports");
+    let offline = root.join("offline-exports");
+    std::fs::rename(&exports, &offline).unwrap();
+    assert!(state.export_history_error.is_none());
+    let mut request = original.request.clone();
+    request.job_id = "offline-new".to_owned();
+    create_export_job(&state, "owner", request).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let terminal = loop {
+        let job = export_job(&state, "owner", "offline-new").unwrap();
+        if job.status != proto::ExportJobStatus::Running as i32 {
+            break job;
+        }
+        assert!(Instant::now() < deadline, "offline export did not finish");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(terminal.status, proto::ExportJobStatus::Failed as i32);
+    assert!(!exports.exists());
+    let artifact = original
+        .path
+        .as_ref()
+        .unwrap()
+        .strip_prefix(&exports)
+        .unwrap();
+    assert_eq!(std::fs::read(offline.join(artifact)).unwrap(), bytes);
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}
+
+#[test]
+fn export_creation_does_not_recreate_captured_history_after_startup() {
+    let (root, catalog, manager, mut state) = captured_legacy_export();
+    let original = legacy_export_record(&state);
+    let exports = state.storage_config.long_term_path.join(".exports");
+    persist_history(&mut state, &exports);
+    let history = std::fs::read(exports.join("history.json")).unwrap();
+    let offline = root.join("offline-exports");
+    std::fs::rename(&exports, &offline).unwrap();
+    let mut request = original.request.clone();
+    request.job_id = "offline-new".into();
+    let error = create_export_job(&state, "owner", request).unwrap_err();
+    assert_eq!(error.code, proto::ErrorCode::Unavailable);
+    assert!(!exports.exists());
+    assert_eq!(
+        std::fs::read(offline.join("history.json")).unwrap(),
+        history
+    );
+    assert_legacy_export_retained(&state, &original);
+    assert_eq!(state.export_jobs.lock().unwrap().len(), 1);
+    persist_export_jobs_logged(&state, &state.export_jobs.lock().unwrap(), "offline-test");
+    assert!(!exports.exists());
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}

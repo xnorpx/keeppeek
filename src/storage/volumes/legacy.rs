@@ -8,6 +8,49 @@ use crate::storage::catalog::{
     },
 };
 
+pub(crate) fn export_root_offline(
+    catalog: Option<&RecordingCatalogHandle>,
+    requested: &std::path::Path,
+) -> anyhow::Result<bool> {
+    let Some(catalog) = catalog else {
+        return Ok(false);
+    };
+    let Reply::LegacyPaths(paths) = catalog.volume_location(Request::LegacyPaths)? else {
+        anyhow::bail!("invalid legacy root reply");
+    };
+    let Some(paths) = paths else { return Ok(false) };
+    let root = std::path::absolute(requested)?;
+    anyhow::ensure!(
+        super::validation::comparison_root(&root)?
+            == super::validation::comparison_root(&paths.export_root)?,
+        "captured export root changed"
+    );
+    match std::fs::metadata(root) {
+        Ok(metadata) => {
+            anyhow::ensure!(metadata.is_dir(), "captured export root is not a directory");
+            Ok(false)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(crate) fn ensure_export_history_available(
+    catalog: Option<&RecordingCatalogHandle>,
+    root: &std::path::Path,
+    history: &std::path::Path,
+) -> anyhow::Result<()> {
+    if export_root_offline(catalog, root)? {
+        let root = super::validation::comparison_root(&std::path::absolute(root)?)?;
+        let history = super::validation::comparison_root(&std::path::absolute(history)?)?;
+        anyhow::ensure!(
+            !history.starts_with(root),
+            "captured export history is unavailable"
+        );
+    }
+    Ok(())
+}
+
 /// Verifies one recording through its captured legacy roots and the current owner revision.
 ///
 /// # Errors

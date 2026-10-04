@@ -1,10 +1,26 @@
 use super::*;
 
+pub(in crate::server) fn persist(
+    state: &ServerState,
+    jobs: &HashMap<String, ExportJobRecord>,
+) -> anyhow::Result<()> {
+    if let Some(path) = &state.export_history_path {
+        crate::storage::volumes::legacy::ensure_export_history_available(
+            state.catalog.as_ref(),
+            &state.storage_config.long_term_path.join(".exports"),
+            path,
+        )?;
+        persist_export_jobs(path, jobs)?;
+    }
+    Ok(())
+}
+
 pub(in crate::server) fn recover(
     record: &mut ExportJobRecord,
     root: &Path,
     catalog: Option<&RecordingCatalogHandle>,
     now: i64,
+    legacy_offline: bool,
 ) -> anyhow::Result<()> {
     let named = owned(catalog, &record.artifact_id)?;
     match proto::ExportJobStatus::try_from(record.job.status)? {
@@ -29,7 +45,7 @@ pub(in crate::server) fn recover(
                     .join(&record.job.job_id)
                     .join(&record.artifact_id)
                     .join(name);
-                if path.is_file() {
+                if legacy_offline || path.is_file() {
                     record.path = Some(path);
                 } else {
                     fail(record, now, "Export artifact is missing; retry the export");
@@ -45,7 +61,7 @@ pub(in crate::server) fn recover(
             }
         }
     }
-    if record.job.status != proto::ExportJobStatus::Ready as i32 {
+    if !legacy_offline && record.job.status != proto::ExportJobStatus::Ready as i32 {
         cleanup_export_attempt_directory(root, &record.job.job_id, &record.artifact_id)?;
     }
     Ok(())
@@ -66,7 +82,7 @@ pub(in crate::server) fn restore(state: &mut ServerState) {
     };
     let export_root = state.storage_config.long_term_path.join(".exports");
     match load_export_jobs(path, &export_root, state.catalog.as_ref()).and_then(|jobs| {
-        persist_export_jobs(path, &jobs)?;
+        persist(state, &jobs)?;
         Ok(jobs)
     }) {
         Ok(jobs) => {
@@ -81,7 +97,7 @@ pub(in crate::server) fn restore(state: &mut ServerState) {
 }
 
 pub(in crate::server) fn expire(state: &ServerState) {
-    if state.export_history_error.is_some() {
+    if state.export_history_error.is_some() || ensure_legacy_available(state).is_err() {
         return;
     }
     let now = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
