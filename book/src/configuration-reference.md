@@ -937,6 +937,12 @@ nonempty, must not contain one another, and must satisfy the migration overlap c
 source cannot be split into conflicting destinations. `StorageMigrationPaths` is a runtime helper
 of borrowed paths, not another TOML section.
 
+Execution requires `recording_catalog_after_move`, including when the catalog stays at its
+current path. Older pending moves without this field are refused before moving files; restore
+the original storage settings and schedule the move again through the storage editor. The
+legacy whole-directory mover also refuses catalogs with captured legacy roots or named-volume
+ownership. Those catalogs require the confirmed named-storage migration workflow.
+
 ## Compatibility and completeness
 
 - Preserve server-managed sections when editing ordinary settings. Serializing only `Config`

@@ -456,3 +456,15 @@ Verified inventory continues to count toward legacy quota and remains eligible f
 The 63 selected legacy, location, and export-history regressions passed in 17.038 seconds
 (`target/129-legacy-inventory-regressions.log`). Root binding, startup integration, other legacy
 owners, and confirmed transfer into named ownership still remain before activation.
+
+Application startup now captures effective legacy roots before reconciliation when a named
+volume is active. Disabled drafts retain ordinary legacy behavior. Once captured, later media
+root edits are rejected even if named volumes are disabled or removed. The old directory
+migration path refuses captured or named ownership while holding the catalog lease, before
+creating destination directories or fencing the source. Pending migrations without catalog
+metadata are refused before filesystem movement; operators must restore the original settings
+and reschedule them. These checks preserve the migration boundary; they do not complete
+confirmed adoption or enable named volumes.
+All 29 migration regressions and three application startup regressions passed
+(`target/129-migration-complete-green.log`, `target/129-application-capture-green.log`).
+Independent review found no remaining blocker in this capture and migration guard.
