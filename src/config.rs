@@ -718,12 +718,7 @@ impl StorageMigration {
         {
             migration.recording_catalog_after_move =
                 Some(next_recording_catalog_path.to_path_buf());
-            if current_recording_catalog_path != next_recording_catalog_path
-                && !migration.is_covered_by_recording_root(
-                    current_recording_catalog_path,
-                    next_recording_catalog_path,
-                )
-            {
+            if current_recording_catalog_path != next_recording_catalog_path {
                 migration.recording_catalog = Some(StoragePathMigration {
                     from: current_recording_catalog_path.to_path_buf(),
                     to: next_recording_catalog_path.to_path_buf(),
@@ -820,6 +815,35 @@ impl StorageMigration {
             .collect::<Vec<_>>();
         recording_routes.sort_unstable();
         recording_routes.dedup();
+        let catalog_route = self.catalog_route();
+        if let Some(route) = &catalog_route {
+            move_recording_catalog_path(&route.from, &route.to)?;
+        }
+        let mut catalog_lease = self
+            .recording_catalog_after_move
+            .as_ref()
+            .filter(|path| path.is_file())
+            .map(|path| crate::storage::catalog::authority::Lease::acquire(path))
+            .transpose()?;
+        let catalog_connection = catalog_lease
+            .as_mut()
+            .map(crate::storage::catalog::authority::Lease::connect)
+            .transpose()?;
+        if let (Some(lease), Some(connection)) = (&catalog_lease, &catalog_connection) {
+            lease.initialize(connection)?;
+        }
+        let retained = catalog_route
+            .as_ref()
+            .map(|route| {
+                ["", "-wal", "-shm"].map(|suffix| {
+                    let mut path = route.from.as_os_str().to_owned();
+                    path.push(suffix);
+                    PathBuf::from(path)
+                })
+            })
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         let mut moved = Vec::new();
         for route in self.routes() {
             if moved
@@ -829,16 +853,42 @@ impl StorageMigration {
                 continue;
             }
             if self.recording_catalog.as_ref() == Some(route) {
-                move_recording_catalog_path(&route.from, &route.to)?;
+                continue;
             } else {
-                move_storage_path(&route.from, &route.to)?;
+                move_storage_path(&route.from, &route.to, &retained)?;
             }
             moved.push((route.from.clone(), route.to.clone()));
         }
-        if let Some(catalog_path) = &self.recording_catalog_after_move {
-            crate::storage::catalog::rewrite_recording_paths(catalog_path, &recording_routes)?;
+        if let Some(connection) = &catalog_connection {
+            crate::storage::catalog::rewrite_recording_paths_connection(
+                connection,
+                &recording_routes,
+            )?;
         }
         Ok(())
+    }
+
+    fn catalog_route(&self) -> Option<StoragePathMigration> {
+        if let Some(route) = &self.recording_catalog {
+            return Some(route.clone());
+        }
+        let target = self.recording_catalog_after_move.as_ref()?;
+        [self.medium_term.as_ref(), self.long_term.as_ref()]
+            .into_iter()
+            .flatten()
+            .filter_map(|route| {
+                target.strip_prefix(&route.to).ok().map(|key| {
+                    (
+                        route.to.components().count(),
+                        StoragePathMigration {
+                            from: route.from.join(key),
+                            to: target.clone(),
+                        },
+                    )
+                })
+            })
+            .max_by_key(|(specificity, _)| *specificity)
+            .map(|(_, route)| route)
     }
 }
 
@@ -2006,7 +2056,7 @@ fn apply_pending_storage_migration(root: &mut toml::Table) -> anyhow::Result<()>
     Ok(())
 }
 
-fn move_directory_contents(from: &Path, to: &Path) -> anyhow::Result<()> {
+fn move_directory_contents(from: &Path, to: &Path, retained: &[PathBuf]) -> anyhow::Result<()> {
     if !from.exists() {
         return Ok(());
     }
@@ -2019,10 +2069,24 @@ fn move_directory_contents(from: &Path, to: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(to)?;
     let mut entries = std::fs::read_dir(from)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_unstable_by_key(|entry| entry.file_name());
+    let mut retained_lock = false;
     for entry in entries {
         let source = entry.path();
+        if retained.contains(&source)
+            || entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(".authority.lock"))
+        {
+            retained_lock = true;
+            continue;
+        }
         let destination = to.join(entry.file_name());
-        move_path(&source, &destination)?;
+        move_path(&source, &destination, retained)?;
+        retained_lock |= source.exists();
+    }
+    if retained_lock {
+        return Ok(());
     }
     std::fs::remove_dir(from).or_else(|error| {
         (error.kind() == std::io::ErrorKind::NotFound)
@@ -2032,41 +2096,37 @@ fn move_directory_contents(from: &Path, to: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn move_storage_path(from: &Path, to: &Path) -> anyhow::Result<()> {
+fn move_storage_path(from: &Path, to: &Path, retained: &[PathBuf]) -> anyhow::Result<()> {
     if !from.exists() {
         return Ok(());
     }
     if from.is_dir() {
-        return move_directory_contents(from, to);
+        return move_directory_contents(from, to, retained);
     }
     let parent = to.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
-    move_path(from, to)
+    move_path(from, to, retained)
 }
 
 fn move_recording_catalog_path(from: &Path, to: &Path) -> anyhow::Result<()> {
-    move_storage_path(from, to)?;
-    for suffix in ["-wal", "-shm"] {
-        let from_sidecar = path_with_suffix(from, suffix);
-        if from_sidecar.exists() {
-            move_storage_path(&from_sidecar, &path_with_suffix(to, suffix))?;
-        }
+    if !from.exists() {
+        return Ok(());
     }
-    Ok(())
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    crate::storage::catalog::authority::transfer_legacy(from, to)
 }
 
-fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut value = path.as_os_str().to_os_string();
-    value.push(suffix);
-    PathBuf::from(value)
-}
-
-fn move_path(from: &Path, to: &Path) -> anyhow::Result<()> {
+fn move_path(from: &Path, to: &Path, retained: &[PathBuf]) -> anyhow::Result<()> {
+    if from.is_dir() && !to.exists() {
+        return move_directory_contents(from, to, retained);
+    }
     if to.exists() {
         let from_metadata = std::fs::symlink_metadata(from)?;
         let to_metadata = std::fs::symlink_metadata(to)?;
         if from_metadata.is_dir() && to_metadata.is_dir() {
-            return move_directory_contents(from, to);
+            return move_directory_contents(from, to, retained);
         }
         if from_metadata.is_file() && to_metadata.is_file() && files_equal(from, to)? {
             std::fs::remove_file(from)?;
@@ -3713,6 +3773,30 @@ mod tests {
     }
 
     #[test]
+    fn pending_storage_migration_locks_unchanged_catalog_before_moving_media() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-move-lease-{}", uuid::Uuid::new_v4()));
+        let current = directory.join("current");
+        let next = directory.join("next");
+        std::fs::create_dir_all(&current).unwrap();
+        let recording = current.join("recording.mp4");
+        std::fs::write(&recording, b"retained").unwrap();
+        let catalog_path = directory.join("external.db");
+        let catalog = RecordingCatalog::open(&catalog_path).unwrap();
+        let migration = StorageMigration::between_with_metadata(
+            StorageMigrationPaths::new(&current, &current, &catalog_path, &current.join("thumbs")),
+            StorageMigrationPaths::new(&next, &next, &catalog_path, &next.join("thumbs")),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(migration.apply().is_err());
+        assert_eq!(std::fs::read(&recording).unwrap(), b"retained");
+        assert!(!next.join("recording.mp4").exists());
+        catalog.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn pending_storage_migration_moves_existing_recordings_and_clears_marker() {
         let directory =
             std::env::temp_dir().join(format!("keeppeek-storage-move-{}", rand::random::<u64>()));
@@ -3752,7 +3836,10 @@ mod tests {
         apply_pending_storage_migration(&mut root).unwrap();
 
         assert!(!root.contains_key(STORAGE_MIGRATION_SECTION));
-        assert!(!current.exists());
+        assert!(catalog.is_file());
+        assert!(RecordingCatalog::open(&catalog).is_err());
+        assert!(current.join("recordings.db.authority.lock").is_file());
+        assert!(!current.join("front_gate").exists());
         assert_eq!(
             std::fs::read(next.join("front_gate/main/2026-08-12/12/0000.mp4")).unwrap(),
             b"recording"

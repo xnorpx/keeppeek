@@ -320,6 +320,7 @@ fn preflight_uses_the_search_worker_when_the_writer_queue_is_full() {
         write_tx.send(Command::Shutdown).unwrap();
         let (search_tx, search_rx) = mpsc::sync_channel(1);
         let handle = RecordingCatalogHandle {
+            readers: std::sync::Arc::new(crate::storage::catalog::readers::Registry::default()),
             tx: write_tx,
             search_tx,
         };
@@ -364,6 +365,7 @@ fn full_and_disconnected_read_queues_fail_without_admitting_preflight_work() {
         let (search_tx, search_rx) = mpsc::sync_channel(1);
         search_tx.send(SearchCommand::Shutdown).unwrap();
         let handle = RecordingCatalogHandle {
+            readers: std::sync::Arc::new(crate::storage::catalog::readers::Registry::default()),
             tx: write_tx,
             search_tx,
         };
@@ -546,6 +548,7 @@ fn search_errors_do_not_expose_internal_paths_to_the_preflight_caller() {
         let (write_tx, _write_rx) = mpsc::sync_channel(1);
         let (search_tx, search_rx) = mpsc::sync_channel(1);
         let handle = RecordingCatalogHandle {
+            readers: std::sync::Arc::new(crate::storage::catalog::readers::Registry::default()),
             tx: write_tx,
             search_tx,
         };

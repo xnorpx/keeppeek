@@ -43,10 +43,68 @@ impl fmt::Debug for Location {
     }
 }
 
+pub(super) async fn finalize(
+    connection: &turso::Connection,
+    publication: &Publication,
+) -> anyhow::Result<Reply> {
+    let mut rows = connection.query("SELECT a.object_id, a.state, r.path, r.finalized, b.root, a.relative_key FROM storage_volume_allocations a JOIN storage_volume_bindings b ON b.id = a.volume_id JOIN recording_files r ON r.id = a.object_id WHERE a.operation = ?1 AND a.kind = 'recording'", [publication.operation.as_str()]).await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("recording allocation does not exist"))?;
+    let id = row.get::<String>(0)?;
+    let state = row.get::<String>(1)?;
+    let expected = std::path::PathBuf::from(row.get::<String>(4)?).join(row.get::<String>(5)?);
+    anyhow::ensure!(
+        std::path::Path::new(&row.get::<String>(2)?) == expected,
+        "recording is not at its reserved location"
+    );
+    if state == "published" {
+        anyhow::ensure!(
+            row.get::<i64>(3)? == 1,
+            "published recording is not finalized"
+        );
+        drop(rows);
+        return publish(connection, publication).await;
+    }
+    anyhow::ensure!(
+        state == "reserved" && row.get::<i64>(3)? == 0,
+        "recording is not an active reserved recording"
+    );
+    drop(rows);
+    connection
+        .execute(
+            "UPDATE recording_files SET finalized = 1,
+            finalized_at_ms = CAST(unixepoch('subsec') * 1000 AS INTEGER),
+            ended_at_ms = COALESCE((SELECT MAX(start_ms + duration_ms)
+                FROM recording_fragments WHERE recording_id = ?1), ended_at_ms),
+            file_bytes = ?2, file_identity = ?3 WHERE id = ?1",
+            turso::params![
+                id.clone(),
+                to_i64(publication.bytes, "recording bytes")?,
+                publication.file_identity.clone()
+            ],
+        )
+        .await?;
+    super::super::rebuild_recording_coverage(connection, &id).await?;
+    publish(connection, publication).await
+}
+
 pub(super) async fn publish(
     connection: &turso::Connection,
     publication: &Publication,
 ) -> anyhow::Result<Reply> {
+    let mut moves = connection
+        .query(
+            "SELECT 1 FROM storage_volume_moves WHERE destination_operation = ?1 OR (source_operation = ?1 AND phase IN ('published','retiring','complete'))",
+            [publication.operation.as_str()],
+        )
+        .await?;
+    anyhow::ensure!(
+        moves.next().await?.is_none(),
+        "move publication requires its journal transition"
+    );
+    drop(moves);
     let mut rows = connection.query("SELECT kind, object_id, bytes, state, file_identity, digest FROM storage_volume_allocations WHERE operation = ?1", [publication.operation.as_str()]).await?;
     let row = rows
         .next()
@@ -73,6 +131,11 @@ pub(super) async fn publish(
         ),
         _ => anyhow::bail!("allocation cannot be published"),
     }
+    anyhow::ensure!(
+        row.get::<Option<String>>(4)?
+            .is_none_or(|identity| identity == publication.file_identity),
+        "publication file identity changed"
+    );
     validate_recording_location(connection, &object, &publication.operation).await?;
     connection.execute("UPDATE storage_volume_allocations SET state = 'published', bytes = ?2, file_identity = ?3, digest = ?4, location_revision = 1 WHERE operation = ?1 AND state = 'reserved'", turso::params![publication.operation.clone(), to_i64(publication.bytes, "publication bytes")?, publication.file_identity.clone(), publication.digest.to_vec()]).await?;
     bump_revision(connection).await?;
@@ -104,7 +167,7 @@ pub(super) async fn lookup(
     connection: &turso::Connection,
     object: &Object,
 ) -> anyhow::Result<Reply> {
-    let mut rows = connection.query("SELECT volume_id, generation, relative_key, location_revision, bytes, file_identity, digest FROM storage_volume_allocations WHERE kind = ?1 AND object_id = ?2 AND state = 'published'", turso::params![object.kind.as_str(), object.id.clone()]).await?;
+    let mut rows = connection.query("SELECT volume_id, generation, relative_key, location_revision, bytes, file_identity, digest FROM storage_volume_allocations a WHERE kind = ?1 AND object_id = ?2 AND state = 'published' AND NOT EXISTS (SELECT 1 FROM storage_volume_moves m WHERE m.source_operation = a.operation AND m.phase IN ('published','retiring','complete'))", turso::params![object.kind.as_str(), object.id.clone()]).await?;
     let Some(row) = rows.next().await? else {
         return Ok(Reply::Location(None));
     };
@@ -126,7 +189,7 @@ pub(super) async fn lookup(
     })))
 }
 
-fn parse_kind(value: &str) -> anyhow::Result<super::Kind> {
+pub(super) fn parse_kind(value: &str) -> anyhow::Result<super::Kind> {
     match value {
         "recording" => Ok(super::Kind::Recording),
         "export" => Ok(super::Kind::Export),

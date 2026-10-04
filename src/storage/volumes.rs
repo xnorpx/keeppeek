@@ -9,6 +9,7 @@ use std::{fmt, path::PathBuf};
 
 mod placement;
 pub mod root;
+pub mod runtime;
 pub(in crate::storage) mod validation;
 
 /// Keeps validation and status responses bounded for a local recorder.

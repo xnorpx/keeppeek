@@ -57,6 +57,40 @@ fn observations() -> Vec<VolumeObservation> {
 }
 
 #[test]
+fn volume_placement_resolves_multiple_groups_without_configuration_order_dependence() {
+    let mut configuration = fixture();
+    let base = configuration.placement[0].clone();
+    for (group, candidate) in [("zulu", "primary"), ("alpha", "secondary")] {
+        let mut rule = base.clone();
+        rule.group = Some(group.to_owned());
+        rule.candidates = vec![VolumeId::parse(candidate).unwrap()];
+        configuration.placement.push(rule);
+    }
+    configuration.volumes[1].groups = vec!["zulu".into()];
+    for groups in [["alpha", "zulu"], ["zulu", "alpha"]] {
+        let decision = configuration
+            .place_with_groups(&request(), &groups, &observations())
+            .unwrap();
+        assert_eq!(
+            decision.selected.as_ref().map(VolumeId::as_str),
+            Some("secondary")
+        );
+        configuration.placement.reverse();
+    }
+    let mut source = base;
+    source.source = Some(request().source.into());
+    source.candidates = vec![VolumeId::parse("primary").unwrap()];
+    configuration.placement.push(source);
+    let decision = configuration
+        .place_with_groups(&request(), &["alpha", "zulu"], &observations())
+        .unwrap();
+    assert_eq!(
+        decision.selected.as_ref().map(VolumeId::as_str),
+        Some("primary")
+    );
+}
+
+#[test]
 fn volume_placement_falls_back_only_when_explicitly_allowed() {
     let mut config = fixture();
     config.validate().unwrap();

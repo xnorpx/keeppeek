@@ -44,6 +44,10 @@ const QUEUED_MEDIA_BYTES_CAPACITY: usize = 64 * 1_048_576;
 
 #[derive(Clone)]
 pub struct StorageConfig {
+    pub named_volumes: Option<super::volumes::VolumeConfiguration>,
+    pub volume_runtime: Option<Arc<super::volumes::runtime::Manager>>,
+    pub volume_mover: Option<super::volumes::runtime::worker::Handle>,
+    pub volume_groups: Arc<RwLock<HashMap<String, Vec<String>>>>,
     pub medium_term_path: PathBuf,
     pub long_term_path: PathBuf,
     pub recording_catalog_path: PathBuf,
@@ -93,6 +97,10 @@ impl StorageConfig {
             .map(PathBuf::from)
             .unwrap_or_else(|| long_term_path.join(".event-thumbnails"));
         Self {
+            named_volumes: toml.named_volumes.clone(),
+            volume_runtime: None,
+            volume_mover: None,
+            volume_groups: Arc::default(),
             medium_term_path,
             long_term_path,
             recording_catalog_path,
@@ -113,6 +121,30 @@ impl StorageConfig {
             pre_recording_global_max_bytes: usize::try_from(toml.pre_recording_global_max_bytes)
                 .expect("validated pre-recording global budget fits this platform"),
         }
+    }
+
+    pub fn initialize_named_volumes(
+        &mut self,
+        catalog: RecordingCatalogHandle,
+    ) -> anyhow::Result<()> {
+        use super::{
+            catalog::locations::{Reply, Request},
+            volumes::{VolumeState, runtime::Manager},
+        };
+        let Some(configuration) = &self.named_volumes else {
+            return Ok(());
+        };
+        let Reply::Usage(usage) = catalog.volume_location(Request::Usage)? else {
+            anyhow::bail!("volume usage query returned an invalid response");
+        };
+        let activated = configuration.volumes.iter().any(|volume| {
+            volume.state != VolumeState::Disabled
+                || usage.iter().any(|entry| entry.volume == volume.id.as_str())
+        });
+        if activated {
+            self.volume_runtime = Some(Arc::new(Manager::new(configuration.clone(), catalog)?));
+        }
+        Ok(())
     }
 
     pub(crate) const fn safety_policy(&self) -> StorageSafetyPolicy {
@@ -1273,6 +1305,33 @@ impl WriterWorker {
         path: &Path,
         recording_id: &str,
     ) -> std::io::Result<PathBuf> {
+        self.move_to_long_term_for_source(camera_id, path, recording_id, None)
+    }
+
+    fn move_to_long_term_for_source(
+        &self,
+        camera_id: &str,
+        path: &Path,
+        recording_id: &str,
+        source_id: Option<&str>,
+    ) -> std::io::Result<PathBuf> {
+        if self.config.volume_runtime.is_some() {
+            use super::catalog::locations::{Kind, Object, Reply, Request};
+            if let Some(catalog) = &self.catalog
+                && matches!(
+                    catalog
+                        .volume_location(Request::Lookup(Object {
+                            kind: Kind::Recording,
+                            id: recording_id.to_owned()
+                        }))
+                        .map_err(std::io::Error::other)?,
+                    Reply::Location(Some(_))
+                )
+            {
+                self.schedule_named_archive(camera_id, recording_id, source_id)?;
+                return Ok(path.to_path_buf());
+            }
+        }
         let destination = if self.config.medium_term_path == self.config.long_term_path {
             tracing::info!(
                 camera = camera_id,
@@ -1314,6 +1373,55 @@ impl WriterWorker {
         Ok(destination)
     }
 
+    fn schedule_named_archive(
+        &self,
+        camera_id: &str,
+        recording_id: &str,
+        source_id: Option<&str>,
+    ) -> std::io::Result<()> {
+        use super::{
+            catalog::locations::{Kind, Object},
+            volumes::{PlacementRequest, VolumeRole},
+        };
+        let (Some(manager), Some(mover)) = (&self.config.volume_runtime, &self.config.volume_mover)
+        else {
+            return Ok(());
+        };
+        let source = source_id
+            .or_else(|| {
+                self.pipelines
+                    .get(camera_id)
+                    .map(|pipeline| pipeline.identity.source_id.as_str())
+            })
+            .ok_or_else(|| std::io::Error::other("archive source identity is unavailable"))?;
+        let groups = self
+            .config
+            .volume_groups
+            .read()
+            .map_err(|_| std::io::Error::other("volume group registry unavailable"))?
+            .get(source)
+            .cloned()
+            .unwrap_or_default();
+        let groups = groups.iter().map(String::as_str).collect::<Vec<_>>();
+        mover
+            .schedule(
+                manager,
+                Object {
+                    kind: Kind::Recording,
+                    id: recording_id.to_owned(),
+                },
+                &PlacementRequest {
+                    role: VolumeRole::Archive,
+                    source,
+                    group: "",
+                    required_bytes: 0,
+                },
+                &groups,
+            )
+            .map_err(std::io::Error::other)?;
+        Ok(())
+    }
+
     fn pipeline_for(&mut self, identity: RecordingStreamIdentity) -> &mut CameraPipeline {
         let buffer_window = self
             .config
@@ -1336,6 +1444,45 @@ fn create_medium_term_writer(
     identity: &RecordingStreamIdentity,
     started_at: Instant,
 ) -> std::io::Result<MediumTermWriter> {
+    if let Some(manager) = &config.volume_runtime {
+        let catalog =
+            catalog.ok_or_else(|| std::io::Error::other("named writer requires a catalog"))?;
+        use super::{
+            catalog::locations::{Kind, Object},
+            volumes::VolumeRole,
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        let groups = config
+            .volume_groups
+            .read()
+            .map_err(|_| std::io::Error::other("volume group registry unavailable"))?
+            .get(&identity.source_id)
+            .cloned()
+            .unwrap_or_default();
+        let groups = groups.iter().map(String::as_str).collect::<Vec<_>>();
+        if let Some(reservation) = manager
+            .reserve(
+                VolumeRole::Active,
+                &identity.source_id,
+                &groups,
+                Object {
+                    kind: Kind::Recording,
+                    id: id.clone(),
+                },
+                65_536,
+            )
+            .map_err(std::io::Error::other)?
+        {
+            return MediumTermWriter::create_with_reservation(
+                reservation,
+                id,
+                identity.clone(),
+                started_at,
+                config.write_buffer_bytes,
+                catalog.clone(),
+            );
+        }
+    }
     catalog.map_or_else(
         || {
             MediumTermWriter::create(
@@ -1365,6 +1512,8 @@ pub struct ShortTermStats {
 
 #[cfg(test)]
 mod tests {
+    mod named;
+
     use super::*;
     use crate::storage::{
         AudioCodec, AudioFrame, CatalogRecording, MediaFrame, RecordingCatalog, VideoCodec,
@@ -1400,6 +1549,10 @@ mod tests {
             .join("test-output")
             .join(name);
         StorageConfig {
+            named_volumes: None,
+            volume_runtime: None,
+            volume_mover: None,
+            volume_groups: Arc::default(),
             medium_term_path: root.clone(),
             long_term_path: root.clone(),
             recording_catalog_path: root.join("recordings.db"),
