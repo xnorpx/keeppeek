@@ -64,7 +64,8 @@ pub(in crate::server) fn restore(state: &mut ServerState) {
     let Some(path) = &state.export_history_path else {
         return;
     };
-    match load_export_jobs(path, state.catalog.as_ref()).and_then(|jobs| {
+    let export_root = state.storage_config.long_term_path.join(".exports");
+    match load_export_jobs(path, &export_root, state.catalog.as_ref()).and_then(|jobs| {
         persist_export_jobs(path, &jobs)?;
         Ok(jobs)
     }) {

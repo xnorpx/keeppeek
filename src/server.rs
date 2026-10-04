@@ -8911,6 +8911,7 @@ fn export_history_path(storage: &StorageConfig) -> PathBuf {
 
 fn load_export_jobs(
     history_path: &Path,
+    export_root: &Path,
     catalog: Option<&RecordingCatalogHandle>,
 ) -> anyhow::Result<HashMap<String, ExportJobRecord>> {
     let metadata = match std::fs::metadata(history_path) {
@@ -8933,9 +8934,6 @@ fn load_export_jobs(
         "unsupported export history version {}",
         history.version
     );
-    let export_root = history_path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("export history has no parent directory"))?;
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
     let mut jobs = HashMap::new();
     for persisted in history.jobs {
@@ -21277,7 +21275,7 @@ mod tests {
         std::fs::write(&interrupted_path, b"partial").unwrap();
 
         persist_export_jobs(&history_path, &jobs).unwrap();
-        let recovered = load_export_jobs(&history_path, None).unwrap();
+        let recovered = load_export_jobs(&history_path, &directory, None).unwrap();
 
         let ready = recovered.get("ready-job").unwrap();
         assert_eq!(ready.job.status, proto::ExportJobStatus::Ready as i32);
@@ -21301,6 +21299,14 @@ mod tests {
         assert_eq!(missing.job.status, proto::ExportJobStatus::Failed as i32);
         assert!(missing.job.retryable);
 
+        let relocated_history = directory.join("metadata").join(EXPORT_HISTORY_FILE);
+        std::fs::create_dir_all(relocated_history.parent().unwrap()).unwrap();
+        std::fs::rename(&history_path, &relocated_history).unwrap();
+        let relocated = load_export_jobs(&relocated_history, &directory, None).unwrap();
+        let ready = relocated.get("ready-job").unwrap();
+        assert_eq!(ready.job.status, proto::ExportJobStatus::Ready as i32);
+        assert_eq!(ready.path.as_deref(), Some(ready_path.as_path()));
+
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -21315,7 +21321,7 @@ mod tests {
         let file = File::create(&history_path).unwrap();
         file.set_len(MAX_EXPORT_HISTORY_BYTES + 1).unwrap();
 
-        let error = match load_export_jobs(&history_path, None) {
+        let error = match load_export_jobs(&history_path, &directory, None) {
             Ok(_) => panic!("oversized export history must be rejected"),
             Err(error) => error,
         };
