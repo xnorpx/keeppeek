@@ -119,6 +119,13 @@ pub(super) async fn pending(
         UNION ALL
         SELECT q.id FROM storage_volume_archives q JOIN storage_volume_allocations a ON a.operation = q.operation
             WHERE q.done = 0 AND a.state = 'published'
+        UNION ALL
+        SELECT operation FROM storage_image_retirements WHERE acknowledged=0
+        UNION
+        SELECT i.object_id FROM storage_event_images i JOIN storage_volume_allocations a ON a.object_id=i.object_id AND a.kind='thumbnail'
+            WHERE i.active=0 AND a.state='published'
+            AND NOT EXISTS(SELECT 1 FROM storage_image_retirements r JOIN storage_volume_allocations retired ON retired.operation=r.operation WHERE retired.object_id=i.object_id AND retired.kind='thumbnail')
+            AND NOT EXISTS(SELECT 1 FROM storage_event_images current WHERE current.object_id=i.object_id AND current.active=1)
         ) WHERE (?1 IS NULL OR id > ?1) ORDER BY id LIMIT ?2",
         turso::params![page.after.clone(), i64::from(page.limit)]).await?;
     let mut ids = Vec::with_capacity(usize::from(page.limit));

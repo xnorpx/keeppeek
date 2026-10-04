@@ -34,6 +34,7 @@ pub(super) async fn checkpoint(
     materialized: &Materialization,
 ) -> anyhow::Result<Reply> {
     super::moves::ensure_writable(connection, &materialized.operation).await?;
+    super::images::retirement::ensure_writable(connection, &materialized.operation).await?;
     let mut rows = connection.query(
         "SELECT bytes, materialized_bytes, file_identity, state FROM storage_volume_allocations WHERE operation = ?1",
         [materialized.operation.as_str()],

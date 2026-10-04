@@ -211,7 +211,8 @@ already owns the recording, completing the request needs no additional capacity 
 Event-image startup no longer deletes unindexed images or temporary files, and missing files keep
 their catalog references. The legacy thumbnail quota considers only catalog-referenced filenames
 in its configured root. This preserves unrelated files under a nonzero quota as well as during
-startup. Named thumbnail placement and durable per-object root ownership remain separate work.
+startup. Named image placement now uses the ownership path described below; legacy image
+backfill remains separate work.
 
 The same scan retries up to 32 roots that were unavailable when the runtime started. It opens
 and synchronizes roots outside the admission lock, then checks the durable binding before making
@@ -242,7 +243,29 @@ named-root restore remains rejected until root ownership transfer is implemented
 operations preserve ambiguous files. These changes are internal integration, not activation:
 configuration still accepts only Disabled named-volume drafts.
 
-Remaining before activation: legacy bindings/backfill, export and thumbnail owner integration,
+Remaining before activation: legacy bindings/backfill, export owner integration, incomplete-image recovery,
 per-volume retention and drain, live policy changes and mounted-volume recovery, named metadata relocation,
 Administrator operations and UI, and final performance/platform evidence. Focused test logs are
 under `target/129-*-nextest.log`; failed intermediate runs must not be presented as final evidence.
+
+## Named event-image integration
+
+Snapshots, published event images, and native camera attachments reserve their matching thumbnail
+volume before writing. The event revision and complete attachment-location set commit in one
+catalog transaction. Full and offline matched volumes return an error without falling back to
+the legacy directory. An immutable publication receipt permits the same commit to be retried
+after a later event close, while rejecting changed evidence or a changed attachment set.
+
+Current attachment mappings are explicit. Replacing an attachment with a legacy image or detaching
+it deactivates the old mapping. Media delivery and native image reads hold the existing reader
+lease through the read. Image moves use the existing copy, verification, publication, and
+retirement workflow. A default-policy change does not redirect a published named image.
+
+The existing worker retires superseded images after their readers finish. Removal uses the
+captured identity and digest, and releases quota only after a durable removal receipt. Rejected
+commits also journal cleanup for their sealed files; an already committed allocation is preserved
+when the publication reply was lost. No directory scan grants ownership of unrelated images.
+
+This increment does not enable named volumes. Recovery of crashes or failures before image
+sealing, legacy root backfill, notification image-location refresh, per-volume retention,
+exports, migration management, and Administrator UI remain outstanding. The PR stays draft.

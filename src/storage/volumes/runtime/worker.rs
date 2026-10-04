@@ -158,6 +158,9 @@ fn process(manager: &Manager, id: &str, cancelled: &AtomicBool) {
 }
 
 fn execute(manager: &Manager, id: &str, cancelled: &AtomicBool) -> anyhow::Result<()> {
+    if manager.retire_unused_image(id)? {
+        return Ok(());
+    }
     if !manager.admit_archive(id)? {
         return Ok(());
     }

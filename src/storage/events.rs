@@ -20,12 +20,20 @@ const PUBLISHED_IMAGE_DIMENSION_MAX: u32 = 8_192;
 const PUBLISHED_IMAGE_ALLOCATION_MAX: u64 = 64 * 1024 * 1024;
 
 mod native;
+mod placement;
+
+#[cfg(test)]
+mod placement_tests;
 
 #[derive(Clone)]
 pub struct EventStore {
     catalog: RecordingCatalogHandle,
     thumbnail_root: PathBuf,
     max_thumbnail_bytes: u64,
+    volume_storage: Option<std::sync::Arc<super::volumes::runtime::Manager>>,
+    volume_mover: Option<super::volumes::runtime::worker::Handle>,
+    volume_groups:
+        std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, Vec<String>>>>,
 }
 
 #[derive(Debug)]
@@ -77,9 +85,19 @@ impl EventStore {
             catalog,
             thumbnail_root: thumbnail_root.canonicalize()?,
             max_thumbnail_bytes,
+            volume_storage: None,
+            volume_mover: None,
+            volume_groups: Default::default(),
         };
         store.enforce_thumbnail_limit()?;
         Ok(store)
+    }
+
+    pub(crate) fn with_volume_storage(mut self, storage: &super::engine::StorageConfig) -> Self {
+        self.volume_storage.clone_from(&storage.volume_runtime);
+        self.volume_mover.clone_from(&storage.volume_mover);
+        self.volume_groups = std::sync::Arc::clone(&storage.volume_groups);
+        self
     }
 
     pub fn insert(&self, event: TimelineEvent) -> anyhow::Result<()> {
@@ -168,6 +186,9 @@ impl EventStore {
         let decoded = image::load_from_memory_with_format(jpeg, ImageFormat::Jpeg)?;
         let thumbnail = decoded.thumbnail(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT);
         let encoded = encode_jpeg(&thumbnail)?;
+        if self.commit_named_snapshot(event, &encoded)? {
+            return Ok(());
+        }
         let byte_len = u64::try_from(encoded.len())?;
         let filename = format!("{event_id}.jpg");
         let destination = self.thumbnail_root.join(&filename);
@@ -188,11 +209,39 @@ impl EventStore {
     pub(crate) fn commit_published_image(
         &self,
         publication_id: &str,
-        mut event: TimelineEvent,
+        event: TimelineEvent,
         jpeg: &[u8],
     ) -> Result<PublishedImageCommit, PublishedImageCommitError> {
-        use PublishedImageCommitError::{Invalid, Storage};
+        use PublishedImageCommitError::Storage;
+        let publication = self.validate_publication_image(publication_id, &event, jpeg)?;
+        let previous = self.catalog.event_by_id(&event.id).map_err(Storage)?;
+        if self.check_published_revision(&event, &publication, jpeg, previous.as_ref())? {
+            return Ok(PublishedImageCommit::Existing);
+        }
+        let attachment_id = event
+            .canonical_attachment_id
+            .clone()
+            .expect("validated canonical descriptor");
+        if self
+            .commit_named_images(
+                event.clone(),
+                Some(publication.clone()),
+                &[(attachment_id, jpeg)],
+            )
+            .map_err(Storage)?
+        {
+            return Ok(PublishedImageCommit::Stored);
+        }
+        self.write_legacy_published_image(event, publication, jpeg, previous)
+    }
 
+    fn validate_publication_image(
+        &self,
+        publication_id: &str,
+        event: &TimelineEvent,
+        jpeg: &[u8],
+    ) -> Result<EventPublicationIdentity, PublishedImageCommitError> {
+        use PublishedImageCommitError::Invalid;
         if !safe_event_id(&event.id) || !safe_event_id(publication_id) {
             return Err(Invalid(anyhow::anyhow!(
                 "invalid event or publication identifier"
@@ -220,24 +269,46 @@ impl EventStore {
 
         let publication = EventPublicationIdentity {
             publication_id: publication_id.to_owned(),
-            fingerprint: published_image_fingerprint(publication_id, &event, jpeg)
+            fingerprint: published_image_fingerprint(publication_id, event, jpeg)
                 .map_err(Invalid)?,
         };
-        let previous = self.catalog.event_by_id(&event.id).map_err(Storage)?;
-        match previous.as_ref() {
+        Ok(publication)
+    }
+
+    fn check_published_revision(
+        &self,
+        event: &TimelineEvent,
+        publication: &EventPublicationIdentity,
+        jpeg: &[u8],
+        previous: Option<&TimelineEvent>,
+    ) -> Result<bool, PublishedImageCommitError> {
+        use PublishedImageCommitError::Storage;
+        match previous {
             Some(stored) if event.revision == stored.revision => {
                 let stored_publication = self
                     .catalog
                     .event_publication_identity(&event.id)
                     .map_err(Storage)?;
-                if stored_publication.as_ref() == Some(&publication) {
-                    let filename = stored.thumbnail_filename.as_deref().ok_or_else(|| {
+                if stored_publication.as_ref() == Some(publication) {
+                    stored.thumbnail_filename.as_deref().ok_or_else(|| {
                         Storage(anyhow::anyhow!("published event image is missing"))
                     })?;
-                    let stored_jpeg = fs::read(self.thumbnail_root.join(filename))
-                        .map_err(|error| Storage(error.into()))?;
+                    let (stored_path, _lease) = self
+                        .leased_attachment_path(
+                            stored,
+                            stored
+                                .canonical_attachment_id
+                                .as_deref()
+                                .expect("validated canonical descriptor"),
+                        )
+                        .map_err(Storage)?
+                        .ok_or_else(|| {
+                            Storage(anyhow::anyhow!("published event image is unavailable"))
+                        })?;
+                    let stored_jpeg =
+                        fs::read(stored_path).map_err(|error| Storage(error.into()))?;
                     if stored_jpeg == jpeg {
-                        return Ok(PublishedImageCommit::Existing);
+                        return Ok(true);
                     }
                 }
                 return Err(PublishedImageCommitError::Conflict(Some(stored.revision)));
@@ -254,6 +325,18 @@ impl EventStore {
             }
             Some(_) | None => {}
         }
+        Ok(false)
+    }
+
+    fn write_legacy_published_image(
+        &self,
+        mut event: TimelineEvent,
+        publication: EventPublicationIdentity,
+        jpeg: &[u8],
+        previous: Option<TimelineEvent>,
+    ) -> Result<PublishedImageCommit, PublishedImageCommitError> {
+        use PublishedImageCommitError::Storage;
+        let previous = self.legacy_image_references(previous).map_err(Storage)?;
         let filename = format!("{}--r{}.jpg", event.id, event.revision);
         let destination = self.thumbnail_root.join(&filename);
         let temporary = self
@@ -312,6 +395,11 @@ impl EventStore {
         };
         if event.camera_id != camera_id {
             return Ok(None);
+        }
+        if let Some(attachment) = &event.canonical_attachment_id
+            && let Some(path) = self.named_image_path(event_id, attachment)?
+        {
+            return Ok(Some(path));
         }
         let Some(filename) = event.thumbnail_filename else {
             return Ok(None);
@@ -763,7 +851,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    fn image_event(id: &str, jpeg: &[u8]) -> TimelineEvent {
+    pub(super) fn image_event(id: &str, jpeg: &[u8]) -> TimelineEvent {
         TimelineEvent {
             id: id.to_owned(),
             revision: 1,

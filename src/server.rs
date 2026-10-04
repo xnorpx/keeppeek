@@ -6842,6 +6842,70 @@ fn resolve_event_search_attachment(
     state: &ServerState,
     object: &proto::EventSearchMediaObject,
 ) -> Result<ResolvedEventSearchMediaObject, ControlCommandError> {
+    let store = state.events.as_ref().ok_or_else(|| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "event attachment storage is unavailable",
+        )
+    })?;
+    let event = load_event_search_attachment(store, object)?;
+    let descriptor = event_search_attachment_descriptor(&event, object)?;
+    let (path, reader_lease) = store
+        .leased_attachment_path(&event, &object.attachment_id)
+        .map_err(|error| stored_catalog_error("resolve event attachment", error))?
+        .ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "canonical event attachment is unavailable",
+            )
+        })?;
+    let length = path
+        .metadata()
+        .map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "canonical event attachment is unavailable",
+            )
+        })?
+        .len();
+    if descriptor
+        .byte_len
+        .is_some_and(|expected| expected != length)
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "canonical event attachment length changed",
+        ));
+    }
+    Ok(ResolvedEventSearchMediaObject {
+        _reader_lease: reader_lease,
+        object_id: object.object_id.clone(),
+        event_id: event.id,
+        event_revision: event.revision,
+        attachment_id: descriptor.id,
+        recording_id: String::new(),
+        fragment_sequence: 0,
+        representation: proto::StoredMediaObjectRepresentation::EventAttachment,
+        content_type: descriptor.content_type,
+        path,
+        offset: 0,
+        length,
+        codec: String::new(),
+        width: 0,
+        height: 0,
+        decoder_config: Vec::new(),
+        nal_length_size: 0,
+    })
+}
+
+fn load_event_search_attachment(
+    store: &crate::storage::events::EventStore,
+    object: &proto::EventSearchMediaObject,
+) -> Result<TimelineEvent, ControlCommandError> {
     validate_client_id(&object.source_id, "event attachment source ID")?;
     validate_client_id(&object.event_id, "event attachment event ID")?;
     validate_client_id(&object.attachment_id, "event attachment ID")?;
@@ -6852,13 +6916,6 @@ fn resolve_event_search_attachment(
             "event attachment revision must be positive",
         ));
     }
-    let store = state.events.as_ref().ok_or_else(|| {
-        ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            "event attachment storage is unavailable",
-        )
-    })?;
     let event = store
         .event_by_id(&object.event_id)
         .map_err(|error| stored_catalog_error("load event attachment metadata", error))?
@@ -6883,6 +6940,13 @@ fn resolve_event_search_attachment(
             "event attachment revision is stale",
         ));
     }
+    Ok(event)
+}
+
+fn event_search_attachment_descriptor(
+    event: &TimelineEvent,
+    object: &proto::EventSearchMediaObject,
+) -> Result<crate::storage::metadata::EventAttachment, ControlCommandError> {
     let native_image =
         event.source == EventSource::Camera && object.attachment_id.starts_with("isapi-");
     if !native_image
@@ -6913,55 +6977,7 @@ fn resolve_event_search_attachment(
             "canonical event attachment is unavailable",
         ));
     }
-    let path = store
-        .attachment_path(&event.camera_id, &event.id, &object.attachment_id)
-        .map_err(|error| stored_catalog_error("resolve event attachment", error))?
-        .ok_or_else(|| {
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                "canonical event attachment is unavailable",
-            )
-        })?;
-    let length = path
-        .metadata()
-        .map_err(|_| {
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                "canonical event attachment is unavailable",
-            )
-        })?
-        .len();
-    if descriptor
-        .byte_len
-        .is_some_and(|expected| expected != length)
-    {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            "canonical event attachment length changed",
-        ));
-    }
-    Ok(ResolvedEventSearchMediaObject {
-        _reader_lease: None,
-        object_id: object.object_id.clone(),
-        event_id: event.id,
-        event_revision: event.revision,
-        attachment_id: descriptor.id,
-        recording_id: String::new(),
-        fragment_sequence: 0,
-        representation: proto::StoredMediaObjectRepresentation::EventAttachment,
-        content_type: descriptor.content_type,
-        path,
-        offset: 0,
-        length,
-        codec: String::new(),
-        width: 0,
-        height: 0,
-        decoder_config: Vec::new(),
-        nal_length_size: 0,
-    })
+    Ok(descriptor)
 }
 
 fn stream_event_search_object(

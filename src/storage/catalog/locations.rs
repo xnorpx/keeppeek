@@ -10,6 +10,7 @@ use std::{
 
 pub mod archives;
 mod growth;
+pub mod images;
 mod materialization;
 pub mod moves;
 pub use materialization::Materialization;
@@ -144,6 +145,12 @@ pub enum Request {
     Publish(Publication),
     Finalize(Publication),
     Lookup(Object),
+    CommitImages(Box<images::Commit>),
+    Image { event: String, attachment: String },
+    ImageRetirement(String),
+    ImageRetired(Publication),
+    ImageAbandoned(Publication),
+    ImageRetirementAcknowledged(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,6 +164,7 @@ pub enum Reply {
     Moves(Vec<moves::Job>),
     PendingMoves(Vec<String>),
     Archive(Option<Box<archives::Job>>),
+    ImageRetirement(Option<Box<images::retirement::Retirement>>),
 }
 
 impl RecordingCatalogHandle {
@@ -206,6 +214,7 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     .await?;
     moves::initialize(connection).await?;
     archives::initialize(connection).await?;
+    images::initialize(connection).await?;
     // A sample from a previous actor lifetime must never authorize another allocation.
     bump_revision(connection).await?;
     connection.execute("INSERT OR IGNORE INTO catalog_schema_migrations (version, applied_at_ms) VALUES (3, ?1)", [super::current_unix_time_ms()]).await?;
@@ -223,7 +232,9 @@ fn identifier(value: &str) -> anyhow::Result<()> {
 fn validate(request: &Request) -> anyhow::Result<()> {
     match request {
         Request::Revision | Request::Usage => {}
-        Request::Move(id) => identifier(id)?,
+        Request::Move(id)
+        | Request::ImageRetirement(id)
+        | Request::ImageRetirementAcknowledged(id) => identifier(id)?,
         Request::Archive(id) => identifier(id)?,
         Request::CompleteArchive { id, source } => {
             identifier(id)?;
@@ -254,10 +265,18 @@ fn validate(request: &Request) -> anyhow::Result<()> {
                 "filesystem available bytes",
             )?;
         }
-        Request::Publish(publication) | Request::Finalize(publication) => {
+        Request::Publish(publication)
+        | Request::Finalize(publication)
+        | Request::ImageAbandoned(publication)
+        | Request::ImageRetired(publication) => {
             validate_publication(publication)?;
         }
         Request::Lookup(object) => identifier(&object.id)?,
+        Request::CommitImages(commit) => commit.validate()?,
+        Request::Image { event, attachment } => {
+            identifier(event)?;
+            identifier(attachment)?;
+        }
         Request::Bind(binding) => validate_binding(binding)?,
         Request::Reserve(allocation) => validate_allocation(allocation)?,
         Request::ReserveArchive(allocation, intent) => {
@@ -377,39 +396,7 @@ pub(super) async fn execute(
     }
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
-        let reply = match request {
-            Request::Bind(binding) => bind(connection, &binding).await?,
-            Request::Reserve(allocation) => reserve(connection, &allocation).await?,
-            Request::ReserveArchive(allocation, intent) => {
-                archives::reserve(connection, &allocation, &intent).await?
-            }
-            Request::Grow(growth) => growth::grow(connection, &growth).await?,
-            Request::BeginMove(intent) => {
-                Reply::Move(Box::new(archives::begin_move(connection, &intent).await?))
-            }
-            Request::Move(id) => Reply::Move(Box::new(moves::load(connection, &id).await?)),
-            Request::Moves(page) => Reply::Moves(moves::page(connection, &page).await?),
-            Request::PendingMoves(page) => {
-                Reply::PendingMoves(archives::pending(connection, &page).await?)
-            }
-            Request::Archive(id) => {
-                Reply::Archive(archives::load(connection, &id).await?.map(Box::new))
-            }
-            Request::CompleteArchive { id, source } => {
-                archives::complete(connection, &id, &source).await?
-            }
-            Request::AdvanceMove(step) => {
-                Reply::Move(Box::new(moves::advance(connection, &step).await?))
-            }
-            Request::Materialize(materialized) => {
-                materialization::checkpoint(connection, &materialized).await?
-            }
-            Request::Usage => growth::usage(connection).await?,
-            Request::Publish(publication) => ownership::publish(connection, &publication).await?,
-            Request::Finalize(publication) => ownership::finalize(connection, &publication).await?,
-            Request::Lookup(object) => ownership::lookup(connection, &object).await?,
-            Request::Revision => unreachable!("read returned before transaction"),
-        };
+        let reply = dispatch(connection, request).await?;
         check_deadline(deadline)?;
         Ok(reply)
     }
@@ -427,6 +414,60 @@ pub(super) async fn execute(
             Err(error)
         }
     }
+}
+
+async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::Result<Reply> {
+    Ok(match request {
+        Request::Bind(binding) => bind(connection, &binding).await?,
+        Request::Reserve(allocation) => reserve(connection, &allocation).await?,
+        Request::ReserveArchive(allocation, intent) => {
+            archives::reserve(connection, &allocation, &intent).await?
+        }
+        Request::Grow(growth) => growth::grow(connection, &growth).await?,
+        Request::BeginMove(intent) => {
+            Reply::Move(Box::new(archives::begin_move(connection, &intent).await?))
+        }
+        Request::Move(id) => Reply::Move(Box::new(moves::load(connection, &id).await?)),
+        Request::Moves(page) => Reply::Moves(moves::page(connection, &page).await?),
+        Request::PendingMoves(page) => {
+            Reply::PendingMoves(archives::pending(connection, &page).await?)
+        }
+        Request::Archive(id) => {
+            Reply::Archive(archives::load(connection, &id).await?.map(Box::new))
+        }
+        Request::CompleteArchive { id, source } => {
+            archives::complete(connection, &id, &source).await?
+        }
+        Request::AdvanceMove(step) => {
+            Reply::Move(Box::new(moves::advance(connection, &step).await?))
+        }
+        Request::Materialize(materialized) => {
+            materialization::checkpoint(connection, &materialized).await?
+        }
+        Request::Usage => growth::usage(connection).await?,
+        Request::Publish(publication) => ownership::publish(connection, &publication).await?,
+        Request::Finalize(publication) => ownership::finalize(connection, &publication).await?,
+        Request::Lookup(object) => ownership::lookup(connection, &object).await?,
+        Request::CommitImages(commit) => images::commit(connection, *commit).await?,
+        Request::ImageRetirement(id) => Reply::ImageRetirement(
+            images::retirement::begin(connection, &id)
+                .await?
+                .map(Box::new),
+        ),
+        Request::ImageRetired(evidence) => {
+            images::retirement::complete(connection, &evidence).await?
+        }
+        Request::ImageAbandoned(evidence) => {
+            images::retirement::abandon(connection, &evidence).await?
+        }
+        Request::ImageRetirementAcknowledged(id) => {
+            images::retirement::acknowledge(connection, &id).await?
+        }
+        Request::Image { event, attachment } => {
+            Reply::Location(images::lookup(connection, &event, &attachment).await?)
+        }
+        Request::Revision => unreachable!("read returned before transaction"),
+    })
 }
 
 async fn rollback(connection: &turso::Connection) -> anyhow::Result<()> {
