@@ -279,3 +279,19 @@ discards buffered bytes after failure. Sink callers own synchronization, locatio
 and cleanup. Tests cover byte-equivalent output, cancellation, invalid sinks, final-flush failure,
 and a real capacity-limited reserved file. Export job placement, history recovery, downloads,
 and expiry are not connected to named volumes by this prerequisite alone.
+
+## Export retirement and readers
+
+Export retirement is now journaled before cleanup. Its artifact ID fences late reservation,
+growth, and publication. A worker that was creating a file may still record its initial identity
+before cleanup captures evidence. The existing storage worker removes only that owned file,
+using the existing durable removal receipts, and releases capacity after confirmed removal.
+Absent, empty, and partial pending files follow the same path; ambiguous files remain untouched.
+
+Export readers resolve the current location and acquire a lease in one catalog operation.
+Retirement refuses new readers and waits for existing readers and admitted moves. Read-only or
+offline roots keep their cleanup intent for a later pass. Existing compact artifact UUIDs retain
+their catalog spelling, while file-removal receipts use the allocation operation ID.
+
+This is the cleanup and reader prerequisite. Server export jobs, history recovery, downloads,
+and expiry still need to adopt these operations before export placement is complete.

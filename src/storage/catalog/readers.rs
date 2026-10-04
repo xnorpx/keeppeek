@@ -152,6 +152,7 @@ pub(super) enum Request {
         sequence: u64,
     },
     Snapshots(BTreeSet<Key>),
+    Export(String),
     Image {
         event: String,
         attachment: String,
@@ -164,9 +165,24 @@ pub(super) enum Reply {
     Object(Option<(CatalogMediaObjectLocation, LeaseSet)>),
     Snapshots(LeaseSet),
     Image(Option<(super::locations::Location, LeaseSet)>),
+    Export(Option<(super::locations::Location, LeaseSet)>),
 }
 
 impl RecordingCatalogHandle {
+    /// Resolves an export and prevents its retirement until the returned lease closes.
+    ///
+    /// # Errors
+    /// Rejects retiring exports and unavailable catalog authority.
+    pub fn leased_export(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Option<(super::locations::Location, LeaseSet)>> {
+        match self.read_lease(Request::Export(id.into()))? {
+            Reply::Export(export) => Ok(export),
+            _ => anyhow::bail!("unexpected export reader reply"),
+        }
+    }
+
     pub(crate) fn leased_event_image(
         &self,
         event: &super::TimelineEvent,
@@ -317,6 +333,15 @@ pub(super) async fn execute(
             let keys = owned_locations(connection, keys).await?;
             Ok(Reply::Snapshots(registry.acquire(keys)?))
         }
+        Request::Export(id) => {
+            let Some(location) =
+                super::locations::export_cleanup::readable(connection, &id).await?
+            else {
+                return Ok(Reply::Export(None));
+            };
+            let lease = volume_lease(connection, registry, &location).await?;
+            Ok(Reply::Export(Some((location, lease))))
+        }
     }
 }
 
@@ -339,6 +364,15 @@ async fn image(
     else {
         return Ok(Reply::Image(None));
     };
+    let lease = volume_lease(connection, registry, &location).await?;
+    Ok(Reply::Image(Some((location, lease))))
+}
+
+async fn volume_lease(
+    connection: &turso::Connection,
+    registry: &Arc<Registry>,
+    location: &super::locations::Location,
+) -> anyhow::Result<LeaseSet> {
     let mut rows = connection
         .query(
             "SELECT root FROM storage_volume_bindings WHERE id=?1 AND generation=?2",
@@ -351,14 +385,14 @@ async fn image(
     let root = rows
         .next()
         .await?
-        .ok_or_else(|| anyhow::anyhow!("image volume binding disappeared"))?
+        .ok_or_else(|| anyhow::anyhow!("media volume binding disappeared"))?
         .get::<String>(0)?;
     let path = std::path::Path::new(&root).join(&location.relative_key);
     let keys = BTreeSet::from([(
         location.object.id.clone(),
         path.to_string_lossy().into_owned(),
     )]);
-    Ok(Reply::Image(Some((location, registry.acquire(keys)?))))
+    registry.acquire(keys)
 }
 
 async fn owned_locations(

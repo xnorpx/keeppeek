@@ -7,6 +7,7 @@ use std::time::Instant;
 pub(super) async fn grow(connection: &turso::Connection, growth: &Growth) -> anyhow::Result<Reply> {
     super::moves::ensure_writable(connection, &growth.operation).await?;
     super::images::retirement::ensure_writable(connection, &growth.operation).await?;
+    super::export_cleanup::ensure_active_operation(connection, &growth.operation).await?;
     let mut rows = connection.query("SELECT kind, object_id, volume_id, generation, relative_key, bytes, state FROM storage_volume_allocations WHERE operation = ?1", [growth.operation.as_str()]).await?;
     let row = rows
         .next()

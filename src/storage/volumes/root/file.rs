@@ -123,7 +123,7 @@ impl Root {
         self.revalidate()
     }
 
-    /// Reopens a journal-owned temporary file for recovery without creating or truncating it.
+    /// Reopens a journal-owned file for recovery without creating or truncating it.
     /// The caller must retain its capacity reservation and exclusive worker lease.
     ///
     /// # Errors
@@ -137,7 +137,7 @@ impl Root {
     ) -> anyhow::Result<OwnedFile> {
         validate_key(key)?;
         anyhow::ensure!(
-            key.ends_with(".tmp") && minimum_bytes <= maximum_bytes,
+            (key.ends_with(".tmp") || key.ends_with(".mp4")) && minimum_bytes <= maximum_bytes,
             "invalid writable recovery range"
         );
         self.revalidate()?;

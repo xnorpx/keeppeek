@@ -9,6 +9,7 @@ use std::{
 };
 
 pub mod archives;
+pub mod export_cleanup;
 mod growth;
 pub mod images;
 mod materialization;
@@ -150,6 +151,8 @@ pub enum Request {
     ImageRetirement(String),
     ImageRetired(Publication),
     ImageAbandoned(Publication),
+    RetireExport(String),
+    ExportCleanup(export_cleanup::Action),
     ImageRetirementAcknowledged(String),
 }
 
@@ -165,6 +168,7 @@ pub enum Reply {
     PendingMoves(Vec<String>),
     Archive(Option<Box<archives::Job>>),
     ImageRetirement(Option<Box<images::retirement::Retirement>>),
+    ExportCleanup(Option<Box<export_cleanup::Job>>),
 }
 
 impl RecordingCatalogHandle {
@@ -214,6 +218,7 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     .await?;
     moves::initialize(connection).await?;
     archives::initialize(connection).await?;
+    export_cleanup::initialize(connection).await?;
     images::initialize(connection).await?;
     // A sample from a previous actor lifetime must never authorize another allocation.
     bump_revision(connection).await?;
@@ -236,6 +241,10 @@ fn validate(request: &Request) -> anyhow::Result<()> {
         | Request::ImageRetirement(id)
         | Request::ImageRetirementAcknowledged(id) => identifier(id)?,
         Request::Archive(id) => identifier(id)?,
+        Request::RetireExport(id) => {
+            export_cleanup::validate_id(id)?;
+        }
+        Request::ExportCleanup(action) => action.validate()?,
         Request::CompleteArchive { id, source } => {
             identifier(id)?;
             identifier(&source.object.id)?;
@@ -460,6 +469,8 @@ async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::R
         Request::ImageAbandoned(evidence) => {
             images::retirement::abandon(connection, &evidence).await?
         }
+        Request::RetireExport(id) => export_cleanup::retire(connection, &id).await?,
+        Request::ExportCleanup(action) => export_cleanup::dispatch(connection, action).await?,
         Request::ImageRetirementAcknowledged(id) => {
             images::retirement::acknowledge(connection, &id).await?
         }
@@ -543,6 +554,7 @@ async fn bind(connection: &turso::Connection, binding: &Binding) -> anyhow::Resu
 }
 
 async fn reserve(connection: &turso::Connection, allocation: &Allocation) -> anyhow::Result<Reply> {
+    export_cleanup::ensure_active(connection, &allocation.object).await?;
     if let Some(reply) = retry(connection, allocation).await? {
         return Ok(reply);
     }
