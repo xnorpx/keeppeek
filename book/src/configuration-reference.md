@@ -470,8 +470,8 @@ It does not create an empty replacement catalog if the selected owner is unavail
 
 Ordinary settings cannot install, clear, disable, or relocate the metadata owner. Unrelated
 updates preserve its existing secret references. This draft permits an enabled metadata-only
-owner with a valid binding while other named-volume activation remains gated. The confirmed
-relocation controls are not yet available; do not construct or edit this binding manually.
+owner with a valid binding while other named-volume activation remains gated. Use the administrator metadata preview and confirmation controls to schedule relocation;
+do not construct or edit this binding manually.
 The internal `[storage.metadata_pending]` restart record contains a 32-byte source-configuration
 digest and the target binding. It retains the previous effective paths until a stopped transfer
 verifies both the catalog snapshot and copied export history, then atomically commits the new
@@ -480,6 +480,14 @@ Pending handoffs reject effective storage-setting changes while allowing unrelat
 Startup rechecks available space, the byte cap, and the larger minimum/critical free-space reserve
 before fencing the source. Managed export history must already exist, fit within 8 MiB, and contain
 valid, uniquely owned jobs; missing or invalid history is preserved and reported unavailable.
+
+In Settings, add and save a disabled volume with only the Metadata role, then use
+**Preview metadata move** to check its root and required space. **Confirm metadata move**
+saves the plan without interrupting recording. The service restart copies the latest catalog
+and export history before workers resume. Cancel a pending plan before restarting if needed.
+Returning to an earlier metadata volume uses the same workflow and a new catalog generation;
+never point the service at a retained old catalog. An interrupted startup leaves the plan available
+for retry after its reported storage problem is corrected.
 
 Each `[[storage.named_volumes.volumes]]` entry has these fields:
 

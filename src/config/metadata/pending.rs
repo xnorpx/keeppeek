@@ -1,3 +1,4 @@
+pub mod control;
 use super::*;
 use crate::storage::StorageConfig;
 use sha2::{Digest, Sha256};
@@ -42,7 +43,7 @@ pub(in crate::config) fn preserve_storage(
     Ok(())
 }
 
-pub(in crate::config) fn apply(
+pub fn apply(
     path: &Path,
     root: &mut toml::Table,
     secrets: &crate::config::Secrets,

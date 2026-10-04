@@ -54,6 +54,11 @@ pub struct Authority {
     pub generation: u64,
 }
 
+pub struct MetadataInfo {
+    pub authority: Authority,
+    pub snapshot_bytes: u64,
+}
+
 #[derive(PartialEq, Eq)]
 struct Record {
     authority: Authority,

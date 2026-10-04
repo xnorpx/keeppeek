@@ -8,6 +8,7 @@ use std::{
 
 #[derive(Default)]
 pub(in crate::server) struct Registry {
+    pub(super) metadata: super::metadata::Registry,
     plans: Mutex<HashMap<String, Plan>>,
 }
 

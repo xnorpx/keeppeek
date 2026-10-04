@@ -190,3 +190,34 @@ fn prune(state: &ServerState, jobs: &mut HashMap<String, ExportJobRecord>, now: 
     }
     changed
 }
+
+/// Reads the persisted source without running recovery or changing export ownership.
+pub(in crate::server) fn snapshot(state: &ServerState) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read as _;
+    anyhow::ensure!(
+        state.export_history_error.is_none(),
+        "export history is unavailable"
+    );
+    let _jobs = state
+        .export_jobs
+        .lock()
+        .map_err(|_| anyhow::anyhow!("export history is unavailable"))?;
+    let bytes = if let Some(binding) = &state.storage_config.metadata {
+        state
+            .storage_config
+            .metadata_root()?
+            .read_history(&binding.history_file)?
+    } else {
+        let path = state
+            .export_history_path
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("export history path is unavailable"))?;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(MAX_EXPORT_HISTORY_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        bytes
+    };
+    validate_export_history_snapshot(&bytes)?;
+    Ok(bytes)
+}

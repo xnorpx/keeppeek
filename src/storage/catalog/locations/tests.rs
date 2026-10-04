@@ -944,3 +944,78 @@ fn volume_ledger_publication_cannot_exceed_reserved_capacity() {
     );
     catalog.shutdown();
 }
+#[test]
+fn checking_bindings_is_read_only_and_rejects_identity_changes() {
+    let root = test_dir("volume-check-binding");
+    let catalog = RecordingCatalog::open(&root.join("catalog.db")).unwrap();
+    let handle = catalog.handle();
+    let original = binding(&root, "primary", "disk");
+    handle
+        .volume_location(Request::Bind(original.clone()))
+        .unwrap();
+    let revision = handle.volume_ledger_revision().unwrap();
+    let usage = handle.volume_location(Request::Usage).unwrap();
+    let new = binding(&root, "new", "disk");
+    for candidate in [original.clone(), new] {
+        assert_eq!(
+            handle
+                .volume_location(Request::CheckBinding(candidate))
+                .unwrap(),
+            Reply::Bound
+        );
+        assert_eq!(handle.volume_ledger_revision().unwrap(), revision);
+        assert_eq!(handle.volume_location(Request::Usage).unwrap(), usage);
+    }
+    let mut alias = original.clone();
+    alias.id = "alias".into();
+    let mut changed_path = original.clone();
+    changed_path.root = root.join("replacement");
+    let mut changed_identity = original.clone();
+    changed_identity.root_identity = "replacement-root".into();
+    let mut changed_generation = original;
+    changed_generation.generation = 2;
+    for candidate in [alias, changed_path, changed_identity, changed_generation] {
+        assert!(
+            handle
+                .volume_location(Request::CheckBinding(candidate))
+                .is_err()
+        );
+        assert_eq!(handle.volume_ledger_revision().unwrap(), revision);
+        assert_eq!(handle.volume_location(Request::Usage).unwrap(), usage);
+    }
+    drop(handle);
+    catalog.shutdown();
+}
+
+#[test]
+fn checking_existing_binding_at_capacity_succeeds_without_admitting_another() {
+    let root = test_dir("volume-check-binding-limit");
+    let catalog = RecordingCatalog::open(&root.join("catalog.db")).unwrap();
+    let handle = catalog.handle();
+    for index in 0..MAX_BINDINGS {
+        handle
+            .volume_location(Request::Bind(binding(
+                &root,
+                &format!("volume-{index}"),
+                "disk",
+            )))
+            .unwrap();
+    }
+    let revision = handle.volume_ledger_revision().unwrap();
+    let usage = handle.volume_location(Request::Usage).unwrap();
+    assert_eq!(
+        handle
+            .volume_location(Request::CheckBinding(binding(&root, "volume-0", "disk")))
+            .unwrap(),
+        Reply::Bound
+    );
+    assert!(
+        handle
+            .volume_location(Request::CheckBinding(binding(&root, "overflow", "disk")))
+            .is_err()
+    );
+    assert_eq!(handle.volume_ledger_revision().unwrap(), revision);
+    assert_eq!(handle.volume_location(Request::Usage).unwrap(), usage);
+    drop(handle);
+    catalog.shutdown();
+}

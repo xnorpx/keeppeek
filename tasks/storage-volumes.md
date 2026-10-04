@@ -584,3 +584,25 @@ regression first reproduced the lost wake. All 12 worker tests and 30 event-stor
 on Windows (`target/129-ci-worker-green.log`, `target/129-ci-events-green.log`), as did strict
 workspace/all-target Clippy (`target/129-ci-repairs-clippy.log`). Current-head platform CI remains
 required; these focused checks are not final acceptance evidence.
+
+Metadata administrator controls now expose preview, confirmation for restart, persisted status,
+and revision-checked cancellation. Previews read persisted history and the live catalog owner,
+check conservative space requirements and immutable root bindings, and preserve secret-reference
+IDs. Cancelling invalidates cached previews, so an old confirmation cannot restage a cancelled plan.
+The stopped transfer repeats the binding check before fencing. Exact existing bindings remain valid
+at the binding-count limit; checks do not allocate or change the ledger revision.
+
+Settings now provides a metadata review panel and reconnects pending state to the existing restart
+action. Cancelling metadata does not clear another setting's restart requirement. The API-to-restart
+regression copies the latest history, reopens the next authority generation with an online volume,
+and proves the retained old source cannot reopen. Focused qualification passed 77 metadata tests,
+12 volume-management tests, two binding checks, 11 volume UI browser tests, three Settings E2E tests,
+and Svelte checking with no errors or warnings (`target/129-metadata-controls-final.log`,
+`target/129-metadata-management-all.log`, `target/129-binding-check-green.log`,
+`target/129-metadata-ui-all.log`, `target/129-metadata-settings-e2e.log`,
+`target/129-metadata-ui-check.log`). The cancellation replay and restart-status callback had failing
+regressions before their fixes. General activation, legacy media adoption, bulk evacuation,
+health completion, and final platform/performance qualification remain open.
+
+Strict workspace/all-target Clippy passed for the metadata control checkpoint
+(`target/129-metadata-controls-clippy.log`). The final canonical gate remains required.

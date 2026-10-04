@@ -726,3 +726,35 @@ fn managed_catalog_open_requires_existing_authority_without_creating_a_leaf() {
         .unwrap()
         .shutdown();
 }
+#[test]
+fn catalog_metadata_info_uses_live_owner_and_rejects_retained_handles_after_shutdown() {
+    let root = fixture();
+    let path = root.join("catalog.db");
+    let catalog = super::super::RecordingCatalog::open(&path).unwrap();
+    let handle = catalog.handle();
+    assert!(Lease::acquire(&path).is_err());
+    let before = handle.metadata_info().unwrap();
+    assert!(before.snapshot_bytes > 0);
+    assert!(before.snapshot_bytes >= std::fs::metadata(&path).unwrap().len());
+    assert_eq!(handle.metadata_info().unwrap().authority, before.authority);
+    catalog.shutdown();
+    assert!(handle.metadata_info().is_err());
+    let mut lease = Lease::acquire(&path).unwrap();
+    let connection = lease.connect().unwrap();
+    assert_eq!(lease.verify(&connection).unwrap(), before.authority);
+    let snapshot = root.join("snapshot.db");
+    crate::backup::database::snapshot_turso_database(&connection, &snapshot, before.snapshot_bytes)
+        .unwrap();
+    let snapshot_bytes = std::fs::metadata(&snapshot).unwrap().len();
+    assert!(snapshot_bytes > 0 && snapshot_bytes <= before.snapshot_bytes);
+    drop(connection);
+    drop(lease);
+    let reopened = super::super::RecordingCatalog::open(&path).unwrap();
+    let reopened_handle = reopened.handle();
+    let after = reopened_handle.metadata_info().unwrap();
+    assert_eq!(after.authority, before.authority);
+    assert!(after.snapshot_bytes >= std::fs::metadata(&path).unwrap().len());
+    assert!(handle.metadata_info().is_err());
+    reopened.shutdown();
+    assert!(reopened_handle.metadata_info().is_err());
+}
