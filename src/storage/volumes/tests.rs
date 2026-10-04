@@ -42,6 +42,7 @@ fn observations() -> Vec<VolumeObservation> {
         VolumeObservation {
             id: VolumeId::parse("primary").unwrap(),
             health: VolumeHealth::Online,
+            draining: false,
             total_bytes: 4000,
             available_bytes: 500,
             owned_bytes: 500,
@@ -49,11 +50,38 @@ fn observations() -> Vec<VolumeObservation> {
         VolumeObservation {
             id: VolumeId::parse("secondary").unwrap(),
             health: VolumeHealth::Online,
+            draining: false,
             total_bytes: 4000,
             available_bytes: 1000,
             owned_bytes: 100,
         },
     ]
+}
+
+#[test]
+fn operational_drain_requires_explicit_placement_fallback() {
+    let mut configuration = fixture();
+    let mut samples = observations();
+    samples[0].draining = true;
+    let decision = configuration.place(&request(), &samples).unwrap();
+    assert_eq!(
+        decision.selected.as_ref().map(VolumeId::as_str),
+        Some("secondary")
+    );
+    assert!(
+        decision
+            .rejected
+            .iter()
+            .any(|item| item.reason == RejectionReason::Draining)
+    );
+    configuration.placement[0].allow_fallback = false;
+    assert!(
+        configuration
+            .place(&request(), &samples)
+            .unwrap()
+            .selected
+            .is_none()
+    );
 }
 
 #[test]

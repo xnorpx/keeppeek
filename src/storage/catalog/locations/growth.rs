@@ -56,7 +56,7 @@ pub(super) async fn grow(connection: &turso::Connection, growth: &Growth) -> any
 }
 
 pub(super) async fn usage(connection: &turso::Connection) -> anyhow::Result<Reply> {
-    let mut rows = connection.query("SELECT id, allocated_bytes, reserved_bytes, filesystem FROM storage_volume_bindings ORDER BY id LIMIT ?1", [MAX_BINDINGS + 1]).await?;
+    let mut rows = connection.query("SELECT id, allocated_bytes, reserved_bytes, filesystem, draining, operator_draining FROM storage_volume_bindings ORDER BY id LIMIT ?1", [MAX_BINDINGS + 1]).await?;
     let mut usage = Vec::new();
     while let Some(row) = rows.next().await? {
         anyhow::ensure!(
@@ -68,6 +68,8 @@ pub(super) async fn usage(connection: &turso::Connection) -> anyhow::Result<Repl
             filesystem: row.get::<String>(3)?,
             allocated_bytes: to_u64(row.get::<i64>(1)?, "allocated bytes")?,
             reserved_bytes: to_u64(row.get::<i64>(2)?, "reserved bytes")?,
+            configured_draining: row.get::<i64>(4)? != 0,
+            operator_draining: row.get::<i64>(5)? != 0,
         });
     }
     Ok(Reply::Usage(usage))

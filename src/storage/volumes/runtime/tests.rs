@@ -150,6 +150,40 @@ fn draining_volume_finishes_existing_growth_but_rejects_new_reservations() -> an
 }
 
 #[test]
+fn operational_drain_preserves_admitted_writer_and_survives_manager_rebind() -> anyhow::Result<()> {
+    let (path, catalog, manager) = fixture(2 * GROWTH_BYTES)?;
+    let reservation = manager
+        .reserve(VolumeRole::Export, "camera", &[], object(), 8)?
+        .unwrap();
+    manager.set_draining("primary", true)?;
+    let rebound = Manager::new(manager.configuration().clone(), catalog.handle())?;
+    assert!(rebound.observations()?[0].draining);
+    assert!(
+        rebound
+            .reserve(VolumeRole::Export, "camera", &[], object(), 8)
+            .is_err()
+    );
+    let mut writer = reservation.open()?;
+    writer.write_all(b"123456789")?;
+    let evidence = writer.evidence()?;
+    assert_eq!(evidence.bytes, 9);
+    writer.publish(evidence)?;
+    rebound.set_draining("primary", false)?;
+    assert!(!rebound.observations()?[0].draining);
+    assert!(
+        rebound
+            .reserve(VolumeRole::Export, "camera", &[], object(), 8)?
+            .is_some()
+    );
+    drop(writer);
+    drop(rebound);
+    drop(manager);
+    catalog.shutdown();
+    std::fs::remove_dir_all(path)?;
+    Ok(())
+}
+
+#[test]
 fn offline_root_recovers_without_restarting_the_manager() -> anyhow::Result<()> {
     let (path, catalog, original) = fixture(GROWTH_BYTES)?;
     let mut configuration = original.inner.configuration.clone();

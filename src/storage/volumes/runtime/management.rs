@@ -23,6 +23,29 @@ impl MovePreview {
 }
 
 impl Manager {
+    /// Stops or resumes new placements without revoking admitted writers.
+    ///
+    /// # Errors
+    /// Rejects unconfigured or unbound volumes and unavailable catalog ownership.
+    pub fn set_draining(&self, volume: &str, draining: bool) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.inner
+                .configuration
+                .volumes
+                .iter()
+                .any(|item| item.id.as_str() == volume),
+            "volume is not configured"
+        );
+        // ponytail: bindings currently use generation 1 and never permit identity rebinding.
+        let reply = self.inner.catalog.volume_location(Request::SetDraining {
+            volume: volume.to_owned(),
+            generation: 1,
+            draining,
+        })?;
+        anyhow::ensure!(reply == Reply::Bound, "invalid drain reply");
+        Ok(())
+    }
+
     /// Reports whether new objects use named admission, including unavailable roots.
     pub(crate) fn uses_named_policy(
         &self,

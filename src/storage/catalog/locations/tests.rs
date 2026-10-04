@@ -185,7 +185,9 @@ fn assert_growth_usage(handle: &RecordingCatalogHandle) {
             volume: "primary".into(),
             filesystem: "disk".into(),
             allocated_bytes: 80,
-            reserved_bytes: 80
+            reserved_bytes: 80,
+            configured_draining: false,
+            operator_draining: false,
         }])
     );
 }
