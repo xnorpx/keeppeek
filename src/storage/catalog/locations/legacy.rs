@@ -8,6 +8,7 @@ use std::path::PathBuf;
 const SNAPSHOT_BYTES_MAX: usize = 32_768;
 
 pub mod inventory;
+pub(in crate::storage::catalog) mod startup;
 
 /// Original effective paths, independent of later changes to placement defaults.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,7 +94,7 @@ pub(super) async fn register(
         .ok_or_else(|| anyhow::anyhow!("legacy path snapshot was not persisted"))
 }
 
-pub(super) async fn load(connection: &turso::Connection) -> anyhow::Result<Option<LegacyPaths>> {
+pub(crate) async fn load(connection: &turso::Connection) -> anyhow::Result<Option<LegacyPaths>> {
     let mut rows = connection
         .query(
             "SELECT snapshot FROM storage_legacy_paths WHERE singleton=1",
@@ -121,3 +122,12 @@ mod inventory_tests;
 
 #[cfg(test)]
 mod inventory_boundary_tests;
+
+#[cfg(test)]
+mod startup_tests;
+
+#[cfg(test)]
+mod startup_repair_tests;
+
+#[cfg(test)]
+mod startup_boundary_tests;

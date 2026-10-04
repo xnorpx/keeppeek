@@ -77,6 +77,18 @@ The owner approved extending the protobuf API on 2026-09-27 for this task. The s
 includes the protocol documentation, generated bindings, and contract tests. Approval is recorded;
 it does not imply that runtime operations or their acceptance evidence are implemented.
 
+Captured legacy roots now suppress destructive startup reconciliation. Before exposing catalog
+handles, startup may repair missing keyframes or a completed `.active` rename only when a pinned
+file matches the recorded identity, size, initialization, fragments, and existing keyframes.
+Finalization, coverage, and event links commit together. Offline files, changed evidence, and
+maintenance/allocation conflicts retain their references. The pass attempts at most 64 candidates
+within a shared five-second cooperative deadline; a durable cursor advances past unresolved files
+on later starts. Filesystem calls can exceed the cooperative deadline. Disabled drafts retain the
+original legacy startup behavior. The catalog regression selection passed 197 tests with one
+existing ignored test (`target/129-captured-startup-regressions.log`); strict workspace/all-target
+Clippy also passed (`target/129-captured-startup-clippy.log`). This remains a prerequisite for
+application adoption, not completion of migration or activation.
+
 ## Durable location checkpoint
 
 The next catalog slice needs these records and transitions before activating any destination:

@@ -98,12 +98,9 @@ fn physical_verification_matches_the_existing_legacy_catalog_identity_format() -
     catalog
         .handle()
         .update_recording_path(&reference.object.id, &reference.path, true)?;
-    let Reply::LegacyReference(Some(current)) =
-        catalog
-            .handle()
-            .volume_location(Request::LegacyInventory(Action::Lookup(
-                reference.object,
-            )))?
+    let Reply::LegacyReference(Some(current)) = catalog
+        .handle()
+        .volume_location(Request::LegacyInventory(Action::Lookup(reference.object)))?
     else {
         anyhow::bail!("legacy reference missing");
     };
