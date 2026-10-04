@@ -311,7 +311,7 @@ struct Permit {
 impl Permit {
     fn acquire(bytes: Arc<AtomicUsize>) -> Result<Self, u16> {
         bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current <= INGRESS_BYTES_MAX - BODY_BYTES_MAX).then_some(current + BODY_BYTES_MAX)
             })
             .map_err(|_| 503_u16)?;
@@ -530,7 +530,7 @@ impl Fence {
 
 fn bump_epoch(epoch: &std::sync::atomic::AtomicU64) {
     epoch
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
             value.checked_add(1)
         })
         .expect("callback generation space exhausted");
