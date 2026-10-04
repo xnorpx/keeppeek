@@ -217,6 +217,17 @@ impl RecordingCatalogHandle {
         }
     }
 
+    pub(crate) fn lease_event_keyframe(
+        &self,
+        location: &super::EventKeyframeLocation,
+    ) -> anyhow::Result<LeaseSet> {
+        let keys = BTreeSet::from([(location.recording_id.clone(), location.path.clone())]);
+        match self.read_lease(Request::Snapshots(keys))? {
+            Reply::Snapshots(lease) => Ok(lease),
+            _ => anyhow::bail!("unexpected recording reader reply"),
+        }
+    }
+
     fn read_lease(&self, request: Request) -> anyhow::Result<Reply> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
@@ -642,6 +653,43 @@ mod tests {
         drop(lease);
         drop(handle);
         drop(catalog);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cached_keyframe_lease_blocks_mutation_until_reader_finishes() {
+        let (root, catalog, handle) = fixture("reader-keyframe-lease", true);
+        let fragments = handle
+            .media_fragments_in_range("camera/main", 1000, 3000)
+            .unwrap();
+        let location = super::super::EventKeyframeLocation {
+            event_id: "event".into(),
+            stream_id: "main".into(),
+            event_time_ms: 1000,
+            recording_id: "reader-recording".into(),
+            fragment_sequence: 1,
+            fragment_start_ms: 1000,
+            path: fragments[0].path.clone(),
+            byte_offset: 40,
+            byte_len: 30,
+        };
+        let lease = handle.lease_event_keyframe(&location).unwrap();
+        assert!(handle.delete_recording("reader-recording").is_err());
+        assert!(
+            handle
+                .reader_leases()
+                .conflicts("reader-recording", "")
+                .unwrap()
+        );
+        drop(lease);
+        assert!(
+            !handle
+                .reader_leases()
+                .conflicts("reader-recording", "")
+                .unwrap()
+        );
+        drop(handle);
+        catalog.shutdown();
         std::fs::remove_dir_all(root).unwrap();
     }
 

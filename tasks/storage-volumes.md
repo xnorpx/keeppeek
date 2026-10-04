@@ -217,6 +217,9 @@ behavior; operator drain previews, queued migration, and live policy application
 Playback, scrub, event-search, and export workers retain reader leases for their actual file-use
 lifetime. Leases also cover legacy aliases of named paths. After publication, new readers cannot
 resolve an alias of the retired source. Existing readers finish before its retirement.
+The library keyframe reader validates cached locations through the same catalog lease request
+before opening a file. A stale path is refused even when the old file still exists; the lease
+remains held until the file handle closes.
 
 Catalog authority leases protect both database workers and surviving reader/move workers.
 Validated backup imports, compaction, and legacy path migration use explicit authority transitions;
