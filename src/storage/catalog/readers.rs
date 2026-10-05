@@ -303,7 +303,7 @@ pub(super) async fn execute(
             let fragments =
                 super::media_fragments_in_range(connection, &stream, start, end).await?;
             let keys = fragment_keys(&fragments)?;
-            let keys = owned_locations(connection, keys).await?;
+            let keys = reader_locations(connection, keys).await?;
             Ok(Reply::Fragments(fragments, registry.acquire(keys)?))
         }
         Request::Object {
@@ -326,11 +326,11 @@ pub(super) async fn execute(
                 return Ok(Reply::Object(None));
             };
             let keys = BTreeSet::from([(object.recording_id.clone(), object.path.clone())]);
-            let keys = owned_locations(connection, keys).await?;
+            let keys = reader_locations(connection, keys).await?;
             Ok(Reply::Object(Some((object, registry.acquire(keys)?))))
         }
         Request::Snapshots(keys) => {
-            let keys = owned_locations(connection, keys).await?;
+            let keys = reader_locations(connection, keys).await?;
             Ok(Reply::Snapshots(registry.acquire(keys)?))
         }
         Request::Export(id) => {
@@ -396,7 +396,7 @@ async fn volume_lease(
     registry.acquire(keys)
 }
 
-async fn owned_locations(
+async fn reader_locations(
     connection: &turso::Connection,
     keys: BTreeSet<Key>,
 ) -> anyhow::Result<BTreeSet<Key>> {
@@ -407,8 +407,7 @@ async fn owned_locations(
     let mut owned = BTreeSet::new();
     for (id, path) in keys {
         let mut rows = connection.query(
-            "SELECT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind = 'recording' AND a.state != 'cancelled' AND (a.object_id = r.id OR a.destination_path = replace(r.path, char(92), '/') COLLATE NOCASE))
-             FROM recording_files r WHERE r.id = ?1 AND r.path = ?2 AND r.cleanup_pending = 0
+            "SELECT 1 FROM recording_files r WHERE r.id = ?1 AND r.path = ?2 AND r.cleanup_pending = 0
              AND NOT EXISTS (SELECT 1 FROM storage_recording_retirements WHERE recording_id = r.id AND complete = 0)
              AND NOT EXISTS (SELECT 1 FROM storage_recording_recovery q JOIN storage_volume_allocations a ON a.operation=q.operation
                  WHERE q.complete=0 AND (q.recording_id=r.id OR a.destination_path=replace(r.path,char(92),'/') COLLATE NOCASE))
@@ -417,14 +416,10 @@ async fn owned_locations(
              AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE (recording_id = r.id OR replace(path, char(92), '/') = replace(r.path, char(92), '/') COLLATE NOCASE) AND active = 1)",
             (id.as_str(), path.as_str()),
         ).await?;
-        let row = rows.next().await?.ok_or_else(|| {
+        rows.next().await?.ok_or_else(|| {
             anyhow::anyhow!("recording reader location changed or is unavailable")
         })?;
-        // Legacy archive rotation precedes its catalog path update. It cannot use
-        // this fence until its owner adopts the location transition protocol.
-        if row.get::<i64>(0)? != 0 {
-            owned.insert((id, path));
-        }
+        owned.insert((id, path));
     }
     Ok(owned)
 }
@@ -515,11 +510,19 @@ pub(super) async fn ensure_path_change_idle(
     destination: &str,
 ) -> anyhow::Result<()> {
     let mut rows = connection
-        .query("SELECT path FROM recording_files WHERE id = ?1", [id])
+        .query(
+            "SELECT path, EXISTS (SELECT 1 FROM storage_volume_allocations a
+         WHERE a.kind='recording' AND a.state!='cancelled' AND
+         (a.object_id=r.id OR a.destination_path=replace(r.path,char(92),'/') COLLATE NOCASE
+          OR a.destination_path=replace(?2,char(92),'/') COLLATE NOCASE))
+         FROM recording_files r WHERE id=?1",
+            (id, destination),
+        )
         .await?;
     if let Some(row) = rows.next().await? {
         let old: String = row.get(0)?;
-        if old == destination {
+        // Legacy archive rotation renames first; tracking readers must not reject its later update.
+        if old == destination || row.get::<i64>(1)? == 0 {
             return Ok(());
         }
     }
@@ -737,7 +740,7 @@ mod tests {
             .leased_media_fragments_in_range("camera/main", 1000, 3000)
             .unwrap();
         assert!(
-            !handle
+            handle
                 .reader_leases()
                 .conflicts("reader-recording", "")
                 .unwrap()
@@ -747,7 +750,7 @@ mod tests {
             .unwrap();
         assert!(handle.lease_media_fragments(&fragments).is_err());
         assert!(
-            !handle
+            handle
                 .reader_leases()
                 .conflicts("reader-recording", "")
                 .unwrap()
@@ -1087,6 +1090,113 @@ mod tests {
         );
         drop(handle);
         drop(catalog);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn legacy_reader_leases_survive_promotion_and_source_publication() {
+        let (root, catalog, handle) = fixture("legacy-reader-promotion", false);
+        let source = root.join("reader.mp4");
+        handle
+            .update_recording_path("reader-recording", &source, true)
+            .unwrap();
+        let source_text = source.to_string_lossy().into_owned();
+        let alias = alternate_separators(&source_text);
+        insert_alias(&handle, &alias);
+        let (_, recording_lease) = handle
+            .leased_media_fragments_in_range("camera/main", 1000, 3000)
+            .unwrap();
+        let (_, alias_lease) = handle
+            .leased_media_fragments_in_range("alias/main", 1000, 3000)
+            .unwrap();
+        assert!(
+            handle
+                .reader_leases()
+                .conflicts("reader-recording", "")
+                .unwrap()
+        );
+        assert!(
+            handle
+                .reader_leases()
+                .conflicts("unrelated", &source_text)
+                .unwrap()
+        );
+        // ponytail: Existing reservation and publication helpers simulate promotion.
+        assert_eq!(named_path(&root, &handle), source_text);
+        publish_reader_move(&handle, &root);
+        assert!(
+            handle
+                .reader_leases()
+                .conflicts("reader-recording", &source_text)
+                .unwrap()
+        );
+        assert!(
+            handle
+                .leased_media_fragments_in_range("alias/main", 1000, 3000)
+                .is_err()
+        );
+        drop(recording_lease);
+        assert!(
+            handle
+                .reader_leases()
+                .conflicts("reader-recording", &source_text)
+                .unwrap()
+        );
+        drop(alias_lease);
+        assert!(
+            !handle
+                .reader_leases()
+                .conflicts("reader-recording", &source_text)
+                .unwrap()
+        );
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tracked_legacy_reader_allows_raw_archive_rename_before_catalog_path_update() {
+        let (root, catalog, handle) = fixture("legacy-reader-archive-rename", false);
+        let source = root.join("reader.mp4");
+        let destination = root.join("archive.mp4");
+        std::fs::write(&source, [7_u8; 120]).unwrap();
+        handle
+            .update_recording_path("reader-recording", &source, true)
+            .unwrap();
+        let (old, lease) = handle
+            .leased_media_fragments_in_range("camera/main", 1000, 3000)
+            .unwrap();
+        assert!(
+            handle
+                .reader_leases()
+                .conflicts("reader-recording", "")
+                .unwrap()
+        );
+        std::fs::rename(&source, &destination).unwrap();
+        handle
+            .update_recording_path("reader-recording", &destination, true)
+            .unwrap();
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(&destination).unwrap(), [7_u8; 120]);
+        assert!(handle.lease_media_fragments(&old).is_err());
+        let current = handle
+            .media_fragments_in_range("camera/main", 1000, 3000)
+            .unwrap();
+        assert_eq!(current[0].path, destination.to_string_lossy());
+        assert!(
+            handle
+                .reader_leases()
+                .conflicts("reader-recording", &old[0].path)
+                .unwrap()
+        );
+        drop(lease);
+        assert!(
+            !handle
+                .reader_leases()
+                .conflicts("reader-recording", &old[0].path)
+                .unwrap()
+        );
+        drop(handle);
+        catalog.shutdown();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

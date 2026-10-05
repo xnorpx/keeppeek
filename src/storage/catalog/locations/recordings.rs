@@ -12,8 +12,11 @@ impl super::RecordingCatalogHandle {
 }
 
 pub(super) async fn legacy_bytes(connection: &turso::Connection) -> anyhow::Result<u64> {
-    let mut rows = connection.query("SELECT COALESCE(SUM(file_bytes),0) FROM recording_files r
-        WHERE NOT EXISTS(SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
+    let mut rows = connection.query("SELECT COALESCE(SUM(CASE WHEN p.operation IS NOT NULL THEN owned.bytes ELSE r.file_bytes END),0)
+        FROM recording_files r LEFT JOIN storage_volume_allocations owned
+            ON owned.kind='recording' AND owned.object_id=r.id AND owned.state='published'
+        LEFT JOIN storage_legacy_adoptions p ON p.operation=owned.operation
+        WHERE p.operation IS NOT NULL OR NOT EXISTS(SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
             AND (a.object_id=r.id OR a.destination_path=replace(r.path,char(92),'/') COLLATE NOCASE))", ()).await?;
     to_u64(
         rows.next().await?.expect("sum row").get(0)?,
@@ -124,7 +127,8 @@ async fn begin(
     drop(pending);
     let mut rows = connection.query("SELECT a.operation,r.id FROM storage_volume_allocations a
         JOIN recording_files r ON r.id=a.object_id JOIN storage_volume_bindings b ON b.id=a.volume_id
-        WHERE a.volume_id=?1 AND a.kind='recording' AND a.state='published' AND b.writable=1
+        WHERE a.volume_id=?1 AND a.kind='recording' AND a.state='published'
+        AND (b.writable=1 OR EXISTS(SELECT 1 FROM storage_legacy_adoptions p WHERE p.operation=a.operation))
         AND r.finalized=1 AND r.protected=0 AND r.cleanup_pending=0
         AND NOT EXISTS(SELECT 1 FROM storage_recording_retirements WHERE recording_id=r.id)
         AND NOT EXISTS(SELECT 1 FROM recording_maintenance_claims c WHERE c.active=1 AND (c.recording_id=r.id OR replace(c.path,char(92),'/')=a.destination_path COLLATE NOCASE))

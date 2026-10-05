@@ -7,7 +7,9 @@ use std::path::PathBuf;
 
 const SNAPSHOT_BYTES_MAX: usize = 32_768;
 
+pub mod adoption;
 pub mod inventory;
+pub mod roots;
 pub(in crate::storage::catalog) mod startup;
 
 /// Original effective paths, independent of later changes to placement defaults.
@@ -159,3 +161,9 @@ mod startup_repair_tests;
 
 #[cfg(test)]
 mod startup_boundary_tests;
+
+#[cfg(test)]
+mod roots_tests;
+
+#[cfg(test)]
+mod adoption_tests;

@@ -27,6 +27,21 @@ impl std::fmt::Debug for OwnedFile {
 }
 
 impl Root {
+    pub(crate) fn open_legacy_owned(
+        &self,
+        key: &str,
+        identity: &str,
+        bytes: u64,
+    ) -> anyhow::Result<OwnedFile> {
+        let file = self.inspect_legacy(key)?;
+        anyhow::ensure!(
+            file.identity == identity && file.expected_bytes == Some(bytes),
+            "adopted legacy file changed"
+        );
+        file.revalidate()?;
+        Ok(file)
+    }
+
     /// Creates a UUID-named leaf without overwriting or following an existing entry.
     ///
     /// # Errors
