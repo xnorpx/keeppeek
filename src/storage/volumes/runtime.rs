@@ -107,6 +107,43 @@ impl std::fmt::Debug for ReservedFile {
 }
 
 impl Manager {
+    pub(crate) fn deletion_archive(
+        &self,
+        claim: &crate::storage::catalog::maintenance::jobs::claims::Claim,
+    ) -> anyhow::Result<crate::storage::long_term::inspection::Archive> {
+        anyhow::ensure!(
+            claim.volume_operation.is_some(),
+            "named deletion ownership is missing"
+        );
+        let object = Object {
+            kind: Kind::Recording,
+            id: claim.recording_id.clone(),
+        };
+        let Reply::Location(Some(location)) = self
+            .inner
+            .catalog
+            .volume_location(Request::Lookup(object))?
+        else {
+            anyhow::bail!("named deletion location is unavailable");
+        };
+        let index = self
+            .inner
+            .configuration
+            .volumes
+            .iter()
+            .position(|volume| volume.id.as_str() == location.volume)
+            .ok_or_else(|| anyhow::anyhow!("named deletion volume is unavailable"))?;
+        let root = self.inner.writable_root(index)?;
+        let configured_root = &self.inner.configuration.volumes[index].root;
+        anyhow::ensure!(
+            configured_root.join(&location.relative_key) == claim.path
+                && location.bytes == claim.file_bytes,
+            "named deletion location changed"
+        );
+        let archive = crate::storage::long_term::inspection::Archive::open(configured_root)?;
+        archive.require_root(root)?;
+        Ok(archive)
+    }
     pub(crate) fn open_owned(
         &self,
         location: &crate::storage::catalog::locations::Location,

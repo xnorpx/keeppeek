@@ -1,7 +1,8 @@
 //! Reserves a second copy without changing the readable object location.
 
 use super::{
-    Allocation, Location, Object, Publication, Reply, bump_revision, ownership, reserve, to_i64,
+    Allocation, Kind, Location, Object, Publication, Reply, bump_revision, ownership, reserve,
+    to_i64,
 };
 
 mod cancellation;
@@ -168,6 +169,17 @@ pub(super) async fn begin(connection: &turso::Connection, intent: &Intent) -> an
     super::recordings::ensure_active(connection, &intent.object).await?;
     super::images::retirement::ensure_not_retiring(connection, &intent.object).await?;
     super::export_cleanup::ensure_active(connection, &intent.object).await?;
+    if intent.object.kind == Kind::Recording {
+        let mut claims = connection.query("SELECT 1 FROM recording_maintenance_claims c
+            JOIN storage_volume_allocations a ON a.kind='recording' AND a.object_id=?1 AND a.state='published'
+            WHERE c.active=1 AND (c.recording_id=a.object_id
+                OR replace(c.path,char(92),'/')=a.destination_path COLLATE NOCASE) LIMIT 1",
+            [intent.object.id.as_str()]).await?;
+        anyhow::ensure!(
+            claims.next().await?.is_none(),
+            "recording deletion owns this object"
+        );
+    }
     let mut existing = connection.query("SELECT kind, object_id, source_revision, destination_operation FROM storage_volume_moves WHERE id = ?1", [intent.id.as_str()]).await?;
     if let Some(row) = existing.next().await? {
         anyhow::ensure!(
@@ -518,7 +530,7 @@ async fn publish(connection: &turso::Connection, job: &Job) -> anyhow::Result<()
         turso::params![job.id.clone(), format!("retired:{}", job.id)]).await?;
     if job.object.kind == super::Kind::Recording {
         let changed = connection.execute("UPDATE recording_files SET path = ?2, file_identity = ?3 WHERE id = ?1 AND finalized = 1",
-            turso::params![job.object.id.clone(), path, identity]).await?;
+            turso::params![job.object.id.clone(), path, ownership::recording_identity(&identity)?]).await?;
         anyhow::ensure!(changed == 1, "move recording is not finalized");
     }
     connection.execute("UPDATE storage_volume_allocations SET object_id = ?2, state = 'published', bytes = ?3, location_revision = ?4 WHERE operation = ?1",

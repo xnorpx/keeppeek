@@ -6,6 +6,9 @@ use std::path::PathBuf;
 fn managed_startup_fixture() -> anyhow::Result<(PathBuf, StorageConfig)> {
     let root =
         std::env::temp_dir().join(format!("keeppeek-managed-startup-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root)?;
+    #[cfg(unix)]
+    let root = std::fs::canonicalize(root)?;
     let metadata = root.join("metadata");
     std::fs::create_dir_all(&metadata)?;
     let handoff = uuid::Uuid::new_v4();

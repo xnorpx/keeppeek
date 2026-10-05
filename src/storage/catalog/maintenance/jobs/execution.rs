@@ -82,7 +82,36 @@ impl RecordingCatalogHandle {
         archive.validate_removal().inspect_err(|error| {
             report_io_failure("validate_archive", id, error);
         })?;
-        let claims = self.recording_deletion_claims(actor, id)?;
+        self.execute_deletion(actor, id, false, |_| Ok(archive.try_clone()?), authorize)
+    }
+
+    pub(crate) fn execute_named_recording_deletion_authorized(
+        &self,
+        actor: &str,
+        id: &str,
+        manager: &crate::storage::volumes::runtime::Manager,
+        authorize: impl Fn(bool) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Report> {
+        self.execute_deletion(
+            actor,
+            id,
+            true,
+            |claim| manager.deletion_archive(claim),
+            authorize,
+        )
+    }
+
+    fn execute_deletion(
+        &self,
+        actor: &str,
+        id: &str,
+        named: bool,
+        resolve: impl Fn(&Claim) -> anyhow::Result<Archive>,
+        authorize: impl Fn(bool) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Report> {
+        // ponytail: Reuse the durable deletion journal for both ownership modes.
+        authorize(false)?;
+        let claims = self.deletion_claims(actor, id, named)?;
         let lease = Arc::new(());
         for claim in claims {
             authorize(false)?;
@@ -105,10 +134,17 @@ impl RecordingCatalogHandle {
             if matches!(object.status, Status::Deleted | Status::Cancelled) {
                 continue;
             }
+            let archive = match resolve(&claim) {
+                Ok(archive) => archive,
+                Err(_) => {
+                    self.execution_action(actor, id, Action::Fail(claim))?;
+                    continue;
+                }
+            };
             authorize(object.staged_directory.is_none())?;
             if report.cancelled
                 && object.staged_directory.is_none()
-                && self.cancel_claim(actor, id, &claim, archive)?
+                && self.cancel_claim(actor, id, &claim, &archive)?
             {
                 continue;
             }
@@ -329,6 +365,11 @@ pub(super) async fn persist_transition(
         turso::params![job.id.as_str(), claim.recording_id.as_str(), next, epoch.id.as_str(), current_unix_time_ms(), directory.as_ref().map(|identity| identity.0.as_slice())]
     ).await?;
     if next == "deleted" {
+        if let Some(operation) = &claim.volume_operation {
+            let changed = connection.execute("UPDATE storage_volume_allocations SET state='cancelled' WHERE operation=?1 AND kind='recording' AND object_id=?2 AND state='published' AND bytes=?3 AND destination_path=replace(?4,char(92),'/') COLLATE NOCASE", turso::params![operation.as_str(), claim.recording_id.as_str(), i64::try_from(claim.file_bytes)?, claim.path.to_str().ok_or(Failure::Invalid)?]).await?;
+            anyhow::ensure!(changed == 1, Failure::Conflict);
+            crate::storage::catalog::locations::bump_revision(connection).await?;
+        }
         record_deletion(
             connection,
             &claim.recording_id,

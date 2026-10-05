@@ -82,12 +82,31 @@ pub(super) async fn finalize(
             turso::params![
                 id.clone(),
                 to_i64(publication.bytes, "recording bytes")?,
-                publication.file_identity.clone()
+                recording_identity(&publication.file_identity)?
             ],
         )
         .await?;
     super::super::rebuild_recording_coverage(connection, &id).await?;
     publish(connection, publication).await
+}
+
+pub(super) fn recording_identity(identity: &str) -> anyhow::Result<String> {
+    #[cfg(windows)]
+    if let Some((device, file)) = identity.split_once(':')
+        && file.len() == 32
+        && file.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        let bytes = u128::from_str_radix(file, 16)?.to_be_bytes();
+        // NTFS uses a 64-bit file index; keep the full ID in the ownership ledger.
+        anyhow::ensure!(
+            bytes[8..] == [0; 8],
+            "maintenance requires an NTFS file index"
+        );
+        let index = u64::from_le_bytes(bytes[..8].try_into()?);
+        let serial = device.parse::<u64>()? & u64::from(u32::MAX);
+        return Ok(format!("{serial}:{index}"));
+    }
+    Ok(identity.into())
 }
 
 pub(super) async fn publish(

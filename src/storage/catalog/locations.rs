@@ -292,7 +292,7 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     Ok(())
 }
 
-fn identifier(value: &str) -> anyhow::Result<()> {
+pub(in crate::storage::catalog) fn identifier(value: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control),
         "invalid volume ledger identifier"
@@ -630,7 +630,9 @@ async fn revision(connection: &turso::Connection) -> anyhow::Result<u64> {
     )
 }
 
-async fn bump_revision(connection: &turso::Connection) -> anyhow::Result<()> {
+pub(in crate::storage::catalog) async fn bump_revision(
+    connection: &turso::Connection,
+) -> anyhow::Result<()> {
     let count = connection.execute("UPDATE storage_volume_ledger SET revision = revision + 1 WHERE singleton = 1 AND revision < 9223372036854775807", ()).await?;
     anyhow::ensure!(count == 1, "volume ledger revision exhausted");
     Ok(())
