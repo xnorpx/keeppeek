@@ -334,7 +334,17 @@ fn authority_compaction_retries_the_fence_after_snapshot_size_failure() {
     assert!(crate::backup::database::compact_turso_database(&path, &temporary, 1).is_err());
     assert!(super::super::RecordingCatalog::open(&path).is_err());
     assert!(temporary.is_file());
-    crate::backup::database::compact_turso_database(&path, &temporary, 8 * 1024 * 1024).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while let Err(error) =
+        crate::backup::database::compact_turso_database(&path, &temporary, 8 * 1024 * 1024)
+    {
+        assert!(
+            error.to_string().contains("lease is unavailable")
+                && std::time::Instant::now() < deadline,
+            "compaction must succeed once the failed attempt releases its leases: {error}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     let (_lease, _connection, authority) = database(&path);
     assert_eq!(authority.generation, 2);
 }
