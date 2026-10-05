@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e64824f6.js";
+            window.path_to_searchindex_js = "searchindex-11f96c56.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -190,9 +190,12 @@ There are no retained server backups, upload reservations, or separate dry-run r
 passwords, access keys, MQTT credentials, webhook URLs, and notification-provider destinations.
 Restrict the ZIP like the live secrets file and delete copies that are no longer needed. Environment
 secret overrides are not copied into the bundle.</p>
-<p><code>recordings.db</code>, MP4 recordings, thumbnail JPEGs, sessions, caches, audit activity, and in-memory
-notification/MQTT work are excluded. The target recorder keeps its local storage paths during
-restore. Protect the recording tree with a separate archive policy when it needs recovery.</p>
+<p>The catalog, MP4 recordings, thumbnail JPEGs, sessions, caches, audit activity, and in-memory
+notification/MQTT work are excluded. The target recorder retains its named volumes, placement,
+and metadata authority during restore. Private root references stay in configuration; the uploaded
+secrets must resolve them to the same target owners. Conflicting or missing references reject the
+apply before mutation. Finish or cancel a pending metadata handoff before importing configuration.
+Protect all owned volume roots with a separate archive policy when they need recovery.</p>
 <h2 id="what-survives-a-restart"><a class="header" href="#what-survives-a-restart">What survives a restart</a></h2>
 <div class="table-wrapper">
 <table>
@@ -204,7 +207,7 @@ restore. Protect the recording tree with a separate archive policy when it needs
 <tr><td>File-backed secrets</td><td>Durable sibling <code>secrets.toml</code>; included in plaintext. Environment overrides remain outside the ZIP.</td></tr>
 <tr><td>Recording metadata, events, coverage and maintenance intent</td><td>Recording catalog data; recover with a consistent catalog and media archive.</td></tr>
 <tr><td>MP4 recordings and event images</td><td>Files in configured storage locations; not part of a configuration ZIP.</td></tr>
-<tr><td>Evidence-export history and artifacts</td><td>Stored in <code>.exports</code> under the long-term recording root, with separate history and artifact expiry; not part of the ZIP.</td></tr>
+<tr><td>Evidence-export history and artifacts</td><td>History belongs to the metadata volume; artifacts belong to export volumes, with separate expiry; not part of the ZIP.</td></tr>
 <tr><td>Diagnostic log filter</td><td>The existing sibling <code>log-filter</code> file persists separately and is not in the two-TOML ZIP.</td></tr>
 <tr><td>Notification delivery jobs, retries, inbox/history, cooldowns and delivery counters</td><td>Runtime memory; reset on restart. Saved rule drafts and active rules remain.</td></tr>
 <tr><td>MQTT pending publications, retries and deduplication history</td><td>Runtime memory; reset on restart. Stored source events are not an automatic replay queue.</td></tr>

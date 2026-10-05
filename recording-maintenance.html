@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e64824f6.js";
+            window.path_to_searchindex_js = "searchindex-11f96c56.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -186,6 +186,12 @@ exclude their recordings from retention and new playback/export resolution until
 the claim reaches a terminal outcome. Never delete recording files directly as a
 substitute for maintenance: that can leave stale catalog entries and unavailable
 evidence links.</p>
+<p>Named-volume deletion follows each recording’s current catalog owner, including
+recordings moved to another named volume. It requires the original bound root to
+be available and writable. Active readers and unfinished moves block removal.
+Failed or interrupted jobs retain capacity ownership until the durable deletion
+checkpoint completes. Restore the same root or finish the conflicting work before
+retrying; do not clear ownership rows or private staging to force progress.</p>
 <p>Startup preserves <code>.active</code> files and their catalog rows. A temporary-looking
 filename does not establish ownership or authorize deletion, in either the
 medium-term or long-term root. Interrupted media remains available for inspection.

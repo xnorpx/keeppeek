@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e64824f6.js";
+            window.path_to_searchindex_js = "searchindex-11f96c56.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -602,13 +602,134 @@ to <code>.event-thumbnails</code> under that same directory. See
 <p>The effective critical threshold is the greater of <code>critical_free_gb</code> and <code>minimum_free_gb</code>.
 If <code>warning_free_gb</code> is zero while the effective critical threshold is nonzero, the warning
 threshold is derived as critical plus hysteresis. Otherwise, warning must be at least critical.
-Use the storage editor’s validated path-migration workflow for moves; do not repoint a live
-recording catalog by editing a path alone.</p>
+Effective media paths come from named owners, and catalog paths come from the metadata binding.
+Use named-volume move controls for stored objects and the confirmed metadata restart workflow
+for the catalog. The general storage editor displays these paths read-only.</p>
 <p>These values are policy defaults, not a capacity guarantee. Storage budgets and free-space thresholds
 must suit the actual disks and camera bitrates. A configuration ZIP preserves the target’s existing
 storage paths on apply; it does not move a recording archive. See
 <a href="./upgrades-and-migrations.html#move-storage-deliberately">storage migration</a> and
 <a href="./recording-archive-recovery.html">recording archive recovery</a>.</p>
+<p><code>event_thumbnail_max_mb</code> applies to catalog-referenced image files in the configured thumbnail
+directory. Unindexed images and temporary files are excluded from this quota and are not removed
+at startup. Missing image files retain their catalog references so that restoring an unavailable
+thumbnail directory does not require rebuilding event metadata.</p>
+<h3 id="named-storage-volumes"><a class="header" href="#named-storage-volumes">Named storage volumes</a></h3>
+<p><code>[storage.named_volumes]</code> stores volume and placement definitions in <code>config.toml</code>.
+A fresh installation creates four private roots beneath <code>storage/</code> beside the configuration:
+<code>media</code> for active and archived recordings, <code>exports</code>, <code>images</code> for thumbnails, and <code>metadata</code>
+for the catalog and export history. Global placement rules use these roots without fallback.
+The initial media and image caps use <code>long_term_max_gb</code> and <code>event_thumbnail_max_mb</code>;
+after initialization, edit each volume’s byte cap directly.</p>
+<p>Saved volume and placement changes take effect after restart and affect future placement.
+Existing objects keep their catalog owner. Create custom root directories before enabling them.
+A missing bound root stays unavailable; startup does not recreate it or redirect writes.</p>
+<p>The optional section has two arrays: <code>volumes</code> (at most 32) and <code>placement</code> (at most 256).
+Both default to empty. Ordinary settings updates that omit <code>named_volumes</code> preserve the section.
+An explicit empty section requests removal, subject to ownership and metadata checks.
+Unknown fields in this section and its entries are rejected.</p>
+<p>Administrator runtime settings carry these definitions in the optional protobuf <code>named_volumes</code>
+field. Updates that include it require the current configuration revision. String fields,
+including IDs, roots, selectors, and candidate IDs, support existing secret references.
+Validation uses resolved values; saved settings and responses retain the references.</p>
+<p>Administrators can edit volumes under <strong>Settings → Storage → Named storage volumes</strong>.
+Byte limits use exact whole-byte values. Refreshing status or a failed save preserves unsaved
+inputs. Removing a saved volume definition requires confirmation. Root probes inspect existing
+configured roots without creating directories; a successful probe does not establish write
+permission. Individual move preview, confirmation, status, and cancellation appear only
+when a volume runtime is available. The same runtime controls let administrators stop new
+writes to a volume or clear that operator drain, after confirmation. Already admitted writes
+finish normally. Clearing an operator drain does not override a draining or read-only saved
+configuration. Operator drain survives restart and does not itself move existing media.</p>
+<p>The move controls preview up to 16 objects from the loaded page and show exact file and byte
+totals before confirmation. Each confirmed object has a durable move job. Stop dispatch after
+the current request or cancel admitted work under <strong>Move jobs</strong>. Refresh jobs to inspect progress;
+refresh the object page after completed batches. A lost confirmation reply is checked against
+the same job identity before further work is admitted.</p>
+<p>Removing a bound definition requires stopped writes, zero owned and reserved bytes, and completed
+cleanup receipts. An offline enabled runtime must be stopped through operator drain, or disabled
+and restarted before removing an unbound definition. Remove archive-policy references and restart
+before removing their destination; already captured archive work must finish first. Removal keeps
+the catalog’s immutable binding and completed history and does not delete files.
+The removal check inspects up to 1,024 pending archive policies; finish a larger backlog before
+retrying removal.</p>
+<p><code>[storage.metadata]</code> is a server-managed binding, not an ordinary placement draft. It contains
+<code>volume_id</code>, <code>catalog_file</code>, <code>history_file</code>, <code>catalog_id</code>, <code>generation</code>, <code>filesystem</code>, and
+<code>root_identity</code>. The filenames use one shared canonical UUID with <code>catalog-&lt;uuid&gt;.db</code> and
+<code>exports-&lt;uuid&gt;.json</code>. The catalog ID is a UUID, generation is 1 through <code>i64::MAX</code>, and both
+filesystem identity strings contain 1–256 bytes without control characters. The volume must
+exist, have the metadata role, and be enabled; a separate <code>recording_catalog_path</code> override is
+incompatible with this binding. Startup verifies the saved directory and catalog authority.
+It does not create an empty replacement catalog if the selected owner is unavailable.</p>
+<p>Ordinary settings cannot install, clear, disable, or relocate the metadata owner. Unrelated
+updates preserve its existing secret references. Use the administrator metadata preview and confirmation controls to schedule relocation;
+do not construct or edit this binding manually.
+The internal <code>[storage.metadata_pending]</code> restart record contains a 32-byte source-configuration
+digest and the target binding. It retains the previous effective paths until a stopped transfer
+verifies both the catalog snapshot and copied export history, then atomically commits the new
+binding. Failed or interrupted transfers retain their source files and pending state for retry.
+Pending handoffs reject effective storage-setting changes while allowing unrelated settings saves.
+Startup rechecks available space, the byte cap, and the larger minimum/critical free-space reserve
+before fencing the source. Managed export history must already exist, fit within 8 MiB, and contain
+valid, uniquely owned jobs; missing or invalid history is preserved and reported unavailable.</p>
+<p>In Settings, add and save a disabled volume with only the Metadata role, then use
+<strong>Preview metadata move</strong> to check its root and required space. <strong>Confirm metadata move</strong>
+saves the plan without interrupting recording. The service restart copies the latest catalog
+and export history before workers resume. Cancel a pending plan before restarting if needed.
+Returning to an earlier metadata volume uses the same workflow and a new catalog generation;
+never point the service at a retained old catalog. An interrupted startup leaves the plan available
+for retry after its reported storage problem is corrected.</p>
+<p>Each <code>[[storage.named_volumes.volumes]]</code> entry has these fields:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>id</code></td><td>String</td><td>Required</td><td>1–64 lowercase ASCII letters, digits, <code>_</code> or <code>-</code>; <code>legacy-</code> is reserved.</td></tr>
+<tr><td><code>root</code></td><td>Path string</td><td>Required</td><td>Absolute UTF-8 directory path, at most 4096 bytes and 64 components; no traversal, control characters, duplicate or nested roots. Windows requires a local drive path and rejects device names and reserved characters.</td></tr>
+<tr><td><code>roles</code></td><td>Role array</td><td>Required</td><td>1–5 distinct values: <code>active</code>, <code>archive</code>, <code>export</code>, <code>thumbnail</code>, <code>metadata</code>. Only one bound metadata owner is active; other metadata-capable volumes can be relocation targets.</td></tr>
+<tr><td><code>state</code></td><td>State</td><td><code>enabled</code></td><td><code>enabled</code> admits new writes; <code>read_only</code> and <code>draining</code> retain reads but stop new writes; <code>disabled</code> does not open the root.</td></tr>
+<tr><td><code>priority</code></td><td><code>u16</code></td><td><code>0</code></td><td>Smaller values rank first for priority placement.</td></tr>
+<tr><td><code>capacity_bytes</code></td><td>Optional <code>u64</code></td><td>No cap</td><td>Positive owned-data byte cap.</td></tr>
+<tr><td><code>minimum_free_bytes</code></td><td><code>u64</code></td><td><code>0</code></td><td>Minimum filesystem free space to retain.</td></tr>
+<tr><td><code>critical_free_bytes</code></td><td><code>u64</code></td><td><code>0</code></td><td>Placement retains the larger of minimum and critical free space.</td></tr>
+<tr><td><code>warning_free_bytes</code></td><td><code>u64</code></td><td><code>0</code></td><td>Must be at least both minimum and critical free space.</td></tr>
+<tr><td><code>sources</code>, <code>groups</code></td><td>String arrays</td><td>Empty</td><td>At most 256 unique exact selectors each, 1–256 bytes without control or surrounding whitespace. Empty lists allow all sources. When either list is populated, matching either a source or a group permits placement. Metadata volumes cannot restrict sources or groups.</td></tr>
+</tbody>
+</table>
+</div>
+<p>All byte thresholds must fit a signed TOML 64-bit integer. A root can use the existing
+<code>{secret:KEY}</code> or <code>{secret:KEY|url}</code> resolver; unchanged root references are preserved during
+settings updates. Paths are redacted from the volume model’s debug output. Lexical validation
+does not establish filesystem identity, writability, or protection against path replacement.</p>
+<p>On Windows, owned storage requires local NTFS volumes with persistent ACLs and directory
+metadata flushing. ReFS, FAT, and network shares are not qualified for owned writes or deletion;
+they remain unavailable rather than bypassing these checks. Keep the configuration directory
+on NTFS when using the automatically created default volumes. An unavailable bound root is
+never recreated.</p>
+<p>Each <code>[[storage.named_volumes.placement]]</code> entry contains:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>role</code></td><td>Role</td><td>Required</td><td>One of the roles above.</td></tr>
+<tr><td><code>source</code>, <code>group</code></td><td>Optional string</td><td>Absent</td><td>Select either a source or a group, using the same string limits as volume allowlists. Absence selects the role default.</td></tr>
+<tr><td><code>candidates</code></td><td>Volume ID array</td><td>Required</td><td>1–8 distinct configured volumes supporting the role.</td></tr>
+<tr><td><code>strategy</code></td><td>Strategy</td><td><code>priority</code></td><td><code>priority</code> ranks smaller priorities first; <code>free_space</code> ranks usable free bytes after reserve and cap limits. Ties use volume ID order.</td></tr>
+<tr><td><code>allow_fallback</code></td><td>Boolean</td><td><code>false</code></td><td>False limits selection to the first candidate. True permits ranking all eligible candidates in the explicit pool.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Source rules take precedence over group rules, which take precedence over role defaults. A failed
+override never falls through to a broader rule. Duplicate selectors for a role are invalid.
+Metadata placement requires one global candidate and forbids fallback. Selection is a pure proposal;
+it does not reserve capacity, authorize writes, or alter existing object locations.</p>
+<p>Source: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/storage/volumes.rs">named-volume model</a>.
+Windows path validation follows the
+<a href="https://learn.microsoft.com/windows/win32/fileio/naming-a-file">Windows filename rules</a>.</p>
 <h2 id="battery-wake"><a class="header" href="#battery-wake">Battery wake</a></h2>
 <p>Type: <code>BatteryWakeConfig</code>, section <code>[battery_wake]</code>. This is the Reolink wake middleman service,
 not a general Wake-on-LAN or scheduled privacy configuration.</p>
