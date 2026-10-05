@@ -11,6 +11,8 @@ use super::RecordingCatalogHandle;
 use crate::storage::metadata::TimelineEvent;
 use crate::storage::retention::{Interval, MAX_EVENTS, MAX_RULES, Policy, Reason, Recording};
 
+pub(super) mod event_index;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredDecision {
     pub recording_id: String,
@@ -84,10 +86,48 @@ pub(super) async fn initialize(connection: &turso::Connection) -> Result<()> {
          END;",
         )
         .await?;
+    event_index::initialize(connection).await?;
     Ok(())
 }
 
 impl RecordingCatalogHandle {
+    /// Rebuilds at most 256 temporal index entries. Returns true when the index is current.
+    /// This maintains derived metadata and does not authorize recording deletion.
+    pub fn reconcile_retention_events(&self, max_rows: usize) -> Result<bool> {
+        ensure!(
+            (1..=MAX_EVENTS).contains(&max_rows),
+            "retention event index batch must be 1 to 256"
+        );
+        let started = Instant::now();
+        self.check_retention_available(started)?;
+        let owner = self
+            .retention
+            .upgrade()
+            .context("retention catalog is closed")?;
+        let connection = owner
+            .connection
+            .try_lock()
+            .map_err(|_| anyhow::anyhow!("retention catalog is busy or poisoned"))?;
+        pollster::block_on(async {
+            connection.execute_batch("BEGIN IMMEDIATE").await?;
+            let result = async {
+                owner.authority.verify_transaction(&connection)?;
+                let complete = event_index::reconcile(&connection, max_rows).await?;
+                self.check_retention_available(started)?;
+                connection.execute_batch("COMMIT").await?;
+                Ok(complete)
+            }
+            .await;
+            if result.is_err() {
+                connection
+                    .execute_batch("ROLLBACK")
+                    .await
+                    .context("rollback retention event index")?;
+            }
+            result
+        })
+    }
+
     /// Commits current canonical evidence without shortening an existing deadline.
     /// Revisions must increase when rules change. This does not activate a policy or fence cleanup.
     pub fn commit_retention(
@@ -273,37 +313,7 @@ async fn matching_events(
     connection: &turso::Connection,
     snapshot: &Snapshot,
 ) -> Result<Vec<TimelineEvent>> {
-    let mut rows = connection
-        .query(
-            "SELECT substr(id, 1, 257), camera_id, stream, substr(source, 1, 65), substr(kind, 1, 257),
-                start_time_ms, end_time_ms, NULL, NULL, NULL, NULL, revision,
-                NULL, '[]', NULL, '', NULL, NULL, NULL
-         FROM recording_events WHERE camera_id = ?1 AND (stream IS NULL OR stream = ?2)
-           AND start_time_ms < ?4
-           AND (end_time_ms IS NULL OR end_time_ms > ?3
-                OR (end_time_ms = start_time_ms AND start_time_ms >= ?3))
-         ORDER BY start_time_ms, id LIMIT ?5",
-            turso::params![
-                snapshot.camera_id.as_str(),
-                snapshot.stream_id.as_str(),
-                snapshot.interval.start_ms(),
-                snapshot.interval.end_ms(),
-                (MAX_EVENTS + 1) as i64
-            ],
-        )
-        .await?;
-    let mut events = Vec::with_capacity(MAX_EVENTS);
-    while let Some(row) = rows.next().await? {
-        ensure!(
-            events.len() < MAX_EVENTS,
-            "retention event snapshot limit exceeded"
-        );
-        let event = super::event_from_row(&row, false)?;
-        validate_identity(&event.id)?;
-        validate_identity(&event.kind)?;
-        events.push(event);
-    }
-    Ok(events)
+    event_index::matching(connection, snapshot).await
 }
 
 async fn read_previous(connection: &turso::Connection, id: &str) -> Result<Option<Previous>> {

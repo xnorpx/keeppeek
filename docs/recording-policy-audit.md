@@ -190,8 +190,8 @@ Invalid stored metadata and oversized event snapshots fail without replacing a p
 The ledger uses one additional connection to the same database, a nonblocking connection lock,
 the catalog's two-second database busy timeout, and at most 256 event rows plus one overflow row.
 Metadata reads are bounded. A transaction that exceeds the elapsed-time budget rolls back before
-commit. This elapsed-time check does not interrupt a running SQL statement: archive-scale query
-latency and indexed candidate traversal still require qualification before runtime activation.
+commit. This elapsed-time check does not interrupt a running SQL statement. The temporal index
+below bounds candidate traversal; archive-scale runtime qualification remains necessary.
 No new settings, background expiry job, cleanup authorization or public protocol fields ship in
 this increment. Global policy activation fencing and bounded late-event reevaluation remain open.
 
@@ -219,3 +219,66 @@ that already owns its connection keeps the catalog locked until that connection 
 Retention reads and commits verify the existing authority. Commit verification runs inside the
 write transaction, so an offline handoff fence rejects the operation without leaving a transaction
 open or changing its prior commitment. These guards do not activate retention cleanup.
+
+### Bounded canonical event traversal
+
+`src/storage/catalog/retention/event_index.rs` derives one temporal bucket per canonical event.
+The bucket is the smallest aligned binary interval containing the event's inclusive timestamp
+range. A finite event uses its exclusive end minus one; a pulse uses its timestamp; an open event
+extends to the largest timestamp. Events crossing the signed timestamp boundary use the root
+bucket. Every actual overlap falls in a queried bucket at its stored level.
+
+A lookup performs at most 130 composite-index seeks: 65 levels for each of the camera-wide and
+logical-stream scopes. It examines at most 256 candidates plus one overflow row, then checks
+canonical geometry and half-open overlap. Coarse buckets can include nonmatching candidates.
+The derived scope key is non-null and distinguishes camera-wide events from every stream name.
+The native plan test requires equality and bucket-range constraints with no sorter. A nullable
+`IS` parameter failed that test because Turso only sought camera and level.
+An oversized candidate set rejects the decision without truncating evidence or changing an
+existing deadline. Elapsed checks reject work exceeding two seconds; they do not interrupt OS I/O.
+
+Canonical insertions and replacement revisions update the index within their transaction.
+Database triggers mark other insertions and temporal changes pending, including the existing
+native-event close path; pending changes for the camera fence commitments until reconciliation.
+An existing database starts with migration incomplete. `reconcile_retention_events` accepts
+1–256 entries per transaction, persists a keyset cursor, resumes after restart and repairs pending
+entries. Index maintenance does not change canonical event revisions. An incomplete migration
+fences all new commitments while leaving prior decisions readable. Index initialization does
+not walk the archive or build an index over its existing canonical rows.
+
+`examples/recording_retention_query.rs` measures metadata-only debug lookup latency with five
+warmup decisions and 30 samples. It uses a 2 MiB thread stack, matching Rust test threads; the
+Windows main-thread stack overflows during debug catalog startup before seeding. Synthetic bulk
+seeding and bounded index preparation are outside the timed decisions. Run with Rust 1.99.0,
+incremental compilation disabled, and `cargo run --example recording_retention_query -- 50000`.
+The unchanged query at `cd870b2` measured median 966,655 µs and p95 1,183,743 µs over 50,000
+historical events. Its native query plan used the camera/start-time index and an order-by sorter.
+The indexed query measured median 19,279 µs and p95 22,031 µs on the same archive workload,
+about 54 times faster at p95. Synthetic seeding took 144,131 ms and bounded index preparation
+took 95,492 ms; neither is part of lookup timing or a live-ingest measurement. Three index tests
+cover signed and half-open interval geometry and the native composite query plan. Catalog tests
+also cover a pending canonical change, bounded migration with restart and a write failure that
+rolls back the canonical event revision along with its derived index.
+This harness does not establish RSS, live ingest cost or the 127-source/30-day AC-7 budgets.
+
+The archived [baseline harness](./verification/recording-retention/baseline.rs) excludes only
+the indexed implementation's untimed reconciliation step. [Baseline measurements](./verification/recording-retention/baseline.json)
+and [indexed measurements](./verification/recording-retention/indexed.json) record the environment
+and histogram results. To reproduce the baseline on Windows from this branch, keep the same
+Rust and incremental-compilation settings and use a fresh worktree:
+
+```powershell
+git worktree add --detach ../keeppeek-retention-baseline cd870b2
+Copy-Item docs/verification/recording-retention/baseline.rs ../keeppeek-retention-baseline/examples/recording_retention_query.rs
+cargo run --manifest-path ../keeppeek-retention-baseline/Cargo.toml --example recording_retention_query -- 50000
+```
+
+Observed on 2026-10-05, Windows, Rust 1.99.0, `CARGO_INCREMENTAL=0`, slow tests enabled:
+all 25 retention tests and the full `check.bat` passed. The full gate passed 3,220 Rust tests
+(26 configured skips), workspace Clippy and formatting, zero-error/zero-warning Svelte checks,
+409 Bun tests, 259 browser component/visual tests, 57 compatibility tests and 284 Playwright
+tests (two existing capability skips). Markdown formatting and mdbook 0.5.4 passed separately.
+An initial full browser run had one Chromium `ERR_NO_BUFFER_SPACE` CSS-load failure; its
+artifacts were preserved. The unchanged case passed alone and the unchanged full gate passed
+on rerun. The resource observations did not establish the transport failure's cause.
+These checks qualify the index increment, not settings activation or physical expiry.
