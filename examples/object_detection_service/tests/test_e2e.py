@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -109,20 +110,12 @@ def test_two_stream_no_model_client_publishes_high_quality_evidence(tmp_path: Pa
             camera_configs.append(read_camera_config(camera))
 
         port = unused_loopback_port()
-        catalog_path = tmp_path / "recordings.db"
-        storage_path = tmp_path / "recordings"
-        thumbnail_path = tmp_path / "event-thumbnails"
-        storage_path.mkdir()
         config_path = tmp_path / "config.toml"
         config_path.write_text(
             f"""host = "127.0.0.1"
 port = {port}
 
 [storage]
-medium_term_path = {json.dumps(str(storage_path))}
-long_term_path = {json.dumps(str(storage_path))}
-recording_catalog_path = {json.dumps(str(catalog_path))}
-event_thumbnail_path = {json.dumps(str(thumbnail_path))}
 event_thumbnail_max_mb = 16
 short_term_secs = 5
 medium_term_secs = 60
@@ -161,6 +154,7 @@ long_term_max_gb = 0
                 log_path=server_log_path,
             )
 
+        catalog_path, storage_path, thumbnail_path = managed_storage_paths(config_path)
         client_environment = os.environ.copy()
         client_environment["KEEPPEEK_ACCESS_KEY"] = DIAGNOSTIC_ACCESS_KEY_SENTINEL
         command = [
@@ -461,19 +455,12 @@ def test_ultralytics_detection_reaches_local_keeppeek_catalog(tmp_path: Path) ->
         camera_config = read_camera_config(camera)
 
         port = unused_loopback_port()
-        catalog_path = tmp_path / "recordings.db"
-        storage_path = tmp_path / "recordings"
-        storage_path.mkdir()
         config_path = tmp_path / "config.toml"
         config_path.write_text(
             f"""host = "127.0.0.1"
 port = {port}
 
 [storage]
-medium_term_path = {json.dumps(str(storage_path))}
-long_term_path = {json.dumps(str(storage_path))}
-recording_catalog_path = {json.dumps(str(catalog_path))}
-event_thumbnail_path = {json.dumps(str(tmp_path / "event-thumbnails"))}
 event_thumbnail_max_mb = 16
 short_term_secs = 5
 medium_term_secs = 60
@@ -509,6 +496,7 @@ long_term_max_gb = 0
             log_path=server_log_path,
         )
 
+        catalog_path = managed_storage_paths(config_path)[0]
         detector_log = detector_log_path.open("w", encoding="utf-8")
         handles.append(detector_log)
         detector_environment = os.environ.copy()
@@ -897,6 +885,21 @@ def current_recording_bytes(storage_path: Path) -> int:
 def detector_published(log_path: Path) -> bool:
     log = read_log(log_path)
     return "loading Ultralytics model" in log and "published detection event_id=" in log
+
+
+def managed_storage_paths(config_path: Path) -> tuple[Path, Path, Path]:
+    with config_path.open("rb") as configuration:
+        storage = tomllib.load(configuration)["storage"]
+    metadata = storage["metadata"]
+    volumes = storage["named_volumes"]["volumes"]
+    owner = next(volume for volume in volumes if volume["id"] == metadata["volume_id"])
+    media = next(volume for volume in volumes if "active" in volume["roles"])
+    images = next(volume for volume in volumes if "thumbnail" in volume["roles"])
+    return (
+        Path(owner["root"]) / metadata["catalog_file"],
+        Path(media["root"]),
+        Path(images["root"]),
+    )
 
 
 def published_event(catalog_path: Path) -> tuple[str, str, str, str, str, int, float, str] | None:
