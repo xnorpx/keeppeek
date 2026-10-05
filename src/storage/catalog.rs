@@ -30,6 +30,7 @@ use std::{
 };
 
 pub mod maintenance;
+pub mod retention;
 pub mod workflow;
 
 const COMMAND_CAPACITY: usize = 256;
@@ -332,12 +333,15 @@ pub(crate) struct CatalogStreamCoverage {
 pub struct RecordingCatalogHandle {
     tx: SyncSender<Command>,
     search_tx: SyncSender<SearchCommand>,
+    retention: std::sync::Weak<std::sync::Mutex<turso::Connection>>,
+    retention_shutdown: Arc<AtomicBool>,
 }
 
 pub struct RecordingCatalog {
     handle: RecordingCatalogHandle,
     thread: Option<JoinHandle<()>>,
     maintenance_shutdown: Arc<AtomicBool>,
+    retention_connection: Option<Arc<std::sync::Mutex<turso::Connection>>>,
     maintenance: Option<JoinHandle<()>>,
     search_thread: Option<JoinHandle<()>>,
 }
@@ -604,24 +608,24 @@ impl RecordingCatalog {
         let search_connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
         search_connection.busy_timeout(BUSY_TIMEOUT)?;
-        pollster::block_on(initialize_schema(&connection))?;
-        let legacy_recordings =
-            pollster::block_on(legacy_recordings_without_keyframes(&connection))?;
-        pollster::block_on(backfill_recording_file_sizes(
-            &connection,
-            &legacy_recordings,
-        ))?;
+        let legacy_recordings = pollster::block_on(prepare_catalog(&connection))?;
 
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (search_tx, search_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
-        let handle = RecordingCatalogHandle { tx, search_tx };
+        let maintenance_shutdown = Arc::new(AtomicBool::new(false));
+        let retention_connection = retention::connect(&database)?;
+        let handle = RecordingCatalogHandle {
+            tx,
+            search_tx,
+            retention: Arc::downgrade(&retention_connection),
+            retention_shutdown: maintenance_shutdown.clone(),
+        };
         let thread = std::thread::Builder::new()
             .name("recording-catalog".to_owned())
             .spawn(move || run_catalog(connection, rx))?;
         let search_thread = std::thread::Builder::new()
             .name("recording-catalog-search".to_owned())
             .spawn(move || run_search_catalog(search_connection, search_rx))?;
-        let maintenance_shutdown = Arc::new(AtomicBool::new(false));
         let maintenance = (!legacy_recordings.is_empty())
             .then(|| {
                 let handle = handle.clone();
@@ -636,6 +640,7 @@ impl RecordingCatalog {
             handle,
             thread: Some(thread),
             maintenance_shutdown,
+            retention_connection: Some(retention_connection),
             maintenance,
             search_thread: Some(search_thread),
         })
@@ -659,6 +664,7 @@ impl RecordingCatalog {
 
     fn shutdown_inner(&mut self) {
         self.maintenance_shutdown.store(true, Ordering::Release);
+        self.retention_connection.take();
         self.wait_for_maintenance();
         let _ = self.handle.search_tx.send(SearchCommand::Shutdown);
         if let Some(search_thread) = self.search_thread.take()
@@ -767,6 +773,16 @@ pub(crate) fn rewrite_recording_paths(
 }
 
 impl RecordingCatalogHandle {
+    #[cfg(test)]
+    fn test_handle(tx: SyncSender<Command>, search_tx: SyncSender<SearchCommand>) -> Self {
+        Self {
+            tx,
+            search_tx,
+            retention: std::sync::Weak::new(),
+            retention_shutdown: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub fn upsert_recording(&self, recording: CatalogRecording) -> anyhow::Result<()> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
@@ -2709,9 +2725,21 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     backfill_event_presentation(connection, icon_key_added).await?;
     apply_event_search_backfill(connection).await?;
     backfill_recording_coverage(connection).await?;
+    initialize_operational_schema(connection).await?;
+    Ok(())
+}
+
+async fn prepare_catalog(connection: &turso::Connection) -> anyhow::Result<Vec<LegacyRecording>> {
+    initialize_schema(connection).await?;
+    let recordings = legacy_recordings_without_keyframes(connection).await?;
+    backfill_recording_file_sizes(connection, &recordings).await?;
+    Ok(recordings)
+}
+
+async fn initialize_operational_schema(connection: &turso::Connection) -> anyhow::Result<()> {
     workflow::initialize(connection).await?;
     maintenance::jobs::initialize(connection).await?;
-    Ok(())
+    retention::initialize(connection).await
 }
 
 async fn ensure_column(

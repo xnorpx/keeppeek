@@ -22,6 +22,14 @@ pub struct Interval {
 }
 
 impl Interval {
+    pub const fn start_ms(self) -> i64 {
+        self.start_ms
+    }
+
+    pub const fn end_ms(self) -> i64 {
+        self.end_ms
+    }
+
     pub fn new(start_ms: i64, end_ms: i64) -> Result<Self> {
         if start_ms >= end_ms {
             bail!("retention interval must have a start before its end");
@@ -95,7 +103,7 @@ impl Rule {
     }
 }
 
-fn validate_selector(value: &str) -> Result<()> {
+pub(super) fn validate_selector(value: &str) -> Result<()> {
     if value.is_empty()
         || value.len() > MAX_SELECTOR_BYTES
         || !value
@@ -175,7 +183,8 @@ pub struct Decision<'a> {
 }
 
 /// The obligation that controls the resulting retention decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Reason {
     MatchingRules,
     CommittedDeadline,
