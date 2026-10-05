@@ -69,16 +69,7 @@ pub fn verify_recording(
         current.path == reference.path && current.revision == reference.revision,
         "legacy reference changed"
     );
-    let Reply::LegacyPaths(Some(paths)) = catalog.volume_location(Request::LegacyPaths)? else {
-        anyhow::bail!("legacy roots have not been captured");
-    };
-    // ponytail: the two captured recording roots suffice; no filesystem discovery is needed.
-    use crate::storage::catalog::locations::legacy::roots::Role;
-    let role = [Role::Archive, Role::Active]
-        .into_iter()
-        .filter(|role| reference.path.starts_with(role.path(&paths)))
-        .max_by_key(|role| role.path(&paths).components().count())
-        .ok_or_else(|| anyhow::anyhow!("legacy recording is outside captured roots"))?;
+    let (paths, role) = recording_role(catalog, reference)?;
     let path = role.path(&paths);
     let key = reference
         .path
@@ -107,6 +98,26 @@ pub fn verify_recording(
         anyhow::bail!("invalid legacy verification reply");
     };
     Ok(*verified)
+}
+
+pub(crate) fn recording_role(
+    catalog: &RecordingCatalogHandle,
+    reference: &Reference,
+) -> anyhow::Result<(
+    crate::storage::catalog::locations::legacy::LegacyPaths,
+    crate::storage::catalog::locations::legacy::roots::Role,
+)> {
+    use crate::storage::catalog::locations::legacy::roots::Role;
+    let Reply::LegacyPaths(Some(paths)) = catalog.volume_location(Request::LegacyPaths)? else {
+        anyhow::bail!("legacy roots have not been captured");
+    };
+    // ponytail: The two captured recording roots suffice; no filesystem discovery is needed.
+    let role = [Role::Archive, Role::Active]
+        .into_iter()
+        .filter(|role| reference.path.starts_with(role.path(&paths)))
+        .max_by_key(|role| role.path(&paths).components().count())
+        .ok_or_else(|| anyhow::anyhow!("legacy recording is outside captured roots"))?;
+    Ok((*paths, role))
 }
 
 #[cfg(test)]
@@ -164,7 +175,7 @@ pub fn capture_roots(
     Ok(())
 }
 
-fn captured_root(
+pub(crate) fn captured_root(
     catalog: &RecordingCatalogHandle,
     role: crate::storage::catalog::locations::legacy::roots::Role,
 ) -> anyhow::Result<Option<super::root::Root>> {

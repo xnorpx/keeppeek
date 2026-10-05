@@ -1359,6 +1359,7 @@ message StorageVolumeCommand {
     ConfirmStorageMetadata confirm_metadata = 12;
     GetStorageMetadata metadata = 13;
     CancelStorageMetadata cancel_metadata = 14;
+    ListLegacyStorageObjects legacy_objects = 15;
   }
 }
 // Metadata confirmation stages an offline transfer at the next service restart.
@@ -1399,6 +1400,17 @@ enum StorageObjectKind {
 }
 message StorageObject { StorageObjectKind kind = 1; string id = 2; }
 message ListStorageObjects { string volume_id = 1; StorageObject after = 2; }
+// Lists catalog references without reading files. Initially supports finalized recordings.
+message ListLegacyStorageObjects { StorageObject after = 1; }
+message StorageLegacyObject {
+  StorageObject object = 1;
+  optional uint64 bytes = 2;
+  uint64 revision = 3;
+}
+message StorageLegacyObjectList {
+  repeated StorageLegacyObject objects = 1;
+  StorageObject next_after = 2;
+}
 message PreviewStorageMove {
   StorageObject object = 1;
   string destination_volume_id = 2;
@@ -1453,6 +1465,8 @@ message StorageMovePreview {
   StorageObjectLocation source = 4;
   string destination_volume_id = 5;
   uint32 expires_in_seconds = 6;
+  // Adoption remains in force if the operator later cancels the transfer.
+  bool adopts_legacy = 7;
 }
 message StorageMoveJob {
   string job_id = 1;
@@ -1473,6 +1487,7 @@ message StorageVolumeResult {
     StorageMoveList jobs = 7;
     StorageMetadataPreview metadata_preview = 8;
     StorageMetadataStatus metadata = 9;
+    StorageLegacyObjectList legacy_objects = 10;
   }
 }
 

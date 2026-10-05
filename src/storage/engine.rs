@@ -157,18 +157,20 @@ impl StorageConfig {
             catalog::locations::{Reply, Request},
             volumes::{VolumeState, runtime::Manager},
         };
-        let Some(configuration) = &self.named_volumes else {
-            return Ok(());
-        };
         let Reply::Usage(usage) = catalog.volume_location(Request::Usage)? else {
             anyhow::bail!("volume usage query returned an invalid response");
         };
-        let activated = configuration.volumes.iter().any(|volume| {
-            volume.state != VolumeState::Disabled
-                || usage.iter().any(|entry| entry.volume == volume.id.as_str())
-        });
+        let configuration = self.named_volumes.clone().unwrap_or_default();
+        // ponytail: Keep recovery available for captured roots, including zero-byte pending receipts.
+        let activated = usage
+            .iter()
+            .any(|entry| entry.volume.starts_with("legacy-"))
+            || configuration.volumes.iter().any(|volume| {
+                volume.state != VolumeState::Disabled
+                    || usage.iter().any(|entry| entry.volume == volume.id.as_str())
+            });
         if activated {
-            self.volume_runtime = Some(Arc::new(Manager::new(configuration.clone(), catalog)?));
+            self.volume_runtime = Some(Arc::new(Manager::new(configuration, catalog)?));
         }
         Ok(())
     }
@@ -996,15 +998,10 @@ impl WriterWorker {
         let mut bytes_removed = 0u64;
 
         while capacity.keeppeek_bytes > target_bytes {
-            let candidate = catalog.claim_cleanup_candidate()?.ok_or_else(|| {
-                anyhow::anyhow!("no eligible finalized recording remains to restore headroom")
-            })?;
-            let removed = self.remove_cleanup_candidate(&catalog, &candidate, reason)?;
+            let (removed, _) = self.remove_pressure_candidate(&catalog, reason, target_bytes)?;
             files_removed = files_removed.saturating_add(u64::from(removed > 0));
             bytes_removed = bytes_removed.saturating_add(removed);
-            capacity.keeppeek_bytes = capacity
-                .keeppeek_bytes
-                .saturating_sub(candidate.file_bytes.max(removed));
+            capacity.keeppeek_bytes = catalog.legacy_recording_bytes()?;
             capacity.available_bytes = capacity
                 .available_bytes
                 .saturating_add(removed)
@@ -1044,6 +1041,39 @@ impl WriterWorker {
             "storage cleanup restored configured headroom",
         );
         Ok(())
+    }
+
+    fn remove_pressure_candidate(
+        &self,
+        catalog: &RecordingCatalogHandle,
+        reason: StorageCleanupReason,
+        target_bytes: u64,
+    ) -> anyhow::Result<(u64, u64)> {
+        use crate::storage::catalog::locations::recordings::Reason;
+        if catalog.legacy_recording_bytes()? <= target_bytes {
+            return Ok((0, 0));
+        }
+        let managed_reason = match reason {
+            StorageCleanupReason::ArchiveCap => Some(Reason::Capacity),
+            StorageCleanupReason::FilesystemHeadroom | StorageCleanupReason::Combined => {
+                Some(Reason::DiskPressure)
+            }
+            StorageCleanupReason::Reconciliation => None,
+        };
+        if let (Some(manager), Some(reason)) = (&self.config.volume_runtime, managed_reason)
+            && let Some(bytes) = manager.cleanup_legacy_adoption(reason)?
+        {
+            self.safety.cleanup_progress(bytes);
+            return Ok((bytes, bytes));
+        }
+        if catalog.legacy_recording_bytes()? <= target_bytes {
+            return Ok((0, 0));
+        }
+        let candidate = catalog.claim_cleanup_candidate()?.ok_or_else(|| {
+            anyhow::anyhow!("no eligible finalized recording remains to restore headroom")
+        })?;
+        let removed = self.remove_cleanup_candidate(catalog, &candidate, reason)?;
+        Ok((removed, candidate.file_bytes.max(removed)))
     }
 
     fn remove_cleanup_candidate(

@@ -1399,7 +1399,14 @@ definitions; successful removal retains immutable catalog bindings and completed
   groups come from server configuration. Rejections explain state, role, source, or capacity limits.
 - `objects`: list at most 64 authoritative objects on one volume, ordered by kind and object ID.
   Use `next_after` for another page. Pending writers and retired move sources are excluded.
-- `preview_move`: capture one owned object, destination, byte count, and configuration revision.
+- `legacy_objects`: list at most 64 finalized legacy recording references by object ID. Use
+  `next_after` for another page. Listing registers references without reading media; optional
+  `bytes` is absent until verification. Offline references remain visible and paths are omitted.
+- `preview_move`: capture one owned object or registered legacy recording, destination, verified
+  byte count, and configuration revision. Legacy previews require captured root identities and
+  report `adopts_legacy=true`. Confirmation permanently adopts the source into managed storage;
+  cancelling the transfer leaves that source managed at its current location. No copy or
+  ownership transfer occurs during preview.
   The server resolves camera ownership and group eligibility; clients cannot supply those claims.
 - `confirm_move`: submit the preview token and unchanged configuration revision. Tokens belong
   to the requesting Administrator, expire after 300 seconds, and are limited to 64 per server.

@@ -642,3 +642,30 @@ recording-retention regressions passed (`target/129-legacy-retention-green.log`,
 `target/129-legacy-retention-regressions.log`). Strict workspace/all-target Clippy passed
 (`target/129-legacy-adoption-clippy.log`). Automatic global-pressure selection still needs to route
 these sources into that journal. The administrator migration API/UI and activation remain closed.
+
+Automatic legacy pressure cleanup now selects adopted recordings through the existing retention
+journal, preserves oldest-first ordering against ordinary legacy recordings, and scopes physical
+pressure to the captured archive filesystem. It refreshes usage after background progress and
+keeps recovery available after the final named definition is removed. All 14 named engine tests
+passed (`target/129-legacy-pressure-reviewed-green.log`), including reader delay, background
+retirement, and restart with no named definitions.
+
+Legacy recording migration now reuses administrator move preview/confirmation and the existing
+worker. Confirmation holds the recording claim through verification and atomic adoption; retries
+resolve the original job. The bounded inventory lists offline catalog references without scanning
+files or exposing paths. Preview discloses that cancellation retains adopted ownership. Already
+adopted sources remain selectable in their original storage. All 75 selected legacy tests and 16
+volume-management server tests passed (`target/129-legacy-management-green.log`,
+`target/129-legacy-management-api-all.log`). Three browser component tests passed after reproducing
+the missing legacy UI; Svelte checking reported zero errors and warnings
+(`target/129-legacy-ui-green.log`, `target/129-legacy-ui-check.log`).
+
+The current-head Ubuntu CI failures were stale test expectations: legacy event-media readers now
+hold leases, and export-history fixtures must use distinct artifact IDs. Both focused regressions
+pass (`target/129-ci-event-readers-green.log`, `target/129-ci-export-history-green.log`). Full final
+qualification, legacy export/thumbnail migration, bulk drain, health completion, and activation
+remain open; this checkpoint does not satisfy the complete issue.
+
+Strict workspace/all-target Clippy passed (`target/129-legacy-controls-clippy.log`), and all 13
+storage-volume browser component tests passed (`target/129-legacy-controls-ui-all.log`). The
+canonical platform gate remains required after the remaining implementation work.

@@ -539,17 +539,21 @@ fn bind_opened_root(
 }
 
 fn object_key(role: VolumeRole, object: &Object) -> anyhow::Result<String> {
-    let extension = match (role, object.kind) {
-        (VolumeRole::Active | VolumeRole::Archive, Kind::Recording)
-        | (VolumeRole::Export, Kind::Export) => "mp4",
-        (VolumeRole::Thumbnail, Kind::Thumbnail) => "jpg",
-        _ => anyhow::bail!("object kind does not match volume role"),
-    };
+    let extension = object_extension(role, object.kind)?;
     anyhow::ensure!(
         matches!(object.id.len(), 32 | 36) && uuid::Uuid::parse_str(&object.id).is_ok(),
         "object ID must be a UUID"
     );
     Ok(format!("{}.{extension}", object.id))
+}
+
+fn object_extension(role: VolumeRole, kind: Kind) -> anyhow::Result<&'static str> {
+    Ok(match (role, kind) {
+        (VolumeRole::Active | VolumeRole::Archive, Kind::Recording)
+        | (VolumeRole::Export, Kind::Export) => "mp4",
+        (VolumeRole::Thumbnail, Kind::Thumbnail) => "jpg",
+        _ => anyhow::bail!("object kind does not match volume role"),
+    })
 }
 
 impl Inner {

@@ -3,6 +3,8 @@
 use super::*;
 use crate::storage::catalog::locations::Location;
 
+mod legacy;
+
 /// A captured source and explicit destination. Admission rechecks both.
 #[derive(Debug, Clone)]
 pub struct MovePreview {
@@ -11,9 +13,14 @@ pub struct MovePreview {
     role: VolumeRole,
     source_id: String,
     groups: Vec<String>,
+    legacy: Option<legacy::Preview>,
 }
 
 impl MovePreview {
+    /// Confirmation permanently adopts this source even if the transfer is later cancelled.
+    pub const fn adopts_legacy(&self) -> bool {
+        self.legacy.is_some()
+    }
     pub const fn source(&self) -> &Location {
         &self.source
     }
@@ -126,15 +133,20 @@ impl Manager {
             request.source.len() <= 256 && groups.iter().all(|group| group.len() <= 256),
             "source selector is too long"
         );
-        let Reply::Location(Some(source)) = self
+        let Reply::Location(source) = self
             .inner
             .catalog
-            .volume_location(Request::Lookup(object))?
+            .volume_location(Request::Lookup(object.clone()))?
         else {
-            anyhow::bail!("move source is not owned");
+            anyhow::bail!("invalid move source reply");
+        };
+        let (source, legacy) = match source {
+            Some(source) => (source, None),
+            None => self.preview_legacy_recording(object)?,
         };
         let preview = MovePreview {
             source,
+            legacy,
             destination: super::super::VolumeId::parse(destination)?,
             role: request.role,
             source_id: request.source.to_owned(),
@@ -171,6 +183,9 @@ impl Manager {
             );
             return Ok(());
         }
+        if preview.legacy.is_some() {
+            return self.admit_legacy_recording(job_id, preview);
+        }
         let Reply::Location(Some(current)) = self
             .inner
             .catalog
@@ -190,7 +205,7 @@ impl Manager {
             preview.source.volume != preview.destination.as_str(),
             "object is already on the destination"
         );
-        object_key(preview.role, &preview.source.object)?;
+        object_extension(preview.role, preview.source.object.kind)?;
         let (index, volume) = self
             .inner
             .configuration
