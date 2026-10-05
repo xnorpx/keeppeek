@@ -194,10 +194,7 @@ fn serialization_cannot_bypass_policy_validation() {
         assert!(serde_json::from_str::<Policy>(invalid).is_err());
     }
     let rule = serde_json::json!({"id":"same", "duration_ms":1, "predicate":{"kind":"motion"}});
-    assert!(
-        serde_json::from_value::<Policy>(serde_json::json!({"rules":[rule.clone(), rule.clone()]}))
-            .is_err()
-    );
+    assert!(serde_json::from_value::<Policy>(serde_json::json!({"rules":[rule, rule]})).is_err());
     assert!(
         serde_json::from_value::<Policy>(serde_json::json!({"rules":vec![rule; MAX_RULES + 1]}))
             .is_err()
@@ -208,10 +205,7 @@ fn serialization_cannot_bypass_policy_validation() {
 fn overlapping_rules_keep_the_latest_deadline_independent_of_order() {
     let short = Rule::new("continuous", 43_200_000, Predicate::Continuous).unwrap();
     let long = Rule::new("longer", 172_800_000, Predicate::Continuous).unwrap();
-    for rules in [
-        vec![short.clone(), long.clone()],
-        vec![long.clone(), short.clone()],
-    ] {
+    for rules in [vec![short.clone(), long.clone()], vec![long, short]] {
         let policy = Policy::new(rules).unwrap();
         let decision = policy
             .resolve(
