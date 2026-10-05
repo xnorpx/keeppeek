@@ -23,7 +23,7 @@ const INSPECTION_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(in crate::storage) mod container;
 mod inventory;
-mod removal;
+pub(in crate::storage) mod removal;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::storage) struct Identity {
@@ -78,6 +78,12 @@ pub struct Observation {
 }
 
 impl Archive {
+    pub(in crate::storage) fn require_root(
+        &self,
+        root: &crate::storage::volumes::root::Root,
+    ) -> anyhow::Result<()> {
+        root.matches_directory(&self.directory)
+    }
     pub(in crate::storage) fn try_clone(&self) -> std::io::Result<Self> {
         Ok(Self {
             root: self.root.clone(),

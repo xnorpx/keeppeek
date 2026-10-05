@@ -8,6 +8,89 @@ const BOX_BYTES_MAX: u64 = 1024 * 1024;
 const BOX_COUNT_MAX: usize = 16_384;
 const FRAGMENT_COUNT_MAX: usize = 4_096;
 
+pub(in crate::storage) fn inspect_initialization(
+    reader: &mut (impl Read + Seek),
+    size: u64,
+    deadline: Instant,
+) -> anyhow::Result<()> {
+    inspect_initialization_boxes(reader, size, deadline)?;
+    reader.seek(SeekFrom::Start(0))?;
+    let parsed = mp4::Mp4Reader::read_header(
+        Bounded {
+            reader: BufReader::new(reader),
+            remaining: METADATA_BYTES_MAX * 4,
+            size,
+            deadline,
+        },
+        size,
+    )?;
+    anyhow::ensure!(
+        parsed.moov.mvex.is_some()
+            && (1..=2).contains(&parsed.tracks().len())
+            && parsed
+                .tracks()
+                .values()
+                .all(|track| track.sample_count() == 0),
+        "initialization contains indexed media"
+    );
+    let video = parsed
+        .tracks()
+        .values()
+        .find(|track| {
+            matches!(
+                track.media_type(),
+                Ok(mp4::MediaType::H264 | mp4::MediaType::H265)
+            )
+        })
+        .ok_or_else(|| anyhow::anyhow!("initialization has no video decoder"))?;
+    anyhow::ensure!(
+        video.timescale() > 0 && video.video_decoder_config()?.is_some(),
+        "invalid initialization decoder"
+    );
+    Ok(())
+}
+
+fn inspect_initialization_boxes(
+    reader: &mut (impl Read + Seek),
+    size: u64,
+    deadline: Instant,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        size > 0 && size <= METADATA_BYTES_MAX,
+        "initialization size limit exceeded"
+    );
+    let mut position = 0;
+    let mut movie = false;
+    // ponytail: Writer initialization has only a few boxes; cap this recovery scan at sixteen.
+    for _ in 0..16 {
+        if position == size {
+            break;
+        }
+        super::check_deadline(deadline)?;
+        let (kind, _, end) = header(reader, position, size)?;
+        match kind {
+            mp4::BoxType::FtypBox => {
+                anyhow::ensure!(position == 0 && end <= 4096, "invalid file type position");
+            }
+            mp4::BoxType::MoovBox => {
+                anyhow::ensure!(
+                    !movie && end - position <= 65_536,
+                    "invalid initialization movie"
+                );
+                movie = true;
+            }
+            mp4::BoxType::FreeBox => anyhow::ensure!(movie, "unexpected initialization padding"),
+            _ => anyhow::bail!("initialization contains unindexed data"),
+        }
+        position = end;
+    }
+    anyhow::ensure!(
+        movie && position == size,
+        "invalid initialization box count"
+    );
+    Ok(())
+}
+
 impl super::Archive {
     pub(in crate::storage) fn container_index(
         &self,

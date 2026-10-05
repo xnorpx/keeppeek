@@ -280,7 +280,7 @@ fn validate_ace(
     Ok(())
 }
 
-pub(super) fn exclusive_file(directory: &Dir, name: &OsStr) -> io::Result<File> {
+pub(in crate::storage) fn exclusive_file(directory: &Dir, name: &OsStr) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options
         .read(true)
@@ -312,12 +312,51 @@ fn reject_reparse(object: HANDLE) -> io::Result<()> {
 }
 
 pub(super) fn rename(file: &File, directory: &Dir) -> io::Result<()> {
-    let name = child_name(directory, OsStr::new(super::STAGED_FILE))?;
+    rename_to(file, directory, OsStr::new(super::STAGED_FILE))
+}
+
+pub(in crate::storage) fn rename_to(
+    file: &impl AsRawHandle,
+    directory: &Dir,
+    name: &OsStr,
+) -> io::Result<()> {
+    rename_selected(file, directory, name, false)
+}
+
+pub(in crate::storage) fn replace_to(
+    file: &impl AsRawHandle,
+    directory: &Dir,
+    name: &OsStr,
+) -> io::Result<()> {
+    rename_selected(file, directory, name, true)
+}
+
+fn rename_selected(
+    file: &impl AsRawHandle,
+    directory: &Dir,
+    name: &OsStr,
+    replace: bool,
+) -> io::Result<()> {
+    let name = child_name(directory, name)?;
     let bytes = mem::offset_of!(FILE_RENAME_INFO, FileName) + name.len() * 2;
     let mut buffer = vec![0_usize; bytes.div_ceil(mem::size_of::<usize>())];
     let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    let information_class = if replace {
+        FileRenameInfoEx
+    } else {
+        FileRenameInfo
+    };
+    // SAFETY: The aligned buffer includes the complete structure and target filename.
     unsafe {
-        (*information).Anonymous.ReplaceIfExists = false;
+        if replace {
+            use windows::Win32::System::WindowsProgramming::{
+                FILE_RENAME_FLAG_POSIX_SEMANTICS, FILE_RENAME_FLAG_REPLACE_IF_EXISTS,
+            };
+            (*information).Anonymous.Flags =
+                FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+        } else {
+            (*information).Anonymous.ReplaceIfExists = false;
+        }
         (*information).RootDirectory = HANDLE::default();
         (*information).FileNameLength = u32::try_from((name.len() - 1) * 2).unwrap();
         std::ptr::copy_nonoverlapping(
@@ -327,7 +366,7 @@ pub(super) fn rename(file: &File, directory: &Dir) -> io::Result<()> {
         );
         SetFileInformationByHandle(
             handle(file),
-            FileRenameInfo,
+            information_class,
             information.cast(),
             u32::try_from(bytes).unwrap(),
         )
@@ -335,7 +374,7 @@ pub(super) fn rename(file: &File, directory: &Dir) -> io::Result<()> {
     .map_err(|error| operation_error("rename selected handle", error))
 }
 
-pub(super) fn remove(file: File) -> io::Result<()> {
+pub(in crate::storage) fn remove(file: File) -> io::Result<()> {
     let disposition = FILE_DISPOSITION_INFO_EX {
         Flags: FILE_DISPOSITION_INFO_EX_FLAGS(
             FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0,

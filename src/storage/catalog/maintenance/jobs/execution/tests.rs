@@ -76,6 +76,7 @@ impl Fixture {
             &connection,
             "administrator",
             &job.id,
+            false,
             Instant::now() + BUSY_TIMEOUT,
         )
         .await
@@ -641,6 +642,7 @@ fn cancellation_preserves_started_claims_for_recovery() {
             &fixture.connection,
             "administrator",
             &fixture.job.id,
+            false,
             Instant::now() + BUSY_TIMEOUT,
         )
         .await

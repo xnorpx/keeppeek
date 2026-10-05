@@ -9,21 +9,21 @@ current boundaries; it does not qualify every filesystem, backup product, or cra
 
 ## Inventory the recovery set
 
-Open the storage settings as an Administrator and record the effective paths. Defaults can differ
-from a custom `--config` directory, and catalog or thumbnail paths can sit outside recording roots.
+Open Named storage volumes as an Administrator and record every configured root and its stable ID.
+Fresh defaults live beside the selected `config.toml`; each role can have a separate destination.
 Record the operating-system account that owns and runs the recorder.
 
-| Item                                                                                                     | Why it matters                                                                                                                                                |
-| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config.toml` and sibling `secrets.toml`                                                                 | Cameras, stable identities, policies, credentials, grants, dashboards, and integration settings. A configuration ZIP can preserve this pair.                  |
-| The configured recording catalog, normally `recordings.db`, and any accompanying `-wal` and `-shm` files | Recording identities, paths, indexes, event data, coverage/deletion evidence, and maintenance intent. Copy the database family consistently.                  |
-| The runtime state-store database file and any accompanying sidecars                                      | Desired-state documents, leases, namespace and entry revisions. A separate consistent set; excluded from the configuration ZIP. Copy the family consistently. |
-| Settings-backed state entries                                                                            | Stored in the `state_store` section of `config.toml`; already covered by the configuration ZIP. Generic runtime entries are not.                              |
-| Both medium-term and long-term recording roots                                                           | The MP4 bytes referenced by the catalog. The roots may be the same directory. Preserve relative structure and file names.                                     |
-| The configured event-thumbnail directory                                                                 | Event-image bytes. It may be outside the recording root.                                                                                                      |
-| Hidden `.exports` under the long-term root                                                               | Export history and artifacts, if you need to retain that local history. Artifacts still have independent expiry rules.                                        |
-| Service definitions, environment-only secrets, certificates, and external service configuration          | Deployment dependencies outside the two TOML files. Preserve them through your existing protected operations system.                                          |
-| The existing sibling `log-filter` and retained service logs                                              | Diagnostic configuration and investigation evidence outside the configuration ZIP.                                                                            |
+| Item                                                                                            | Why it matters                                                                                                                                                |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.toml` and sibling `secrets.toml`                                                        | Cameras, stable identities, policies, credentials, grants, dashboards, and integration settings. A configuration ZIP can preserve this pair.                  |
+| The metadata-bound recording catalog and any accompanying database sidecars                     | Recording identities, owned locations, indexes, event data, coverage/deletion evidence, and maintenance intent. Copy the database family consistently.        |
+| The runtime state-store database file and any accompanying sidecars                             | Desired-state documents, leases, namespace and entry revisions. A separate consistent set; excluded from the configuration ZIP. Copy the family consistently. |
+| Settings-backed state entries                                                                   | Stored in the `state_store` section of `config.toml`; already covered by the configuration ZIP. Generic runtime entries are not.                              |
+| Every active and archive volume root                                                            | The MP4 bytes referenced by the catalog. Preserve relative structure, file names, and interrupted work.                                                       |
+| Every thumbnail volume root                                                                     | Event-image bytes and their catalog ownership.                                                                                                                |
+| Every export volume root and the metadata-bound export history file                             | Export artifacts and durable history. Artifacts still have independent expiry rules.                                                                          |
+| Service definitions, environment-only secrets, certificates, and external service configuration | Deployment dependencies outside the two TOML files. Preserve them through your existing protected operations system.                                          |
+| The existing sibling `log-filter` and retained service logs                                     | Diagnostic configuration and investigation evidence outside the configuration ZIP.                                                                            |
 
 Copy the entire selected recording roots, including hidden and interrupted-work entries, rather than
 selecting only files ending in `.mp4`. Maintenance checkpoints can depend on private staging entries.
@@ -49,7 +49,7 @@ clip as a full recording backup. Clips cover selected ranges and do not contain 
    disk.
 5. Start the source recorder again and verify that new recordings finalize normally.
 
-A live copy of just `recordings.db` can disagree with its journal or recording files. KeepPeek's
+A live copy of just the catalog database can disagree with its journal or recording files. KeepPeek's
 configuration export lock does not create an atomic snapshot of the catalog, media, and export tree.
 If you use storage snapshots instead of a stopped copy, establish and test a consistent capture
 procedure for every involved volume and writer. This book does not claim that an arbitrary live
@@ -103,12 +103,14 @@ and maintenance. It is not an exhaustive media scan or a replacement for a consi
 - An interrupted recording finalization can reconnect a catalog row to its finalized sibling.
   Existing `.active` files are preserved rather than truncated or deleted merely because of their
   extension.
-- Missing cataloged recordings can lose stale rows when their parent directory is available.
-  When the parent itself is unavailable, startup retains metadata and reports the unavailable
-  storage. Restore the complete tree before starting; an empty mounted directory is different from
-  an unavailable mount.
+- Missing or unavailable named roots retain their catalog ownership. A replacement directory does
+  not have the bound root identity. Restore the original root or use an explicit recovery procedure;
+  creating an empty directory at its path does not make it the original volume.
 - Export work that was running becomes failed and retryable. Missing ready artifacts also become
   failed. Partial export artifacts are cleaned within the owned export area.
+- Event images retain their catalog references when the files are missing. Startup preserves
+  unindexed images and temporary files; thumbnail quota cleanup only removes catalog-referenced
+  images in the configured directory.
 - Maintenance recovery only settles outcomes supported by its retained identity and checkpoint
   evidence. Other interrupted objects remain failed and reserved for Administrator inspection or
   retry. Copying files can change their identity, so a restored checkpoint may properly refuse work.

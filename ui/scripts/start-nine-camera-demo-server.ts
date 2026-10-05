@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
 	nineCameraCircularStartSeparationSeconds,
@@ -16,8 +17,13 @@ import {
 } from '../src/lib/server/storybook/nine-camera-fixture';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const testRoot = path.join(repositoryRoot, 'target', 'nine-camera-demo');
-const storageRoot = path.join(testRoot, 'recordings');
+const testRoot =
+	process.platform === 'win32'
+		? path.join(
+				tmpdir(),
+				`keeppeek-nine-camera-${createHash('sha256').update(repositoryRoot).digest('hex').slice(0, 12)}`
+			)
+		: path.join(repositoryRoot, 'target', 'nine-camera-demo');
 const configPath = path.join(testRoot, 'config.toml');
 const draftsPath = path.join(testRoot, 'camera-drafts.json');
 const fixtureManifestPath = path.join(
@@ -137,7 +143,7 @@ for (const keyframeIntervalSeconds of nineCameraKeyframeIntervalsSeconds) {
 }
 
 await rm(testRoot, { recursive: true, force: true });
-await mkdir(storageRoot, { recursive: true });
+await mkdir(testRoot, { recursive: true });
 
 const safeBeforeSeconds = 1;
 const safeAfterSeconds = 65;
@@ -172,7 +178,6 @@ await writeFile(
 	)}\n`
 );
 
-const tomlString = (value: string) => JSON.stringify(value);
 await writeFile(
 	configPath,
 	`host = "127.0.0.1"
@@ -182,10 +187,6 @@ port = 4318
 allowed_origins = ["http://127.0.0.1:4175"]
 
 [storage]
-medium_term_path = ${tomlString(storageRoot)}
-long_term_path = ${tomlString(storageRoot)}
-recording_catalog_path = ${tomlString(path.join(testRoot, 'recordings.db'))}
-event_thumbnail_path = ${tomlString(path.join(testRoot, 'event-thumbnails'))}
 event_thumbnail_max_mb = 16
 short_term_secs = 5
 medium_term_secs = 60

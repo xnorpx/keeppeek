@@ -54,6 +54,14 @@ export class SystemControlClient {
 		private readonly mapRecordingEvent: MapRecordingEvent
 	) {}
 
+	async storageVolumes(command: import('./proto/webrtc_pb').StorageVolumeCommand) {
+		const result = await this.sendRequest({ case: 'storageVolumeCommand', value: command });
+		if (result.case !== 'storageVolumeResult') {
+			throw new Error('Server returned an unexpected storage volume response.');
+		}
+		return result.value;
+	}
+
 	async getHealth(signal?: AbortSignal): Promise<ServerHealthResponse> {
 		signal?.throwIfAborted();
 		const command = create(HealthCommandSchema, {
@@ -120,6 +128,7 @@ export class SystemControlClient {
 		update: SettingsConfigUpdate
 	): Promise<SettingsConfigUpdateResponse> {
 		const storage = create(RuntimeStorageConfigurationSchema, {
+			namedVolumes: update.storage.named_volumes,
 			mediumTermPath: update.storage.medium_term_path,
 			longTermPath: update.storage.long_term_path,
 			recordingCatalogPath: update.storage.recording_catalog_path,
@@ -232,6 +241,7 @@ export function runtimeConfiguration(config: SanitizedRuntimeConfiguration): San
 		port: config.port,
 		configuration_revision: config.configurationRevision,
 		storage: {
+			named_volumes: config.storage.namedVolumes,
 			medium_term_path: config.storage.mediumTermPath,
 			long_term_path: config.storage.longTermPath,
 			recording_catalog_path: config.storage.recordingCatalogPath,

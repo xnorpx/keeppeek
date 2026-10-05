@@ -26,6 +26,7 @@
 	import PeekDashboardSettings from '$lib/components/PeekDashboardSettings.svelte';
 	import StorageRetentionSection from '$lib/components/StorageRetentionSection.svelte';
 	import StorageSettingsEditor from '$lib/components/StorageSettingsEditor.svelte';
+	import NamedVolumesSection from '$lib/components/storage-volumes/NamedVolumesSection.svelte';
 	import SettingsApplyingState from '$lib/components/SettingsApplyingState.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -60,6 +61,8 @@
 	let statusMessage = $state<string | null>(null);
 	let restarting = $state(false);
 	let pendingRestart = $state(false);
+	let metadataRestart = $state(false);
+	let restartRequired = $derived(pendingRestart || metadataRestart);
 	let pendingStorageMigration = $state(false);
 	let runtimeEditor = $state<RuntimeEditorMode>(null);
 	let savingRuntimeSettings = $state(false);
@@ -330,7 +333,7 @@
 	}
 
 	async function applyChanges() {
-		if (!pendingRestart || restarting) return;
+		if (!restartRequired || restarting) return;
 		restarting = true;
 		restartError = null;
 		try {
@@ -432,7 +435,7 @@
 				{/if}
 			</div>
 
-			{#if pendingRestart || statusMessage || restartError}
+			{#if restartRequired || statusMessage || restartError}
 				<div
 					class="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-muted/45 px-3 py-2 text-sm {mobileFocus
 						? 'max-md:mx-4'
@@ -441,18 +444,18 @@
 				>
 					<p class={restartError ? 'text-destructive' : 'text-muted-foreground'}>
 						{restartError ??
-							(restarting && pendingStorageMigration
+							(restarting && (pendingStorageMigration || metadataRestart)
 								? 'Restarting KeepPeek. Existing storage moves before recording resumes.'
 								: (statusMessage ?? 'Saved changes are ready to apply.'))}
 					</p>
-					{#if pendingRestart}
+					{#if restartRequired}
 						<Button size="sm" onclick={applyChanges} disabled={restarting}>
 							<RotateCcwIcon class={restarting ? 'animate-spin' : undefined} />
 							{restarting
-								? pendingStorageMigration
+								? pendingStorageMigration || metadataRestart
 									? 'Restarting and moving storage'
 									: 'Applying changes'
-								: pendingStorageMigration
+								: pendingStorageMigration || metadataRestart
 									? 'Restart and move storage'
 									: 'Apply changes'}
 						</Button>
@@ -496,6 +499,18 @@
 							onsave={saveStorageSettings}
 						/>
 					</div>
+				{/if}
+				{#if administrator}
+					<NamedVolumesSection
+						onpendingchange={(pending) => (metadataRestart = pending)}
+						{config}
+						controller={controlClient}
+						disabled={savingRuntimeSettings || runtimeEditor !== null}
+						onsaved={(result) => {
+							config = result.config;
+							pendingRestart ||= result.restart_required;
+						}}
+					/>
 				{/if}
 			</div>
 

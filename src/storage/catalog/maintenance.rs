@@ -76,7 +76,7 @@ pub(super) fn read(connection: &turso::Connection, request: ReadRequest) {
 /// Bounds retained selector and result identities independently of catalog contents.
 const MAX_IDENTIFIER_BYTES: usize = 512;
 /// Limits complete selections so future destructive previews remain inspectable.
-const MAX_RECORDINGS: usize = 128;
+pub(super) const MAX_RECORDINGS: usize = 128;
 /// Bounds history inspection when old long-lived objects cannot be ruled out by time alone.
 const MAX_SCAN_RECORDINGS: usize = 4_096;
 /// Limits requested wall-clock intervals to match existing catalog coverage windows.
@@ -702,6 +702,7 @@ mod tests {
         let (write_tx, _) = mpsc::sync_channel(1);
         let (search_tx, _) = mpsc::sync_channel(1);
         let handle = RecordingCatalogHandle {
+            readers: std::sync::Arc::new(crate::storage::catalog::readers::Registry::default()),
             tx: write_tx,
             search_tx,
         };
@@ -727,6 +728,7 @@ mod tests {
         write_tx.send(Command::Shutdown).unwrap();
         let (search_tx, search_rx) = mpsc::sync_channel(1);
         let handle = RecordingCatalogHandle {
+            readers: std::sync::Arc::new(crate::storage::catalog::readers::Registry::default()),
             tx: write_tx,
             search_tx,
         };
@@ -768,6 +770,7 @@ mod tests {
         let (search_tx, search_rx) = mpsc::sync_channel(1);
         search_tx.send(SearchCommand::Shutdown).unwrap();
         let handle = RecordingCatalogHandle {
+            readers: std::sync::Arc::new(crate::storage::catalog::readers::Registry::default()),
             tx: write_tx,
             search_tx,
         };

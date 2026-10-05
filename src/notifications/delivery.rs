@@ -21,6 +21,8 @@ use super::{
 };
 use crate::storage::metadata::EventAttachment;
 
+mod attachments;
+
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(5);
 const PUSHOVER_MESSAGES_URL: &str = "https://api.pushover.net/1/messages.json";
 const PUSHOVER_RECEIPTS_URL: &str = "https://api.pushover.net/1/receipts/";
@@ -586,7 +588,10 @@ pub(super) struct Workers {
 }
 
 impl Workers {
-    pub(super) fn start(store: Store) -> anyhow::Result<Self> {
+    pub(super) fn start(
+        store: Store,
+        events: Option<crate::storage::EventStore>,
+    ) -> anyhow::Result<Self> {
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut threads = Vec::with_capacity(4);
         let channels = [
@@ -597,6 +602,7 @@ impl Workers {
         ];
         for channel in channels {
             let store = store.clone();
+            let events = events.clone();
             let worker_shutdown = shutdown.clone();
             let provider: Box<dyn Provider> = match channel {
                 Channel::Browser => Box::new(BrowserProvider),
@@ -607,7 +613,7 @@ impl Workers {
             threads.push(
                 std::thread::Builder::new()
                     .name(format!("notification-{}", channel.as_str()))
-                    .spawn(move || run_worker(store, channel, provider, worker_shutdown))?,
+                    .spawn(move || run_worker(store, channel, provider, worker_shutdown, events))?,
             );
         }
         Ok(Self { shutdown, threads })
@@ -641,6 +647,7 @@ fn run_worker(
     channel: Channel,
     provider: Box<dyn Provider>,
     shutdown: Arc<AtomicBool>,
+    events: Option<crate::storage::EventStore>,
 ) {
     while !shutdown.load(Ordering::Acquire) {
         let now_ms = unix_time_ms();
@@ -648,7 +655,7 @@ fn run_worker(
         match store.claim_due(channel, now_ms) {
             Ok(Some(delivery)) => {
                 did_work = true;
-                let outcome = provider.deliver(&delivery);
+                let outcome = attachments::deliver(provider.as_ref(), &delivery, events.as_ref());
                 if let Err(error) = store.finish_delivery(&delivery, outcome, unix_time_ms()) {
                     tracing::warn!(
                         event = "notification_delivery_record_failed",
@@ -1739,7 +1746,7 @@ mod tests {
             .count()
     }
 
-    fn pushover_delivery() -> Delivery {
+    pub(super) fn pushover_delivery() -> Delivery {
         let destination = pushover::Destination {
             application_token: "a23456789012345678901234567890".to_owned(),
             user_key: "u23456789012345678901234567890".to_owned(),

@@ -57,7 +57,19 @@ impl Drop for WindowsTimerResolution {
 }
 
 fn open_recording_catalog(storage_config: &StorageConfig) -> anyhow::Result<RecordingCatalog> {
-    let catalog = RecordingCatalog::open(&storage_config.recording_catalog_path)?;
+    let catalog = if let Some(binding) = &storage_config.metadata {
+        let bytes = storage_config
+            .metadata_root()?
+            .read_history(&binding.history_file)?;
+        crate::server::validate_export_history_snapshot(&bytes)?;
+        RecordingCatalog::open_managed(
+            &storage_config.recording_catalog_path,
+            &binding.authority(),
+            &binding.root_identity(),
+        )?
+    } else {
+        RecordingCatalog::open(&storage_config.recording_catalog_path)?
+    };
     if storage_config.long_term_path.is_dir() {
         let archive =
             crate::storage::long_term::inspection::Archive::open(&storage_config.long_term_path)?;
@@ -144,9 +156,30 @@ pub fn run(
         None
     };
 
-    let storage_config = StorageConfig::from_toml(&cfg.storage);
+    let mut storage_config = StorageConfig::from_toml(&cfg.storage);
     let recording_catalog = open_recording_catalog(&storage_config)?;
     let catalog_handle = recording_catalog.handle();
+    storage_config.initialize_named_volumes(catalog_handle.clone())?;
+    let volume_worker = storage_config
+        .volume_runtime
+        .as_ref()
+        .map(|manager| crate::storage::volumes::runtime::worker::Worker::start((**manager).clone()))
+        .transpose()?;
+    storage_config.volume_mover = volume_worker.as_ref().map(|worker| worker.handle());
+    {
+        let mut groups = storage_config
+            .volume_groups
+            .write()
+            .map_err(|_| anyhow::anyhow!("volume group registry unavailable"))?;
+        for (group, cameras) in &camera_configs {
+            for camera in cameras {
+                groups
+                    .entry(camera.ip.to_string())
+                    .or_default()
+                    .push(group.clone());
+            }
+        }
+    }
     for camera in cameras.values() {
         let source_id = camera.config.ip.to_string();
         let recording_label = camera
@@ -164,11 +197,7 @@ pub fn run(
     }
     let storage_engine =
         StorageEngine::start_with_catalog(storage_config.clone(), catalog_handle.clone());
-    let event_store = EventStore::new(
-        catalog_handle,
-        &storage_config.event_thumbnail_path,
-        storage_config.event_thumbnail_max_bytes,
-    )?;
+    let event_store = EventStore::from_storage(catalog_handle, &storage_config)?;
     let operational_event_store = event_store.clone();
     let event_forwarder =
         EventForwarderRuntime::open(cfg.event_forwarder.mqtt.clone(), shutdown.clone())?;
@@ -211,6 +240,7 @@ pub fn run(
     let notification_runtime = NotificationRuntime::open_with_config_update(
         config_path,
         server_state.configuration_update_lock(),
+        Some(event_store.clone()),
     )?;
     let notification_handle = notification_runtime.handle();
     let notification_health = NotificationHealthMonitor::start(
@@ -398,7 +428,9 @@ pub fn run(
     notification_runtime.shutdown();
     tracing::info!("flushing and finalizing all recordings...");
     storage_engine.shutdown();
+    let mover_shutdown = volume_worker.map_or(Ok(()), |worker| worker.shutdown());
     recording_catalog.shutdown();
+    mover_shutdown?;
     tracing::info!("all recordings saved");
 
     if let Some(error) = startup_error {
@@ -438,3 +470,6 @@ fn with_camera_events(state: ServerState, keeppeek: &mut KeepPeekLoop) -> Server
     keeppeek.set_event_publisher(move |event| publisher.publish_camera_event(event));
     state
 }
+
+#[cfg(test)]
+mod storage_startup_tests;

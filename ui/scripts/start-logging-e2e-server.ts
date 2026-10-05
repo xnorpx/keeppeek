@@ -11,7 +11,6 @@ const testRoot = path.join(storageParent, `ui-logging-e2e${runId ? `-${runId}` :
 const seedAge = Number(process.env.KEEPPEEK_E2E_SEED_AGE_SECONDS ?? '240');
 if (!Number.isInteger(seedAge) || seedAge < 0 || seedAge > 86_400)
 	throw new Error('Invalid E2E seed age');
-const storageRoot = path.join(testRoot, 'recordings');
 const configPath = path.join(testRoot, 'config.toml');
 const cameraDraftPath = path.join(testRoot, 'camera-draft.json');
 const testdataRoot = path.join(repositoryRoot, 'crates', 'test-camera', 'testdata');
@@ -114,8 +113,8 @@ async function startTestCamera(name: string, main: string, sub: string): Promise
 }
 
 await rm(testRoot, { recursive: true, force: true });
-await mkdir(storageRoot, { recursive: true });
-await protectRecordingStorage();
+// ponytail: let the recorder create its private owned storage directories.
+await mkdir(testRoot, { recursive: true });
 
 const testCameras: TestCamera[] = [];
 try {
@@ -136,7 +135,6 @@ const testCamera = testCameras[0];
 if (!testCamera) throw new Error('The logging E2E server requires a test camera');
 await writeFile(cameraDraftPath, `${JSON.stringify(parseCameraDraft(testCamera), null, 2)}\n`);
 
-const tomlString = (value: string) => JSON.stringify(value);
 await writeFile(
 	configPath,
 	`host = "127.0.0.1"
@@ -149,10 +147,6 @@ require_secure_remote = false
 allowed_origins = ["http://127.0.0.1:${frontendPort}"]
 
 [storage]
-medium_term_path = ${tomlString(storageRoot)}
-long_term_path = ${tomlString(storageRoot)}
-recording_catalog_path = ${tomlString(path.join(testRoot, 'recordings.db'))}
-event_thumbnail_path = ${tomlString(path.join(testRoot, 'event-thumbnails'))}
 event_thumbnail_max_mb = 16
 short_term_secs = 5
 medium_term_secs = 60
@@ -170,10 +164,8 @@ const seed = Bun.spawn(
 		'seed-recording',
 		'--source',
 		path.join(testdataRoot, 'cc-4k-640x360-h264.mp4'),
-		'--recordings',
-		storageRoot,
-		'--catalog',
-		path.join(testRoot, 'recordings.db'),
+		'--config',
+		configPath,
 		'--stream-id',
 		process.env.KEEPPEEK_E2E_SEED_STABLE_ID === '1'
 			? `${parseCameraDraft(testCamera).ip}/sub`
@@ -189,7 +181,6 @@ if (seedExitCode !== 0) {
 	await Promise.all(testCameras.map((camera) => camera.process.exited));
 	throw new Error(`Recording seed exited with code ${seedExitCode}`);
 }
-await protectRecordingStorage();
 
 const server = Bun.spawn([keeppeekBinary, `--config=${configPath}`], {
 	cwd: repositoryRoot,
@@ -239,23 +230,4 @@ function requiredBinary(binaryName: string): string {
 		);
 	}
 	return binaryPath;
-}
-
-async function protectRecordingStorage(): Promise<void> {
-	if (process.platform !== 'win32') return;
-	const permissions = Bun.spawn(
-		[
-			'powershell.exe',
-			'-NoLogo',
-			'-NoProfile',
-			'-NonInteractive',
-			'-File',
-			path.join(repositoryRoot, '.github', 'scripts', 'protect-test-directory.ps1'),
-			'-Directory',
-			storageRoot,
-			'-Recurse'
-		],
-		{ cwd: repositoryRoot, stdout: 'inherit', stderr: 'inherit' }
-	);
-	if ((await permissions.exited) !== 0) throw new Error('Unable to protect E2E recording storage');
 }

@@ -195,6 +195,7 @@ str0m = { version = "0.23.0", default-features = false, features = [
 ] }
 tracing-layer-win-eventlog = { version = "1.0.1", default-features = false }
 windows = { version = "0.62.2", features = [
+  "Win32_System_WindowsProgramming",
   "Win32_Foundation",
   "Win32_Media",
   "Win32_Security",

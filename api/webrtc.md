@@ -1344,6 +1344,98 @@ Implementations ignore unknown protobuf fields, unknown control-envelope bodies,
 types, unknown payload IDs, unknown enum values, and unknown `Message` or nested message
 subtypes when their runtime supports doing so. Unknown source events are not protocol errors.
 
+## Named storage volumes
+
+`RuntimeStorageConfiguration.named_volumes` (field 18) carries a
+`StorageVolumeConfiguration` through the existing Administrator-only runtime settings
+commands. Omission preserves the current section for older clients. A present empty
+message explicitly clears drafts. Named-volume updates require a nonempty current
+configuration revision. Older updates that omit the field retain their existing revision
+behavior. Atomic whole-candidate persistence applies.
+
+The configuration contains at most 32 volumes and 256 placement rules. Volume IDs use
+1–64 lowercase ASCII letters, digits, `_`, or `-`; the `legacy-` prefix is reserved.
+Roots are absolute paths or supported secret references. String fields, including IDs,
+candidate IDs, and source/group selectors, preserve supported secret references in
+requests, persistence, and responses. Validation applies to resolved values; responses
+do not return those private values. Priority fits `u16`; byte caps
+are positive when present, and byte thresholds fit signed TOML 64-bit integers. Source
+and group allowlists each contain at most 256 distinct selectors of at most 256 bytes.
+
+Roles are active, archive, export, thumbnail, and metadata. States are enabled, read-only,
+draining, and disabled. Strategies are priority and free-space. Unknown and unspecified
+enum values are rejected on writes. Rules select one source, one group, or the role
+default, in that precedence order, with 1–8 distinct candidate IDs. A failed override
+does not fall through to a broader rule. Fallback must be explicit. With fallback off,
+only the first candidate is eligible. With fallback on, ranking considers all eligible
+candidates and breaks ties by ID. Metadata placement has one global candidate and no fallback.
+
+Volume configuration accepts enabled, read-only, draining, and disabled states. Changes
+take effect after restart. Fresh installations initialize named roots and global policies
+for recordings, exports, thumbnails, and metadata. Missing policies reject admission.
+The runtime journals verified moves between named volumes; changing placement does not move
+existing objects.
+
+An explicit configuration update cannot remove a bound volume until effective drain is set,
+owned/reserved bytes are zero, and cleanup receipts are acknowledged. Enabled running volumes
+require operator drain; unbound offline volumes require disabling and restarting first.
+Running archive rules and pending captured archive policies also block destination removal.
+Remove the running rule reference and restart, then finish captured work before retrying.
+These checks run before filesystem probes or configuration persistence. Omission still preserves
+definitions; successful removal retains immutable catalog bindings and completed history.
+
+`StorageVolumeCommand` (request field 29) is Administrator-only. Responses use
+`Ok.storage_volume_result` (field 43). The operations are:
+
+- `list`: configured volumes with online status, available bytes, owned bytes, reservations,
+  configuration revision, and whether the running volume configuration matches saved settings.
+- `probe`: inspect one configured root without creating directories or media files. An unavailable
+  root reports offline; this is a capacity probe, not a write-permission guarantee.
+- `set_draining`: set or clear the operational drain flag using the current configuration revision.
+  The flag persists across restarts and configuration rebinding. Setting it immediately blocks
+  new placements; existing writers and admitted moves may finish. Clearing it does not override
+  configured draining or read-only state. The response is a refreshed volume list, with separate
+  `configured_draining` and `operator_draining` status fields. This command does not migrate objects.
+- `placement`: evaluate a prospective role/source/byte allocation without reserving it. Camera
+  groups come from server configuration. Rejections explain state, role, source, or capacity limits.
+- `objects`: list at most 64 authoritative objects on one volume, ordered by kind and object ID.
+  Use `next_after` for another page. Pending writers and retired move sources are excluded.
+- `preview_move`: capture one owned object, destination, byte count, and configuration revision.
+  The server resolves camera ownership and group eligibility; clients cannot supply those claims.
+- `confirm_move`: submit the preview token and unchanged configuration revision. Tokens belong
+  to the requesting Administrator, expire after 300 seconds, and are limited to 64 per server.
+  The token is also the durable job ID. Admission precedes notification of the existing move worker.
+- `moves` and `get_move`: inspect durable job state. History pages contain at most 16 jobs and
+  return `next_after_job_id`. Phases are `reserved`, `verified`, `file_published`, `published`,
+  `retiring`, `complete`, and `cancelled`.
+- `cancel_move`: request cancellation through the same journal. Cancellation does not imply
+  rollback of an already published destination; inspect the returned job state.
+
+- `preview_metadata`: inspect a disabled metadata-only destination without camera restrictions.
+  Returns a conservative snapshot/history byte bound and explicit restart/downtime requirements.
+  The preview belongs to its Administrator, expires after 300 seconds, and does not copy files.
+- `confirm_metadata`: stage that preview in `config.toml` using its unchanged revision. Catalog
+  and export history move together during the next service startup, before workers start.
+  Current files remain authoritative until that stopped handoff; old source files are retained.
+- `metadata`: report the current metadata volume, optional pending destination, restart requirement,
+  and metadata configuration revision. The response identifies the current metadata owner when configured.
+- `cancel_metadata`: remove a pending plan using the latest metadata status revision. Cancellation
+  is available only while the running source remains authoritative, before restarting the service.
+
+Metadata revisions include the pending handoff; use the revision from metadata preview/status,
+not the general settings revision. Confirmation rechecks persisted history, capacity, authority,
+and root identity. Pending state survives server restart and freezes storage-setting changes.
+After a completed transfer, returning to a previous metadata volume uses a new preview and
+confirmation with a new authority generation; it never reactivates the retained old catalog.
+Unknown, changed, or historically conflicting roots fail without changing their bindings.
+
+All responses are limited to 48 KiB. Volume IDs preserve configured secret references, and object
+responses omit physical paths and file identities. Configuration changes, changed object locations,
+unavailable capacity, or conflicting work reject confirmation. If settings differ from the running
+Manager configuration, placement and new move admission require a restart. A repeated confirmation
+with its original unexpired token returns the same admitted job. After a timeout or restart, query
+that job ID before preparing another move. A preview never changes default placement or moves data.
+
 ## Event pre-recording
 
 Clients must require `keeppeek.recording.pre-roll.v1` before offering event-only

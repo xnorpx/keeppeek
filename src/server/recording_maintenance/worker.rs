@@ -132,12 +132,11 @@ fn run(
         .try_lock()
         .map_err(|_| anyhow::anyhow!("configuration is changing"))?;
     check_restore(state)?;
-    let archive = Archive::open(&state.storage_config.long_term_path)?;
     let catalog = state
         .catalog
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("catalog unavailable"))?;
-    catalog.execute_recording_deletion_authorized(&principal.id(), &job.id, &archive, |unstaged| {
+    let authorize = |unstaged| {
         let current = controller
             .authorize_api_session(session_id, AccessRole::Administrator, "recording_delete")
             .map_err(|_| anyhow::anyhow!("recording maintenance authorization is unavailable"))?;
@@ -154,7 +153,18 @@ fn run(
             );
         }
         Ok(())
-    })
+    };
+    if let Some(manager) = &state.storage_config.volume_runtime {
+        catalog.execute_named_recording_deletion_authorized(
+            &principal.id(),
+            &job.id,
+            manager,
+            authorize,
+        )
+    } else {
+        let archive = Archive::open(&state.storage_config.long_term_path)?;
+        catalog.execute_recording_deletion_authorized(&principal.id(), &job.id, &archive, authorize)
+    }
 }
 
 pub(super) fn check_restore(state: &ServerState) -> anyhow::Result<()> {

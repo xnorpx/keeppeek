@@ -435,15 +435,16 @@ pub struct Runtime {
 impl Runtime {
     #[cfg(test)]
     pub fn open(path: &Path) -> anyhow::Result<Self> {
-        Self::open_with_config_update(path, Arc::new(Mutex::new(())))
+        Self::open_with_config_update(path, Arc::new(Mutex::new(())), None)
     }
 
     pub(crate) fn open_with_config_update(
         path: &Path,
         config_update: Arc<Mutex<()>>,
+        events: Option<crate::storage::EventStore>,
     ) -> anyhow::Result<Self> {
         let store = store::Store::open_with_config_update(path, config_update)?;
-        let deliveries = delivery::Workers::start(store.clone())?;
+        let deliveries = delivery::Workers::start(store.clone(), events)?;
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let handle = Handle {
             tx,

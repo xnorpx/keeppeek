@@ -100,6 +100,9 @@ mod event_publication;
 mod event_search;
 mod event_subscription;
 mod event_workflow;
+mod export_storage;
+#[cfg(test)]
+mod export_storage_tests;
 mod health_snapshot;
 mod logging;
 mod mqtt_integration;
@@ -122,6 +125,7 @@ mod state_store_integration;
 pub(crate) mod state_store_schema;
 pub(crate) mod state_store_settings;
 pub(crate) mod state_store_watch;
+mod storage_volumes;
 mod stored_media;
 mod talkback;
 
@@ -253,6 +257,8 @@ struct RuntimeSettingsUpdate {
 
 #[derive(Deserialize)]
 struct RuntimeStorageSettingsUpdate {
+    #[serde(default)]
+    named_volumes: Option<crate::storage::volumes::VolumeConfiguration<String>>,
     medium_term_path: String,
     long_term_path: String,
     recording_catalog_path: String,
@@ -500,6 +506,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::EventSearchCommand(_)) => "event_search",
         Some(control_request::Command::EventWorkflowCommand(_)) => "event_workflow",
         Some(control_request::Command::RecordingMaintenanceCommand(_)) => "recording_maintenance",
+        Some(control_request::Command::StorageVolumeCommand(_)) => "storage_volumes",
         Some(control_request::Command::NotificationRuleCommand(_)) => "notification_rule",
         Some(control_request::Command::ConfigurationCommand(_)) => "configuration",
         None => "missing_command",
@@ -550,6 +557,16 @@ fn sensitive_administrator_operation(
                 _ => None,
             }
         }
+        Some(control_request::Command::StorageVolumeCommand(command)) => match command.action {
+            Some(proto::storage_volume_command::Action::ConfirmMove(_)) => {
+                Some("storage_volume_move")
+            }
+            Some(proto::storage_volume_command::Action::CancelMove(_)) => {
+                Some("storage_volume_cancel")
+            }
+            Some(proto::storage_volume_command::Action::Probe(_)) => Some("storage_volume_probe"),
+            _ => None,
+        },
         Some(control_request::Command::StateStoreCommand(command)) => match &command.action {
             Some(proto::state_store_command::Action::Put(request)) => {
                 match request.namespace.as_str() {
@@ -786,6 +803,10 @@ impl ControlRequestHandler for ServerControlHandler {
                     }
                     Some(control_request::Command::RecordingMaintenanceCommand(command)) => {
                         recording_maintenance::dispatch(self, session_id, &principal, command)
+                            .map(Some)
+                    }
+                    Some(control_request::Command::StorageVolumeCommand(command)) => {
+                        storage_volumes::management::dispatch(&self.state, &principal, command)
                             .map(Some)
                     }
                     Some(control_request::Command::StoredMediaCommand(command)) => {
@@ -3535,6 +3556,13 @@ fn create_export_job(
     requester_id: &str,
     request: proto::CreateExportJob,
 ) -> Result<proto::ExportJob, ControlCommandError> {
+    if let Some(error) = &state.export_history_error {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            format!("export history is unavailable: {error}"),
+        ));
+    }
     if state.maintenance_active.load(Ordering::Acquire) {
         return Err(ControlCommandError::new(
             proto::ErrorCode::Rejected,
@@ -3743,9 +3771,7 @@ fn create_export_job(
             downloaded_at_ms: None,
         },
     );
-    if let Some(history_path) = &state.export_history_path
-        && let Err(error) = persist_export_jobs(history_path, &jobs)
-    {
+    if let Err(error) = export_storage::history::persist(state, &jobs) {
         jobs.remove(&request.job_id);
         return Err(ControlCommandError::new(
             proto::ErrorCode::Unavailable,
@@ -3935,118 +3961,15 @@ fn spawn_export_worker(
     end_ms: i64,
     file_name: String,
 ) {
-    let job_id = request.job_id;
-    let _ = cleanup_export_attempt_artifacts(&state, &job_id, &artifact_id);
-    let path = export_attempt_directory(&state, &job_id, &artifact_id).join(&file_name);
-    let monitor_state = state.clone();
-    let monitor_job_id = job_id.clone();
-    let monitor_cancel = cancel.clone();
-    let monitor_path = path;
-    let monitor_file_name = file_name;
-    let monitor_artifact_id = artifact_id.clone();
-    let spawn = std::thread::Builder::new()
-        .name(format!("export-monitor-{job_id}"))
-        .spawn(move || {
-            let (events, receiver) = mpsc::sync_channel(64);
-            let worker_cancel = monitor_cancel.clone();
-            let worker_path = monitor_path.clone();
-            let worker_attempt_directory = worker_path.parent().map(Path::to_path_buf);
-            let worker_job_id = monitor_job_id.clone();
-            let estimated_bytes = export_estimated_bytes(&fragments).max(1);
-            let worker = std::thread::Builder::new()
-                .name(format!("export-worker-{worker_job_id}"))
-                .spawn(move || {
-                    let result = crate::storage::playback::export_fragment_ranges_with_progress(
-                        &fragments,
-                        end_ms,
-                        &worker_path,
-                        || {
-                            let _ = events.try_send(ExportWorkerEvent::Heartbeat);
-                            worker_cancel.load(Ordering::Acquire)
-                        },
-                        |bytes| {
-                            let _ = events.try_send(ExportWorkerEvent::Progress {
-                                per_mille: 200u32.saturating_add(
-                                    u32::try_from(bytes.saturating_mul(650) / estimated_bytes)
-                                        .unwrap_or(650)
-                                        .min(650),
-                                ),
-                                bytes,
-                            });
-                        },
-                    )
-                    .and_then(|artifact| {
-                        let _ = events.send(ExportWorkerEvent::Progress {
-                            per_mille: 900,
-                            bytes: artifact.bytes,
-                        });
-                        let checksum = sha256_file_with_progress(
-                            &worker_path,
-                            &worker_cancel,
-                            artifact.bytes,
-                            |bytes| {
-                                let _ = events.try_send(ExportWorkerEvent::Progress {
-                                    per_mille: 900u32.saturating_add(
-                                        u32::try_from(
-                                            bytes.saturating_mul(90) / artifact.bytes.max(1),
-                                        )
-                                        .unwrap_or(90)
-                                        .min(90),
-                                    ),
-                                    bytes: artifact.bytes,
-                                });
-                            },
-                        )?;
-                        Ok((artifact, checksum))
-                    });
-                    let cleanup = result.is_err() || worker_cancel.load(Ordering::Acquire);
-                    let delivered = events.send(ExportWorkerEvent::Finished(result)).is_ok();
-                    if (cleanup || !delivered)
-                        && let Some(directory) = worker_attempt_directory
-                    {
-                        let _ = std::fs::remove_dir_all(directory);
-                    }
-                });
-            if let Err(error) = worker {
-                finish_export_worker(
-                    &monitor_state,
-                    &monitor_job_id,
-                    &monitor_cancel,
-                    ExportArtifactTarget {
-                        path: &monitor_path,
-                        file_name: &monitor_file_name,
-                        artifact_id: &monitor_artifact_id,
-                    },
-                    Err(anyhow::anyhow!("unable to start export worker: {error}")),
-                );
-                return;
-            }
-            monitor_export_worker(
-                &monitor_state,
-                &monitor_job_id,
-                &monitor_cancel,
-                ExportArtifactTarget {
-                    path: &monitor_path,
-                    file_name: &monitor_file_name,
-                    artifact_id: &monitor_artifact_id,
-                },
-                receiver,
-                ExportDeadlines {
-                    no_progress: EXPORT_NO_PROGRESS_TIMEOUT,
-                    total_runtime: EXPORT_TOTAL_RUNTIME_TIMEOUT,
-                },
-            );
-        });
-    if let Err(error) = spawn
-        && fail_export_job(
-            &state,
-            &job_id,
-            &cancel,
-            format!("unable to start export monitor: {error}"),
-        )
-    {
-        let _ = cleanup_export_attempt_artifacts(&state, &job_id, &artifact_id);
-    }
+    export_storage::spawn(
+        state,
+        request,
+        fragments,
+        cancel,
+        artifact_id,
+        end_ms,
+        file_name,
+    );
 }
 
 enum ExportWorkerEvent {
@@ -4260,9 +4183,7 @@ fn persist_export_jobs_logged(
     jobs: &HashMap<String, ExportJobRecord>,
     transition: &str,
 ) {
-    if let Some(history_path) = &state.export_history_path
-        && let Err(error) = persist_export_jobs(history_path, jobs)
-    {
+    if let Err(error) = export_storage::history::persist(state, jobs) {
         tracing::warn!(%error, transition, "unable to persist export history");
     }
 }
@@ -4330,15 +4251,13 @@ fn cancel_export_job(
     record.completed_at_ms = Some(now_ms);
     let job = record.job.clone();
     let artifact_id = record.artifact_id.clone();
-    if let Some(history_path) = &state.export_history_path {
-        persist_export_jobs(history_path, &jobs).map_err(|error| {
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                format!("unable to persist export cancellation: {error}"),
-            )
-        })?;
-    }
+    export_storage::history::persist(state, &jobs).map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            format!("unable to persist export cancellation: {error}"),
+        )
+    })?;
     drop(jobs);
     let _ = cleanup_export_attempt_artifacts(state, job_id, &artifact_id);
     Ok(job)
@@ -4392,11 +4311,16 @@ fn retry_export_job(
         record.cancel.store(true, Ordering::Release);
         let request = record.request.clone();
         let artifact_id = record.artifact_id.clone();
+        cleanup_export_attempt_artifacts(state, job_id, &artifact_id).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                format!("export cleanup could not be admitted: {error}"),
+            )
+        })?;
         let previous = record.clone();
         jobs.remove(job_id);
-        if let Some(history_path) = &state.export_history_path
-            && let Err(error) = persist_export_jobs(history_path, &jobs)
-        {
+        if let Err(error) = export_storage::history::persist(state, &jobs) {
             jobs.insert(job_id.to_owned(), previous);
             return Err(ControlCommandError::new(
                 proto::ErrorCode::Unavailable,
@@ -4415,180 +4339,7 @@ fn download_export(
     requester_id: &str,
     request: proto::DownloadExport,
 ) -> Result<(proto::ExportDownloadResult, Vec<OutboundDataMessage>), ControlCommandError> {
-    let (target, channel) = data_channel_target(request.channel)?;
-    if target != DataChannelTarget::Reliable {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "export downloads require reliable-data",
-        ));
-    }
-    let (job, path, expected_checksum) = {
-        let jobs = state
-            .export_jobs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let record = jobs
-            .get(&request.job_id)
-            .filter(|record| record.requester_id == requester_id)
-            .ok_or_else(|| {
-                ControlCommandError::new(
-                    proto::ErrorCode::NotFound,
-                    404,
-                    "export job was not found",
-                )
-            })?;
-        if record.job.status != proto::ExportJobStatus::Ready as i32 {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "export file is not ready",
-            ));
-        }
-        let path = record.path.clone().ok_or_else(|| {
-            ControlCommandError::new(proto::ErrorCode::Internal, 500, "ready export has no file")
-        })?;
-        let expected_checksum = record.job.sha256.clone().ok_or_else(|| {
-            ControlCommandError::new(
-                proto::ErrorCode::Internal,
-                500,
-                "ready export has no checksum",
-            )
-        })?;
-        (record.job.clone(), path, expected_checksum)
-    };
-    if privacy_active_for_media(state, &job.source_id)? {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            409,
-            "camera privacy is active",
-        ));
-    }
-    let size = path
-        .metadata()
-        .map_err(|error| {
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                format!("export file is unavailable: {error}"),
-            )
-        })?
-        .len();
-    if size > MAX_EXPORT_DOWNLOAD_BYTES {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            413,
-            "export file exceeds the browser download limit",
-        ));
-    }
-    let payload = std::fs::read(&path).map_err(|error| {
-        ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            format!("unable to read export file: {error}"),
-        )
-    })?;
-    let actual_checksum = encode_lower_hex(Sha256::digest(&payload));
-    if actual_checksum != expected_checksum {
-        let mut jobs = state
-            .export_jobs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let artifact_id = if let Some(record) = jobs.get_mut(&request.job_id)
-            && record.requester_id == requester_id
-        {
-            let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
-            record.job.status = proto::ExportJobStatus::Failed as i32;
-            record.job.error =
-                Some("Export checksum verification failed; retry the export".to_owned());
-            record.job.retryable = true;
-            record.updated_at_ms = now_ms;
-            record.completed_at_ms = Some(now_ms);
-            record.path = None;
-            Some(record.artifact_id.clone())
-        } else {
-            None
-        };
-        if let Some(history_path) = &state.export_history_path
-            && let Err(error) = persist_export_jobs(history_path, &jobs)
-        {
-            tracing::warn!(%error, "unable to persist export checksum failure");
-        }
-        drop(jobs);
-        if let Some(artifact_id) = artifact_id {
-            let _ = cleanup_export_attempt_artifacts(state, &request.job_id, &artifact_id);
-        }
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            "export checksum verification failed; retry the export",
-        ));
-    }
-    if privacy_active_for_media(state, &job.source_id)? {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            409,
-            "camera privacy is active",
-        ));
-    }
-    let chunk_count = payload.len().div_ceil(DATA_MESSAGE_CHUNK_BYTES);
-    let chunk_count_u32 = u32::try_from(chunk_count).map_err(|_| {
-        ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            "export has too many chunks",
-        )
-    })?;
-    let messages = payload
-        .chunks(DATA_MESSAGE_CHUNK_BYTES)
-        .enumerate()
-        .map(|(chunk_index, chunk)| OutboundDataMessage {
-            target,
-            group: format!("export:{}", request.job_id),
-            message: proto::Message {
-                message: Some(proto::message::Message::Export(proto::ExportMessage {
-                    message: Some(proto::export_message::Message::FileChunk(
-                        proto::ExportFileChunk {
-                            job_id: request.job_id.clone(),
-                            chunk_index: u32::try_from(chunk_index).unwrap_or(u32::MAX),
-                            chunk_count: chunk_count_u32,
-                            payload: chunk.to_vec(),
-                        },
-                    )),
-                })),
-            },
-        })
-        .collect();
-    {
-        let mut jobs = state
-            .export_jobs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(record) = jobs.get_mut(&request.job_id)
-            && record.requester_id == requester_id
-        {
-            let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
-            record.downloaded_at_ms = Some(now_ms);
-            record.updated_at_ms = now_ms;
-        }
-        if let Some(history_path) = &state.export_history_path {
-            persist_export_jobs(history_path, &jobs).map_err(|error| {
-                ControlCommandError::new(
-                    proto::ErrorCode::Unavailable,
-                    503,
-                    format!("unable to persist export download: {error}"),
-                )
-            })?;
-        }
-    }
-    Ok((
-        proto::ExportDownloadResult {
-            job: Some(job),
-            channel: channel as i32,
-            chunk_count: chunk_count_u32,
-        },
-        messages,
-    ))
+    export_storage::download::download(state, requester_id, request)
 }
 
 fn privacy_active_for_media(
@@ -4642,77 +4393,7 @@ fn cancel_privacy_exports(state: &ServerState, source_id: &str) {
 }
 
 fn cleanup_expired_exports(state: &ServerState) {
-    let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
-    let mut attempts = Vec::new();
-    let mut jobs = state
-        .export_jobs
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut changed = false;
-    for record in jobs.values_mut() {
-        if record.job.status == proto::ExportJobStatus::Ready as i32 {
-            let missing = record.path.as_ref().is_none_or(|path| !path.is_file());
-            let expired = record
-                .job
-                .expires_at
-                .as_ref()
-                .and_then(timestamp_ms)
-                .is_some_and(|expires| expires <= now_ms);
-            if missing || expired {
-                record.job.status = if missing {
-                    proto::ExportJobStatus::Failed as i32
-                } else {
-                    proto::ExportJobStatus::Expired as i32
-                };
-                record.job.error =
-                    missing.then(|| "Export artifact is missing; retry the export".to_owned());
-                record.job.retryable = true;
-                record.updated_at_ms = now_ms;
-                record.completed_at_ms = Some(now_ms);
-                record.path = None;
-                changed = true;
-                attempts.push((record.job.job_id.clone(), record.artifact_id.clone()));
-            }
-        }
-    }
-    let retention_ms = i64::try_from(EXPORT_METADATA_RETENTION.as_millis()).unwrap_or(i64::MAX);
-    let retained_after_ms = now_ms.saturating_sub(retention_ms);
-    jobs.retain(|job_id, record| {
-        let retain = record.job.status == proto::ExportJobStatus::Running as i32
-            || record.updated_at_ms >= retained_after_ms;
-        if !retain {
-            attempts.push((job_id.clone(), record.artifact_id.clone()));
-            changed = true;
-        }
-        retain
-    });
-    if jobs.len() > MAX_EXPORT_HISTORY_JOBS {
-        let mut terminal = jobs
-            .iter()
-            .filter(|(_, record)| record.job.status != proto::ExportJobStatus::Running as i32)
-            .map(|(job_id, record)| (job_id.clone(), record.updated_at_ms))
-            .collect::<Vec<_>>();
-        terminal.sort_unstable_by_key(|(_, updated_at_ms)| *updated_at_ms);
-        for (job_id, _) in terminal
-            .into_iter()
-            .take(jobs.len().saturating_sub(MAX_EXPORT_HISTORY_JOBS))
-        {
-            if let Some(record) = jobs.remove(&job_id) {
-                attempts.push((job_id, record.artifact_id));
-            }
-            changed = true;
-        }
-    }
-    if changed
-        && let Some(history_path) = &state.export_history_path
-        && let Err(error) = persist_export_jobs(history_path, &jobs)
-    {
-        tracing::warn!(%error, "unable to persist expired export jobs");
-    }
-    drop(jobs);
-    for (job_id, artifact_id) in attempts {
-        let _ = cleanup_export_attempt_artifacts(state, &job_id, &artifact_id);
-    }
+    export_storage::history::expire(state);
 }
 
 fn export_job_directory(state: &ServerState, job_id: &str) -> PathBuf {
@@ -4732,6 +4413,21 @@ fn cleanup_export_attempt_artifacts(
     job_id: &str,
     artifact_id: &str,
 ) -> std::io::Result<()> {
+    let managed = state.storage_config.volume_runtime.is_some()
+        || export_storage::owned(state.catalog.as_ref(), artifact_id)
+            .map_err(std::io::Error::other)?;
+    if managed {
+        export_storage::retire(state.catalog.as_ref(), artifact_id)
+            .map_err(std::io::Error::other)?;
+    }
+    if let Some(worker) = &state.storage_config.volume_mover
+        && let Err(error) = worker.scan()
+    {
+        tracing::warn!(%error, "export cleanup remains journaled until the storage worker restarts");
+    }
+    if managed {
+        return Ok(());
+    }
     cleanup_export_attempt_directory(
         &state.storage_config.long_term_path.join(".exports"),
         job_id,
@@ -5416,13 +5112,14 @@ fn stored_media_batch(
             "stored media time is out of range",
         )
     })?;
-    let selected = catalog
-        .media_fragments_in_range(
+    let (selected, _selected_lease) = catalog
+        .leased_media_fragments_in_range(
             request.recording_stream_id,
             request.requested_time_ms,
             lookup_end,
         )
-        .map_err(|error| stored_catalog_error("locate stored media fragment", error))?
+        .map_err(|error| stored_catalog_error("locate stored media fragment", error))?;
+    let selected = selected
         .into_iter()
         .max_by_key(|fragment| fragment.start_ms)
         .ok_or_else(|| {
@@ -5442,8 +5139,12 @@ fn stored_media_batch(
     let delivery_end = request
         .end_time_ms
         .map_or(buffer_end, |end_time_ms| end_time_ms.min(buffer_end));
-    let mut fragments = catalog
-        .media_fragments_in_range(request.recording_stream_id, selected.start_ms, delivery_end)
+    let (mut fragments, _fragment_leases) = catalog
+        .leased_media_fragments_in_range(
+            request.recording_stream_id,
+            selected.start_ms,
+            delivery_end,
+        )
         .map_err(|error| stored_catalog_error("query stored media fragments", error))?;
     if fragments.is_empty() {
         fragments.push(selected.clone());
@@ -5469,8 +5170,8 @@ fn encode_stored_media_keyframe(
             "recording catalog is unavailable",
         )
     })?;
-    let location = catalog
-        .resolve_media_object(
+    let (location, _location_lease) = catalog
+        .leased_resolve_media_object(
             request.source_id,
             request.stream_id,
             Some(request.recording_stream_id),
@@ -5583,8 +5284,8 @@ fn stored_media_continuation_batch(
             "recording catalog is unavailable",
         ));
     };
-    let fragments = catalog
-        .media_fragments_in_range(recording_stream_id, start_time_ms, end_time_ms)
+    let (fragments, _fragment_leases) = catalog
+        .leased_media_fragments_in_range(recording_stream_id, start_time_ms, end_time_ms)
         .map_err(|error| stored_catalog_error("refill stored media fragments", error))?;
     let Some(fragment_time_ms) = fragments.first().map(|fragment| fragment.start_ms) else {
         return Ok(None);
@@ -6599,6 +6300,7 @@ fn fetch_event_search_media(
 }
 
 struct ResolvedEventSearchMediaObject {
+    _reader_lease: Option<crate::storage::catalog::readers::LeaseSet>,
     object_id: String,
     event_id: String,
     event_revision: u64,
@@ -6692,8 +6394,8 @@ fn stream_event_search_media(
         let legacy_recording_stream_id = camera
             .as_ref()
             .map(|camera| format!("{}/{}", camera.recording_label, stored_stream_id));
-        let location = catalog
-            .resolve_media_object(
+        let (location, location_lease) = catalog
+            .leased_resolve_media_object(
                 &object.source_id,
                 stored_stream_id,
                 legacy_recording_stream_id.as_deref(),
@@ -6759,6 +6461,7 @@ fn stream_event_search_media(
             ));
         }
         objects.push(ResolvedEventSearchMediaObject {
+            _reader_lease: Some(location_lease),
             object_id: object.object_id.clone(),
             event_id: String::new(),
             event_revision: 0,
@@ -6825,6 +6528,70 @@ fn resolve_event_search_attachment(
     state: &ServerState,
     object: &proto::EventSearchMediaObject,
 ) -> Result<ResolvedEventSearchMediaObject, ControlCommandError> {
+    let store = state.events.as_ref().ok_or_else(|| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "event attachment storage is unavailable",
+        )
+    })?;
+    let event = load_event_search_attachment(store, object)?;
+    let descriptor = event_search_attachment_descriptor(&event, object)?;
+    let (path, reader_lease) = store
+        .leased_attachment_path(&event, &object.attachment_id)
+        .map_err(|error| stored_catalog_error("resolve event attachment", error))?
+        .ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "canonical event attachment is unavailable",
+            )
+        })?;
+    let length = path
+        .metadata()
+        .map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "canonical event attachment is unavailable",
+            )
+        })?
+        .len();
+    if descriptor
+        .byte_len
+        .is_some_and(|expected| expected != length)
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "canonical event attachment length changed",
+        ));
+    }
+    Ok(ResolvedEventSearchMediaObject {
+        _reader_lease: reader_lease,
+        object_id: object.object_id.clone(),
+        event_id: event.id,
+        event_revision: event.revision,
+        attachment_id: descriptor.id,
+        recording_id: String::new(),
+        fragment_sequence: 0,
+        representation: proto::StoredMediaObjectRepresentation::EventAttachment,
+        content_type: descriptor.content_type,
+        path,
+        offset: 0,
+        length,
+        codec: String::new(),
+        width: 0,
+        height: 0,
+        decoder_config: Vec::new(),
+        nal_length_size: 0,
+    })
+}
+
+fn load_event_search_attachment(
+    store: &crate::storage::events::EventStore,
+    object: &proto::EventSearchMediaObject,
+) -> Result<TimelineEvent, ControlCommandError> {
     validate_client_id(&object.source_id, "event attachment source ID")?;
     validate_client_id(&object.event_id, "event attachment event ID")?;
     validate_client_id(&object.attachment_id, "event attachment ID")?;
@@ -6835,13 +6602,6 @@ fn resolve_event_search_attachment(
             "event attachment revision must be positive",
         ));
     }
-    let store = state.events.as_ref().ok_or_else(|| {
-        ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            "event attachment storage is unavailable",
-        )
-    })?;
     let event = store
         .event_by_id(&object.event_id)
         .map_err(|error| stored_catalog_error("load event attachment metadata", error))?
@@ -6866,6 +6626,13 @@ fn resolve_event_search_attachment(
             "event attachment revision is stale",
         ));
     }
+    Ok(event)
+}
+
+fn event_search_attachment_descriptor(
+    event: &TimelineEvent,
+    object: &proto::EventSearchMediaObject,
+) -> Result<crate::storage::metadata::EventAttachment, ControlCommandError> {
     let native_image =
         event.source == EventSource::Camera && object.attachment_id.starts_with("isapi-");
     if !native_image
@@ -6896,54 +6663,7 @@ fn resolve_event_search_attachment(
             "canonical event attachment is unavailable",
         ));
     }
-    let path = store
-        .attachment_path(&event.camera_id, &event.id, &object.attachment_id)
-        .map_err(|error| stored_catalog_error("resolve event attachment", error))?
-        .ok_or_else(|| {
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                "canonical event attachment is unavailable",
-            )
-        })?;
-    let length = path
-        .metadata()
-        .map_err(|_| {
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                "canonical event attachment is unavailable",
-            )
-        })?
-        .len();
-    if descriptor
-        .byte_len
-        .is_some_and(|expected| expected != length)
-    {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            "canonical event attachment length changed",
-        ));
-    }
-    Ok(ResolvedEventSearchMediaObject {
-        object_id: object.object_id.clone(),
-        event_id: event.id,
-        event_revision: event.revision,
-        attachment_id: descriptor.id,
-        recording_id: String::new(),
-        fragment_sequence: 0,
-        representation: proto::StoredMediaObjectRepresentation::EventAttachment,
-        content_type: descriptor.content_type,
-        path,
-        offset: 0,
-        length,
-        codec: String::new(),
-        width: 0,
-        height: 0,
-        decoder_config: Vec::new(),
-        nal_length_size: 0,
-    })
+    Ok(descriptor)
 }
 
 fn stream_event_search_object(
@@ -8163,6 +7883,7 @@ fn proto_runtime_configuration_result(
             port: u32::from(config.port),
             configuration_revision: config.configuration_revision,
             storage: Some(proto::RuntimeStorageConfiguration {
+                named_volumes: config.storage.named_volumes.map(storage_volumes::to_wire),
                 medium_term_path: config.storage.medium_term_path,
                 long_term_path: config.storage.long_term_path,
                 recording_catalog_path: config.storage.recording_catalog_path,
@@ -8833,18 +8554,6 @@ const fn initial_session_policy(config: &Config) -> ApiSessionPolicy {
     }
 }
 
-fn restored_export_jobs(storage: &StorageConfig) -> (PathBuf, HashMap<String, ExportJobRecord>) {
-    let path = export_history_path(storage);
-    let jobs = load_export_jobs(&path).unwrap_or_else(|error| {
-        tracing::warn!(%error, path = %path.display(), "unable to load export history");
-        HashMap::new()
-    });
-    if let Err(error) = persist_export_jobs(&path, &jobs) {
-        tracing::warn!(%error, path = %path.display(), "unable to persist recovered export history");
-    }
-    (path, jobs)
-}
-
 fn configured_camera_entries(
     configs: &HashMap<String, Vec<CameraConfig>>,
     cameras: &HashMap<IpAddr, Camera>,
@@ -9149,79 +8858,54 @@ impl PersistedExportJobRecord {
         }
     }
 
-    fn into_record(self, export_root: &Path, now_ms: i64) -> anyhow::Result<ExportJobRecord> {
-        let request_bytes = URL_SAFE_NO_PAD.decode(self.request)?;
-        let job_bytes = URL_SAFE_NO_PAD.decode(self.job)?;
-        let request = proto::CreateExportJob::decode(request_bytes.as_slice())?;
-        let mut job = proto::ExportJob::decode(job_bytes.as_slice())?;
+    fn messages(&self) -> anyhow::Result<(proto::CreateExportJob, proto::ExportJob)> {
+        let request =
+            proto::CreateExportJob::decode(URL_SAFE_NO_PAD.decode(&self.request)?.as_slice())?;
+        let job = proto::ExportJob::decode(URL_SAFE_NO_PAD.decode(&self.job)?.as_slice())?;
         anyhow::ensure!(
             request.job_id == job.job_id
                 && safe_export_job_id(&job.job_id)
                 && safe_export_job_id(&self.artifact_id),
             "persisted export job identity is invalid"
         );
-
-        let previous_completed_at_ms = self.completed_at_ms;
-        let mut completed_at_ms = previous_completed_at_ms;
-        let path = match proto::ExportJobStatus::try_from(job.status) {
-            Ok(proto::ExportJobStatus::Running) => {
-                job.status = proto::ExportJobStatus::Failed as i32;
-                job.error = Some("Server restarted before the export completed".to_owned());
-                job.retryable = true;
-                completed_at_ms = Some(now_ms);
-                None
-            }
-            Ok(proto::ExportJobStatus::Ready) => {
-                let file_name = job
-                    .file_name
+        let status = proto::ExportJobStatus::try_from(job.status)?;
+        anyhow::ensure!(
+            status != proto::ExportJobStatus::Unspecified,
+            "persisted export job status is invalid"
+        );
+        if status == proto::ExportJobStatus::Ready {
+            anyhow::ensure!(
+                job.file_name
                     .as_deref()
-                    .filter(|name| safe_export_path_component(name))
-                    .ok_or_else(|| anyhow::anyhow!("ready export has an invalid file name"))?;
-                let path = export_root
-                    .join(&job.job_id)
-                    .join(&self.artifact_id)
-                    .join(file_name);
-                if path.is_file() {
-                    Some(path)
-                } else {
-                    job.status = proto::ExportJobStatus::Failed as i32;
-                    job.error = Some("Export artifact is missing; retry the export".to_owned());
-                    job.retryable = true;
-                    completed_at_ms = Some(now_ms);
-                    None
-                }
-            }
-            Ok(
-                proto::ExportJobStatus::Partial
-                | proto::ExportJobStatus::Failed
-                | proto::ExportJobStatus::Cancelled
-                | proto::ExportJobStatus::Expired,
-            ) => None,
-            Ok(proto::ExportJobStatus::Unspecified) | Err(_) => {
-                anyhow::bail!("persisted export job status is invalid")
-            }
-        };
-        let recovered = completed_at_ms != previous_completed_at_ms;
-        if path.is_none() {
-            let _ = cleanup_export_attempt_directory(export_root, &job.job_id, &self.artifact_id);
+                    .is_some_and(safe_export_path_component),
+                "ready export has an invalid file name"
+            );
         }
-        Ok(ExportJobRecord {
+        Ok((request, job))
+    }
+
+    fn into_record(
+        self,
+        export_root: &Path,
+        now_ms: i64,
+        catalog: Option<&RecordingCatalogHandle>,
+    ) -> anyhow::Result<ExportJobRecord> {
+        let (request, job) = self.messages()?;
+        let mut record = ExportJobRecord {
             requester_id: self.requester_id,
             artifact_id: self.artifact_id,
             request,
             job,
-            path,
+            path: None,
             cancel: Arc::new(AtomicBool::new(false)),
             created_at_ms: self.created_at_ms,
             started_at_ms: self.started_at_ms,
-            updated_at_ms: if recovered {
-                now_ms
-            } else {
-                self.updated_at_ms
-            },
-            completed_at_ms,
+            updated_at_ms: self.updated_at_ms,
+            completed_at_ms: self.completed_at_ms,
             downloaded_at_ms: self.downloaded_at_ms,
-        })
+        };
+        export_storage::history::recover(&mut record, export_root, catalog, now_ms)?;
+        Ok(record)
     }
 }
 
@@ -9232,13 +8916,19 @@ fn safe_export_path_component(value: &str) -> bool {
 }
 
 fn export_history_path(storage: &StorageConfig) -> PathBuf {
-    storage
-        .long_term_path
-        .join(".exports")
-        .join(EXPORT_HISTORY_FILE)
+    storage.metadata_history_path.clone().unwrap_or_else(|| {
+        storage
+            .long_term_path
+            .join(".exports")
+            .join(EXPORT_HISTORY_FILE)
+    })
 }
 
-fn load_export_jobs(history_path: &Path) -> anyhow::Result<HashMap<String, ExportJobRecord>> {
+fn load_export_jobs(
+    history_path: &Path,
+    export_root: &Path,
+    catalog: Option<&RecordingCatalogHandle>,
+) -> anyhow::Result<HashMap<String, ExportJobRecord>> {
     let metadata = match std::fs::metadata(history_path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
@@ -9249,28 +8939,47 @@ fn load_export_jobs(history_path: &Path) -> anyhow::Result<HashMap<String, Expor
         "export history exceeds {MAX_EXPORT_HISTORY_BYTES} bytes"
     );
     let bytes = std::fs::read(history_path)?;
+    restore_export_history(&bytes, export_root, catalog)
+}
+
+fn parse_export_history(bytes: &[u8]) -> anyhow::Result<PersistedExportHistory> {
     anyhow::ensure!(
         u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_EXPORT_HISTORY_BYTES,
         "export history exceeds {MAX_EXPORT_HISTORY_BYTES} bytes"
     );
-    let history: PersistedExportHistory = serde_json::from_slice(&bytes)?;
+    let history: PersistedExportHistory = serde_json::from_slice(bytes)?;
     anyhow::ensure!(
         history.version == EXPORT_HISTORY_VERSION,
         "unsupported export history version {}",
         history.version
     );
-    let export_root = history_path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("export history has no parent directory"))?;
+    let mut jobs = HashSet::new();
+    let mut artifacts = HashSet::new();
+    for record in &history.jobs {
+        let (_, job) = record.messages()?;
+        anyhow::ensure!(
+            jobs.insert(job.job_id) && artifacts.insert(&record.artifact_id),
+            "export history contains duplicate ownership"
+        );
+    }
+    Ok(history)
+}
+
+pub(crate) fn validate_export_history_snapshot(bytes: &[u8]) -> anyhow::Result<()> {
+    parse_export_history(bytes).map(|_| ())
+}
+
+fn restore_export_history(
+    bytes: &[u8],
+    export_root: &Path,
+    catalog: Option<&RecordingCatalogHandle>,
+) -> anyhow::Result<HashMap<String, ExportJobRecord>> {
+    let history = parse_export_history(bytes)?;
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
     let mut jobs = HashMap::new();
     for persisted in history.jobs {
-        match persisted.into_record(export_root, now_ms) {
-            Ok(record) => {
-                jobs.insert(record.job.job_id.clone(), record);
-            }
-            Err(error) => tracing::warn!(%error, "ignoring invalid persisted export job"),
-        }
+        let record = persisted.into_record(export_root, now_ms, catalog)?;
+        jobs.insert(record.job.job_id.clone(), record);
     }
     let retention_ms = i64::try_from(EXPORT_METADATA_RETENTION.as_millis()).unwrap_or(i64::MAX);
     let retained_after_ms = now_ms.saturating_sub(retention_ms);
@@ -9281,11 +8990,16 @@ fn load_export_jobs(history_path: &Path) -> anyhow::Result<HashMap<String, Expor
         if record.updated_at_ms >= retained_after_ms && retained.len() < MAX_EXPORT_HISTORY_JOBS {
             retained.insert(record.job.job_id.clone(), record);
         } else {
-            let _ = cleanup_export_attempt_directory(
-                export_root,
-                &record.job.job_id,
-                &record.artifact_id,
-            );
+            if export_storage::owned(catalog, &record.artifact_id)? {
+                export_storage::retire(catalog, &record.artifact_id)?;
+            }
+            if !export_storage::owned(catalog, &record.artifact_id)? {
+                cleanup_export_attempt_directory(
+                    export_root,
+                    &record.job.job_id,
+                    &record.artifact_id,
+                )?;
+            }
         }
     }
     Ok(retained)
@@ -9295,6 +9009,11 @@ fn persist_export_jobs(
     history_path: &Path,
     jobs: &HashMap<String, ExportJobRecord>,
 ) -> anyhow::Result<()> {
+    config::write_private_file_atomically(history_path, &export_history_bytes(jobs)?)?;
+    Ok(())
+}
+
+fn export_history_bytes(jobs: &HashMap<String, ExportJobRecord>) -> anyhow::Result<Vec<u8>> {
     let mut records = jobs.values().collect::<Vec<_>>();
     records.sort_unstable_by(|left, right| left.job.job_id.cmp(&right.job.job_id));
     let history = PersistedExportHistory {
@@ -9304,9 +9023,7 @@ fn persist_export_jobs(
             .map(PersistedExportJobRecord::from_record)
             .collect(),
     };
-    let serialized = serde_json::to_vec(&history)?;
-    config::write_private_file_atomically(history_path, &serialized)?;
-    Ok(())
+    Ok(serde_json::to_vec(&history)?)
 }
 
 #[derive(Clone)]
@@ -9335,7 +9052,9 @@ pub struct ServerState {
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
     maintenance_active: Arc<AtomicBool>,
     maintenance_reconciliation: Arc<recording_maintenance::reconciliation::Registry>,
+    volume_previews: Arc<storage_volumes::management::Registry>,
     export_history_path: Option<Arc<PathBuf>>,
+    export_history_error: Option<Arc<str>>,
     event_search_tasks: EventSearchTasks,
     event_publications: event_publication::Registry,
     event_subscriptions: event_subscription::Registry,
@@ -9426,7 +9145,8 @@ impl ServerState {
         let camera_count = entries.len();
         let sanitized_config = sanitized_config(config, storage, camera_count, &entries);
         let access_manager = initial_access_manager(config);
-        let (export_history_path, export_jobs) = restored_export_jobs(storage);
+        let export_history_path = export_history_path(storage);
+        let export_jobs = HashMap::new();
         let mut privacy_schedules = config.privacy.cameras.clone();
         let mut privacy_sources = config
             .privacy
@@ -9494,7 +9214,9 @@ impl ServerState {
             maintenance_reconciliation: Arc::new(
                 recording_maintenance::reconciliation::Registry::default(),
             ),
+            volume_previews: Arc::new(storage_volumes::management::Registry::default()),
             export_history_path: Some(Arc::new(export_history_path)),
+            export_history_error: None,
             event_search_tasks: Arc::new(Mutex::new(HashMap::new())),
             event_publications: event_publication::Registry::default(),
             event_subscriptions: event_subscription::Registry::default(),
@@ -9750,11 +9472,13 @@ impl ServerState {
     }
 
     fn upsert_camera(&self, mut entry: CameraEntry) {
+        let source_ip = entry.configuration.ip;
         let mut cameras = self
             .cameras
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let changed_groups;
+        let volume_groups;
         if let Some(existing) = cameras
             .iter_mut()
             .find(|camera| camera.info.id == entry.info.id)
@@ -9762,6 +9486,7 @@ impl ServerState {
             if entry.groups.is_empty() {
                 entry.groups.clone_from(&existing.groups);
             }
+            volume_groups = entry.groups.clone();
             changed_groups = if entry.groups == existing.groups {
                 Vec::new()
             } else {
@@ -9774,14 +9499,32 @@ impl ServerState {
             };
             *existing = entry;
         } else {
+            volume_groups = entry.groups.clone();
             changed_groups = entry.groups.clone();
             cameras.push(entry);
+        }
+        if let Err(error) = self.update_volume_groups(source_ip, Some(volume_groups)) {
+            tracing::error!(ip = %source_ip, %error, "named recording group registry is unavailable; recording remains fail-closed");
         }
         cameras.sort_unstable_by(|left, right| left.info.id.cmp(&right.info.id));
         drop(cameras);
         if !changed_groups.is_empty() {
             camera_access::invalidate_group_sessions(self, &changed_groups);
         }
+    }
+
+    fn update_volume_groups(&self, ip: IpAddr, groups: Option<Vec<String>>) -> anyhow::Result<()> {
+        let mut registry = self
+            .storage_config
+            .volume_groups
+            .write()
+            .map_err(|_| anyhow::anyhow!("volume group registry unavailable"))?;
+        if let Some(groups) = groups {
+            registry.insert(ip.to_string(), groups);
+        } else {
+            registry.remove(&ip.to_string());
+        }
+        Ok(())
     }
 
     fn camera_info(&self, camera: &CameraEntry) -> CameraInfo {
@@ -9937,6 +9680,7 @@ impl ServerState {
 
     pub fn with_recording_catalog(mut self, catalog: RecordingCatalogHandle) -> Self {
         self.catalog = Some(catalog);
+        export_storage::history::restore(&mut self);
         self
     }
 
@@ -10433,6 +10177,7 @@ fn sanitized_config(
         port: config.port,
         configuration_revision: configuration_revision(config),
         storage: SanitizedStorage {
+            named_volumes: storage_volumes::sanitized(config),
             medium_term_path,
             long_term_path,
             recording_catalog_path,
@@ -12874,6 +12619,111 @@ fn present_discovered_cameras(
         .collect::<Vec<_>>()
 }
 
+fn validate_storage_destination(
+    state: &ServerState,
+    next: &StorageConfig,
+    move_existing: bool,
+) -> Result<(), ControlCommandError> {
+    if next.named_volumes.is_some() {
+        if move_existing {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "Use named-volume move controls to relocate stored objects",
+            ));
+        }
+        return Ok(());
+    }
+    validate_raw_storage_destination(state, next, move_existing)
+}
+
+fn validate_raw_storage_destination(
+    state: &ServerState,
+    next: &StorageConfig,
+    move_existing: bool,
+) -> Result<(), ControlCommandError> {
+    probe_storage_paths(next)?;
+    let catalog_recording_bytes = state
+        .catalog
+        .as_ref()
+        .and_then(|catalog| catalog.stats().ok())
+        .map_or(0, |stats| stats.recording_bytes);
+    let capacity = filesystem_capacity(
+        &next.long_term_path,
+        if next.long_term_path == state.storage_config.long_term_path || move_existing {
+            catalog_recording_bytes
+        } else {
+            0
+        },
+    )
+    .map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            format!("storage filesystem is unavailable: {error}"),
+        )
+    })?;
+    let safety = next.safety_policy().evaluate(capacity);
+    if safety.critical_free_bytes > capacity.total_bytes
+        || safety.warning_free_bytes > capacity.total_bytes
+        || safety.recovery_free_bytes > capacity.total_bytes
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "storage headroom thresholds exceed destination filesystem capacity",
+        ));
+    }
+    let reclaimable_bytes =
+        if next.long_term_path == state.storage_config.long_term_path || move_existing {
+            catalog_recording_bytes
+        } else {
+            0
+        };
+    if capacity.available_bytes.saturating_add(reclaimable_bytes) < safety.recovery_free_bytes {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "destination filesystem cannot provide the configured cleanup recovery headroom",
+        ));
+    }
+    if move_existing
+        && next.long_term_path != state.storage_config.long_term_path
+        && capacity.available_bytes
+            < catalog_recording_bytes.saturating_add(safety.critical_free_bytes)
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "destination filesystem cannot hold indexed recordings and critical headroom",
+        ));
+    }
+    Ok(())
+}
+
+fn probe_storage_paths(next: &StorageConfig) -> Result<(), ControlCommandError> {
+    let mut probe_paths = HashSet::new();
+    probe_paths.insert(next.medium_term_path.clone());
+    probe_paths.insert(next.long_term_path.clone());
+    probe_paths.insert(next.event_thumbnail_path.clone());
+    probe_paths.insert(
+        next.recording_catalog_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
+    );
+    for path in probe_paths {
+        if let Err(error) = storage_write_probe(&path) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                format!("storage path is not writable: {error}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn save_runtime_settings(
     update: RuntimeSettingsUpdate,
     state: &ServerState,
@@ -12894,6 +12744,15 @@ fn save_runtime_settings(
             )
         })
     };
+    if let Some(volumes) = &update.storage.named_volumes {
+        config::validate_volume_configuration(config_path, volumes).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                format!("invalid named-volume configuration: {error}"),
+            )
+        })?;
+    }
     let resolved_host = resolve("host", &update.host)?;
     let Some(host) = normalize_server_host(&resolved_host) else {
         return Err(ControlCommandError::new(
@@ -13002,9 +12861,20 @@ fn save_runtime_settings(
             .storage_config
             .long_term_path
             .join(".event-thumbnails");
-    let recording_catalog_path = (!recording_catalog_is_default
-        || Path::new(&recording_catalog_path) != state.storage_config.recording_catalog_path)
-        .then_some(recording_catalog_path);
+    let recording_catalog_path = if state.storage_config.metadata.is_some() {
+        if Path::new(&recording_catalog_path) != state.storage_config.recording_catalog_path {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                409,
+                "Managed metadata requires a confirmed relocation",
+            ));
+        }
+        None
+    } else {
+        (!recording_catalog_is_default
+            || Path::new(&recording_catalog_path) != state.storage_config.recording_catalog_path)
+            .then_some(recording_catalog_path)
+    };
     let event_thumbnail_path = (!event_thumbnail_is_default
         || Path::new(&event_thumbnail_path) != state.storage_config.event_thumbnail_path)
         .then_some(event_thumbnail_path);
@@ -13013,6 +12883,12 @@ fn save_runtime_settings(
         port: update.port,
         storage: StorageToml {
             medium_term_path: Some(medium_term_path),
+            metadata: state.storage_config.metadata.clone(),
+            named_volumes: state
+                .storage_config
+                .metadata
+                .as_ref()
+                .and_then(|_| state.storage_config.named_volumes.clone()),
             long_term_path: Some(long_term_path),
             recording_catalog_path,
             event_thumbnail_path,
@@ -13040,6 +12916,31 @@ fn save_runtime_settings(
         ));
     }
     let next_storage_config = StorageConfig::from_toml(&settings.storage);
+    let _config_update = state
+        .config_update
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !update.expected_configuration_revision.is_empty() {
+        let current = config::load_config(config_path).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                format!("unable to verify current settings revision: {error}"),
+            )
+        })?;
+        if configuration_revision(&current) != update.expected_configuration_revision {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                409,
+                "runtime configuration changed after this editor was opened; reload before applying the draft",
+            ));
+        }
+    }
+    storage_volumes::settings::validate_removals(
+        state,
+        config_path,
+        update.storage.named_volumes.as_ref(),
+    )?;
     let migration = if update.move_existing_recordings {
         match StorageMigration::between_with_metadata(
             StorageMigrationPaths::new(
@@ -13067,116 +12968,22 @@ fn save_runtime_settings(
     } else {
         None
     };
-    let mut probe_paths = HashSet::new();
-    probe_paths.insert(next_storage_config.medium_term_path.clone());
-    probe_paths.insert(next_storage_config.long_term_path.clone());
-    probe_paths.insert(next_storage_config.event_thumbnail_path.clone());
-    probe_paths.insert(
-        next_storage_config
-            .recording_catalog_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf(),
-    );
-    for path in probe_paths {
-        if let Err(error) = storage_write_probe(&path) {
+    validate_storage_destination(state, &next_storage_config, update.move_existing_recordings)?;
+    let saved = match config::update_settings_with_volume_draft(
+        config_path,
+        &settings,
+        migration.as_ref(),
+        update.storage.named_volumes.as_ref(),
+    ) {
+        Ok(saved) => saved,
+        Err(error) => {
             return Err(ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                format!("storage path is not writable: {error}"),
-            ));
-        }
-    }
-    let catalog_recording_bytes = state
-        .catalog
-        .as_ref()
-        .and_then(|catalog| catalog.stats().ok())
-        .map_or(0, |stats| stats.recording_bytes);
-    let capacity = filesystem_capacity(
-        &next_storage_config.long_term_path,
-        if next_storage_config.long_term_path == state.storage_config.long_term_path
-            || update.move_existing_recordings
-        {
-            catalog_recording_bytes
-        } else {
-            0
-        },
-    )
-    .map_err(|error| {
-        ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            format!("storage filesystem is unavailable: {error}"),
-        )
-    })?;
-    let safety = next_storage_config.safety_policy().evaluate(capacity);
-    if safety.critical_free_bytes > capacity.total_bytes
-        || safety.warning_free_bytes > capacity.total_bytes
-        || safety.recovery_free_bytes > capacity.total_bytes
-    {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "storage headroom thresholds exceed destination filesystem capacity",
-        ));
-    }
-    let reclaimable_bytes = if next_storage_config.long_term_path
-        == state.storage_config.long_term_path
-        || update.move_existing_recordings
-    {
-        catalog_recording_bytes
-    } else {
-        0
-    };
-    if capacity.available_bytes.saturating_add(reclaimable_bytes) < safety.recovery_free_bytes {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "destination filesystem cannot provide the configured cleanup recovery headroom",
-        ));
-    }
-    if update.move_existing_recordings
-        && next_storage_config.long_term_path != state.storage_config.long_term_path
-        && capacity.available_bytes
-            < catalog_recording_bytes.saturating_add(safety.critical_free_bytes)
-    {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "destination filesystem cannot hold indexed recordings and critical headroom",
-        ));
-    }
-    let _config_update = state
-        .config_update
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !update.expected_configuration_revision.is_empty() {
-        let current = config::load_config(config_path).map_err(|error| {
-            ControlCommandError::new(
                 proto::ErrorCode::Internal,
                 500,
-                format!("unable to verify current settings revision: {error}"),
-            )
-        })?;
-        if configuration_revision(&current) != update.expected_configuration_revision {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "runtime configuration changed after this editor was opened; reload before applying the draft",
+                format!("unable to save settings: {error}"),
             ));
         }
-    }
-    let saved =
-        match config::update_settings_with_migration(config_path, &settings, migration.as_ref()) {
-            Ok(saved) => saved,
-            Err(error) => {
-                return Err(ControlCommandError::new(
-                    proto::ErrorCode::Internal,
-                    500,
-                    format!("unable to save settings: {error}"),
-                ));
-            }
-        };
+    };
     let camera_count = config::load_cameras(config_path)
         .map(|cameras| cameras.values().map(Vec::len).sum())
         .unwrap_or(state.config.camera_count);
@@ -13588,6 +13395,10 @@ fn start_runtime_camera(
         return None;
     }
     let groups = runtime_camera_groups(config_path, camera.config.ip)?;
+    if let Err(error) = state.update_volume_groups(camera.config.ip, Some(groups.clone())) {
+        tracing::error!(ip = %camera.config.ip, %error, "camera cannot start with an unavailable volume group registry");
+        return None;
+    }
     let runtime_result = if restart {
         runtime.restart_camera(camera.clone())
     } else {
@@ -13665,6 +13476,13 @@ fn delete_camera_settings(
             if let Some(runtime) = &state.camera_runtime {
                 runtime.stop_camera(ip).map_err(|_| ControlCommandError::new(proto::ErrorCode::Unavailable, 503, "camera configuration was removed but its runtime stop could not be confirmed"))?;
             }
+            state.update_volume_groups(ip, None).map_err(|_| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Unavailable,
+                    503,
+                    "camera was removed but its volume group registry is unavailable",
+                )
+            })?;
             camera_configuration_revision(state)
         }
         Err(error) => Err(ControlCommandError::new(
@@ -13963,7 +13781,7 @@ mod tests {
         health::CameraHealthReason,
     };
 
-    fn fixture_video_keyframe(name: &str, media_type: mp4::MediaType) -> bytes::Bytes {
+    pub(super) fn fixture_video_keyframe(name: &str, media_type: mp4::MediaType) -> bytes::Bytes {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("crates/test-camera/testdata")
             .join(name);
@@ -17299,6 +17117,66 @@ mod tests {
     }
 
     #[test]
+    fn camera_group_updates_reach_the_shared_volume_registry() {
+        let state = media_test_state();
+        let shared = state.storage_config.clone().volume_groups;
+        let mut camera = state.camera("127.0.0.1").unwrap();
+        camera.groups = vec!["outdoor".to_owned()];
+        state.upsert_camera(camera.clone());
+        assert_eq!(shared.read().unwrap()["127.0.0.1"], ["outdoor"]);
+        camera.groups.clear();
+        state.upsert_camera(camera.clone());
+        assert_eq!(shared.read().unwrap()["127.0.0.1"], ["outdoor"]);
+        camera.groups = vec!["indoor".to_owned()];
+        state.upsert_camera(camera);
+        assert_eq!(shared.read().unwrap()["127.0.0.1"], ["indoor"]);
+    }
+
+    #[test]
+    fn camera_deletion_removes_only_its_shared_volume_groups() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-volume-groups-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("config.toml");
+        crate::config::write_private_file(&path, b"[cameras]\n").unwrap();
+        let state = media_test_state().with_camera_config_path(path.clone());
+        let mut camera = state.camera("127.0.0.1").unwrap();
+        crate::config::upsert_camera(&path, &camera.configuration).unwrap();
+        camera.groups = vec!["outdoor".to_owned()];
+        state.upsert_camera(camera);
+        state
+            .update_volume_groups("127.0.0.2".parse().unwrap(), Some(vec!["retained".into()]))
+            .unwrap();
+        let shared = state.storage_config.clone().volume_groups;
+        assert!(shared.read().unwrap().contains_key("127.0.0.1"));
+        delete_camera_settings(&state, "127.0.0.1", "").unwrap();
+        let groups = shared.read().unwrap();
+        assert!(!groups.contains_key("127.0.0.1"));
+        assert_eq!(groups["127.0.0.2"], ["retained"]);
+        drop(groups);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn poisoned_volume_group_registry_rejects_updates() {
+        let state = media_test_state();
+        let shared = state.storage_config.volume_groups.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = shared.write().unwrap();
+                panic!("poison the synthetic group registry");
+            })
+            .join()
+            .is_err()
+        );
+        assert!(
+            state
+                .update_volume_groups("127.0.0.1".parse().unwrap(), Some(vec!["outdoor".into()]))
+                .is_err()
+        );
+        assert!(state.storage_config.volume_groups.read().is_err());
+    }
+
+    #[test]
     fn camera_group_changes_cancel_existing_user_work() {
         let state = media_test_state();
         state.cameras.write().unwrap()[0].groups = vec!["outdoor".to_owned()];
@@ -19076,24 +18954,72 @@ mod tests {
 
     #[test]
     fn event_search_queries_and_fetches_encoded_media_objects() {
-        let directory =
-            std::env::temp_dir().join(format!("keeppeek-event-search-{}", rand::random::<u64>()));
-        let catalog = RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+        check_event_search_queries_and_fetches_encoded_media_objects(false);
+    }
+
+    #[test]
+    fn named_event_search_readers_hold_leases_through_cancellation_delivery() {
+        check_event_search_queries_and_fetches_encoded_media_objects(true);
+    }
+
+    fn check_event_search_queries_and_fetches_encoded_media_objects(named: bool) {
+        let (directory, catalog, manager) = if named {
+            let (directory, catalog, manager) =
+                crate::storage::volumes::runtime::tests::fixture(2 * 1024 * 1024).unwrap();
+            (directory, catalog, Some(manager))
+        } else {
+            let directory = std::env::temp_dir()
+                .join(format!("keeppeek-event-search-{}", rand::random::<u64>()));
+            let catalog = RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+            (directory, catalog, None)
+        };
         let handle = catalog.handle();
         let started_at = Instant::now();
-        let mut writer =
-            crate::storage::medium_term::MediumTermWriter::create_with_catalog_identity(
-                &directory,
-                crate::storage::RecordingStreamIdentity::new(
-                    "127.0.0.1",
-                    "sub",
-                    "archived-front-door",
-                ),
-                started_at,
-                8 * 1024,
-                handle.clone(),
-            )
-            .unwrap();
+        let mut writer = manager.as_ref().map_or_else(
+            || {
+                crate::storage::medium_term::MediumTermWriter::create_with_catalog_identity(
+                    &directory,
+                    crate::storage::RecordingStreamIdentity::new(
+                        "127.0.0.1",
+                        "sub",
+                        "archived-front-door",
+                    ),
+                    started_at,
+                    8 * 1024,
+                    handle.clone(),
+                )
+                .unwrap()
+            },
+            |manager| {
+                let id = uuid::Uuid::new_v4().to_string();
+                let reservation = manager
+                    .reserve(
+                        crate::storage::volumes::VolumeRole::Active,
+                        "127.0.0.1",
+                        &[],
+                        crate::storage::catalog::locations::Object {
+                            kind: crate::storage::catalog::locations::Kind::Recording,
+                            id: id.clone(),
+                        },
+                        8192,
+                    )
+                    .unwrap()
+                    .unwrap();
+                crate::storage::medium_term::MediumTermWriter::create_with_reservation(
+                    reservation,
+                    id,
+                    crate::storage::RecordingStreamIdentity::new(
+                        "127.0.0.1",
+                        "sub",
+                        "archived-front-door",
+                    ),
+                    started_at,
+                    8192,
+                    handle.clone(),
+                )
+                .unwrap()
+            },
+        );
         let frame_payload = bytes::Bytes::from_static(&[
             0, 0, 0, 8, 0x67, 0x42, 0x00, 0x1f, 0xe5, 0x88, 0x68, 0x40, 0, 0, 0, 4, 0x68, 0xce,
             0x3c, 0x80, 0, 0, 0, 1, 0x65,
@@ -19654,12 +19580,33 @@ mod tests {
             },
             &cancelled,
             |message| {
+                assert_eq!(
+                    handler
+                        .state
+                        .catalog
+                        .as_ref()
+                        .unwrap()
+                        .reader_leases()
+                        .conflicts(&fragments[0].recording_id, &fragments[0].path)
+                        .unwrap(),
+                    named
+                );
                 cancelled_messages.push(message);
                 cancelled.store(true, Ordering::Release);
                 Ok(())
             },
         )
         .unwrap();
+        assert!(
+            !handler
+                .state
+                .catalog
+                .as_ref()
+                .unwrap()
+                .reader_leases()
+                .conflicts(&fragments[0].recording_id, &fragments[0].path)
+                .unwrap()
+        );
         assert_eq!(cancelled_messages.len(), 1);
         assert!(matches!(
             cancelled_messages[0].message.message,
@@ -19672,6 +19619,7 @@ mod tests {
 
         drop(handler);
         catalog.shutdown();
+        drop(manager);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -21333,7 +21281,7 @@ mod tests {
         let history_path = directory.join(EXPORT_HISTORY_FILE);
         let ready_path = directory
             .join("ready-job")
-            .join("attempt")
+            .join("ready-job-attempt")
             .join("ready.mp4");
         std::fs::create_dir_all(ready_path.parent().unwrap()).unwrap();
         std::fs::write(&ready_path, b"ready export").unwrap();
@@ -21373,7 +21321,7 @@ mod tests {
         let record =
             |request: proto::CreateExportJob, job: proto::ExportJob, path| ExportJobRecord {
                 requester_id: "local-administrator".to_owned(),
-                artifact_id: "attempt".to_owned(),
+                artifact_id: format!("{}-attempt", job.job_id),
                 request,
                 job,
                 path,
@@ -21419,13 +21367,13 @@ mod tests {
         );
         let interrupted_path = directory
             .join("running-job")
-            .join("attempt")
+            .join("running-job-attempt")
             .join("partial.mp4.active");
         std::fs::create_dir_all(interrupted_path.parent().unwrap()).unwrap();
         std::fs::write(&interrupted_path, b"partial").unwrap();
 
         persist_export_jobs(&history_path, &jobs).unwrap();
-        let recovered = load_export_jobs(&history_path).unwrap();
+        let recovered = load_export_jobs(&history_path, &directory, None).unwrap();
 
         let ready = recovered.get("ready-job").unwrap();
         assert_eq!(ready.job.status, proto::ExportJobStatus::Ready as i32);
@@ -21449,6 +21397,14 @@ mod tests {
         assert_eq!(missing.job.status, proto::ExportJobStatus::Failed as i32);
         assert!(missing.job.retryable);
 
+        let relocated_history = directory.join("metadata").join(EXPORT_HISTORY_FILE);
+        std::fs::create_dir_all(relocated_history.parent().unwrap()).unwrap();
+        std::fs::rename(&history_path, &relocated_history).unwrap();
+        let relocated = load_export_jobs(&relocated_history, &directory, None).unwrap();
+        let ready = relocated.get("ready-job").unwrap();
+        assert_eq!(ready.job.status, proto::ExportJobStatus::Ready as i32);
+        assert_eq!(ready.path.as_deref(), Some(ready_path.as_path()));
+
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -21463,7 +21419,7 @@ mod tests {
         let file = File::create(&history_path).unwrap();
         file.set_len(MAX_EXPORT_HISTORY_BYTES + 1).unwrap();
 
-        let error = match load_export_jobs(&history_path) {
+        let error = match load_export_jobs(&history_path, &directory, None) {
             Ok(_) => panic!("oversized export history must be rejected"),
             Err(error) => error,
         };
@@ -22147,6 +22103,7 @@ mod tests {
         .with_camera_config_path(config_path.clone());
         let handler = test_control_handler(state);
         let storage_update = |safety: Option<u64>| proto::RuntimeStorageConfiguration {
+            named_volumes: None,
             medium_term_path: recordings.to_string_lossy().into_owned(),
             long_term_path: recordings.to_string_lossy().into_owned(),
             recording_catalog_path: recordings
@@ -22256,6 +22213,21 @@ mod tests {
 
         assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn named_settings_validation_does_not_create_offline_roots() {
+        let missing = std::env::temp_dir().join(format!("offline-named-{}", uuid::Uuid::new_v4()));
+        let mut storage = StorageConfig::from_toml(&StorageToml::default());
+        storage.named_volumes = Some(Default::default());
+        storage.medium_term_path = missing.join("active");
+        storage.long_term_path = missing.join("archive");
+        storage.event_thumbnail_path = missing.join("images");
+        storage.recording_catalog_path = missing.join("metadata/catalog.db");
+        let state = ServerState::empty();
+        validate_storage_destination(&state, &storage, false).unwrap();
+        assert!(validate_storage_destination(&state, &storage, true).is_err());
+        assert!(!missing.exists());
     }
 
     #[test]
@@ -24483,6 +24455,7 @@ mod tests {
                 port: 3200,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: medium_term_path.to_string_lossy().into_owned(),
                     long_term_path: long_term_path.to_string_lossy().into_owned(),
                     recording_catalog_path: recording_catalog_path.to_string_lossy().into_owned(),
@@ -24578,6 +24551,7 @@ mod tests {
                 port: 0,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: "/media/invalid".to_owned(),
                     long_term_path: "/archive/invalid".to_owned(),
                     recording_catalog_path: "/metadata/invalid-recordings.db".to_owned(),
@@ -24639,6 +24613,7 @@ mod tests {
                 port: 3200,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: writable.clone(),
                     long_term_path: writable.clone(),
                     recording_catalog_path: directory
@@ -24686,6 +24661,7 @@ mod tests {
                 port: 3200,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: inaccessible_path.to_owned(),
                     long_term_path: inaccessible_path.to_owned(),
                     recording_catalog_path: directory
@@ -24732,6 +24708,7 @@ mod tests {
                 port: 3200,
                 expected_configuration_revision: stale_revision,
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: writable.clone(),
                     long_term_path: writable,
                     recording_catalog_path: directory
@@ -24815,6 +24792,7 @@ mod tests {
                 port: 3000,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: next.to_string_lossy().into_owned(),
                     long_term_path: next.to_string_lossy().into_owned(),
                     recording_catalog_path: current
@@ -24937,6 +24915,7 @@ mod tests {
                 port: 3000,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    named_volumes: None,
                     medium_term_path: next_recordings.to_string_lossy().into_owned(),
                     long_term_path: next_recordings.to_string_lossy().into_owned(),
                     recording_catalog_path: next_catalog.to_string_lossy().into_owned(),

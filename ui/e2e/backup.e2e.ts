@@ -2,8 +2,9 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
 import { execFile, spawn, type ExecFileException } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { mockControlPeer } from './fixtures/control-peer';
@@ -180,18 +181,20 @@ test('HTTP apply replaces both TOMLs only after an isolated recorder restart', a
 	request
 }, testInfo) => {
 	test.setTimeout(90_000);
-	const directory = testInfo.outputPath('isolated-recorder');
+	const directory =
+		process.platform === 'win32'
+			? await mkdtemp(resolve(tmpdir(), 'keeppeek-backup-e2e-'))
+			: testInfo.outputPath('isolated-recorder');
 	const configPath = resolve(directory, 'config.toml');
 	const secretsPath = resolve(directory, 'secrets.toml');
-	const recordings = resolve(directory, 'target-recordings');
-	const sourceRecordings = resolve(directory, 'source-recordings');
+	const recordings = resolve(directory, 'storage/media');
 	const sourceZip = testInfo.outputPath('source.zip');
 	const restoredZip = testInfo.outputPath('restored.zip');
 	const port = await unusedPort();
 	const serverURL = `http://127.0.0.1:${port}`;
 	let stop: (() => Promise<void>) | undefined;
 	try {
-		await writeRecorderConfiguration(directory, port, sourceRecordings, 17, 'exported-value');
+		await writeRecorderConfiguration(directory, port, 17, 'exported-value');
 		stop = await startRecorder(configPath, serverURL, request);
 		const exported = await exportConfigurationZip(request, serverURL, sourceZip);
 		expect(exported.members.sort()).toEqual(['config.toml', 'secrets.toml']);
@@ -199,12 +202,16 @@ test('HTTP apply replaces both TOMLs only after an isolated recorder restart', a
 		expect(exported.secretsSha256).toBe(sha256(await readFile(secretsPath)));
 		await stop();
 
-		await writeRecorderConfiguration(directory, port, recordings, 53, 'original-value');
+		await writeRecorderConfiguration(directory, port, 53, 'original-value');
 		stop = await startRecorder(configPath, serverURL, request);
-		const catalogPath = resolve(recordings, 'recordings.db');
+		const catalogPath = resolve(
+			directory,
+			'storage/metadata',
+			exported.storage.metadata.catalog_file
+		);
 		const mediaPath = resolve(recordings, 'preserved.mp4');
 		await copyFile(resolve('../crates/test-camera/testdata/cc-4k-640x360-h264.mp4'), mediaPath);
-		const original = await recorderFileChecksums(directory, recordings);
+		const original = await recorderFileChecksums(directory, recordings, catalogPath);
 
 		const applied = await request.post(`${serverURL}/config/apply`, {
 			headers: { 'Content-Type': 'application/zip' },
@@ -212,20 +219,22 @@ test('HTTP apply replaces both TOMLs only after an isolated recorder restart', a
 		});
 		expect(applied.status()).toBe(202);
 		expect(await applied.json()).toMatchObject({ state: 'RESTORE_STATE_AWAITING_RESTART' });
-		expect(await recorderFileChecksums(directory, recordings)).toEqual(original);
+		expect(await recorderFileChecksums(directory, recordings, catalogPath)).toEqual(original);
 		await stop();
 
 		stop = await startRecorder(configPath, serverURL, request);
 		const restored = await exportConfigurationZip(request, serverURL, restoredZip);
 		expect(restored.storage).toMatchObject({
 			short_term_secs: 17,
-			long_term_path: recordings,
-			recording_catalog_path: catalogPath
+			metadata: exported.storage.metadata
 		});
+		expect(restored.storage.named_volumes.volumes).toContainEqual(
+			expect.objectContaining({ id: 'media', root: recordings })
+		);
 		expect(restored.secretsSha256).toBe(exported.secretsSha256);
 		expect(restored.secretsSha256).not.toBe(original.secrets);
 		expect(restored.members.sort()).toEqual(['config.toml', 'secrets.toml']);
-		const activated = await recorderFileChecksums(directory, recordings);
+		const activated = await recorderFileChecksums(directory, recordings, catalogPath);
 		expect(activated.catalog).toBe(original.catalog);
 		expect(activated.media).toBe(original.media);
 	} finally {
@@ -248,7 +257,11 @@ async function inspectConfigurationZip(archivePath: string): Promise<{
 	members: string[];
 	configSha256: string;
 	secretsSha256: string;
-	storage: { short_term_secs: number; long_term_path: string; recording_catalog_path: string };
+	storage: {
+		short_term_secs: number;
+		metadata: { catalog_file: string };
+		named_volumes: { volumes: { id: string; root: string }[] };
+	};
 }> {
 	const python =
 		process.env.KEEPPEEK_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3.12');
@@ -304,11 +317,11 @@ async function downloadConfigurationZip(page: Page, section: Locator) {
 	return { downloadPath, archiveBytes: await readFile(downloadPath) };
 }
 
-async function recorderFileChecksums(directory: string, recordings: string) {
+async function recorderFileChecksums(directory: string, recordings: string, catalogPath: string) {
 	const [config, secrets, catalog, media] = await Promise.all([
 		readFile(resolve(directory, 'config.toml')),
 		readFile(resolve(directory, 'secrets.toml')),
-		readFile(resolve(recordings, 'recordings.db')),
+		readFile(catalogPath),
 		readFile(resolve(recordings, 'preserved.mp4'))
 	]);
 	return {
@@ -339,11 +352,10 @@ function sha256(bytes: Buffer): string {
 async function writeRecorderConfiguration(
 	directory: string,
 	port: number,
-	recordings: string,
 	shortTermSecs: number,
 	token: string
 ) {
-	await mkdir(recordings, { recursive: true, mode: 0o700 });
+	await mkdir(directory, { recursive: true, mode: 0o700 });
 	await writeFile(
 		resolve(directory, 'config.toml'),
 		`host = "127.0.0.1"
@@ -351,9 +363,6 @@ port = ${port}
 access_key = "{secret:KEEPPEEK_ACCESS_KEY}"
 
 [storage]
-medium_term_path = ${JSON.stringify(recordings)}
-long_term_path = ${JSON.stringify(recordings)}
-recording_catalog_path = ${JSON.stringify(resolve(recordings, 'recordings.db'))}
 short_term_secs = ${shortTermSecs}
 long_term_max_gb = 0
 minimum_free_gb = 0
