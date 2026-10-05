@@ -29,7 +29,7 @@ impl Interval {
         Ok(Self { start_ms, end_ms })
     }
 
-    fn overlaps(self, other: Self) -> bool {
+    const fn overlaps(self, other: Self) -> bool {
         self.start_ms < other.end_ms && other.start_ms < self.end_ms
     }
 }
