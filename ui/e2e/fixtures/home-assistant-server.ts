@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -96,8 +96,6 @@ async function writeFixtureConfiguration(options: {
 	configurations: string[];
 }): Promise<string> {
 	const { directory, origin, port, configurations } = options;
-	const recordings = resolve(directory, 'recordings');
-	await mkdir(recordings);
 	const configPath = resolve(directory, 'config.toml');
 	await writeFile(
 		configPath,

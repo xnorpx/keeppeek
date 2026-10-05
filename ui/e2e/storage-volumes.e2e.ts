@@ -28,7 +28,7 @@ test('named defaults support probes and cancellable drafts on desktop and mobile
 	await volumes.getByRole('button', { name: 'Edit volume draft', exact: true }).click();
 	const draft = volumes.getByRole('form', { name: 'Named volume draft' });
 	const media = draft.getByRole('group', { name: 'Volume 1', exact: true });
-	await expect(media.getByLabel('State', { exact: true })).toHaveValue('1');
+	await expect(media.getByRole('combobox', { name: 'State', exact: true })).toHaveValue('1');
 	await media
 		.getByLabel('Capacity in bytes (blank means unlimited)', { exact: true })
 		.fill('12345');

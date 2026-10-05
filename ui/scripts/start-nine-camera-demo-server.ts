@@ -24,7 +24,6 @@ const testRoot =
 				`keeppeek-nine-camera-${createHash('sha256').update(repositoryRoot).digest('hex').slice(0, 12)}`
 			)
 		: path.join(repositoryRoot, 'target', 'nine-camera-demo');
-const storageRoot = path.join(testRoot, 'recordings');
 const configPath = path.join(testRoot, 'config.toml');
 const draftsPath = path.join(testRoot, 'camera-drafts.json');
 const fixtureManifestPath = path.join(
@@ -144,7 +143,7 @@ for (const keyframeIntervalSeconds of nineCameraKeyframeIntervalsSeconds) {
 }
 
 await rm(testRoot, { recursive: true, force: true });
-await mkdir(storageRoot, { recursive: true });
+await mkdir(testRoot, { recursive: true });
 
 const safeBeforeSeconds = 1;
 const safeAfterSeconds = 65;
