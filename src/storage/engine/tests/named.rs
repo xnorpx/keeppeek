@@ -273,3 +273,149 @@ fn named_event_boost_records_sub_and_main_gops_in_one_owned_file() -> anyhow::Re
     catalog.shutdown();
     Ok(())
 }
+
+fn legacy_archiver_fixture() -> anyhow::Result<(PathBuf, RecordingCatalog, StorageConfig, PathBuf)>
+{
+    let (root, catalog, mut config) = named_fixture()?;
+    let (legacy, pinned) = crate::storage::volumes::root::test_root()?;
+    drop(pinned);
+    config.medium_term_path = legacy;
+    config.event_thumbnail_path = root.join("legacy-thumbnails");
+    let path = config
+        .medium_term_path
+        .join("camera/non-uuid-recording.mp4");
+    std::fs::create_dir(path.parent().unwrap())?;
+    std::fs::write(&path, [7_u8; 128])?;
+    catalog
+        .handle()
+        .upsert_recording(crate::storage::catalog::CatalogRecording {
+            id: "legacy-archiver".into(),
+            stream_id: "camera/main".into(),
+            source_id: Some("camera".into()),
+            logical_stream_id: Some("main".into()),
+            started_at_ms: 1000,
+            ended_at_ms: Some(2000),
+            path: path.to_string_lossy().into_owned(),
+            init_offset: 0,
+            init_len: 8,
+            finalized: true,
+        })?;
+    config.volume_runtime = None;
+    Ok((root, catalog, config, path))
+}
+
+#[test]
+fn adoption_claim_prevents_legacy_archiver_from_renaming_source() -> anyhow::Result<()> {
+    let (_root, catalog, config, path) = legacy_archiver_fixture()?;
+    let archive = config.long_term_path.clone();
+    let handle = catalog.handle();
+    let claim = handle.claim_volume_move("legacy-archiver")?;
+    let worker = WriterWorker::new(
+        config,
+        RecordingDemand::new(Duration::ZERO),
+        Some(handle.clone()),
+    );
+    assert!(
+        worker
+            .move_to_long_term("camera", &path, "legacy-archiver")
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path)?, [7_u8; 128]);
+    assert!(!archive.exists());
+    drop(claim);
+    let destination = worker.move_to_long_term("camera", &path, "legacy-archiver")?;
+    assert_eq!(destination, archive.join("camera/non-uuid-recording.mp4"));
+    assert!(!path.exists());
+    assert_eq!(std::fs::read(destination)?, [7_u8; 128]);
+    drop(worker);
+    drop(handle);
+    catalog.shutdown();
+    Ok(())
+}
+
+fn adopt_archiver_source(
+    root: &Path,
+    catalog: &RecordingCatalog,
+    config: &StorageConfig,
+) -> anyhow::Result<()> {
+    use crate::storage::catalog::locations::{
+        Allocation,
+        legacy::{LegacyPaths, adoption, inventory, roots},
+        moves,
+    };
+    let handle = catalog.handle();
+    let paths = LegacyPaths::effective(config)?;
+    crate::storage::volumes::legacy::capture_roots(&handle, &paths)?;
+    let Reply::LegacyReferences(mut references) =
+        handle.volume_location(Request::LegacyInventory(inventory::Action::Recordings {
+            after: None,
+            limit: 1,
+        }))?
+    else {
+        anyhow::bail!("legacy reference missing")
+    };
+    assert_eq!(references.len(), 1);
+    let reference =
+        crate::storage::volumes::legacy::verify_recording(&handle, &references.remove(0))?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let primary = crate::storage::volumes::root::Root::open(&root.join("primary"))?;
+    let destination = moves::Intent {
+        id: id.clone(),
+        object: reference.object.clone(),
+        expected_revision: 1,
+        destination: Allocation {
+            operation: id.clone(),
+            object: Object {
+                kind: Kind::Recording,
+                id: id.clone(),
+            },
+            volume: "primary".into(),
+            generation: 1,
+            relative_key: format!("{id}.mp4"),
+            bytes: 128,
+            capacity: primary.capacity(handle.volume_ledger_revision()?)?,
+        },
+    };
+    handle.volume_location(Request::AdoptLegacyRecording(Box::new(adoption::Intent {
+        reference,
+        role: roots::Role::Active,
+        operation: uuid::Uuid::new_v4().to_string(),
+        destination,
+    })))?;
+    Ok(())
+}
+
+#[test]
+fn already_adopted_source_never_uses_raw_archive_rename_without_runtime_manager()
+-> anyhow::Result<()> {
+    let (root, catalog, config, path) = legacy_archiver_fixture()?;
+    assert!(config.volume_runtime.is_none());
+    adopt_archiver_source(&root, &catalog, &config)?;
+    let object = Object {
+        kind: Kind::Recording,
+        id: "legacy-archiver".into(),
+    };
+    let before = catalog
+        .handle()
+        .volume_location(Request::Lookup(object.clone()))?;
+    assert!(matches!(&before, Reply::Location(Some(_))));
+    let archive = config.long_term_path.clone();
+    let worker = WriterWorker::new(
+        config,
+        RecordingDemand::new(Duration::ZERO),
+        Some(catalog.handle()),
+    );
+    assert_eq!(
+        worker.move_to_long_term("camera", &path, "legacy-archiver")?,
+        path
+    );
+    assert_eq!(std::fs::read(&path)?, [7_u8; 128]);
+    assert!(!archive.exists());
+    assert_eq!(
+        catalog.handle().volume_location(Request::Lookup(object))?,
+        before
+    );
+    drop(worker);
+    catalog.shutdown();
+    Ok(())
+}

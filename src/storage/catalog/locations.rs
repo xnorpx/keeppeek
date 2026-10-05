@@ -156,6 +156,9 @@ impl fmt::Debug for Allocation {
 #[derive(Debug, Clone)]
 pub enum Request {
     RegisterLegacyPaths(Box<legacy::LegacyPaths>),
+    AdoptLegacyRecording(Box<legacy::adoption::Intent>),
+    CaptureLegacyRoots(Box<legacy::roots::Capture>),
+    LegacyRoot(legacy::roots::Role),
     LegacyPaths,
     LegacyInventory(legacy::inventory::Action),
     Bind(Binding),
@@ -210,6 +213,7 @@ pub enum Request {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
     LegacyPaths(Option<Box<legacy::LegacyPaths>>),
+    LegacyRoot(legacy::roots::State),
     LegacyReference(Option<Box<legacy::inventory::Reference>>),
     LegacyReferences(Vec<legacy::inventory::Reference>),
     Bound,
@@ -293,6 +297,8 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     recordings::initialize(connection).await?;
     recording_recovery::initialize(connection).await?;
     legacy::initialize(connection).await?;
+    legacy::roots::initialize(connection).await?;
+    legacy::adoption::initialize(connection).await?;
     legacy::inventory::initialize(connection).await?;
     removal::initialize(connection).await?;
     // A sample from a previous actor lifetime must never authorize another allocation.
@@ -314,8 +320,11 @@ fn validate(request: &Request) -> anyhow::Result<()> {
         Request::Revision
         | Request::Usage
         | Request::LegacyRecordingBytes
-        | Request::LegacyPaths => {}
+        | Request::LegacyPaths
+        | Request::LegacyRoot(_) => {}
         Request::RegisterLegacyPaths(paths) => paths.validate()?,
+        Request::CaptureLegacyRoots(capture) => capture.validate()?,
+        Request::AdoptLegacyRecording(intent) => intent.validate()?,
         Request::LegacyInventory(action) => action.validate()?,
         Request::Move(id)
         | Request::EnsureRemovable(id)
@@ -528,6 +537,15 @@ async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::R
             Reply::LegacyPaths(Some(Box::new(legacy::register(connection, &paths).await?)))
         }
         Request::LegacyPaths => Reply::LegacyPaths(legacy::load(connection).await?.map(Box::new)),
+        Request::CaptureLegacyRoots(capture) => {
+            legacy::roots::capture(connection, &capture).await?
+        }
+        Request::AdoptLegacyRecording(intent) => {
+            legacy::adoption::begin(connection, &intent).await?
+        }
+        Request::LegacyRoot(role) => {
+            Reply::LegacyRoot(legacy::roots::lookup(connection, role).await?)
+        }
         Request::LegacyInventory(action) => legacy::inventory::dispatch(connection, action).await?,
         Request::Bind(binding) => bind(connection, &binding).await?,
         Request::CheckBinding(binding) => {

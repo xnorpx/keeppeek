@@ -120,20 +120,8 @@ impl Manager {
         }
         let _worker = self.inner.catalog.claim_volume_move(operation)?;
         let location = &job.location;
-        let index = self
-            .inner
-            .configuration
-            .volumes
-            .iter()
-            .position(|volume| volume.id.as_str() == location.volume)
-            .ok_or_else(|| anyhow::anyhow!("recording volume is not configured"))?;
-        anyhow::ensure!(
-            location.generation == 1,
-            "recording volume generation changed"
-        );
-        let path = self.inner.configuration.volumes[index]
-            .root
-            .join(&location.relative_key);
+        let root = self.owned_root(location, true)?;
+        let path = root.path().join(&location.relative_key);
         if self
             .inner
             .catalog
@@ -142,15 +130,20 @@ impl Manager {
         {
             return Ok(true);
         }
-        self.remove_recording(index, &job)?;
+        self.remove_recording(&root, &job)?;
         Ok(true)
     }
 
-    fn remove_recording(&self, index: usize, job: &Job) -> anyhow::Result<()> {
-        let root = self.inner.writable_root(index)?;
+    fn remove_recording(&self, root: &super::Root, job: &Job) -> anyhow::Result<()> {
         let location = &job.location;
         if !job.complete {
-            root.retire_owned(
+            let retire = if location.volume.starts_with("legacy-") {
+                super::Root::retire_legacy
+            } else {
+                super::Root::retire_owned
+            };
+            retire(
+                root,
                 &location.relative_key,
                 &location.file_identity,
                 location.bytes,
@@ -166,7 +159,13 @@ impl Manager {
                     digest: location.digest,
                 })))?;
         }
-        root.acknowledge_retirement(
+        let acknowledge = if location.volume.starts_with("legacy-") {
+            super::Root::acknowledge_legacy
+        } else {
+            super::Root::acknowledge_retirement
+        };
+        acknowledge(
+            root,
             &location.relative_key,
             &location.file_identity,
             location.bytes,

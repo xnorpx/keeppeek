@@ -73,18 +73,23 @@ pub fn verify_recording(
         anyhow::bail!("legacy roots have not been captured");
     };
     // ponytail: the two captured recording roots suffice; no filesystem discovery is needed.
-    let path = [&paths.archive_root, &paths.active_root]
+    use crate::storage::catalog::locations::legacy::roots::Role;
+    let role = [Role::Archive, Role::Active]
         .into_iter()
-        .filter(|root| reference.path.starts_with(root))
-        .max_by_key(|root| root.components().count())
+        .filter(|role| reference.path.starts_with(role.path(&paths)))
+        .max_by_key(|role| role.path(&paths).components().count())
         .ok_or_else(|| anyhow::anyhow!("legacy recording is outside captured roots"))?;
+    let path = role.path(&paths);
     let key = reference
         .path
         .strip_prefix(path)?
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("legacy recording path is not UTF-8"))?
         .replace('\\', "/");
-    let root = super::root::Root::open(path)?;
+    let root = match captured_root(catalog, role)? {
+        Some(root) => root,
+        None => super::root::Root::open(path)?,
+    };
     let mut file = root.inspect_legacy(&key)?;
     let (bytes, file_identity, digest) = file.inspect_evidence()?;
     let catalog_identity = file.catalog_identity()?;
@@ -106,3 +111,114 @@ pub fn verify_recording(
 
 #[cfg(test)]
 mod tests;
+
+/// Captures only the four configured media roots; unavailable roots are not created.
+/// Later recovery must match these identities or require another explicit capture.
+pub fn capture_roots(
+    catalog: &RecordingCatalogHandle,
+    paths: &crate::storage::catalog::locations::legacy::LegacyPaths,
+) -> anyhow::Result<()> {
+    use crate::storage::catalog::locations::{
+        Binding,
+        legacy::roots::{Capture, Role},
+    };
+    let mut capture = Capture {
+        paths: paths.clone(),
+        roots: Vec::with_capacity(4),
+    };
+    let mut pinned = Vec::with_capacity(4);
+    let mut known = known_roots(catalog)?;
+    for role in Role::ALL {
+        let Ok(root) = super::root::Root::open(role.path(paths)) else {
+            capture.roots.push((role, None));
+            continue;
+        };
+        // ponytail: four known roots allow a direct scan; no filesystem discovery or cache.
+        let shared = known.iter().find(|binding| {
+            binding.filesystem == root.identity().filesystem
+                && binding.root_identity == root.identity().directory
+        });
+        let binding = shared.cloned().unwrap_or_else(|| Binding {
+            id: role.id().into(),
+            generation: 1,
+            root: role.path(paths).into(),
+            filesystem: root.identity().filesystem.clone(),
+            root_identity: root.identity().directory.clone(),
+            writable: false,
+            draining: false,
+            limit_bytes: None,
+            minimum_free_bytes: 0,
+        });
+        known.push(binding.clone());
+        capture.roots.push((role, Some(binding)));
+        pinned.push(root);
+    }
+    for root in &pinned {
+        root.revalidate()?;
+    }
+    let reply = catalog.volume_location(Request::CaptureLegacyRoots(Box::new(capture)))?;
+    anyhow::ensure!(reply == Reply::Bound, "invalid legacy capture reply");
+    for root in &pinned {
+        root.revalidate()?;
+    }
+    Ok(())
+}
+
+fn captured_root(
+    catalog: &RecordingCatalogHandle,
+    role: crate::storage::catalog::locations::legacy::roots::Role,
+) -> anyhow::Result<Option<super::root::Root>> {
+    use crate::storage::catalog::locations::legacy::roots::State;
+    let Reply::LegacyRoot(state) = catalog.volume_location(Request::LegacyRoot(role))? else {
+        anyhow::bail!("invalid legacy root reply");
+    };
+    let binding = match state {
+        State::Uncaptured => return Ok(None),
+        State::Offline => {
+            anyhow::bail!("legacy root was unavailable at capture; explicit recapture is required")
+        }
+        State::Bound(binding) => binding,
+    };
+    Ok(Some(open_binding(&binding)?))
+}
+
+fn open_binding(
+    binding: &crate::storage::catalog::locations::Binding,
+) -> anyhow::Result<super::root::Root> {
+    let root = super::root::Root::open(&binding.root)?;
+    anyhow::ensure!(
+        root.identity().filesystem == binding.filesystem
+            && root.identity().directory == binding.root_identity,
+        "captured legacy root identity changed"
+    );
+    Ok(root)
+}
+
+pub(crate) fn volume_root(
+    catalog: &RecordingCatalogHandle,
+    volume: &str,
+) -> anyhow::Result<Option<super::root::Root>> {
+    if !volume.starts_with("legacy-") {
+        return Ok(None);
+    }
+    let binding = known_roots(catalog)?
+        .into_iter()
+        .find(|binding| binding.id == volume)
+        .ok_or_else(|| anyhow::anyhow!("legacy volume identity has not been captured"))?;
+    Ok(Some(open_binding(&binding)?))
+}
+
+fn known_roots(
+    catalog: &RecordingCatalogHandle,
+) -> anyhow::Result<Vec<crate::storage::catalog::locations::Binding>> {
+    use crate::storage::catalog::locations::legacy::roots::{Role, State};
+    let mut known = Vec::with_capacity(4);
+    for role in Role::ALL {
+        match catalog.volume_location(Request::LegacyRoot(role))? {
+            Reply::LegacyRoot(State::Bound(binding)) => known.push(*binding),
+            Reply::LegacyRoot(State::Uncaptured | State::Offline) => {}
+            _ => anyhow::bail!("invalid legacy root reply"),
+        }
+    }
+    Ok(known)
+}

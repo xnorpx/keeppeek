@@ -606,3 +606,39 @@ health completion, and final platform/performance qualification remain open.
 
 Strict workspace/all-target Clippy passed for the metadata control checkpoint
 (`target/129-metadata-controls-clippy.log`). The final canonical gate remains required.
+
+Legacy root capture now records four role mappings and immutable directory identities. Shared
+roots retain one binding through partial capture and restart; roots unavailable at capture require
+explicit recapture. Recording verification rejects replacement directories even if the original
+file returns inside them. All 82 selected legacy tests passed (`target/129-legacy-root-complete-green.log`).
+The two runtime boundary regressions first reproduced their failures.
+
+Legacy recording readers now retain bounded leases before adoption, including path aliases. The
+legacy archive path-update exception remains explicit because its filesystem rename precedes the
+catalog update. All 14 reader tests passed (`target/129-legacy-readers-green.log`).
+
+The internal adoption transaction promotes a verified source and admits its destination together;
+failed admission rolls back both. Cancellation stops the transfer and retains the adopted source,
+so subsequent moves reuse its immutable ownership and existing journal semantics. Preview must
+state this ownership effect before this internal path becomes an administrator operation. Eight
+catalog adoption tests and two real filesystem move tests passed in the 15-test adoption selection
+(`target/129-legacy-adoption-runtime-green.log`), covering exact retries, stale evidence, failed
+capacity, cancellation, stable identity, nested legacy filenames, and reader-delayed retirement.
+Legacy export/thumbnail adoption, confirmation UI, retention integration, activation, bulk drain,
+and final qualification remain open.
+
+The source bridge passed all 90 runtime regressions (`target/129-legacy-runtime-regressions.log`).
+The legacy archiver now takes the same recording claim as adoption confirmation and checks catalog
+ownership even without a runtime manager. Root lookup follows captured binding IDs across shared
+role mappings. Both regressions first failed, then the 64-test legacy selection and the separate
+adopted-archiver test passed (`target/129-legacy-archiver-alias-green.log`,
+`target/129-adopted-archiver-green.log`).
+
+Retained adopted sources remain in the original legacy byte budget, using their verified size.
+The existing retention journal accepts only proven adopted sources on readonly legacy roots and
+uses confined nested retirement with reader/protection/move fences. Ambiguous normalized catalog
+paths refuse adoption without changing either owner. All 21 adoption-selected tests and the named
+recording-retention regressions passed (`target/129-legacy-retention-green.log`,
+`target/129-legacy-retention-regressions.log`). Strict workspace/all-target Clippy passed
+(`target/129-legacy-adoption-clippy.log`). Automatic global-pressure selection still needs to route
+these sources into that journal. The administrator migration API/UI and activation remain closed.

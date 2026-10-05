@@ -28,22 +28,17 @@ impl Manager {
             return Ok(false);
         }
         let _destination = self.pin_retirement_destination(&job)?;
-        let index = self
-            .inner
-            .configuration
-            .volumes
-            .iter()
-            .position(|volume| volume.id.as_str() == job.source.volume)
-            .ok_or_else(|| anyhow::anyhow!("source volume is not configured"))?;
-        anyhow::ensure!(
-            job.source.generation == 1,
-            "source volume generation changed"
-        );
-        let root = self.inner.writable_root(index)?;
+        let root = self.owned_root(&job.source, true)?;
         self.inner
             .catalog
             .volume_location(Request::AdvanceMove(Step::Retiring(job_id.into())))?;
-        root.retire_owned(
+        let retire = if job.source.volume.starts_with("legacy-") {
+            super::Root::retire_legacy
+        } else {
+            super::Root::retire_owned
+        };
+        retire(
+            &root,
             &job.source.relative_key,
             &job.source.file_identity,
             job.source.bytes,
@@ -66,18 +61,14 @@ impl Manager {
         if job.receipt_acknowledged {
             return Ok(());
         }
-        let index = self
-            .inner
-            .configuration
-            .volumes
-            .iter()
-            .position(|volume| volume.id.as_str() == job.source.volume)
-            .ok_or_else(|| anyhow::anyhow!("source volume is not configured"))?;
-        anyhow::ensure!(
-            job.source.generation == 1,
-            "source volume generation changed"
-        );
-        self.inner.writable_root(index)?.acknowledge_retirement(
+        let root = self.owned_root(&job.source, true)?;
+        let acknowledge = if job.source.volume.starts_with("legacy-") {
+            super::Root::acknowledge_legacy
+        } else {
+            super::Root::acknowledge_retirement
+        };
+        acknowledge(
+            &root,
             &job.source.relative_key,
             &job.source.file_identity,
             job.source.bytes,

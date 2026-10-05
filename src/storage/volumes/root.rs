@@ -41,6 +41,19 @@ impl std::fmt::Debug for Identity {
 }
 
 impl Root {
+    pub(crate) fn try_clone(&self) -> anyhow::Result<Self> {
+        self.revalidate()?;
+        Ok(Self {
+            path: self.path.clone(),
+            directory: self.directory.try_clone()?,
+            identity: self.identity.clone(),
+        })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub(crate) fn matches_directory(&self, directory: &Dir) -> anyhow::Result<()> {
         self.revalidate()?;
         anyhow::ensure!(
@@ -267,6 +280,10 @@ fn identity(directory: &Dir) -> anyhow::Result<Identity> {
 #[cfg(not(any(unix, windows)))]
 fn identity(_directory: &Dir) -> anyhow::Result<Identity> {
     anyhow::bail!("volume root identity is unsupported on this platform")
+}
+
+pub(crate) fn validate_legacy_key(key: &str) -> anyhow::Result<()> {
+    legacy::components(key).map(|_| ())
 }
 
 #[cfg(test)]

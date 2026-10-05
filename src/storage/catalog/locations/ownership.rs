@@ -174,14 +174,19 @@ pub(super) async fn lookup(
         return Ok(Reply::Location(None));
     };
     let relative_key = row.get::<String>(2)?;
-    validate_key(&relative_key)?;
+    let volume = row.get::<String>(0)?;
+    if volume.starts_with("legacy-") {
+        crate::storage::volumes::root::validate_legacy_key(&relative_key)?;
+    } else {
+        validate_key(&relative_key)?;
+    }
     let digest: [u8; 32] = row
         .get::<Vec<u8>>(6)?
         .try_into()
         .map_err(|_| anyhow::anyhow!("invalid location digest"))?;
     Ok(Reply::Location(Some(Location {
         object: object.clone(),
-        volume: row.get::<String>(0)?,
+        volume,
         generation: to_u64(row.get::<i64>(1)?, "volume generation")?,
         relative_key,
         revision: to_u64(row.get::<i64>(3)?, "location revision")?,

@@ -1393,24 +1393,14 @@ impl WriterWorker {
         path: &Path,
         recording_id: &str,
     ) -> std::io::Result<PathBuf> {
-        if self.config.volume_runtime.is_some() {
-            use super::catalog::locations::{Kind, Object, Reply, Request};
-            if let Some(catalog) = &self.catalog
-                && matches!(
-                    catalog
-                        .volume_location(Request::Lookup(Object {
-                            kind: Kind::Recording,
-                            id: recording_id.to_owned()
-                        }))
-                        .map_err(std::io::Error::other)?,
-                    Reply::Location(Some(_))
-                )
-            {
-                if let Some(mover) = &self.config.volume_mover {
-                    mover.scan().map_err(std::io::Error::other)?;
-                }
-                return Ok(path.to_path_buf());
-            }
+        let _claim = self
+            .catalog
+            .as_ref()
+            .map(|catalog| catalog.claim_volume_move(recording_id))
+            .transpose()
+            .map_err(std::io::Error::other)?;
+        if self.wake_owned_archive(recording_id)? {
+            return Ok(path.to_path_buf());
         }
         let destination = if self.config.medium_term_path == self.config.long_term_path {
             tracing::info!(
@@ -1451,6 +1441,28 @@ impl WriterWorker {
             self.enforce_storage_limit(StorageCleanupTrigger::SegmentFinalized);
         }
         Ok(destination)
+    }
+
+    fn wake_owned_archive(&self, recording_id: &str) -> std::io::Result<bool> {
+        use super::catalog::locations::{Kind, Object, Reply, Request};
+        let Some(catalog) = &self.catalog else {
+            return Ok(false);
+        };
+        if !matches!(
+            catalog
+                .volume_location(Request::Lookup(Object {
+                    kind: Kind::Recording,
+                    id: recording_id.to_owned(),
+                }))
+                .map_err(std::io::Error::other)?,
+            Reply::Location(Some(_))
+        ) {
+            return Ok(false);
+        }
+        if let Some(mover) = &self.config.volume_mover {
+            mover.scan().map_err(std::io::Error::other)?;
+        }
+        Ok(true)
     }
 
     fn pipeline_for(&mut self, identity: RecordingStreamIdentity) -> &mut CameraPipeline {

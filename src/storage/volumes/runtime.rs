@@ -107,11 +107,15 @@ impl std::fmt::Debug for ReservedFile {
 }
 
 impl Manager {
-    pub(crate) fn open_owned(
+    fn owned_root(
         &self,
         location: &crate::storage::catalog::locations::Location,
-    ) -> anyhow::Result<OwnedFile> {
+        writable: bool,
+    ) -> anyhow::Result<Root> {
         anyhow::ensure!(location.generation == 1, "owned volume generation changed");
+        if let Some(root) = super::legacy::volume_root(&self.inner.catalog, &location.volume)? {
+            return Ok(root);
+        }
         let index = self
             .inner
             .configuration
@@ -119,11 +123,32 @@ impl Manager {
             .iter()
             .position(|volume| volume.id.as_str() == location.volume)
             .ok_or_else(|| anyhow::anyhow!("owned volume is not configured"))?;
-        self.inner.root(index)?.open_owned(
-            &location.relative_key,
-            &location.file_identity,
-            location.bytes,
-        )
+        let root = if writable {
+            self.inner.writable_root(index)?
+        } else {
+            self.inner.root(index)?
+        };
+        root.try_clone()
+    }
+
+    pub(crate) fn open_owned(
+        &self,
+        location: &crate::storage::catalog::locations::Location,
+    ) -> anyhow::Result<OwnedFile> {
+        let root = self.owned_root(location, false)?;
+        if location.volume.starts_with("legacy-") {
+            root.open_legacy_owned(
+                &location.relative_key,
+                &location.file_identity,
+                location.bytes,
+            )
+        } else {
+            root.open_owned(
+                &location.relative_key,
+                &location.file_identity,
+                location.bytes,
+            )
+        }
     }
 
     /// Resolves an owned file through its recorded volume and validates its identity.
@@ -134,24 +159,9 @@ impl Manager {
         &self,
         location: &super::super::catalog::locations::Location,
     ) -> anyhow::Result<PathBuf> {
-        anyhow::ensure!(location.generation == 1, "owned volume generation changed");
-        let index = self
-            .inner
-            .configuration
-            .volumes
-            .iter()
-            .position(|volume| volume.id.as_str() == location.volume)
-            .ok_or_else(|| anyhow::anyhow!("owned volume is not configured"))?;
-        let root = self.inner.root(index)?;
-        let _file = root.open_owned(
-            &location.relative_key,
-            &location.file_identity,
-            location.bytes,
-        )?;
-        Ok(self.inner.configuration.volumes[index]
-            .root
-            .join(&location.relative_key)
-            .canonicalize()?)
+        let root = self.owned_root(location, false)?;
+        let _file = self.open_owned(location)?;
+        Ok(root.path().join(&location.relative_key).canonicalize()?)
     }
 
     /// Copies an owned object to its resolved destination and publishes its stable identity.
@@ -316,14 +326,8 @@ impl Manager {
             current.revision > job.source.revision,
             "move source is still authoritative"
         );
-        let volume = self
-            .inner
-            .configuration
-            .volumes
-            .iter()
-            .find(|volume| volume.id.as_str() == job.source.volume)
-            .ok_or_else(|| anyhow::anyhow!("move source volume is not configured"))?;
-        let path = volume.root.join(&job.source.relative_key);
+        let root = self.owned_root(&job.source, false)?;
+        let path = root.path().join(&job.source.relative_key);
         Ok(!self
             .inner
             .catalog
@@ -868,3 +872,6 @@ impl Seek for ReservedFile {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod legacy_move_tests;
