@@ -20,7 +20,8 @@ The inventory covers the introduction, three example configurations, capture win
 retention interaction/display, duration rules, recording control, export options/fallback,
 codec compatibility, reconciliation, accounting, mounts/cache, and emergency cleanup.
 Each row has one implementation/evidence owner. Related features may contribute tests without
-becoming a second owner. Maintainer review of classifications and policy decisions is pending.
+becoming a second owner. The retention contract below is approved; final classification review
+and runtime acceptance remain pending.
 
 ## Outcome matrix
 
@@ -73,16 +74,17 @@ accept the consequence and workaround before that classification replaces Partia
 | AC-6 related feature evidence | R16–R27 identify existing owners and unresolved limitations.                           | Final owner-specific evidence; #127/#131 remain open.                                                               |
 | AC-7 scale bound              | #268 measures pre-roll ingest, not retention evaluation.                               | Accepted latency/query/memory/ingest budgets and 127-source/30-day retention harness.                               |
 
-## Decision checkpoint before runtime changes
+## Approved retention contract
 
-The following proposal makes the next work reviewable; it changes no runtime behavior.
-Existing recordings and size-pressure behavior remain unchanged until an accepted contract is
-implemented and qualified. Protected `api/` changes require separate current-task approval.
+The maintainer approved these product semantics on 2026-10-05. The resolver implementation
+below does not yet activate them in the application. Existing recordings and size-pressure
+behavior remain unchanged until settings and durable cleanup integration are qualified.
+Protected `api/` changes require separate current-task approval.
 
 1. Keep #168 as the retention-policy owner. Use bounded camera-local rules in `config.toml`
    with checked integer durations and stable canonical-event predicates. Preserve old configs
-   by leaving the new policy disabled by default. The proposed ceiling is 16 rules per camera;
-   rule count and predicate limits require review before implementation.
+   by leaving the new policy disabled by default. The resolver enforces a ceiling of 16 rules
+   per camera and 128 ASCII identifier bytes per rule ID or event-type selector.
 2. Use half-open UTC intervals. A shared boundary alone is not an overlap. The latest matching
    deadline wins; evidence holds dominate policy expiry. An unknown/unavailable event class
    cannot fabricate motion/object evidence. Zero disables a rule; absent configuration inherits.
@@ -92,7 +94,7 @@ implemented and qualified. Protected `api/` changes require separate current-tas
 4. Record policy/event revisions and deadlines durably. Preserve a previously committed deadline
    on policy shortening until an explicit migration/remedy decision authorizes shortening.
    Bound reevaluation batches and keep ingest independent of cleanup.
-5. Proposed control precedence: configured-disabled and privacy deny admission first; a permitted
+5. Control precedence: configured-disabled and privacy deny admission first; a permitted
    runtime request then selects its mode. #202 owns profile activation. A generic scheduler or
    external recording-toggle feature has no accepted interface here; choose its owner/scope
    before implementing one. Do not overload state-store documents to bypass API approval.
@@ -101,12 +103,12 @@ implemented and qualified. Protected `api/` changes require separate current-tas
    p50/p95/max evaluation latency, queries per batch, peak memory and ingest delta. No invented
    pass/fail threshold or pre-roll benchmark substitutes for that decision.
 
-### Proposed interval fixtures
+### Interval fixtures and remaining integration
 
-These are KeepPeek test proposals, not copies of external configuration or accepted outputs.
+These are KeepPeek fixtures, not copies of external configuration.
 All times are UTC offsets from a fixed epoch and all intervals are half-open.
 
-| Case          | Input                                                                    | Proposed result requiring approval                                                                             |
+| Case          | Input                                                                    | Accepted behavior                                                                                              |
 | ------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
 | Overlap       | File coverage `[0s, 10s)`, two matching rules with deadlines 12h and 48h | One media identity, latest deadline 48h; no duplicate file.                                                    |
 | Boundary      | File `[0s, 10s)`, event `[10s, 20s)`                                     | No event overlap; continuous rule alone may retain the file.                                                   |
@@ -152,5 +154,27 @@ mdbook 0.5.4 and mdbook-mermaid 0.17.1; the existing preprocessor compatibility 
 non-fatal. This focused run does not certify the full platform gate, a release candidate,
 revised-event retention, or the missing runtime retention/control criteria.
 
-Performance: N/A for this documentation slice. AC-7 remains open because it concerns future
-runtime retention behavior. No Rust, UI, configuration, schema or cleanup behavior changes here.
+### First implementation slice
+
+`src/storage/retention.rs` implements a validated policy model and a deterministic resolver.
+`tests/recording_policy_acceptance.rs` exercises the maximum matching deadline, fractional-day
+durations, half-open boundaries, camera/stream identity, exact event types, protected media,
+disabled rules, committed deadlines, invalid revisions, checked arithmetic and deserialization.
+The overlap fixture failed against the initial implementation before the resolver was added.
+All eight acceptance tests passed on Windows with Rust 1.99.0 and incremental compilation disabled.
+
+This model accepts at most 256 canonical event revisions per decision and rejects oversized
+snapshots. It does not truncate observations or infer motion from detection metadata. The caller
+must supply current canonical revisions; repeated event IDs fail rather than selecting a revision.
+An open event extends to the recording's end; a finite pulse covers one millisecond.
+
+This slice does **not** add active configuration fields, persist decisions in the recording
+catalog, query event revisions, enforce deadlines during cleanup, report file-granularity byte
+expansion or implement control profiles. Those integrations remain necessary before #168 can
+close. In particular, pure resolver tests do not qualify restart, late-revision, disk-space or
+real-media retention behavior. AC-7 still needs explicit numeric budgets and runtime measurement.
+
+The PR also removes the obsolete Black 26.5.1 requirement from the Python example configuration.
+The example intentionally installs current unpinned tools; CI's Black 26.10.0 otherwise rejects
+the configuration before checking source formatting. Black, Ruff and mypy passed locally;
+53 Python tests passed, with four existing platform or opt-in environment skips.
