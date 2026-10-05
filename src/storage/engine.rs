@@ -95,15 +95,12 @@ impl StorageConfig {
 
     pub fn from_toml(toml: &StorageToml) -> Self {
         let default_root = crate::config::config_dir().join("recordings");
-        let medium_term_path = toml
-            .medium_term_path
-            .as_deref()
-            .map(PathBuf::from)
+        let medium_term_path = Self::named_root(toml, super::volumes::VolumeRole::Active)
+            .or_else(|| toml.medium_term_path.as_deref().map(PathBuf::from))
             .unwrap_or_else(|| default_root.clone());
-        let long_term_path = toml
-            .long_term_path
-            .as_deref()
-            .map(PathBuf::from)
+        let long_term_path = Self::named_root(toml, super::volumes::VolumeRole::Archive)
+            .or_else(|| Self::named_root(toml, super::volumes::VolumeRole::Active))
+            .or_else(|| toml.long_term_path.as_deref().map(PathBuf::from))
             .unwrap_or(default_root);
         let mut recording_catalog_path = toml
             .recording_catalog_path
@@ -115,10 +112,8 @@ impl StorageConfig {
             recording_catalog_path = catalog;
             history
         });
-        let event_thumbnail_path = toml
-            .event_thumbnail_path
-            .as_deref()
-            .map(PathBuf::from)
+        let event_thumbnail_path = Self::named_root(toml, super::volumes::VolumeRole::Thumbnail)
+            .or_else(|| toml.event_thumbnail_path.as_deref().map(PathBuf::from))
             .unwrap_or_else(|| long_term_path.join(".event-thumbnails"));
         Self {
             metadata: toml.metadata.clone(),
@@ -149,27 +144,32 @@ impl StorageConfig {
         }
     }
 
+    fn named_root(toml: &StorageToml, role: super::volumes::VolumeRole) -> Option<PathBuf> {
+        let configuration = toml.named_volumes.as_ref()?;
+        let rule = configuration
+            .placement
+            .iter()
+            .find(|rule| rule.role == role && rule.source.is_none() && rule.group.is_none())?;
+        let id = rule.candidates.first()?;
+        configuration
+            .volumes
+            .iter()
+            .find(|volume| &volume.id == id)
+            .map(|volume| volume.root.clone())
+    }
+
     pub fn initialize_named_volumes(
         &mut self,
         catalog: RecordingCatalogHandle,
     ) -> anyhow::Result<()> {
-        use super::{
-            catalog::locations::{Reply, Request},
-            volumes::{VolumeState, runtime::Manager},
-        };
-        let Some(configuration) = &self.named_volumes else {
-            return Ok(());
-        };
-        let Reply::Usage(usage) = catalog.volume_location(Request::Usage)? else {
-            anyhow::bail!("volume usage query returned an invalid response");
-        };
-        let activated = configuration.volumes.iter().any(|volume| {
-            volume.state != VolumeState::Disabled
-                || usage.iter().any(|entry| entry.volume == volume.id.as_str())
-        });
-        if activated {
-            self.volume_runtime = Some(Arc::new(Manager::new(configuration.clone(), catalog)?));
-        }
+        let configuration = self
+            .named_volumes
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("named storage volumes are not initialized"))?;
+        self.volume_runtime = Some(Arc::new(super::volumes::runtime::Manager::new(
+            configuration.clone(),
+            catalog,
+        )?));
         Ok(())
     }
 

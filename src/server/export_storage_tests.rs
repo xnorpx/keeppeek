@@ -715,7 +715,7 @@ fn duplicate_export_history_is_rejected_before_reconciliation_can_remove_an_arti
     let retained = std::fs::read(&artifact).unwrap();
     let mut failed = original.clone();
     failed.job.status = proto::ExportJobStatus::Failed as i32;
-    let mut duplicate = original.clone();
+    let mut duplicate = original;
     duplicate.artifact_id = uuid::Uuid::new_v4().to_string();
     let bytes = history_with_records(&[&failed, &duplicate]);
     let history = root.join("duplicate-history.json");

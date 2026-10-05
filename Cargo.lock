@@ -4875,6 +4875,7 @@ dependencies = [
  "test-hikvision",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "windows 0.62.2",
 ]
 

@@ -12,6 +12,7 @@ let serverOutput = '';
 const runId = `maintenance-${process.pid}`;
 const storageParent = process.platform === 'win32' ? tmpdir() : path.resolve('..', 'target');
 const root = path.join(storageParent, `ui-logging-e2e-${runId}`);
+const mediaRoot = path.join(root, 'storage', 'media');
 const now = Date.now();
 
 test.beforeAll(async ({ request }) => {
@@ -88,7 +89,7 @@ test('previews, cancels and deletes exact synthetic recordings with desktop and 
 	await page.route('**/delete', (route) =>
 		route.continue({ url: `http://127.0.0.1:${backendPort}/delete` })
 	);
-	await writeFile(path.join(root, 'recordings', 'unindexed.mp4'), Buffer.from([24, 42, 64]));
+	await writeFile(path.join(mediaRoot, 'unindexed.mp4'), Buffer.from([24, 42, 64]));
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await page.goto(`/recordings/maintenance?start=${now - 22 * 60_000}&end=${now - 14 * 60_000}`);
 	await expect(page.getByRole('button', { name: 'Preview deletion' })).toBeEnabled();
@@ -129,8 +130,6 @@ test('previews, cancels and deletes exact synthetic recordings with desktop and 
 			.filter({ hasText: 'unindexed.mp4' })
 			.getByText('unknown file', { exact: true })
 	).toBeVisible();
-	expect(await readFile(path.join(root, 'recordings', 'unindexed.mp4'))).toEqual(
-		Buffer.from([24, 42, 64])
-	);
+	expect(await readFile(path.join(mediaRoot, 'unindexed.mp4'))).toEqual(Buffer.from([24, 42, 64]));
 	expect(errors).toEqual([]);
 });

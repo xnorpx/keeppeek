@@ -166,7 +166,19 @@ fn confirmation_is_actor_bound_and_uses_the_existing_durable_worker() {
     let worker = crate::storage::volumes::runtime::worker::Worker::start(manager.clone()).unwrap();
     state.storage_config.volume_runtime = Some(Arc::new(manager));
     state.storage_config.volume_mover = Some(worker.handle());
+    let obsolete = moves::preview(&state, "administrator", preview_request(&state)).unwrap();
     let preview = moves::preview(&state, "administrator", preview_request(&state)).unwrap();
+    assert!(
+        moves::confirm(
+            &state,
+            "administrator",
+            proto::ConfirmStorageMove {
+                preview_token: obsolete.preview_token,
+                expected_configuration_revision: obsolete.configuration_revision,
+            }
+        )
+        .is_err()
+    );
     let confirm = proto::ConfirmStorageMove {
         preview_token: preview.preview_token,
         expected_configuration_revision: preview.configuration_revision,

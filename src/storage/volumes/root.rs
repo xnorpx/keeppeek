@@ -38,6 +38,18 @@ impl std::fmt::Debug for Identity {
 }
 
 impl Root {
+    pub(crate) fn create_private_child(&self, name: &str) -> anyhow::Result<Self> {
+        super::VolumeId::parse(name)?;
+        self.revalidate()?;
+        crate::storage::long_term::inspection::removal::private_directory(
+            &self.directory,
+            std::ffi::OsStr::new(name),
+            true,
+        )?;
+        self.revalidate()?;
+        Self::open(&self.path.join(name))
+    }
+
     pub(crate) fn matches_directory(&self, directory: &Dir) -> anyhow::Result<()> {
         self.revalidate()?;
         anyhow::ensure!(

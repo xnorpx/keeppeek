@@ -1370,10 +1370,11 @@ does not fall through to a broader rule. Fallback must be explicit. With fallbac
 only the first candidate is eligible. With fallback on, ranking considers all eligible
 candidates and breaks ties by ID. Metadata placement has one global candidate and no fallback.
 
-Configuration still accepts only disabled drafts and does not advertise a live-volume
-capability. The internal runtime now places recordings, exports, and event images and
-journals verified moves. Activation, bulk draining, and
-the management UI must be qualified before configuration activation.
+Volume configuration accepts enabled, read-only, draining, and disabled states. Changes
+take effect after restart. Fresh installations initialize named roots and global policies
+for recordings, exports, thumbnails, and metadata. Missing policies reject admission.
+The runtime journals verified moves between named volumes; changing placement does not move
+existing objects.
 
 An explicit configuration update cannot remove a bound volume until effective drain is set,
 owned/reserved bytes are zero, and cleanup receipts are acknowledged. Enabled running volumes

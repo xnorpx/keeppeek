@@ -13,6 +13,20 @@ use std::{fs, path::Path, path::PathBuf, sync::Arc};
 mod pressure;
 
 #[test]
+fn named_startup_preserves_missing_thumbnail_root() -> anyhow::Result<()> {
+    let (root, catalog, mut config) = fixture(1024 * 1024, false)?;
+    config.event_thumbnail_path = root.join("missing-images");
+    assert!(!config.event_thumbnail_path.exists());
+    let store = EventStore::from_storage(catalog.handle(), &config)?;
+    assert!(!config.event_thumbnail_path.exists());
+    assert!(store.volume_storage.is_some());
+    drop(store);
+    drop(config);
+    catalog.shutdown();
+    Ok(())
+}
+
+#[test]
 fn committed_image_retry_survives_event_close_and_rejects_changed_evidence() -> anyhow::Result<()> {
     use crate::storage::catalog::locations::{Kind, Object, Reply, Request, images};
     use std::io::Write;
@@ -370,7 +384,7 @@ fn failed_revision_keeps_the_current_published_image() -> anyhow::Result<()> {
 }
 
 #[test]
-fn legacy_revision_replaces_a_named_image_after_policy_stops_matching() -> anyhow::Result<()> {
+fn unmatched_revision_preserves_named_image_and_unrelated_file() -> anyhow::Result<()> {
     let (root, catalog, mut config) = fixture(1024 * 1024, true)?;
     let events = store(&catalog, &config)?;
     let first = encode_jpeg(&DynamicImage::new_rgb8(24, 16))?;
@@ -391,14 +405,17 @@ fn legacy_revision_replaces_a_named_image_after_policy_stops_matching() -> anyho
     let second = encode_jpeg(&DynamicImage::new_rgb8(48, 32))?;
     let mut revision = image_event("event", &second);
     revision.revision = 2;
-    events.commit_published_image("publication-2", revision.clone(), &second)?;
+    assert!(
+        events
+            .commit_published_image("publication-2", revision, &second)
+            .is_err()
+    );
     let current = events.thumbnail_path("front-door", "event")?.unwrap();
-    assert!(current.starts_with(fs::canonicalize(&config.event_thumbnail_path)?));
-    assert_ne!(current, original);
-    assert_eq!(fs::read(current)?, second);
+    assert_eq!(current, original);
+    assert_eq!(fs::read(current)?, first);
     assert_eq!(fs::read(unrelated)?, first);
     assert_eq!(
-        events.commit_published_image("publication-2", revision, &second)?,
+        events.commit_published_image("publication-1", image_event("event", &first), &first)?,
         PublishedImageCommit::Existing
     );
     drop(events);
@@ -437,7 +454,7 @@ fn detached_named_thumbnail_is_no_longer_resolved() -> anyhow::Result<()> {
 }
 
 #[test]
-fn native_legacy_replacement_preserves_unrelated_old_attachment_filename() -> anyhow::Result<()> {
+fn unmatched_native_replacement_preserves_owned_and_unrelated_images() -> anyhow::Result<()> {
     let (root, catalog, mut config) = fixture(1024 * 1024, true)?;
     let events = store(&catalog, &config)?;
     let jpeg = encode_jpeg(&DynamicImage::new_rgb8(24, 16))?;
@@ -450,6 +467,9 @@ fn native_legacy_replacement_preserves_unrelated_old_attachment_filename() -> an
         event.clone(),
         &[("isapi-old".into(), Arc::from(jpeg.clone()))],
     )?;
+    let original = events
+        .attachment_path("front-door", "native-event", "isapi-old")?
+        .unwrap();
     let unrelated = config
         .event_thumbnail_path
         .join("native-event--isapi-old.jpg");
@@ -464,7 +484,16 @@ fn native_legacy_replacement_preserves_unrelated_old_attachment_filename() -> an
     event.attachments[0].id = "isapi-new".into();
     event.canonical_attachment_id = Some("isapi-new".into());
     event.bbox_attachment_id = Some("isapi-new".into());
-    events.commit_native_images(event, &[("isapi-new".into(), Arc::from(jpeg.clone()))])?;
+    assert!(
+        events
+            .commit_native_images(event, &[("isapi-new".into(), Arc::from(jpeg.clone()))])
+            .is_err()
+    );
+    assert_eq!(
+        events.attachment_path("front-door", "native-event", "isapi-old")?,
+        Some(original.clone())
+    );
+    assert_eq!(fs::read(original)?, jpeg);
     assert_eq!(fs::read(unrelated)?, jpeg);
     drop(events);
     drop(config);

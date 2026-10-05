@@ -91,11 +91,14 @@ struct SeedRecordingArgs {
     #[arg(long)]
     source: PathBuf,
 
-    #[arg(long)]
-    recordings: PathBuf,
+    #[arg(long, required_unless_present = "config")]
+    recordings: Option<PathBuf>,
 
-    #[arg(long)]
-    catalog: PathBuf,
+    #[arg(long, required_unless_present = "config")]
+    catalog: Option<PathBuf>,
+
+    #[arg(long, conflicts_with_all = ["recordings", "catalog"])]
+    config: Option<PathBuf>,
 
     #[arg(long)]
     stream_id: String,
@@ -118,15 +121,31 @@ fn main() -> anyhow::Result<()> {
         Command::Hikvision => serve_hikvision(),
         Command::Rtsp(command) => serve_camera(command, false),
         Command::ReoProto(command) => serve_camera(command, true),
-        Command::SeedRecording(command) => seed_recording(&RecordingSeedOptions {
-            source: command.source,
-            recordings: command.recordings,
-            catalog: command.catalog,
-            stream_id: command.stream_id,
-            duration: Duration::from_secs(command.duration_seconds),
-            age: Duration::from_secs(command.age_seconds),
-        }),
+        Command::SeedRecording(command) => {
+            // Windows main threads have less stack than the recorder configuration tests.
+            std::thread::Builder::new()
+                .name("recording-seed".into())
+                .spawn(move || seed(command))?
+                .join()
+                .map_err(|_| anyhow::anyhow!("recording seed worker panicked"))?
+        }
     }
+}
+
+fn seed(command: SeedRecordingArgs) -> anyhow::Result<()> {
+    let configuration = command
+        .config
+        .map(|_| keeppeek::config::load().map(|(config, _)| config.storage))
+        .transpose()?;
+    seed_recording(&RecordingSeedOptions {
+        source: command.source,
+        recordings: command.recordings.unwrap_or_default(),
+        catalog: command.catalog.unwrap_or_default(),
+        configuration,
+        stream_id: command.stream_id,
+        duration: Duration::from_secs(command.duration_seconds),
+        age: Duration::from_secs(command.age_seconds),
+    })
 }
 
 fn serve_hikvision() -> anyhow::Result<()> {

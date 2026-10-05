@@ -417,33 +417,44 @@ directory. Unindexed images and temporary files are excluded from this quota and
 at startup. Missing image files retain their catalog references so that restoring an unavailable
 thumbnail directory does not require rebuilding event metadata.
 
-### Named-volume drafts
+### Named storage volumes
 
-`[storage.named_volumes]` stores bounded volume and placement definitions in the existing
-configuration. These definitions are drafts: this build accepts only volumes with
-`state = "disabled"`. Activation, multi-volume writes, drain, and migration are unavailable.
-KeepPeek rejects other states during configuration loading and before settings are written.
-Legacy recording paths retain their behavior; draft changes do not move media or probe disks.
+`[storage.named_volumes]` stores volume and placement definitions in `config.toml`.
+A fresh installation creates four private roots beneath `storage/` beside the configuration:
+`media` for active and archived recordings, `exports`, `images` for thumbnails, and `metadata`
+for the catalog and export history. Global placement rules use these roots without fallback.
+The initial media and image caps use `long_term_max_gb` and `event_thumbnail_max_mb`;
+after initialization, edit each volume's byte cap directly.
+
+Saved volume and placement changes take effect after restart and affect future placement.
+Existing objects keep their catalog owner. Create custom root directories before enabling them.
+A missing bound root stays unavailable; startup does not recreate it or redirect writes.
 
 The optional section has two arrays: `volumes` (at most 32) and `placement` (at most 256).
 Both default to empty. Ordinary settings updates that omit `named_volumes` preserve the section.
-An explicit empty section clears drafts. Unknown fields in this section and its entries are rejected.
+An explicit empty section requests removal, subject to ownership and metadata checks.
+Unknown fields in this section and its entries are rejected.
 
-Administrator runtime settings carry these drafts in the optional protobuf `named_volumes`
+Administrator runtime settings carry these definitions in the optional protobuf `named_volumes`
 field. Updates that include it require the current configuration revision. String fields,
 including IDs, roots, selectors, and candidate IDs, support existing secret references.
 Validation uses resolved values; saved settings and responses retain the references.
 
-Administrators can edit these drafts under **Settings → Storage → Named storage volumes**.
+Administrators can edit volumes under **Settings → Storage → Named storage volumes**.
 Byte limits use exact whole-byte values. Refreshing status or a failed save preserves unsaved
 inputs. Removing a saved volume definition requires confirmation. Root probes inspect existing
 configured roots without creating directories; a successful probe does not establish write
-permission. Activation and bulk drain remain unavailable
-in this draft build. Individual move preview, confirmation, status, and cancellation appear only
+permission. Individual move preview, confirmation, status, and cancellation appear only
 when a volume runtime is available. The same runtime controls let administrators stop new
 writes to a volume or clear that operator drain, after confirmation. Already admitted writes
 finish normally. Clearing an operator drain does not override a draining or read-only saved
 configuration. Operator drain survives restart and does not itself move existing media.
+
+The move controls preview up to 16 objects from the loaded page and show exact file and byte
+totals before confirmation. Each confirmed object has a durable move job. Stop dispatch after
+the current request or cancel admitted work under **Move jobs**. Refresh jobs to inspect progress;
+refresh the object page after completed batches. A lost confirmation reply is checked against
+the same job identity before further work is admitted.
 
 Removing a bound definition requires stopped writes, zero owned and reserved bytes, and completed
 cleanup receipts. An offline enabled runtime must be stopped through operator drain, or disabled
@@ -463,8 +474,7 @@ incompatible with this binding. Startup verifies the saved directory and catalog
 It does not create an empty replacement catalog if the selected owner is unavailable.
 
 Ordinary settings cannot install, clear, disable, or relocate the metadata owner. Unrelated
-updates preserve its existing secret references. This draft permits an enabled metadata-only
-owner with a valid binding while other named-volume activation remains gated. Use the administrator metadata preview and confirmation controls to schedule relocation;
+updates preserve its existing secret references. Use the administrator metadata preview and confirmation controls to schedule relocation;
 do not construct or edit this binding manually.
 The internal `[storage.metadata_pending]` restart record contains a 32-byte source-configuration
 digest and the target binding. It retains the previous effective paths until a stopped transfer
@@ -490,7 +500,7 @@ Each `[[storage.named_volumes.volumes]]` entry has these fields:
 | `id`                  | String         | Required  | 1–64 lowercase ASCII letters, digits, `_` or `-`; `legacy-` is reserved.                                                                                                                                                                                                 |
 | `root`                | Path string    | Required  | Absolute UTF-8 directory path, at most 4096 bytes and 64 components; no traversal, control characters, duplicate or nested roots. Windows requires a local drive path and rejects device names and reserved characters.                                                  |
 | `roles`               | Role array     | Required  | 1–5 distinct values: `active`, `archive`, `export`, `thumbnail`, `metadata`. Only one bound metadata owner is active; other metadata-capable volumes can be relocation targets.                                                                                          |
-| `state`               | State          | `enabled` | Drafts must explicitly select `disabled`. The model also represents `enabled`, `read_only`, and `draining`, which this build rejects.                                                                                                                                    |
+| `state`               | State          | `enabled` | `enabled` admits new writes; `read_only` and `draining` retain reads but stop new writes; `disabled` does not open the root.                                                                                                                                             |
 | `priority`            | `u16`          | `0`       | Smaller values rank first for priority placement.                                                                                                                                                                                                                        |
 | `capacity_bytes`      | Optional `u64` | No cap    | Positive owned-data byte cap.                                                                                                                                                                                                                                            |
 | `minimum_free_bytes`  | `u64`          | `0`       | Minimum filesystem free space to retain.                                                                                                                                                                                                                                 |

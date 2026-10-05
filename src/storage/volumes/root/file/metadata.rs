@@ -4,6 +4,22 @@ use std::io::Write;
 const HISTORY_BYTES_MAX: u64 = 8 * 1024 * 1024;
 
 impl Root {
+    pub(crate) fn initialize_history(&self, key: &str) -> anyhow::Result<()> {
+        let id = history_key(key)?;
+        self.sync()?;
+        match self.directory.symlink_metadata(key) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // ponytail: one failed initialization stage blocks retry until operator review.
+                let mut stage = self.create_file(&format!("{id}.tmp"))?;
+                stage.file.write_all(b"{\"version\":1,\"jobs\":[]}\n")?;
+                stage.publish_name(key)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        crate::server::validate_export_history_snapshot(&self.read_history(key)?)
+    }
+
     pub(crate) fn read_history(&self, key: &str) -> anyhow::Result<Vec<u8>> {
         let mut file = self.history_file(key)?;
         let identity = file_identity(&file)?;

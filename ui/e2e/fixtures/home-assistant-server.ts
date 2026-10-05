@@ -108,10 +108,6 @@ require_secure_remote = false
 [direct_card]
 allowed_origins = [${JSON.stringify(origin)}]
 [storage]
-medium_term_path = ${JSON.stringify(recordings)}
-long_term_path = ${JSON.stringify(recordings)}
-recording_catalog_path = ${JSON.stringify(resolve(directory, 'recordings.db'))}
-event_thumbnail_path = ${JSON.stringify(resolve(directory, 'thumbnails'))}
 short_term_secs = 5
 medium_term_secs = 60
 long_term_max_gb = 0

@@ -601,8 +601,11 @@ impl RecordingCatalog {
         Self::open_inner(path, None)
     }
 
-    /// Opens a relocated catalog without creating or adopting a replacement database.
-    pub(crate) fn open_managed(
+    /// Opens a bound catalog without creating or adopting a replacement database.
+    ///
+    /// # Errors
+    /// Rejects missing files, changed directory identity, and mismatched catalog authority.
+    pub fn open_managed(
         path: &Path,
         expected: &authority::Authority,
         root_identity: &super::volumes::root::Identity,

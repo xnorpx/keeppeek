@@ -110,7 +110,11 @@ impl MediumTermWriter {
         )
     }
 
-    pub(crate) fn create_with_reservation(
+    /// Creates a fixed-volume writer using an admitted capacity reservation.
+    ///
+    /// # Errors
+    /// Returns an error if the reservation, catalog, or owned file is unavailable.
+    pub fn create_with_reservation(
         reservation: Reservation,
         recording_id: String,
         identity: RecordingStreamIdentity,

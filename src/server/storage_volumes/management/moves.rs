@@ -18,6 +18,7 @@ struct Plan {
     revision: String,
     expires: Instant,
     preview: MovePreview,
+    admitted: bool,
 }
 
 pub(super) fn preview(
@@ -95,7 +96,11 @@ fn store_preview(
             "volume previews are unavailable",
         )
     })?;
-    plans.retain(|_, plan| plan.expires > Instant::now());
+    plans.retain(|_, plan| {
+        !plan.admitted
+            && plan.expires > Instant::now()
+            && (plan.actor != actor || plan.preview.source().object != preview.source().object)
+    });
     if plans.len() >= 64 {
         return Err(error(
             proto::ErrorCode::Rejected,
@@ -110,6 +115,7 @@ fn store_preview(
             revision,
             expires: Instant::now() + Duration::from_secs(300),
             preview,
+            admitted: false,
         },
     );
     Ok(result)
@@ -178,6 +184,11 @@ pub(super) fn confirm(
     manager(state)?
         .admit_move(&request.preview_token, &plan.preview)
         .map_err(failure)?;
+    if let Ok(mut plans) = state.volume_previews.plans.lock()
+        && let Some(plan) = plans.get_mut(&request.preview_token)
+    {
+        plan.admitted = true;
+    }
     // Admission is durable. A failed wakeup leaves the same job for the next worker scan.
     if let Err(cause) = worker.scan() {
         tracing::warn!(%cause, "confirmed move awaits volume worker recovery");

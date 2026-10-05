@@ -382,13 +382,7 @@ mod tests {
         let (directory, handler, catalog) = fixture();
         let original = std::fs::read(directory.join("config.toml")).unwrap();
         let current = dispatch(&handler, Action::Get(proto::GetRuntimeConfiguration {})).unwrap();
-        for state in [
-            0,
-            99,
-            proto::StorageVolumeState::Enabled as i32,
-            proto::StorageVolumeState::ReadOnly as i32,
-            proto::StorageVolumeState::Draining as i32,
-        ] {
+        for state in [0, 99] {
             let mut candidate = current.clone();
             candidate.storage.as_mut().unwrap().named_volumes =
                 Some(proto::StorageVolumeConfiguration {

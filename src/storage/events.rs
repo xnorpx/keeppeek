@@ -75,6 +75,24 @@ impl std::error::Error for PublishedImageCommitError {
 }
 
 impl EventStore {
+    pub(crate) fn from_storage(
+        catalog: RecordingCatalogHandle,
+        storage: &super::engine::StorageConfig,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            storage.volume_runtime.is_some(),
+            "named volume runtime is required"
+        );
+        Ok(Self {
+            catalog,
+            thumbnail_root: storage.event_thumbnail_path.clone(),
+            max_thumbnail_bytes: storage.event_thumbnail_max_bytes,
+            volume_storage: storage.volume_runtime.clone(),
+            volume_mover: storage.volume_mover.clone(),
+            volume_groups: std::sync::Arc::clone(&storage.volume_groups),
+        })
+    }
+
     pub fn new(
         catalog: RecordingCatalogHandle,
         thumbnail_root: &Path,
@@ -93,6 +111,7 @@ impl EventStore {
         Ok(store)
     }
 
+    #[cfg(test)]
     pub(crate) fn with_volume_storage(mut self, storage: &super::engine::StorageConfig) -> Self {
         self.volume_storage.clone_from(&storage.volume_runtime);
         self.volume_mover.clone_from(&storage.volume_mover);

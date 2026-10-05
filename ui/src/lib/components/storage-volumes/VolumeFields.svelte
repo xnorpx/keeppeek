@@ -25,11 +25,11 @@
 			/></label
 		>
 		<label
-			>State<select disabled value={value.state} aria-describedby="volume-activation-note">
-				<option value={StorageVolumeState.DISABLED}>Disabled draft</option>
-				<option value={StorageVolumeState.ENABLED}>Enabled (existing configuration)</option>
-				<option value={StorageVolumeState.READ_ONLY}>Read only (existing configuration)</option>
-				<option value={StorageVolumeState.DRAINING}>Draining (existing configuration)</option>
+			>State<select bind:value={value.state} aria-describedby="volume-activation-note">
+				<option value={StorageVolumeState.DISABLED}>Disabled</option>
+				<option value={StorageVolumeState.ENABLED}>Enabled</option>
+				<option value={StorageVolumeState.READ_ONLY}>Read only</option>
+				<option value={StorageVolumeState.DRAINING}>Draining</option>
 			</select></label
 		>
 		<label>Priority<input bind:value={value.priority} inputmode="numeric" /></label>

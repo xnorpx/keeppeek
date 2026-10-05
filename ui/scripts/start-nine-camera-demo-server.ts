@@ -172,7 +172,6 @@ await writeFile(
 	)}\n`
 );
 
-const tomlString = (value: string) => JSON.stringify(value);
 await writeFile(
 	configPath,
 	`host = "127.0.0.1"
@@ -182,10 +181,6 @@ port = 4318
 allowed_origins = ["http://127.0.0.1:4175"]
 
 [storage]
-medium_term_path = ${tomlString(storageRoot)}
-long_term_path = ${tomlString(storageRoot)}
-recording_catalog_path = ${tomlString(path.join(testRoot, 'recordings.db'))}
-event_thumbnail_path = ${tomlString(path.join(testRoot, 'event-thumbnails'))}
 event_thumbnail_max_mb = 16
 short_term_secs = 5
 medium_term_secs = 60
