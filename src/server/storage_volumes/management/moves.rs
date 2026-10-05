@@ -87,6 +87,7 @@ fn store_preview(
         source: Some(location(preview.source())),
         destination_volume_id: preview.destination().to_owned(),
         expires_in_seconds: 300,
+        adopts_legacy: preview.adopts_legacy(),
     };
     let mut plans = state.volume_previews.plans.lock().map_err(|_| {
         error(

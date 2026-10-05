@@ -4,6 +4,50 @@ use super::{Manager, Publication, Reply, Request, VolumeHealth, VolumeState};
 use crate::storage::catalog::locations::recordings::{Action, Job, Reason};
 
 impl Manager {
+    pub(crate) fn cleanup_legacy_adoption(&self, reason: Reason) -> anyhow::Result<Option<u64>> {
+        use crate::storage::catalog::locations::legacy::roots::Role;
+        let root = if matches!(reason, Reason::DiskPressure) {
+            let Some(root) =
+                super::super::legacy::captured_root(&self.inner.catalog, Role::Archive)?
+            else {
+                return Ok(None);
+            };
+            Some(root)
+        } else {
+            None
+        };
+        let filesystem = root.as_ref().map(|root| root.identity().filesystem.clone());
+        let Reply::RecordingRetirement(job) =
+            self.inner
+                .catalog
+                .volume_location(Request::RecordingRetention(Action::BeginLegacy {
+                    reason,
+                    filesystem,
+                }))?
+        else {
+            anyhow::bail!("invalid legacy retention reply");
+        };
+        let Some(job) = job else {
+            return Ok(None);
+        };
+        if let Some(root) = &root {
+            root.revalidate()?;
+        }
+        self.finish_recording_retirement(&job.operation)?;
+        let Reply::RecordingRetirement(Some(finished)) = self
+            .inner
+            .catalog
+            .volume_location(Request::RecordingRetention(Action::Load(job.operation)))?
+        else {
+            anyhow::bail!("legacy retention job disappeared");
+        };
+        anyhow::ensure!(
+            finished.complete && finished.acknowledged,
+            "legacy retention is waiting for an active reader"
+        );
+        Ok(Some(if job.complete { 0 } else { job.location.bytes }))
+    }
+
     pub(super) fn check_recording_pressure(&self) {
         // ponytail: Inspect at most 32 configured volumes in the existing periodic scan.
         for volume in &self.inner.configuration.volumes {

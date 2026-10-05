@@ -479,3 +479,138 @@ fn adoption_rejects_a_distinct_catalog_owner_at_the_normalized_source_path() -> 
         Ok(())
     })
 }
+
+async fn cancelled_adoption(c: &turso::Connection, intent: &Intent) -> anyhow::Result<()> {
+    request(c, Request::AdoptLegacyRecording(Box::new(intent.clone()))).await?;
+    for step in [
+        moves::Step::Cancel(intent.destination.id.clone()),
+        moves::Step::CancellationVerified {
+            id: intent.destination.id.clone(),
+            evidence: moves::Cancellation::Empty,
+        },
+        moves::Step::Cancelled(intent.destination.id.clone()),
+        moves::Step::Acknowledged(intent.destination.id.clone()),
+    ] {
+        request(c, Request::AdvanceMove(step)).await?;
+    }
+    Ok(())
+}
+async fn legacy_pressure(c: &turso::Connection, filesystem: Option<&str>) -> anyhow::Result<Reply> {
+    use crate::storage::catalog::locations::recordings::{Action, Reason};
+    request(
+        c,
+        Request::RecordingRetention(Action::BeginLegacy {
+            reason: if filesystem.is_some() {
+                Reason::DiskPressure
+            } else {
+                Reason::Capacity
+            },
+            filesystem: filesystem.map(str::to_owned),
+        }),
+    )
+    .await
+}
+#[test]
+fn legacy_pressure_isolates_filesystems_and_reuses_pending_retirement() -> anyhow::Result<()> {
+    pollster::block_on(async {
+        let (c, intent) = fixture().await?;
+        cancelled_adoption(&c, &intent).await?;
+        let revision = request(&c, Request::Revision).await?;
+        let usage = request(&c, Request::Usage).await?;
+        assert_eq!(
+            legacy_pressure(&c, Some("unrelated-disk")).await?,
+            Reply::RecordingRetirement(None)
+        );
+        assert_eq!(request(&c, Request::Revision).await?, revision);
+        assert_eq!(request(&c, Request::Usage).await?, usage);
+        let admitted = legacy_pressure(&c, Some("disk")).await?;
+        let Reply::RecordingRetirement(Some(job)) = &admitted else {
+            anyhow::bail!("retirement missing")
+        };
+        assert_eq!(job.operation, intent.operation);
+        assert_eq!(job.location.object, intent.reference.object);
+        assert!(!job.complete);
+        let revision = request(&c, Request::Revision).await?;
+        assert_eq!(legacy_pressure(&c, Some("disk")).await?, admitted);
+        assert_eq!(request(&c, Request::Revision).await?, revision);
+        assert_eq!(request(&c, Request::Usage).await?, usage);
+        Ok(())
+    })
+}
+#[test]
+fn legacy_pressure_waits_for_older_ordinary_candidate_then_selects_adopted_source()
+-> anyhow::Result<()> {
+    pollster::block_on(async {
+        let (c, intent) = fixture().await?;
+        cancelled_adoption(&c, &intent).await?;
+        let path = intent.reference.path.parent().unwrap().join("ordinary.mp4");
+        c.execute("INSERT INTO recording_files(id,stream_id,started_at_ms,ended_at_ms,path,init_offset,init_len,finalized,file_bytes) VALUES('ordinary','camera/main',0,1,?1,0,8,1,32)", [path.to_string_lossy().into_owned()]).await?;
+        let revision = request(&c, Request::Revision).await?;
+        assert_eq!(
+            legacy_pressure(&c, None).await?,
+            Reply::RecordingRetirement(None)
+        );
+        assert_eq!(request(&c, Request::Revision).await?, revision);
+        c.execute(
+            "UPDATE recording_files SET protected=1 WHERE id='ordinary'",
+            (),
+        )
+        .await?;
+        let Reply::RecordingRetirement(Some(job)) = legacy_pressure(&c, None).await? else {
+            anyhow::bail!("retirement missing")
+        };
+        assert_eq!(job.operation, intent.operation);
+        let mut rows = c
+            .query(
+                "SELECT protected FROM recording_files WHERE id='ordinary'",
+                (),
+            )
+            .await?;
+        assert_eq!(rows.next().await?.unwrap().get::<i64>(0)?, 1);
+        Ok(())
+    })
+}
+#[test]
+fn legacy_pressure_preserves_active_move_and_protected_adopted_source() -> anyhow::Result<()> {
+    pollster::block_on(async {
+        let (c, intent) = fixture().await?;
+        request(&c, Request::AdoptLegacyRecording(Box::new(intent.clone()))).await?;
+        assert_eq!(
+            legacy_pressure(&c, None).await?,
+            Reply::RecordingRetirement(None)
+        );
+        for step in [
+            moves::Step::Cancel(intent.destination.id.clone()),
+            moves::Step::CancellationVerified {
+                id: intent.destination.id.clone(),
+                evidence: moves::Cancellation::Empty,
+            },
+            moves::Step::Cancelled(intent.destination.id.clone()),
+        ] {
+            request(&c, Request::AdvanceMove(step)).await?;
+        }
+        assert_eq!(
+            legacy_pressure(&c, None).await?,
+            Reply::RecordingRetirement(None)
+        );
+        request(
+            &c,
+            Request::AdvanceMove(moves::Step::Acknowledged(intent.destination.id.clone())),
+        )
+        .await?;
+        c.execute(
+            "UPDATE recording_files SET protected=1 WHERE id='legacy-id'",
+            (),
+        )
+        .await?;
+        let revision = request(&c, Request::Revision).await?;
+        let usage = request(&c, Request::Usage).await?;
+        assert_eq!(
+            legacy_pressure(&c, None).await?,
+            Reply::RecordingRetirement(None)
+        );
+        assert_eq!(request(&c, Request::Revision).await?, revision);
+        assert_eq!(request(&c, Request::Usage).await?, usage);
+        Ok(())
+    })
+}

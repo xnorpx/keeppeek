@@ -60,7 +60,7 @@ pub(crate) async fn begin(
     let roots::State::Bound(binding) = roots::lookup(connection, intent.role).await? else {
         anyhow::bail!("legacy root has not been captured");
     };
-    let source = source_location(intent, &binding)?;
+    let source = source_location(&intent.reference, &binding)?;
     if let Some(job) = moves::find(connection, &intent.destination.id).await? {
         check_retry(connection, intent, &source, &job).await?;
         moves::validate_destination_intent(connection, &intent.destination.destination).await?;
@@ -116,22 +116,20 @@ async fn ensure_single_owner(
     Ok(())
 }
 
-fn source_location(intent: &Intent, binding: &Binding) -> anyhow::Result<Location> {
-    let key = intent
-        .reference
+pub(crate) fn source_location(
+    reference: &inventory::Reference,
+    binding: &Binding,
+) -> anyhow::Result<Location> {
+    let key = reference
         .path
         .strip_prefix(&binding.root)?
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("legacy path is not UTF-8"))?
         .replace('\\', "/");
     crate::storage::volumes::root::validate_legacy_key(&key)?;
-    let evidence = intent
-        .reference
-        .evidence
-        .as_ref()
-        .expect("validated evidence");
+    let evidence = reference.evidence.as_ref().expect("validated evidence");
     Ok(Location {
-        object: intent.reference.object.clone(),
+        object: reference.object.clone(),
         volume: binding.id.clone(),
         generation: binding.generation,
         relative_key: key,

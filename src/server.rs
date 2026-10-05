@@ -19563,7 +19563,7 @@ mod tests {
             },
             &cancelled,
             |message| {
-                assert_eq!(
+                assert!(
                     handler
                         .state
                         .catalog
@@ -19571,8 +19571,7 @@ mod tests {
                         .unwrap()
                         .reader_leases()
                         .conflicts(&fragments[0].recording_id, &fragments[0].path)
-                        .unwrap(),
-                    named
+                        .unwrap()
                 );
                 cancelled_messages.push(message);
                 cancelled.store(true, Ordering::Release);
@@ -21264,7 +21263,7 @@ mod tests {
         let history_path = directory.join(EXPORT_HISTORY_FILE);
         let ready_path = directory
             .join("ready-job")
-            .join("attempt")
+            .join("ready-job-attempt")
             .join("ready.mp4");
         std::fs::create_dir_all(ready_path.parent().unwrap()).unwrap();
         std::fs::write(&ready_path, b"ready export").unwrap();
@@ -21304,7 +21303,7 @@ mod tests {
         let record =
             |request: proto::CreateExportJob, job: proto::ExportJob, path| ExportJobRecord {
                 requester_id: "local-administrator".to_owned(),
-                artifact_id: "attempt".to_owned(),
+                artifact_id: format!("{}-attempt", job.job_id),
                 request,
                 job,
                 path,
@@ -21350,7 +21349,7 @@ mod tests {
         );
         let interrupted_path = directory
             .join("running-job")
-            .join("attempt")
+            .join("running-job-attempt")
             .join("partial.mp4.active");
         std::fs::create_dir_all(interrupted_path.parent().unwrap()).unwrap();
         std::fs::write(&interrupted_path, b"partial").unwrap();
