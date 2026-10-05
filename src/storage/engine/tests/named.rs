@@ -375,7 +375,7 @@ fn adopt_archiver_source(
             capacity: primary.capacity(handle.volume_ledger_revision()?)?,
         },
     };
-    handle.volume_location(Request::AdoptLegacyRecording(Box::new(adoption::Intent {
+    handle.volume_location(Request::AdoptLegacyMedia(Box::new(adoption::Intent {
         reference,
         role: roots::Role::Active,
         operation: uuid::Uuid::new_v4().to_string(),

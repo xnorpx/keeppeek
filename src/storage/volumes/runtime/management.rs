@@ -125,14 +125,6 @@ impl Manager {
         request: &PlacementRequest<'_>,
         groups: &[&str],
     ) -> anyhow::Result<MovePreview> {
-        anyhow::ensure!(
-            groups.len() <= super::super::RULES_MAX,
-            "too many source groups"
-        );
-        anyhow::ensure!(
-            request.source.len() <= 256 && groups.iter().all(|group| group.len() <= 256),
-            "source selector is too long"
-        );
         let Reply::Location(source) = self
             .inner
             .catalog
@@ -144,6 +136,25 @@ impl Manager {
             Some(source) => (source, None),
             None => self.preview_legacy_recording(object)?,
         };
+        self.make_move_preview(source, legacy, destination, request, groups)
+    }
+
+    fn make_move_preview(
+        &self,
+        source: Location,
+        legacy: Option<legacy::Preview>,
+        destination: &str,
+        request: &PlacementRequest<'_>,
+        groups: &[&str],
+    ) -> anyhow::Result<MovePreview> {
+        anyhow::ensure!(
+            groups.len() <= super::super::RULES_MAX,
+            "too many source groups"
+        );
+        anyhow::ensure!(
+            request.source.len() <= 256 && groups.iter().all(|group| group.len() <= 256),
+            "source selector is too long"
+        );
         let preview = MovePreview {
             source,
             legacy,
@@ -184,7 +195,7 @@ impl Manager {
             return Ok(());
         }
         if preview.legacy.is_some() {
-            return self.admit_legacy_recording(job_id, preview);
+            return self.admit_legacy_media(job_id, preview);
         }
         let Reply::Location(Some(current)) = self
             .inner

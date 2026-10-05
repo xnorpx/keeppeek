@@ -113,7 +113,7 @@ fn adopted_nested_recording_move_waits_for_pre_adoption_reader_before_retirement
     let destination = base
         .join("primary")
         .join(&intent.destination.destination.relative_key);
-    handle.volume_location(Request::AdoptLegacyRecording(Box::new(intent)))?;
+    handle.volume_location(Request::AdoptLegacyMedia(Box::new(intent)))?;
     manager.resume_move(&job_id, || false)?;
     assert_eq!(std::fs::read(&source)?, [7_u8; 128]);
     assert_eq!(std::fs::read(&destination)?, [7_u8; 128]);
@@ -146,7 +146,7 @@ fn cancelling_adoption_before_copy_preserves_owned_source_for_normal_later_move(
     let abandoned_path = base
         .join("primary")
         .join(&intent.destination.destination.relative_key);
-    handle.volume_location(Request::AdoptLegacyRecording(Box::new(intent)))?;
+    handle.volume_location(Request::AdoptLegacyMedia(Box::new(intent)))?;
     manager.cancel_move(&cancelled)?;
     assert_eq!(std::fs::read(&source)?, [7_u8; 128]);
     assert!(!abandoned_path.exists());
@@ -227,7 +227,7 @@ fn cancelled_adoption_retains_legacy_budget_and_reader_blocks_nested_source_remo
     let source = intent.reference.path.clone();
     let object = intent.reference.object.clone();
     let id = intent.destination.id.clone();
-    handle.volume_location(Request::AdoptLegacyRecording(Box::new(intent)))?;
+    handle.volume_location(Request::AdoptLegacyMedia(Box::new(intent)))?;
     cancel_adopted_move(&manager, &catalog, &id)?;
     assert_eq!(handle.legacy_recording_bytes()?, 128);
     let (fragments, reader) = handle.leased_media_fragments_in_range("camera/main", 1000, 2000)?;
@@ -274,7 +274,7 @@ fn protected_adopted_source_is_excluded_from_legacy_pressure_retention() -> anyh
     let source = intent.reference.path.clone();
     let object = intent.reference.object.clone();
     let id = intent.destination.id.clone();
-    handle.volume_location(Request::AdoptLegacyRecording(Box::new(intent)))?;
+    handle.volume_location(Request::AdoptLegacyMedia(Box::new(intent)))?;
     cancel_adopted_move(&manager, &catalog, &id)?;
     handle.set_recording_protected(&object.id, true)?;
     let before = handle.volume_location(Request::Lookup(object.clone()))?;
@@ -304,7 +304,7 @@ fn active_adoption_move_excludes_legacy_source_until_cancellation_is_acknowledge
     let handle = catalog.handle();
     let source = intent.reference.path.clone();
     let id = intent.destination.id.clone();
-    handle.volume_location(Request::AdoptLegacyRecording(Box::new(intent)))?;
+    handle.volume_location(Request::AdoptLegacyMedia(Box::new(intent)))?;
     assert!(begin_adopted_retention(&catalog)?.is_none());
     assert_eq!(std::fs::read(&source)?, [7_u8; 128]);
     handle.volume_location(Request::AdvanceMove(moves::Step::Cancel(id.clone())))?;
@@ -425,4 +425,171 @@ fn legacy_management_changed_source_rejects_confirmation_without_adoption() -> a
     drop(manager);
     catalog.shutdown();
     Ok(())
+}
+mod legacy_exports {
+    use super::*;
+
+    fn fixture() -> anyhow::Result<(PathBuf, RecordingCatalog, Manager, inventory::Reference)> {
+        let (base, catalog, manager) = tests::fixture(4 * GROWTH_BYTES)?;
+        let exports = base.join("legacy-exports");
+        tests::create_root(&exports)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = exports.join("job/artifact/file.mp4");
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(&path, [7_u8; 128])?;
+        let paths = LegacyPaths {
+            active_root: base.join("legacy-active"),
+            archive_root: base.join("legacy-archive"),
+            export_root: exports.clone(),
+            thumbnail_root: base.join("legacy-images"),
+            catalog_path: base.join("catalog.db"),
+            export_history_path: exports.join("history.json"),
+        };
+        crate::storage::volumes::legacy::capture_roots(&catalog.handle(), &paths)?;
+        let reference = inventory::Reference {
+            object: Object {
+                kind: Kind::Export,
+                id,
+            },
+            path,
+            revision: 1,
+            evidence: None,
+        };
+        Ok((base, catalog, manager, reference))
+    }
+
+    fn preview(
+        manager: &Manager,
+        reference: &inventory::Reference,
+    ) -> anyhow::Result<management::MovePreview> {
+        manager.preview_legacy_export(
+            reference.clone(),
+            "primary",
+            &PlacementRequest {
+                role: VolumeRole::Export,
+                source: "camera",
+                group: "",
+                required_bytes: 0,
+            },
+            &[],
+        )
+    }
+
+    #[test]
+    fn legacy_export_move_preserves_preadoption_reader_until_source_retirement()
+    -> anyhow::Result<()> {
+        let (base, catalog, manager, reference) = fixture()?;
+        let handle = catalog.handle();
+        let reader = handle.lease_legacy_export(&reference.object.id, &reference.path)?;
+        let preview = preview(&manager, &reference)?;
+        assert!(preview.adopts_legacy());
+        assert_eq!(preview.source().bytes, 128);
+        assert_eq!(
+            preview.source().digest,
+            <sha2::Sha256 as sha2::Digest>::digest([7_u8; 128]).as_slice()
+        );
+        assert_eq!(preview.source().relative_key, "job/artifact/file.mp4");
+        let job = uuid::Uuid::new_v4().to_string();
+        manager.admit_move(&job, &preview)?;
+        manager.resume_move(&job, || false)?;
+        let Reply::Location(Some(current)) =
+            handle.volume_location(Request::Lookup(reference.object.clone()))?
+        else {
+            anyhow::bail!("export destination missing")
+        };
+        assert_eq!(current.object, reference.object);
+        assert_eq!(current.volume, "primary");
+        assert_eq!(std::fs::read(manager.owned_path(&current)?)?, [7_u8; 128]);
+        assert!(!manager.retire_move(&job)?);
+        assert_eq!(std::fs::read(&reference.path)?, [7_u8; 128]);
+        drop(reader);
+        assert!(manager.retire_move(&job)?);
+        assert!(!reference.path.exists());
+        assert_eq!(std::fs::read(manager.owned_path(&current)?)?, [7_u8; 128]);
+        assert!(manager.retire_move(&job)?);
+        drop(handle);
+        drop(manager);
+        catalog.shutdown();
+        std::fs::remove_dir_all(base)?;
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_legacy_export_remains_owned_and_cleanup_waits_for_existing_reader()
+    -> anyhow::Result<()> {
+        use crate::storage::catalog::locations::export_cleanup;
+        let (base, catalog, manager, reference) = fixture()?;
+        let handle = catalog.handle();
+        let reader = handle.lease_legacy_export(&reference.object.id, &reference.path)?;
+        let preview = preview(&manager, &reference)?;
+        let job = uuid::Uuid::new_v4().to_string();
+        manager.admit_move(&job, &preview)?;
+        manager.cancel_move(&job)?;
+        assert_eq!(
+            handle.volume_location(Request::Lookup(reference.object.clone()))?,
+            Reply::Location(Some(preview.source().clone()))
+        );
+        assert_eq!(std::fs::read(&reference.path)?, [7_u8; 128]);
+        handle.volume_location(Request::RetireExport(reference.object.id.clone()))?;
+        assert!(
+            handle
+                .lease_legacy_export(&reference.object.id, &reference.path)
+                .is_err()
+        );
+        assert!(manager.finish_export_retirement(&reference.object.id)?);
+        assert_eq!(std::fs::read(&reference.path)?, [7_u8; 128]);
+        drop(reader);
+        assert!(manager.finish_export_retirement(&reference.object.id)?);
+        assert!(!reference.path.exists());
+        assert!(manager.finish_export_retirement(&reference.object.id)?);
+        let Reply::ExportCleanup(Some(done)) = handle.volume_location(Request::ExportCleanup(
+            export_cleanup::Action::Load(reference.object.id),
+        ))?
+        else {
+            anyhow::bail!("export cleanup missing")
+        };
+        assert!(done.complete && done.acknowledged);
+        let Reply::Usage(rows) = handle.volume_location(Request::Usage)? else {
+            anyhow::bail!("usage missing")
+        };
+        assert!(
+            rows.iter()
+                .all(|row| row.allocated_bytes == 0 && row.reserved_bytes == 0)
+        );
+        drop(handle);
+        drop(manager);
+        catalog.shutdown();
+        std::fs::remove_dir_all(base)?;
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_export_confirmation_rejects_same_size_source_mutation_after_preview()
+    -> anyhow::Result<()> {
+        let (base, catalog, manager, reference) = fixture()?;
+        let preview = preview(&manager, &reference)?;
+        let handle = catalog.handle();
+        let usage = handle.volume_location(Request::Usage)?;
+        let revision = handle.volume_ledger_revision()?;
+        let job = uuid::Uuid::new_v4().to_string();
+        std::fs::write(&reference.path, [9_u8; 128])?;
+        assert!(manager.admit_move(&job, &preview).is_err());
+        assert_eq!(handle.volume_location(Request::Usage)?, usage);
+        assert_eq!(handle.volume_ledger_revision()?, revision);
+        assert_eq!(
+            handle.volume_location(Request::Lookup(reference.object))?,
+            Reply::Location(None)
+        );
+        assert_eq!(
+            handle.volume_location(Request::FindMove(job))?,
+            Reply::OptionalMove(None)
+        );
+        assert_eq!(std::fs::read(&reference.path)?, [9_u8; 128]);
+        assert_eq!(std::fs::read_dir(base.join("primary"))?.count(), 0);
+        drop(handle);
+        drop(manager);
+        catalog.shutdown();
+        std::fs::remove_dir_all(base)?;
+        Ok(())
+    }
 }

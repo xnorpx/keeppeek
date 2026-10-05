@@ -11,6 +11,35 @@ pub(super) struct Preview {
 }
 
 impl Manager {
+    /// Previews a legacy export whose ready owner is checked by the caller at confirmation.
+    ///
+    /// # Errors
+    /// Rejects changed roots, unsafe files, and ineligible destinations.
+    pub(crate) fn preview_legacy_export(
+        &self,
+        reference: inventory::Reference,
+        destination: &str,
+        request: &PlacementRequest<'_>,
+        groups: &[&str],
+    ) -> anyhow::Result<MovePreview> {
+        let catalog = &self.inner.catalog;
+        let reference = crate::storage::volumes::legacy::verify_export(catalog, &reference)?;
+        let role = roots::Role::Export;
+        let Reply::LegacyRoot(roots::State::Bound(binding)) =
+            catalog.volume_location(Request::LegacyRoot(role))?
+        else {
+            anyhow::bail!("legacy export root identity has not been captured");
+        };
+        let source = adoption::source_location(&reference, &binding)?;
+        self.make_move_preview(
+            source,
+            Some(Preview { reference, role }),
+            destination,
+            request,
+            groups,
+        )
+    }
+
     pub(super) fn preview_legacy_recording(
         &self,
         object: Object,
@@ -36,7 +65,7 @@ impl Manager {
         Ok((location, Some(Preview { reference, role })))
     }
 
-    pub(super) fn admit_legacy_recording(
+    pub(super) fn admit_legacy_media(
         &self,
         job_id: &str,
         preview: &MovePreview,
@@ -44,13 +73,20 @@ impl Manager {
         let legacy = preview.legacy.as_ref().expect("legacy preview");
         let catalog = &self.inner.catalog;
         let _source_claim = catalog.claim_volume_move(&preview.source.object.id)?;
-        let current =
-            crate::storage::volumes::legacy::verify_recording(catalog, &legacy.reference)?;
+        let current = match legacy.reference.object.kind {
+            Kind::Recording => {
+                crate::storage::volumes::legacy::verify_recording(catalog, &legacy.reference)?
+            }
+            Kind::Export => {
+                crate::storage::volumes::legacy::verify_export(catalog, &legacy.reference)?
+            }
+            Kind::Thumbnail => anyhow::bail!("legacy thumbnail adoption is unavailable"),
+        };
         anyhow::ensure!(current == legacy.reference, "legacy preview changed");
         let index = self.move_destination(preview)?;
         let _file = self.open_owned(&preview.source)?;
         let object = Object {
-            kind: Kind::Recording,
+            kind: preview.source.object.kind,
             id: job_id.to_owned(),
         };
         let destination = Allocation {
@@ -66,7 +102,7 @@ impl Manager {
                 .capacity(catalog.volume_ledger_revision()?)?,
         };
         let Reply::Move(job) =
-            catalog.volume_location(Request::AdoptLegacyRecording(Box::new(adoption::Intent {
+            catalog.volume_location(Request::AdoptLegacyMedia(Box::new(adoption::Intent {
                 reference: current,
                 role: legacy.role,
                 operation: uuid::Uuid::new_v4().to_string(),

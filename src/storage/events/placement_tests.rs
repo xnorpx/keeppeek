@@ -759,3 +759,46 @@ fn replacement_cleanup_waits_for_readers_and_releases_only_owned_bytes() -> anyh
     fs::remove_dir_all(root)?;
     Ok(())
 }
+
+mod legacy_attachment_readers {
+    use super::*;
+
+    #[test]
+    fn legacy_attachment_lease_tracks_path_and_rejects_stale_event_revision() -> anyhow::Result<()>
+    {
+        let (root, catalog, mut config) = fixture(1024 * 1024, true)?;
+        config.volume_runtime = None;
+        config.named_volumes = None;
+        let events = store(&catalog, &config)?;
+        let jpeg = encode_jpeg(&DynamicImage::new_rgb8(24, 16))?;
+        events.commit_published_image(
+            "legacy-reader-publication",
+            image_event("legacy-reader", &jpeg),
+            &jpeg,
+        )?;
+        let event = events.event_by_id("legacy-reader")?.unwrap();
+        let (path, lease) = events.leased_attachment_path(&event, "snapshot")?.unwrap();
+        let lease = lease.expect("legacy attachment needs a reader lease before adoption");
+        assert!(path.starts_with(config.event_thumbnail_path.canonicalize()?));
+        assert_eq!(fs::read(&path)?, jpeg);
+        let registry = Arc::clone(catalog.handle().reader_leases());
+        assert!(registry.conflicts(&event.id, &path.to_string_lossy())?);
+        assert!(registry.conflicts("future-adopted-image", &path.to_string_lossy())?);
+        catalog.handle().close_event(&event.id, 2000)?;
+        assert!(events.leased_attachment_path(&event, "snapshot").is_err());
+        assert!(registry.conflicts("future-adopted-image", &path.to_string_lossy())?);
+        drop(lease);
+        assert!(!registry.conflicts("future-adopted-image", &path.to_string_lossy())?);
+        let current = events.event_by_id(&event.id)?.unwrap();
+        let (_, current_lease) = events
+            .leased_attachment_path(&current, "snapshot")?
+            .unwrap();
+        assert!(current_lease.is_some());
+        drop(current_lease);
+        drop(events);
+        drop(config);
+        catalog.shutdown();
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+}

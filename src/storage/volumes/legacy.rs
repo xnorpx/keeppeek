@@ -120,6 +120,41 @@ pub(crate) fn recording_role(
     Ok((*paths, role))
 }
 
+pub(crate) fn verify_export(
+    catalog: &RecordingCatalogHandle,
+    reference: &Reference,
+) -> anyhow::Result<Reference> {
+    use crate::storage::catalog::locations::{Kind, legacy::roots::Role};
+    anyhow::ensure!(
+        reference.object.kind == Kind::Export,
+        "invalid legacy export kind"
+    );
+    let root = captured_root(catalog, Role::Export)?
+        .ok_or_else(|| anyhow::anyhow!("legacy export root identity has not been captured"))?;
+    let key = reference
+        .path
+        .strip_prefix(root.path())?
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("legacy export path is not UTF-8"))?
+        .replace('\\', "/");
+    let mut file = root.inspect_legacy(&key)?;
+    let (bytes, file_identity, digest) = file.inspect_evidence()?;
+    let evidence = Evidence {
+        bytes,
+        file_identity,
+        digest,
+        catalog_identity: file.catalog_identity()?,
+    };
+    file.revalidate()?;
+    if let Some(expected) = &reference.evidence {
+        anyhow::ensure!(*expected == evidence, "legacy export evidence changed");
+    }
+    Ok(Reference {
+        evidence: Some(evidence),
+        ..reference.clone()
+    })
+}
+
 #[cfg(test)]
 mod tests;
 

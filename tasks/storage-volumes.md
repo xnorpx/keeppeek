@@ -669,3 +669,31 @@ remain open; this checkpoint does not satisfy the complete issue.
 Strict workspace/all-target Clippy passed (`target/129-legacy-controls-clippy.log`), and all 13
 storage-volume browser component tests passed (`target/129-legacy-controls-ui-all.log`). The
 canonical platform gate remains required after the remaining implementation work.
+
+### Legacy export adoption and reader handoff
+
+Legacy exports and event attachments now acquire catalog reader leases before opening their files.
+Ownership promotion therefore preserves readers that started before the move. Export cleanup
+fences new readers even without an active named-volume runtime, and acknowledges allocation-free
+cleanup after raw deletion. Owned allocations use journaled removal and never recursively remove
+their old attempt directory. The 16 catalog-reader, 20 image-placement, and 19 export-storage tests
+passed before the final no-runtime fence addition; its dedicated regression also passed after
+reproducing the missing admission fence.
+
+Export adoption shares the recording adoption transaction and mover. It validates the captured
+export root, file evidence, capacity revision, existing path owners, and retirement tombstones.
+Four catalog adoption tests and three real-filesystem export migration tests passed. Server preview
+derives the file from the captured root and Ready attempt identity, verifies bytes and checksum,
+and confirmation holds the export-history lock through admission. Four server tests passed for
+download continuity, changed owners, expiration, and an unrelated cached-path decoy. A further
+regression reproduced confirmation retry failure after owner expiry; durable retry now precedes
+first-admission owner validation. All 93 legacy-selected tests passed, including that retry
+(`target/129-legacy-export-all-green.log`).
+
+Evidence: `target/129-export-adoption-green.log`, `target/129-legacy-export-runtime-green.log`,
+`target/129-legacy-export-api-green.log`, and `target/129-export-cleanup-fence-green.log`.
+The complete export-storage group (20 tests) and volume-management group (21 tests) also passed
+(`target/129-export-storage-complete-green.log`, `target/129-export-management-complete-green.log`).
+Strict workspace/all-target Clippy passed (`target/129-export-adoption-clippy.log`).
+Export inventory/UI selection, thumbnail adoption, bulk drain, health/capability presentation,
+activation/root capture, and final canonical/platform qualification remain open.
