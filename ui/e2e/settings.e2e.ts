@@ -1018,7 +1018,7 @@ test('keeps confirmed settings visible and locked while a WebRTC update is apply
 	});
 	await page.goto('/settings');
 	await page.getByRole('button', { name: 'Edit server' }).click();
-	const port = page.getByLabel('Port');
+	const port = page.getByLabel('Port', { exact: true });
 	await port.fill('3201');
 	await page.getByRole('button', { name: 'Save server settings' }).click();
 
