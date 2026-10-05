@@ -24,7 +24,7 @@ pub fn fixture(limit: u64) -> anyhow::Result<(PathBuf, RecordingCatalog, Manager
     Ok((path, catalog, manager))
 }
 
-pub(super) fn create_root(path: &Path) -> anyhow::Result<()> {
+pub fn create_root(path: &Path) -> anyhow::Result<()> {
     std::fs::create_dir(path)?;
     #[cfg(windows)]
     anyhow::ensure!(
@@ -43,7 +43,7 @@ pub(super) fn create_root(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(super) fn volume(id: &str, root: PathBuf, limit: u64) -> Volume {
+pub fn volume(id: &str, root: PathBuf, limit: u64) -> Volume {
     Volume {
         id: VolumeId::parse(id).unwrap(),
         root,

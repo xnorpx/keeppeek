@@ -35,7 +35,7 @@ fn volume_drain_local_scale() -> anyhow::Result<()> {
     let unrelated = root.join("primary/unrelated.txt");
     std::fs::write(&unrelated, b"preserve")?;
     let mut samples = Vec::with_capacity(30);
-    let mut meter = ProcessMeter::new()?;
+    let mut meter = ProcessMeter::new();
     for run in 0..31 {
         let sample = run_sample(&manager, &catalog.handle(), &object, &mut meter)?;
         if run != 0 {
@@ -74,6 +74,8 @@ fn run_sample(
     } else {
         "primary"
     };
+    manager.set_draining(&source.volume, true)?;
+    manager.set_draining(destination, false)?;
     let target = &manager
         .configuration()
         .volumes
@@ -264,12 +266,12 @@ struct ProcessMeter {
 }
 
 impl ProcessMeter {
-    fn new() -> anyhow::Result<Self> {
-        Ok(Self {
+    fn new() -> Self {
+        Self {
             system: sysinfo::System::new(),
-            pid: sysinfo::get_current_pid()?,
+            pid: sysinfo::Pid::from_u32(std::process::id()),
             resident: 0,
-        })
+        }
     }
 
     fn sample(&mut self) -> u64 {

@@ -91,7 +91,8 @@ Application log after the source has been registered. See the
 
 Stop the current process, replace the executable with the intended build, and start it with the same
 configuration selection and environment. The `--config <path>` option selects the TOML file and its
-sibling `secrets.toml`; it does not automatically relocate omitted recording paths.
+sibling `secrets.toml`. A fresh configuration initializes named storage beside that file;
+an existing metadata binding keeps its recorded owner.
 
 ## What startup migrates
 
@@ -120,22 +121,29 @@ See the [configuration reference](./configuration-reference.md) for current fiel
 
 ## Move storage deliberately
 
-Use **Settings** and its storage editor. Set the new locations, then choose whether to leave existing
-recordings where they are or **Move existing storage during restart**. Review all changes and the
-space assessment before saving. A leave choice is not a media transfer: retain access to the old
-locations, and verify how the selected catalog will expose existing recordings.
+Use **Settings → Named storage volumes**. Create a private destination directory on a supported
+local filesystem, add its stable ID, roles, limits, and placement rules, and save the draft. Restart
+to apply configuration changes. New placement rules affect future objects; existing objects retain
+their catalog owner.
 
-For a move, KeepPeek writes a pending `[storage_migration]` journal into the existing configuration.
-On restart it moves the selected recording roots and separately configured catalog and thumbnail
-paths, including catalog sidecars when needed, and updates stored recording paths. Overlapping or
-conflicting destinations are rejected. Cross-filesystem moves can require copying the data and
-therefore take longer than a rename.
+To drain media, choose **Stop new writes** for the source. Existing fragments finish there. Load its
+stored objects, select a compatible destination, and preview an individual move or a batch of up to
+16 objects. Review the file count and bytes before confirming. Move jobs show durable progress and
+offer cancellation before authoritative publication. Stopping a batch stops new confirmations;
+already admitted jobs remain visible. An expired or changed preview requires another review.
 
-Reserve a maintenance window and enough destination capacity. If startup reports a different file
-already at a destination, stop and inspect both copies; do not overwrite one to bypass the check.
-Do not edit the migration journal or remove partial files to force progress. Preserve source,
-destination, configuration, and logs before requesting recovery help. This workflow is a storage
-move, not an importer for an unrelated recording archive.
+Moves copy into a confined temporary file, verify length and SHA-256, publish the verified catalog
+location, then retire the old copy after readers finish. A lost confirmation reply is checked using
+the original job ID. Interrupted work resumes from its durable journal. Removal requires no owned
+objects, active allocations, unfinished jobs, or cleanup receipts; removing a definition does not
+delete unrelated files or its directory.
+
+Metadata uses **Catalog and export history** controls. Preview a disabled metadata-only destination,
+review downtime and capacity, then confirm the restart handoff. The old catalog and history remain
+available for recovery, and the new authority is verified before media workers start. A missing
+bound root is offline and is never recreated. Preserve both copies and the pending configuration
+if activation fails; do not edit journals, overwrite a conflicting destination, or clear fencing
+records to force a retry. See the [configuration reference](./configuration-reference.md#named-storage-volumes).
 
 ## Verify and recover
 

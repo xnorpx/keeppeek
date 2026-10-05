@@ -2,8 +2,9 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
 import { execFile, spawn, type ExecFileException } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { mockControlPeer } from './fixtures/control-peer';
@@ -180,7 +181,10 @@ test('HTTP apply replaces both TOMLs only after an isolated recorder restart', a
 	request
 }, testInfo) => {
 	test.setTimeout(90_000);
-	const directory = testInfo.outputPath('isolated-recorder');
+	const directory =
+		process.platform === 'win32'
+			? await mkdtemp(resolve(tmpdir(), 'keeppeek-backup-e2e-'))
+			: testInfo.outputPath('isolated-recorder');
 	const configPath = resolve(directory, 'config.toml');
 	const secretsPath = resolve(directory, 'secrets.toml');
 	const recordings = resolve(directory, 'storage/media');

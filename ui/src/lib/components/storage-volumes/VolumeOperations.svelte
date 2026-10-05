@@ -143,7 +143,7 @@
 		busy = true;
 		stopBatch = false;
 		try {
-			for (const plan of [...batch]) {
+			for (const plan of batch) {
 				if (!alive || stopBatch) break;
 				try {
 					const job = await confirmPlan(plan);

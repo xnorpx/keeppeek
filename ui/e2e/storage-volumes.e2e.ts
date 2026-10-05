@@ -17,6 +17,14 @@ test('named defaults support probes and cancellable drafts on desktop and mobile
 	await expect(volumes.getByRole('alert')).toHaveCount(0);
 	await volumes.getByRole('button', { name: 'Refresh move jobs', exact: true }).click();
 	await expect(volumes.getByText('No move jobs on this page.', { exact: true })).toBeVisible();
+	await page.getByRole('button', { name: 'Change storage', exact: true }).click();
+	await expect(page.getByLabel('Folder path', { exact: true })).toBeDisabled();
+	await page.getByText('Advanced storage paths and writer controls', { exact: true }).click();
+	await expect(page.getByLabel('Recording catalog path', { exact: true })).toBeDisabled();
+	await page
+		.locator('#storage-settings-editor')
+		.getByRole('button', { name: 'Cancel', exact: true })
+		.click();
 	await volumes.getByRole('button', { name: 'Edit volume draft', exact: true }).click();
 	const draft = volumes.getByRole('form', { name: 'Named volume draft' });
 	const media = draft.getByRole('group', { name: 'Volume 1', exact: true });

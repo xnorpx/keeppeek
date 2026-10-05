@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -143,7 +144,8 @@ export async function startHomeAssistantServer(origin: string) {
 	const extension = process.platform === 'win32' ? '.exe' : '';
 	const binary = (name: string) => resolve(repositoryRoot, 'target/release', `${name}${extension}`);
 	await Promise.all([access(binary('keeppeek')), access(binary('test_camera'))]);
-	const directory = await mkdtemp(resolve(repositoryRoot, 'target/home-assistant-e2e-'));
+	const parent = process.platform === 'win32' ? tmpdir() : resolve(repositoryRoot, 'target');
+	const directory = await mkdtemp(resolve(parent, 'home-assistant-e2e-'));
 	const children: ChildProcess[] = [];
 	const close = async () => {
 		await Promise.all(children.map(stop));
