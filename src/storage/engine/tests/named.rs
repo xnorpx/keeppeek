@@ -7,6 +7,7 @@ use crate::storage::{
     },
 };
 
+mod drain_performance;
 mod failure_isolation;
 mod performance;
 

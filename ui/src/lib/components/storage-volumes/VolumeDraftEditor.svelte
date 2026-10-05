@@ -75,9 +75,9 @@
 	aria-label="Named volume draft"
 >
 	<p id="volume-activation-note" class="text-sm text-text-muted">
-		Save your volume settings, then restart to apply them. Create each root directory before enabling
-		it. Saving does not move existing files. Use the separate catalog and export history controls to
-		relocate metadata.
+		Save your volume settings, then restart to apply them. Create each root directory before
+		enabling it. Saving does not move existing files. Use the separate catalog and export history
+		controls to relocate metadata.
 	</p>
 	<fieldset disabled={saving} class="space-y-4">
 		{#each draft.volumes as _, index (index)}<VolumeFields
