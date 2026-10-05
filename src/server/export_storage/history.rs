@@ -11,11 +11,6 @@ pub(in crate::server) fn persist(
             .replace_history(&binding.history_file, &export_history_bytes(jobs)?);
     }
     if let Some(path) = &state.export_history_path {
-        crate::storage::volumes::legacy::ensure_export_history_available(
-            state.catalog.as_ref(),
-            &state.storage_config.long_term_path.join(".exports"),
-            path,
-        )?;
         persist_export_jobs(path, jobs)?;
     }
     Ok(())
@@ -26,7 +21,6 @@ pub(in crate::server) fn recover(
     root: &Path,
     catalog: Option<&RecordingCatalogHandle>,
     now: i64,
-    legacy_offline: bool,
 ) -> anyhow::Result<()> {
     let named = owned(catalog, &record.artifact_id)?;
     match proto::ExportJobStatus::try_from(record.job.status)? {
@@ -51,7 +45,7 @@ pub(in crate::server) fn recover(
                     .join(&record.job.job_id)
                     .join(&record.artifact_id)
                     .join(name);
-                if legacy_offline || path.is_file() {
+                if path.is_file() {
                     record.path = Some(path);
                 } else {
                     fail(record, now, "Export artifact is missing; retry the export");
@@ -67,8 +61,10 @@ pub(in crate::server) fn recover(
             }
         }
     }
-    if !legacy_offline && record.job.status != proto::ExportJobStatus::Ready as i32 {
-        cleanup_legacy_attempt(catalog, root, &record.job.job_id, &record.artifact_id)?;
+    if record.job.status != proto::ExportJobStatus::Ready as i32 {
+        if !named {
+            cleanup_export_attempt_directory(root, &record.job.job_id, &record.artifact_id)?;
+        }
     }
     Ok(())
 }
@@ -108,17 +104,13 @@ fn load(state: &ServerState, path: &Path) -> anyhow::Result<HashMap<String, Expo
             .storage_config
             .metadata_root()?
             .read_history(&binding.history_file)?;
-        let offline = crate::storage::volumes::legacy::export_root_offline(
-            state.catalog.as_ref(),
-            &export_root,
-        )?;
-        return restore_export_history(&bytes, &export_root, state.catalog.as_ref(), offline);
+        return restore_export_history(&bytes, &export_root, state.catalog.as_ref());
     }
     load_export_jobs(path, &export_root, state.catalog.as_ref())
 }
 
 pub(in crate::server) fn expire(state: &ServerState) {
-    if state.export_history_error.is_some() || ensure_legacy_available(state).is_err() {
+    if state.export_history_error.is_some() {
         return;
     }
     let now = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);

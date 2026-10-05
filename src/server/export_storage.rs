@@ -18,17 +18,6 @@ struct Output {
     _lease: MoveLease,
 }
 
-pub(super) fn ensure_legacy_available(state: &ServerState) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        !crate::storage::volumes::legacy::export_root_offline(
-            state.catalog.as_ref(),
-            &state.storage_config.long_term_path.join(".exports"),
-        )?,
-        "captured legacy export root is unavailable"
-    );
-    Ok(())
-}
-
 pub(super) fn owned(catalog: Option<&RecordingCatalogHandle>, id: &str) -> anyhow::Result<bool> {
     let Some(catalog) = catalog else {
         return Ok(false);
@@ -46,51 +35,6 @@ pub(super) fn retire(catalog: Option<&RecordingCatalogHandle>, id: &str) -> anyh
         // Legacy test/history IDs need no tombstone when no volume has ever owned them.
         if uuid::Uuid::parse_str(id).is_ok() || owned(Some(catalog), id)? {
             catalog.volume_location(Request::RetireExport(id.into()))?;
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn cleanup_legacy_attempt(
-    catalog: Option<&RecordingCatalogHandle>,
-    root: &Path,
-    job_id: &str,
-    artifact_id: &str,
-) -> anyhow::Result<()> {
-    retire(catalog, artifact_id)?;
-    if let Some(catalog) = catalog {
-        let Reply::ExportOwned(allocated) = catalog.volume_location(Request::ExportCleanup(
-            Action::Allocated(artifact_id.into()),
-        ))?
-        else {
-            anyhow::bail!("invalid export allocation reply");
-        };
-        // A retirement tombstone fences admission; only an allocation transfers directory cleanup.
-        if allocated {
-            return Ok(());
-        }
-        anyhow::ensure!(
-            !catalog.reader_leases().conflicts(artifact_id, "")?,
-            "export has active readers"
-        );
-    }
-    anyhow::ensure!(
-        !crate::storage::volumes::legacy::export_root_offline(catalog, root)?,
-        "captured legacy export root is unavailable"
-    );
-    cleanup_export_attempt_directory(root, job_id, artifact_id)?;
-    if let Some(catalog) = catalog
-        && uuid::Uuid::parse_str(artifact_id).is_ok()
-    {
-        for action in [
-            Action::Verify(
-                artifact_id.into(),
-                crate::storage::catalog::locations::moves::Cancellation::Empty,
-            ),
-            Action::Complete(artifact_id.into()),
-            Action::Acknowledge(artifact_id.into()),
-        ] {
-            catalog.volume_location(Request::ExportCleanup(action))?;
         }
     }
     Ok(())
@@ -293,7 +237,6 @@ fn write(
         file.publish(evidence)?;
         Ok((artifact, checksum))
     } else {
-        ensure_legacy_available(state)?;
         let artifact = crate::storage::playback::export_fragment_ranges_with_progress(
             fragments, end_ms, path, cancelled, progress,
         )?;

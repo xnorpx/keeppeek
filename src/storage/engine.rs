@@ -157,20 +157,18 @@ impl StorageConfig {
             catalog::locations::{Reply, Request},
             volumes::{VolumeState, runtime::Manager},
         };
+        let Some(configuration) = &self.named_volumes else {
+            return Ok(());
+        };
         let Reply::Usage(usage) = catalog.volume_location(Request::Usage)? else {
             anyhow::bail!("volume usage query returned an invalid response");
         };
-        let configuration = self.named_volumes.clone().unwrap_or_default();
-        // ponytail: Keep recovery available for captured roots, including zero-byte pending receipts.
-        let activated = usage
-            .iter()
-            .any(|entry| entry.volume.starts_with("legacy-"))
-            || configuration.volumes.iter().any(|volume| {
-                volume.state != VolumeState::Disabled
-                    || usage.iter().any(|entry| entry.volume == volume.id.as_str())
-            });
+        let activated = configuration.volumes.iter().any(|volume| {
+            volume.state != VolumeState::Disabled
+                || usage.iter().any(|entry| entry.volume == volume.id.as_str())
+        });
         if activated {
-            self.volume_runtime = Some(Arc::new(Manager::new(configuration, catalog)?));
+            self.volume_runtime = Some(Arc::new(Manager::new(configuration.clone(), catalog)?));
         }
         Ok(())
     }
@@ -998,10 +996,15 @@ impl WriterWorker {
         let mut bytes_removed = 0u64;
 
         while capacity.keeppeek_bytes > target_bytes {
-            let (removed, _) = self.remove_pressure_candidate(&catalog, reason, target_bytes)?;
+            let candidate = catalog.claim_cleanup_candidate()?.ok_or_else(|| {
+                anyhow::anyhow!("no eligible finalized recording remains to restore headroom")
+            })?;
+            let removed = self.remove_cleanup_candidate(&catalog, &candidate, reason)?;
             files_removed = files_removed.saturating_add(u64::from(removed > 0));
             bytes_removed = bytes_removed.saturating_add(removed);
-            capacity.keeppeek_bytes = catalog.legacy_recording_bytes()?;
+            capacity.keeppeek_bytes = capacity
+                .keeppeek_bytes
+                .saturating_sub(candidate.file_bytes.max(removed));
             capacity.available_bytes = capacity
                 .available_bytes
                 .saturating_add(removed)
@@ -1041,39 +1044,6 @@ impl WriterWorker {
             "storage cleanup restored configured headroom",
         );
         Ok(())
-    }
-
-    fn remove_pressure_candidate(
-        &self,
-        catalog: &RecordingCatalogHandle,
-        reason: StorageCleanupReason,
-        target_bytes: u64,
-    ) -> anyhow::Result<(u64, u64)> {
-        use crate::storage::catalog::locations::recordings::Reason;
-        if catalog.legacy_recording_bytes()? <= target_bytes {
-            return Ok((0, 0));
-        }
-        let managed_reason = match reason {
-            StorageCleanupReason::ArchiveCap => Some(Reason::Capacity),
-            StorageCleanupReason::FilesystemHeadroom | StorageCleanupReason::Combined => {
-                Some(Reason::DiskPressure)
-            }
-            StorageCleanupReason::Reconciliation => None,
-        };
-        if let (Some(manager), Some(reason)) = (&self.config.volume_runtime, managed_reason)
-            && let Some(bytes) = manager.cleanup_legacy_adoption(reason)?
-        {
-            self.safety.cleanup_progress(bytes);
-            return Ok((bytes, bytes));
-        }
-        if catalog.legacy_recording_bytes()? <= target_bytes {
-            return Ok((0, 0));
-        }
-        let candidate = catalog.claim_cleanup_candidate()?.ok_or_else(|| {
-            anyhow::anyhow!("no eligible finalized recording remains to restore headroom")
-        })?;
-        let removed = self.remove_cleanup_candidate(catalog, &candidate, reason)?;
-        Ok((removed, candidate.file_bytes.max(removed)))
     }
 
     fn remove_cleanup_candidate(
@@ -1423,14 +1393,24 @@ impl WriterWorker {
         path: &Path,
         recording_id: &str,
     ) -> std::io::Result<PathBuf> {
-        let _claim = self
-            .catalog
-            .as_ref()
-            .map(|catalog| catalog.claim_volume_move(recording_id))
-            .transpose()
-            .map_err(std::io::Error::other)?;
-        if self.wake_owned_archive(recording_id)? {
-            return Ok(path.to_path_buf());
+        if self.config.volume_runtime.is_some() {
+            use super::catalog::locations::{Kind, Object, Reply, Request};
+            if let Some(catalog) = &self.catalog
+                && matches!(
+                    catalog
+                        .volume_location(Request::Lookup(Object {
+                            kind: Kind::Recording,
+                            id: recording_id.to_owned()
+                        }))
+                        .map_err(std::io::Error::other)?,
+                    Reply::Location(Some(_))
+                )
+            {
+                if let Some(mover) = &self.config.volume_mover {
+                    mover.scan().map_err(std::io::Error::other)?;
+                }
+                return Ok(path.to_path_buf());
+            }
         }
         let destination = if self.config.medium_term_path == self.config.long_term_path {
             tracing::info!(
@@ -1471,28 +1451,6 @@ impl WriterWorker {
             self.enforce_storage_limit(StorageCleanupTrigger::SegmentFinalized);
         }
         Ok(destination)
-    }
-
-    fn wake_owned_archive(&self, recording_id: &str) -> std::io::Result<bool> {
-        use super::catalog::locations::{Kind, Object, Reply, Request};
-        let Some(catalog) = &self.catalog else {
-            return Ok(false);
-        };
-        if !matches!(
-            catalog
-                .volume_location(Request::Lookup(Object {
-                    kind: Kind::Recording,
-                    id: recording_id.to_owned(),
-                }))
-                .map_err(std::io::Error::other)?,
-            Reply::Location(Some(_))
-        ) {
-            return Ok(false);
-        }
-        if let Some(mover) = &self.config.volume_mover {
-            mover.scan().map_err(std::io::Error::other)?;
-        }
-        Ok(true)
     }
 
     fn pipeline_for(&mut self, identity: RecordingStreamIdentity) -> &mut CameraPipeline {

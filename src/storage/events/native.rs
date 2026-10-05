@@ -139,12 +139,9 @@ impl EventStore {
         let Ok(candidate) = candidate.canonicalize() else {
             return Ok(None);
         };
-        Ok(super::legacy_root::contains(
-            &self.thumbnail_root,
-            &candidate,
-            self.thumbnail_root_was_offline,
-        )
-        .then_some(candidate))
+        Ok(candidate
+            .starts_with(&self.thumbnail_root)
+            .then_some(candidate))
     }
 
     fn stage_native_image(&self, filename: &str, bytes: &[u8]) -> anyhow::Result<bool> {

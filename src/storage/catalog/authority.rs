@@ -1,6 +1,5 @@
 //! Fences catalog writers and authorizes an offline transfer to a verified snapshot.
 
-use anyhow::Context as _;
 use cap_fs_ext::{FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
 use std::{
@@ -295,15 +294,6 @@ impl Lease {
             ))?;
         }
         self.verify(connection)
-    }
-
-    /// Holds the authority lease while refusing the old whole-directory migration path.
-    pub(crate) fn initialize_legacy_migration(
-        &self,
-        connection: &turso::Connection,
-    ) -> anyhow::Result<Authority> {
-        reject_legacy_migration(connection)?;
-        self.initialize(connection)
     }
 
     /// Refuses retained, copied, or replaced catalogs before ordinary schema initialization.
@@ -683,16 +673,13 @@ mod tests;
 pub fn transfer_legacy(source_path: &Path, destination_path: &Path) -> anyhow::Result<()> {
     use crate::backup::{BackupSection, database};
     let mut source = Lease::acquire(source_path)?;
-    let source_connection = source.connect()?;
-    reject_legacy_migration(&source_connection)?;
-    if let Some(parent) = destination_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let mut destination = Lease::acquire(destination_path)?;
+    let source_connection = source.connect()?;
     pollster::block_on(source_connection.execute(SCHEMA, ()))?;
     if load(&source_connection)?.is_none() {
         source.initialize(&source_connection)?;
     }
+    reject_named_restore(&source_connection)?;
     let record = required(&source_connection)?;
     let handoff = record
         .handoff
@@ -728,24 +715,6 @@ pub fn transfer_legacy(source_path: &Path, destination_path: &Path) -> anyhow::R
     Ok(())
 }
 
-fn reject_legacy_migration(connection: &turso::Connection) -> anyhow::Result<()> {
-    reject_named_restore(connection)
-        .context("legacy path migration cannot move named-volume ownership")?;
-    let mut rows = pollster::block_on(connection.query(
-        "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='storage_legacy_paths'",
-        (),
-    ))?;
-    let captured_table = pollster::block_on(rows.next())?.is_some();
-    drop(rows);
-    if captured_table {
-        anyhow::ensure!(
-            pollster::block_on(super::locations::legacy::load(connection))?.is_none(),
-            "legacy paths have been captured; use confirmed volume or metadata migration"
-        );
-    }
-    Ok(())
-}
-
 pub fn reject_named_restore(connection: &turso::Connection) -> anyhow::Result<()> {
     let mut rows = pollster::block_on(connection.query(
         "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='storage_volume_bindings'",
@@ -755,7 +724,8 @@ pub fn reject_named_restore(connection: &turso::Connection) -> anyhow::Result<()
         return Ok(());
     }
     drop(rows);
-    let mut rows = pollster::block_on(connection.query("SELECT 1 FROM storage_volume_bindings WHERE id NOT IN ('legacy-active','legacy-archive','legacy-export','legacy-thumbnail','legacy-metadata') LIMIT 1", ()))?;
+    let mut rows =
+        pollster::block_on(connection.query("SELECT 1 FROM storage_volume_bindings LIMIT 1", ()))?;
     anyhow::ensure!(
         pollster::block_on(rows.next())?.is_none(),
         "restoring named storage ownership requires an explicit root ownership transfer"

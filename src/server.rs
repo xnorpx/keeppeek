@@ -4413,10 +4413,10 @@ fn cleanup_export_attempt_artifacts(
     job_id: &str,
     artifact_id: &str,
 ) -> std::io::Result<()> {
-    if state.storage_config.volume_runtime.is_some()
+    let managed = state.storage_config.volume_runtime.is_some()
         || export_storage::owned(state.catalog.as_ref(), artifact_id)
-            .map_err(std::io::Error::other)?
-    {
+            .map_err(std::io::Error::other)?;
+    if managed {
         export_storage::retire(state.catalog.as_ref(), artifact_id)
             .map_err(std::io::Error::other)?;
     }
@@ -4425,13 +4425,14 @@ fn cleanup_export_attempt_artifacts(
     {
         tracing::warn!(%error, "export cleanup remains journaled until the storage worker restarts");
     }
-    export_storage::cleanup_legacy_attempt(
-        state.catalog.as_ref(),
+    if managed {
+        return Ok(());
+    }
+    cleanup_export_attempt_directory(
         &state.storage_config.long_term_path.join(".exports"),
         job_id,
         artifact_id,
     )
-    .map_err(std::io::Error::other)
 }
 
 fn cleanup_export_attempt_directory(
@@ -8888,7 +8889,6 @@ impl PersistedExportJobRecord {
         export_root: &Path,
         now_ms: i64,
         catalog: Option<&RecordingCatalogHandle>,
-        legacy_offline: bool,
     ) -> anyhow::Result<ExportJobRecord> {
         let (request, job) = self.messages()?;
         let mut record = ExportJobRecord {
@@ -8904,13 +8904,7 @@ impl PersistedExportJobRecord {
             completed_at_ms: self.completed_at_ms,
             downloaded_at_ms: self.downloaded_at_ms,
         };
-        export_storage::history::recover(
-            &mut record,
-            export_root,
-            catalog,
-            now_ms,
-            legacy_offline,
-        )?;
+        export_storage::history::recover(&mut record, export_root, catalog, now_ms)?;
         Ok(record)
     }
 }
@@ -8935,14 +8929,9 @@ fn load_export_jobs(
     export_root: &Path,
     catalog: Option<&RecordingCatalogHandle>,
 ) -> anyhow::Result<HashMap<String, ExportJobRecord>> {
-    let legacy_offline =
-        crate::storage::volumes::legacy::export_root_offline(catalog, export_root)?;
     let metadata = match std::fs::metadata(history_path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            anyhow::ensure!(!legacy_offline, "captured export history is unavailable");
-            return Ok(HashMap::new());
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
         Err(error) => return Err(error.into()),
     };
     anyhow::ensure!(
@@ -8950,7 +8939,7 @@ fn load_export_jobs(
         "export history exceeds {MAX_EXPORT_HISTORY_BYTES} bytes"
     );
     let bytes = std::fs::read(history_path)?;
-    restore_export_history(&bytes, export_root, catalog, legacy_offline)
+    restore_export_history(&bytes, export_root, catalog)
 }
 
 fn parse_export_history(bytes: &[u8]) -> anyhow::Result<PersistedExportHistory> {
@@ -8984,18 +8973,13 @@ fn restore_export_history(
     bytes: &[u8],
     export_root: &Path,
     catalog: Option<&RecordingCatalogHandle>,
-    legacy_offline: bool,
 ) -> anyhow::Result<HashMap<String, ExportJobRecord>> {
     let history = parse_export_history(bytes)?;
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
     let mut jobs = HashMap::new();
     for persisted in history.jobs {
-        let record = persisted.into_record(export_root, now_ms, catalog, legacy_offline)?;
+        let record = persisted.into_record(export_root, now_ms, catalog)?;
         jobs.insert(record.job.job_id.clone(), record);
-    }
-    // ponytail: preserve the bounded history until cleanup can inspect the captured root.
-    if legacy_offline {
-        return Ok(jobs);
     }
     let retention_ms = i64::try_from(EXPORT_METADATA_RETENTION.as_millis()).unwrap_or(i64::MAX);
     let retained_after_ms = now_ms.saturating_sub(retention_ms);
@@ -9009,12 +8993,13 @@ fn restore_export_history(
             if export_storage::owned(catalog, &record.artifact_id)? {
                 export_storage::retire(catalog, &record.artifact_id)?;
             }
-            export_storage::cleanup_legacy_attempt(
-                catalog,
-                export_root,
-                &record.job.job_id,
-                &record.artifact_id,
-            )?;
+            if !export_storage::owned(catalog, &record.artifact_id)? {
+                cleanup_export_attempt_directory(
+                    export_root,
+                    &record.job.job_id,
+                    &record.artifact_id,
+                )?;
+            }
         }
     }
     Ok(retained)
@@ -12846,7 +12831,6 @@ fn save_runtime_settings(
             ));
         }
     }
-    storage_volumes::settings::validate_captured_paths(state, &next_storage_config)?;
     storage_volumes::settings::validate_removals(
         state,
         config_path,
@@ -19569,7 +19553,7 @@ mod tests {
             },
             &cancelled,
             |message| {
-                assert!(
+                assert_eq!(
                     handler
                         .state
                         .catalog
@@ -19577,7 +19561,8 @@ mod tests {
                         .unwrap()
                         .reader_leases()
                         .conflicts(&fragments[0].recording_id, &fragments[0].path)
-                        .unwrap()
+                        .unwrap(),
+                    named
                 );
                 cancelled_messages.push(message);
                 cancelled.store(true, Ordering::Release);

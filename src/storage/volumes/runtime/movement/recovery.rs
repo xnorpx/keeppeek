@@ -46,7 +46,12 @@ impl Manager {
         let index = self.move_volume(&job.destination.volume, job.destination.generation)?;
         let root = self.inner.writable_root(index)?;
         let temporary = format!("{}.tmp", job.id);
-        let input = self.open_owned(&job.source)?;
+        let source_index = self.move_volume(&job.source.volume, job.source.generation)?;
+        let input = self.inner.root(source_index)?.open_owned(
+            &job.source.relative_key,
+            &job.source.file_identity,
+            job.source.bytes,
+        )?;
         check_work(deadline, cancelled)?;
         let file = match &job.destination.file_identity {
             Some(identity) => root.open_owned_writable(

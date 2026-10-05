@@ -2,9 +2,6 @@
 
 use std::{path::Path, sync::Arc};
 
-#[cfg(test)]
-mod storage_startup_tests;
-
 use crate::{
     access::AccessManager,
     api::{CameraId, CameraLifecycle, CameraStatus},
@@ -60,20 +57,6 @@ impl Drop for WindowsTimerResolution {
 }
 
 fn open_recording_catalog(storage_config: &StorageConfig) -> anyhow::Result<RecordingCatalog> {
-    use crate::storage::{
-        catalog::locations::{Reply, Request},
-        volumes::VolumeState,
-    };
-    let paths = crate::storage::catalog::locations::legacy::LegacyPaths::effective(storage_config)?;
-    let capture = storage_config
-        .named_volumes
-        .as_ref()
-        .is_some_and(|configuration| {
-            configuration
-                .volumes
-                .iter()
-                .any(|volume| volume.state != VolumeState::Disabled)
-        });
     let catalog = if let Some(binding) = &storage_config.metadata {
         let bytes = storage_config
             .metadata_root()?
@@ -84,18 +67,9 @@ fn open_recording_catalog(storage_config: &StorageConfig) -> anyhow::Result<Reco
             &binding.authority(),
             &binding.root_identity(),
         )?
-    } else if capture {
-        RecordingCatalog::open_with_legacy_paths(&storage_config.recording_catalog_path, &paths)?
     } else {
         RecordingCatalog::open(&storage_config.recording_catalog_path)?
     };
-    let Reply::LegacyPaths(captured) = catalog.handle().volume_location(Request::LegacyPaths)?
-    else {
-        anyhow::bail!("invalid legacy paths reply");
-    };
-    if let Some(captured) = captured {
-        captured.ensure_same_media_roots(&paths)?;
-    }
     if storage_config.long_term_path.is_dir() {
         let archive =
             crate::storage::long_term::inspection::Archive::open(&storage_config.long_term_path)?;
@@ -501,3 +475,6 @@ fn with_camera_events(state: ServerState, keeppeek: &mut KeepPeekLoop) -> Server
     keeppeek.set_event_publisher(move |event| publisher.publish_camera_event(event));
     state
 }
+
+#[cfg(test)]
+mod storage_startup_tests;

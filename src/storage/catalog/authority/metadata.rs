@@ -22,11 +22,6 @@ impl TransferCheck<'_> {
                 && owner.authority.generation.checked_add(1) == Some(self.authority.generation),
             "metadata handoff authority changed"
         );
-        anyhow::ensure!(
-            pollster::block_on(crate::storage::catalog::locations::legacy::load(connection))?
-                .is_some(),
-            "metadata handoff requires captured legacy paths"
-        );
         let binding =
             crate::storage::catalog::locations::Binding::metadata(self.volume, self.destination);
         pollster::block_on(crate::storage::catalog::locations::check_binding(

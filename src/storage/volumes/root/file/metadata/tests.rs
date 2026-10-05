@@ -1,3 +1,4 @@
+use super::super::tests::fixture as test_root;
 use super::*;
 
 const HISTORY_TEST_KEY: &str = "exports-12345678-1234-4234-8234-123456789abc.json";
@@ -5,7 +6,7 @@ const HISTORY_TEST_KEY: &str = "exports-12345678-1234-4234-8234-123456789abc.jso
 #[test]
 fn history_replacement_preserves_old_open_file_and_reopens_complete_new_bytes() -> anyhow::Result<()>
 {
-    let (path, root) = crate::storage::volumes::root::test_root()?;
+    let (path, root) = test_root()?;
     let original = b"{\"version\":1,\"jobs\":[]}\n";
     let replacement = b"{\n  \"jobs\": [],\n  \"version\": 1\n}\n";
     std::fs::write(path.join(HISTORY_TEST_KEY), original)?;
@@ -27,7 +28,7 @@ fn history_replacement_preserves_old_open_file_and_reopens_complete_new_bytes() 
 #[test]
 fn history_operations_refuse_missing_leaf_and_replaced_root_without_recreating_them()
 -> anyhow::Result<()> {
-    let (path, root) = crate::storage::volumes::root::test_root()?;
+    let (path, root) = test_root()?;
     assert!(root.read_history(HISTORY_TEST_KEY).is_err());
     assert!(root.replace_history(HISTORY_TEST_KEY, b"new").is_err());
     assert!(!path.join(HISTORY_TEST_KEY).exists());
@@ -62,7 +63,7 @@ fn history_operations_refuse_missing_leaf_and_replaced_root_without_recreating_t
 
 #[test]
 fn history_operations_reject_traversal_noncanonical_names_and_hardlinks() -> anyhow::Result<()> {
-    let (path, root) = crate::storage::volumes::root::test_root()?;
+    let (path, root) = test_root()?;
     let outside_key = format!("exports-{}.json", uuid::Uuid::new_v4());
     let outside = path.parent().unwrap().join(&outside_key);
     std::fs::write(&outside, b"unrelated outside history")?;
@@ -91,7 +92,7 @@ fn history_operations_reject_traversal_noncanonical_names_and_hardlinks() -> any
 #[test]
 fn history_read_and_replacement_reject_more_than_eight_mebibytes_without_mutation()
 -> anyhow::Result<()> {
-    let (path, root) = crate::storage::volumes::root::test_root()?;
+    let (path, root) = test_root()?;
     let history = path.join(HISTORY_TEST_KEY);
     std::fs::write(&history, b"original")?;
     let oversized = vec![b' '; 8 * 1024 * 1024 + 1];

@@ -106,12 +106,6 @@ fn payload(state: &ServerState, record: &ExportJobRecord) -> Result<Vec<u8>, Con
             .path
             .as_ref()
             .ok_or_else(|| unavailable("ready export has no file"))?;
-        let _lease = state
-            .catalog
-            .as_ref()
-            .map(|catalog| catalog.lease_legacy_export(&record.artifact_id, path))
-            .transpose()
-            .map_err(unavailable)?;
         let mut file = File::open(path).map_err(unavailable)?;
         let length = file.metadata().map_err(unavailable)?.len();
         read(&mut file, length)
@@ -183,6 +177,6 @@ fn downloaded(state: &ServerState, snapshot: &ExportJobRecord) -> Result<(), Con
         record.downloaded_at_ms = Some(now);
         record.updated_at_ms = now;
     }
-    history::persist(state, &jobs).map_err(unavailable)?;
+    super::history::persist(state, &jobs).map_err(unavailable)?;
     Ok(())
 }

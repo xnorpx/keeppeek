@@ -12,11 +12,8 @@ impl super::RecordingCatalogHandle {
 }
 
 pub(super) async fn legacy_bytes(connection: &turso::Connection) -> anyhow::Result<u64> {
-    let mut rows = connection.query("SELECT COALESCE(SUM(CASE WHEN p.operation IS NOT NULL THEN owned.bytes ELSE r.file_bytes END),0)
-        FROM recording_files r LEFT JOIN storage_volume_allocations owned
-            ON owned.kind='recording' AND owned.object_id=r.id AND owned.state='published'
-        LEFT JOIN storage_legacy_adoptions p ON p.operation=owned.operation
-        WHERE p.operation IS NOT NULL OR NOT EXISTS(SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
+    let mut rows = connection.query("SELECT COALESCE(SUM(file_bytes),0) FROM recording_files r
+        WHERE NOT EXISTS(SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
             AND (a.object_id=r.id OR a.destination_path=replace(r.path,char(92),'/') COLLATE NOCASE))", ()).await?;
     to_u64(
         rows.next().await?.expect("sum row").get(0)?,
@@ -41,14 +38,7 @@ impl Reason {
 
 #[derive(Debug, Clone)]
 pub enum Action {
-    Begin {
-        volume: String,
-        reason: Reason,
-    },
-    BeginLegacy {
-        reason: Reason,
-        filesystem: Option<String>,
-    },
+    Begin { volume: String, reason: Reason },
     Load(String),
     Complete(Publication),
     Acknowledge(String),
@@ -58,16 +48,6 @@ impl Action {
     pub(super) fn validate(&self) -> anyhow::Result<()> {
         match self {
             Self::Begin { volume, .. } => super::identifier(volume),
-            Self::BeginLegacy { reason, filesystem } => {
-                anyhow::ensure!(
-                    matches!(reason, Reason::Capacity) || filesystem.is_some(),
-                    "legacy disk pressure requires its filesystem identity"
-                );
-                if let Some(filesystem) = filesystem {
-                    super::identifier(filesystem)?;
-                }
-                Ok(())
-            }
             Self::Load(id) | Self::Acknowledge(id) => super::identifier(id),
             Self::Complete(evidence) => super::validate_publication(evidence),
         }
@@ -105,16 +85,7 @@ pub(super) async fn dispatch(
     match action {
         Action::Begin { volume, reason } => {
             return Ok(Reply::RecordingRetirement(
-                begin(connection, Some(&volume), reason, None)
-                    .await?
-                    .map(Box::new),
-            ));
-        }
-        Action::BeginLegacy { reason, filesystem } => {
-            return Ok(Reply::RecordingRetirement(
-                begin(connection, None, reason, filesystem.as_deref())
-                    .await?
-                    .map(Box::new),
+                begin(connection, &volume, reason).await?.map(Box::new),
             ));
         }
         Action::Load(id) => {
@@ -139,101 +110,42 @@ pub(super) async fn dispatch(
     Ok(Reply::Bound)
 }
 
-struct Candidate {
-    operation: String,
-    recording: String,
-    volume: String,
-    started_at_ms: i64,
-}
-
 async fn begin(
     connection: &turso::Connection,
-    volume: Option<&str>,
+    volume: &str,
     reason: Reason,
-    filesystem: Option<&str>,
 ) -> anyhow::Result<Option<Job>> {
-    let mut pending = connection.query("SELECT t.operation FROM storage_recording_retirements t
-        JOIN storage_volume_allocations a ON a.operation=t.operation
-        JOIN storage_volume_bindings b ON b.id=a.volume_id
-        WHERE t.acknowledged=0 AND (?1 IS NULL OR t.volume_id=?1)
-        AND (?1 IS NOT NULL OR EXISTS(SELECT 1 FROM storage_legacy_adoptions p WHERE p.operation=t.operation))
-        AND (?2 IS NULL OR b.filesystem=?2) ORDER BY t.rowid LIMIT 1",
-        turso::params![volume, filesystem]).await?;
+    let mut pending = connection.query("SELECT operation FROM storage_recording_retirements WHERE volume_id=?1 AND acknowledged=0 LIMIT 1", [volume]).await?;
     if let Some(row) = pending.next().await? {
         let id: String = row.get(0)?;
         drop(pending);
         return load(connection, &id).await;
     }
     drop(pending);
-    let Some(candidate) = candidate(connection, volume, filesystem).await? else {
-        return Ok(None);
-    };
-    if volume.is_none() && older_ordinary(connection, &candidate).await? {
-        return Ok(None);
-    }
-    admit(connection, &candidate, reason).await.map(Some)
-}
-
-async fn candidate(
-    connection: &turso::Connection,
-    volume: Option<&str>,
-    filesystem: Option<&str>,
-) -> anyhow::Result<Option<Candidate>> {
-    let mut rows = connection.query("SELECT a.operation,r.id,a.volume_id,r.started_at_ms FROM storage_volume_allocations a
+    let mut rows = connection.query("SELECT a.operation,r.id FROM storage_volume_allocations a
         JOIN recording_files r ON r.id=a.object_id JOIN storage_volume_bindings b ON b.id=a.volume_id
-        WHERE (?1 IS NULL OR a.volume_id=?1) AND a.kind='recording' AND a.state='published'
-        AND (?2 IS NULL OR b.filesystem=?2)
-        AND (?1 IS NOT NULL OR EXISTS(SELECT 1 FROM storage_legacy_adoptions p WHERE p.operation=a.operation))
-        AND (b.writable=1 OR EXISTS(SELECT 1 FROM storage_legacy_adoptions p WHERE p.operation=a.operation))
+        WHERE a.volume_id=?1 AND a.kind='recording' AND a.state='published' AND b.writable=1
         AND r.finalized=1 AND r.protected=0 AND r.cleanup_pending=0
         AND NOT EXISTS(SELECT 1 FROM storage_recording_retirements WHERE recording_id=r.id)
         AND NOT EXISTS(SELECT 1 FROM recording_maintenance_claims c WHERE c.active=1 AND (c.recording_id=r.id OR replace(c.path,char(92),'/')=a.destination_path COLLATE NOCASE))
         AND NOT EXISTS(SELECT 1 FROM storage_volume_moves m WHERE m.kind='recording' AND m.object_id=r.id AND (m.phase NOT IN ('complete','cancelled') OR m.receipt_acknowledged=0))
         AND NOT EXISTS(SELECT 1 FROM storage_volume_moves m WHERE m.source_operation=a.operation AND m.phase IN ('published','retiring','complete'))
-        ORDER BY r.started_at_ms,r.id LIMIT 1", turso::params![volume, filesystem]).await?;
-    rows.next()
-        .await?
-        .map(|row| {
-            Ok(Candidate {
-                operation: row.get(0)?,
-                recording: row.get(1)?,
-                volume: row.get(2)?,
-                started_at_ms: row.get(3)?,
-            })
-        })
-        .transpose()
-}
-
-async fn older_ordinary(
-    connection: &turso::Connection,
-    candidate: &Candidate,
-) -> anyhow::Result<bool> {
-    let mut rows = connection.query("SELECT 1 FROM recording_files r WHERE r.finalized=1 AND r.protected=0
-        AND (r.cleanup_pending=1 OR r.started_at_ms<?1 OR (r.started_at_ms=?1 AND r.id<?2))
-        AND NOT EXISTS(SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
-            AND (a.object_id=r.id OR a.destination_path=replace(r.path,char(92),'/') COLLATE NOCASE))
-        AND NOT EXISTS(SELECT 1 FROM recording_maintenance_claims c WHERE c.active=1 AND c.recording_id=r.id)
-        LIMIT 1", turso::params![candidate.started_at_ms, candidate.recording.clone()]).await?;
-    Ok(rows.next().await?.is_some())
-}
-
-async fn admit(
-    connection: &turso::Connection,
-    candidate: &Candidate,
-    reason: Reason,
-) -> anyhow::Result<Job> {
-    connection.execute("INSERT INTO storage_recording_retirements(operation,recording_id,volume_id,reason) VALUES (?1,?2,?3,?4)",
-        turso::params![candidate.operation.clone(), candidate.recording.clone(), candidate.volume.clone(), reason.deletion().as_str()]).await?;
+        ORDER BY r.started_at_ms,r.id LIMIT 1", [volume]).await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(None);
+    };
+    let operation: String = row.get(0)?;
+    let recording: String = row.get(1)?;
+    drop(rows);
+    connection.execute("INSERT INTO storage_recording_retirements(operation,recording_id,volume_id,reason) VALUES (?1,?2,?3,?4)", turso::params![operation.clone(), recording, volume, reason.deletion().as_str()]).await?;
     connection
         .execute(
             "UPDATE storage_volume_archives SET done=1 WHERE operation=?1",
-            [candidate.operation.as_str()],
+            [operation.as_str()],
         )
         .await?;
     bump_revision(connection).await?;
-    load(connection, &candidate.operation)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("admitted retirement is missing"))
+    load(connection, &operation).await
 }
 
 async fn load(connection: &turso::Connection, operation: &str) -> anyhow::Result<Option<Job>> {

@@ -4,50 +4,6 @@ use super::{Manager, Publication, Reply, Request, VolumeHealth, VolumeState};
 use crate::storage::catalog::locations::recordings::{Action, Job, Reason};
 
 impl Manager {
-    pub(crate) fn cleanup_legacy_adoption(&self, reason: Reason) -> anyhow::Result<Option<u64>> {
-        use crate::storage::catalog::locations::legacy::roots::Role;
-        let root = if matches!(reason, Reason::DiskPressure) {
-            let Some(root) =
-                super::super::legacy::captured_root(&self.inner.catalog, Role::Archive)?
-            else {
-                return Ok(None);
-            };
-            Some(root)
-        } else {
-            None
-        };
-        let filesystem = root.as_ref().map(|root| root.identity().filesystem.clone());
-        let Reply::RecordingRetirement(job) =
-            self.inner
-                .catalog
-                .volume_location(Request::RecordingRetention(Action::BeginLegacy {
-                    reason,
-                    filesystem,
-                }))?
-        else {
-            anyhow::bail!("invalid legacy retention reply");
-        };
-        let Some(job) = job else {
-            return Ok(None);
-        };
-        if let Some(root) = &root {
-            root.revalidate()?;
-        }
-        self.finish_recording_retirement(&job.operation)?;
-        let Reply::RecordingRetirement(Some(finished)) = self
-            .inner
-            .catalog
-            .volume_location(Request::RecordingRetention(Action::Load(job.operation)))?
-        else {
-            anyhow::bail!("legacy retention job disappeared");
-        };
-        anyhow::ensure!(
-            finished.complete && finished.acknowledged,
-            "legacy retention is waiting for an active reader"
-        );
-        Ok(Some(if job.complete { 0 } else { job.location.bytes }))
-    }
-
     pub(super) fn check_recording_pressure(&self) {
         // ponytail: Inspect at most 32 configured volumes in the existing periodic scan.
         for volume in &self.inner.configuration.volumes {
@@ -164,8 +120,20 @@ impl Manager {
         }
         let _worker = self.inner.catalog.claim_volume_move(operation)?;
         let location = &job.location;
-        let root = self.owned_root(location, true)?;
-        let path = root.path().join(&location.relative_key);
+        let index = self
+            .inner
+            .configuration
+            .volumes
+            .iter()
+            .position(|volume| volume.id.as_str() == location.volume)
+            .ok_or_else(|| anyhow::anyhow!("recording volume is not configured"))?;
+        anyhow::ensure!(
+            location.generation == 1,
+            "recording volume generation changed"
+        );
+        let path = self.inner.configuration.volumes[index]
+            .root
+            .join(&location.relative_key);
         if self
             .inner
             .catalog
@@ -174,20 +142,15 @@ impl Manager {
         {
             return Ok(true);
         }
-        self.remove_recording(&root, &job)?;
+        self.remove_recording(index, &job)?;
         Ok(true)
     }
 
-    fn remove_recording(&self, root: &super::Root, job: &Job) -> anyhow::Result<()> {
+    fn remove_recording(&self, index: usize, job: &Job) -> anyhow::Result<()> {
+        let root = self.inner.writable_root(index)?;
         let location = &job.location;
         if !job.complete {
-            let retire = if location.volume.starts_with("legacy-") {
-                super::Root::retire_legacy
-            } else {
-                super::Root::retire_owned
-            };
-            retire(
-                root,
+            root.retire_owned(
                 &location.relative_key,
                 &location.file_identity,
                 location.bytes,
@@ -203,13 +166,7 @@ impl Manager {
                     digest: location.digest,
                 })))?;
         }
-        let acknowledge = if location.volume.starts_with("legacy-") {
-            super::Root::acknowledge_legacy
-        } else {
-            super::Root::acknowledge_retirement
-        };
-        acknowledge(
-            root,
+        root.acknowledge_retirement(
             &location.relative_key,
             &location.file_identity,
             location.bytes,

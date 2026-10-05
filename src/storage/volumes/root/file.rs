@@ -13,7 +13,6 @@ use std::{
 /// An owned leaf whose parent and file handles remain pinned.
 pub struct OwnedFile {
     root: Root,
-    binding: Option<Root>,
     key: String,
     file: File,
     identity: String,
@@ -27,21 +26,6 @@ impl std::fmt::Debug for OwnedFile {
 }
 
 impl Root {
-    pub(crate) fn open_legacy_owned(
-        &self,
-        key: &str,
-        identity: &str,
-        bytes: u64,
-    ) -> anyhow::Result<OwnedFile> {
-        let file = self.inspect_legacy(key)?;
-        anyhow::ensure!(
-            file.identity == identity && file.expected_bytes == Some(bytes),
-            "adopted legacy file changed"
-        );
-        file.revalidate()?;
-        Ok(file)
-    }
-
     /// Creates a UUID-named leaf without overwriting or following an existing entry.
     ///
     /// # Errors
@@ -72,7 +56,6 @@ impl Root {
         let file = self.directory.open_with(key, &options)?.into_std();
         let identity = file_identity(&file)?;
         let owned = OwnedFile {
-            binding: None,
             root: Self {
                 path: self.path.clone(),
                 directory: self.directory.try_clone()?,
@@ -116,7 +99,6 @@ impl Root {
             "owned file identity changed"
         );
         let owned = OwnedFile {
-            binding: None,
             root: Self {
                 path: self.path.clone(),
                 directory: self.directory.try_clone()?,
@@ -186,7 +168,6 @@ impl Root {
             "recovery file length is outside its reservation"
         );
         let owned = OwnedFile {
-            binding: None,
             root: Self {
                 path: self.path.clone(),
                 directory: self.directory.try_clone()?,
@@ -203,19 +184,6 @@ impl Root {
 }
 
 impl OwnedFile {
-    /// Reads the historical catalog identity from the same pinned handle.
-    pub(crate) fn catalog_identity(&self) -> anyhow::Result<String> {
-        self.revalidate()?;
-        #[cfg(windows)]
-        {
-            crate::storage::catalog::recording_handle_identity(&self.file)
-                .ok_or_else(|| anyhow::anyhow!("legacy catalog identity is unavailable"))
-        }
-        #[cfg(not(windows))]
-        {
-            Ok(self.identity.clone())
-        }
-    }
     /// Hashes a synchronized prefix without changing the owned file.
     pub(crate) fn prefix_digest(&mut self, bytes: u64) -> anyhow::Result<[u8; 32]> {
         self.revalidate()?;
@@ -276,26 +244,6 @@ impl OwnedFile {
         self.file.sync_all()?;
         self.root.sync()?;
         self.revalidate()
-    }
-
-    pub(super) fn inspected_legacy(
-        root: Root,
-        binding: Root,
-        key: String,
-        file: File,
-    ) -> anyhow::Result<Self> {
-        let identity = file_identity(&file)?;
-        let expected_bytes = Some(file.metadata()?.len());
-        let owned = Self {
-            root,
-            binding: Some(binding),
-            key,
-            file,
-            identity,
-            expected_bytes,
-        };
-        owned.revalidate()?;
-        Ok(owned)
     }
 
     /// Publishes staged media under a new UUID name without replacing another entry.
@@ -386,14 +334,7 @@ impl OwnedFile {
     /// # Errors
     /// Rejects replacement, changed length, extra links, or mutation during verification.
     pub fn inspect_evidence(&mut self) -> anyhow::Result<(u64, String, [u8; 32])> {
-        self.inspect_evidence_until(Instant::now() + Duration::from_secs(60))
-    }
-
-    pub(crate) fn inspect_evidence_until(
-        &mut self,
-        deadline: Instant,
-    ) -> anyhow::Result<(u64, String, [u8; 32])> {
-        self.inspect_until(deadline, &mut |_| Ok(()))
+        self.inspect_until(Instant::now() + Duration::from_secs(60), &mut |_| Ok(()))
     }
 
     fn inspect_until(
@@ -423,10 +364,6 @@ impl OwnedFile {
     /// # Errors
     /// Rejects changed roots, unsafe permissions, links, or replaced files.
     pub(crate) fn revalidate(&self) -> anyhow::Result<()> {
-        if let Some(binding) = &self.binding {
-            binding.revalidate()?;
-            validate_owner(&binding.directory, 0o022)?;
-        }
         self.root.revalidate()?;
         validate_owner(&self.root.directory, 0o022)?;
         anyhow::ensure!(
@@ -579,7 +516,7 @@ pub(super) mod tests {
     use std::io::Write;
     use std::path::PathBuf;
 
-    pub(in crate::storage) fn fixture() -> anyhow::Result<(PathBuf, Root)> {
+    pub(in crate::storage::volumes::root) fn fixture() -> anyhow::Result<(PathBuf, Root)> {
         let base = std::env::temp_dir();
         #[cfg(unix)]
         let base = std::fs::canonicalize(base)?;

@@ -244,7 +244,7 @@ pub(super) async fn ensure_writable(
     Ok(())
 }
 
-pub(super) async fn validate_destination_intent(
+async fn validate_destination_intent(
     connection: &turso::Connection,
     destination: &Allocation,
 ) -> anyhow::Result<()> {

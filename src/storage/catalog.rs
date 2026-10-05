@@ -598,15 +598,7 @@ enum SearchCommand {
 
 impl RecordingCatalog {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
-        Self::open_with_legacy_backfill(path, true, None, None)
-    }
-
-    /// Opens the catalog without inspecting legacy paths before explicit adoption.
-    ///
-    /// # Errors
-    /// Returns catalog authority, schema, or worker startup errors.
-    pub fn open_for_adoption(path: &Path) -> anyhow::Result<Self> {
-        Self::open_with_legacy_backfill(path, false, None, None)
+        Self::open_inner(path, None)
     }
 
     /// Opens a relocated catalog without creating or adopting a replacement database.
@@ -615,26 +607,11 @@ impl RecordingCatalog {
         expected: &authority::Authority,
         root_identity: &super::volumes::root::Identity,
     ) -> anyhow::Result<Self> {
-        Self::open_with_legacy_backfill(path, true, None, Some((expected, root_identity)))
+        Self::open_inner(path, Some((expected, root_identity)))
     }
 
-    /// Captures the effective legacy roots before any startup reconciliation can run.
-    pub(crate) fn open_with_legacy_paths(
+    fn open_inner(
         path: &Path,
-        paths: &locations::legacy::LegacyPaths,
-    ) -> anyhow::Result<Self> {
-        paths.validate()?;
-        anyhow::ensure!(
-            paths.catalog_path == std::path::absolute(path)?,
-            "legacy snapshot refers to a different catalog"
-        );
-        Self::open_with_legacy_backfill(path, true, Some(paths), None)
-    }
-
-    fn open_with_legacy_backfill(
-        path: &Path,
-        legacy_backfill: bool,
-        capture: Option<&locations::legacy::LegacyPaths>,
         expected: Option<(&authority::Authority, &super::volumes::root::Identity)>,
     ) -> anyhow::Result<Self> {
         let (database, lease) = Self::bootstrap_database(path, expected)?;
@@ -644,11 +621,7 @@ impl RecordingCatalog {
         connection.busy_timeout(BUSY_TIMEOUT)?;
         search_connection.busy_timeout(BUSY_TIMEOUT)?;
         pollster::block_on(initialize_schema(&connection))?;
-        if let Some(paths) = capture {
-            pollster::block_on(locations::legacy::register(&connection, paths))?;
-        }
-        let legacy_recordings =
-            pollster::block_on(prepare_startup_backfill(&connection, legacy_backfill))?;
+        let legacy_recordings = pollster::block_on(prepare_legacy_backfill(&connection))?;
 
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (search_tx, search_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
@@ -2018,20 +1991,6 @@ fn run_search_catalog(connection: turso::Connection, rx: Receiver<SearchCommand>
     }
 }
 
-async fn prepare_startup_backfill(
-    connection: &turso::Connection,
-    legacy_backfill: bool,
-) -> anyhow::Result<Vec<LegacyRecording>> {
-    if !legacy_backfill {
-        return Ok(Vec::new());
-    }
-    if let Some(paths) = locations::legacy::load(connection).await? {
-        locations::legacy::startup::repair(connection, &paths).await?;
-        return Ok(Vec::new());
-    }
-    prepare_legacy_backfill(connection).await
-}
-
 async fn prepare_legacy_backfill(
     connection: &turso::Connection,
 ) -> anyhow::Result<Vec<LegacyRecording>> {
@@ -2224,8 +2183,36 @@ async fn insert_backfilled_keyframes(
     keyframes: Vec<CatalogKeyframe>,
 ) -> anyhow::Result<()> {
     connection.execute_batch("BEGIN IMMEDIATE").await?;
-    let result =
-        insert_backfilled_keyframes_in_transaction(connection, recording_id, keyframes).await;
+    let result = async {
+        let mut inserted = false;
+        for keyframe in keyframes {
+            if keyframe.recording_id != recording_id {
+                anyhow::bail!("backfilled keyframe belongs to a different recording");
+            }
+            inserted |= connection
+                .execute(
+                    "INSERT OR IGNORE INTO recording_keyframes (
+                         recording_id, fragment_sequence, byte_offset, byte_len
+                     ) VALUES (?1, ?2, ?3, ?4)",
+                    turso::params![
+                        recording_id,
+                        to_i64(keyframe.fragment_sequence, "keyframe fragment sequence")?,
+                        to_i64(keyframe.byte_offset, "keyframe byte offset")?,
+                        to_i64(keyframe.byte_len, "keyframe byte length")?,
+                    ],
+                )
+                .await?
+                > 0;
+            reconcile_events_for_fragment(connection, recording_id, keyframe.fragment_sequence)
+                .await?;
+        }
+        if inserted {
+            rebuild_recording_coverage(connection, recording_id).await?;
+            bump_catalog_revision(connection).await?;
+        }
+        anyhow::Ok(())
+    }
+    .await;
     match result {
         Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
         Err(error) => {
@@ -2233,39 +2220,6 @@ async fn insert_backfilled_keyframes(
             Err(error)
         }
     }
-}
-
-async fn insert_backfilled_keyframes_in_transaction(
-    connection: &turso::Connection,
-    recording_id: &str,
-    keyframes: Vec<CatalogKeyframe>,
-) -> anyhow::Result<()> {
-    let mut inserted = false;
-    for keyframe in keyframes {
-        if keyframe.recording_id != recording_id {
-            anyhow::bail!("backfilled keyframe belongs to a different recording");
-        }
-        inserted |= connection
-            .execute(
-                "INSERT OR IGNORE INTO recording_keyframes (
-                         recording_id, fragment_sequence, byte_offset, byte_len
-                     ) VALUES (?1, ?2, ?3, ?4)",
-                turso::params![
-                    recording_id,
-                    to_i64(keyframe.fragment_sequence, "keyframe fragment sequence")?,
-                    to_i64(keyframe.byte_offset, "keyframe byte offset")?,
-                    to_i64(keyframe.byte_len, "keyframe byte length")?,
-                ],
-            )
-            .await?
-            > 0;
-        reconcile_events_for_fragment(connection, recording_id, keyframe.fragment_sequence).await?;
-    }
-    if inserted {
-        rebuild_recording_coverage(connection, recording_id).await?;
-        bump_catalog_revision(connection).await?;
-    }
-    Ok(())
 }
 
 async fn bump_catalog_revision(connection: &turso::Connection) -> anyhow::Result<()> {
@@ -6191,17 +6145,13 @@ fn recording_file_identity(_path: &Path, metadata: &std::fs::Metadata) -> Option
 
 #[cfg(windows)]
 fn recording_file_identity(path: &Path, _metadata: &std::fs::Metadata) -> Option<String> {
-    recording_handle_identity(&std::fs::File::open(path).ok()?)
-}
-
-#[cfg(windows)]
-pub(crate) fn recording_handle_identity(file: &std::fs::File) -> Option<String> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
     };
 
+    let file = std::fs::File::open(path).ok()?;
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: `file` owns a valid handle for this call and `information` is writable storage.
     unsafe {
@@ -7716,9 +7666,7 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    pub(super) fn write_fragmented_recording(
-        path: &Path,
-    ) -> (mp4::Mp4ByteRange, Vec<mp4::Mp4FragmentInfo>) {
+    fn write_fragmented_recording(path: &Path) -> (mp4::Mp4ByteRange, Vec<mp4::Mp4FragmentInfo>) {
         let config = mp4::Mp4Config {
             major_brand: "iso6".parse().unwrap(),
             minor_version: 1,
@@ -7732,8 +7680,8 @@ pub(crate) mod tests {
             media_conf: mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
                 width: 320,
                 height: 240,
-                seq_param_set: vec![0x67, 0x42, 0, 0x1e, 0xe9, 1, 0x40, 0x7b, 0x20],
-                pic_param_set: vec![0x68, 0xce, 6, 0xe2],
+                seq_param_set: Vec::new(),
+                pic_param_set: Vec::new(),
             }),
         };
         let mut writer = mp4::FragmentedMp4Writer::write_start(

@@ -122,7 +122,6 @@ pub(super) fn confirm(
     if *root.identity() != plan.target.root_identity() {
         return Err(rejected("metadata destination changed; preview again"));
     }
-    capture(state)?;
     root.revalidate().map_err(failure)?;
     view.stage(path(state)?, &plan.target).map_err(failure)?;
     status(state)
@@ -259,12 +258,6 @@ fn destination<'a>(
 
 fn ensure_live(state: &ServerState, view: &View) -> Result<()> {
     let configured = StorageConfig::from_toml(&view.config.storage);
-    let expected = locations::legacy::LegacyPaths::effective(&configured).map_err(failure)?;
-    let running =
-        locations::legacy::LegacyPaths::effective(&state.storage_config).map_err(failure)?;
-    expected
-        .ensure_same_media_roots(&running)
-        .map_err(failure)?;
     let history = crate::server::export_history_path(&configured);
     if configured.recording_catalog_path != state.storage_config.recording_catalog_path
         || configured.metadata != state.storage_config.metadata
@@ -275,19 +268,6 @@ fn ensure_live(state: &ServerState, view: &View) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-fn capture(state: &ServerState) -> Result<()> {
-    let expected =
-        locations::legacy::LegacyPaths::effective(&state.storage_config).map_err(failure)?;
-    let Reply::LegacyPaths(Some(captured)) = catalog(
-        state,
-        Request::RegisterLegacyPaths(Box::new(expected.clone())),
-    )?
-    else {
-        return Err(rejected("legacy storage roots could not be captured"));
-    };
-    captured.ensure_same_media_roots(&expected).map_err(failure)
 }
 
 fn store(state: &ServerState, token: &str, plan: Plan) -> Result<()> {

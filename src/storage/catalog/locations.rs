@@ -12,7 +12,6 @@ pub mod archives;
 pub mod export_cleanup;
 mod growth;
 pub mod images;
-pub mod legacy;
 mod materialization;
 pub mod moves;
 pub mod objects;
@@ -155,12 +154,6 @@ impl fmt::Debug for Allocation {
 
 #[derive(Debug, Clone)]
 pub enum Request {
-    RegisterLegacyPaths(Box<legacy::LegacyPaths>),
-    AdoptLegacyMedia(Box<legacy::adoption::Intent>),
-    CaptureLegacyRoots(Box<legacy::roots::Capture>),
-    LegacyRoot(legacy::roots::Role),
-    LegacyPaths,
-    LegacyInventory(legacy::inventory::Action),
     Bind(Binding),
     CheckBinding(Binding),
     EnsureRemovable(String),
@@ -212,10 +205,6 @@ pub enum Request {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
-    LegacyPaths(Option<Box<legacy::LegacyPaths>>),
-    LegacyRoot(legacy::roots::State),
-    LegacyReference(Option<Box<legacy::inventory::Reference>>),
-    LegacyReferences(Vec<legacy::inventory::Reference>),
     Bound,
     Revision(u64),
     Reserved { operation: String, bytes: u64 },
@@ -296,10 +285,6 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     images::initialize(connection).await?;
     recordings::initialize(connection).await?;
     recording_recovery::initialize(connection).await?;
-    legacy::initialize(connection).await?;
-    legacy::roots::initialize(connection).await?;
-    legacy::adoption::initialize(connection).await?;
-    legacy::inventory::initialize(connection).await?;
     removal::initialize(connection).await?;
     // A sample from a previous actor lifetime must never authorize another allocation.
     bump_revision(connection).await?;
@@ -317,15 +302,7 @@ fn identifier(value: &str) -> anyhow::Result<()> {
 
 fn validate(request: &Request) -> anyhow::Result<()> {
     match request {
-        Request::Revision
-        | Request::Usage
-        | Request::LegacyRecordingBytes
-        | Request::LegacyPaths
-        | Request::LegacyRoot(_) => {}
-        Request::RegisterLegacyPaths(paths) => paths.validate()?,
-        Request::CaptureLegacyRoots(capture) => capture.validate()?,
-        Request::AdoptLegacyMedia(intent) => intent.validate()?,
-        Request::LegacyInventory(action) => action.validate()?,
+        Request::Revision | Request::Usage | Request::LegacyRecordingBytes => {}
         Request::Move(id)
         | Request::EnsureRemovable(id)
         | Request::FindMove(id)
@@ -533,18 +510,6 @@ pub(super) async fn execute(
 
 async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::Result<Reply> {
     Ok(match request {
-        Request::RegisterLegacyPaths(paths) => {
-            Reply::LegacyPaths(Some(Box::new(legacy::register(connection, &paths).await?)))
-        }
-        Request::LegacyPaths => Reply::LegacyPaths(legacy::load(connection).await?.map(Box::new)),
-        Request::CaptureLegacyRoots(capture) => {
-            legacy::roots::capture(connection, &capture).await?
-        }
-        Request::AdoptLegacyMedia(intent) => legacy::adoption::begin(connection, &intent).await?,
-        Request::LegacyRoot(role) => {
-            Reply::LegacyRoot(legacy::roots::lookup(connection, role).await?)
-        }
-        Request::LegacyInventory(action) => legacy::inventory::dispatch(connection, action).await?,
         Request::Bind(binding) => bind(connection, &binding).await?,
         Request::CheckBinding(binding) => {
             check_binding(connection, &binding).await?;

@@ -321,7 +321,8 @@ fn export_publication_requires_evidence_and_seals_writes() -> anyhow::Result<()>
 }
 
 #[test]
-fn unmatched_rule_is_none_but_offline_policy_never_uses_legacy() -> anyhow::Result<()> {
+fn missing_rule_and_offline_destination_reject_admission_without_explicit_fallback()
+-> anyhow::Result<()> {
     let (path, catalog, manager) = fixture(128)?;
     assert!(
         manager
@@ -334,8 +335,8 @@ fn unmatched_rule_is_none_but_offline_policy_never_uses_legacy() -> anyhow::Resu
                     id: uuid::Uuid::new_v4().to_string()
                 },
                 8
-            )?
-            .is_none()
+            )
+            .is_err()
     );
     let mut configuration = manager.inner.configuration.clone();
     configuration

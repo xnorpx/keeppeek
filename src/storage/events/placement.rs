@@ -56,11 +56,9 @@ impl EventStore {
                 .ok_or_else(|| anyhow::anyhow!("image volume runtime unavailable"))?;
             return Ok(Some((manager.owned_path(&location)?, Some(lease))));
         }
-        let Some(path) = self.attachment_path(&event.camera_id, &event.id, attachment)? else {
-            return Ok(None);
-        };
-        let lease = self.catalog.lease_legacy_image(event, attachment, &path)?;
-        Ok(Some((path, Some(lease))))
+        Ok(self
+            .attachment_path(&event.camera_id, &event.id, attachment)?
+            .map(|path| (path, None)))
     }
 
     pub(super) fn commit_named_images(

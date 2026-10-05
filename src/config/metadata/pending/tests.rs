@@ -1,9 +1,6 @@
 use super::*;
 use crate::config::{Config, Secrets, write_private_file};
-use crate::storage::{
-    RecordingCatalog,
-    catalog::{authority::Lease, locations::legacy::LegacyPaths},
-};
+use crate::storage::{RecordingCatalog, catalog::authority::Lease};
 
 fn source_storage(directory: &Path) -> StorageToml {
     toml::from_str(&format!(
@@ -48,12 +45,11 @@ fn fixture() -> (PathBuf, toml::Table, MetadataBinding) {
         ..Default::default()
     };
     let storage = StorageConfig::from_toml(&config.storage);
-    let snapshot = LegacyPaths::effective(&storage).unwrap();
-    RecordingCatalog::open_with_legacy_paths(&storage.recording_catalog_path, &snapshot)
+    RecordingCatalog::open(&storage.recording_catalog_path)
         .unwrap()
         .shutdown();
     std::fs::write(
-        &snapshot.export_history_path,
+        storage.long_term_path.join(".exports/history.json"),
         b"{\"version\":1,\"jobs\":[]}\n",
     )
     .unwrap();
