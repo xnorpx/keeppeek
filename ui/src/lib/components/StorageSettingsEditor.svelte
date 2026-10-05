@@ -451,6 +451,7 @@
 			expected_configuration_revision: config.configuration_revision,
 			move_existing_recordings: locationsChanged && migrationChoice === 'move',
 			storage: {
+				named_volumes: config.storage.named_volumes,
 				medium_term_path: draft.mediumTermPath.trim(),
 				long_term_path: draft.longTermPath.trim(),
 				recording_catalog_path: draft.recordingCatalogPath.trim(),
@@ -591,13 +592,19 @@
 							</h3>
 						</div>
 						<p class="mt-1 text-xs leading-5 text-text-muted">
-							KeepPeek derives active files, the catalog, and thumbnails from this location when
-							they still use the standard layout.
+							{#if config.storage.named_volumes}
+								Use Named storage volumes to edit destinations and placement. Use its move controls
+								to relocate existing files and its metadata controls to relocate the catalog.
+							{:else}
+								KeepPeek derives active files, the catalog, and thumbnails from this location when
+								they still use the standard layout.
+							{/if}
 						</p>
 						<label class="mt-3 grid gap-1.5 text-sm font-medium" for="recording-location">
 							Folder path
 							<Input
 								id="recording-location"
+								disabled={!!config.storage.named_volumes}
 								value={draft.longTermPath}
 								oninput={(event) => setRecordingLocation(event.currentTarget.value)}
 								aria-invalid={fieldErrors.longTermPath !== null}
@@ -628,6 +635,7 @@
 										type="button"
 										variant="outline"
 										size="sm"
+										disabled={!!config.storage.named_volumes}
 										onclick={() => setRecordingLocation(disk.mount_point)}
 									>
 										{disk.name} · {formatBytes(disk.available_bytes)} free
@@ -853,6 +861,7 @@
 									<Input
 										id={item.id}
 										bind:value={draft[item.field as FieldName]}
+										disabled={!!config.storage.named_volumes}
 										aria-invalid={fieldErrors[item.field as FieldName] !== null}
 										aria-describedby={fieldErrors[item.field as FieldName]
 											? `${item.id}-error`

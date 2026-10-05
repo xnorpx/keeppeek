@@ -13,6 +13,13 @@ the claim reaches a terminal outcome. Never delete recording files directly as a
 substitute for maintenance: that can leave stale catalog entries and unavailable
 evidence links.
 
+Named-volume deletion follows each recording's current catalog owner, including
+recordings moved to another named volume. It requires the original bound root to
+be available and writable. Active readers and unfinished moves block removal.
+Failed or interrupted jobs retain capacity ownership until the durable deletion
+checkpoint completes. Restore the same root or finish the conflicting work before
+retrying; do not clear ownership rows or private staging to force progress.
+
 Startup preserves `.active` files and their catalog rows. A temporary-looking
 filename does not establish ownership or authorize deletion, in either the
 medium-term or long-term root. Interrupted media remains available for inspection.

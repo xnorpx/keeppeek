@@ -70,6 +70,76 @@ pub fn export_fragment_ranges_with_progress(
     cancelled: impl Fn() -> bool,
     progress: impl Fn(u64),
 ) -> anyhow::Result<ExportArtifact> {
+    fragments
+        .first()
+        .context("export range has no recorded fragments")?;
+    let temporary =
+        destination.with_extension(format!("mp4.{}.active", uuid::Uuid::new_v4().hyphenated()));
+    if let Some(parent) = temporary.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let result = (|| {
+        let mut output = BufWriter::new(File::create(&temporary)?);
+        let result = export_fragment_ranges_to_writer(
+            fragments,
+            requested_end_ms,
+            &mut output,
+            &cancelled,
+            progress,
+        );
+        // Discard pending buffered bytes on failure instead of retrying writes during drop.
+        let (file, _) = output.into_parts();
+        drop(file);
+        let artifact = result?;
+        if cancelled() {
+            bail!("export was cancelled");
+        }
+        std::fs::rename(&temporary, destination)?;
+        Ok(artifact)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temporary);
+    }
+    result
+}
+
+/// Writes to a new empty sink; its owner handles durability, publication, and failed-file cleanup.
+pub(crate) fn export_fragment_ranges_to_writer<W: Write + Seek>(
+    fragments: &[CatalogMediaFragment],
+    requested_end_ms: i64,
+    output: &mut W,
+    cancelled: impl Fn() -> bool,
+    progress: impl Fn(u64),
+) -> anyhow::Result<ExportArtifact> {
+    anyhow::ensure!(
+        output.stream_position()? == 0,
+        "export sink must start at offset zero"
+    );
+    anyhow::ensure!(
+        output.seek(std::io::SeekFrom::End(0))? == 0,
+        "export sink must be empty"
+    );
+    if cancelled() {
+        bail!("export was cancelled");
+    }
+    let (recordings, aligned_start_ms, delivered_end_ms) =
+        export_recordings(fragments, requested_end_ms)?;
+    let bytes =
+        write_export_recordings(&recordings, aligned_start_ms, output, &cancelled, &progress)?;
+    if cancelled() {
+        bail!("export was cancelled");
+    }
+    Ok(ExportArtifact {
+        aligned_start_ms,
+        delivered_end_ms,
+        bytes,
+    })
+}
+
+fn export_recordings(
+    fragments: &[CatalogMediaFragment],
+    requested_end_ms: i64,
+) -> anyhow::Result<(Vec<ExportRecording>, i64, i64)> {
     let aligned_start_ms = fragments
         .first()
         .context("export range has no recorded fragments")?
@@ -102,42 +172,16 @@ pub fn export_fragment_ranges_with_progress(
     let mut recordings = recordings.into_values().collect::<Vec<_>>();
     recordings.sort_unstable_by_key(|recording| recording.started_at_ms);
 
-    let temporary =
-        destination.with_extension(format!("mp4.{}.active", uuid::Uuid::new_v4().hyphenated()));
-    if let Some(parent) = temporary.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let result = write_export_recordings(
-        &recordings,
-        aligned_start_ms,
-        &temporary,
-        &cancelled,
-        &progress,
-    )
-    .and_then(|()| {
-        if cancelled() {
-            bail!("export was cancelled");
-        }
-        std::fs::rename(&temporary, destination)?;
-        Ok(ExportArtifact {
-            aligned_start_ms,
-            delivered_end_ms,
-            bytes: destination.metadata()?.len(),
-        })
-    });
-    if result.is_err() {
-        let _ = std::fs::remove_file(temporary);
-    }
-    result
+    Ok((recordings, aligned_start_ms, delivered_end_ms))
 }
 
-fn write_export_recordings(
+fn write_export_recordings<W: Write + Seek>(
     recordings: &[ExportRecording],
     aligned_start_ms: i64,
-    destination: &Path,
+    output: &mut W,
     cancelled: &impl Fn() -> bool,
     report_progress: &impl Fn(u64),
-) -> anyhow::Result<()> {
+) -> anyhow::Result<u64> {
     let first = recordings
         .first()
         .context("export has no source recordings")?;
@@ -149,32 +193,7 @@ fn write_export_recordings(
         .iter()
         .map(|index| reference_tracks[*index].clone())
         .collect::<Vec<_>>();
-    let configs = tracks
-        .iter()
-        .map(|track| mp4::FragmentedTrackConfig {
-            track_type: track.config.track_type,
-            timescale: track.config.timescale,
-            language: track.config.language.clone(),
-            sample_descriptions: track.sample_descriptions.clone(),
-        })
-        .collect::<Vec<_>>();
-    if !configs
-        .iter()
-        .any(|config| config.track_type == mp4::TrackType::Video)
-    {
-        bail!("export source has no supported video track");
-    }
-    let config = mp4::Mp4Config {
-        major_brand: "iso6".parse().unwrap(),
-        minor_version: 1,
-        compatible_brands: vec![
-            "iso6".parse().unwrap(),
-            "isom".parse().unwrap(),
-            "mp41".parse().unwrap(),
-        ],
-        timescale: 1_000,
-    };
-    let output = BufWriter::new(File::create(destination)?);
+    let (config, configs) = export_mp4_configuration(&tracks)?;
     let mut writer =
         mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(output, &config, &configs)?;
     let mut progress = ExportProgress::default();
@@ -211,9 +230,40 @@ fn write_export_recordings(
         )?;
     }
     writer.write_end()?;
-    let mut output = writer.into_writer();
+    let output = writer.into_writer();
     output.flush()?;
-    Ok(())
+    Ok(output.seek(std::io::SeekFrom::End(0))?)
+}
+
+fn export_mp4_configuration(
+    tracks: &[PlaybackTrack],
+) -> anyhow::Result<(mp4::Mp4Config, Vec<mp4::FragmentedTrackConfig>)> {
+    let configs = tracks
+        .iter()
+        .map(|track| mp4::FragmentedTrackConfig {
+            track_type: track.config.track_type,
+            timescale: track.config.timescale,
+            language: track.config.language.clone(),
+            sample_descriptions: track.sample_descriptions.clone(),
+        })
+        .collect::<Vec<_>>();
+    if !configs
+        .iter()
+        .any(|config| config.track_type == mp4::TrackType::Video)
+    {
+        bail!("export source has no supported video track");
+    }
+    let config = mp4::Mp4Config {
+        major_brand: "iso6".parse().unwrap(),
+        minor_version: 1,
+        compatible_brands: vec![
+            "iso6".parse().unwrap(),
+            "isom".parse().unwrap(),
+            "mp41".parse().unwrap(),
+        ],
+        timescale: 1_000,
+    };
+    Ok((config, configs))
 }
 
 fn selected_export_track_indexes(
@@ -332,12 +382,12 @@ fn export_tracks<R: Read + Seek>(reader: &mp4::Mp4Reader<R>) -> anyhow::Result<V
     Ok(tracks)
 }
 
-fn write_export_recording<R: Read + Seek>(
+fn write_export_recording<R: Read + Seek, W: Write + Seek>(
     reader: &mut mp4::Mp4Reader<R>,
     recording: &ExportRecording,
     tracks: &[PlaybackTrack],
     aligned_start_ms: i64,
-    writer: &mut mp4::FragmentedMp4Writer<BufWriter<File>>,
+    writer: &mut mp4::FragmentedMp4Writer<W>,
     progress: &mut ExportProgress,
     callbacks: &ExportCallbacks<'_>,
 ) -> anyhow::Result<()> {
@@ -706,6 +756,150 @@ mod tests {
 
         catalog.shutdown();
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn export_to_an_owned_writer_matches_file_output_and_honors_cancellation() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-export-writer-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let catalog = RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        write_export_source(&directory, Instant::now(), handle.clone());
+        let fragments = handle
+            .media_fragments_in_range("front-door/main", i64::MIN + 1, i64::MAX)
+            .unwrap();
+        let last = fragments.last().unwrap();
+        let end_ms = last.start_ms + i64::try_from(last.duration_ms).unwrap();
+        let path = directory.join("expected.mp4");
+        let expected = export_fragment_ranges(&fragments, end_ms, &path, || false).unwrap();
+        let mut output = std::io::Cursor::new(Vec::new());
+        let actual =
+            export_fragment_ranges_to_writer(&fragments, end_ms, &mut output, || false, |_| {})
+                .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(output.get_ref(), &std::fs::read(path).unwrap());
+        output.set_position(0);
+        let reader = mp4::Mp4Reader::read_header(output, actual.bytes).unwrap();
+        assert!(
+            reader
+                .tracks()
+                .values()
+                .any(|track| track.sample_count() > 0)
+        );
+        let mut cancelled = std::io::Cursor::new(Vec::new());
+        assert!(
+            export_fragment_ranges_to_writer(&fragments, end_ms, &mut cancelled, || true, |_| {})
+                .is_err()
+        );
+        assert!(cancelled.into_inner().is_empty());
+        let mut nonempty = std::io::Cursor::new(vec![1, 2, 3]);
+        assert!(
+            export_fragment_ranges_to_writer(&fragments, end_ms, &mut nonempty, || false, |_| {})
+                .is_err()
+        );
+        assert_eq!(nonempty.into_inner(), vec![1, 2, 3]);
+        let mut displaced = std::io::Cursor::new(Vec::new());
+        displaced.set_position(1);
+        assert!(
+            export_fragment_ranges_to_writer(&fragments, end_ms, &mut displaced, || false, |_| {})
+                .is_err()
+        );
+        assert!(displaced.into_inner().is_empty());
+        let mut failing = ExportFlushFailure {
+            bytes: std::io::Cursor::new(Vec::new()),
+            fail_at: expected.bytes,
+        };
+        assert!(
+            export_fragment_ranges_to_writer(&fragments, end_ms, &mut failing, || false, |_| {})
+                .is_err()
+        );
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    struct ExportFlushFailure {
+        bytes: std::io::Cursor<Vec<u8>>,
+        fail_at: u64,
+    }
+
+    #[test]
+    fn export_to_reserved_file_reserves_growth_and_refuses_capacity_failure() -> anyhow::Result<()>
+    {
+        use crate::storage::{
+            catalog::locations::{Kind, Object, Reply, Request},
+            volumes::{VolumeRole, runtime::tests::fixture},
+        };
+        for capacity in [64, 1_048_576] {
+            let (directory, catalog, manager) = fixture(capacity)?;
+            let handle = catalog.handle();
+            write_export_source(&directory, Instant::now(), handle.clone());
+            let fragments =
+                handle.media_fragments_in_range("front-door/main", i64::MIN + 1, i64::MAX)?;
+            let last = fragments.last().unwrap();
+            let end_ms = last.start_ms + i64::try_from(last.duration_ms)?;
+            let object = Object {
+                kind: Kind::Export,
+                id: uuid::Uuid::new_v4().to_string(),
+            };
+            let reservation = manager
+                .reserve(VolumeRole::Export, "front-door", &[], object.clone(), 8)?
+                .unwrap();
+            let path = reservation.path().to_path_buf();
+            let mut writer = reservation.open()?;
+            let result =
+                export_fragment_ranges_to_writer(&fragments, end_ms, &mut writer, || false, |_| {});
+            if capacity == 64 {
+                assert!(result.is_err());
+                assert!(writer.evidence().is_err());
+                assert_eq!(
+                    handle.volume_location(Request::Lookup(object))?,
+                    Reply::Location(None)
+                );
+            } else {
+                let artifact = result?;
+                let evidence = writer.evidence()?;
+                assert_eq!(evidence.bytes, artifact.bytes);
+                writer.publish(evidence)?;
+                assert!(matches!(
+                    handle.volume_location(Request::Lookup(object))?,
+                    Reply::Location(Some(_))
+                ));
+                let reader = mp4::read_mp4(File::open(&path)?)?;
+                assert!(
+                    reader
+                        .tracks()
+                        .values()
+                        .any(|track| track.sample_count() > 0)
+                );
+            }
+            drop(writer);
+            drop(manager);
+            drop(handle);
+            catalog.shutdown();
+            std::fs::remove_dir_all(directory)?;
+        }
+        Ok(())
+    }
+
+    impl Write for ExportFlushFailure {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.bytes.write(bytes)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            if self.bytes.get_ref().len() as u64 >= self.fail_at {
+                return Err(std::io::Error::other("injected final export flush failure"));
+            }
+            Ok(())
+        }
+    }
+
+    impl Seek for ExportFlushFailure {
+        fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.bytes.seek(position)
+        }
     }
 
     #[test]

@@ -37,24 +37,10 @@ impl ServerState {
             camera.info.ip.parse().ok().map(|ip| {
                 camera_source_session_id(&camera.info.id, self.webrtc.camera_generation(ip))
             });
-        let image = self
-            .events
-            .as_ref()
-            .and_then(|store| {
-                store
-                    .thumbnail_path(&event.camera_id, &event.id)
-                    .ok()
-                    .flatten()
-            })
-            .and_then(|path| {
-                let mut bytes = Vec::new();
-                let file = std::fs::File::open(path).ok()?;
-                file.take(THUMBNAIL_SIZE_BYTES_MAX + 1)
-                    .read_to_end(&mut bytes)
-                    .ok()?;
-                (!bytes.is_empty() && bytes.len() as u64 <= THUMBNAIL_SIZE_BYTES_MAX)
-                    .then(|| Arc::<[u8]>::from(bytes))
-            });
+        let image = self.events.as_ref().and_then(|store| {
+            let id = event.canonical_attachment_id.as_deref()?;
+            read_image(store, event, id, THUMBNAIL_SIZE_BYTES_MAX as usize)
+        });
         let mut message = message(event, source_session, image.is_some());
         message.source_id = camera.info.id.clone();
         let mut additional = Vec::new();
@@ -83,9 +69,7 @@ fn read_image(
         .attachments
         .iter()
         .find(|descriptor| descriptor.id == id && descriptor.content_type == "image/jpeg")?;
-    let path = store
-        .attachment_path(&event.camera_id, &event.id, id)
-        .ok()??;
+    let (path, _lease) = store.leased_attachment_path(event, id).ok()??;
     let limit = remaining.min(THUMBNAIL_SIZE_BYTES_MAX as usize);
     let mut bytes = Vec::new();
     std::fs::File::open(path)

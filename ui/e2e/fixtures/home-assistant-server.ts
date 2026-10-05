@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -95,8 +96,6 @@ async function writeFixtureConfiguration(options: {
 	configurations: string[];
 }): Promise<string> {
 	const { directory, origin, port, configurations } = options;
-	const recordings = resolve(directory, 'recordings');
-	await mkdir(recordings);
 	const configPath = resolve(directory, 'config.toml');
 	await writeFile(
 		configPath,
@@ -108,10 +107,6 @@ require_secure_remote = false
 [direct_card]
 allowed_origins = [${JSON.stringify(origin)}]
 [storage]
-medium_term_path = ${JSON.stringify(recordings)}
-long_term_path = ${JSON.stringify(recordings)}
-recording_catalog_path = ${JSON.stringify(resolve(directory, 'recordings.db'))}
-event_thumbnail_path = ${JSON.stringify(resolve(directory, 'thumbnails'))}
 short_term_secs = 5
 medium_term_secs = 60
 long_term_max_gb = 0
@@ -147,7 +142,8 @@ export async function startHomeAssistantServer(origin: string) {
 	const extension = process.platform === 'win32' ? '.exe' : '';
 	const binary = (name: string) => resolve(repositoryRoot, 'target/release', `${name}${extension}`);
 	await Promise.all([access(binary('keeppeek')), access(binary('test_camera'))]);
-	const directory = await mkdtemp(resolve(repositoryRoot, 'target/home-assistant-e2e-'));
+	const parent = process.platform === 'win32' ? tmpdir() : resolve(repositoryRoot, 'target');
+	const directory = await mkdtemp(resolve(parent, 'home-assistant-e2e-'));
 	const children: ChildProcess[] = [];
 	const close = async () => {
 		await Promise.all(children.map(stop));

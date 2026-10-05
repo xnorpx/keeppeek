@@ -41,6 +41,7 @@ import {
 	AccessSessionResultSchema,
 	AccessSessionSchema,
 	CatalogHealthSnapshotSchema,
+	StorageVolumeResultSchema,
 	CameraTransport as ProtoCameraTransport,
 	CameraDefaultValuesSchema,
 	CameraEffectiveConfigurationSchema,
@@ -397,6 +398,7 @@ export type MockControlPeerOptions = {
 	cameraSettingsSequence?: readonly (readonly CameraSettings[])[];
 	cameraConfigurationRevision?: string;
 	runtimeConfiguration?: SanitizedConfig;
+	metadataPendingVolumeId?: string;
 	health?: HealthFixture;
 	healthSequence?: readonly HealthFixture[];
 	healthError?: string;
@@ -742,6 +744,8 @@ export async function mockControlPeer(
 	page: Page,
 	options: MockControlPeerOptions = {}
 ): Promise<ControlRequests> {
+	let metadataPending = options.metadataPendingVolumeId;
+	let metadataRevision = 1;
 	const reportedManufacturer = options.reportedManufacturer ?? 'ONVIF';
 	const requests: ControlRequests = {
 		motion: [],
@@ -2451,6 +2455,41 @@ export async function mockControlPeer(
 					configurationRevision: cameraConfigurationRevision
 				})
 			});
+		}
+		if (
+			request.command.case === 'storageVolumeCommand' &&
+			request.command.value.action.case === 'list'
+		) {
+			return encodedOk(request.requestId, {
+				case: 'storageVolumeResult',
+				value: create(StorageVolumeResultSchema, {
+					result: { case: 'volumes', value: { runtimeAvailable: false, volumes: [] } }
+				})
+			});
+		}
+		if (request.command.case === 'storageVolumeCommand') {
+			const action = request.command.value.action;
+			if (action.case === 'cancelMetadata') {
+				if (action.value.expectedConfigurationRevision !== `metadata-${metadataRevision}`)
+					throw new Error('Stale metadata status');
+				metadataPending = undefined;
+				metadataRevision += 1;
+			}
+			if (action.case === 'metadata' || action.case === 'cancelMetadata') {
+				return encodedOk(request.requestId, {
+					case: 'storageVolumeResult',
+					value: create(StorageVolumeResultSchema, {
+						result: {
+							case: 'metadata',
+							value: {
+								configurationRevision: `metadata-${metadataRevision}`,
+								pendingVolumeId: metadataPending,
+								restartRequired: !!metadataPending
+							}
+						}
+					})
+				});
+			}
 		}
 		if (request.command.case !== 'cameraControlCommand') {
 			throw new Error(`unexpected command ${request.command.case}`);

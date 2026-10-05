@@ -76,7 +76,7 @@ pub(super) fn read(connection: &turso::Connection, request: ReadRequest) {
 /// Bounds retained selector and result identities independently of catalog contents.
 const MAX_IDENTIFIER_BYTES: usize = 512;
 /// Limits complete selections so future destructive previews remain inspectable.
-const MAX_RECORDINGS: usize = 128;
+pub(super) const MAX_RECORDINGS: usize = 128;
 /// Bounds history inspection when old long-lived objects cannot be ruled out by time alone.
 const MAX_SCAN_RECORDINGS: usize = 4_096;
 /// Limits requested wall-clock intervals to match existing catalog coverage windows.

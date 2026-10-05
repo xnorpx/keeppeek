@@ -44,6 +44,12 @@ const QUEUED_MEDIA_BYTES_CAPACITY: usize = 64 * 1_048_576;
 
 #[derive(Clone)]
 pub struct StorageConfig {
+    pub metadata: Option<crate::config::MetadataBinding>,
+    pub metadata_history_path: Option<PathBuf>,
+    pub named_volumes: Option<super::volumes::VolumeConfiguration>,
+    pub volume_runtime: Option<Arc<super::volumes::runtime::Manager>>,
+    pub volume_mover: Option<super::volumes::runtime::worker::Handle>,
+    pub volume_groups: Arc<RwLock<HashMap<String, Vec<String>>>>,
     pub medium_term_path: PathBuf,
     pub long_term_path: PathBuf,
     pub recording_catalog_path: PathBuf,
@@ -70,29 +76,52 @@ impl Default for StorageConfig {
 }
 
 impl StorageConfig {
+    pub(crate) fn metadata_root(&self) -> anyhow::Result<super::volumes::root::Root> {
+        let binding = self
+            .metadata
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("metadata binding is unavailable"))?;
+        let parent = self
+            .recording_catalog_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("metadata parent is unavailable"))?;
+        let root = super::volumes::root::Root::open(parent)?;
+        anyhow::ensure!(
+            *root.identity() == binding.root_identity(),
+            "metadata root changed"
+        );
+        Ok(root)
+    }
+
     pub fn from_toml(toml: &StorageToml) -> Self {
         let default_root = crate::config::config_dir().join("recordings");
-        let medium_term_path = toml
-            .medium_term_path
-            .as_deref()
-            .map(PathBuf::from)
+        let medium_term_path = Self::named_root(toml, super::volumes::VolumeRole::Active)
+            .or_else(|| toml.medium_term_path.as_deref().map(PathBuf::from))
             .unwrap_or_else(|| default_root.clone());
-        let long_term_path = toml
-            .long_term_path
-            .as_deref()
-            .map(PathBuf::from)
+        let long_term_path = Self::named_root(toml, super::volumes::VolumeRole::Archive)
+            .or_else(|| Self::named_root(toml, super::volumes::VolumeRole::Active))
+            .or_else(|| toml.long_term_path.as_deref().map(PathBuf::from))
             .unwrap_or(default_root);
-        let recording_catalog_path = toml
+        let mut recording_catalog_path = toml
             .recording_catalog_path
             .as_deref()
             .map(PathBuf::from)
             .unwrap_or_else(|| long_term_path.join("recordings.db"));
-        let event_thumbnail_path = toml
-            .event_thumbnail_path
-            .as_deref()
-            .map(PathBuf::from)
+        let metadata_history_path = toml.metadata.as_ref().map(|binding| {
+            let (catalog, history) = binding.paths(toml).expect("validated metadata binding");
+            recording_catalog_path = catalog;
+            history
+        });
+        let event_thumbnail_path = Self::named_root(toml, super::volumes::VolumeRole::Thumbnail)
+            .or_else(|| toml.event_thumbnail_path.as_deref().map(PathBuf::from))
             .unwrap_or_else(|| long_term_path.join(".event-thumbnails"));
         Self {
+            metadata: toml.metadata.clone(),
+            metadata_history_path,
+            named_volumes: toml.named_volumes.clone(),
+            volume_runtime: None,
+            volume_mover: None,
+            volume_groups: Arc::default(),
             medium_term_path,
             long_term_path,
             recording_catalog_path,
@@ -113,6 +142,35 @@ impl StorageConfig {
             pre_recording_global_max_bytes: usize::try_from(toml.pre_recording_global_max_bytes)
                 .expect("validated pre-recording global budget fits this platform"),
         }
+    }
+
+    fn named_root(toml: &StorageToml, role: super::volumes::VolumeRole) -> Option<PathBuf> {
+        let configuration = toml.named_volumes.as_ref()?;
+        let rule = configuration
+            .placement
+            .iter()
+            .find(|rule| rule.role == role && rule.source.is_none() && rule.group.is_none())?;
+        let id = rule.candidates.first()?;
+        configuration
+            .volumes
+            .iter()
+            .find(|volume| &volume.id == id)
+            .map(|volume| volume.root.clone())
+    }
+
+    pub fn initialize_named_volumes(
+        &mut self,
+        catalog: RecordingCatalogHandle,
+    ) -> anyhow::Result<()> {
+        let configuration = self
+            .named_volumes
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("named storage volumes are not initialized"))?;
+        self.volume_runtime = Some(Arc::new(super::volumes::runtime::Manager::new(
+            configuration.clone(),
+            catalog,
+        )?));
+        Ok(())
     }
 
     pub(crate) const fn safety_policy(&self) -> StorageSafetyPolicy {
@@ -873,6 +931,24 @@ impl WriterWorker {
         }
     }
 
+    fn cleanup_capacity(
+        &self,
+        catalog: &RecordingCatalogHandle,
+        capacity: Option<FilesystemCapacity>,
+    ) -> anyhow::Result<FilesystemCapacity> {
+        let recording_bytes = catalog.legacy_recording_bytes()?;
+        match capacity {
+            Some(mut capacity) => {
+                capacity.keeppeek_bytes = recording_bytes;
+                Ok(capacity)
+            }
+            None => Ok(filesystem_capacity(
+                &self.config.long_term_path,
+                recording_bytes,
+            )?),
+        }
+    }
+
     fn try_enforce_storage_limit(
         &self,
         trigger: StorageCleanupTrigger,
@@ -883,14 +959,7 @@ impl WriterWorker {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("recording catalog is unavailable for safe cleanup"))?;
         let injected_capacity = capacity.is_some();
-        let stats = catalog.stats()?;
-        let mut capacity = match capacity {
-            Some(mut capacity) => {
-                capacity.keeppeek_bytes = stats.recording_bytes;
-                capacity
-            }
-            None => filesystem_capacity(&self.config.long_term_path, stats.recording_bytes)?,
-        };
+        let mut capacity = self.cleanup_capacity(&catalog, capacity)?;
         let policy = self.config.safety_policy();
         let mut evaluation = policy.evaluate(capacity);
 
@@ -943,10 +1012,23 @@ impl WriterWorker {
         }
 
         if !injected_capacity {
-            let stats = catalog.stats()?;
-            capacity = filesystem_capacity(&self.config.long_term_path, stats.recording_bytes)?;
+            capacity = filesystem_capacity(
+                &self.config.long_term_path,
+                catalog.legacy_recording_bytes()?,
+            )?;
         }
-        let recovered = policy.evaluate(capacity);
+        self.finish_storage_cleanup(trigger, reason, capacity, files_removed, bytes_removed)
+    }
+
+    fn finish_storage_cleanup(
+        &self,
+        trigger: StorageCleanupTrigger,
+        reason: StorageCleanupReason,
+        capacity: FilesystemCapacity,
+        files_removed: u64,
+        bytes_removed: u64,
+    ) -> anyhow::Result<()> {
+        let recovered = self.config.safety_policy().evaluate(capacity);
         self.safety.observe(trigger, capacity, recovered);
         if recovered.cleanup_required {
             anyhow::bail!("cleanup completed without restoring the configured recovery target");
@@ -989,7 +1071,15 @@ impl WriterWorker {
 
     fn ingest(&mut self, identity: RecordingStreamIdentity, frame: RecordingFrame) {
         if self.safety.recording_paused() {
-            return;
+            match self.uses_named_storage(&identity) {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(error) => {
+                    self.health
+                        .note_failure(&identity.storage_key, &error.to_string());
+                    return;
+                }
+            }
         }
         let storage_key = identity.storage_key.clone();
         self.pipeline_for(identity);
@@ -1037,6 +1127,33 @@ impl WriterWorker {
         self.write_frame_to_pipeline(camera_id, frame, false)
     }
 
+    fn uses_named_storage(&self, identity: &RecordingStreamIdentity) -> anyhow::Result<bool> {
+        if let Some(writer) = self
+            .pipelines
+            .get(&identity.storage_key)
+            .and_then(|pipeline| pipeline.medium_term.as_ref())
+        {
+            return Ok(writer.is_named());
+        }
+        let Some(manager) = &self.config.volume_runtime else {
+            return Ok(false);
+        };
+        let registry = self
+            .config
+            .volume_groups
+            .read()
+            .map_err(|_| anyhow::anyhow!("volume group registry unavailable"))?;
+        let groups = registry
+            .get(&identity.source_id)
+            .map_or(&[][..], Vec::as_slice);
+        let groups = groups.iter().map(String::as_str).collect::<Vec<_>>();
+        manager.uses_named_policy(
+            super::volumes::VolumeRole::Active,
+            &identity.source_id,
+            &groups,
+        )
+    }
+
     fn write_frame_to_pipeline(
         &mut self,
         camera_id: &str,
@@ -1067,6 +1184,7 @@ impl WriterWorker {
                 self.catalog.as_ref(),
                 &pipeline.identity,
                 started_at,
+                self.safety.recording_paused(),
             )?;
             tracing::info!(
                 camera = camera_id,
@@ -1165,6 +1283,7 @@ impl WriterWorker {
                     self.catalog.as_ref(),
                     &pipeline.identity,
                     started_at,
+                    self.safety.recording_paused(),
                 )?;
                 tracing::info!(
                     camera = camera_id,
@@ -1229,6 +1348,7 @@ impl WriterWorker {
                     self.catalog.as_ref(),
                     &pipeline.identity,
                     started_at,
+                    self.safety.recording_paused(),
                 ) {
                     Ok(writer) => pipeline.medium_term = Some(writer),
                     Err(e) => {
@@ -1273,6 +1393,25 @@ impl WriterWorker {
         path: &Path,
         recording_id: &str,
     ) -> std::io::Result<PathBuf> {
+        if self.config.volume_runtime.is_some() {
+            use super::catalog::locations::{Kind, Object, Reply, Request};
+            if let Some(catalog) = &self.catalog
+                && matches!(
+                    catalog
+                        .volume_location(Request::Lookup(Object {
+                            kind: Kind::Recording,
+                            id: recording_id.to_owned()
+                        }))
+                        .map_err(std::io::Error::other)?,
+                    Reply::Location(Some(_))
+                )
+            {
+                if let Some(mover) = &self.config.volume_mover {
+                    mover.scan().map_err(std::io::Error::other)?;
+                }
+                return Ok(path.to_path_buf());
+            }
+        }
         let destination = if self.config.medium_term_path == self.config.long_term_path {
             tracing::info!(
                 camera = camera_id,
@@ -1335,6 +1474,58 @@ fn create_medium_term_writer(
     catalog: Option<&RecordingCatalogHandle>,
     identity: &RecordingStreamIdentity,
     started_at: Instant,
+    legacy_paused: bool,
+) -> std::io::Result<MediumTermWriter> {
+    if let Some(manager) = &config.volume_runtime {
+        let catalog =
+            catalog.ok_or_else(|| std::io::Error::other("named writer requires a catalog"))?;
+        use super::{
+            catalog::locations::{Kind, Object},
+            volumes::VolumeRole,
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        let groups = config
+            .volume_groups
+            .read()
+            .map_err(|_| std::io::Error::other("volume group registry unavailable"))?
+            .get(&identity.source_id)
+            .cloned()
+            .unwrap_or_default();
+        let groups = groups.iter().map(String::as_str).collect::<Vec<_>>();
+        if let Some(reservation) = manager
+            .reserve(
+                VolumeRole::Active,
+                &identity.source_id,
+                &groups,
+                Object {
+                    kind: Kind::Recording,
+                    id: id.clone(),
+                },
+                65_536,
+            )
+            .map_err(std::io::Error::other)?
+        {
+            return MediumTermWriter::create_with_reservation(
+                reservation,
+                id,
+                identity.clone(),
+                started_at,
+                config.write_buffer_bytes,
+                catalog.clone(),
+            );
+        }
+    }
+    if legacy_paused {
+        return Err(std::io::Error::other("legacy recording storage is paused"));
+    }
+    create_legacy_medium_term_writer(config, catalog, identity, started_at)
+}
+
+fn create_legacy_medium_term_writer(
+    config: &StorageConfig,
+    catalog: Option<&RecordingCatalogHandle>,
+    identity: &RecordingStreamIdentity,
+    started_at: Instant,
 ) -> std::io::Result<MediumTermWriter> {
     catalog.map_or_else(
         || {
@@ -1365,6 +1556,8 @@ pub struct ShortTermStats {
 
 #[cfg(test)]
 mod tests {
+    mod named;
+
     use super::*;
     use crate::storage::{
         AudioCodec, AudioFrame, CatalogRecording, MediaFrame, RecordingCatalog, VideoCodec,
@@ -1400,6 +1593,12 @@ mod tests {
             .join("test-output")
             .join(name);
         StorageConfig {
+            metadata: None,
+            metadata_history_path: None,
+            named_volumes: None,
+            volume_runtime: None,
+            volume_mover: None,
+            volume_groups: Arc::default(),
             medium_term_path: root.clone(),
             long_term_path: root.clone(),
             recording_catalog_path: root.join("recordings.db"),

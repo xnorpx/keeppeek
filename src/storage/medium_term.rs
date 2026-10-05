@@ -1,4 +1,5 @@
 use crate::media_time::{duration_to_ticks, ticks_to_duration};
+use crate::storage::volumes::runtime::Reservation;
 use crate::storage::{
     adts,
     catalog::{CatalogFragment, CatalogKeyframe, CatalogRecording, RecordingCatalogHandle},
@@ -14,6 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 use uuid::Uuid;
+mod volume_file;
+use volume_file::WriterFile;
 
 const VIDEO_TIMESCALE: u32 = 90_000;
 
@@ -32,6 +35,8 @@ pub struct MediumTermWriter {
     bytes_written: u64,
     recorded_duration: Duration,
     write_buffer_bytes: usize,
+    reservation: Option<Reservation>,
+    named_volume: bool,
 }
 
 enum WriterState {
@@ -41,7 +46,7 @@ enum WriterState {
 }
 
 struct ActiveWriter {
-    writer: mp4::FragmentedMp4Writer<BufWriter<File>>,
+    writer: mp4::FragmentedMp4Writer<BufWriter<WriterFile>>,
     video_track: u32,
     video_codec: VideoCodec,
     video_media_config: mp4::MediaConfig,
@@ -67,6 +72,7 @@ impl MediumTermWriter {
             started_at,
             write_buffer_bytes,
             None,
+            None,
         )
     }
 
@@ -83,6 +89,7 @@ impl MediumTermWriter {
             started_at,
             write_buffer_bytes,
             Some(catalog),
+            None,
         )
     }
 
@@ -99,6 +106,29 @@ impl MediumTermWriter {
             started_at,
             write_buffer_bytes,
             Some(catalog),
+            None,
+        )
+    }
+
+    /// Creates a fixed-volume writer using an admitted capacity reservation.
+    ///
+    /// # Errors
+    /// Returns an error if the reservation, catalog, or owned file is unavailable.
+    pub fn create_with_reservation(
+        reservation: Reservation,
+        recording_id: String,
+        identity: RecordingStreamIdentity,
+        started_at: Instant,
+        write_buffer_bytes: usize,
+        catalog: RecordingCatalogHandle,
+    ) -> std::io::Result<Self> {
+        Self::create_inner(
+            Path::new(""),
+            identity,
+            started_at,
+            write_buffer_bytes,
+            Some(catalog),
+            Some((recording_id, reservation)),
         )
     }
 
@@ -108,23 +138,39 @@ impl MediumTermWriter {
         started_at: Instant,
         write_buffer_bytes: usize,
         catalog: Option<RecordingCatalogHandle>,
+        reservation: Option<(String, Reservation)>,
     ) -> std::io::Result<Self> {
         let started_at_utc = time::OffsetDateTime::now_utc() - started_at.elapsed();
         let started_at_ms = i64::try_from(started_at_utc.unix_timestamp_nanos() / 1_000_000)
             .map_err(|_| std::io::Error::other("recording start timestamp is out of range"))?;
-        let active_path =
-            layout::active_segment_path(root, &identity.storage_key, started_at_utc, "mp4");
-        let final_path = layout::segment_path(root, &identity.storage_key, started_at_utc, "mp4");
-
-        if let Some(parent) = active_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        let named_volume = reservation.is_some();
+        let (recording_id, active_path, final_path, reservation) = match reservation {
+            Some((id, reservation)) => (
+                id,
+                reservation.path().to_path_buf(),
+                reservation.path().to_path_buf(),
+                Some(reservation),
+            ),
+            None => {
+                let active =
+                    layout::active_segment_path(root, &identity.storage_key, started_at_utc, "mp4");
+                if let Some(parent) = active.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                (
+                    Uuid::new_v4().hyphenated().to_string(),
+                    active,
+                    layout::segment_path(root, &identity.storage_key, started_at_utc, "mp4"),
+                    None,
+                )
+            }
+        };
 
         Ok(Self {
             state: WriterState::WaitingForKeyframe,
             path: active_path,
             final_path,
-            recording_id: Uuid::new_v4().hyphenated().to_string(),
+            recording_id,
             identity,
             started_at_ms,
             catalog,
@@ -135,6 +181,8 @@ impl MediumTermWriter {
             bytes_written: 0,
             recorded_duration: Duration::ZERO,
             write_buffer_bytes,
+            reservation,
+            named_volume,
         })
     }
 
@@ -215,7 +263,7 @@ impl MediumTermWriter {
         Ok(())
     }
 
-    fn init_mp4(&self, frames: &[RecordingFrame]) -> std::io::Result<ActiveWriter> {
+    fn init_mp4(&mut self, frames: &[RecordingFrame]) -> std::io::Result<ActiveWriter> {
         let keyframe = frames
             .iter()
             .find(|frame| frame.frame.is_video_keyframe())
@@ -243,44 +291,50 @@ impl MediumTermWriter {
             language: String::from("und"),
             media_conf: media_conf.clone(),
         };
-        let audio = frames.iter().find_map(|frame| {
-            let MediaFrame::Audio(audio) = &frame.frame else {
-                return None;
-            };
-            if audio.codec != AudioCodec::Aac {
-                return None;
-            }
-            let (raw_aac, adts_info) = adts::strip_adts(&audio.data);
-            if raw_aac.is_empty() {
-                return None;
-            }
-            let timescale = adts_info
-                .as_ref()
-                .map_or(audio.sample_rate, |info| info.sample_rate);
-            let channels = adts_info.as_ref().map_or(1, |info| info.channels);
-            Some((timescale, channels))
-        });
+        let audio_config = audio_track_config(frames);
+        let audio = audio_config.as_ref().map(|config| config.timescale);
         let mut track_configs = vec![video_config];
-        if let Some((timescale, channels)) = audio {
-            track_configs.push(mp4::TrackConfig {
-                track_type: mp4::TrackType::Audio,
-                timescale,
-                language: String::from("und"),
-                media_conf: mp4::MediaConfig::AacConfig(mp4::AacConfig {
-                    bitrate: 64_000,
-                    profile: mp4::AudioObjectType::AacLowComplexity,
-                    freq_index: sample_freq_index(timescale),
-                    chan_conf: match channels {
-                        2 => mp4::ChannelConfig::Stereo,
-                        _ => mp4::ChannelConfig::Mono,
-                    },
-                }),
-            });
-        }
-        let file = BufWriter::with_capacity(self.write_buffer_bytes, File::create_new(&self.path)?);
+        track_configs.extend(audio_config);
+        let file = self.open_writer_file()?;
+        let file = BufWriter::with_capacity(self.write_buffer_bytes, file);
         let writer = mp4::FragmentedMp4Writer::write_start(file, &mp4_config, &track_configs)
             .map_err(mp4_err)?;
-        let initialization = writer.initialization();
+        self.catalog_initialization(writer.initialization())?;
+        tracing::debug!(
+            path = %self.path.display(),
+            audio = audio.is_some(),
+            init_bytes = writer.initialization().size,
+            "fragmented MP4 segment initialized",
+        );
+
+        Ok(ActiveWriter {
+            writer,
+            video_track: 1,
+            video_codec: video.codec,
+            video_media_config: media_conf,
+            video_sample_description_index: 1,
+            audio_track: audio.map(|_| 2),
+            audio_timescale: audio.unwrap_or(0),
+            last_video_dts: None,
+            last_video_duration: 0,
+            fragment_start_dts: None,
+            next_audio_dts: None,
+        })
+    }
+
+    fn open_writer_file(&mut self) -> std::io::Result<WriterFile> {
+        match self.reservation.take() {
+            Some(reservation) => Ok(WriterFile::Named(Box::new(
+                reservation.open().map_err(std::io::Error::other)?,
+            ))),
+            None if !self.named_volume => Ok(WriterFile::Legacy(File::create_new(&self.path)?)),
+            None => Err(std::io::Error::other(
+                "named recording reservation is no longer available",
+            )),
+        }
+    }
+
+    fn catalog_initialization(&self, initialization: mp4::Mp4ByteRange) -> std::io::Result<()> {
         if let Some(catalog) = &self.catalog {
             catalog
                 .upsert_recording(CatalogRecording {
@@ -297,26 +351,7 @@ impl MediumTermWriter {
                 })
                 .map_err(catalog_err)?;
         }
-        tracing::debug!(
-            path = %self.path.display(),
-            audio = audio.is_some(),
-            init_bytes = writer.initialization().size,
-            "fragmented MP4 segment initialized",
-        );
-
-        Ok(ActiveWriter {
-            writer,
-            video_track: 1,
-            video_codec: video.codec,
-            video_media_config: media_conf,
-            video_sample_description_index: 1,
-            audio_track: audio.map(|_| 2),
-            audio_timescale: audio.map_or(0, |(timescale, _)| timescale),
-            last_video_dts: None,
-            last_video_duration: 0,
-            fragment_start_dts: None,
-            next_audio_dts: None,
-        })
+        Ok(())
     }
 
     fn write_frame(&mut self, rf: RecordingFrame) -> std::io::Result<()> {
@@ -529,7 +564,9 @@ impl MediumTermWriter {
                 let final_fragment = writer.write_end().map_err(mp4_err)?;
                 let mut inner = writer.into_writer();
                 std::io::Write::flush(&mut inner)?;
-                drop(inner);
+                let file = inner
+                    .into_inner()
+                    .map_err(std::io::IntoInnerError::into_error)?;
                 if let Some(fragment) = final_fragment {
                     let start_dts = fragment_start_dts.ok_or_else(|| {
                         std::io::Error::other("final MP4 fragment has no start timestamp")
@@ -539,17 +576,18 @@ impl MediumTermWriter {
                         .saturating_add(u64::from(last_video_duration));
                     self.insert_catalog_fragment(fragment, start_dts, end_dts)?;
                 }
-                tracing::debug!(from = %self.path.display(), to = %self.final_path.display(), "renaming active segment");
-                std::fs::rename(&self.path, &self.final_path)?;
-                if let Some(catalog) = &self.catalog {
-                    catalog
-                        .update_recording_path(&self.recording_id, &self.final_path, true)
-                        .map_err(catalog_err)?;
-                }
+                file.complete(
+                    self.catalog.as_ref(),
+                    &self.recording_id,
+                    &self.path,
+                    &self.final_path,
+                )?;
                 Ok(self.final_path)
             }
             _ => {
-                let _ = std::fs::remove_file(&self.path);
+                if !self.named_volume {
+                    let _ = std::fs::remove_file(&self.path);
+                }
                 Ok(self.final_path)
             }
         }
@@ -603,6 +641,10 @@ impl MediumTermWriter {
 
     pub const fn frames_written(&self) -> u64 {
         self.frames_written
+    }
+
+    pub(crate) const fn is_named(&self) -> bool {
+        self.named_volume
     }
 
     pub fn active_path(&self) -> &Path {
@@ -761,6 +803,39 @@ fn catalog_err(error: anyhow::Error) -> std::io::Error {
     std::io::Error::other(error.to_string())
 }
 
+fn audio_track_config(frames: &[RecordingFrame]) -> Option<mp4::TrackConfig> {
+    frames.iter().find_map(|frame| {
+        let MediaFrame::Audio(audio) = &frame.frame else {
+            return None;
+        };
+        if audio.codec != AudioCodec::Aac {
+            return None;
+        }
+        let (raw_aac, adts_info) = adts::strip_adts(&audio.data);
+        if raw_aac.is_empty() {
+            return None;
+        }
+        let timescale = adts_info
+            .as_ref()
+            .map_or(audio.sample_rate, |info| info.sample_rate);
+        let channels = adts_info.as_ref().map_or(1, |info| info.channels);
+        Some(mp4::TrackConfig {
+            track_type: mp4::TrackType::Audio,
+            timescale,
+            language: String::from("und"),
+            media_conf: mp4::MediaConfig::AacConfig(mp4::AacConfig {
+                bitrate: 64_000,
+                profile: mp4::AudioObjectType::AacLowComplexity,
+                freq_index: sample_freq_index(timescale),
+                chan_conf: match channels {
+                    2 => mp4::ChannelConfig::Stereo,
+                    _ => mp4::ChannelConfig::Mono,
+                },
+            }),
+        })
+    })
+}
+
 fn mp4_err(e: mp4::Error) -> std::io::Error {
     match e {
         mp4::Error::IoError(io_err) => io_err,
@@ -807,7 +882,7 @@ mod tests {
     fn writer_creation_preserves_an_existing_active_path() {
         let root = std::env::temp_dir().join(format!("keeppeek-writer-{}", uuid::Uuid::new_v4()));
         let started_at = Instant::now();
-        let writer = MediumTermWriter::create(&root, "camera/sub", started_at, 8_192).unwrap();
+        let mut writer = MediumTermWriter::create(&root, "camera/sub", started_at, 8_192).unwrap();
         std::fs::write(&writer.path, b"unowned interrupted data").unwrap();
 
         let error = writer
@@ -822,6 +897,62 @@ mod tests {
         assert!(!writer.final_path.exists());
         drop(writer);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn named_volume_writer_reserves_before_creation_and_publishes_complete_mp4()
+    -> anyhow::Result<()> {
+        use crate::storage::{
+            catalog::locations::{Kind, Object, Reply, Request},
+            volumes::{VolumeRole, runtime::tests::fixture},
+        };
+        let (_root, catalog, manager) = fixture(2 * 1_048_576)?;
+        let handle = catalog.handle();
+        let id = uuid::Uuid::new_v4().to_string();
+        let object = Object {
+            kind: Kind::Recording,
+            id: id.clone(),
+        };
+        let reservation = manager
+            .reserve(VolumeRole::Active, "camera", &[], object.clone(), 1)?
+            .unwrap();
+        let path = reservation.path().to_path_buf();
+        assert!(!path.exists());
+        assert_eq!(
+            handle.volume_location(Request::Lookup(object.clone()))?,
+            Reply::Location(None)
+        );
+        let start = Instant::now();
+        let mut writer = MediumTermWriter::create_with_reservation(
+            reservation,
+            id.clone(),
+            crate::storage::identity::RecordingStreamIdentity::legacy("camera/main"),
+            start,
+            8192,
+            handle.clone(),
+        )?;
+        writer.append_one(video_frame(start, Duration::ZERO))?;
+        assert!(!path.exists());
+        writer.append_one(video_frame(
+            start + Duration::from_millis(100),
+            Duration::from_millis(100),
+        ))?;
+        assert_eq!(writer.recording_id(), id);
+        let finalized = writer.finalize()?;
+        assert_eq!(finalized, path);
+        let Reply::Location(Some(location)) = handle.volume_location(Request::Lookup(object))?
+        else {
+            anyhow::bail!("final recording location missing");
+        };
+        assert_eq!(location.volume, "primary");
+        assert_eq!(location.bytes, std::fs::metadata(&path)?.len());
+        let parsed = mp4::read_mp4(File::open(path)?)?;
+        assert_eq!(parsed.tracks().len(), 1);
+        assert!(parsed.tracks().values().next().unwrap().sample_count() > 0);
+        drop(parsed);
+        drop(manager);
+        catalog.shutdown();
+        Ok(())
     }
 
     fn video_frame(received_at: Instant, timestamp: Duration) -> RecordingFrame {

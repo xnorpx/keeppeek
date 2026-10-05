@@ -17,10 +17,10 @@ const REMOVAL_BUDGET: Duration = Duration::from_secs(2);
 const STAGED_FILE: &str = "recording.mp4";
 
 #[cfg(windows)]
-mod windows;
+pub(in crate::storage) mod windows;
 
 #[cfg(unix)]
-mod unix;
+pub(in crate::storage) mod unix;
 
 #[cfg(any(windows, test))]
 mod ace;
@@ -309,21 +309,36 @@ fn validate_claim(observation: &Observation, claim: &Claim) -> io::Result<()> {
     Ok(())
 }
 
-fn private_directory(parent: &Dir, name: &OsStr, create: bool) -> io::Result<Dir> {
-    #[cfg(not(windows))]
-    let mut builder = DirBuilder::new();
-    #[cfg(not(windows))]
-    builder.recursive(false);
-    #[cfg(unix)]
+pub(in crate::storage) fn create_private_directory(parent: &Dir, name: &OsStr) -> io::Result<Dir> {
+    create_private_entry(parent, name)?;
+    private_directory(parent, name, false)
+}
+
+fn create_private_entry(parent: &Dir, name: &OsStr) -> io::Result<()> {
+    #[cfg(windows)]
     {
-        use cap_std::fs::DirBuilderExt;
-        builder.mode(0o700);
+        windows::create_private(parent, name)
     }
+    #[cfg(not(windows))]
+    {
+        let mut builder = DirBuilder::new();
+        builder.recursive(false);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        parent.create_dir_with(name, &builder)
+    }
+}
+
+pub(in crate::storage) fn private_directory(
+    parent: &Dir,
+    name: &OsStr,
+    create: bool,
+) -> io::Result<Dir> {
     if create {
-        #[cfg(windows)]
-        let created = windows::create_private(parent, name);
-        #[cfg(not(windows))]
-        let created = parent.create_dir_with(name, &builder);
+        let created = create_private_entry(parent, name);
         match created {
             Ok(()) => sync_directory(parent)?,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -337,7 +352,7 @@ fn private_directory(parent: &Dir, name: &OsStr, create: bool) -> io::Result<Dir
     Ok(directory)
 }
 
-fn validate_owner(directory: &Dir, forbidden: u32) -> io::Result<()> {
+pub(in crate::storage) fn validate_owner(directory: &Dir, forbidden: u32) -> io::Result<()> {
     #[cfg(unix)]
     {
         use cap_std::fs::{MetadataExt, PermissionsExt};
@@ -363,7 +378,7 @@ fn validate_owner(directory: &Dir, forbidden: u32) -> io::Result<()> {
     }
 }
 
-fn sync_directory(directory: &Dir) -> io::Result<()> {
+pub(in crate::storage) fn sync_directory(directory: &Dir) -> io::Result<()> {
     #[cfg(windows)]
     {
         windows::sync(directory)
@@ -373,6 +388,26 @@ fn sync_directory(directory: &Dir) -> io::Result<()> {
         let mut options = OpenOptions::new();
         options.read(true).write(false).maybe_dir(true);
         directory.open_with(".", &options)?.sync_all()
+    }
+}
+
+#[cfg(test)]
+mod private_directory_tests {
+    use super::*;
+
+    #[test]
+    fn exclusive_private_creation_never_adopts_an_existing_directory() -> io::Result<()> {
+        let root = std::env::temp_dir().join(format!("keeppeek-private-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)?;
+        let parent = Dir::open_ambient_dir(&root, cap_std::ambient_authority())?;
+        let directory = create_private_directory(&parent, OsStr::new("snapshot"))?;
+        directory.write("unrelated", b"preserve")?;
+        assert!(create_private_directory(&parent, OsStr::new("snapshot")).is_err());
+        assert_eq!(directory.read("unrelated")?, b"preserve");
+        drop(directory);
+        drop(parent);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 }
 

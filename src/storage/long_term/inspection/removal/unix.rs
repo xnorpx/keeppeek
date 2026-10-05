@@ -2,20 +2,29 @@ use cap_std::fs::Dir;
 use std::{ffi::OsStr, io};
 
 pub(super) fn rename(parent: &Dir, name: &OsStr, directory: &Dir) -> io::Result<()> {
+    rename_to(parent, name, directory, OsStr::new(super::STAGED_FILE))
+}
+
+pub(in crate::storage) fn rename_to(
+    parent: &Dir,
+    name: &OsStr,
+    directory: &Dir,
+    destination: &OsStr,
+) -> io::Result<()> {
     #[cfg(any(target_vendor = "apple", target_os = "linux"))]
     {
         rustix::fs::renameat_with(
             parent,
             name,
             directory,
-            super::STAGED_FILE,
+            destination,
             rustix::fs::RenameFlags::NOREPLACE,
         )
         .map_err(io::Error::from)
     }
     #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
     {
-        let _ = (parent, name, directory);
+        let _ = (parent, name, directory, destination);
         Err(io::ErrorKind::Unsupported.into())
     }
 }

@@ -205,7 +205,17 @@ Observed on 2026-10-05, Windows, Rust 1.99.0, `CARGO_INCREMENTAL=0`: all eight c
 acceptance tests and the library shutdown ownership regression passed, alongside the eight
 resolver acceptance tests. The initial restart test failed before the catalog implementation.
 
-The PR also removes the obsolete Black 26.5.1 requirement from the Python example configuration.
-The example intentionally installs current unpinned tools; CI's Black 26.10.0 otherwise rejects
-the configuration before checking source formatting. Black, Ruff and mypy passed locally;
+The Python example tracks current unpinned tools. Its obsolete Black 26.5.1 requirement is absent
+on current main. Black, Ruff and mypy passed locally;
 53 Python tests passed, with four existing platform or opt-in environment skips.
+
+### Storage authority integration
+
+PR #269 merged on 2026-10-05. This branch incorporates main commit
+`5e782456e2dda9a1b45022c1362c0b52476d8769`, preserving its catalog authority,
+reader leases and named-volume location initialization. Each in-flight retention connection
+holds the same catalog authority lease. Shutdown rejects new retention operations; an operation
+that already owns its connection keeps the catalog locked until that connection is released.
+Retention reads and commits verify the existing authority. Commit verification runs inside the
+write transaction, so an offline handoff fence rejects the operation without leaving a transaction
+open or changing its prior commitment. These guards do not activate retention cleanup.

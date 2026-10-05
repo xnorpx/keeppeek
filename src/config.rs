@@ -1,4 +1,6 @@
 pub use crate::access::AccessKey;
+pub(crate) mod metadata;
+mod storage_volumes;
 use crate::{
     access,
     cameras::{
@@ -8,6 +10,7 @@ use crate::{
     event_forwarder::config::{EventForwarderConfig, MQTT_PASSWORD_SECRET, MqttForwarderConfig},
 };
 use ipnet::IpNet;
+pub use metadata::MetadataBinding;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -20,7 +23,7 @@ use url::Url;
 const DEFAULT_CONFIG_NAME: &str = "config.toml";
 const DEFAULT_SECRETS_NAME: &str = "secrets.toml";
 const ACCESS_KEY_SECRET: &str = "KEEPPEEK_ACCESS_KEY";
-const STORAGE_MIGRATION_SECTION: &str = "storage_migration";
+pub(crate) const STORAGE_MIGRATION_SECTION: &str = "storage_migration";
 const DEFAULT_SECRETS_TEMPLATE: &str = r#"# Keep this file private. KeepPeek creates it with owner-only permissions.
 # It is a flat string-to-string map. Reference values from config.toml with
 # {secret:KEY}; use {secret:KEY|url} for percent-encoded URL components.
@@ -507,6 +510,10 @@ const fn default_battery_wake_stale_after_secs() -> u64 {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageToml {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<MetadataBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub named_volumes: Option<crate::storage::volumes::VolumeConfiguration>,
     #[serde(default)]
     pub medium_term_path: Option<String>,
 
@@ -715,12 +722,7 @@ impl StorageMigration {
         {
             migration.recording_catalog_after_move =
                 Some(next_recording_catalog_path.to_path_buf());
-            if current_recording_catalog_path != next_recording_catalog_path
-                && !migration.is_covered_by_recording_root(
-                    current_recording_catalog_path,
-                    next_recording_catalog_path,
-                )
-            {
+            if current_recording_catalog_path != next_recording_catalog_path {
                 migration.recording_catalog = Some(StoragePathMigration {
                     from: current_recording_catalog_path.to_path_buf(),
                     to: next_recording_catalog_path.to_path_buf(),
@@ -817,6 +819,35 @@ impl StorageMigration {
             .collect::<Vec<_>>();
         recording_routes.sort_unstable();
         recording_routes.dedup();
+        let catalog_route = self.catalog_route();
+        if let Some(route) = &catalog_route {
+            move_recording_catalog_path(&route.from, &route.to)?;
+        }
+        let mut catalog_lease = self
+            .recording_catalog_after_move
+            .as_ref()
+            .filter(|path| path.is_file())
+            .map(|path| crate::storage::catalog::authority::Lease::acquire(path))
+            .transpose()?;
+        let catalog_connection = catalog_lease
+            .as_mut()
+            .map(crate::storage::catalog::authority::Lease::connect)
+            .transpose()?;
+        if let (Some(lease), Some(connection)) = (&catalog_lease, &catalog_connection) {
+            lease.initialize(connection)?;
+        }
+        let retained = catalog_route
+            .as_ref()
+            .map(|route| {
+                ["", "-wal", "-shm"].map(|suffix| {
+                    let mut path = route.from.as_os_str().to_owned();
+                    path.push(suffix);
+                    PathBuf::from(path)
+                })
+            })
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         let mut moved = Vec::new();
         for route in self.routes() {
             if moved
@@ -826,16 +857,42 @@ impl StorageMigration {
                 continue;
             }
             if self.recording_catalog.as_ref() == Some(route) {
-                move_recording_catalog_path(&route.from, &route.to)?;
+                continue;
             } else {
-                move_storage_path(&route.from, &route.to)?;
+                move_storage_path(&route.from, &route.to, &retained)?;
             }
             moved.push((route.from.clone(), route.to.clone()));
         }
-        if let Some(catalog_path) = &self.recording_catalog_after_move {
-            crate::storage::catalog::rewrite_recording_paths(catalog_path, &recording_routes)?;
+        if let Some(connection) = &catalog_connection {
+            crate::storage::catalog::rewrite_recording_paths_connection(
+                connection,
+                &recording_routes,
+            )?;
         }
         Ok(())
+    }
+
+    fn catalog_route(&self) -> Option<StoragePathMigration> {
+        if let Some(route) = &self.recording_catalog {
+            return Some(route.clone());
+        }
+        let target = self.recording_catalog_after_move.as_ref()?;
+        [self.medium_term.as_ref(), self.long_term.as_ref()]
+            .into_iter()
+            .flatten()
+            .filter_map(|route| {
+                target.strip_prefix(&route.to).ok().map(|key| {
+                    (
+                        route.to.components().count(),
+                        StoragePathMigration {
+                            from: route.from.join(key),
+                            to: target.clone(),
+                        },
+                    )
+                })
+            })
+            .max_by_key(|(specificity, _)| *specificity)
+            .map(|(_, route)| route)
     }
 }
 
@@ -882,6 +939,8 @@ const fn default_cleanup_hysteresis_gb() -> u64 {
 impl Default for StorageToml {
     fn default() -> Self {
         Self {
+            metadata: None,
+            named_volumes: None,
             medium_term_path: None,
             long_term_path: None,
             recording_catalog_path: None,
@@ -1305,12 +1364,13 @@ pub fn load() -> anyhow::Result<(Config, PathBuf)> {
 }
 
 fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
-    let config_directory = ensure_config_dir()?;
+    ensure_config_dir()?;
     let mut secrets = ensure_secrets_file(&path)?;
 
     let (mut cfg, mut merged, existing_config) = if path.exists() {
         let text = std::fs::read_to_string(&path)?;
         let mut root: toml::Table = toml::from_str(&text)?;
+        metadata::pending::apply(&path, &mut root, &secrets)?;
         apply_pending_storage_migration(&mut root)?;
         let cfg = config_from_table(&root, &secrets)?;
         (cfg, root, true)
@@ -1338,16 +1398,15 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
     cfg.privacy.validate()?;
     cfg.event_forwarder.mqtt.validate()?;
 
-    let default_recordings = config_directory
-        .join("recordings")
-        .to_string_lossy()
-        .into_owned();
-    if cfg.storage.medium_term_path.is_none() {
-        cfg.storage.medium_term_path = Some(default_recordings.clone());
-    }
-    if cfg.storage.long_term_path.is_none() {
-        cfg.storage.long_term_path = Some(default_recordings);
-    }
+    let initializing_metadata = cfg.storage.metadata.is_none();
+    let storage_base = std::path::absolute(
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new(".")),
+    )?;
+    crate::storage::volumes::bootstrap::initialize(&mut cfg.storage, &storage_base)?;
+    metadata::validate(&cfg.storage)?;
+    storage_volumes::validate(cfg.storage.named_volumes.as_ref())?;
 
     let cfg_value: toml::Value = toml::Value::try_from(&cfg)?;
     let cfg_table = cfg_value.as_table().cloned().unwrap_or_default();
@@ -1367,8 +1426,11 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
         );
     }
 
+    if initializing_metadata {
+        storage_volumes::preserve_initial_metadata_id(&cfg.storage, &mut merged)?;
+    }
     let text = toml::to_string_pretty(&merged)?;
-    write_private_file(&path, text.as_bytes())?;
+    write_private_file_atomically(&path, text.as_bytes())?;
 
     if !existing_config {
         tracing::info!("created default config at {}", path.display());
@@ -1475,9 +1537,31 @@ pub fn update_settings_with_migration(
     settings: &Config,
     migration: Option<&StorageMigration>,
 ) -> anyhow::Result<Config> {
+    update_settings_with_volume_draft(path, settings, migration, None)
+}
+
+pub(crate) fn update_settings_with_volume_draft(
+    path: &Path,
+    settings: &Config,
+    migration: Option<&StorageMigration>,
+    volumes: Option<&crate::storage::volumes::VolumeConfiguration<String>>,
+) -> anyhow::Result<Config> {
     let text = std::fs::read_to_string(path)?;
     let mut root: toml::Table = toml::from_str(&text)?;
     let secrets = load_secrets(path)?;
+    let mut previous_metadata = root
+        .get("storage")
+        .and_then(|storage| storage.get("metadata"))
+        .cloned();
+    if let Some(value) = &mut previous_metadata {
+        resolve_toml_secret_references(value, &secrets)?;
+    }
+    let previous_metadata: Option<MetadataBinding> =
+        previous_metadata.map(toml::Value::try_into).transpose()?;
+    anyhow::ensure!(
+        previous_metadata == settings.storage.metadata,
+        "metadata ownership requires a confirmed handoff"
+    );
     set_string_preserving_secret_reference(&mut root, "host", &settings.host, &secrets)?;
     root.insert(
         "port".to_owned(),
@@ -1581,6 +1665,11 @@ pub fn update_settings_with_migration(
         "cleanup_hysteresis_gb".to_owned(),
         toml::Value::Integer(i64::try_from(settings.storage.cleanup_hysteresis_gb)?),
     );
+    if let Some(volumes) = volumes {
+        storage_volumes::persist(storage, Some(volumes), &secrets)?;
+    } else {
+        storage_volumes::persist(storage, settings.storage.named_volumes.as_ref(), &secrets)?;
+    }
     match migration {
         Some(migration) => {
             migration.validate()?;
@@ -1596,6 +1685,11 @@ pub fn update_settings_with_migration(
 
     let serialized = toml::to_string_pretty(&root)?;
     let updated = config_from_table(&root, &secrets)?;
+    metadata::pending::preserve_storage(&text, &root, &updated.storage, &secrets)?;
+    if updated.storage.metadata.is_some() {
+        let previous = load_config(path)?;
+        metadata::preserve_owner(&previous.storage, &updated.storage)?;
+    }
     write_private_file_atomically(path, serialized.as_bytes())?;
     Ok(updated)
 }
@@ -1745,6 +1839,8 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     resolve_toml_secret_references(&mut resolved, secrets)?;
     let mut config: Config = resolved.try_into()?;
     config.storage.validate_pre_recording_budgets()?;
+    metadata::validate(&config.storage)?;
+    storage_volumes::validate(config.storage.named_volumes.as_ref())?;
     if let Some(external_auth) = &config.external_auth {
         external_auth.validate()?;
     }
@@ -1753,6 +1849,14 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     }
     config.source = root.clone();
     Ok(config)
+}
+
+pub(crate) fn validate_volume_configuration(
+    path: &Path,
+    configuration: &crate::storage::volumes::VolumeConfiguration<String>,
+) -> anyhow::Result<()> {
+    let secrets = load_secrets(path)?;
+    storage_volumes::validate_with_secrets(configuration, &secrets)
 }
 
 fn merge_preserving_secret_references(existing: &mut toml::Value, next: toml::Value) {
@@ -1979,7 +2083,7 @@ fn apply_pending_storage_migration(root: &mut toml::Table) -> anyhow::Result<()>
     Ok(())
 }
 
-fn move_directory_contents(from: &Path, to: &Path) -> anyhow::Result<()> {
+fn move_directory_contents(from: &Path, to: &Path, retained: &[PathBuf]) -> anyhow::Result<()> {
     if !from.exists() {
         return Ok(());
     }
@@ -1992,10 +2096,24 @@ fn move_directory_contents(from: &Path, to: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(to)?;
     let mut entries = std::fs::read_dir(from)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_unstable_by_key(|entry| entry.file_name());
+    let mut retained_lock = false;
     for entry in entries {
         let source = entry.path();
+        if retained.contains(&source)
+            || entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(".authority.lock"))
+        {
+            retained_lock = true;
+            continue;
+        }
         let destination = to.join(entry.file_name());
-        move_path(&source, &destination)?;
+        move_path(&source, &destination, retained)?;
+        retained_lock |= source.exists();
+    }
+    if retained_lock {
+        return Ok(());
     }
     std::fs::remove_dir(from).or_else(|error| {
         (error.kind() == std::io::ErrorKind::NotFound)
@@ -2005,41 +2123,37 @@ fn move_directory_contents(from: &Path, to: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn move_storage_path(from: &Path, to: &Path) -> anyhow::Result<()> {
+fn move_storage_path(from: &Path, to: &Path, retained: &[PathBuf]) -> anyhow::Result<()> {
     if !from.exists() {
         return Ok(());
     }
     if from.is_dir() {
-        return move_directory_contents(from, to);
+        return move_directory_contents(from, to, retained);
     }
     let parent = to.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
-    move_path(from, to)
+    move_path(from, to, retained)
 }
 
 fn move_recording_catalog_path(from: &Path, to: &Path) -> anyhow::Result<()> {
-    move_storage_path(from, to)?;
-    for suffix in ["-wal", "-shm"] {
-        let from_sidecar = path_with_suffix(from, suffix);
-        if from_sidecar.exists() {
-            move_storage_path(&from_sidecar, &path_with_suffix(to, suffix))?;
-        }
+    if !from.exists() {
+        return Ok(());
     }
-    Ok(())
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    crate::storage::catalog::authority::transfer_legacy(from, to)
 }
 
-fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut value = path.as_os_str().to_os_string();
-    value.push(suffix);
-    PathBuf::from(value)
-}
-
-fn move_path(from: &Path, to: &Path) -> anyhow::Result<()> {
+fn move_path(from: &Path, to: &Path, retained: &[PathBuf]) -> anyhow::Result<()> {
+    if from.is_dir() && !to.exists() {
+        return move_directory_contents(from, to, retained);
+    }
     if to.exists() {
         let from_metadata = std::fs::symlink_metadata(from)?;
         let to_metadata = std::fs::symlink_metadata(to)?;
         if from_metadata.is_dir() && to_metadata.is_dir() {
-            return move_directory_contents(from, to);
+            return move_directory_contents(from, to, retained);
         }
         if from_metadata.is_file() && to_metadata.is_file() && files_equal(from, to)? {
             std::fs::remove_file(from)?;
@@ -2483,7 +2597,10 @@ fn sanitize_camera_key(name: &str) -> String {
 pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
     let filename = path
         .file_name()
@@ -2545,7 +2662,8 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
     }
     #[cfg(not(windows))]
     {
-        std::fs::rename(temporary, path)
+        std::fs::rename(temporary, path)?;
+        std::fs::File::open(parent)?.sync_all()
     }
 }
 
@@ -3558,6 +3676,8 @@ mod tests {
             host: "127.0.0.1".to_owned(),
             port: 3200,
             storage: StorageToml {
+                named_volumes: None,
+                metadata: None,
                 medium_term_path: None,
                 long_term_path: None,
                 recording_catalog_path: Some("/metadata/recordings.db".to_owned()),
@@ -3685,6 +3805,30 @@ mod tests {
     }
 
     #[test]
+    fn pending_storage_migration_locks_unchanged_catalog_before_moving_media() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-move-lease-{}", uuid::Uuid::new_v4()));
+        let current = directory.join("current");
+        let next = directory.join("next");
+        std::fs::create_dir_all(&current).unwrap();
+        let recording = current.join("recording.mp4");
+        std::fs::write(&recording, b"retained").unwrap();
+        let catalog_path = directory.join("external.db");
+        let catalog = RecordingCatalog::open(&catalog_path).unwrap();
+        let migration = StorageMigration::between_with_metadata(
+            StorageMigrationPaths::new(&current, &current, &catalog_path, &current.join("thumbs")),
+            StorageMigrationPaths::new(&next, &next, &catalog_path, &next.join("thumbs")),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(migration.apply().is_err());
+        assert_eq!(std::fs::read(&recording).unwrap(), b"retained");
+        assert!(!next.join("recording.mp4").exists());
+        catalog.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn pending_storage_migration_moves_existing_recordings_and_clears_marker() {
         let directory =
             std::env::temp_dir().join(format!("keeppeek-storage-move-{}", rand::random::<u64>()));
@@ -3724,7 +3868,10 @@ mod tests {
         apply_pending_storage_migration(&mut root).unwrap();
 
         assert!(!root.contains_key(STORAGE_MIGRATION_SECTION));
-        assert!(!current.exists());
+        assert!(catalog.is_file());
+        assert!(RecordingCatalog::open(&catalog).is_err());
+        assert!(current.join("recordings.db.authority.lock").is_file());
+        assert!(!current.join("front_gate").exists());
         assert_eq!(
             std::fs::read(next.join("front_gate/main/2026-08-12/12/0000.mp4")).unwrap(),
             b"recording"

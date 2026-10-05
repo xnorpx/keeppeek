@@ -159,6 +159,10 @@ The TLS scenarios
 are also reproducible with `bun run test:e2e:run -- e2e/external-authentication.e2e.ts`
 under `ui/` after the normal E2E preparation. The focused eight-test run uses
 `bun run test:e2e:run -- --config e2e/fixtures/external-authentication.config.ts`.
+The runner compiles the authentication test executable before starting Playwright and
+Vite. CI can supply an existing executable through `KEEPPEEK_AUTH_E2E_BINARY`.
+The live fixture never invokes Cargo, which would regenerate files watched by Vite
+and interrupt unrelated browser tests.
 Test fixtures are synthetic; do not
 substitute production credentials or publish raw HAR/configuration archives.
 

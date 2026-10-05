@@ -49,6 +49,7 @@ message Request {
     RecordingMaintenanceCommand recording_maintenance_command = 27;
     // Arms the authenticated session microphone for one target set.
     TalkbackCommand talkback_command = 28;
+    StorageVolumeCommand storage_volume_command = 29;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -1333,6 +1334,192 @@ message RuntimeStorageConfiguration {
   optional uint64 cleanup_hysteresis_gb = 15;
   optional uint64 pre_recording_stream_max_bytes = 16;
   optional uint64 pre_recording_global_max_bytes = 17;
+  StorageVolumeConfiguration named_volumes = 18;
+}
+
+message StorageVolumeConfiguration {
+  repeated StorageVolume volumes = 1;
+  repeated StoragePlacementRule placement = 2;
+}
+
+// Administrator-only operations. Configuration updates use RuntimeConfigurationCommand.
+message StorageVolumeCommand {
+  oneof action {
+    ListStorageVolumes list = 1;
+    ProbeStorageVolume probe = 2;
+    PreviewStoragePlacement placement = 3;
+    ListStorageObjects objects = 4;
+    PreviewStorageMove preview_move = 5;
+    ConfirmStorageMove confirm_move = 6;
+    ListStorageMoves moves = 7;
+    GetStorageMove get_move = 8;
+    CancelStorageMove cancel_move = 9;
+    SetStorageVolumeDraining set_draining = 10;
+    PreviewStorageMetadata preview_metadata = 11;
+    ConfirmStorageMetadata confirm_metadata = 12;
+    GetStorageMetadata metadata = 13;
+    CancelStorageMetadata cancel_metadata = 14;
+  }
+}
+// Metadata confirmation stages an offline transfer at the next service restart.
+message PreviewStorageMetadata { string destination_volume_id = 1; }
+message ConfirmStorageMetadata {
+  string preview_token = 1;
+  string expected_configuration_revision = 2;
+}
+message GetStorageMetadata {}
+message CancelStorageMetadata { string expected_configuration_revision = 1; }
+message StorageMetadataPreview {
+  string preview_token = 1;
+  string configuration_revision = 2;
+  string destination_volume_id = 3;
+  uint64 required_bytes = 4;
+  uint32 expires_in_seconds = 5;
+  bool restart_required = 6;
+  bool requires_downtime = 7;
+}
+message StorageMetadataStatus {
+  string configuration_revision = 1;
+  optional string current_volume_id = 2;
+  optional string pending_volume_id = 3;
+  bool restart_required = 4;
+}
+message ListStorageVolumes {}
+message ProbeStorageVolume { string volume_id = 1; }
+message PreviewStoragePlacement {
+  StorageVolumeRole role = 1;
+  string source_id = 2;
+  uint64 bytes = 3;
+}
+enum StorageObjectKind {
+  STORAGE_OBJECT_KIND_UNSPECIFIED = 0;
+  STORAGE_OBJECT_KIND_RECORDING = 1;
+  STORAGE_OBJECT_KIND_EXPORT = 2;
+  STORAGE_OBJECT_KIND_THUMBNAIL = 3;
+}
+message StorageObject { StorageObjectKind kind = 1; string id = 2; }
+message ListStorageObjects { string volume_id = 1; StorageObject after = 2; }
+message PreviewStorageMove {
+  StorageObject object = 1;
+  string destination_volume_id = 2;
+  StorageVolumeRole role = 3;
+}
+message ConfirmStorageMove {
+  string preview_token = 1;
+  string expected_configuration_revision = 2;
+}
+message ListStorageMoves { string after_job_id = 1; }
+message GetStorageMove { string job_id = 1; }
+message CancelStorageMove { string job_id = 1; }
+// Stops new placements. Existing writers and moves retain their reservations.
+message SetStorageVolumeDraining {
+  string volume_id = 1;
+  bool draining = 2;
+  string expected_configuration_revision = 3;
+}
+message StorageVolumeStatus {
+  string volume_id = 1;
+  bool online = 2;
+  optional uint64 available_bytes = 3;
+  uint64 owned_bytes = 4;
+  uint64 reserved_bytes = 5;
+  bool configured_draining = 6;
+  bool operator_draining = 7;
+}
+message StorageVolumeList {
+  string configuration_revision = 1;
+  repeated StorageVolumeStatus volumes = 2;
+  bool runtime_available = 3;
+}
+message StoragePlacementResult {
+  optional string selected_volume_id = 1;
+  repeated StoragePlacementRejection rejected = 2;
+}
+message StoragePlacementRejection { string volume_id = 1; string reason = 2; }
+message StorageObjectLocation {
+  StorageObject object = 1;
+  string volume_id = 2;
+  uint64 bytes = 3;
+  uint64 revision = 4;
+}
+message StorageObjectList {
+  repeated StorageObjectLocation objects = 1;
+  StorageObject next_after = 2;
+}
+message StorageMovePreview {
+  string preview_token = 1;
+  string configuration_revision = 2;
+  string job_id = 3;
+  StorageObjectLocation source = 4;
+  string destination_volume_id = 5;
+  uint32 expires_in_seconds = 6;
+}
+message StorageMoveJob {
+  string job_id = 1;
+  StorageObjectLocation source = 2;
+  string destination_volume_id = 3;
+  string phase = 4;
+  bool cancellation_requested = 5;
+}
+message StorageMoveList { repeated StorageMoveJob jobs = 1; string next_after_job_id = 2; }
+message StorageVolumeResult {
+  oneof result {
+    StorageVolumeList volumes = 1;
+    StorageVolumeStatus probe = 2;
+    StoragePlacementResult placement = 3;
+    StorageObjectList objects = 4;
+    StorageMovePreview preview = 5;
+    StorageMoveJob job = 6;
+    StorageMoveList jobs = 7;
+    StorageMetadataPreview metadata_preview = 8;
+    StorageMetadataStatus metadata = 9;
+  }
+}
+
+enum StorageVolumeRole {
+  STORAGE_VOLUME_ROLE_UNSPECIFIED = 0;
+  STORAGE_VOLUME_ROLE_ACTIVE = 1;
+  STORAGE_VOLUME_ROLE_ARCHIVE = 2;
+  STORAGE_VOLUME_ROLE_EXPORT = 3;
+  STORAGE_VOLUME_ROLE_THUMBNAIL = 4;
+  STORAGE_VOLUME_ROLE_METADATA = 5;
+}
+
+enum StorageVolumeState {
+  STORAGE_VOLUME_STATE_UNSPECIFIED = 0;
+  STORAGE_VOLUME_STATE_ENABLED = 1;
+  STORAGE_VOLUME_STATE_READ_ONLY = 2;
+  STORAGE_VOLUME_STATE_DRAINING = 3;
+  STORAGE_VOLUME_STATE_DISABLED = 4;
+}
+
+enum StoragePlacementStrategy {
+  STORAGE_PLACEMENT_STRATEGY_UNSPECIFIED = 0;
+  STORAGE_PLACEMENT_STRATEGY_PRIORITY = 1;
+  STORAGE_PLACEMENT_STRATEGY_FREE_SPACE = 2;
+}
+
+message StorageVolume {
+  string id = 1;
+  string root = 2;
+  repeated StorageVolumeRole roles = 3;
+  StorageVolumeState state = 4;
+  uint32 priority = 5;
+  optional uint64 capacity_bytes = 6;
+  uint64 minimum_free_bytes = 7;
+  uint64 warning_free_bytes = 8;
+  uint64 critical_free_bytes = 9;
+  repeated string sources = 10;
+  repeated string groups = 11;
+}
+
+message StoragePlacementRule {
+  StorageVolumeRole role = 1;
+  optional string source = 2;
+  optional string group = 3;
+  repeated string candidates = 4;
+  StoragePlacementStrategy strategy = 5;
+  bool allow_fallback = 6;
 }
 
 message LoggingCommand {
@@ -2735,6 +2922,7 @@ message Ok {
     RecordingReconciliationReport recording_reconciliation_report = 40;
     CameraAudioPlaybackResult camera_audio_playback_result = 41;
     ExternalAuthenticationResult external_authentication_result = 42;
+    StorageVolumeResult storage_volume_result = 43;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";

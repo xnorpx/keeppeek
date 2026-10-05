@@ -29,7 +29,11 @@ use std::{
     time::Duration,
 };
 
+pub(crate) mod authority;
+mod event_write;
+pub mod locations;
 pub mod maintenance;
+pub(crate) mod readers;
 pub mod retention;
 pub mod workflow;
 
@@ -331,9 +335,10 @@ pub(crate) struct CatalogStreamCoverage {
 
 #[derive(Clone)]
 pub struct RecordingCatalogHandle {
+    readers: Arc<readers::Registry>,
     tx: SyncSender<Command>,
     search_tx: SyncSender<SearchCommand>,
-    retention: std::sync::Weak<std::sync::Mutex<turso::Connection>>,
+    retention: std::sync::Weak<retention::Connection>,
     retention_shutdown: Arc<AtomicBool>,
 }
 
@@ -341,7 +346,7 @@ pub struct RecordingCatalog {
     handle: RecordingCatalogHandle,
     thread: Option<JoinHandle<()>>,
     maintenance_shutdown: Arc<AtomicBool>,
-    retention_connection: Option<Arc<std::sync::Mutex<turso::Connection>>>,
+    retention_connection: Option<Arc<retention::Connection>>,
     maintenance: Option<JoinHandle<()>>,
     search_thread: Option<JoinHandle<()>>,
 }
@@ -355,6 +360,18 @@ struct LegacyRecording {
 }
 
 enum Command {
+    MetadataInfo {
+        reply: SyncSender<anyhow::Result<authority::MetadataInfo>>,
+    },
+    ReadLease {
+        request: readers::Request,
+        reply: SyncSender<anyhow::Result<readers::Reply>>,
+    },
+    VolumeLocation {
+        request: locations::Request,
+        deadline: std::time::Instant,
+        reply: SyncSender<anyhow::Result<locations::Reply>>,
+    },
     RecoverDeletions {
         archive: super::long_term::inspection::Archive,
         deadline: std::time::Instant,
@@ -384,6 +401,7 @@ enum Command {
     ClaimRecordings {
         actor: String,
         id: String,
+        named: bool,
         deadline: std::time::Instant,
         reply: SyncSender<anyhow::Result<Vec<maintenance::jobs::claims::Claim>>>,
     },
@@ -493,14 +511,6 @@ enum Command {
         stream_id: String,
         reply: SyncSender<anyhow::Result<Option<EventKeyframeLocation>>>,
     },
-    ResolveMediaObject {
-        source_id: String,
-        logical_stream_id: String,
-        legacy_recording_stream_id: Option<String>,
-        recording_id: String,
-        fragment_sequence: u64,
-        reply: SyncSender<anyhow::Result<Option<CatalogMediaObjectLocation>>>,
-    },
     BackfillKeyframes {
         recording_id: String,
         keyframes: Vec<CatalogKeyframe>,
@@ -593,17 +603,27 @@ enum SearchCommand {
 
 impl RecordingCatalog {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let path = path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("Turso catalog path is not valid UTF-8"))?;
-        let database = pollster::block_on(
-            turso::Builder::new_local(path)
-                .experimental_vacuum(true)
-                .build(),
-        )?;
+        Self::open_inner(path, None)
+    }
+
+    /// Opens a bound catalog without creating or adopting a replacement database.
+    ///
+    /// # Errors
+    /// Rejects missing files, changed directory identity, and mismatched catalog authority.
+    pub fn open_managed(
+        path: &Path,
+        expected: &authority::Authority,
+        root_identity: &super::volumes::root::Identity,
+    ) -> anyhow::Result<Self> {
+        Self::open_inner(path, Some((expected, root_identity)))
+    }
+
+    fn open_inner(
+        path: &Path,
+        expected: Option<(&authority::Authority, &super::volumes::root::Identity)>,
+    ) -> anyhow::Result<Self> {
+        let (database, lease) = Self::bootstrap_database(path, expected)?;
+        let lease = Arc::new(lease);
         let connection = database.connect()?;
         let search_connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
@@ -613,19 +633,28 @@ impl RecordingCatalog {
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (search_tx, search_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let maintenance_shutdown = Arc::new(AtomicBool::new(false));
-        let retention_connection = retention::connect(&database)?;
+        let retention_connection = retention::connect(&database, Arc::clone(&lease))?;
+        let readers = Arc::new(readers::Registry::new(&lease));
         let handle = RecordingCatalogHandle {
+            readers: Arc::clone(&readers),
             tx,
             search_tx,
             retention: Arc::downgrade(&retention_connection),
             retention_shutdown: maintenance_shutdown.clone(),
         };
+        let writer_lease = lease.clone();
         let thread = std::thread::Builder::new()
             .name("recording-catalog".to_owned())
-            .spawn(move || run_catalog(connection, rx))?;
+            .spawn(move || {
+                run_catalog(connection, rx, readers, &writer_lease);
+            })?;
         let search_thread = std::thread::Builder::new()
             .name("recording-catalog-search".to_owned())
-            .spawn(move || run_search_catalog(search_connection, search_rx))?;
+            .spawn(move || {
+                let _lease = lease;
+                run_search_catalog(search_connection, search_rx);
+            })?;
+
         let maintenance = (!legacy_recordings.is_empty())
             .then(|| {
                 let handle = handle.clone();
@@ -644,6 +673,45 @@ impl RecordingCatalog {
             maintenance,
             search_thread: Some(search_thread),
         })
+    }
+
+    fn bootstrap_database(
+        path: &Path,
+        expected: Option<(&authority::Authority, &super::volumes::root::Identity)>,
+    ) -> anyhow::Result<(turso::Database, authority::Lease)> {
+        if expected.is_none()
+            && let Some(parent) = path.parent()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let root = expected
+            .map(|(_, identity)| {
+                let root = super::volumes::root::Root::open(
+                    path.parent()
+                        .ok_or_else(|| anyhow::anyhow!("metadata parent is missing"))?,
+                )?;
+                anyhow::ensure!(root.identity() == identity, "managed metadata root changed");
+                Ok::<_, anyhow::Error>(root)
+            })
+            .transpose()?;
+        let mut lease = authority::Lease::acquire(path)?;
+        if let Some(root) = &root {
+            lease.require_root(root)?;
+            lease.require_existing()?;
+        }
+        let database = lease.database()?;
+        let connection = database.connect()?;
+        connection.busy_timeout(BUSY_TIMEOUT)?;
+        if let Some((expected, _)) = expected {
+            anyhow::ensure!(
+                lease.verify(&connection)? == *expected,
+                "managed catalog authority does not match configuration"
+            );
+        } else {
+            lease.initialize(&connection)?;
+        }
+        drop(connection);
+        Ok((database, lease))
     }
 
     pub fn handle(&self) -> RecordingCatalogHandle {
@@ -687,6 +755,7 @@ impl Drop for RecordingCatalog {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn rewrite_recording_paths(
     catalog_path: &Path,
     routes: &[(PathBuf, PathBuf)],
@@ -694,14 +763,18 @@ pub(crate) fn rewrite_recording_paths(
     if routes.is_empty() || !catalog_path.exists() {
         return Ok(());
     }
-    let path = catalog_path
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Turso catalog path is not valid UTF-8"))?;
-    let database = pollster::block_on(turso::Builder::new_local(path).build())?;
-    let connection = database.connect()?;
-    connection.busy_timeout(BUSY_TIMEOUT)?;
+    let mut lease = authority::Lease::acquire(catalog_path)?;
+    let connection = lease.connect()?;
+    lease.initialize(&connection)?;
+    rewrite_recording_paths_connection(&connection, routes)
+}
+
+pub(crate) fn rewrite_recording_paths_connection(
+    connection: &turso::Connection,
+    routes: &[(PathBuf, PathBuf)],
+) -> anyhow::Result<()> {
     pollster::block_on(async {
-        initialize_schema(&connection).await?;
+        initialize_schema(connection).await?;
         let mut rows = connection
             .query("SELECT id, path, finalized FROM recording_files", ())
             .await?;
@@ -778,6 +851,7 @@ impl RecordingCatalogHandle {
         Self {
             tx,
             search_tx,
+            readers: Arc::new(readers::Registry::default()),
             retention: std::sync::Weak::new(),
             retention_shutdown: Arc::new(AtomicBool::new(false)),
         }
@@ -1208,30 +1282,6 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
-    pub(crate) fn resolve_media_object(
-        &self,
-        source_id: &str,
-        logical_stream_id: &str,
-        legacy_recording_stream_id: Option<&str>,
-        recording_id: &str,
-        fragment_sequence: u64,
-    ) -> anyhow::Result<Option<CatalogMediaObjectLocation>> {
-        let (reply, response) = mpsc::sync_channel(1);
-        self.tx
-            .send(Command::ResolveMediaObject {
-                source_id: source_id.to_owned(),
-                logical_stream_id: logical_stream_id.to_owned(),
-                legacy_recording_stream_id: legacy_recording_stream_id.map(str::to_owned),
-                recording_id: recording_id.to_owned(),
-                fragment_sequence,
-                reply,
-            })
-            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
-        response
-            .recv()
-            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
-    }
-
     fn backfill_keyframes(
         &self,
         recording_id: &str,
@@ -1435,6 +1485,16 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    pub(crate) fn metadata_info(&self) -> anyhow::Result<authority::MetadataInfo> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .try_send(Command::MetadataInfo { reply })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable or busy"))?;
+        response
+            .recv_timeout(BUSY_TIMEOUT)
+            .map_err(|_| anyhow::anyhow!("recording catalog metadata query timed out"))?
+    }
+
     pub fn stats(&self) -> anyhow::Result<CatalogStats> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
@@ -1465,10 +1525,62 @@ impl RecordingCatalogHandle {
     }
 }
 
-fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
+fn run_catalog(
+    connection: turso::Connection,
+    rx: Receiver<Command>,
+    readers: Arc<readers::Registry>,
+    lease: &authority::Lease,
+) {
     let intent_epoch = maintenance::jobs::Epoch::new();
     while let Ok(command) = rx.recv() {
         match command {
+            Command::MetadataInfo { reply } => {
+                let result = lease.verify(&connection).and_then(|authority| {
+                    Ok(authority::MetadataInfo {
+                        authority,
+                        snapshot_bytes: crate::backup::database::snapshot_size_limit(&connection)?,
+                    })
+                });
+                let _ = reply.send(result);
+            }
+            Command::ReadLease { request, reply } => {
+                let _ = reply.send(pollster::block_on(readers::execute(
+                    &connection,
+                    &readers,
+                    request,
+                )));
+            }
+            Command::VolumeLocation {
+                request,
+                deadline,
+                reply,
+            } => {
+                let result = pollster::block_on(async {
+                    if let locations::Request::RecordingRecovery(
+                        locations::recording_recovery::Action::Begin(pending, _),
+                    ) = &request
+                    {
+                        readers::ensure_recording_idle(
+                            &connection,
+                            &readers,
+                            &pending.recording,
+                            &pending.path,
+                        )
+                        .await?;
+                    }
+                    locations::execute(&connection, request, deadline).await
+                });
+                let fatal = result
+                    .as_ref()
+                    .is_err_and(|error| error.is::<locations::FatalTransaction>());
+                let _ = reply.send(result);
+                if fatal {
+                    tracing::error!(
+                        "volume catalog transaction state is unknown; stopping catalog writer"
+                    );
+                    break;
+                }
+            }
             Command::RecoverDeletions {
                 archive,
                 deadline,
@@ -1489,16 +1601,16 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                 deadline,
                 reply,
             } => {
-                let _ = reply.send(pollster::block_on(
-                    maintenance::reconciliation::reindex::apply(
+                let _ = reply.send(readers::ensure_idle(&readers).and_then(|()| {
+                    pollster::block_on(maintenance::reconciliation::reindex::apply(
                         &connection,
                         &expected,
                         revision,
                         index,
                         evidence,
                         deadline,
-                    ),
-                ));
+                    ))
+                }));
             }
             Command::ReconcileMissing {
                 expected,
@@ -1506,14 +1618,14 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                 deadline,
                 reply,
             } => {
-                let _ = reply.send(pollster::block_on(
-                    maintenance::reconciliation::remove_missing(
+                let _ = reply.send(readers::ensure_idle(&readers).and_then(|()| {
+                    pollster::block_on(maintenance::reconciliation::remove_missing(
                         &connection,
                         &expected,
                         revision,
                         deadline,
-                    ),
-                ));
+                    ))
+                }));
             }
             Command::DeletionWork {
                 actor,
@@ -1535,15 +1647,15 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
             Command::ClaimRecordings {
                 actor,
                 id,
+                named,
                 deadline,
                 reply,
             } => {
-                let result = pollster::block_on(maintenance::jobs::claims::reserve(
-                    &connection,
-                    &actor,
-                    &id,
-                    deadline,
-                ));
+                let result = pollster::block_on(async {
+                    readers::ensure_job_idle(&connection, &readers, &actor, &id).await?;
+                    maintenance::jobs::claims::reserve(&connection, &actor, &id, named, deadline)
+                        .await
+                });
                 let _ = reply.send(result);
             }
             Command::DeletionIntent { request, reply } => {
@@ -1554,7 +1666,16 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                 )));
             }
             Command::UpsertRecording { recording, reply } => {
-                let _ = reply.send(pollster::block_on(upsert_recording(&connection, recording)));
+                let _ = reply.send(pollster::block_on(async {
+                    readers::ensure_path_change_idle(
+                        &connection,
+                        &readers,
+                        &recording.id,
+                        &recording.path,
+                    )
+                    .await?;
+                    upsert_recording(&connection, recording).await
+                }));
             }
             Command::InsertFragment { fragment, reply } => {
                 let _ = reply.send(pollster::block_on(insert_fragment(&connection, fragment)));
@@ -1576,12 +1697,11 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                 finalized,
                 reply,
             } => {
-                let _ = reply.send(pollster::block_on(update_recording_path(
-                    &connection,
-                    &recording_id,
-                    &path,
-                    finalized,
-                )));
+                let _ = reply.send(pollster::block_on(async {
+                    readers::ensure_path_change_idle(&connection, &readers, &recording_id, &path)
+                        .await?;
+                    update_recording_path(&connection, &recording_id, &path, finalized).await
+                }));
             }
             Command::FragmentsInRange {
                 stream_id,
@@ -1726,23 +1846,6 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                     &stream_id,
                 )));
             }
-            Command::ResolveMediaObject {
-                source_id,
-                logical_stream_id,
-                legacy_recording_stream_id,
-                recording_id,
-                fragment_sequence,
-                reply,
-            } => {
-                let _ = reply.send(pollster::block_on(resolve_media_object(
-                    &connection,
-                    &source_id,
-                    &logical_stream_id,
-                    legacy_recording_stream_id.as_deref(),
-                    &recording_id,
-                    fragment_sequence,
-                )));
-            }
             Command::BackfillKeyframes {
                 recording_id,
                 keyframes,
@@ -1771,13 +1874,17 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                 recording_id,
                 reply,
             } => {
-                let _ = reply.send(pollster::block_on(delete_recording(
-                    &connection,
-                    &recording_id,
-                )));
+                let _ = reply.send(pollster::block_on(async {
+                    readers::ensure_recording_idle(&connection, &readers, &recording_id, "")
+                        .await?;
+                    delete_recording(&connection, &recording_id).await
+                }));
             }
             Command::ClaimCleanupCandidate { reply } => {
-                let _ = reply.send(pollster::block_on(claim_cleanup_candidate(&connection)));
+                let _ = reply.send(pollster::block_on(async {
+                    readers::ensure_cleanup_idle(&connection, &readers).await?;
+                    claim_cleanup_candidate(&connection).await
+                }));
             }
             Command::PendingCleanupCandidate { reply } => {
                 let _ = reply.send(pollster::block_on(pending_cleanup_candidate(&connection)));
@@ -1787,11 +1894,11 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                 reason,
                 reply,
             } => {
-                let _ = reply.send(pollster::block_on(complete_cleanup(
-                    &connection,
-                    &recording_id,
-                    reason,
-                )));
+                let _ = reply.send(pollster::block_on(async {
+                    readers::ensure_recording_idle(&connection, &readers, &recording_id, "")
+                        .await?;
+                    complete_cleanup(&connection, &recording_id, reason).await
+                }));
             }
             Command::CancelCleanup {
                 recording_id,
@@ -1910,6 +2017,14 @@ fn run_search_catalog(connection: turso::Connection, rx: Receiver<SearchCommand>
     }
 }
 
+async fn prepare_legacy_backfill(
+    connection: &turso::Connection,
+) -> anyhow::Result<Vec<LegacyRecording>> {
+    let recordings = legacy_recordings_without_keyframes(connection).await?;
+    backfill_recording_file_sizes(connection, &recordings).await?;
+    Ok(recordings)
+}
+
 async fn legacy_recordings_without_keyframes(
     connection: &turso::Connection,
 ) -> anyhow::Result<Vec<LegacyRecording>> {
@@ -1926,6 +2041,8 @@ async fn legacy_recordings_without_keyframes(
                                         )
              FROM recording_files AS r
              WHERE NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
+               AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations
+                   WHERE kind = 'recording' AND object_id = r.id AND state != 'cancelled')
              ORDER BY r.started_at_ms, r.id",
             (),
         )
@@ -2245,6 +2362,8 @@ async fn claim_cleanup_candidate(
                 "SELECT id, path, file_bytes, cleanup_pending
                  FROM recording_files
                  WHERE finalized = 1 AND protected = 0
+                   AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
+                       AND (a.object_id=recording_files.id OR a.destination_path=replace(recording_files.path,char(92),'/') COLLATE NOCASE))
                    AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims
                                    WHERE recording_id = recording_files.id AND active = 1)
                  ORDER BY cleanup_pending DESC, started_at_ms, id
@@ -2298,6 +2417,8 @@ async fn pending_cleanup_candidate(
             "SELECT id, path, file_bytes
              FROM recording_files
              WHERE finalized = 1 AND protected = 0 AND cleanup_pending = 1
+               AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
+                   AND (a.object_id=recording_files.id OR a.destination_path=replace(recording_files.path,char(92),'/') COLLATE NOCASE))
              ORDER BY started_at_ms, id
              LIMIT 1",
             (),
@@ -2731,14 +2852,13 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
 
 async fn prepare_catalog(connection: &turso::Connection) -> anyhow::Result<Vec<LegacyRecording>> {
     initialize_schema(connection).await?;
-    let recordings = legacy_recordings_without_keyframes(connection).await?;
-    backfill_recording_file_sizes(connection, &recordings).await?;
-    Ok(recordings)
+    prepare_legacy_backfill(connection).await
 }
 
 async fn initialize_operational_schema(connection: &turso::Connection) -> anyhow::Result<()> {
     workflow::initialize(connection).await?;
     maintenance::jobs::initialize(connection).await?;
+    locations::initialize(connection).await?;
     retention::initialize(connection).await
 }
 
@@ -4134,160 +4254,7 @@ async fn insert_event(
     event: TimelineEvent,
     publication: Option<EventPublicationIdentity>,
 ) -> anyhow::Result<()> {
-    let mut event = event;
-    normalize_event_presentation(&mut event)?;
-    if event.kind.is_empty() {
-        anyhow::bail!("event kind must not be empty");
-    }
-    if event.revision == 0 {
-        anyhow::bail!("event revision must be greater than zero");
-    }
-    if event
-        .end_time_ms
-        .is_some_and(|end_time_ms| end_time_ms < event.start_time_ms)
-    {
-        anyhow::bail!("event end must not precede its start");
-    }
-    let bbox_json = event
-        .bbox
-        .map(|bbox| serde_json::to_string(&bbox))
-        .transpose()?;
-    let attachments_json = serde_json::to_string(&event.attachments)?;
-    let payload_json = event
-        .payload
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
-    let publication_id = publication
-        .as_ref()
-        .map(|identity| identity.publication_id.clone());
-    let publication_fingerprint = publication.map(|identity| identity.fingerprint);
-    connection.execute_batch("BEGIN IMMEDIATE").await?;
-    let result = async {
-        let existing = event_by_id(connection, &event.id).await?;
-        if let Some(existing) = &existing {
-            if event.revision <= existing.revision {
-                anyhow::bail!(
-                    "event revision {} does not exceed stored revision {}",
-                    event.revision,
-                    existing.revision
-                );
-            }
-            if event.camera_id != existing.camera_id || event.source != existing.source {
-                anyhow::bail!("event revision cannot change source identity");
-            }
-            connection
-                .execute(
-                    "UPDATE recording_events
-                     SET camera_id = ?2, stream = ?3, source = ?4, kind = ?5,
-                         start_time_ms = ?6, end_time_ms = ?7, confidence = ?8,
-                         bbox_json = ?9, zone = ?10, thumbnail_filename = ?11,
-                         revision = ?12, bbox_attachment_id = ?13,
-                         attachments_json = ?14, canonical_attachment_id = ?15,
-                         icon_key = ?16, rejected_icon_key = ?17,
-                         text = ?18, payload_json = ?19,
-                         publication_id = ?20, publication_fingerprint = ?21
-                     WHERE id = ?1",
-                    turso::params![
-                        event.id.clone(),
-                        event.camera_id.clone(),
-                        event.stream.clone(),
-                        event.source.as_str(),
-                        event.kind.clone(),
-                        event.start_time_ms,
-                        event.end_time_ms,
-                        event.confidence,
-                        bbox_json.clone(),
-                        event.zone.clone(),
-                        event.thumbnail_filename.clone(),
-                        to_i64(event.revision, "event revision")?,
-                        event.bbox_attachment_id.clone(),
-                        attachments_json.clone(),
-                        event.canonical_attachment_id.clone(),
-                        event.icon_key.clone(),
-                        event.rejected_icon_key.clone(),
-                        event.text.clone(),
-                        payload_json.clone(),
-                        publication_id.clone(),
-                        publication_fingerprint.clone(),
-                    ],
-                )
-                .await?;
-            replace_intrinsic_event_terms(
-                connection,
-                &event.id,
-                &event.kind,
-                event.text.as_deref(),
-            )
-            .await?;
-            record_event_search_mutation(connection, &event.id).await?;
-        } else {
-            if event.revision != 1 {
-                anyhow::bail!("new events must start at revision one");
-            }
-            connection
-                .execute(
-                    "INSERT INTO recording_events (
-                     id, camera_id, stream, source, kind, start_time_ms,
-                     end_time_ms, confidence, bbox_json, zone, thumbnail_filename,
-                     revision, bbox_attachment_id, attachments_json,
-                     canonical_attachment_id, icon_key, rejected_icon_key,
-                     text, payload_json, publication_id, publication_fingerprint
-                 ) VALUES (
-                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                     ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
-                 )",
-                    turso::params![
-                        event.id.clone(),
-                        event.camera_id.clone(),
-                        event.stream.clone(),
-                        event.source.as_str(),
-                        event.kind.clone(),
-                        event.start_time_ms,
-                        event.end_time_ms,
-                        event.confidence,
-                        bbox_json,
-                        event.zone,
-                        event.thumbnail_filename,
-                        to_i64(event.revision, "event revision")?,
-                        event.bbox_attachment_id,
-                        attachments_json,
-                        event.canonical_attachment_id,
-                        event.icon_key,
-                        event.rejected_icon_key.clone(),
-                        event.text.clone(),
-                        payload_json,
-                        publication_id,
-                        publication_fingerprint,
-                    ],
-                )
-                .await?;
-            replace_intrinsic_event_terms(
-                connection,
-                &event.id,
-                &event.kind,
-                event.text.as_deref(),
-            )
-            .await?;
-        }
-        reconcile_keyframes_for_event(
-            connection,
-            &event.id,
-            &event.camera_id,
-            event.stream.as_deref(),
-            event.start_time_ms,
-        )
-        .await?;
-        anyhow::Ok(())
-    }
-    .await;
-    match result {
-        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
-        Err(error) => {
-            let _ = connection.execute_batch("ROLLBACK").await;
-            Err(error)
-        }
-    }
+    event_write::insert(connection, event, publication).await
 }
 
 async fn replace_intrinsic_event_terms(
@@ -4560,6 +4527,7 @@ async fn attach_event_thumbnail(
             event.bbox_attachment_id = Some("thumbnail".to_owned());
         }
         let attachments_json = serde_json::to_string(&event.attachments)?;
+        locations::images::detach(connection, id).await?;
         connection
             .execute(
                 "UPDATE recording_events
@@ -4602,6 +4570,7 @@ async fn detach_event_thumbnail(connection: &turso::Connection, id: &str) -> any
         if changed == 0 {
             anyhow::bail!("event was not found");
         }
+        locations::images::detach(connection, id).await?;
         record_event_search_mutation(connection, id).await
     }
     .await;
@@ -4642,6 +4611,7 @@ async fn detach_event_thumbnail_file(
                 )
                 .await?;
             if changed == 1 {
+                locations::images::detach(connection, &event_id).await?;
                 record_event_search_mutation(connection, &event_id).await?;
             }
         }
@@ -4662,7 +4632,8 @@ async fn event_thumbnail_filenames(connection: &turso::Connection) -> anyhow::Re
         .query(
             "SELECT id, source, thumbnail_filename, attachments_json
              FROM recording_events
-             WHERE thumbnail_filename IS NOT NULL OR (source = 'camera' AND attachments_json LIKE '%isapi-%')
+             WHERE (thumbnail_filename IS NOT NULL OR (source = 'camera' AND attachments_json LIKE '%isapi-%'))
+             AND NOT EXISTS (SELECT 1 FROM storage_event_images i WHERE i.event_id=recording_events.id AND i.active=1)
              ORDER BY thumbnail_filename",
             (),
         )
@@ -6353,8 +6324,17 @@ pub(crate) mod tests {
             .snapshot_to(&snapshot_path, 16 * 1024 * 1024)
             .unwrap();
 
-        let snapshot = RecordingCatalog::open(&snapshot_path).unwrap();
-        assert_eq!(snapshot.handle().stats().unwrap().recording_files, 1);
+        assert!(RecordingCatalog::open(&snapshot_path).is_err());
+        let snapshot =
+            pollster::block_on(turso::Builder::new_local(snapshot_path.to_str().unwrap()).build())
+                .unwrap();
+        let snapshot = snapshot.connect().unwrap();
+        assert_eq!(
+            pollster::block_on(catalog_stats(&snapshot))
+                .unwrap()
+                .recording_files,
+            1
+        );
         handle
             .upsert_recording(CatalogRecording {
                 id: "recording-after".to_owned(),
@@ -6370,7 +6350,12 @@ pub(crate) mod tests {
             })
             .unwrap();
         assert_eq!(handle.stats().unwrap().recording_files, 2);
-        assert_eq!(snapshot.handle().stats().unwrap().recording_files, 1);
+        assert_eq!(
+            pollster::block_on(catalog_stats(&snapshot))
+                .unwrap()
+                .recording_files,
+            1
+        );
     }
 
     #[test]

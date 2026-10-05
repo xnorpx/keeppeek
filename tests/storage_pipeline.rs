@@ -72,6 +72,7 @@ fn three_tier_storage_pipeline() {
         warning_free_bytes: 0,
         critical_free_bytes: 0,
         cleanup_hysteresis_bytes: 0,
+        ..StorageConfig::default()
     };
     let engine = StorageEngine::start(config);
 
@@ -182,6 +183,7 @@ fn segment_moves_from_medium_to_long_term() {
         warning_free_bytes: 0,
         critical_free_bytes: 0,
         cleanup_hysteresis_bytes: 0,
+        ..StorageConfig::default()
     };
     let engine = StorageEngine::start(config);
 
@@ -272,6 +274,7 @@ fn same_path_no_extra_copy() {
         warning_free_bytes: 0,
         critical_free_bytes: 0,
         cleanup_hysteresis_bytes: 0,
+        ..StorageConfig::default()
     };
     let engine = StorageEngine::start(config);
 
@@ -351,6 +354,7 @@ fn long_term_retention_limit() {
         warning_free_bytes: 0,
         critical_free_bytes: 0,
         cleanup_hysteresis_bytes: 0,
+        ..StorageConfig::default()
     };
     let engine = StorageEngine::start(config);
 

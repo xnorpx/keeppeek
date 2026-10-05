@@ -33,11 +33,22 @@ struct Snapshot {
     protected: bool,
 }
 
-pub(super) fn connect(database: &turso::Database) -> Result<Arc<Mutex<turso::Connection>>> {
+pub(super) struct Connection {
+    connection: Mutex<turso::Connection>,
+    authority: Arc<super::authority::Lease>,
+}
+
+pub(super) fn connect(
+    database: &turso::Database,
+    authority: Arc<super::authority::Lease>,
+) -> Result<Arc<Connection>> {
     let connection = database.connect()?;
     connection.busy_timeout(super::BUSY_TIMEOUT)?;
     pollster::block_on(connection.execute_batch("PRAGMA foreign_keys = ON"))?;
-    Ok(Arc::new(Mutex::new(connection)))
+    Ok(Arc::new(Connection {
+        connection: Mutex::new(connection),
+        authority,
+    }))
 }
 
 pub(super) async fn initialize(connection: &turso::Connection) -> Result<()> {
@@ -99,11 +110,13 @@ impl RecordingCatalogHandle {
             .upgrade()
             .context("retention catalog is closed")?;
         let connection = owner
+            .connection
             .try_lock()
             .map_err(|_| anyhow::anyhow!("retention catalog is busy or poisoned"))?;
         pollster::block_on(async {
             connection.execute_batch("BEGIN IMMEDIATE").await?;
             let result = async {
+                owner.authority.verify_transaction(&connection)?;
                 let decision = commit(&connection, recording_id, policy_revision, policy).await?;
                 self.check_retention_available(started)?;
                 connection.execute_batch("COMMIT").await?;
@@ -130,8 +143,10 @@ impl RecordingCatalogHandle {
             .upgrade()
             .context("retention catalog is closed")?;
         let connection = owner
+            .connection
             .try_lock()
             .map_err(|_| anyhow::anyhow!("retention catalog is busy or poisoned"))?;
+        owner.authority.verify(&connection)?;
         let previous = pollster::block_on(read_previous(&connection, recording_id));
         self.check_retention_available(started)?;
         Ok(previous?.map(|previous| previous.decision))
@@ -366,6 +381,63 @@ async fn write_decision(
 mod tests {
     use super::super::RecordingCatalog;
 
+    #[test]
+    fn in_flight_retention_keeps_the_catalog_authority_until_completion() {
+        let root = std::env::temp_dir().join(format!("retention-lease-{}", uuid::Uuid::new_v4()));
+        let path = root.join("catalog.db");
+        let catalog = RecordingCatalog::open(&path).unwrap();
+        let handle = catalog.handle();
+        let in_flight = handle.retention.upgrade().unwrap();
+        catalog.shutdown();
+        assert!(RecordingCatalog::open(&path).is_err());
+        assert!(handle.retention_decision("recording").is_err());
+        drop(in_flight);
+        let reopened = RecordingCatalog::open(&path).unwrap();
+        reopened.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn fenced_authority_rejects_retention_reads_and_commits() {
+        let root = std::env::temp_dir().join(format!("retention-fence-{}", uuid::Uuid::new_v4()));
+        let catalog = RecordingCatalog::open(&root.join("catalog.db")).unwrap();
+        let handle = catalog.handle();
+        let owner = handle.retention.upgrade().unwrap();
+        {
+            let connection = owner.connection.lock().unwrap();
+            let destination =
+                super::super::authority::Lease::acquire(&root.join("destination.db")).unwrap();
+            let generation = owner.authority.verify(&connection).unwrap().generation;
+            owner
+                .authority
+                .fence(
+                    &connection,
+                    generation,
+                    &uuid::Uuid::new_v4().to_string(),
+                    &destination,
+                )
+                .unwrap();
+        }
+        let policy = crate::storage::retention::Policy::new(Vec::new()).unwrap();
+        let error = handle
+            .commit_retention("recording", 1, &policy)
+            .unwrap_err();
+        assert!(error.to_string().contains("fenced"), "{error:#}");
+        let error = handle.retention_decision("recording").unwrap_err();
+        assert!(error.to_string().contains("fenced"), "{error:#}");
+        {
+            let connection = owner.connection.lock().unwrap();
+            assert!(connection.is_autocommit().unwrap());
+            pollster::block_on(connection.execute_batch(
+                "UPDATE recording_catalog_authority SET state = 0, handoff = NULL,
+                 destination = NULL, destination_lock = NULL WHERE singleton = 1",
+            ))
+            .unwrap();
+        }
+        assert!(handle.retention_decision("recording").unwrap().is_none());
+        drop(owner);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn surviving_handles_do_not_keep_the_database_open_after_shutdown() {
         let root =

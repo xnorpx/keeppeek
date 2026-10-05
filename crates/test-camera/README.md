@@ -69,10 +69,11 @@ Seed deterministic H.264 history for browser tests:
 ```sh
 cargo run -p test-camera --bin test_camera -- seed-recording \
 	--source testdata/cc-4k-640x360-h264.mp4 \
-	--recordings /tmp/keeppeek-recordings \
-	--catalog /tmp/keeppeek-recordings.db \
+	--config /tmp/keeppeek-test/config.toml \
 	--stream-id e2e-h264/main
 ```
 
 This mode replaces the former standalone E2E seeder and exits after finalizing
-the recording and catalog entries.
+the recording and catalog entries. `--config` initializes named defaults and seeds
+through their capacity reservations. The standalone `--recordings` and `--catalog`
+flags remain available for isolated writer fixtures.

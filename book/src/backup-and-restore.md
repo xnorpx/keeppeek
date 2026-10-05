@@ -21,24 +21,27 @@ passwords, access keys, MQTT credentials, webhook URLs, and notification-provide
 Restrict the ZIP like the live secrets file and delete copies that are no longer needed. Environment
 secret overrides are not copied into the bundle.
 
-`recordings.db`, MP4 recordings, thumbnail JPEGs, sessions, caches, audit activity, and in-memory
-notification/MQTT work are excluded. The target recorder keeps its local storage paths during
-restore. Protect the recording tree with a separate archive policy when it needs recovery.
+The catalog, MP4 recordings, thumbnail JPEGs, sessions, caches, audit activity, and in-memory
+notification/MQTT work are excluded. The target recorder retains its named volumes, placement,
+and metadata authority during restore. Private root references stay in configuration; the uploaded
+secrets must resolve them to the same target owners. Conflicting or missing references reject the
+apply before mutation. Finish or cancel a pending metadata handoff before importing configuration.
+Protect all owned volume roots with a separate archive policy when they need recovery.
 
 ## What survives a restart
 
-| State                                                                                                                   | Persistence and recovery boundary                                                                                        |
-| ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Camera settings, access credentials and grants, dashboards and selections, templates, notification rules, MQTT settings | Durable configuration in `config.toml`; included in a configuration ZIP.                                                 |
-| File-backed secrets                                                                                                     | Durable sibling `secrets.toml`; included in plaintext. Environment overrides remain outside the ZIP.                     |
-| Recording metadata, events, coverage and maintenance intent                                                             | Recording catalog data; recover with a consistent catalog and media archive.                                             |
-| MP4 recordings and event images                                                                                         | Files in configured storage locations; not part of a configuration ZIP.                                                  |
-| Evidence-export history and artifacts                                                                                   | Stored in `.exports` under the long-term recording root, with separate history and artifact expiry; not part of the ZIP. |
-| Diagnostic log filter                                                                                                   | The existing sibling `log-filter` file persists separately and is not in the two-TOML ZIP.                               |
-| Notification delivery jobs, retries, inbox/history, cooldowns and delivery counters                                     | Runtime memory; reset on restart. Saved rule drafts and active rules remain.                                             |
-| MQTT pending publications, retries and deduplication history                                                            | Runtime memory; reset on restart. Stored source events are not an automatic replay queue.                                |
-| Access audit, credential last-use activity and active sessions                                                          | Runtime memory; reset on restart. Durable identities and grants remain.                                                  |
-| Browser sign-in key, media handles and active wake lock                                                                 | Page/browser runtime state; reload or reconnect as required. Saved dashboard wake-lock intent remains configuration.     |
+| State                                                                                                                   | Persistence and recovery boundary                                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Camera settings, access credentials and grants, dashboards and selections, templates, notification rules, MQTT settings | Durable configuration in `config.toml`; included in a configuration ZIP.                                               |
+| File-backed secrets                                                                                                     | Durable sibling `secrets.toml`; included in plaintext. Environment overrides remain outside the ZIP.                   |
+| Recording metadata, events, coverage and maintenance intent                                                             | Recording catalog data; recover with a consistent catalog and media archive.                                           |
+| MP4 recordings and event images                                                                                         | Files in configured storage locations; not part of a configuration ZIP.                                                |
+| Evidence-export history and artifacts                                                                                   | History belongs to the metadata volume; artifacts belong to export volumes, with separate expiry; not part of the ZIP. |
+| Diagnostic log filter                                                                                                   | The existing sibling `log-filter` file persists separately and is not in the two-TOML ZIP.                             |
+| Notification delivery jobs, retries, inbox/history, cooldowns and delivery counters                                     | Runtime memory; reset on restart. Saved rule drafts and active rules remain.                                           |
+| MQTT pending publications, retries and deduplication history                                                            | Runtime memory; reset on restart. Stored source events are not an automatic replay queue.                              |
+| Access audit, credential last-use activity and active sessions                                                          | Runtime memory; reset on restart. Durable identities and grants remain.                                                |
+| Browser sign-in key, media handles and active wake lock                                                                 | Page/browser runtime state; reload or reconnect as required. Saved dashboard wake-lock intent remains configuration.   |
 
 Restart is therefore a recording interruption and a runtime-state reset, even when every saved
 setting returns correctly. Collect required audit and delivery evidence before restart. A queue

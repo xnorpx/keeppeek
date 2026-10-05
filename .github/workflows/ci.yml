@@ -325,13 +325,14 @@ jobs:
           launchctl print "gui/$(id -u)/com.keeppeek"
 
   rust-test:
-    name: Rust Test (${{ matrix.os }})
+    name: Rust Test (${{ matrix.os }}, ${{ matrix.suite }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 30
     strategy:
       fail-fast: true
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        suite: [core, durable-state]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -350,20 +351,31 @@ jobs:
       - name: Run Rust tests
         id: rust-tests
         shell: bash
+        env:
+          DURABLE_STATE_TESTS: "server::state_store_durable::"
         run: |
           set -o pipefail
+          features=()
+          threads=()
           if [[ "$RUNNER_OS" == "macOS" ]]; then
-            cargo test --locked --all --lib --bins --tests --features macos-test-aws-crypto -- --test-threads=1 2>&1 | tee rust-test-results.log
-          elif [[ "$RUNNER_OS" == "Windows" ]]; then
-            cargo test --locked --all --lib --bins --tests -- --test-threads=1 2>&1 | tee rust-test-results.log
+            features=(--features macos-test-aws-crypto)
+          fi
+          if [[ "${{ matrix.suite }}" == "durable-state" ]]; then
+            if [[ "$RUNNER_OS" != "Linux" ]]; then
+              threads=(--test-threads=2)
+            fi
+            cargo test --locked -p keeppeek --lib "${features[@]}" "$DURABLE_STATE_TESTS" -- "${threads[@]}" 2>&1 | tee rust-test-results.log
           else
-            cargo test --locked --all --lib --bins --tests 2>&1 | tee rust-test-results.log
+            if [[ "$RUNNER_OS" != "Linux" ]]; then
+              threads=(--test-threads=1)
+            fi
+            cargo test --locked --all --lib --bins --tests "${features[@]}" -- --skip "$DURABLE_STATE_TESTS" "${threads[@]}" 2>&1 | tee rust-test-results.log
           fi
       - name: Upload Rust test log
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: rust-test-log-${{ matrix.os }}
+          name: rust-test-log-${{ matrix.os }}-${{ matrix.suite }}
           path: rust-test-results.log
           if-no-files-found: ignore
           retention-days: 14

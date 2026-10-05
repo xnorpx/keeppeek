@@ -2,7 +2,10 @@ use super::{BackupManifest, BackupPathKind, BackupSection};
 use crate::{
     api::backup_proto,
     config,
-    storage::{catalog::rewrite_recording_paths, safety::filesystem_capacity},
+    storage::{
+        catalog::{authority::Lease, rewrite_recording_paths_connection},
+        safety::filesystem_capacity,
+    },
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -12,6 +15,8 @@ use std::{
     path::{Path, PathBuf},
 };
 use zip::ZipArchive;
+
+mod owned_storage;
 
 const RESTORE_PLAN_TTL_MS: u64 = 10 * 60 * 1_000;
 const ROLLBACK_WINDOW_MS: u64 = 30 * 60 * 1_000;
@@ -57,6 +62,8 @@ struct RestoreJournalTarget {
     target_existed: bool,
     #[serde(default)]
     before_image_ready: bool,
+    #[serde(default)]
+    before_image_sha256: Option<String>,
     prepared: bool,
     applied: bool,
 }
@@ -745,6 +752,7 @@ fn restored_native_configuration<R: Read + Seek>(
     )?;
     let mut source = toml::from_str::<toml::Table>(std::str::from_utf8(&config)?)?;
     let mut target = config::load_configuration_table(target_config_path)?;
+    owned_storage::preserve(&mut source, &target)?;
     let mut target_storage_paths = take_storage_paths(&mut target);
     for value in target_storage_paths.values_mut() {
         let path = value
@@ -763,7 +771,8 @@ fn restored_native_configuration<R: Read + Seek>(
     }
     source.remove("storage_migration");
     let config = toml::to_string_pretty(&source)?.into_bytes();
-    super::validate_native_configuration(&config, &secrets)?;
+    let validated = super::validated_native_configuration(&config, &secrets)?;
+    owned_storage::verify(target_config_path, &validated)?;
     Ok((config, secrets))
 }
 
@@ -1004,6 +1013,7 @@ fn journal_target(
         database,
         target_existed,
         before_image_ready: false,
+        before_image_sha256: None,
         prepared: false,
         applied: false,
     })
@@ -1066,13 +1076,10 @@ fn write_preparations(
             PreparedContent::ArchiveSection(section) => {
                 write_staged_section(&mut archive, manifest, section, target)?;
                 if section == BackupSection::RecordingCatalog {
-                    rewrite_recording_paths(
-                        &target.staged,
-                        &recording_path_routes(manifest, plan)?,
-                    )?;
+                    prepare_catalog_paths(&target.staged, &recording_path_routes(manifest, plan)?)?;
                 }
                 if target.database {
-                    super::database::compact_turso_database(
+                    super::database::compact_restore_database(
                         &target.staged,
                         &target.rollback,
                         super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes,
@@ -1086,6 +1093,14 @@ fn write_preparations(
         persist_journal(journal_path, journal)?;
     }
     Ok(())
+}
+
+fn prepare_catalog_paths(path: &Path, routes: &[(PathBuf, PathBuf)]) -> anyhow::Result<()> {
+    let mut lease = Lease::acquire(path)?;
+    let connection = lease.connect()?;
+    super::database::validate_connection(&connection, BackupSection::RecordingCatalog, true)?;
+    crate::storage::catalog::authority::reject_named_restore(&connection)?;
+    rewrite_recording_paths_connection(&connection, routes)
 }
 
 fn recording_path_routes(
@@ -1207,6 +1222,16 @@ fn apply_journal(path: &Path, journal: &mut RestoreJournal) -> anyhow::Result<()
             rollback_journal(path, journal)?;
             anyhow::bail!("restore journal target state is invalid");
         }
+        if journal.targets[index].database {
+            if let Err(error) = apply_database_target(path, journal, index) {
+                reconcile_applied_targets(journal);
+                rollback_journal(path, journal)?;
+                return Err(error);
+            }
+            journal.targets[index].applied = true;
+            persist_journal(path, journal)?;
+            continue;
+        }
         let target = &journal.targets[index];
         let staged_hash = if target.database {
             target_family_sha256(&target.staged, true)
@@ -1232,24 +1257,6 @@ fn apply_journal(path: &Path, journal: &mut RestoreJournal) -> anyhow::Result<()
             rollback_journal(path, journal)?;
             return Err(error);
         }
-        if journal.targets[index].database
-            && journal.targets[index].target_existed
-            && !journal.targets[index].before_image_ready
-        {
-            let snapshot = super::database::snapshot_turso_database_path(
-                &journal.targets[index].target,
-                &journal.targets[index].rollback,
-                super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes,
-            );
-            if let Err(error) = snapshot {
-                super::database::remove_database_family(&journal.targets[index].rollback);
-                reconcile_applied_targets(journal);
-                rollback_journal(path, journal)?;
-                return Err(error);
-            }
-            journal.targets[index].before_image_ready = true;
-            persist_journal(path, journal)?;
-        }
         let target = &journal.targets[index];
         if let Err(error) = apply_target(target) {
             reconcile_applied_targets(journal);
@@ -1261,6 +1268,48 @@ fn apply_journal(path: &Path, journal: &mut RestoreJournal) -> anyhow::Result<()
     }
     journal.state = RestoreJournalState::AwaitingHealth;
     persist_journal(path, journal)
+}
+
+fn apply_database_target(
+    path: &Path,
+    journal: &mut RestoreJournal,
+    index: usize,
+) -> anyhow::Result<()> {
+    let target = &journal.targets[index];
+    let mut live = Lease::acquire(&target.target)?;
+    let mut staged = Lease::acquire(&target.staged)?;
+    let _rollback = Lease::acquire(&target.rollback)?;
+    anyhow::ensure!(
+        target_family_sha256(&target.staged, true)? == target.expected_sha256,
+        "staged restore target checksum changed"
+    );
+    verify_original_target(target)?;
+    if target.target_existed {
+        let connection = live.connect()?;
+        crate::storage::catalog::authority::reject_named_restore(&connection)?;
+    }
+    if target.target_existed && !target.before_image_ready {
+        super::database::snapshot_turso_database_path(
+            &target.target,
+            &target.rollback,
+            super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes,
+        )?;
+        let checksum = hash_file(
+            &target.rollback,
+            super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes,
+        )?;
+        journal.targets[index].before_image_sha256 = Some(checksum);
+        journal.targets[index].before_image_ready = true;
+        persist_journal(path, journal)?;
+    }
+    live.release_file()?;
+    staged.release_file()?;
+    apply_target(&journal.targets[index])?;
+    let connection = live.connect()?;
+    super::database::validate_connection(&connection, BackupSection::RecordingCatalog, false)?;
+    live.import_validated(&connection, &format!("{}:apply", journal.restore_id))?;
+    super::database::checkpoint(&connection)?;
+    Ok(())
 }
 
 fn apply_target(target: &RestoreJournalTarget) -> anyhow::Result<()> {
@@ -1400,6 +1449,12 @@ fn rollback_journal(path: &Path, journal: &mut RestoreJournal) -> anyhow::Result
             continue;
         }
         let target = &journal.targets[index];
+        if target.database {
+            rollback_database_target(target, &format!("{}:rollback", journal.restore_id))?;
+            journal.targets[index].applied = false;
+            persist_journal(path, journal)?;
+            continue;
+        }
         remove_target_checked(&target.target, target.database)?;
         if target.target_existed {
             move_target(&target.rollback, &target.target, target.database)?;
@@ -1410,6 +1465,55 @@ fn rollback_journal(path: &Path, journal: &mut RestoreJournal) -> anyhow::Result
     cleanup_prepared_targets(journal);
     journal.state = RestoreJournalState::RolledBack;
     persist_journal(path, journal)
+}
+
+fn rollback_database_target(target: &RestoreJournalTarget, operation: &str) -> anyhow::Result<()> {
+    let mut live = Lease::acquire(&target.target)?;
+    let mut saved = Lease::acquire(&target.rollback)?;
+    if !target.target_existed {
+        live.release_file()?;
+        return remove_target_checked(&target.target, true);
+    }
+    if target.rollback.exists() {
+        if let Some(expected) = &target.before_image_sha256 {
+            anyhow::ensure!(
+                hash_file(
+                    &target.rollback,
+                    super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes
+                )? == *expected,
+                "restore before-image changed"
+            );
+        }
+        let connection = saved.connect()?;
+        super::database::validate_connection(&connection, BackupSection::RecordingCatalog, false)?;
+        drop(connection);
+        live.release_file()?;
+        saved.release_file()?;
+        remove_target_checked(&target.target, true)?;
+        move_target(&target.rollback, &target.target, true)?;
+    } else {
+        anyhow::ensure!(
+            target.target.is_file(),
+            "restore before-image is unavailable"
+        );
+        let original_matches = target.before_image_sha256.as_ref().is_some_and(|expected| {
+            hash_file(
+                &target.target,
+                super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes,
+            )
+            .is_ok_and(|hash| hash == *expected)
+        });
+        let connection = live.connect()?;
+        if live.imported(&connection, operation)? {
+            return Ok(());
+        }
+        anyhow::ensure!(original_matches, "restore before-image is unavailable");
+    }
+    let connection = live.connect()?;
+    super::database::validate_connection(&connection, BackupSection::RecordingCatalog, false)?;
+    live.import_validated(&connection, operation)?;
+    super::database::checkpoint(&connection)?;
+    Ok(())
 }
 
 fn move_target(source: &Path, destination: &Path, database: bool) -> anyhow::Result<()> {
@@ -2856,11 +2960,23 @@ mod tests {
 
     #[test]
     fn database_rollback_preserves_the_latest_pre_activation_state() {
+        for interrupted in [false, true] {
+            check_database_restore_authority(interrupted);
+        }
+    }
+
+    fn check_database_restore_authority(interrupted: bool) {
         let directory = test_directory("database-before-image");
         let target = directory.join("target.db");
         let staged = directory.join("staged.db");
         write_test_database(&target, "staged-at-one");
         write_test_database(&staged, "replacement");
+        crate::storage::RecordingCatalog::open(&target)
+            .unwrap()
+            .shutdown();
+        crate::storage::RecordingCatalog::open(&staged)
+            .unwrap()
+            .shutdown();
         super::super::database::compact_turso_database(
             &staged,
             &directory.join("compact.db"),
@@ -2871,7 +2987,7 @@ mod tests {
         let mut target_state = journal_target(&target, expected_sha256, "restore-1", true).unwrap();
         target_state.staged = staged;
         target_state.prepared = true;
-        write_test_database(&target, "latest-before-restart");
+        update_test_database(&target, "latest-before-restart");
         let journal_path = directory.join("restore-journal.json");
         let mut journal = RestoreJournal {
             version: RESTORE_JOURNAL_VERSION,
@@ -2890,8 +3006,19 @@ mod tests {
 
         apply_journal(&journal_path, &mut journal).unwrap();
         assert_eq!(read_test_database(&target), "replacement");
+        crate::storage::RecordingCatalog::open(&target)
+            .unwrap()
+            .shutdown();
+        if interrupted {
+            remove_target_checked(&target, true).unwrap();
+            move_target(&journal.targets[0].rollback, &target, true).unwrap();
+            assert!(crate::storage::RecordingCatalog::open(&target).is_err());
+        }
         rollback_journal(&journal_path, &mut journal).unwrap();
         assert_eq!(read_test_database(&target), "latest-before-restart");
+        crate::storage::RecordingCatalog::open(&target)
+            .unwrap()
+            .shutdown();
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -2996,9 +3123,25 @@ mod tests {
         .unwrap();
     }
 
+    fn update_test_database(path: &Path, value: &str) {
+        let database = pollster::block_on(
+            turso::Builder::new_local(path.to_str().unwrap())
+                .experimental_generated_columns(true)
+                .build(),
+        )
+        .unwrap();
+        let connection = database.connect().unwrap();
+        pollster::block_on(connection.execute("UPDATE state SET value=?1", turso::params![value]))
+            .unwrap();
+    }
+
     fn read_test_database(path: &Path) -> String {
-        let database =
-            pollster::block_on(turso::Builder::new_local(path.to_str().unwrap()).build()).unwrap();
+        let database = pollster::block_on(
+            turso::Builder::new_local(path.to_str().unwrap())
+                .experimental_generated_columns(true)
+                .build(),
+        )
+        .unwrap();
         let connection = database.connect().unwrap();
         pollster::block_on(async {
             connection
