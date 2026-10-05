@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
 	nineCameraCircularStartSeparationSeconds,
@@ -16,7 +17,13 @@ import {
 } from '../src/lib/server/storybook/nine-camera-fixture';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const testRoot = path.join(repositoryRoot, 'target', 'nine-camera-demo');
+const testRoot =
+	process.platform === 'win32'
+		? path.join(
+				tmpdir(),
+				`keeppeek-nine-camera-${createHash('sha256').update(repositoryRoot).digest('hex').slice(0, 12)}`
+			)
+		: path.join(repositoryRoot, 'target', 'nine-camera-demo');
 const storageRoot = path.join(testRoot, 'recordings');
 const configPath = path.join(testRoot, 'config.toml');
 const draftsPath = path.join(testRoot, 'camera-drafts.json');

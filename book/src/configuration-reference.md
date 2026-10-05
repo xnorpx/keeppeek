@@ -403,8 +403,9 @@ to `.event-thumbnails` under that same directory. See
 The effective critical threshold is the greater of `critical_free_gb` and `minimum_free_gb`.
 If `warning_free_gb` is zero while the effective critical threshold is nonzero, the warning
 threshold is derived as critical plus hysteresis. Otherwise, warning must be at least critical.
-Use the storage editor's validated path-migration workflow for moves; do not repoint a live
-recording catalog by editing a path alone.
+Effective media paths come from named owners, and catalog paths come from the metadata binding.
+Use named-volume move controls for stored objects and the confirmed metadata restart workflow
+for the catalog. The general storage editor displays these paths read-only.
 
 These values are policy defaults, not a capacity guarantee. Storage budgets and free-space thresholds
 must suit the actual disks and camera bitrates. A configuration ZIP preserves the target's existing
@@ -512,6 +513,12 @@ All byte thresholds must fit a signed TOML 64-bit integer. A root can use the ex
 `{secret:KEY}` or `{secret:KEY|url}` resolver; unchanged root references are preserved during
 settings updates. Paths are redacted from the volume model's debug output. Lexical validation
 does not establish filesystem identity, writability, or protection against path replacement.
+
+On Windows, owned storage requires local NTFS volumes with persistent ACLs and directory
+metadata flushing. ReFS, FAT, and network shares are not qualified for owned writes or deletion;
+they remain unavailable rather than bypassing these checks. Keep the configuration directory
+on NTFS when using the automatically created default volumes. An unavailable bound root is
+never recreated.
 
 Each `[[storage.named_volumes.placement]]` entry contains:
 

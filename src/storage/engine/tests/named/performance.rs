@@ -27,14 +27,26 @@ fn named_writer_local_scale() -> anyhow::Result<()> {
         ),
     ];
     let mut elapsed = [Vec::with_capacity(30), Vec::with_capacity(30)];
+    let mut ingest = [Vec::with_capacity(15_360), Vec::with_capacity(15_360)];
     for run in 0..31 {
         // Alternate execution order to reduce cache and background load bias.
         for index in [run % 2, (run + 1) % 2] {
-            let duration = record_batch(&mut workers[index], &catalog.handle(), index == 1)?;
+            let (duration, samples) =
+                record_batch(&mut workers[index], &catalog.handle(), index == 1)?;
             if run != 0 {
                 elapsed[index].push(duration.as_secs_f64() * 1000.0);
+                ingest[index].extend(samples);
             }
         }
+    }
+    for (name, timings) in ["baseline", "named"].into_iter().zip(&mut ingest) {
+        timings.sort_by(f64::total_cmp);
+        println!(
+            "{name}_ingest_ms: samples={} median={:.3} p95={:.3}",
+            timings.len(),
+            timings[timings.len().div_ceil(2) - 1],
+            timings[(timings.len() * 95).div_ceil(100) - 1]
+        );
     }
     for (name, timings) in ["baseline", "named"].into_iter().zip(&mut elapsed) {
         timings.sort_by(f64::total_cmp);
@@ -53,17 +65,20 @@ fn record_batch(
     worker: &mut WriterWorker,
     catalog: &RecordingCatalogHandle,
     named: bool,
-) -> anyhow::Result<Duration> {
+) -> anyhow::Result<(Duration, Vec<f64>)> {
     let identities: Vec<_> = (0..8)
         .map(|camera| RecordingStreamIdentity::legacy(format!("camera-{camera}")))
         .collect();
     let start = Instant::now();
+    let mut ingest_timings = Vec::with_capacity(512);
     for frame in 0..64 {
         for identity in &identities {
+            let ingest_start = Instant::now();
             worker.ingest(
                 identity.clone(),
                 key_frame(start + Duration::from_millis(frame * 40)),
             );
+            ingest_timings.push(ingest_start.elapsed().as_secs_f64() * 1_000.0);
         }
     }
     worker.shutdown_flush();
@@ -88,5 +103,5 @@ fn record_batch(
             assert_published(catalog, &id, &path);
         }
     }
-    Ok(duration)
+    Ok((duration, ingest_timings))
 }

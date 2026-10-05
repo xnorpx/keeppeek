@@ -16,6 +16,8 @@ use std::{
 };
 use zip::ZipArchive;
 
+mod owned_storage;
+
 const RESTORE_PLAN_TTL_MS: u64 = 10 * 60 * 1_000;
 const ROLLBACK_WINDOW_MS: u64 = 30 * 60 * 1_000;
 const RESTORE_JOURNAL_VERSION: u32 = 1;
@@ -750,6 +752,7 @@ fn restored_native_configuration<R: Read + Seek>(
     )?;
     let mut source = toml::from_str::<toml::Table>(std::str::from_utf8(&config)?)?;
     let mut target = config::load_configuration_table(target_config_path)?;
+    owned_storage::preserve(&mut source, &target)?;
     let mut target_storage_paths = take_storage_paths(&mut target);
     for value in target_storage_paths.values_mut() {
         let path = value
@@ -768,7 +771,8 @@ fn restored_native_configuration<R: Read + Seek>(
     }
     source.remove("storage_migration");
     let config = toml::to_string_pretty(&source)?.into_bytes();
-    super::validate_native_configuration(&config, &secrets)?;
+    let validated = super::validated_native_configuration(&config, &secrets)?;
+    owned_storage::verify(target_config_path, &validated)?;
     Ok((config, secrets))
 }
 
