@@ -75,6 +75,256 @@ fn usage(catalog: &RecordingCatalog) -> anyhow::Result<u64> {
     Ok(usage.iter().map(|volume| volume.allocated_bytes).sum())
 }
 
+fn deletion_job(
+    handle: &crate::storage::RecordingCatalogHandle,
+    object: &Object,
+) -> anyhow::Result<crate::storage::catalog::maintenance::jobs::Job> {
+    use crate::storage::catalog::maintenance::{Scope, jobs};
+    use anyhow::Context;
+    let scope = Scope::Recording {
+        source_id: "camera".into(),
+        stream_id: "main".into(),
+        recording_id: object.id.clone(),
+    };
+    let snapshot = handle.recording_maintenance_snapshot(scope.clone())?;
+    assert!(snapshot.recordings[0].file_identity.is_some());
+    let mut job = handle
+        .recording_deletion_intent(
+            "admin",
+            jobs::Action::Prepare(jobs::Intent {
+                scope,
+                reason: jobs::Reason::Operator,
+                expected_revision: snapshot.revision,
+            }),
+        )
+        .context("prepare named deletion")?;
+    handle
+        .recording_deletion_intent(
+            "admin",
+            jobs::Action::Confirm {
+                id: job.id.clone(),
+                nonce: job.confirmation.take().unwrap(),
+                expected_revision: job.revision,
+            },
+        )
+        .context("confirm named deletion")?;
+    Ok(job)
+}
+
+#[test]
+fn operator_deletion_of_named_recording_releases_ownership() -> anyhow::Result<()> {
+    use anyhow::Context;
+    let (root, catalog, manager) = tests::fixture(1024)?;
+    let (object, path) = recording(&manager, &catalog, 1_000, true)?;
+    let handle = catalog.handle();
+    let job = deletion_job(&handle, &object)?;
+    let archive = crate::storage::long_term::inspection::Archive::open(path.parent().unwrap())?;
+    assert!(
+        handle
+            .execute_recording_deletion("admin", &job.id, &archive)
+            .is_err()
+    );
+    let report = handle
+        .execute_named_recording_deletion_authorized("admin", &job.id, &manager, |_| Ok(()))
+        .context("execute named deletion")?;
+    assert_eq!(report.deleted, 1);
+    assert!(!path.exists());
+    assert_eq!(usage(&catalog)?, 0);
+    drop(archive);
+    drop(manager);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn operator_deletion_waits_for_named_readers() -> anyhow::Result<()> {
+    let (_root, catalog, manager) = tests::fixture(1024)?;
+    let (object, path) = recording(&manager, &catalog, 1_000, true)?;
+    let handle = catalog.handle();
+    let job = deletion_job(&handle, &object)?;
+    let (fragments, reader) =
+        handle.leased_media_fragments_in_range("camera/main", 1_000, 1_100)?;
+    assert_eq!(fragments.len(), 1);
+    assert!(
+        handle
+            .execute_named_recording_deletion_authorized("admin", &job.id, &manager, |_| Ok(()))
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path)?, b"initdata");
+    assert_eq!(usage(&catalog)?, 8);
+    drop(reader);
+    let completed =
+        handle
+            .execute_named_recording_deletion_authorized("admin", &job.id, &manager, |_| Ok(()))?;
+    assert_eq!(completed.deleted, 1);
+    assert!(!path.exists());
+    assert_eq!(usage(&catalog)?, 0);
+    drop(manager);
+    catalog.shutdown();
+    Ok(())
+}
+
+#[test]
+fn operator_deletion_resumes_staged_named_recording_after_restart() -> anyhow::Result<()> {
+    let (root, catalog, manager) = tests::fixture(1024)?;
+    let (object, path) = recording(&manager, &catalog, 1_000, true)?;
+    let handle = catalog.handle();
+    let job = deletion_job(&handle, &object)?;
+    let configuration = manager.configuration().clone();
+    let staged = std::cell::Cell::new(false);
+    assert!(
+        handle
+            .execute_named_recording_deletion_authorized("admin", &job.id, &manager, |unstaged| {
+                anyhow::ensure!(!staged.get(), "simulated shutdown after staging");
+                if unstaged {
+                    staged.set(true);
+                }
+                Ok(())
+            })
+            .is_err()
+    );
+    assert!(!path.exists());
+    assert_eq!(usage(&catalog)?, 8);
+    drop(manager);
+    drop(handle);
+    catalog.shutdown();
+    let catalog = RecordingCatalog::open(&root.join("catalog.db"))?;
+    let manager = Manager::new(configuration, catalog.handle())?;
+    let report = catalog
+        .handle()
+        .execute_named_recording_deletion_authorized("admin", &job.id, &manager, |_| Ok(()))?;
+    assert_eq!(report.deleted, 1);
+    assert_eq!(usage(&catalog)?, 0);
+    assert!(
+        catalog
+            .handle()
+            .recording_deletion_claims("admin", &job.id)
+            .is_err()
+    );
+    let repeated = catalog
+        .handle()
+        .execute_named_recording_deletion_authorized("admin", &job.id, &manager, |_| Ok(()))?;
+    assert_eq!(repeated.deleted, 1);
+    drop(manager);
+    catalog.shutdown();
+    Ok(())
+}
+
+#[test]
+fn operator_deletion_preserves_unavailable_named_owners() -> anyhow::Result<()> {
+    let (root, catalog, manager) = tests::fixture(1024)?;
+    let (object, path) = recording(&manager, &catalog, 1_000, true)?;
+    let handle = catalog.handle();
+    let job = deletion_job(&handle, &object)?;
+    let configuration = manager.configuration().clone();
+    let mut read_only = configuration.clone();
+    read_only.volumes[0].state = VolumeState::ReadOnly;
+    drop(manager);
+    let unavailable = Manager::new(read_only, catalog.handle())?;
+    assert!(
+        handle
+            .execute_named_recording_deletion_authorized("admin", &job.id, &unavailable, |_| Ok(()))
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path)?, b"initdata");
+    assert_eq!(usage(&catalog)?, 8);
+    drop(unavailable);
+    std::fs::rename(root.join("primary"), root.join("offline"))?;
+    let unavailable = Manager::new(configuration.clone(), catalog.handle())?;
+    assert!(
+        handle
+            .execute_named_recording_deletion_authorized("admin", &job.id, &unavailable, |_| Ok(()))
+            .is_err()
+    );
+    assert_eq!(usage(&catalog)?, 8);
+    drop(unavailable);
+    tests::create_root(&root.join("primary"))?;
+    let replacement = Manager::new(configuration.clone(), catalog.handle());
+    if let Ok(replacement) = replacement {
+        assert!(
+            handle
+                .execute_named_recording_deletion_authorized(
+                    "admin",
+                    &job.id,
+                    &replacement,
+                    |_| Ok(())
+                )
+                .is_err()
+        );
+        drop(replacement);
+    }
+    assert_eq!(
+        std::fs::read(root.join("offline").join(path.file_name().unwrap()))?,
+        b"initdata"
+    );
+    assert_eq!(usage(&catalog)?, 8);
+    std::fs::remove_dir(root.join("primary"))?;
+    std::fs::rename(root.join("offline"), root.join("primary"))?;
+    let restored = Manager::new(configuration, catalog.handle())?;
+    let report =
+        handle
+            .execute_named_recording_deletion_authorized("admin", &job.id, &restored, |_| Ok(()))?;
+    assert_eq!(report.deleted, 1);
+    assert_eq!(usage(&catalog)?, 0);
+    drop(restored);
+    catalog.shutdown();
+    Ok(())
+}
+
+#[test]
+fn operator_deletion_uses_moved_recordings_current_named_owner() -> anyhow::Result<()> {
+    let (root, catalog, initial) = tests::fixture(1024)?;
+    let (object, original) = recording(&initial, &catalog, 1_000, true)?;
+    let secondary = root.join("secondary");
+    tests::create_root(&secondary)?;
+    let mut configuration = initial.configuration().clone();
+    configuration
+        .volumes
+        .push(tests::volume("secondary", secondary, 1024));
+    configuration.placement[0].candidates = vec![super::super::VolumeId::parse("secondary")?];
+    let manager = Manager::new(configuration, catalog.handle())?;
+    let move_id = uuid::Uuid::new_v4().to_string();
+    assert!(manager.move_object(
+        &move_id,
+        object.clone(),
+        &PlacementRequest {
+            role: VolumeRole::Active,
+            source: "camera",
+            group: "",
+            required_bytes: 8,
+        },
+        &[],
+        || false
+    )?);
+    let job = deletion_job(&catalog.handle(), &object)?;
+    assert!(
+        catalog
+            .handle()
+            .execute_named_recording_deletion_authorized("admin", &job.id, &manager, |_| Ok(()))
+            .is_err()
+    );
+    assert!(manager.retire_move(&move_id)?);
+    assert!(!original.exists());
+    let Reply::Location(Some(location)) =
+        catalog.handle().volume_location(Request::Lookup(object))?
+    else {
+        anyhow::bail!("moved recording missing");
+    };
+    let destination = manager.owned_path(&location)?;
+    assert_eq!(std::fs::read(&destination)?, b"initdata");
+    let report = catalog
+        .handle()
+        .execute_named_recording_deletion_authorized("admin", &job.id, &manager, |_| Ok(()))?;
+    assert_eq!(report.deleted, 1);
+    assert!(!destination.exists());
+    assert_eq!(usage(&catalog)?, 0);
+    drop(manager);
+    drop(initial);
+    catalog.shutdown();
+    Ok(())
+}
+
 #[test]
 fn moved_recording_retires_from_its_authoritative_destination() -> anyhow::Result<()> {
     let (root, catalog, initial) = tests::fixture(1024)?;

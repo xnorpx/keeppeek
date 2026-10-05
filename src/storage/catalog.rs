@@ -397,6 +397,7 @@ enum Command {
     ClaimRecordings {
         actor: String,
         id: String,
+        named: bool,
         deadline: std::time::Instant,
         reply: SyncSender<anyhow::Result<Vec<maintenance::jobs::claims::Claim>>>,
     },
@@ -1626,12 +1627,14 @@ fn run_catalog(
             Command::ClaimRecordings {
                 actor,
                 id,
+                named,
                 deadline,
                 reply,
             } => {
                 let result = pollster::block_on(async {
                     readers::ensure_job_idle(&connection, &readers, &actor, &id).await?;
-                    maintenance::jobs::claims::reserve(&connection, &actor, &id, deadline).await
+                    maintenance::jobs::claims::reserve(&connection, &actor, &id, named, deadline)
+                        .await
                 });
                 let _ = reply.send(result);
             }

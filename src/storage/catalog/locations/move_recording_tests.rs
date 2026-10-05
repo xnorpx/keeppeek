@@ -149,6 +149,55 @@ async fn index_metadata(connection: &turso::Connection) -> anyhow::Result<Vec<i6
 }
 
 #[test]
+fn recording_move_rejects_admitted_deletion_and_path_aliases_without_reserving_capacity()
+-> anyhow::Result<()> {
+    pollster::block_on(async {
+        for recording_id in ["recording", "path-alias"] {
+            let database = turso::Builder::new_local(":memory:")
+                .experimental_generated_columns(true)
+                .build()
+                .await?;
+            let connection = database.connect()?;
+            let (intent, _) = fixture(&connection).await?;
+            connection
+                .execute(
+                    "INSERT INTO recording_maintenance_claims
+                (job_id,ordinal,recording_id,token,path,file_identity,file_bytes,volume_operation)
+                SELECT 'deletion',0,id,'claim-token',path,zeroblob(32),file_bytes,'recording'
+                FROM recording_files WHERE id='recording'",
+                    (),
+                )
+                .await?;
+            connection
+                .execute(
+                    "UPDATE recording_maintenance_claims SET recording_id=?1",
+                    [recording_id],
+                )
+                .await?;
+            assert!(
+                request(&connection, Request::BeginMove(intent.clone()))
+                    .await
+                    .is_err()
+            );
+            let mut rows = connection
+                .query(
+                    "SELECT
+                (SELECT COUNT(*) FROM storage_volume_moves),
+                (SELECT COUNT(*) FROM storage_volume_allocations WHERE operation='move'),
+                (SELECT allocated_bytes FROM storage_volume_bindings WHERE id='destination')",
+                    (),
+                )
+                .await?;
+            let row = rows.next().await?.unwrap();
+            assert_eq!(row.get::<i64>(0)?, 0);
+            assert_eq!(row.get::<i64>(1)?, 0);
+            assert_eq!(row.get::<i64>(2)?, 0);
+        }
+        Ok(())
+    })
+}
+
+#[test]
 fn recording_move_preserves_identity_fragments_and_finalization_across_exact_retry()
 -> anyhow::Result<()> {
     pollster::block_on(async {

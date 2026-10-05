@@ -73,6 +73,15 @@ BEFORE INSERT ON recording_maintenance_claims
 WHEN EXISTS (SELECT 1 FROM storage_volume_allocations
     WHERE kind = 'recording' AND state != 'cancelled'
         AND (object_id = NEW.recording_id OR destination_path = replace(NEW.path, char(92), '/') COLLATE NOCASE))
+AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations a
+    JOIN storage_volume_bindings b ON b.id=a.volume_id AND b.generation=a.generation
+    WHERE a.operation=NEW.volume_operation AND a.kind='recording' AND a.state='published'
+        AND a.object_id=NEW.recording_id AND a.bytes=NEW.file_bytes AND b.writable=1
+        AND a.destination_path=replace(NEW.path,char(92),'/') COLLATE NOCASE
+        AND NOT EXISTS (SELECT 1 FROM storage_volume_moves m WHERE m.kind='recording'
+            AND m.object_id=NEW.recording_id AND (m.phase NOT IN ('complete','cancelled') OR m.receipt_acknowledged=0))
+        AND NOT EXISTS (SELECT 1 FROM storage_recording_retirements r WHERE r.recording_id=NEW.recording_id AND r.acknowledged=0)
+        AND NOT EXISTS (SELECT 1 FROM storage_recording_recovery r WHERE r.recording_id=NEW.recording_id AND r.complete=0))
 BEGIN SELECT RAISE(ABORT, 'volume ownership requires volume maintenance'); END;
 CREATE TRIGGER IF NOT EXISTS storage_volume_recording_update_fence
 BEFORE UPDATE ON recording_files

@@ -20,6 +20,7 @@ pub struct Claim {
     pub(in crate::storage) path: PathBuf,
     pub(in crate::storage) file_identity: FileIdentity,
     pub(in crate::storage) file_bytes: u64,
+    pub(in crate::storage) volume_operation: Option<String>,
 }
 
 impl Claim {
@@ -48,6 +49,15 @@ impl RecordingCatalogHandle {
     /// Rejects unavailable, stale, cancelled, corrupt, changed, or competing selections.
     /// A timeout may have committed reservations; retry the same job identity.
     pub fn recording_deletion_claims(&self, actor: &str, id: &str) -> anyhow::Result<Vec<Claim>> {
+        self.deletion_claims(actor, id, false)
+    }
+
+    pub(super) fn deletion_claims(
+        &self,
+        actor: &str,
+        id: &str,
+        named: bool,
+    ) -> anyhow::Result<Vec<Claim>> {
         anyhow::ensure!(id.len() == 32, Failure::Invalid);
         validate_action(actor, &Action::Read { id: id.to_owned() })?;
         let deadline = Instant::now() + BUSY_TIMEOUT;
@@ -56,6 +66,7 @@ impl RecordingCatalogHandle {
             .try_send(Command::ClaimRecordings {
                 actor: actor.to_owned(),
                 id: id.to_owned(),
+                named,
                 deadline,
                 reply,
             })
@@ -81,6 +92,7 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
             recording_id TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
             path TEXT NOT NULL, file_identity BLOB NOT NULL, file_bytes INTEGER NOT NULL,
             active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+            volume_operation TEXT,
             PRIMARY KEY (job_id, ordinal)
          );
          CREATE UNIQUE INDEX IF NOT EXISTS recording_maintenance_active_recording
@@ -119,11 +131,12 @@ pub(in crate::storage::catalog) async fn reserve(
     connection: &turso::Connection,
     actor: &str,
     id: &str,
+    named: bool,
     deadline: Instant,
 ) -> anyhow::Result<Vec<Claim>> {
     check_deadline(deadline)?;
     connection.execute_batch("BEGIN IMMEDIATE").await?;
-    let result = reserve_inner(connection, actor, id, deadline).await;
+    let result = reserve_inner(connection, actor, id, named, deadline).await;
     match result {
         Ok(claims) => {
             if let Err(error) = check_deadline(deadline) {
@@ -149,6 +162,7 @@ async fn reserve_inner(
     connection: &turso::Connection,
     actor: &str,
     id: &str,
+    named: bool,
     deadline: Instant,
 ) -> anyhow::Result<Vec<Claim>> {
     let (job, _) = load(connection, actor, id, deadline).await?;
@@ -158,6 +172,12 @@ async fn reserve_inner(
     );
     let existing = read(connection, &job, deadline).await?;
     if !existing.is_empty() || job.state == State::Cancelled {
+        anyhow::ensure!(
+            existing
+                .iter()
+                .all(|claim| claim.volume_operation.is_some() == named),
+            Failure::Blocked
+        );
         return Ok(existing);
     }
     check_revision(connection, job.revision).await?;
@@ -165,13 +185,25 @@ async fn reserve_inner(
     let mut insert = connection
         .prepare(
             "INSERT INTO recording_maintenance_claims
-         (job_id, ordinal, recording_id, token, path, file_identity, file_bytes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+         (job_id, ordinal, recording_id, token, path, file_identity, file_bytes, volume_operation)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )
         .await?;
     for (ordinal, expected) in job.snapshot.recordings.iter().enumerate() {
         check_deadline(deadline)?;
-        let claim = candidate(connection, &job, expected).await?;
+        let mut claim = candidate(connection, &job, expected).await?;
+        if named {
+            let mut owned = connection.query("SELECT substr(operation,1,257) FROM storage_volume_allocations WHERE kind='recording' AND object_id=?1 AND state='published' AND destination_path=replace(?2,char(92),'/') COLLATE NOCASE", turso::params![claim.recording_id.as_str(), claim.path.to_str().ok_or(Failure::Invalid)?]).await?;
+            claim.volume_operation = owned
+                .next()
+                .await?
+                .map(|row| row.get::<String>(0))
+                .transpose()?;
+            anyhow::ensure!(claim.volume_operation.is_some(), Failure::Blocked);
+            crate::storage::catalog::locations::identifier(
+                claim.volume_operation.as_deref().ok_or(Failure::Invalid)?,
+            )?;
+        }
         insert
             .execute(turso::params![
                 id,
@@ -180,7 +212,8 @@ async fn reserve_inner(
                 claim.token.as_str(),
                 claim.path.to_str().ok_or(Failure::Invalid)?,
                 claim.file_identity.0.to_vec(),
-                i64::try_from(claim.file_bytes)?
+                i64::try_from(claim.file_bytes)?,
+                claim.volume_operation.clone()
             ])
             .await
             .map_err(|_| Failure::Conflict)?;
@@ -246,6 +279,7 @@ async fn candidate(
         path: PathBuf::from(row.get::<Option<String>>(0)?.ok_or(Failure::Blocked)?),
         file_identity: identity,
         file_bytes: bytes,
+        volume_operation: None,
     })
 }
 
@@ -258,7 +292,7 @@ pub(super) async fn read(
         .query(
             "SELECT ordinal, recording_id, token,
          CASE WHEN length(CAST(path AS BLOB)) <= ?3 THEN path END,
-         CASE WHEN length(file_identity) = 32 THEN file_identity END, file_bytes
+         CASE WHEN length(file_identity) = 32 THEN file_identity END, file_bytes, substr(volume_operation,1,257)
          FROM recording_maintenance_claims WHERE job_id = ?1 ORDER BY ordinal LIMIT ?2",
             turso::params![
                 job.id.as_str(),
@@ -293,6 +327,10 @@ pub(super) async fn read(
                 && bytes == expected.catalog_bytes,
             Failure::Invalid
         );
+        let volume_operation: Option<String> = row.get(6)?;
+        if let Some(operation) = &volume_operation {
+            crate::storage::catalog::locations::identifier(operation)?;
+        }
         claims.push(Claim {
             job_id: job.id.clone(),
             recording_id: expected.recording_id.clone(),
@@ -300,6 +338,7 @@ pub(super) async fn read(
             path: PathBuf::from(row.get::<Option<String>>(3)?.ok_or(Failure::Invalid)?),
             file_identity: identity,
             file_bytes: bytes,
+            volume_operation,
         });
     }
     anyhow::ensure!(

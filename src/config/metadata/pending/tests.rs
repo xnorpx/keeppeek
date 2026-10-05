@@ -37,6 +37,9 @@ fn fixture() -> (PathBuf, toml::Table, MetadataBinding) {
         "keeppeek-pending-metadata-{}",
         uuid::Uuid::new_v4()
     ));
+    std::fs::create_dir(&directory).unwrap();
+    #[cfg(unix)]
+    let directory = std::fs::canonicalize(directory).unwrap();
     for child in ["custom", "metadata", "archive/.exports"] {
         std::fs::create_dir_all(directory.join(child)).unwrap();
     }

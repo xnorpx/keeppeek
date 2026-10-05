@@ -663,6 +663,8 @@ fn metadata_transfer_can_relocate_an_activated_destination_again() {
 fn managed_catalog_open_requires_existing_authority_without_creating_a_leaf() {
     let root = std::env::temp_dir().join(format!("keeppeek-managed-open-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
+    #[cfg(unix)]
+    let root = std::fs::canonicalize(root).unwrap();
     let expected = Authority {
         catalog_id: uuid::Uuid::new_v4().to_string(),
         generation: 1,

@@ -42,8 +42,14 @@ The approved API scope includes `api/webrtc.proto`, `api/webrtc.md`, and generat
 
 ## Current verification
 
-The current full Windows run passes all 3,189 Rust tests (including slow media tests),
-with 26 skipped diagnostics/platform cases. The rest of the gate is still running.
+The previous Windows run passed 3,189 Rust tests (including slow media tests),
+with 26 skipped diagnostics/platform cases. Its browser phase exposed named recording
+maintenance and two transient UI failures. The named deletion route now uses the current
+owner, durable staging, and atomic capacity release, with reciprocal move/claim fences.
+Five named deletion safety tests and the existing 58 maintenance tests pass. The focused
+real-backend browser rerun passes all 29 cases, including desktop/mobile deletion and the
+two other failures. Strict Clippy passes. A new full Windows gate and platform CI remain
+required; macOS fixtures now canonicalize temporary paths before confined root access.
 Three new configuration-restore regressions passed after failing against the old code.
 The configured recording-seed integration verifies named ownership, finalized MP4 samples,
 and refusal to recreate an offline metadata root. The configuration book builds with
