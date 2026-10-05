@@ -156,7 +156,7 @@ impl fmt::Debug for Allocation {
 #[derive(Debug, Clone)]
 pub enum Request {
     RegisterLegacyPaths(Box<legacy::LegacyPaths>),
-    AdoptLegacyRecording(Box<legacy::adoption::Intent>),
+    AdoptLegacyMedia(Box<legacy::adoption::Intent>),
     CaptureLegacyRoots(Box<legacy::roots::Capture>),
     LegacyRoot(legacy::roots::Role),
     LegacyPaths,
@@ -324,7 +324,7 @@ fn validate(request: &Request) -> anyhow::Result<()> {
         | Request::LegacyRoot(_) => {}
         Request::RegisterLegacyPaths(paths) => paths.validate()?,
         Request::CaptureLegacyRoots(capture) => capture.validate()?,
-        Request::AdoptLegacyRecording(intent) => intent.validate()?,
+        Request::AdoptLegacyMedia(intent) => intent.validate()?,
         Request::LegacyInventory(action) => action.validate()?,
         Request::Move(id)
         | Request::EnsureRemovable(id)
@@ -540,9 +540,7 @@ async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::R
         Request::CaptureLegacyRoots(capture) => {
             legacy::roots::capture(connection, &capture).await?
         }
-        Request::AdoptLegacyRecording(intent) => {
-            legacy::adoption::begin(connection, &intent).await?
-        }
+        Request::AdoptLegacyMedia(intent) => legacy::adoption::begin(connection, &intent).await?,
         Request::LegacyRoot(role) => {
             Reply::LegacyRoot(legacy::roots::lookup(connection, role).await?)
         }

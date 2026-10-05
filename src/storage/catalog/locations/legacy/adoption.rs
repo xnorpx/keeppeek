@@ -1,6 +1,8 @@
-//! Transfers confirmed legacy recording ownership and admits its move atomically.
+//! Transfers confirmed legacy media ownership and admits its move atomically.
 
-use super::super::{Binding, Location, Reply, bump_revision, identifier, moves, revision, to_i64};
+use super::super::{
+    Binding, Kind, Location, Reply, bump_revision, identifier, moves, revision, to_i64,
+};
 use super::{inventory, roots};
 
 #[derive(Debug, Clone)]
@@ -20,11 +22,27 @@ impl Intent {
             .evidence
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("legacy source is not verified"))?;
-        inventory::Action::Verify(Box::new(self.reference.clone()), evidence.clone()).validate()?;
+        match (self.reference.object.kind, self.role) {
+            (Kind::Recording, roots::Role::Active | roots::Role::Archive) => {
+                inventory::Action::Verify(Box::new(self.reference.clone()), evidence.clone())
+                    .validate()?;
+            }
+            (Kind::Export, roots::Role::Export) => {
+                super::super::export_cleanup::validate_id(&self.reference.object.id)?;
+                anyhow::ensure!(
+                    self.reference.revision == 1,
+                    "invalid export owner revision"
+                );
+                crate::storage::volumes::validation::comparison_root(&self.reference.path)?;
+                identifier(&evidence.file_identity)?;
+                identifier(&evidence.catalog_identity)?;
+                to_i64(evidence.bytes, "legacy export bytes")?;
+            }
+            _ => anyhow::bail!("legacy object role mismatch"),
+        }
         super::super::validate_move(&self.destination)?;
         anyhow::ensure!(
-            matches!(self.role, roots::Role::Active | roots::Role::Archive)
-                && evidence.bytes > 0
+            evidence.bytes > 0
                 && self.destination.object == self.reference.object
                 && self.destination.expected_revision == 1
                 && self.operation != self.destination.id,
@@ -70,20 +88,7 @@ pub(crate) async fn begin(
         intent.destination.destination.capacity.ledger_revision == revision(connection).await?,
         "volume observation superseded"
     );
-    let current = inventory::lookup(connection, &intent.reference.object)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("legacy owner is unavailable"))?;
-    anyhow::ensure!(
-        current == intent.reference,
-        "legacy adoption preview changed"
-    );
-    ensure_single_owner(connection, &current).await?;
-    inventory::verify(
-        connection,
-        &current,
-        current.evidence.as_ref().expect("validated evidence"),
-    )
-    .await?;
+    verify_owner(connection, &intent.reference).await?;
     insert_source(connection, intent, &source).await?;
     let mut destination = intent.destination.clone();
     // Source promotion is our own mutation in this transaction; the original sample was checked above.
@@ -91,6 +96,27 @@ pub(crate) async fn begin(
     Ok(Reply::Move(Box::new(
         moves::begin(connection, &destination).await?,
     )))
+}
+
+async fn verify_owner(
+    connection: &turso::Connection,
+    reference: &inventory::Reference,
+) -> anyhow::Result<()> {
+    ensure_single_owner(connection, reference).await?;
+    if reference.object.kind == Kind::Export {
+        return super::super::export_cleanup::ensure_active(connection, &reference.object).await;
+    }
+    let current = inventory::lookup(connection, &reference.object)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("legacy owner is unavailable"))?;
+    anyhow::ensure!(current == *reference, "legacy adoption preview changed");
+    inventory::verify(
+        connection,
+        &current,
+        current.evidence.as_ref().expect("validated evidence"),
+    )
+    .await?;
+    Ok(())
 }
 
 async fn ensure_single_owner(
@@ -105,8 +131,14 @@ async fn ensure_single_owner(
     let mut rows = connection
         .query(
             "SELECT 1 FROM recording_files WHERE replace(path,char(92),'/')=?1 COLLATE NOCASE
-         AND id<>?2 LIMIT 1",
-            (path.as_str(), reference.object.id.as_str()),
+         AND (?3<>'recording' OR id<>?2)
+         UNION ALL SELECT 1 FROM storage_volume_allocations
+         WHERE destination_path=?1 COLLATE NOCASE AND state<>'cancelled' LIMIT 1",
+            (
+                path.as_str(),
+                reference.object.id.as_str(),
+                reference.object.kind.as_str(),
+            ),
         )
         .await?;
     anyhow::ensure!(
@@ -158,9 +190,9 @@ async fn insert_source(
         .replace('\\', "/");
     connection.execute("INSERT INTO storage_volume_allocations
         (operation,kind,object_id,volume_id,generation,relative_key,destination_path,bytes,intent_bytes,materialized_bytes,state,file_identity,digest,location_revision)
-        VALUES(?1,'recording',?2,?3,?4,?5,?6,?7,?7,?7,'published',?8,?9,1)",
+        VALUES(?1,?10,?2,?3,?4,?5,?6,?7,?7,?7,'published',?8,?9,1)",
         turso::params![intent.operation.clone(), source.object.id.clone(), source.volume.clone(), to_i64(source.generation,"source generation")?,
-            source.relative_key.clone(), path, to_i64(source.bytes,"source bytes")?, source.file_identity.clone(), source.digest.to_vec()]).await?;
+            source.relative_key.clone(), path, to_i64(source.bytes,"source bytes")?, source.file_identity.clone(), source.digest.to_vec(), source.object.kind.as_str()]).await?;
     connection.execute("INSERT INTO storage_legacy_adoptions(operation,reference_revision,catalog_identity,role) VALUES(?1,?2,?3,?4)",
         turso::params![intent.operation.clone(), to_i64(intent.reference.revision,"legacy revision")?, evidence.catalog_identity.clone(), intent.role.id()]).await?;
     bump_revision(connection).await

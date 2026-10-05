@@ -5,6 +5,7 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
+mod exports;
 
 #[derive(Default)]
 pub(in crate::server) struct Registry {
@@ -18,6 +19,7 @@ struct Plan {
     revision: String,
     expires: Instant,
     preview: MovePreview,
+    legacy_export: Option<crate::server::ExportJobRecord>,
 }
 
 pub(super) fn preview(
@@ -50,19 +52,26 @@ pub(super) fn preview(
         )
     })?;
     let groups = camera.groups.iter().map(String::as_str).collect::<Vec<_>>();
-    let preview = manager(state)?
-        .preview_move(
-            object,
+    let placement = PlacementRequest {
+        role,
+        source: &source_id,
+        group: "",
+        required_bytes: 1,
+    };
+    let legacy_export = exports::owner(state, &object)?;
+    let preview = if let Some(owner) = &legacy_export {
+        exports::preview(
+            state,
+            owner,
             &request.destination_volume_id,
-            &PlacementRequest {
-                role,
-                source: &source_id,
-                group: "",
-                required_bytes: 1,
-            },
+            &placement,
             &groups,
-        )
-        .map_err(failure)?;
+        )?
+    } else {
+        manager(state)?
+            .preview_move(object, &request.destination_volume_id, &placement, &groups)
+            .map_err(failure)?
+    };
     if revision != camera_configuration_revision(state)? {
         return Err(error(
             proto::ErrorCode::Rejected,
@@ -70,7 +79,7 @@ pub(super) fn preview(
             "configuration changed; preview again",
         ));
     }
-    store_preview(state, actor, revision, preview)
+    store_preview(state, actor, revision, preview, legacy_export)
 }
 
 fn store_preview(
@@ -78,6 +87,7 @@ fn store_preview(
     actor: &str,
     revision: String,
     preview: MovePreview,
+    legacy_export: Option<crate::server::ExportJobRecord>,
 ) -> Result<proto::StorageMovePreview> {
     let token = uuid::Uuid::new_v4().to_string();
     let result = proto::StorageMovePreview {
@@ -111,6 +121,7 @@ fn store_preview(
             revision,
             expires: Instant::now() + Duration::from_secs(300),
             preview,
+            legacy_export,
         },
     );
     Ok(result)
@@ -176,9 +187,12 @@ pub(super) fn confirm(
             "volume worker is unavailable",
         )
     })?;
-    manager(state)?
-        .admit_move(&request.preview_token, &plan.preview)
-        .map_err(failure)?;
+    exports::admit(
+        state,
+        &request.preview_token,
+        &plan.preview,
+        plan.legacy_export.as_ref(),
+    )?;
     // Admission is durable. A failed wakeup leaves the same job for the next worker scan.
     if let Err(cause) = worker.scan() {
         tracing::warn!(%cause, "confirmed move awaits volume worker recovery");

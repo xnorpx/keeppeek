@@ -112,8 +112,12 @@ impl Manager {
         location: &crate::storage::catalog::locations::Location,
         writable: bool,
     ) -> anyhow::Result<Root> {
-        anyhow::ensure!(location.generation == 1, "owned volume generation changed");
-        if let Some(root) = super::legacy::volume_root(&self.inner.catalog, &location.volume)? {
+        self.volume_root(&location.volume, location.generation, writable)
+    }
+
+    fn volume_root(&self, volume: &str, generation: u64, writable: bool) -> anyhow::Result<Root> {
+        anyhow::ensure!(generation == 1, "owned volume generation changed");
+        if let Some(root) = super::legacy::volume_root(&self.inner.catalog, volume)? {
             return Ok(root);
         }
         let index = self
@@ -121,7 +125,7 @@ impl Manager {
             .configuration
             .volumes
             .iter()
-            .position(|volume| volume.id.as_str() == location.volume)
+            .position(|item| item.id.as_str() == volume)
             .ok_or_else(|| anyhow::anyhow!("owned volume is not configured"))?;
         let root = if writable {
             self.inner.writable_root(index)?

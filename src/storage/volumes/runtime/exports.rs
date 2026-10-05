@@ -24,17 +24,8 @@ impl Manager {
             self.export_cleanup_action(Action::Acknowledge(id.into()))?;
             return Ok(true);
         };
-        anyhow::ensure!(owned.generation == 1, "export volume generation changed");
-        let index = self
-            .inner
-            .configuration
-            .volumes
-            .iter()
-            .position(|volume| volume.id.as_str() == owned.volume)
-            .ok_or_else(|| anyhow::anyhow!("export volume is not configured"))?;
-        let path = self.inner.configuration.volumes[index]
-            .root
-            .join(&owned.relative_key);
+        let root = self.volume_root(&owned.volume, owned.generation, true)?;
+        let path = root.path().join(&owned.relative_key);
         if self
             .inner
             .catalog
@@ -43,16 +34,15 @@ impl Manager {
         {
             return Ok(true);
         }
-        let root = self.inner.writable_root(index)?;
         let evidence = match job.evidence {
             Some(evidence) => evidence,
             None => {
-                let evidence = capture(root, owned)?;
+                let evidence = capture(&root, owned)?;
                 self.export_cleanup_action(Action::Verify(id.into(), evidence.clone()))?;
                 evidence
             }
         };
-        self.remove_export(root, owned, &evidence, id, job.complete)?;
+        self.remove_export(&root, owned, &evidence, id, job.complete)?;
         Ok(true)
     }
 
@@ -74,7 +64,13 @@ impl Manager {
                     file_identity,
                     digest,
                 } => {
-                    root.retire_owned(
+                    let retire = if owned.volume.starts_with("legacy-") {
+                        Root::retire_legacy
+                    } else {
+                        Root::retire_owned
+                    };
+                    retire(
+                        root,
                         relative_key,
                         file_identity,
                         *bytes,
@@ -92,7 +88,13 @@ impl Manager {
             digest,
         } = evidence
         {
-            root.acknowledge_retirement(
+            let acknowledge = if owned.volume.starts_with("legacy-") {
+                Root::acknowledge_legacy
+            } else {
+                Root::acknowledge_retirement
+            };
+            acknowledge(
+                root,
                 relative_key,
                 file_identity,
                 *bytes,
@@ -128,13 +130,21 @@ fn capture(root: &Root, owned: &Owned) -> anyhow::Result<Cancellation> {
         root.confirm_absent(&[&owned.relative_key])?;
         return Ok(Cancellation::Empty);
     };
-    let mut file = root.open_owned_writable(
-        &owned.relative_key,
-        identity,
-        owned.materialized_bytes,
-        owned.bytes,
-    )?;
-    let (bytes, file_identity, digest) = file.evidence()?;
+    let mut file = if owned.volume.starts_with("legacy-") {
+        root.open_legacy_owned(&owned.relative_key, identity, owned.bytes)?
+    } else {
+        root.open_owned_writable(
+            &owned.relative_key,
+            identity,
+            owned.materialized_bytes,
+            owned.bytes,
+        )?
+    };
+    let (bytes, file_identity, digest) = if owned.volume.starts_with("legacy-") {
+        file.inspect_evidence()?
+    } else {
+        file.evidence()?
+    };
     if let Some(expected) = owned.digest {
         anyhow::ensure!(
             bytes == owned.bytes && digest == expected,

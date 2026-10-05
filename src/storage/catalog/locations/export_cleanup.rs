@@ -25,6 +25,7 @@ pub(in crate::storage::catalog) async fn readable(
 #[derive(Debug, Clone)]
 pub enum Action {
     Owned(String),
+    Allocated(String),
     Load(String),
     Verify(String, Cancellation),
     Complete(String),
@@ -33,12 +34,13 @@ pub enum Action {
 
 impl Action {
     pub(super) fn validate(&self) -> anyhow::Result<()> {
-        if let Self::Load(id) | Self::Owned(id) = self {
+        if let Self::Load(id) | Self::Owned(id) | Self::Allocated(id) = self {
             return super::identifier(id);
         }
         let id = match self {
             Self::Load(id)
             | Self::Owned(id)
+            | Self::Allocated(id)
             | Self::Verify(id, _)
             | Self::Complete(id)
             | Self::Acknowledge(id) => id,
@@ -89,6 +91,10 @@ pub(super) async fn dispatch(
     action: Action,
 ) -> anyhow::Result<Reply> {
     match action {
+        Action::Allocated(id) => {
+            let mut rows = connection.query("SELECT 1 FROM storage_volume_allocations WHERE kind='export' AND object_id=?1 LIMIT 1", [id]).await?;
+            return Ok(Reply::ExportOwned(rows.next().await?.is_some()));
+        }
         Action::Owned(id) => {
             let mut rows = connection.query("SELECT 1 FROM storage_volume_allocations WHERE kind='export' AND object_id=?1 UNION ALL SELECT 1 FROM storage_export_cleanup WHERE object_id=?1 LIMIT 1", [id]).await?;
             return Ok(Reply::ExportOwned(rows.next().await?.is_some()));

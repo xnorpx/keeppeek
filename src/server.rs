@@ -4413,7 +4413,6 @@ fn cleanup_export_attempt_artifacts(
     job_id: &str,
     artifact_id: &str,
 ) -> std::io::Result<()> {
-    export_storage::ensure_legacy_available(state).map_err(std::io::Error::other)?;
     if state.storage_config.volume_runtime.is_some()
         || export_storage::owned(state.catalog.as_ref(), artifact_id)
             .map_err(std::io::Error::other)?
@@ -4426,11 +4425,13 @@ fn cleanup_export_attempt_artifacts(
     {
         tracing::warn!(%error, "export cleanup remains journaled until the storage worker restarts");
     }
-    cleanup_export_attempt_directory(
+    export_storage::cleanup_legacy_attempt(
+        state.catalog.as_ref(),
         &state.storage_config.long_term_path.join(".exports"),
         job_id,
         artifact_id,
     )
+    .map_err(std::io::Error::other)
 }
 
 fn cleanup_export_attempt_directory(
@@ -9008,7 +9009,12 @@ fn restore_export_history(
             if export_storage::owned(catalog, &record.artifact_id)? {
                 export_storage::retire(catalog, &record.artifact_id)?;
             }
-            cleanup_export_attempt_directory(export_root, &record.job.job_id, &record.artifact_id)?;
+            export_storage::cleanup_legacy_attempt(
+                catalog,
+                export_root,
+                &record.job.job_id,
+                &record.artifact_id,
+            )?;
         }
     }
     Ok(retained)

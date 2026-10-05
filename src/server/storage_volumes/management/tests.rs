@@ -739,3 +739,331 @@ fn cancelled_metadata_preview_token_cannot_restage_the_old_handoff() {
     drop(state);
     catalog.shutdown();
 }
+
+mod legacy_export_api {
+    use super::*;
+    use crate::storage::RecordingCatalog;
+    use crate::storage::catalog::locations::{Kind, Object, legacy::LegacyPaths};
+    use std::path::PathBuf;
+
+    struct LegacyExportFixture {
+        root: PathBuf,
+        catalog: RecordingCatalog,
+        state: ServerState,
+        original: PathBuf,
+        bytes: Vec<u8>,
+    }
+
+    fn legacy_export_fixture() -> LegacyExportFixture {
+        let (root, catalog, initial, mut state, request) =
+            export_storage_tests::setup(16 * 1024 * 1024);
+        state.storage_config.volume_runtime = None;
+        state.storage_config.medium_term_path = root.join("recordings");
+        state.storage_config.recording_catalog_path = root.join("catalog.db");
+        state.storage_config.event_thumbnail_path = root.join("legacy/.event-thumbnails");
+        std::fs::create_dir_all(&state.storage_config.long_term_path).unwrap();
+        // ponytail: protect the actual export root before the existing exporter creates its children.
+        metadata_api_root(&state.storage_config.long_term_path.join(".exports"));
+        create_export_job(&state, "owner", request).unwrap();
+        assert_eq!(
+            export_storage_tests::completed(&state).status,
+            proto::ExportJobStatus::Ready as i32
+        );
+        let original = state.export_jobs.lock().unwrap()["named-export"]
+            .path
+            .clone()
+            .unwrap();
+        let bytes = std::fs::read(&original).unwrap();
+        catalog
+            .handle()
+            .volume_location(Request::RegisterLegacyPaths(Box::new(
+                LegacyPaths::effective(&state.storage_config).unwrap(),
+            )))
+            .unwrap();
+        crate::storage::volumes::legacy::capture_roots(
+            &catalog.handle(),
+            &LegacyPaths::effective(&state.storage_config).unwrap(),
+        )
+        .unwrap();
+        let manager = export_storage_tests::move_manager(&root, catalog.handle());
+        state.storage_config.volume_runtime = Some(Arc::new(manager));
+        drop(initial);
+        LegacyExportFixture {
+            root,
+            catalog,
+            state,
+            original,
+            bytes,
+        }
+    }
+
+    fn legacy_export_object(state: &ServerState) -> Object {
+        Object {
+            kind: Kind::Export,
+            id: state.export_jobs.lock().unwrap()["named-export"]
+                .artifact_id
+                .clone(),
+        }
+    }
+
+    fn assert_export_unowned(fixture: &LegacyExportFixture) {
+        assert!(matches!(
+            fixture
+                .catalog
+                .handle()
+                .volume_location(Request::Lookup(legacy_export_object(&fixture.state),))
+                .unwrap(),
+            Reply::Location(None)
+        ));
+        let Reply::Usage(usage) = fixture
+            .catalog
+            .handle()
+            .volume_location(Request::Usage)
+            .unwrap()
+        else {
+            panic!("missing usage")
+        };
+        assert!(
+            usage
+                .iter()
+                .all(|volume| volume.allocated_bytes == 0 && volume.reserved_bytes == 0)
+        );
+        assert_eq!(std::fs::read(&fixture.original).unwrap(), fixture.bytes);
+    }
+
+    fn export_confirmation(preview: &proto::StorageMovePreview) -> proto::ConfirmStorageMove {
+        proto::ConfirmStorageMove {
+            preview_token: preview.preview_token.clone(),
+            expected_configuration_revision: preview.configuration_revision.clone(),
+        }
+    }
+
+    fn assert_export_download(state: &ServerState, expected: &[u8]) {
+        let (_, messages) = crate::server::download_export(
+            state,
+            "owner",
+            proto::DownloadExport {
+                job_id: "named-export".into(),
+                channel: proto::DataChannelKind::ReliableData as i32,
+            },
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        for message in messages {
+            let Some(proto::message::Message::Export(export)) = message.message.message else {
+                panic!("missing export message")
+            };
+            let Some(proto::export_message::Message::FileChunk(chunk)) = export.message else {
+                panic!("missing file chunk")
+            };
+            bytes.extend_from_slice(&chunk.payload);
+        }
+        assert_eq!(bytes, expected);
+    }
+
+    fn finish_legacy_export_fixture(fixture: LegacyExportFixture) {
+        drop(fixture.state);
+        fixture.catalog.shutdown();
+        std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn legacy_export_confirmation_adopts_and_downloads_the_same_artifact() {
+        let mut fixture = legacy_export_fixture();
+        assert_export_unowned(&fixture);
+        let manager = fixture
+            .state
+            .storage_config
+            .volume_runtime
+            .as_ref()
+            .unwrap();
+        let worker =
+            crate::storage::volumes::runtime::worker::Worker::start((**manager).clone()).unwrap();
+        fixture.state.storage_config.volume_mover = Some(worker.handle());
+        let preview = moves::preview(
+            &fixture.state,
+            "administrator",
+            preview_request(&fixture.state),
+        )
+        .unwrap();
+        assert!(preview.adopts_legacy);
+        assert_eq!(
+            preview.source.as_ref().unwrap().bytes,
+            fixture.bytes.len() as u64
+        );
+        assert_export_unowned(&fixture);
+        let admitted = moves::confirm(
+            &fixture.state,
+            "administrator",
+            export_confirmation(&preview),
+        )
+        .unwrap();
+        assert_eq!(admitted.job_id, preview.job_id);
+        wait_for_move_completion(&fixture.state, &preview.job_id);
+        assert_export_download(&fixture.state, &fixture.bytes);
+        assert!(!fixture.original.exists());
+        worker.shutdown().unwrap();
+        finish_legacy_export_fixture(fixture);
+    }
+
+    #[test]
+    fn changed_ready_export_owner_rejects_confirmation_without_adoption() {
+        for change_checksum in [true, false] {
+            let mut fixture = legacy_export_fixture();
+            let manager = fixture
+                .state
+                .storage_config
+                .volume_runtime
+                .as_ref()
+                .unwrap();
+            let worker =
+                crate::storage::volumes::runtime::worker::Worker::start((**manager).clone())
+                    .unwrap();
+            fixture.state.storage_config.volume_mover = Some(worker.handle());
+            let preview = moves::preview(
+                &fixture.state,
+                "administrator",
+                preview_request(&fixture.state),
+            )
+            .unwrap();
+            assert!(preview.adopts_legacy);
+            {
+                let mut jobs = fixture.state.export_jobs.lock().unwrap();
+                let record = jobs.get_mut("named-export").unwrap();
+                if change_checksum {
+                    record.job.sha256 = Some("00".repeat(32));
+                } else {
+                    record.job.status = proto::ExportJobStatus::Failed as i32;
+                }
+            }
+            assert!(
+                moves::confirm(
+                    &fixture.state,
+                    "administrator",
+                    export_confirmation(&preview)
+                )
+                .is_err()
+            );
+            assert_export_unowned(&fixture);
+            worker.shutdown().unwrap();
+            finish_legacy_export_fixture(fixture);
+        }
+    }
+
+    #[test]
+    fn legacy_export_preview_ignores_cached_path_and_keeps_decoy_untouched() {
+        let mut fixture = legacy_export_fixture();
+        let decoy = fixture.root.join("unrelated.mp4");
+        std::fs::write(&decoy, b"unrelated private content").unwrap();
+        fixture
+            .state
+            .export_jobs
+            .lock()
+            .unwrap()
+            .get_mut("named-export")
+            .unwrap()
+            .path = Some(decoy.clone());
+        let manager = fixture
+            .state
+            .storage_config
+            .volume_runtime
+            .as_ref()
+            .unwrap();
+        let worker =
+            crate::storage::volumes::runtime::worker::Worker::start((**manager).clone()).unwrap();
+        fixture.state.storage_config.volume_mover = Some(worker.handle());
+        let preview = moves::preview(
+            &fixture.state,
+            "administrator",
+            preview_request(&fixture.state),
+        )
+        .unwrap();
+        assert!(preview.adopts_legacy);
+        assert_eq!(
+            preview.source.as_ref().unwrap().bytes,
+            fixture.bytes.len() as u64
+        );
+        moves::confirm(
+            &fixture.state,
+            "administrator",
+            export_confirmation(&preview),
+        )
+        .unwrap();
+        wait_for_move_completion(&fixture.state, &preview.job_id);
+        assert_export_download(&fixture.state, &fixture.bytes);
+        assert_eq!(std::fs::read(&decoy).unwrap(), b"unrelated private content");
+        worker.shutdown().unwrap();
+        finish_legacy_export_fixture(fixture);
+    }
+
+    #[test]
+    fn expired_ready_legacy_export_cannot_be_previewed_or_adopted() {
+        let fixture = legacy_export_fixture();
+        fixture
+            .state
+            .export_jobs
+            .lock()
+            .unwrap()
+            .get_mut("named-export")
+            .unwrap()
+            .job
+            .expires_at = Some(crate::server::millis_timestamp(1));
+        assert!(
+            moves::preview(
+                &fixture.state,
+                "administrator",
+                preview_request(&fixture.state)
+            )
+            .is_err()
+        );
+        assert_export_unowned(&fixture);
+        finish_legacy_export_fixture(fixture);
+    }
+    #[test]
+    fn admitted_legacy_export_confirmation_retries_after_owner_expiry() {
+        let mut fixture = legacy_export_fixture();
+        let manager = fixture
+            .state
+            .storage_config
+            .volume_runtime
+            .as_ref()
+            .unwrap();
+        let worker =
+            crate::storage::volumes::runtime::worker::Worker::start((**manager).clone()).unwrap();
+        fixture.state.storage_config.volume_mover = Some(worker.handle());
+        let preview = moves::preview(
+            &fixture.state,
+            "administrator",
+            preview_request(&fixture.state),
+        )
+        .unwrap();
+        assert!(preview.adopts_legacy);
+        let request = export_confirmation(&preview);
+        let admitted = moves::confirm(&fixture.state, "administrator", request.clone()).unwrap();
+        assert_eq!(admitted.job_id, preview.job_id);
+        wait_for_move_completion(&fixture.state, &admitted.job_id);
+        let durable = moves::get(&fixture.state, &admitted.job_id).unwrap();
+        let before = fixture.catalog.handle().volume_ledger_revision().unwrap();
+        fixture
+            .state
+            .export_jobs
+            .lock()
+            .unwrap()
+            .get_mut("named-export")
+            .unwrap()
+            .job
+            .expires_at = Some(crate::server::millis_timestamp(1));
+        // ponytail: an expired owner separates durable retry from fresh admission validation.
+        for _ in 0..2 {
+            let retried = moves::confirm(&fixture.state, "administrator", request.clone()).unwrap();
+            assert_eq!(retried, durable);
+            assert_eq!(retried.job_id, admitted.job_id);
+            assert_eq!(
+                fixture.catalog.handle().volume_ledger_revision().unwrap(),
+                before
+            );
+        }
+        worker.shutdown().unwrap();
+        finish_legacy_export_fixture(fixture);
+    }
+}

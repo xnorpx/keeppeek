@@ -10,6 +10,8 @@ const MAX_LOCATIONS: usize = 4096;
 const MAX_MOVE_WORKERS: usize = 4096;
 type Key = (String, String);
 
+mod legacy;
+
 #[derive(Default)]
 pub struct Registry {
     active: Mutex<BTreeMap<Key, usize>>,
@@ -139,6 +141,7 @@ impl Drop for LeaseSet {
 }
 
 pub(super) enum Request {
+    Legacy(legacy::Request),
     Fragments {
         stream: String,
         start: i64,
@@ -294,6 +297,7 @@ pub(super) async fn execute(
     request: Request,
 ) -> anyhow::Result<Reply> {
     match request {
+        Request::Legacy(request) => legacy::execute(connection, registry, request).await,
         Request::Image {
             event,
             attachment,
@@ -1198,5 +1202,73 @@ mod tests {
         drop(handle);
         catalog.shutdown();
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    mod legacy_export_readers {
+        use super::*;
+
+        #[test]
+        fn legacy_export_lease_pins_path_until_drop_and_retirement_rejects_new_readers()
+        -> anyhow::Result<()> {
+            use crate::storage::catalog::locations::Request as LocationRequest;
+            let (root, catalog, handle) = fixture("legacy-export-reader", false);
+            let id = uuid::Uuid::new_v4().to_string();
+            let path = root.join(format!("{id}.mp4"));
+            std::fs::write(&path, b"legacy export")?;
+            let lease = handle.lease_legacy_export(&id, &path)?;
+            let registry = handle.reader_leases();
+            assert!(registry.conflicts(&id, "")?);
+            assert!(registry.conflicts("future-owner", &path.to_string_lossy())?);
+            handle.volume_location(LocationRequest::RetireExport(id.clone()))?;
+            assert!(handle.lease_legacy_export(&id, &path).is_err());
+            assert!(registry.conflicts(&id, &path.to_string_lossy())?);
+            assert_eq!(std::fs::read(&path)?, b"legacy export");
+            drop(lease);
+            assert!(!registry.conflicts(&id, &path.to_string_lossy())?);
+            assert!(handle.lease_legacy_export(&id, &path).is_err());
+            drop(handle);
+            catalog.shutdown();
+            std::fs::remove_dir_all(root)?;
+            Ok(())
+        }
+
+        #[test]
+        fn legacy_export_lease_rejects_existing_named_reservation() -> anyhow::Result<()> {
+            use crate::storage::{
+                catalog::locations::{Kind, Object},
+                volumes::{VolumeRole, runtime},
+            };
+            let (root, catalog, manager) = runtime::tests::fixture(1024)?;
+            let id = uuid::Uuid::new_v4().to_string();
+            let reserved = manager
+                .reserve(
+                    VolumeRole::Export,
+                    "camera",
+                    &[],
+                    Object {
+                        kind: Kind::Export,
+                        id: id.clone(),
+                    },
+                    8,
+                )?
+                .unwrap();
+            let unrelated = root.join(format!("{id}.mp4"));
+            std::fs::write(&unrelated, b"unrelated legacy export")?;
+            let handle = catalog.handle();
+            assert!(handle.lease_legacy_export(&id, &unrelated).is_err());
+            assert!(handle.lease_legacy_export(&id, reserved.path()).is_err());
+            assert!(
+                !handle
+                    .reader_leases()
+                    .conflicts(&id, &unrelated.to_string_lossy())?
+            );
+            assert_eq!(std::fs::read(&unrelated)?, b"unrelated legacy export");
+            drop(reserved);
+            drop(manager);
+            drop(handle);
+            catalog.shutdown();
+            std::fs::remove_dir_all(root)?;
+            Ok(())
+        }
     }
 }

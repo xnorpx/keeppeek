@@ -68,7 +68,7 @@ pub(in crate::server) fn recover(
         }
     }
     if !legacy_offline && record.job.status != proto::ExportJobStatus::Ready as i32 {
-        cleanup_export_attempt_directory(root, &record.job.job_id, &record.artifact_id)?;
+        cleanup_legacy_attempt(catalog, root, &record.job.job_id, &record.artifact_id)?;
     }
     Ok(())
 }

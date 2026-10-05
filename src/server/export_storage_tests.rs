@@ -918,3 +918,118 @@ fn duplicate_export_history_is_rejected_before_reconciliation_can_remove_an_arti
     drop(manager);
     catalog.shutdown();
 }
+fn owned_legacy_sentinel(state: &ServerState) -> PathBuf {
+    let artifact = object(state).id;
+    let directory = state
+        .storage_config
+        .long_term_path
+        .join(".exports")
+        .join("named-export")
+        .join(artifact);
+    std::fs::create_dir_all(&directory).unwrap();
+    let sentinel = directory.join("unrelated.txt");
+    std::fs::write(&sentinel, b"preserve this legacy entry").unwrap();
+    sentinel
+}
+fn assert_owned_retirement(catalog: &RecordingCatalog, artifact: &str) {
+    let Reply::ExportCleanup(Some(job)) = catalog
+        .handle()
+        .volume_location(Request::ExportCleanup(Action::Load(artifact.into())))
+        .unwrap()
+    else {
+        panic!("owned export cleanup must be journaled");
+    };
+    assert!(job.allocation.is_some());
+}
+#[test]
+fn owned_export_cleanup_preserves_the_entire_legacy_attempt_directory() {
+    let (_, catalog, manager, state, request) = setup(16 * 1024 * 1024);
+    create_export_job(&state, "owner", request).unwrap();
+    assert_eq!(
+        completed(&state).status,
+        proto::ExportJobStatus::Ready as i32
+    );
+    let artifact = object(&state).id;
+    let sentinel = owned_legacy_sentinel(&state);
+    cleanup_export_attempt_artifacts(&state, "named-export", &artifact).unwrap();
+    assert_owned_retirement(&catalog, &artifact);
+    assert!(sentinel.parent().unwrap().is_dir());
+    assert_eq!(
+        std::fs::read(&sentinel).unwrap(),
+        b"preserve this legacy entry"
+    );
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}
+#[test]
+fn terminal_owned_export_recovery_preserves_legacy_attempt_entries() {
+    let (root, catalog, manager, mut state, request) = setup(16 * 1024 * 1024);
+    create_export_job(&state, "owner", request).unwrap();
+    assert_eq!(
+        completed(&state).status,
+        proto::ExportJobStatus::Ready as i32
+    );
+    let artifact = object(&state).id;
+    let sentinel = owned_legacy_sentinel(&state);
+    {
+        let mut jobs = state.export_jobs.lock().unwrap();
+        jobs.get_mut("named-export").unwrap().job.status = proto::ExportJobStatus::Failed as i32;
+    }
+    persist_history(&mut state, &root);
+    let recovered = recover_without_volumes(&state, catalog.handle());
+    assert!(recovered.export_history_error.is_none());
+    assert_owned_retirement(&catalog, &artifact);
+    assert!(sentinel.parent().unwrap().is_dir());
+    assert_eq!(
+        std::fs::read(&sentinel).unwrap(),
+        b"preserve this legacy entry"
+    );
+    drop(recovered);
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}
+#[test]
+fn legacy_export_cleanup_without_runtime_fences_readers_and_acknowledges_retry() {
+    let (_, catalog, manager, mut state, _) = setup(16 * 1024 * 1024);
+    state.storage_config.volume_runtime = None;
+    assert!(state.storage_config.volume_mover.is_none());
+    let artifact = uuid::Uuid::new_v4().to_string();
+    let directory = export_attempt_directory(&state, "legacy-cleanup", &artifact);
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("video.mp4");
+    std::fs::write(&path, b"legacy export bytes").unwrap();
+    let handle = catalog.handle();
+    let lease = handle.lease_legacy_export(&artifact, &path).unwrap();
+    assert!(cleanup_export_attempt_artifacts(&state, "legacy-cleanup", &artifact).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"legacy export bytes");
+    assert!(handle.lease_legacy_export(&artifact, &path).is_err());
+    let load = || {
+        let Reply::ExportCleanup(Some(job)) = handle
+            .volume_location(Request::ExportCleanup(Action::Load(artifact.clone())))
+            .unwrap()
+        else {
+            panic!("legacy cleanup must retain its admission fence");
+        };
+        job
+    };
+    let pending = load();
+    assert!(pending.allocation.is_none());
+    assert!(!pending.complete);
+    assert!(!pending.acknowledged);
+    drop(lease);
+    cleanup_export_attempt_artifacts(&state, "legacy-cleanup", &artifact).unwrap();
+    assert!(!directory.exists());
+    let complete = load();
+    assert!(complete.allocation.is_none());
+    assert!(complete.complete);
+    assert!(complete.acknowledged);
+    assert!(handle.lease_legacy_export(&artifact, &path).is_err());
+    cleanup_export_attempt_artifacts(&state, "legacy-cleanup", &artifact).unwrap();
+    assert_eq!(load(), complete);
+    drop(handle);
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}

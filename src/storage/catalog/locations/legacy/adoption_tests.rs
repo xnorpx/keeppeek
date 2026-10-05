@@ -141,7 +141,7 @@ fn adoption_capacity_failure_rolls_back_source_and_destination() -> anyhow::Resu
         let usage = request(&c, Request::Usage).await?;
         intent.destination.destination.capacity.available_bytes = 0;
         assert!(
-            request(&c, Request::AdoptLegacyRecording(Box::new(intent.clone())))
+            request(&c, Request::AdoptLegacyMedia(Box::new(intent.clone())))
                 .await
                 .is_err()
         );
@@ -152,7 +152,7 @@ fn adoption_capacity_failure_rolls_back_source_and_destination() -> anyhow::Resu
 fn adoption_preserves_recording_and_exact_retry_without_double_charge() -> anyhow::Result<()> {
     pollster::block_on(async {
         let (c, intent) = fixture().await?;
-        let result = request(&c, Request::AdoptLegacyRecording(Box::new(intent.clone()))).await?;
+        let result = request(&c, Request::AdoptLegacyMedia(Box::new(intent.clone()))).await?;
         let Reply::Move(job) = &result else {
             anyhow::bail!("move missing")
         };
@@ -170,7 +170,7 @@ fn adoption_preserves_recording_and_exact_retry_without_double_charge() -> anyho
         assert_eq!((source.allocated_bytes, source.reserved_bytes), (64, 0));
         assert_eq!((target.allocated_bytes, target.reserved_bytes), (64, 64));
         assert_eq!(
-            request(&c, Request::AdoptLegacyRecording(Box::new(intent.clone()))).await?,
+            request(&c, Request::AdoptLegacyMedia(Box::new(intent.clone()))).await?,
             result
         );
         assert_eq!(request(&c, Request::Revision).await?, revision);
@@ -207,7 +207,7 @@ fn adoption_rejects_stale_reference_and_wrong_captured_role_without_mutation() -
         changed.reference.evidence.as_mut().unwrap().digest = [9; 32];
         for invalid in [stale, wrong_role, changed] {
             assert!(
-                request(&c, Request::AdoptLegacyRecording(Box::new(invalid)))
+                request(&c, Request::AdoptLegacyMedia(Box::new(invalid)))
                     .await
                     .is_err()
             );
@@ -229,7 +229,7 @@ fn adoption_cleanup_conflict_preserves_counters_and_cleanup_owner() -> anyhow::R
         let revision = request(&c, Request::Revision).await?;
         let usage = request(&c, Request::Usage).await?;
         assert!(
-            request(&c, Request::AdoptLegacyRecording(Box::new(intent.clone())))
+            request(&c, Request::AdoptLegacyMedia(Box::new(intent.clone())))
                 .await
                 .is_err()
         );
@@ -255,7 +255,7 @@ async fn retry_unchanged(c: &turso::Connection, intent: &Intent) -> anyhow::Resu
     let revision = request(c, Request::Revision).await?;
     let usage = request(c, Request::Usage).await?;
     assert_eq!(
-        request(c, Request::AdoptLegacyRecording(Box::new(intent.clone()))).await?,
+        request(c, Request::AdoptLegacyMedia(Box::new(intent.clone()))).await?,
         job
     );
     assert_eq!(request(c, Request::Revision).await?, revision);
@@ -282,7 +282,7 @@ async fn publish_adopted(c: &turso::Connection, intent: &Intent) -> anyhow::Resu
 fn adopted_move_retry_after_publication_and_source_retirement_is_read_only() -> anyhow::Result<()> {
     pollster::block_on(async {
         let (c, intent) = fixture().await?;
-        request(&c, Request::AdoptLegacyRecording(Box::new(intent.clone()))).await?;
+        request(&c, Request::AdoptLegacyMedia(Box::new(intent.clone()))).await?;
         publish_adopted(&c, &intent).await?;
         retry_unchanged(&c, &intent).await?;
         request(
@@ -325,7 +325,7 @@ fn adopted_move_retry_after_publication_and_source_retirement_is_read_only() -> 
 fn cancelled_adopted_move_retry_preserves_published_source_ownership() -> anyhow::Result<()> {
     pollster::block_on(async {
         let (c, intent) = fixture().await?;
-        request(&c, Request::AdoptLegacyRecording(Box::new(intent.clone()))).await?;
+        request(&c, Request::AdoptLegacyMedia(Box::new(intent.clone()))).await?;
         for step in [
             moves::Step::Cancel(intent.destination.id.clone()),
             moves::Step::CancellationVerified {
@@ -370,7 +370,7 @@ fn adopted_retry_rejects_changed_provenance_and_destination_without_mutation() -
 {
     pollster::block_on(async {
         let (c, intent) = fixture().await?;
-        request(&c, Request::AdoptLegacyRecording(Box::new(intent.clone()))).await?;
+        request(&c, Request::AdoptLegacyMedia(Box::new(intent.clone()))).await?;
         let revision = request(&c, Request::Revision).await?;
         let usage = request(&c, Request::Usage).await?;
         let mut changed_reference = intent.clone();
@@ -396,7 +396,7 @@ fn adopted_retry_rejects_changed_provenance_and_destination_without_mutation() -
             changed_bytes,
         ] {
             assert!(
-                request(&c, Request::AdoptLegacyRecording(Box::new(invalid)))
+                request(&c, Request::AdoptLegacyMedia(Box::new(invalid)))
                     .await
                     .is_err()
             );
@@ -415,7 +415,7 @@ fn adoption_invalid_source_operation_uuid_preserves_legacy_owner() -> anyhow::Re
         let usage = request(&c, Request::Usage).await?;
         intent.operation = "not-a-uuid".into();
         assert!(
-            request(&c, Request::AdoptLegacyRecording(Box::new(intent.clone())))
+            request(&c, Request::AdoptLegacyMedia(Box::new(intent.clone())))
                 .await
                 .is_err()
         );
@@ -439,7 +439,7 @@ fn adoption_rejects_a_distinct_catalog_owner_at_the_normalized_source_path() -> 
         let revision = request(&c, Request::Revision).await?;
         let usage = request(&c, Request::Usage).await?;
         assert!(
-            request(&c, Request::AdoptLegacyRecording(Box::new(intent.clone())))
+            request(&c, Request::AdoptLegacyMedia(Box::new(intent.clone())))
                 .await
                 .is_err()
         );
@@ -481,7 +481,7 @@ fn adoption_rejects_a_distinct_catalog_owner_at_the_normalized_source_path() -> 
 }
 
 async fn cancelled_adoption(c: &turso::Connection, intent: &Intent) -> anyhow::Result<()> {
-    request(c, Request::AdoptLegacyRecording(Box::new(intent.clone()))).await?;
+    request(c, Request::AdoptLegacyMedia(Box::new(intent.clone()))).await?;
     for step in [
         moves::Step::Cancel(intent.destination.id.clone()),
         moves::Step::CancellationVerified {
@@ -574,7 +574,7 @@ fn legacy_pressure_waits_for_older_ordinary_candidate_then_selects_adopted_sourc
 fn legacy_pressure_preserves_active_move_and_protected_adopted_source() -> anyhow::Result<()> {
     pollster::block_on(async {
         let (c, intent) = fixture().await?;
-        request(&c, Request::AdoptLegacyRecording(Box::new(intent.clone()))).await?;
+        request(&c, Request::AdoptLegacyMedia(Box::new(intent.clone()))).await?;
         assert_eq!(
             legacy_pressure(&c, None).await?,
             Reply::RecordingRetirement(None)
@@ -613,4 +613,213 @@ fn legacy_pressure_preserves_active_move_and_protected_adopted_source() -> anyho
         assert_eq!(request(&c, Request::Usage).await?, usage);
         Ok(())
     })
+}
+mod export_adoption {
+    use super::*;
+
+    async fn export_fixture() -> anyhow::Result<(turso::Connection, Intent)> {
+        let (c, _) = fixture().await?;
+        let Reply::LegacyPaths(Some(paths)) = request(&c, Request::LegacyPaths).await? else {
+            anyhow::bail!("legacy paths missing")
+        };
+        let source = binding(&paths.export_root, "legacy-export", false);
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = paths.export_root.join(format!("{id}.mp4"));
+        request(
+            &c,
+            Request::CaptureLegacyRoots(Box::new(Capture {
+                paths: *paths,
+                roots: vec![
+                    (Role::Active, None),
+                    (Role::Archive, None),
+                    (Role::Export, Some(source)),
+                    (Role::Thumbnail, None),
+                ],
+            })),
+        )
+        .await?;
+        let reference = inventory::Reference {
+            object: Object {
+                kind: Kind::Export,
+                id,
+            },
+            path,
+            revision: 1,
+            evidence: Some(Evidence {
+                file_identity: "export-file".into(),
+                catalog_identity: "export-catalog-file".into(),
+                bytes: 64,
+                digest: [7; 32],
+            }),
+        };
+        let mut destination = destination(&c, reference.object.clone()).await?;
+        destination.destination.object.kind = Kind::Export;
+        Ok((
+            c,
+            Intent {
+                reference,
+                role: Role::Export,
+                operation: uuid::Uuid::new_v4().to_string(),
+                destination,
+            },
+        ))
+    }
+
+    async fn rejected_without_ownership(
+        c: &turso::Connection,
+        intent: &Intent,
+    ) -> anyhow::Result<()> {
+        let revision = request(c, Request::Revision).await?;
+        let usage = request(c, Request::Usage).await?;
+        assert!(
+            request(c, Request::AdoptLegacyMedia(Box::new(intent.clone())))
+                .await
+                .is_err()
+        );
+        assert_eq!(request(c, Request::Revision).await?, revision);
+        assert_eq!(request(c, Request::Usage).await?, usage);
+        assert_eq!(
+            request(c, Request::Lookup(intent.reference.object.clone())).await?,
+            Reply::Location(None)
+        );
+        assert!(
+            request(c, Request::Move(intent.destination.id.clone()))
+                .await
+                .is_err()
+        );
+        let mut rows = c
+            .query(
+                "SELECT COUNT(*) FROM storage_legacy_adoptions WHERE operation=?1",
+                [intent.operation.as_str()],
+            )
+            .await?;
+        assert_eq!(rows.next().await?.unwrap().get::<i64>(0)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn export_adoption_publishes_source_and_durable_move_with_exact_retry() -> anyhow::Result<()> {
+        pollster::block_on(async {
+            let (c, intent) = export_fixture().await?;
+            let Reply::Move(job) =
+                request(&c, Request::AdoptLegacyMedia(Box::new(intent.clone()))).await?
+            else {
+                anyhow::bail!("adopted export move missing")
+            };
+            assert_eq!(job.source.object, intent.reference.object);
+            assert_eq!(job.source.volume, "legacy-export");
+            assert_eq!(
+                job.source.relative_key,
+                format!("{}.mp4", intent.reference.object.id)
+            );
+            assert_eq!(job.source.file_identity, "export-file");
+            assert_eq!(job.source.bytes, 64);
+            assert_eq!(job.object.kind, Kind::Export);
+            assert_eq!(
+                request(&c, Request::Lookup(intent.reference.object.clone())).await?,
+                Reply::Location(Some(job.source.clone()))
+            );
+            retry_unchanged(&c, &intent).await?;
+            let Reply::Usage(rows) = request(&c, Request::Usage).await? else {
+                anyhow::bail!("usage missing")
+            };
+            let source = rows
+                .iter()
+                .find(|row| row.volume == "legacy-export")
+                .unwrap();
+            let target = rows.iter().find(|row| row.volume == "target").unwrap();
+            assert_eq!((source.allocated_bytes, source.reserved_bytes), (64, 0));
+            assert_eq!((target.allocated_bytes, target.reserved_bytes), (64, 64));
+            publish_adopted(&c, &intent).await?;
+            retry_unchanged(&c, &intent).await?;
+            let Reply::Location(Some(location)) =
+                request(&c, Request::Lookup(intent.reference.object.clone())).await?
+            else {
+                anyhow::bail!("published export missing")
+            };
+            assert_eq!(location.object, intent.reference.object);
+            assert_eq!(location.volume, "target");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn export_adoption_cleanup_tombstone_rejects_without_mutation() -> anyhow::Result<()> {
+        pollster::block_on(async {
+            let (c, mut intent) = export_fixture().await?;
+            request(
+                &c,
+                Request::RetireExport(intent.reference.object.id.clone()),
+            )
+            .await?;
+            let Reply::Revision(revision) = request(&c, Request::Revision).await? else {
+                anyhow::bail!("revision missing")
+            };
+            intent.destination.destination.capacity.ledger_revision = revision;
+            rejected_without_ownership(&c, &intent).await
+        })
+    }
+
+    #[test]
+    fn export_adoption_capacity_and_role_errors_roll_back_source_ownership() -> anyhow::Result<()> {
+        pollster::block_on(async {
+            let (c, intent) = export_fixture().await?;
+            let mut full = intent.clone();
+            full.destination.destination.capacity.available_bytes = 0;
+            rejected_without_ownership(&c, &full).await?;
+            for role in [Role::Active, Role::Archive, Role::Thumbnail] {
+                let mut invalid = intent.clone();
+                invalid.role = role;
+                rejected_without_ownership(&c, &invalid).await?;
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn export_adoption_cannot_take_an_existing_recording_location() -> anyhow::Result<()> {
+        pollster::block_on(async {
+            let (c, mut intent) = export_fixture().await?;
+            let path = intent.reference.path.to_string_lossy().replace('\\', "/");
+            c.execute(
+                "UPDATE recording_files SET path=?1 WHERE id='legacy-id'",
+                [path.as_str()],
+            )
+            .await?;
+            let Reply::Revision(revision) = request(&c, Request::Revision).await? else {
+                anyhow::bail!("revision missing")
+            };
+            intent.destination.destination.capacity.ledger_revision = revision;
+            rejected_without_ownership(&c, &intent).await?;
+            c.execute("INSERT INTO storage_volume_allocations(operation,kind,object_id,volume_id,generation,relative_key,destination_path,bytes,intent_bytes,materialized_bytes,state,file_identity,digest,location_revision)
+                VALUES('existing-recording','recording','legacy-id','legacy-export',1,?1,?2,64,64,64,'published','recording-file',?3,1)",
+                turso::params![format!("{}.mp4", intent.reference.object.id), path.clone(), vec![9_u8; 32]]).await?;
+            let Reply::Revision(revision) = request(&c, Request::Revision).await? else {
+                anyhow::bail!("revision missing")
+            };
+            intent.destination.destination.capacity.ledger_revision = revision;
+            let before = request(
+                &c,
+                Request::Lookup(Object {
+                    kind: Kind::Recording,
+                    id: "legacy-id".into(),
+                }),
+            )
+            .await?;
+            assert!(matches!(&before, Reply::Location(Some(_))));
+            rejected_without_ownership(&c, &intent).await?;
+            assert_eq!(
+                request(
+                    &c,
+                    Request::Lookup(Object {
+                        kind: Kind::Recording,
+                        id: "legacy-id".into()
+                    })
+                )
+                .await?,
+                before
+            );
+            Ok(())
+        })
+    }
 }
