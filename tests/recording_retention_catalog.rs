@@ -89,6 +89,124 @@ fn motion_policy() -> Policy {
 }
 
 #[test]
+fn canonical_changes_without_an_index_fence_new_retention_commitments() {
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    let handle = catalog.handle();
+    handle.upsert_recording(recording()).unwrap();
+    let previous = handle
+        .commit_retention("recording", 1, &policy(50_000))
+        .unwrap();
+    drop(handle);
+    catalog.shutdown();
+    fixture.execute_sql(
+        "INSERT INTO recording_events(id,camera_id,source,kind,start_time_ms,end_time_ms)
+         VALUES ('unindexed','front','keeppeek','motion',0,1000)",
+    );
+    let catalog = fixture.open();
+    let handle = catalog.handle();
+    let error = handle
+        .commit_retention("recording", 2, &motion_policy())
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("retention event index"),
+        "{error:#}"
+    );
+    assert_eq!(
+        handle.retention_decision("recording").unwrap(),
+        Some(previous)
+    );
+    assert!(handle.reconcile_retention_events(0).is_err());
+    assert!(handle.reconcile_retention_events(257).is_err());
+    assert!(handle.reconcile_retention_events(1).unwrap());
+    let recovered = handle
+        .commit_retention("recording", 2, &motion_policy())
+        .unwrap();
+    assert_eq!(recovered.deadline_ms, Some(60_000));
+    assert_eq!(recovered.matching_rules, ["motion"]);
+    catalog.shutdown();
+}
+
+#[test]
+fn legacy_index_migration_resumes_in_bounded_batches_after_restart() {
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    let handle = catalog.handle();
+    handle.upsert_recording(recording()).unwrap();
+    for id in ["a", "b", "c"] {
+        handle.insert_event(event(id, "motion")).unwrap();
+    }
+    catalog.shutdown();
+    fixture.execute_sql(
+        "DROP TRIGGER recording_retention_index_insert;
+         DROP TRIGGER recording_retention_index_update;
+         DROP TRIGGER recording_retention_index_delete;
+         DROP TABLE recording_retention_event_index;
+         DROP TABLE recording_retention_index_state;",
+    );
+    let catalog = fixture.open();
+    let handle = catalog.handle();
+    assert!(
+        handle
+            .commit_retention("recording", 1, &motion_policy())
+            .is_err()
+    );
+    assert!(!handle.reconcile_retention_events(1).unwrap());
+    catalog.shutdown();
+    let catalog = fixture.open();
+    let handle = catalog.handle();
+    handle.insert_event(event("0", "motion")).unwrap();
+    assert!(!handle.reconcile_retention_events(1).unwrap());
+    assert!(!handle.reconcile_retention_events(1).unwrap());
+    assert!(handle.reconcile_retention_events(1).unwrap());
+    assert_eq!(
+        handle
+            .commit_retention("recording", 1, &motion_policy())
+            .unwrap()
+            .deadline_ms,
+        Some(60_000)
+    );
+    catalog.shutdown();
+}
+
+#[test]
+fn failed_index_write_rolls_back_the_canonical_event_revision() {
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    let handle = catalog.handle();
+    handle.upsert_recording(recording()).unwrap();
+    let original = event("motion", "motion");
+    handle.insert_event(original.clone()).unwrap();
+    let before = handle
+        .commit_retention("recording", 1, &motion_policy())
+        .unwrap();
+    catalog.shutdown();
+    fixture.execute_sql(
+        "CREATE TRIGGER fail_retention_index BEFORE UPDATE ON recording_retention_event_index
+         BEGIN SELECT RAISE(ABORT,'injected temporal index failure'); END;",
+    );
+    let catalog = fixture.open();
+    let handle = catalog.handle();
+    let mut revision = original.clone();
+    revision.revision = 2;
+    revision.end_time_ms = Some(1_000);
+    assert!(handle.insert_event(revision).is_err());
+    assert_eq!(handle.event_by_id("motion").unwrap(), Some(original));
+    assert_eq!(
+        handle.retention_decision("recording").unwrap(),
+        Some(before)
+    );
+    assert_eq!(
+        handle
+            .commit_retention("recording", 1, &motion_policy())
+            .unwrap()
+            .deadline_ms,
+        Some(60_000)
+    );
+    catalog.shutdown();
+}
+
+#[test]
 fn commitments_survive_restart_and_shorter_policy_revisions() {
     let fixture = Fixture::new();
     let catalog = fixture.open();

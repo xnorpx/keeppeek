@@ -65,6 +65,7 @@ pub(super) async fn write(
         anyhow::ensure!(event.revision == 1, "new events must start at revision one");
     }
     upsert(connection, event, publication).await?;
+    retention::event_index::write(connection, event).await?;
     replace_intrinsic_event_terms(connection, &event.id, &event.kind, event.text.as_deref())
         .await?;
     if existing.is_some() {
