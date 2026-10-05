@@ -501,7 +501,7 @@ fn authority_parent_symlink_alias_shares_lease_but_leaf_symlink_is_rejected() {
 }
 
 fn metadata_transfer_fixture() -> PathBuf {
-    use super::super::locations::{Binding, Request, legacy::LegacyPaths};
+    use super::super::locations::{Binding, Request};
     let root = fixture();
     let catalog_path = root.join("source.db");
     let catalog = super::super::RecordingCatalog::open(&catalog_path).unwrap();
@@ -518,19 +518,6 @@ fn metadata_transfer_fixture() -> PathBuf {
             limit_bytes: Some(4096),
             minimum_free_bytes: 0,
         }))
-        .unwrap();
-    let storage = crate::storage::StorageConfig {
-        medium_term_path: root.join("active"),
-        long_term_path: root.join("archive"),
-        event_thumbnail_path: root.join("thumbnails"),
-        recording_catalog_path: catalog_path,
-        ..Default::default()
-    };
-    catalog
-        .handle()
-        .volume_location(Request::RegisterLegacyPaths(Box::new(
-            LegacyPaths::effective(&storage).unwrap(),
-        )))
         .unwrap();
     catalog.shutdown();
     std::fs::write(
@@ -550,21 +537,12 @@ fn transfer_metadata_fixture(root: &Path) -> anyhow::Result<()> {
     )
 }
 
-fn metadata_ownership(
-    path: &Path,
-) -> (
-    super::super::locations::Reply,
-    super::super::locations::Reply,
-) {
+fn metadata_ownership(path: &Path) -> super::super::locations::Reply {
     use super::super::locations::Request;
     let catalog = super::super::RecordingCatalog::open(path).unwrap();
     let usage = catalog.handle().volume_location(Request::Usage).unwrap();
-    let paths = catalog
-        .handle()
-        .volume_location(Request::LegacyPaths)
-        .unwrap();
     catalog.shutdown();
-    (usage, paths)
+    usage
 }
 
 #[test]

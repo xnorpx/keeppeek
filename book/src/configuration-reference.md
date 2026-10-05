@@ -438,7 +438,7 @@ Administrators can edit these drafts under **Settings → Storage → Named stor
 Byte limits use exact whole-byte values. Refreshing status or a failed save preserves unsaved
 inputs. Removing a saved volume definition requires confirmation. Root probes inspect existing
 configured roots without creating directories; a successful probe does not establish write
-permission. Activation, bulk drain, legacy adoption, and metadata relocation remain unavailable
+permission. Activation and bulk drain remain unavailable
 in this draft build. Individual move preview, confirmation, status, and cancellation appear only
 when a volume runtime is available. The same runtime controls let administrators stop new
 writes to a volume or clear that operator drain, after confirmation. Already admitted writes
@@ -453,18 +453,12 @@ the catalog's immutable binding and completed history and does not delete files.
 The removal check inspects up to 1,024 pending archive policies; finish a larger backlog before
 retrying removal.
 
-Captured legacy export roots are not recreated when unavailable. Ready exports keep their paths
-and checksums; downloads can resume when the original directory returns. Export expiry and history
-trimming wait while that root is unavailable. If export history itself was unavailable at startup,
-restore the directory and restart to reload it. These recovery guards do not enable activation or
-replace the confirmed legacy migration workflow.
-
 `[storage.metadata]` is a server-managed binding, not an ordinary placement draft. It contains
 `volume_id`, `catalog_file`, `history_file`, `catalog_id`, `generation`, `filesystem`, and
 `root_identity`. The filenames use one shared canonical UUID with `catalog-<uuid>.db` and
 `exports-<uuid>.json`. The catalog ID is a UUID, generation is 1 through `i64::MAX`, and both
 filesystem identity strings contain 1–256 bytes without control characters. The volume must
-exist, have the metadata role, and be enabled; a legacy `recording_catalog_path` override is
+exist, have the metadata role, and be enabled; a separate `recording_catalog_path` override is
 incompatible with this binding. Startup verifies the saved directory and catalog authority.
 It does not create an empty replacement catalog if the selected owner is unavailable.
 
@@ -983,12 +977,6 @@ Each `StoragePathMigration` has two required `PathBuf` fields: `from` and `to`. 
 nonempty, must not contain one another, and must satisfy the migration overlap checks. A single
 source cannot be split into conflicting destinations. `StorageMigrationPaths` is a runtime helper
 of borrowed paths, not another TOML section.
-
-Execution requires `recording_catalog_after_move`, including when the catalog stays at its
-current path. Older pending moves without this field are refused before moving files; restore
-the original storage settings and schedule the move again through the storage editor. The
-legacy whole-directory mover also refuses catalogs with captured legacy roots or named-volume
-ownership. Those catalogs require the confirmed named-storage migration workflow.
 
 ## Compatibility and completeness
 

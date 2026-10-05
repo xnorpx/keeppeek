@@ -245,10 +245,7 @@ async fn release_unopened(
     Ok(Reply::Bound)
 }
 
-pub(super) async fn fragments(
-    connection: &turso::Connection,
-    id: &str,
-) -> anyhow::Result<Vec<Fragment>> {
+async fn fragments(connection: &turso::Connection, id: &str) -> anyhow::Result<Vec<Fragment>> {
     let mut rows = connection.query("SELECT f.sequence,f.byte_offset,f.byte_len,k.byte_offset,k.byte_len,f.start_ms,f.duration_ms,f.random_access
         FROM recording_fragments f LEFT JOIN recording_keyframes k ON k.recording_id=f.recording_id AND k.fragment_sequence=f.sequence
         WHERE f.recording_id=?1 ORDER BY f.sequence LIMIT 4097", [id]).await?;

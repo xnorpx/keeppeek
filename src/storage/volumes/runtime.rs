@@ -107,52 +107,23 @@ impl std::fmt::Debug for ReservedFile {
 }
 
 impl Manager {
-    fn owned_root(
+    pub(crate) fn open_owned(
         &self,
         location: &crate::storage::catalog::locations::Location,
-        writable: bool,
-    ) -> anyhow::Result<Root> {
-        self.volume_root(&location.volume, location.generation, writable)
-    }
-
-    fn volume_root(&self, volume: &str, generation: u64, writable: bool) -> anyhow::Result<Root> {
-        anyhow::ensure!(generation == 1, "owned volume generation changed");
-        if let Some(root) = super::legacy::volume_root(&self.inner.catalog, volume)? {
-            return Ok(root);
-        }
+    ) -> anyhow::Result<OwnedFile> {
+        anyhow::ensure!(location.generation == 1, "owned volume generation changed");
         let index = self
             .inner
             .configuration
             .volumes
             .iter()
-            .position(|item| item.id.as_str() == volume)
+            .position(|volume| volume.id.as_str() == location.volume)
             .ok_or_else(|| anyhow::anyhow!("owned volume is not configured"))?;
-        let root = if writable {
-            self.inner.writable_root(index)?
-        } else {
-            self.inner.root(index)?
-        };
-        root.try_clone()
-    }
-
-    pub(crate) fn open_owned(
-        &self,
-        location: &crate::storage::catalog::locations::Location,
-    ) -> anyhow::Result<OwnedFile> {
-        let root = self.owned_root(location, false)?;
-        if location.volume.starts_with("legacy-") {
-            root.open_legacy_owned(
-                &location.relative_key,
-                &location.file_identity,
-                location.bytes,
-            )
-        } else {
-            root.open_owned(
-                &location.relative_key,
-                &location.file_identity,
-                location.bytes,
-            )
-        }
+        self.inner.root(index)?.open_owned(
+            &location.relative_key,
+            &location.file_identity,
+            location.bytes,
+        )
     }
 
     /// Resolves an owned file through its recorded volume and validates its identity.
@@ -163,9 +134,24 @@ impl Manager {
         &self,
         location: &super::super::catalog::locations::Location,
     ) -> anyhow::Result<PathBuf> {
-        let root = self.owned_root(location, false)?;
-        let _file = self.open_owned(location)?;
-        Ok(root.path().join(&location.relative_key).canonicalize()?)
+        anyhow::ensure!(location.generation == 1, "owned volume generation changed");
+        let index = self
+            .inner
+            .configuration
+            .volumes
+            .iter()
+            .position(|volume| volume.id.as_str() == location.volume)
+            .ok_or_else(|| anyhow::anyhow!("owned volume is not configured"))?;
+        let root = self.inner.root(index)?;
+        let _file = root.open_owned(
+            &location.relative_key,
+            &location.file_identity,
+            location.bytes,
+        )?;
+        Ok(self.inner.configuration.volumes[index]
+            .root
+            .join(&location.relative_key)
+            .canonicalize()?)
     }
 
     /// Copies an owned object to its resolved destination and publishes its stable identity.
@@ -215,9 +201,11 @@ impl Manager {
             required_bytes: source.bytes,
             ..*request
         };
-        let Some(rule) = self.inner.configuration.matching_rule(&request, groups) else {
-            return Ok(None);
-        };
+        let rule = self
+            .inner
+            .configuration
+            .matching_rule(&request, groups)
+            .ok_or_else(|| anyhow::anyhow!("no placement rule for the requested storage role"))?;
         let observations = self.inner.observations(&rule.candidates)?;
         let decision =
             self.inner
@@ -330,8 +318,14 @@ impl Manager {
             current.revision > job.source.revision,
             "move source is still authoritative"
         );
-        let root = self.owned_root(&job.source, false)?;
-        let path = root.path().join(&job.source.relative_key);
+        let volume = self
+            .inner
+            .configuration
+            .volumes
+            .iter()
+            .find(|volume| volume.id.as_str() == job.source.volume)
+            .ok_or_else(|| anyhow::anyhow!("move source volume is not configured"))?;
+        let path = volume.root.join(&job.source.relative_key);
         Ok(!self
             .inner
             .catalog
@@ -423,9 +417,11 @@ impl Manager {
             required_bytes,
         };
         anyhow::ensure!(groups.len() <= super::RULES_MAX, "too many source groups");
-        let Some(rule) = self.inner.configuration.matching_rule(&request, groups) else {
-            return Ok(None);
-        };
+        let rule = self
+            .inner
+            .configuration
+            .matching_rule(&request, groups)
+            .ok_or_else(|| anyhow::anyhow!("no placement rule for the requested storage role"))?;
         let key = object_key(role, &object)?;
         let _guard = self
             .inner
@@ -543,21 +539,17 @@ fn bind_opened_root(
 }
 
 fn object_key(role: VolumeRole, object: &Object) -> anyhow::Result<String> {
-    let extension = object_extension(role, object.kind)?;
+    let extension = match (role, object.kind) {
+        (VolumeRole::Active | VolumeRole::Archive, Kind::Recording)
+        | (VolumeRole::Export, Kind::Export) => "mp4",
+        (VolumeRole::Thumbnail, Kind::Thumbnail) => "jpg",
+        _ => anyhow::bail!("object kind does not match volume role"),
+    };
     anyhow::ensure!(
         matches!(object.id.len(), 32 | 36) && uuid::Uuid::parse_str(&object.id).is_ok(),
         "object ID must be a UUID"
     );
     Ok(format!("{}.{extension}", object.id))
-}
-
-fn object_extension(role: VolumeRole, kind: Kind) -> anyhow::Result<&'static str> {
-    Ok(match (role, kind) {
-        (VolumeRole::Active | VolumeRole::Archive, Kind::Recording)
-        | (VolumeRole::Export, Kind::Export) => "mp4",
-        (VolumeRole::Thumbnail, Kind::Thumbnail) => "jpg",
-        _ => anyhow::bail!("object kind does not match volume role"),
-    })
 }
 
 impl Inner {
@@ -880,6 +872,3 @@ impl Seek for ReservedFile {
 
 #[cfg(test)]
 pub(crate) mod tests;
-
-#[cfg(test)]
-mod legacy_move_tests;

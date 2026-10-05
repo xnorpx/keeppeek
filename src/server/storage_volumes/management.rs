@@ -17,8 +17,6 @@ mod names;
 pub(in crate::server) use moves::Registry;
 type Result<T> = std::result::Result<T, ControlCommandError>;
 #[cfg(test)]
-mod legacy_tests;
-#[cfg(test)]
 mod tests;
 
 pub(in crate::server) fn dispatch(
@@ -49,9 +47,6 @@ pub(in crate::server) fn dispatch(
         Some(Action::Probe(request)) => Wire::Probe(probe(state, &request.volume_id)?),
         Some(Action::Placement(request)) => Wire::Placement(placement(state, request)?),
         Some(Action::Objects(request)) => Wire::Objects(objects(state, request)?),
-        Some(Action::LegacyObjects(request)) => {
-            Wire::LegacyObjects(legacy_objects(state, request)?)
-        }
         Some(Action::PreviewMove(request)) => {
             Wire::Preview(moves::preview(state, &principal.id(), request)?)
         }
@@ -82,51 +77,6 @@ pub(in crate::server) fn dispatch(
         ));
     }
     Ok(proto::ok::Result::StorageVolumeResult(result))
-}
-
-fn legacy_objects(
-    state: &ServerState,
-    request: proto::ListLegacyStorageObjects,
-) -> Result<proto::StorageLegacyObjectList> {
-    let after = request.after.map(object).transpose()?;
-    if after
-        .as_ref()
-        .is_some_and(|object| object.kind != locations::Kind::Recording)
-    {
-        return Err(error(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "legacy cursor must identify a recording",
-        ));
-    }
-    let Reply::LegacyReferences(references) = catalog(
-        state,
-        Request::LegacyInventory(locations::legacy::inventory::Action::Recordings {
-            after: after.map(|object| object.id),
-            limit: 64,
-        }),
-    )?
-    else {
-        unreachable!("legacy inventory reply");
-    };
-    let objects = references
-        .into_iter()
-        .map(|reference| proto::StorageLegacyObject {
-            object: Some(proto::StorageObject {
-                kind: proto::StorageObjectKind::Recording as i32,
-                id: reference.object.id,
-            }),
-            bytes: reference.evidence.map(|evidence| evidence.bytes),
-            revision: reference.revision,
-        })
-        .collect::<Vec<_>>();
-    let next_after = (objects.len() == 64)
-        .then(|| objects.last().and_then(|object| object.object.clone()))
-        .flatten();
-    Ok(proto::StorageLegacyObjectList {
-        objects,
-        next_after,
-    })
 }
 
 fn manager(state: &ServerState) -> Result<&Manager> {
@@ -325,12 +275,7 @@ fn object(value: proto::StorageObject) -> Result<locations::Object> {
             ));
         }
     };
-    let valid = if kind == locations::Kind::Recording {
-        !value.id.is_empty() && value.id.len() <= 256 && !value.id.chars().any(char::is_control)
-    } else {
-        uuid::Uuid::parse_str(&value.id).is_ok()
-    };
-    if !valid {
+    if uuid::Uuid::parse_str(&value.id).is_err() {
         return Err(error(
             proto::ErrorCode::InvalidRequest,
             400,

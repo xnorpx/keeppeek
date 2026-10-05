@@ -6,7 +6,7 @@
 		StorageObjectKind,
 		StorageVolumeRole,
 		type StorageObject,
-		type StorageLegacyObject,
+		type StorageObjectLocation,
 		type StorageMovePreview
 	} from '$lib/proto/webrtc_pb';
 	import type { VolumeController } from '$lib/storage-volumes';
@@ -14,10 +14,8 @@
 	let { controller, volumes }: { controller: VolumeController; volumes: string[] } = $props();
 	let source = $state('');
 	let destination = $state('');
-	const legacySource = 'legacy:recordings';
-	type ListedObject = Pick<StorageLegacyObject, 'object' | 'bytes'>;
-	let objects = $state<ListedObject[]>([]);
-	let selected = $state<ListedObject | undefined>();
+	let objects = $state<StorageObjectLocation[]>([]);
+	let selected = $state<StorageObjectLocation | undefined>();
 	let next = $state<StorageObject | undefined>();
 	let role = $state(StorageVolumeRole.ARCHIVE);
 	let preview = $state<StorageMovePreview | null>(null);
@@ -44,15 +42,11 @@
 		try {
 			const response = await controller.storageVolumes(
 				create(StorageVolumeCommandSchema, {
-					action:
-						source === legacySource
-							? { case: 'legacyObjects', value: { after } }
-							: { case: 'objects', value: { volumeId: source, after } }
+					action: { case: 'objects', value: { volumeId: source, after } }
 				})
 			);
 			if (!alive) return;
-			if (response.result.case !== 'objects' && response.result.case !== 'legacyObjects')
-				throw new Error('Unexpected object list response.');
+			if (response.result.case !== 'objects') throw new Error('Unexpected object list response.');
 			objects = response.result.value.objects;
 			next = response.result.value.nextAfter;
 			selected = undefined;
@@ -126,32 +120,27 @@
 	<h4 class="text-sm font-medium">Move one stored object</h4>
 	<p class="text-xs text-text-muted">
 		Preview checks the current source and destination. Confirm queues a durable move; readers finish
-		before the old copy is removed.
+		before the old copy is removed. Bulk drain and metadata migration are unavailable.
 	</p>
 	<fieldset disabled={busy} class="space-y-3">
 		<label
 			>Source volume<select bind:value={source} onchange={reset}
-				><option value="">Choose source volume</option><option value={legacySource}
-					>Legacy recordings</option
-				><option value="legacy-active">Managed files in original active storage</option>
-				<option value="legacy-archive">Managed files in original archive storage</option>
-				{#each volumes as id (id)}<option value={id}>{id}</option>{/each}</select
+				><option value="">Choose source volume</option>{#each volumes as id (id)}<option value={id}
+						>{id}</option
+					>{/each}</select
 			></label
 		>
 		<Button type="button" variant="outline" disabled={!source} onclick={() => load()}
 			>Load stored objects</Button
 		>
 		{#if loaded && objects.length === 0}<p class="text-sm text-text-muted">
-				No eligible objects on this page.
+				No owned objects on this page.
 			</p>{/if}
 		{#if objects.length}<label
 				>Stored object<select bind:value={selected} onchange={() => (preview = null)}
 					><option value={undefined}>Choose object</option
 					>{#each objects as object (`${object.object?.kind}:${object.object?.id}`)}<option
-							value={object}
-							>{object.object?.id} · {object.bytes === undefined
-								? 'verify size in preview'
-								: `${object.bytes.toString()} bytes`}</option
+							value={object}>{object.object?.id} · {object.bytes.toString()} bytes</option
 						>{/each}</select
 				></label
 			>{/if}
@@ -187,10 +176,6 @@
 					{preview.source?.bytes.toString()} bytes. Preview valid for {preview.expiresInSeconds} seconds;
 					changed settings require a new preview.
 				</p>
-				{#if preview.adoptsLegacy}<p>
-						Confirmation adopts this file into managed storage. Cancelling the transfer keeps it
-						managed at its current location.
-					</p>{/if}
 				<Button type="button" onclick={confirm}>Confirm this move</Button>
 			</div>
 		{/if}

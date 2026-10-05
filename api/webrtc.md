@@ -1372,7 +1372,7 @@ candidates and breaks ties by ID. Metadata placement has one global candidate an
 
 Configuration still accepts only disabled drafts and does not advertise a live-volume
 capability. The internal runtime now places recordings, exports, and event images and
-journals verified moves. Legacy backfill, retention, draining, metadata relocation, and
+journals verified moves. Activation, bulk draining, and
 the management UI must be qualified before configuration activation.
 
 An explicit configuration update cannot remove a bound volume until effective drain is set,
@@ -1399,14 +1399,7 @@ definitions; successful removal retains immutable catalog bindings and completed
   groups come from server configuration. Rejections explain state, role, source, or capacity limits.
 - `objects`: list at most 64 authoritative objects on one volume, ordered by kind and object ID.
   Use `next_after` for another page. Pending writers and retired move sources are excluded.
-- `legacy_objects`: list at most 64 finalized legacy recording references by object ID. Use
-  `next_after` for another page. Listing registers references without reading media; optional
-  `bytes` is absent until verification. Offline references remain visible and paths are omitted.
-- `preview_move`: capture one owned object or registered legacy recording, destination, verified
-  byte count, and configuration revision. Legacy previews require captured root identities and
-  report `adopts_legacy=true`. Confirmation permanently adopts the source into managed storage;
-  cancelling the transfer leaves that source managed at its current location. No copy or
-  ownership transfer occurs during preview.
+- `preview_move`: capture one owned object, destination, byte count, and configuration revision.
   The server resolves camera ownership and group eligibility; clients cannot supply those claims.
 - `confirm_move`: submit the preview token and unchanged configuration revision. Tokens belong
   to the requesting Administrator, expire after 300 seconds, and are limited to 64 per server.
@@ -1424,7 +1417,7 @@ definitions; successful removal retains immutable catalog bindings and completed
   and export history move together during the next service startup, before workers start.
   Current files remain authoritative until that stopped handoff; old source files are retained.
 - `metadata`: report the current metadata volume, optional pending destination, restart requirement,
-  and metadata configuration revision. An absent current volume means legacy metadata paths.
+  and metadata configuration revision. The response identifies the current metadata owner when configured.
 - `cancel_metadata`: remove a pending plan using the latest metadata status revision. Cancellation
   is available only while the running source remains authoritative, before restarting the service.
 

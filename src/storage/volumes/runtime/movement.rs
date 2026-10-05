@@ -30,7 +30,18 @@ impl Manager {
         let deadline = Instant::now() + Duration::from_secs(300);
         check_work(deadline, &cancelled)?;
         self.validate_copy(job_id, source, &destination)?;
-        let input = self.open_owned(source)?;
+        let source_index = self
+            .inner
+            .configuration
+            .volumes
+            .iter()
+            .position(|volume| volume.id.as_str() == source.volume)
+            .ok_or_else(|| anyhow::anyhow!("move source volume is not configured"))?;
+        let input = self.inner.root(source_index)?.open_owned(
+            &source.relative_key,
+            &source.file_identity,
+            source.bytes,
+        )?;
         let root = self.inner.writable_root(destination.index)?;
         let temporary = format!("{job_id}.tmp");
         let mut output = ReservedFile {

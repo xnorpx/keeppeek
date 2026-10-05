@@ -36,21 +36,10 @@ struct Receipt {
     filesystem: String,
     root: String,
     quarantine: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    binding: Option<LegacyBinding>,
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-struct LegacyBinding {
-    filesystem: String,
-    root: String,
-    parent: String,
 }
 
 struct Retirement<'a> {
     root: &'a Root,
-    binding: Option<&'a Root>,
     lock: File,
     staging: Dir,
     directory: Dir,
@@ -94,27 +83,6 @@ impl Root {
         Retirement::prepare(self, key, expected_identity, bytes, digest, operation)?.finish()
     }
 
-    pub(super) fn retire_with_binding(
-        &self,
-        key: &str,
-        expected_identity: &str,
-        bytes: u64,
-        digest: [u8; 32],
-        operation: &str,
-        binding: Option<&Self>,
-    ) -> anyhow::Result<()> {
-        Retirement::prepare_with_binding(
-            self,
-            key,
-            expected_identity,
-            bytes,
-            digest,
-            operation,
-            binding,
-        )?
-        .finish()
-    }
-
     /// Removes retirement receipts only after the catalog has durably completed this job.
     /// A pinned receipt moves outside the job directory before its metadata is removed.
     /// This operation never removes a media file.
@@ -129,20 +97,7 @@ impl Root {
         digest: [u8; 32],
         operation: &str,
     ) -> anyhow::Result<()> {
-        self.acknowledge_with_binding(key, expected_identity, bytes, digest, operation, None)
-    }
-
-    pub(super) fn acknowledge_with_binding(
-        &self,
-        key: &str,
-        expected_identity: &str,
-        bytes: u64,
-        digest: [u8; 32],
-        operation: &str,
-        binding: Option<&Self>,
-    ) -> anyhow::Result<()> {
-        validate_retirement_key(key, binding)?;
-        validate_binding(binding)?;
+        validate_key(key)?;
         anyhow::ensure!(
             operation.len() == 36 && uuid::Uuid::parse_str(operation)?.to_string() == operation,
             "invalid retirement operation"
@@ -176,7 +131,6 @@ impl Root {
                 digest,
                 operation,
             )?;
-            validate_receipt_binding(self, binding, &staged)?;
             validate_ack(self, directory, &staged)?;
             validate_intent(directory, &staged)?;
             let file = open_removal(directory, STAGED)?;
@@ -195,8 +149,7 @@ impl Root {
             digest,
             operation,
         )?;
-        validate_receipt_binding(self, binding, &receipt)?;
-        finish_ack(self, &staging, directory, &receipt, &ack, binding)
+        finish_ack(self, &staging, directory, &receipt, &ack)
     }
 }
 
@@ -209,20 +162,7 @@ impl<'a> Retirement<'a> {
         digest: [u8; 32],
         operation: &str,
     ) -> anyhow::Result<Self> {
-        Self::prepare_with_binding(root, key, expected_identity, bytes, digest, operation, None)
-    }
-
-    fn prepare_with_binding(
-        root: &'a Root,
-        key: &str,
-        expected_identity: &str,
-        bytes: u64,
-        digest: [u8; 32],
-        operation: &str,
-        binding: Option<&'a Root>,
-    ) -> anyhow::Result<Self> {
-        validate_retirement_key(key, binding)?;
-        validate_binding(binding)?;
+        validate_key(key)?;
         anyhow::ensure!(
             operation.len() == 36 && uuid::Uuid::parse_str(operation)?.to_string() == operation,
             "invalid retirement operation"
@@ -250,11 +190,9 @@ impl<'a> Retirement<'a> {
             filesystem: root.identity.filesystem.clone(),
             root: root.identity.directory.clone(),
             quarantine: observed.directory,
-            binding: receipt_binding(root, binding)?,
         };
         let retirement = Self {
             root,
-            binding,
             lock,
             staging,
             directory,
@@ -359,7 +297,6 @@ impl<'a> Retirement<'a> {
 
     fn revalidate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(Instant::now() < self.deadline, "retirement timed out");
-        validate_binding(self.binding)?;
         self.root.revalidate()?;
         validate_owner(&self.root.directory, 0o022)?;
         let staging = private_directory(&self.root.directory, OsStr::new(QUARANTINE), false)?;
@@ -675,7 +612,6 @@ fn finish_ack(
     directory: Option<Dir>,
     receipt: &Receipt,
     ack: &str,
-    binding: Option<&Root>,
 ) -> anyhow::Result<()> {
     if let Some(directory) = directory {
         validate_ack(root, &directory, receipt)?;
@@ -685,7 +621,6 @@ fn finish_ack(
         );
         validate_intent(&directory, receipt)?;
         validate_staging(root, staging)?;
-        validate_binding(binding)?;
         remove_receipt(&directory, INTENT, receipt)?;
         sync_directory(&directory)?;
         root.revalidate()?;
@@ -697,7 +632,6 @@ fn finish_ack(
             "retirement directory changed"
         );
         drop(named);
-        validate_binding(binding)?;
         staging.remove_dir(&receipt.operation)?;
         sync_directory(staging)?;
     }
@@ -706,58 +640,7 @@ fn finish_ack(
         absent(staging, &receipt.operation)?,
         "retirement directory reappeared"
     );
-    validate_binding(binding)?;
     remove_receipt(staging, ack, receipt)?;
     sync_directory(staging)?;
     root.sync()
-}
-
-fn validate_binding(binding: Option<&Root>) -> anyhow::Result<()> {
-    if let Some(binding) = binding {
-        binding.revalidate()?;
-        validate_owner(&binding.directory, 0o022)?;
-    }
-    Ok(())
-}
-
-fn receipt_binding(parent: &Root, binding: Option<&Root>) -> anyhow::Result<Option<LegacyBinding>> {
-    binding
-        .map(|binding| {
-            Ok(LegacyBinding {
-                filesystem: binding.identity.filesystem.clone(),
-                root: binding.identity.directory.clone(),
-                parent: parent
-                    .path
-                    .strip_prefix(&binding.path)?
-                    .to_str()
-                    .ok_or_else(|| anyhow::anyhow!("invalid legacy parent path"))?
-                    .replace('\\', "/"),
-            })
-        })
-        .transpose()
-}
-
-fn validate_receipt_binding(
-    parent: &Root,
-    binding: Option<&Root>,
-    receipt: &Receipt,
-) -> anyhow::Result<()> {
-    validate_binding(binding)?;
-    anyhow::ensure!(
-        receipt.binding == receipt_binding(parent, binding)?,
-        "legacy retirement binding changed"
-    );
-    Ok(())
-}
-
-fn validate_retirement_key(key: &str, binding: Option<&Root>) -> anyhow::Result<()> {
-    if binding.is_some() {
-        anyhow::ensure!(
-            super::legacy::components(key)?.len() == 1,
-            "legacy retirement requires a leaf"
-        );
-        Ok(())
-    } else {
-        validate_key(key)
-    }
 }

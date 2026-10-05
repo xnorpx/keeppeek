@@ -133,7 +133,12 @@ impl Manager {
             current == job.source,
             "cancelled move source authority changed"
         );
-        let mut file = self.open_owned(&current)?;
+        let index = self.cancellation_volume(&current.volume, current.generation)?;
+        let mut file = self.inner.root(index)?.open_owned(
+            &current.relative_key,
+            &current.file_identity,
+            current.bytes,
+        )?;
         anyhow::ensure!(
             file.inspect_evidence()? == (current.bytes, current.file_identity, current.digest),
             "cancelled move source changed"

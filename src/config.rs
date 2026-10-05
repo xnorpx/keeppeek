@@ -812,7 +812,6 @@ impl StorageMigration {
 
     fn apply(&self) -> anyhow::Result<()> {
         self.validate()?;
-        self.require_catalog_metadata()?;
         let mut recording_routes = [self.medium_term.as_ref(), self.long_term.as_ref()]
             .into_iter()
             .flatten()
@@ -835,7 +834,7 @@ impl StorageMigration {
             .map(crate::storage::catalog::authority::Lease::connect)
             .transpose()?;
         if let (Some(lease), Some(connection)) = (&catalog_lease, &catalog_connection) {
-            lease.initialize_legacy_migration(connection)?;
+            lease.initialize(connection)?;
         }
         let retained = catalog_route
             .as_ref()
@@ -870,14 +869,6 @@ impl StorageMigration {
                 &recording_routes,
             )?;
         }
-        Ok(())
-    }
-
-    fn require_catalog_metadata(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.recording_catalog_after_move.is_some(),
-            "storage migration lacks catalog metadata; restore the original storage settings and reschedule the move"
-        );
         Ok(())
     }
 
@@ -2162,6 +2153,9 @@ fn move_storage_path(from: &Path, to: &Path, retained: &[PathBuf]) -> anyhow::Re
 fn move_recording_catalog_path(from: &Path, to: &Path) -> anyhow::Result<()> {
     if !from.exists() {
         return Ok(());
+    }
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
     }
     crate::storage::catalog::authority::transfer_legacy(from, to)
 }
@@ -3991,13 +3985,9 @@ mod tests {
         std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
         std::fs::write(&source, b"complete recording").unwrap();
         std::fs::write(&destination, b"complete recording").unwrap();
-        let catalog = directory.join("catalog.db");
-        let migration = StorageMigration::between_with_metadata(
-            StorageMigrationPaths::new(&current, &current, &catalog, &current.join("thumbnails")),
-            StorageMigrationPaths::new(&next, &next, &catalog, &next.join("thumbnails")),
-        )
-        .unwrap()
-        .unwrap();
+        let migration = StorageMigration::between(&current, &next, &current, &next)
+            .unwrap()
+            .unwrap();
 
         migration.apply().unwrap();
         migration.apply().unwrap();

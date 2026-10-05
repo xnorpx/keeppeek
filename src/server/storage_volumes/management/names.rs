@@ -43,9 +43,6 @@ impl Names {
         mut action: Option<proto::storage_volume_command::Action>,
     ) -> Result<Option<proto::storage_volume_command::Action>> {
         use proto::storage_volume_command::Action;
-        if matches!(&action, Some(Action::Objects(value)) if legacy_id(&value.volume_id)) {
-            return Ok(action);
-        }
         let id = match &mut action {
             Some(Action::Probe(value)) => Some(&mut value.volume_id),
             Some(Action::Objects(value)) => Some(&mut value.volume_id),
@@ -75,9 +72,6 @@ impl Names {
     }
 
     fn redact(&self, id: &mut String) {
-        if legacy_id(id) {
-            return;
-        }
         *id = self
             .0
             .iter()
@@ -99,7 +93,6 @@ impl Names {
     pub(super) fn response(&self, result: &mut proto::storage_volume_result::Result) {
         use proto::storage_volume_result::Result as Wire;
         match result {
-            Wire::LegacyObjects(_) => {}
             Wire::MetadataPreview(value) => self.redact(&mut value.destination_volume_id),
             Wire::Metadata(value) => {
                 if let Some(id) = &mut value.current_volume_id {
@@ -140,10 +133,4 @@ impl Names {
             }
         }
     }
-}
-
-fn legacy_id(id: &str) -> bool {
-    locations::legacy::roots::Role::ALL
-        .into_iter()
-        .any(|role| role.id() == id)
 }

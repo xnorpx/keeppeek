@@ -214,7 +214,7 @@ mod tests {
             .unwrap();
         let storage = StorageConfig::from_toml(&config.storage);
         let catalog =
-            crate::storage::RecordingCatalog::open(&storage.recording_catalog_path).unwrap();
+            crate::storage::RecordingCatalog::open(&directory.join("catalog.db")).unwrap();
         let state = ServerState::new(
             &config,
             &HashMap::new(),
@@ -451,103 +451,6 @@ mod tests {
         ] {
             assert_eq!(state_from_wire(state_to_wire(state)).unwrap(), state);
         }
-    }
-    fn capture_settings_paths(handler: &ServerControlHandler) {
-        use crate::storage::catalog::locations::{Reply, Request, legacy::LegacyPaths};
-        let storage = &handler.state.storage_config;
-        let paths = LegacyPaths {
-            active_root: storage.medium_term_path.clone(),
-            archive_root: storage.long_term_path.clone(),
-            thumbnail_root: storage.event_thumbnail_path.clone(),
-            catalog_path: storage.recording_catalog_path.clone(),
-            export_root: storage.long_term_path.join(".exports"),
-            export_history_path: storage.long_term_path.join(".exports/history.json"),
-        };
-        assert_eq!(
-            handler
-                .state
-                .catalog
-                .as_ref()
-                .unwrap()
-                .volume_location(Request::RegisterLegacyPaths(Box::new(paths.clone())))
-                .unwrap(),
-            Reply::LegacyPaths(Some(Box::new(paths)))
-        );
-    }
-
-    fn captured_path_update(
-        mut current: proto::SanitizedRuntimeConfiguration,
-        field: &str,
-        path: &std::path::Path,
-        move_existing: bool,
-    ) -> proto::runtime_configuration_command::Action {
-        let storage = current.storage.as_mut().unwrap();
-        let path = path.to_string_lossy().into_owned();
-        match field {
-            "active" => storage.medium_term_path = path,
-            "archive" => storage.long_term_path = path,
-            "thumbnail" => storage.event_thumbnail_path = path,
-            "catalog" => storage.recording_catalog_path = path,
-            _ => unreachable!(),
-        }
-        let mut action = update(current);
-        let proto::runtime_configuration_command::Action::Update(request) = &mut action else {
-            unreachable!()
-        };
-        request.move_existing_recordings = move_existing;
-        action
-    }
-
-    #[test]
-    fn captured_settings_paths_reject_changes_before_probes_or_persistence() {
-        use proto::runtime_configuration_command::Action;
-        let (directory, handler, catalog) = fixture();
-        capture_settings_paths(&handler);
-        let current = dispatch(&handler, Action::Get(proto::GetRuntimeConfiguration {})).unwrap();
-        let config_path = directory.join("config.toml");
-        let before = std::fs::read(&config_path).unwrap();
-        for field in ["active", "archive", "thumbnail", "catalog"] {
-            for move_existing in [false, true] {
-                let proposed_root = directory.join(format!("changed-{field}-{move_existing}"));
-                let proposed = if field == "catalog" {
-                    proposed_root.join("catalog.db")
-                } else {
-                    proposed_root.clone()
-                };
-                let error = dispatch(
-                    &handler,
-                    captured_path_update(current.clone(), field, &proposed, move_existing),
-                )
-                .unwrap_err();
-                assert_eq!(
-                    error.code,
-                    proto::ErrorCode::Rejected as i32,
-                    "captured {field} change with migration={move_existing} was not fenced"
-                );
-                assert_eq!(std::fs::read(&config_path).unwrap(), before);
-                assert!(
-                    !proposed_root.exists(),
-                    "rejected {field} change created a probe directory"
-                );
-                let fetched =
-                    dispatch(&handler, Action::Get(proto::GetRuntimeConfiguration {})).unwrap();
-                assert_eq!(
-                    fetched.configuration_revision,
-                    current.configuration_revision
-                );
-                assert_eq!(fetched.storage, current.storage);
-            }
-        }
-        let mut unchanged_paths = current.clone();
-        unchanged_paths.port = if current.port == 9099 { 9100 } else { 9099 };
-        let expected_port = unchanged_paths.port;
-        let saved = dispatch(&handler, update(unchanged_paths)).unwrap();
-        assert_eq!(saved.port, expected_port);
-        assert_eq!(saved.storage, current.storage);
-        assert_ne!(saved.configuration_revision, current.configuration_revision);
-        drop(handler);
-        catalog.shutdown();
-        std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn settings_removal_rejects_unbound_enabled_runtime_until_restart() {
