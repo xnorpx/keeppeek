@@ -1,8 +1,8 @@
 //! Bounded retention decisions for whole, independently decodable recording intervals.
 //!
 //! Durations run from the recording interval's exclusive end. Canonical events are matched
-//! explicitly by type and camera/stream identity; detection metadata never implies motion. These decisions
-//! do not delete media, override evidence holds, or activate application settings.
+//! explicitly by type and camera/stream identity. Detection metadata never implies motion.
+//! These decisions do not delete media, override evidence holds, or activate application settings.
 
 use crate::storage::metadata::TimelineEvent;
 use anyhow::{Result, bail};
@@ -284,7 +284,7 @@ fn recording_events<'a>(
         {
             continue;
         }
-        // ponytail: Duplicate checks cover at most 256 snapshot entries; index IDs if that limit grows.
+        // ponytail: Duplicate checks cover at most 256 entries. Index IDs if that limit grows.
         if event.id.is_empty()
             || observations
                 .iter()
