@@ -701,11 +701,7 @@ mod tests {
     fn invalid_scopes_are_rejected_before_admission_to_the_read_worker() {
         let (write_tx, _) = mpsc::sync_channel(1);
         let (search_tx, _) = mpsc::sync_channel(1);
-        let handle = RecordingCatalogHandle {
-            readers: std::sync::Arc::new(crate::storage::catalog::readers::Registry::default()),
-            tx: write_tx,
-            search_tx,
-        };
+        let handle = RecordingCatalogHandle::test_handle(write_tx, search_tx);
         for scope in [
             range_scope(0, 0),
             range_scope(10, 9),
@@ -727,11 +723,7 @@ mod tests {
         let (write_tx, write_rx) = mpsc::sync_channel(1);
         write_tx.send(Command::Shutdown).unwrap();
         let (search_tx, search_rx) = mpsc::sync_channel(1);
-        let handle = RecordingCatalogHandle {
-            readers: std::sync::Arc::new(crate::storage::catalog::readers::Registry::default()),
-            tx: write_tx,
-            search_tx,
-        };
+        let handle = RecordingCatalogHandle::test_handle(write_tx, search_tx);
         let worker = std::thread::spawn(move || {
             let SearchCommand::Maintenance(super::ReadRequest::Snapshot {
                 scope,
@@ -769,11 +761,7 @@ mod tests {
         let (write_tx, _) = mpsc::sync_channel(1);
         let (search_tx, search_rx) = mpsc::sync_channel(1);
         search_tx.send(SearchCommand::Shutdown).unwrap();
-        let handle = RecordingCatalogHandle {
-            readers: std::sync::Arc::new(crate::storage::catalog::readers::Registry::default()),
-            tx: write_tx,
-            search_tx,
-        };
+        let handle = RecordingCatalogHandle::test_handle(write_tx, search_tx);
         let full = handle
             .recording_maintenance_snapshot(recording_scope())
             .unwrap_err();
