@@ -373,7 +373,7 @@ test('saves only the active Settings draft with Control+S', async ({ page }) => 
 	await waitForKeyboard(page);
 
 	await page.getByRole('button', { name: 'Edit server' }).click();
-	await page.getByLabel('Port').fill('3201');
+	await page.getByLabel('Port', { exact: true }).fill('3201');
 	await page.keyboard.press('Control+s');
 	await expect(page.getByText('Server settings saved.', { exact: true })).toBeVisible();
 	expect(controls.runtimeUpdates).toEqual([
