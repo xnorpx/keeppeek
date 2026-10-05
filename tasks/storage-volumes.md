@@ -28,10 +28,10 @@ The approved API scope includes `api/webrtc.proto`, `api/webrtc.md`, and generat
 
 ## Remaining implementation and verification
 
-- [ ] Finish removing the adoption/captured-path implementation and its contract surface.
-- [ ] Initialize useful named defaults and route every production media writer through them.
-- [ ] Enable validated volume configuration and complete health/status reporting.
-- [ ] Complete bounded bulk move/drain preview, confirmation, progress, and cancellation UI.
+- [x] Finish removing the adoption/captured-path implementation and its contract surface.
+- [x] Initialize useful named defaults and route every production media writer through them.
+- [x] Enable validated volume configuration and complete health/status reporting.
+- [x] Complete bounded bulk move/drain preview, confirmation, progress, and cancellation UI.
 - [ ] Verify export/thumbnail placement, restart recovery, unavailable volumes, and retention.
 - [ ] Verify named metadata relocation and removal without compatibility prerequisites.
 - [ ] Regenerate bindings, synchronize operational documentation, and review the final diff.
@@ -40,3 +40,19 @@ The approved API scope includes `api/webrtc.proto`, `api/webrtc.md`, and generat
 
 Historical test results from removed compatibility slices do not validate the simplified
 implementation. The PR remains draft until the remaining work and checks are complete.
+
+## Current verification
+
+- The initial Windows gate passed 3,184 Rust tests with slow tests enabled, then
+  found four Clippy errors. Those errors are fixed; the final gate is pending.
+- All 13 storage-volume component tests passed in Chromium.
+- The configured recording-seed integration test verifies named ownership, finalized
+  MP4 samples, and refusal to recreate an offline metadata root.
+- The configuration book builds with mdBook 0.5.4 and Mermaid 0.17.1.
+- `named_writer_local_scale` compares the same writer with and without named
+  ownership. Thirty runs after one warmup alternate execution order, each writing
+  eight cameras with 64 synthetic keyframes per camera and verifying every output.
+  Windows debug results: baseline median 2,743.857 ms / p95 3,660.614 ms;
+  named median 6,013.121 ms / p95 9,476.487 ms. This is a synchronous durability
+  workload, not a live-camera throughput result. Final isolated performance and
+  platform evidence remain required before completion.

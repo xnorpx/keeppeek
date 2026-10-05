@@ -4,6 +4,42 @@ use super::*;
 const HISTORY_TEST_KEY: &str = "exports-12345678-1234-4234-8234-123456789abc.json";
 
 #[test]
+fn interrupted_initialization_retries_do_not_accumulate_or_replace_stages() -> anyhow::Result<()> {
+    let (path, root) = test_root()?;
+    let stage = path.join("12345678-1234-4234-8234-123456789abc.tmp");
+    std::fs::write(&stage, b"unverified stage")?;
+    for _ in 0..3 {
+        assert!(root.initialize_history(HISTORY_TEST_KEY).is_err());
+        assert_eq!(std::fs::read(&stage)?, b"unverified stage");
+        assert_eq!(std::fs::read_dir(&path)?.count(), 1);
+    }
+    assert!(!path.join(HISTORY_TEST_KEY).exists());
+    Ok(())
+}
+
+#[test]
+fn initialization_publishes_complete_history_and_preserves_interrupted_stages() -> anyhow::Result<()>
+{
+    let (path, root) = test_root()?;
+    let interrupted = format!("{}.tmp", uuid::Uuid::new_v4());
+    std::fs::write(path.join(&interrupted), b"{\"version\":")?;
+    root.initialize_history(HISTORY_TEST_KEY)?;
+    assert_eq!(
+        root.read_history(HISTORY_TEST_KEY)?,
+        b"{\"version\":1,\"jobs\":[]}\n"
+    );
+    assert_eq!(std::fs::read(path.join(interrupted))?, b"{\"version\":");
+    root.initialize_history(HISTORY_TEST_KEY)?;
+    std::fs::write(path.join(HISTORY_TEST_KEY), b"unrelated invalid history")?;
+    assert!(root.initialize_history(HISTORY_TEST_KEY).is_err());
+    assert_eq!(
+        std::fs::read(path.join(HISTORY_TEST_KEY))?,
+        b"unrelated invalid history"
+    );
+    Ok(())
+}
+
+#[test]
 fn history_replacement_preserves_old_open_file_and_reopens_complete_new_bytes() -> anyhow::Result<()>
 {
     let (path, root) = test_root()?;

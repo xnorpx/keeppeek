@@ -61,10 +61,8 @@ pub(in crate::server) fn recover(
             }
         }
     }
-    if record.job.status != proto::ExportJobStatus::Ready as i32 {
-        if !named {
-            cleanup_export_attempt_directory(root, &record.job.job_id, &record.artifact_id)?;
-        }
+    if record.job.status != proto::ExportJobStatus::Ready as i32 && !named {
+        cleanup_export_attempt_directory(root, &record.job.job_id, &record.artifact_id)?;
     }
     Ok(())
 }

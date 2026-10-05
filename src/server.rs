@@ -12619,6 +12619,111 @@ fn present_discovered_cameras(
         .collect::<Vec<_>>()
 }
 
+fn validate_storage_destination(
+    state: &ServerState,
+    next: &StorageConfig,
+    move_existing: bool,
+) -> Result<(), ControlCommandError> {
+    if next.named_volumes.is_some() {
+        if move_existing {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "Use named-volume move controls to relocate stored objects",
+            ));
+        }
+        return Ok(());
+    }
+    validate_raw_storage_destination(state, next, move_existing)
+}
+
+fn validate_raw_storage_destination(
+    state: &ServerState,
+    next: &StorageConfig,
+    move_existing: bool,
+) -> Result<(), ControlCommandError> {
+    probe_storage_paths(next)?;
+    let catalog_recording_bytes = state
+        .catalog
+        .as_ref()
+        .and_then(|catalog| catalog.stats().ok())
+        .map_or(0, |stats| stats.recording_bytes);
+    let capacity = filesystem_capacity(
+        &next.long_term_path,
+        if next.long_term_path == state.storage_config.long_term_path || move_existing {
+            catalog_recording_bytes
+        } else {
+            0
+        },
+    )
+    .map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            format!("storage filesystem is unavailable: {error}"),
+        )
+    })?;
+    let safety = next.safety_policy().evaluate(capacity);
+    if safety.critical_free_bytes > capacity.total_bytes
+        || safety.warning_free_bytes > capacity.total_bytes
+        || safety.recovery_free_bytes > capacity.total_bytes
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "storage headroom thresholds exceed destination filesystem capacity",
+        ));
+    }
+    let reclaimable_bytes =
+        if next.long_term_path == state.storage_config.long_term_path || move_existing {
+            catalog_recording_bytes
+        } else {
+            0
+        };
+    if capacity.available_bytes.saturating_add(reclaimable_bytes) < safety.recovery_free_bytes {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "destination filesystem cannot provide the configured cleanup recovery headroom",
+        ));
+    }
+    if move_existing
+        && next.long_term_path != state.storage_config.long_term_path
+        && capacity.available_bytes
+            < catalog_recording_bytes.saturating_add(safety.critical_free_bytes)
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "destination filesystem cannot hold indexed recordings and critical headroom",
+        ));
+    }
+    Ok(())
+}
+
+fn probe_storage_paths(next: &StorageConfig) -> Result<(), ControlCommandError> {
+    let mut probe_paths = HashSet::new();
+    probe_paths.insert(next.medium_term_path.clone());
+    probe_paths.insert(next.long_term_path.clone());
+    probe_paths.insert(next.event_thumbnail_path.clone());
+    probe_paths.insert(
+        next.recording_catalog_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
+    );
+    for path in probe_paths {
+        if let Err(error) = storage_write_probe(&path) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                format!("storage path is not writable: {error}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn save_runtime_settings(
     update: RuntimeSettingsUpdate,
     state: &ServerState,
@@ -12863,85 +12968,7 @@ fn save_runtime_settings(
     } else {
         None
     };
-    let mut probe_paths = HashSet::new();
-    probe_paths.insert(next_storage_config.medium_term_path.clone());
-    probe_paths.insert(next_storage_config.long_term_path.clone());
-    probe_paths.insert(next_storage_config.event_thumbnail_path.clone());
-    probe_paths.insert(
-        next_storage_config
-            .recording_catalog_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf(),
-    );
-    for path in probe_paths {
-        if let Err(error) = storage_write_probe(&path) {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                format!("storage path is not writable: {error}"),
-            ));
-        }
-    }
-    let catalog_recording_bytes = state
-        .catalog
-        .as_ref()
-        .and_then(|catalog| catalog.stats().ok())
-        .map_or(0, |stats| stats.recording_bytes);
-    let capacity = filesystem_capacity(
-        &next_storage_config.long_term_path,
-        if next_storage_config.long_term_path == state.storage_config.long_term_path
-            || update.move_existing_recordings
-        {
-            catalog_recording_bytes
-        } else {
-            0
-        },
-    )
-    .map_err(|error| {
-        ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            format!("storage filesystem is unavailable: {error}"),
-        )
-    })?;
-    let safety = next_storage_config.safety_policy().evaluate(capacity);
-    if safety.critical_free_bytes > capacity.total_bytes
-        || safety.warning_free_bytes > capacity.total_bytes
-        || safety.recovery_free_bytes > capacity.total_bytes
-    {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "storage headroom thresholds exceed destination filesystem capacity",
-        ));
-    }
-    let reclaimable_bytes = if next_storage_config.long_term_path
-        == state.storage_config.long_term_path
-        || update.move_existing_recordings
-    {
-        catalog_recording_bytes
-    } else {
-        0
-    };
-    if capacity.available_bytes.saturating_add(reclaimable_bytes) < safety.recovery_free_bytes {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "destination filesystem cannot provide the configured cleanup recovery headroom",
-        ));
-    }
-    if update.move_existing_recordings
-        && next_storage_config.long_term_path != state.storage_config.long_term_path
-        && capacity.available_bytes
-            < catalog_recording_bytes.saturating_add(safety.critical_free_bytes)
-    {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "destination filesystem cannot hold indexed recordings and critical headroom",
-        ));
-    }
+    validate_storage_destination(state, &next_storage_config, update.move_existing_recordings)?;
     let saved = match config::update_settings_with_volume_draft(
         config_path,
         &settings,
@@ -22186,6 +22213,21 @@ mod tests {
 
         assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn named_settings_validation_does_not_create_offline_roots() {
+        let missing = std::env::temp_dir().join(format!("offline-named-{}", uuid::Uuid::new_v4()));
+        let mut storage = StorageConfig::from_toml(&StorageToml::default());
+        storage.named_volumes = Some(Default::default());
+        storage.medium_term_path = missing.join("active");
+        storage.long_term_path = missing.join("archive");
+        storage.event_thumbnail_path = missing.join("images");
+        storage.recording_catalog_path = missing.join("metadata/catalog.db");
+        let state = ServerState::empty();
+        validate_storage_destination(&state, &storage, false).unwrap();
+        assert!(validate_storage_destination(&state, &storage, true).is_err());
+        assert!(!missing.exists());
     }
 
     #[test]

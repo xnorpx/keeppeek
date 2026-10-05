@@ -22,13 +22,15 @@ pub struct MetadataBinding {
 }
 
 impl MetadataBinding {
-    pub(crate) fn root_identity(&self) -> crate::storage::volumes::root::Identity {
+    /// Returns the directory identity required when opening this metadata owner.
+    pub fn root_identity(&self) -> crate::storage::volumes::root::Identity {
         crate::storage::volumes::root::Identity {
             filesystem: self.filesystem.clone(),
             directory: self.root_identity.clone(),
         }
     }
-    pub(crate) fn authority(&self) -> Authority {
+    /// Returns the catalog authority required when opening this metadata owner.
+    pub fn authority(&self) -> Authority {
         Authority {
             catalog_id: self.catalog_id.clone(),
             generation: self.generation,

@@ -197,12 +197,7 @@ pub fn run(
     }
     let storage_engine =
         StorageEngine::start_with_catalog(storage_config.clone(), catalog_handle.clone());
-    let event_store = EventStore::new(
-        catalog_handle,
-        &storage_config.event_thumbnail_path,
-        storage_config.event_thumbnail_max_bytes,
-    )?
-    .with_volume_storage(&storage_config);
+    let event_store = EventStore::from_storage(catalog_handle, &storage_config)?;
     let operational_event_store = event_store.clone();
     let event_forwarder =
         EventForwarderRuntime::open(cfg.event_forwarder.mqtt.clone(), shutdown.clone())?;

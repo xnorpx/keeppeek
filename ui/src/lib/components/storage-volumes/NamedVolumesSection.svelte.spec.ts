@@ -167,6 +167,9 @@ describe('named volume settings', () => {
 		const capacity = page.getByLabelText('Capacity in bytes (blank means unlimited)');
 		await expect.element(capacity).toHaveValue('9007199254740993');
 		await capacity.fill('9007199254740995');
+		await page
+			.getByRole('combobox', { name: /^State/ })
+			.selectOptions(page.getByRole('option', { name: 'Enabled', exact: true }));
 		await page.getByRole('button', { name: 'Refresh volume status' }).click();
 		await expect.element(capacity).toHaveValue('9007199254740995');
 		await expect
@@ -179,6 +182,7 @@ describe('named volume settings', () => {
 		expect(saved.expected_configuration_revision).toBe('revision-one');
 		expect(saved.storage.named_volumes?.volumes[0].capacityBytes).toBe(9007199254740995n);
 		expect(saved.storage.named_volumes?.volumes[0].root).toBe('{secret:ROOT}');
+		expect(saved.storage.named_volumes?.volumes[0].state).toBe(StorageVolumeState.ENABLED);
 		expect(saved.storage.medium_term_path).toBe('/legacy');
 	});
 });

@@ -92,7 +92,7 @@
 	function saved(result: SettingsConfigUpdateResponse) {
 		onsaved(result);
 		editing = false;
-		message = 'Disabled volume draft saved. Activation remains unavailable.';
+		message = 'Volume settings saved. Restart to apply the configuration.';
 		void refresh();
 	}
 </script>
@@ -128,7 +128,7 @@
 				: 'Volume runtime is unavailable. Disabled drafts can be edited; moves require an active runtime.'}
 		</p>
 		{#if !status.volumes.length}<p class="text-sm text-text-muted">
-				No named volumes configured. Existing legacy storage continues to apply.
+				No named volumes configured. Configure placement before recording media.
 			</p>{/if}
 		<ul class="space-y-2">
 			{#each status.volumes as volume (volume.volumeId)}

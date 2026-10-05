@@ -139,26 +139,26 @@ fn named_writer_ignores_changed_groups_but_rotation_cannot_enter_paused_legacy()
 }
 
 #[test]
-fn legacy_writer_stays_paused_when_groups_begin_matching_named_policy() -> anyhow::Result<()> {
-    let (_root, catalog, mut worker) = worker()?;
+fn matching_group_starts_named_writer_after_unmatched_admission() -> anyhow::Result<()> {
+    let (root, catalog, mut worker) = worker()?;
     let identity = RecordingStreamIdentity::legacy("camera");
     let now = Instant::now();
     worker.ingest(identity.clone(), key_frame(now));
     worker.ingest(identity.clone(), key_frame(now + Duration::from_millis(40)));
+    assert!(worker.pipelines["camera"].medium_term.is_none());
     groups(&worker, "camera", true);
     worker
         .safety
-        .cleanup_failed("legacy archive is unavailable");
-    worker.ingest(identity, key_frame(now + Duration::from_millis(80)));
-    assert_eq!(
-        worker.pipelines["camera"]
-            .medium_term
-            .as_ref()
-            .unwrap()
-            .frames_written(),
-        2
-    );
+        .cleanup_failed("unrelated archive is unavailable");
+    worker.ingest(identity.clone(), key_frame(now + Duration::from_millis(80)));
+    worker.ingest(identity, key_frame(now + Duration::from_millis(120)));
+    let writer = worker.pipelines["camera"].medium_term.as_ref().unwrap();
+    let path = writer.active_path().to_owned();
+    let id = writer.recording_id().to_owned();
+    assert!(path.starts_with(root.join("primary")));
     worker.finalize_all();
+    assert_published(&catalog.handle(), &id, &path);
+    assert_eq!(samples(&path), 2);
     drop(worker);
     catalog.shutdown();
     Ok(())

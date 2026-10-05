@@ -1,25 +1,11 @@
-use crate::storage::volumes::{VolumeConfiguration, VolumeRole, VolumeState};
+use crate::storage::volumes::VolumeConfiguration;
 
 use super::{Secrets, resolve_toml_secret_references};
 
-pub(super) fn validate(
-    configuration: Option<&VolumeConfiguration>,
-    metadata: Option<&super::MetadataBinding>,
-) -> anyhow::Result<()> {
-    let Some(configuration) = configuration else {
-        return Ok(());
-    };
-    configuration.validate()?;
-    anyhow::ensure!(
-        configuration
-            .volumes
-            .iter()
-            .all(|volume| volume.state == VolumeState::Disabled
-                || (metadata.is_some_and(|owner| owner.volume_id == volume.id)
-                    && volume.state == VolumeState::Enabled
-                    && volume.roles == [VolumeRole::Metadata])),
-        "named storage volumes must remain disabled until durable placement is available"
-    );
+pub(super) fn validate(configuration: Option<&VolumeConfiguration>) -> anyhow::Result<()> {
+    if let Some(configuration) = configuration {
+        configuration.validate()?;
+    }
     Ok(())
 }
 
@@ -31,13 +17,7 @@ pub(super) fn persist<I: serde::Serialize>(
     let Some(configuration) = configuration else {
         return Ok(());
     };
-    let mut metadata = storage.get("metadata").cloned();
-    if let Some(value) = &mut metadata {
-        resolve_toml_secret_references(value, secrets)?;
-    }
-    let metadata: Option<super::MetadataBinding> =
-        metadata.map(toml::Value::try_into).transpose()?;
-    validate_with_secrets(configuration, secrets, metadata.as_ref())?;
+    validate_with_secrets(configuration, secrets)?;
     let mut next = toml::Value::try_from(configuration)?;
     if let Some(existing) = storage.get("named_volumes")
         && (!configuration.volumes.is_empty() || !configuration.placement.is_empty())
@@ -55,12 +35,11 @@ pub(super) fn persist<I: serde::Serialize>(
 pub(super) fn validate_with_secrets<I: serde::Serialize>(
     configuration: &VolumeConfiguration<I>,
     secrets: &Secrets,
-    metadata: Option<&super::MetadataBinding>,
 ) -> anyhow::Result<()> {
     let mut value = toml::Value::try_from(configuration)?;
     resolve_toml_secret_references(&mut value, secrets)?;
     let resolved = value.try_into()?;
-    validate(Some(&resolved), metadata)
+    validate(Some(&resolved))
 }
 
 fn preserve_references(
@@ -296,25 +275,27 @@ mod tests {
     }
 
     #[test]
-    fn named_volume_activation_fails_before_configuration_mutation() {
+    fn named_volume_activation_persists_without_opening_roots() {
         let directory = std::env::temp_dir().join(format!(
             "keeppeek-volumes-activation-{}",
             rand::random::<u64>()
         ));
         let path = directory.join("config.toml");
         write_private_file(&path, b"port=8081\n").unwrap();
-        let original = std::fs::read(&path).unwrap();
         let mut settings = Config::default();
         let mut volumes = draft();
         volumes.volumes[0].state = VolumeState::Enabled;
         settings.storage.named_volumes = Some(volumes);
-        assert!(update_settings(&path, &settings).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), original);
+        update_settings(&path, &settings).unwrap();
+        assert_eq!(
+            load_config(&path).unwrap().storage.named_volumes,
+            settings.storage.named_volumes
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
-    fn named_volume_load_rejects_activation_and_invalid_drafts_without_writing() {
+    fn named_volume_load_accepts_states_and_rejects_invalid_roots_without_writing() {
         let directory =
             std::env::temp_dir().join(format!("keeppeek-volumes-load-{}", rand::random::<u64>()));
         let path = directory.join("config.toml");
@@ -329,7 +310,7 @@ mod tests {
             settings.storage.named_volumes = Some(volumes);
             let text = toml::to_string(&settings).unwrap();
             write_private_file(&path, text.as_bytes()).unwrap();
-            assert!(load_config(&path).is_err(), "accepted {state:?}");
+            assert!(load_config(&path).is_ok(), "rejected {state:?}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         }
         let mut volumes = draft();
@@ -395,3 +376,35 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
+
+pub(super) fn preserve_initial_metadata_id(
+    storage: &super::StorageToml,
+    root: &mut toml::Table,
+) -> anyhow::Result<()> {
+    let binding = storage.metadata.as_ref().expect("initialized metadata");
+    let index = storage
+        .named_volumes
+        .as_ref()
+        .expect("initialized volumes")
+        .volumes
+        .iter()
+        .position(|volume| volume.id == binding.volume_id)
+        .expect("configured metadata owner");
+    let raw = root
+        .get_mut("storage")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| anyhow::anyhow!("storage table is unavailable"))?;
+    let id = raw
+        .get("named_volumes")
+        .and_then(|value| value.get("volumes"))
+        .and_then(toml::Value::as_array)
+        .and_then(|volumes| volumes.get(index))
+        .and_then(|volume| volume.get("id"))
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("metadata owner ID is unavailable"))?;
+    raw.get_mut("metadata").expect("serialized metadata")["volume_id"] = id;
+    Ok(())
+}
+
+#[cfg(test)]
+mod startup_tests;

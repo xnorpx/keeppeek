@@ -252,7 +252,7 @@ impl OwnedFile {
     /// # Errors
     /// Rejects read-only handles, conflicting names, changed roots, or failed synchronization.
     /// A failure after rename requires journal recovery to inspect the destination.
-    pub fn publish_staged(mut self, target: &str) -> anyhow::Result<()> {
+    pub fn publish_staged(self, target: &str) -> anyhow::Result<()> {
         validate_key(target)?;
         anyhow::ensure!(
             (target.ends_with(".mp4") || target.ends_with(".jpg")) && target != self.key,
@@ -262,6 +262,10 @@ impl OwnedFile {
             self.expected_bytes.is_none(),
             "read-only files cannot publish names"
         );
+        self.publish_name(target)
+    }
+
+    fn publish_name(mut self, target: &str) -> anyhow::Result<()> {
         self.revalidate()?;
         self.file.sync_all()?;
         self.root.sync()?;

@@ -75,9 +75,9 @@
 	aria-label="Named volume draft"
 >
 	<p id="volume-activation-note" class="text-sm text-text-muted">
-		New volumes are saved as disabled drafts. Media activation is unavailable in this build;
-		metadata uses the separate confirmed restart workflow. Saving this draft does not move files or
-		change the active storage destinations.
+		Save your volume settings, then restart to apply them. Create each root directory before enabling
+		it. Saving does not move existing files. Use the separate catalog and export history controls to
+		relocate metadata.
 	</p>
 	<fieldset disabled={saving} class="space-y-4">
 		{#each draft.volumes as _, index (index)}<VolumeFields

@@ -8,6 +8,7 @@ use crate::storage::{
 };
 
 mod failure_isolation;
+mod performance;
 
 fn named_fixture() -> anyhow::Result<(PathBuf, RecordingCatalog, StorageConfig)> {
     let (root, catalog, manager) = runtime::tests::fixture(8 * MEBIBYTE_BYTES)?;
@@ -89,7 +90,7 @@ fn named_worker_rotation_publishes_without_moving_to_legacy_archive() -> anyhow:
 }
 
 #[test]
-fn all_disabled_draft_uses_legacy_writer_without_binding_or_opening_roots() -> anyhow::Result<()> {
+fn all_disabled_volumes_reject_recording_without_binding_or_opening_roots() -> anyhow::Result<()> {
     let mut config = storage_config(&format!("disabled-named-worker-{}", uuid::Uuid::new_v4()));
     let root = config.long_term_path.clone();
     std::fs::create_dir_all(&root)?;
@@ -124,7 +125,7 @@ fn all_disabled_draft_uses_legacy_writer_without_binding_or_opening_roots() -> a
     });
     let catalog = RecordingCatalog::open(&config.recording_catalog_path)?;
     config.initialize_named_volumes(catalog.handle())?;
-    assert!(config.volume_runtime.is_none());
+    assert!(config.volume_runtime.is_some());
     let archive = config.long_term_path.clone();
     let mut worker = WriterWorker::new(
         config,
@@ -139,10 +140,9 @@ fn all_disabled_draft_uses_legacy_writer_without_binding_or_opening_roots() -> a
         );
     }
     worker.finalize_all();
-    let paths = LongTermStore::new(archive.clone()).finalized_segments("camera")?;
-    assert_eq!(paths.len(), 1);
-    assert!(paths[0].starts_with(archive));
-    assert_eq!(samples(&paths[0]), 2);
+    let paths = LongTermStore::new(archive).finalized_segments("camera")?;
+    assert!(paths.is_empty());
+    assert_eq!(catalog.handle().stats()?.recording_files, 0);
     assert_eq!(
         catalog.handle().volume_location(Request::Usage)?,
         Reply::Usage(vec![])
@@ -270,6 +270,58 @@ fn named_event_boost_records_sub_and_main_gops_in_one_owned_file() -> anyhow::Re
             .media_fragments_in_range("camera/main", i64::MIN + 1, i64::MAX)?
             .is_empty()
     );
+    catalog.shutdown();
+    Ok(())
+}
+
+#[test]
+fn fresh_default_volume_records_with_catalog_ownership() -> anyhow::Result<()> {
+    let base = std::env::temp_dir().join(format!("fresh-default-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&base)?;
+    #[cfg(unix)]
+    let base = std::fs::canonicalize(base)?;
+    let mut settings = StorageToml {
+        short_term_secs: 0,
+        flush_interval_secs: 0,
+        minimum_free_gb: 0,
+        critical_free_gb: 0,
+        warning_free_gb: 0,
+        ..StorageToml::default()
+    };
+    crate::storage::volumes::bootstrap::initialize(&mut settings, &base)?;
+    let mut config = StorageConfig::from_toml(&settings);
+    let binding = config.metadata.as_ref().unwrap();
+    let catalog = RecordingCatalog::open_managed(
+        &config.recording_catalog_path,
+        &binding.authority(),
+        &binding.root_identity(),
+    )?;
+    config.initialize_named_volumes(catalog.handle())?;
+    let mut worker = WriterWorker::new(
+        config,
+        RecordingDemand::new(Duration::ZERO),
+        Some(catalog.handle()),
+    );
+    let now = Instant::now();
+    let identity = RecordingStreamIdentity::legacy("camera");
+    worker.ingest(identity.clone(), key_frame(now));
+    worker.ingest(identity, key_frame(now + Duration::from_millis(40)));
+    let writer = worker.pipelines["camera"].medium_term.as_ref().unwrap();
+    let id = writer.recording_id().to_owned();
+    let path = writer.active_path().to_path_buf();
+    worker.finalize_all();
+    let Reply::Location(Some(location)) =
+        catalog.handle().volume_location(Request::Lookup(Object {
+            kind: Kind::Recording,
+            id,
+        }))?
+    else {
+        panic!("default recording has no owner");
+    };
+    assert_eq!(location.volume, "media");
+    assert_eq!(path, base.join("storage/media").join(location.relative_key));
+    assert_eq!(samples(&path), 2);
+    drop(worker);
     catalog.shutdown();
     Ok(())
 }

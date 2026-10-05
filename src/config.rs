@@ -1364,7 +1364,7 @@ pub fn load() -> anyhow::Result<(Config, PathBuf)> {
 }
 
 fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
-    let config_directory = ensure_config_dir()?;
+    ensure_config_dir()?;
     let mut secrets = ensure_secrets_file(&path)?;
 
     let (mut cfg, mut merged, existing_config) = if path.exists() {
@@ -1398,16 +1398,15 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
     cfg.privacy.validate()?;
     cfg.event_forwarder.mqtt.validate()?;
 
-    let default_recordings = config_directory
-        .join("recordings")
-        .to_string_lossy()
-        .into_owned();
-    if cfg.storage.medium_term_path.is_none() {
-        cfg.storage.medium_term_path = Some(default_recordings.clone());
-    }
-    if cfg.storage.long_term_path.is_none() {
-        cfg.storage.long_term_path = Some(default_recordings);
-    }
+    let initializing_metadata = cfg.storage.metadata.is_none();
+    let storage_base = std::path::absolute(
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new(".")),
+    )?;
+    crate::storage::volumes::bootstrap::initialize(&mut cfg.storage, &storage_base)?;
+    metadata::validate(&cfg.storage)?;
+    storage_volumes::validate(cfg.storage.named_volumes.as_ref())?;
 
     let cfg_value: toml::Value = toml::Value::try_from(&cfg)?;
     let cfg_table = cfg_value.as_table().cloned().unwrap_or_default();
@@ -1427,12 +1426,11 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
         );
     }
 
-    let text = toml::to_string_pretty(&merged)?;
-    if cfg.storage.metadata.is_some() {
-        write_private_file_atomically(&path, text.as_bytes())?;
-    } else {
-        write_private_file(&path, text.as_bytes())?;
+    if initializing_metadata {
+        storage_volumes::preserve_initial_metadata_id(&cfg.storage, &mut merged)?;
     }
+    let text = toml::to_string_pretty(&merged)?;
+    write_private_file_atomically(&path, text.as_bytes())?;
 
     if !existing_config {
         tracing::info!("created default config at {}", path.display());
@@ -1842,10 +1840,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     let mut config: Config = resolved.try_into()?;
     config.storage.validate_pre_recording_budgets()?;
     metadata::validate(&config.storage)?;
-    storage_volumes::validate(
-        config.storage.named_volumes.as_ref(),
-        config.storage.metadata.as_ref(),
-    )?;
+    storage_volumes::validate(config.storage.named_volumes.as_ref())?;
     if let Some(external_auth) = &config.external_auth {
         external_auth.validate()?;
     }
@@ -1861,17 +1856,7 @@ pub(crate) fn validate_volume_configuration(
     configuration: &crate::storage::volumes::VolumeConfiguration<String>,
 ) -> anyhow::Result<()> {
     let secrets = load_secrets(path)?;
-    let root = load_configuration_table(path)?;
-    let metadata = if root
-        .get("storage")
-        .and_then(|storage| storage.get("metadata"))
-        .is_some()
-    {
-        config_from_table(&root, &secrets)?.storage.metadata
-    } else {
-        None
-    };
-    storage_volumes::validate_with_secrets(configuration, &secrets, metadata.as_ref())
+    storage_volumes::validate_with_secrets(configuration, &secrets)
 }
 
 fn merge_preserving_secret_references(existing: &mut toml::Value, next: toml::Value) {

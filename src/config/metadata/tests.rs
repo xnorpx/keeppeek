@@ -273,7 +273,7 @@ fn ordinary_settings_cannot_forge_a_new_metadata_binding() {
 }
 
 #[test]
-fn metadata_exception_does_not_activate_unbound_or_media_writing_volumes() {
+fn named_volume_activation_loads_without_opening_media_or_metadata_roots() {
     let (path, settings) = managed_config_fixture();
     for change in 0..3 {
         let mut candidate = settings.clone();
@@ -294,7 +294,7 @@ fn metadata_exception_does_not_activate_unbound_or_media_writing_volumes() {
         }
         let bytes = toml::to_string(&candidate).unwrap();
         write_private_file(&path, bytes.as_bytes()).unwrap();
-        assert!(load_config(&path).is_err(), "accepted activation {change}");
+        assert!(load_config(&path).is_ok(), "rejected activation {change}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), bytes);
         assert!(!path.with_file_name("other-media-root").exists());
     }
