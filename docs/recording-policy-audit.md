@@ -529,8 +529,33 @@ Archive ingest p95 is 350.719 ms enabled and 395.263 ms disabled, with exact
 800-ms limit. Enabled is 11.27% below disabled at current source, establishing
 only enablement overhead. Disabled samples follow enabled samples and begin
 with 560 additional recording rows. The fresh-catalog `b877` controls above
-establish fresh-catalog regression only; the pre-feature full-archive comparison
-requires its own matching archive control and remains pending.
+establish fresh-catalog regression only.
+
+The separate [pre-feature archive control](./verification/recording-retention/runtime-archive-baseline.json)
+at `b877bdd674c32dc1f84e92356f9c35d67197ea14` uses the same 365,760 main/sub
+historical rows, 91,440 hourly events and 35 late events, real H.264 GOP,
+240 frames, sixteen files and 458,320 bytes. Five warm-ups and thirty measured
+samples give median 7,245.823 ms, p95 7,942.143 ms and maximum 8,081.407 ms.
+Current enabled p95 is 95.58% lower; current disabled p95 is 95.02% lower.
+Both meet the matching-archive 30% regression limit and absolute 800-ms limit.
+Schema differences belong to the feature; the disabled current run follows the
+additional 560 recordings from enabled ingest. Startup and verification remain
+outside the timer in both implementations. No whole-host isolation is claimed.
+
+The [control provenance](./verification/recording-retention/runtime-archive-baseline-environment.json)
+records its binary, lockfile, source hashes and the wrapper-status discrepancy:
+PowerShell returned 1 although the executable produced the final report and all
+35 verified states, with no benchmark error. Completion is established by these
+artifacts; no explicit native exit-code claim is made. Earlier control attempts
+were interrupted to match the late-event population or stopped before samples
+by a corrected verification-only column-name error; their timings are unused.
+The exact [harness](./verification/recording-retention/runtime-archive-baseline-harness.rs)
+and [support](./verification/recording-retention/runtime-archive-baseline-support.rs)
+are retained. To reproduce, copy them into a `b877` checkout's `examples/` as
+`recording_retention_archive_baseline.rs` and `recording_retention_archive_support.rs`,
+then build/run `recording_retention_archive_baseline` in release with Rust 1.99.0
+and incremental compilation disabled. Production source was unchanged; the
+existing regression module is `cfg(test)` and excluded from release.
 
 Policy disable drains successfully, and the exact committed 31-day floor
 survives restart, disable and both ingest modes. Historical metadata is
