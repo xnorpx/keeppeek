@@ -1,0 +1,26 @@
+{
+  "source_commit": "b877bdd674c32dc1f84e92356f9c35d67197ea14",
+  "production_changes": "Only preserved cfg(test) engine regression module; excluded from release",
+  "binary_sha256": "24d97e5272744c68fdfefb554ee9177bea1ff1ed889f891549cd8081e6251a84",
+  "cargo_lock_sha256": "18699eff21b2e9637adf2932a27c6a1b6752f653388ae7fd8753e0e59ff3745b",
+  "harness_sha256": {
+    "recording_retention_archive_baseline.rs": "3562b79bfe21015307a94e471bef61c716a41904d7b557c6b1c83b975f137d96",
+    "recording_retention_archive_support.rs": "591b884f931115f590e7c746671f07c203020c0f560335b8e530ef383de6179f"
+  },
+  "workload": "127 cameras main/sub 30 days,365760 synthetic future-dated recordings,91440 hourly events; real H264 240frames16files458320bytes; disabled pre-feature control; 5warmups30measured;35additional late-person events matching current archive before enabled ingest",
+  "scope": "Ingest plus shutdown; source seeding, catalog startup, and all-file sum verification excluded",
+  "discarded_attempt": "Initial control interrupted before qualification to add matching35 late events; no measurements from interrupted attempt used",
+  "failed_control_attempt": "Matched seed control exited before timing any samples: verification query used nonexistent size_bytes; corrected to actual file_bytes. No failed-attempt timing used.",
+  "review": "Fresh reviewer found no concrete comparator defect; schemas differ by feature; disabled current-source run follows560 additional recordings",
+  "artifact_root": "C:\\Users\\xnorp\\AppData\\Local\\Temp\\retention-scale-baseline-9b2ebd2b-cf90-4670-8383-1ba4c7f1c24d",
+  "complete_samples": 35,
+  "measured_samples": 30,
+  "baseline_p95_us": 7942143,
+  "current_enabled_p95_us": 350719,
+  "current_disabled_p95_us": 395263,
+  "enabled_regression_percent": -95.5840759855369,
+  "disabled_regression_percent": -95.02321980352154,
+  "matching_archive_regression_limit_passed": true,
+  "shell_status_note": "PowerShell wrapper reported1 despite full report/progress35 and no benchmark error; explicit native exit code was not captured. Completion established by final report and all35 verified sample states, not wrapper status.",
+  "report_sha256": "e18f02d23537d10fee5eb6e1bdd9abbbf804b6ca69c781746d2f90e24765cec3"
+}
