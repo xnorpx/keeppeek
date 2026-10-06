@@ -1,0 +1,26 @@
+{
+  "source_commit": "0f75eb63cec014d67e1a0445382360127bbde9ec",
+  "binary_sha256": "ffb31b1cbf0f52c1306fc47ad50a9b6b93405603c124da02c5937a0f346c7d5d",
+  "sources": 127,
+  "days": 30,
+  "historical_recordings": 365760,
+  "historical_events": 91440,
+  "exit_code": 1,
+  "failure": "disabled ingest sample 25 did not publish exactly sixteen records",
+  "completed_assertions": [
+    "initial full sweep with no quarantines",
+    "steady commitments",
+    "late-event deadlines and advancing revisions",
+    "restart during 30-to-31-day extension",
+    "exact 31-day floor before ingest",
+    "35 enabled samples, 240 frames and sixteen files each",
+    "disable transition with preserved 31-day floor",
+    "25 disabled samples before failure"
+  ],
+  "unavailable_evidence": "combined report was written only after all phases; initial/restarted/steady/late timing distributions and partial disabled timing samples were not saved",
+  "enabled_ingest_report": "runtime-archive-ingest-enabled-before.json",
+  "enabled_ingest_p95_us": 15114239,
+  "approved_ingest_p95_us": 800000,
+  "result": "FAIL; no full AC-7 qualification",
+  "diagnosis": "legacy safety byte accounting scan is suspected; native profiling pending; no claimed cause for no-media sample yet"
+}
