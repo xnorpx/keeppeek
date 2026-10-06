@@ -1476,7 +1476,10 @@ impl WriterWorker {
             );
             destination
         };
-        if let Some(catalog) = &self.catalog {
+        // Writer finalization already committed the catalog entry at the same root.
+        if self.config.medium_term_path != self.config.long_term_path
+            && let Some(catalog) = &self.catalog
+        {
             catalog
                 .update_recording_path(recording_id, &destination, true)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -1590,6 +1593,7 @@ pub struct ShortTermStats {
 
 #[cfg(test)]
 mod tests {
+    mod finalization;
     mod named;
 
     use super::*;
