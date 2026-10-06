@@ -8,6 +8,8 @@ use crate::storage::metadata::TimelineEvent;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
+pub mod settings;
+
 /// Maximum independent rules evaluated for one camera.
 pub const MAX_RULES: usize = 16;
 /// Maximum canonical event revisions accepted in one recording decision.
@@ -200,6 +202,12 @@ impl Decision<'_> {
 }
 
 impl Policy {
+    pub(crate) fn requires_event_evidence(&self) -> bool {
+        self.rules
+            .iter()
+            .any(|rule| rule.duration_ms != 0 && rule.predicate != Predicate::Continuous)
+    }
+
     pub fn new(rules: Vec<Rule>) -> Result<Self> {
         if rules.len() > MAX_RULES {
             bail!("retention rule limit exceeded");

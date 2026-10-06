@@ -25,6 +25,7 @@ pub(super) async fn legacy_bytes(connection: &turso::Connection) -> anyhow::Resu
 pub enum Reason {
     Capacity,
     DiskPressure,
+    Expiry,
 }
 
 impl Reason {
@@ -32,13 +33,21 @@ impl Reason {
         match self {
             Self::Capacity => super::super::CatalogDeletionReason::ArchiveLimit,
             Self::DiskPressure => super::super::CatalogDeletionReason::DiskPressure,
+            Self::Expiry => super::super::CatalogDeletionReason::RetentionExpiry,
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum Action {
-    Begin { volume: String, reason: Reason },
+    Begin {
+        volume: String,
+        reason: Reason,
+    },
+    Expire {
+        volume: String,
+        recording_id: String,
+    },
     Load(String),
     Complete(Publication),
     Acknowledge(String),
@@ -47,6 +56,13 @@ pub enum Action {
 impl Action {
     pub(super) fn validate(&self) -> anyhow::Result<()> {
         match self {
+            Self::Expire {
+                volume,
+                recording_id,
+            } => {
+                super::identifier(volume)?;
+                super::identifier(recording_id)
+            }
             Self::Begin { volume, .. } => super::identifier(volume),
             Self::Load(id) | Self::Acknowledge(id) => super::identifier(id),
             Self::Complete(evidence) => super::validate_publication(evidence),
@@ -75,6 +91,13 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
     CREATE TRIGGER IF NOT EXISTS storage_recording_retirement_update_fence
     BEFORE UPDATE ON recording_files WHEN EXISTS(SELECT 1 FROM storage_recording_retirements WHERE recording_id=OLD.id AND complete=0)
     BEGIN SELECT RAISE(ABORT,'recording retirement owns this object'); END;").await?;
+    super::super::ensure_column(
+        connection,
+        "storage_recording_retirements",
+        "retention_expiry",
+        "INTEGER NOT NULL DEFAULT 0 CHECK(retention_expiry IN(0,1))",
+    )
+    .await?;
     Ok(())
 }
 
@@ -85,7 +108,19 @@ pub(super) async fn dispatch(
     match action {
         Action::Begin { volume, reason } => {
             return Ok(Reply::RecordingRetirement(
-                begin(connection, &volume, reason).await?.map(Box::new),
+                begin(connection, &volume, reason, None)
+                    .await?
+                    .map(Box::new),
+            ));
+        }
+        Action::Expire {
+            volume,
+            recording_id,
+        } => {
+            return Ok(Reply::RecordingRetirement(
+                begin(connection, &volume, Reason::Expiry, Some(&recording_id))
+                    .await?
+                    .map(Box::new),
             ));
         }
         Action::Load(id) => {
@@ -114,6 +149,7 @@ async fn begin(
     connection: &turso::Connection,
     volume: &str,
     reason: Reason,
+    recording_id: Option<&str>,
 ) -> anyhow::Result<Option<Job>> {
     let mut pending = connection.query("SELECT operation FROM storage_recording_retirements WHERE volume_id=?1 AND acknowledged=0 LIMIT 1", [volume]).await?;
     if let Some(row) = pending.next().await? {
@@ -122,16 +158,22 @@ async fn begin(
         return load(connection, &id).await;
     }
     drop(pending);
-    let mut rows = connection.query("SELECT a.operation,r.id FROM storage_volume_allocations a
+    super::super::retention::runtime::ensure_admission_ready(connection).await?;
+    let mut rows = connection.query(format!("SELECT a.operation,r.id FROM storage_volume_allocations a
         JOIN recording_files r ON r.id=a.object_id JOIN storage_volume_bindings b ON b.id=a.volume_id
         WHERE a.volume_id=?1 AND a.kind='recording' AND a.state='published' AND b.writable=1
-        AND r.finalized=1 AND r.protected=0 AND r.cleanup_pending=0
+        AND r.finalized=1 AND r.protected=0 AND r.cleanup_pending=0 AND r.retention_pending=0
+        AND (?3=0 OR (r.retention_generation=(SELECT generation FROM recording_retention_runtime WHERE singleton=1)
+            AND EXISTS(SELECT 1 FROM recording_retention_policies p WHERE p.camera_id=r.source_id OR p.camera_id='')
+            AND EXISTS(SELECT 1 FROM recording_retention_decisions d WHERE d.recording_id=r.id)))
+        AND NOT EXISTS(SELECT 1 FROM recording_retention_camera_work w WHERE w.camera_id=r.source_id)
         AND NOT EXISTS(SELECT 1 FROM recording_retention_decisions d WHERE d.recording_id=r.id AND d.deadline_ms>?2)
         AND NOT EXISTS(SELECT 1 FROM storage_recording_retirements WHERE recording_id=r.id)
         AND NOT EXISTS(SELECT 1 FROM recording_maintenance_claims c WHERE c.active=1 AND (c.recording_id=r.id OR replace(c.path,char(92),'/')=a.destination_path COLLATE NOCASE))
         AND NOT EXISTS(SELECT 1 FROM storage_volume_moves m WHERE m.kind='recording' AND m.object_id=r.id AND (m.phase NOT IN ('complete','cancelled') OR m.receipt_acknowledged=0))
         AND NOT EXISTS(SELECT 1 FROM storage_volume_moves m WHERE m.source_operation=a.operation AND m.phase IN ('published','retiring','complete'))
-        ORDER BY r.started_at_ms,r.id LIMIT 1", turso::params![volume, super::super::retention::now_ms()?]).await?;
+        {} ORDER BY r.started_at_ms,r.id LIMIT 1",if recording_id.is_some(){"AND r.id=?4"} else {"AND ?4 IS NULL"}),
+        turso::params![volume, super::super::retention::now_ms()?,i64::from(matches!(reason,Reason::Expiry)),recording_id]).await?;
     let Some(row) = rows.next().await? else {
         return Ok(None);
     };
@@ -139,7 +181,14 @@ async fn begin(
     let recording: String = row.get(1)?;
     drop(rows);
     super::super::retention::ensure_cleanup_allowed(connection, &recording).await?;
-    connection.execute("INSERT INTO storage_recording_retirements(operation,recording_id,volume_id,reason) VALUES (?1,?2,?3,?4)", turso::params![operation.clone(), recording, volume, reason.deletion().as_str()]).await?;
+    let expiry = matches!(reason, Reason::Expiry);
+    let journal_reason = if expiry {
+        super::super::CatalogDeletionReason::ArchiveLimit
+    } else {
+        reason.deletion()
+    };
+    connection.execute("INSERT INTO storage_recording_retirements(operation,recording_id,volume_id,reason,retention_expiry) VALUES (?1,?2,?3,?4,?5)",
+        turso::params![operation.clone(), recording, volume, journal_reason.as_str(),i64::from(expiry)]).await?;
     connection
         .execute(
             "UPDATE storage_volume_archives SET done=1 WHERE operation=?1",
@@ -197,17 +246,18 @@ async fn complete(connection: &turso::Connection, evidence: &Publication) -> any
     }
     let mut rows = connection
         .query(
-            "SELECT reason FROM storage_recording_retirements WHERE operation=?1",
+            "SELECT reason,retention_expiry FROM storage_recording_retirements WHERE operation=?1",
             [evidence.operation.as_str()],
         )
         .await?;
-    let reason = rows
-        .next()
-        .await?
-        .expect("retirement exists")
-        .get::<String>(0)?;
-    let reason = super::super::CatalogDeletionReason::parse(&reason)
+    let row = rows.next().await?.expect("retirement exists");
+    let reason = super::super::CatalogDeletionReason::parse(&row.get::<String>(0)?)
         .ok_or_else(|| anyhow::anyhow!("invalid retirement reason"))?;
+    let reason = if row.get::<i64>(1)? != 0 {
+        super::super::CatalogDeletionReason::RetentionExpiry
+    } else {
+        reason
+    };
     drop(rows);
     super::super::record_deletion(connection, &job.location.object.id, reason).await?;
     connection
