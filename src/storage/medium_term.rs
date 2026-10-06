@@ -546,6 +546,7 @@ impl MediumTermWriter {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     pub fn finalize(mut self) -> std::io::Result<PathBuf> {
         if matches!(self.state, WriterState::Preparing(_)) {
             self.activate_prepared()?;

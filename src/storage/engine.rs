@@ -966,6 +966,7 @@ impl WriterWorker {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     fn try_enforce_storage_limit(
         &self,
         trigger: StorageCleanupTrigger,

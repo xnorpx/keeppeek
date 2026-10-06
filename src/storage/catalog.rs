@@ -369,7 +369,12 @@ struct LegacyRecording {
     finalized: bool,
     cleanup_pending: bool,
     needs_keyframe_backfill: bool,
+    needs_finalization_refresh: bool,
 }
+
+#[cfg(test)]
+#[path = "catalog/startup_refresh_tests.rs"]
+mod startup_refresh_tests;
 
 enum Command {
     MetadataInfo {
@@ -872,6 +877,7 @@ impl RecordingCatalogHandle {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     pub fn upsert_recording(&self, recording: CatalogRecording) -> anyhow::Result<()> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
@@ -892,6 +898,7 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     pub fn insert_fragment_with_keyframe(
         &self,
         fragment: CatalogFragment,
@@ -915,6 +922,7 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     pub fn update_recording_path(
         &self,
         recording_id: &str,
@@ -2082,7 +2090,8 @@ async fn legacy_recordings_without_keyframes(
                                                     ON k.recording_id = f.recording_id
                                                  AND k.fragment_sequence = f.sequence
                                                 WHERE f.recording_id = r.id AND k.recording_id IS NULL
-                                        )
+                                        ),
+                                        r.finalized_at_ms IS NULL OR r.ended_at_ms IS NULL
              FROM recording_files AS r
              WHERE NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
                AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations
@@ -2099,6 +2108,7 @@ async fn legacy_recordings_without_keyframes(
             finalized: row.get::<i64>(2)? != 0,
             cleanup_pending: row.get::<i64>(3)? != 0,
             needs_keyframe_backfill: row.get::<i64>(4)? != 0,
+            needs_finalization_refresh: row.get::<i64>(5)? != 0,
         });
     }
     Ok(recordings)
@@ -2128,6 +2138,7 @@ fn backfill_legacy_recordings(
                 }
                 recording.path = path;
                 recording.finalized = true;
+                recording.needs_finalization_refresh = false;
             } else if recording.path.parent().is_some_and(Path::is_dir) {
                 if let Err(error) = catalog.delete_recording(&recording.id) {
                     tracing::warn!(recording_id = recording.id, %error, "unable to remove stale recording catalog row");
@@ -2145,34 +2156,49 @@ fn backfill_legacy_recordings(
         if !recording.finalized {
             continue;
         }
-        if let Err(error) = catalog.update_recording_path(&recording.id, &recording.path, true) {
-            tracing::warn!(recording_id = recording.id, %error, "unable to backfill recording file size");
+        if let Err(error) = backfill_finalization(&catalog, &recording) {
+            tracing::warn!(recording_id = recording.id, %error, "unable to backfill recording finalization");
             continue;
         }
         if !recording.needs_keyframe_backfill {
             continue;
         }
-        let keyframes = match read_legacy_keyframes(&recording.path, &recording.id) {
-            Ok(keyframes) => keyframes,
-            Err(error) => {
-                tracing::warn!(
-                    recording_id = recording.id,
-                    path = %recording.path.display(),
-                    %error,
-                    "unable to backfill legacy recording keyframes",
-                );
-                continue;
-            }
-        };
-        if let Err(error) = catalog.backfill_keyframes(&recording.id, keyframes) {
+        backfill_recording_keyframes(&catalog, &recording);
+    }
+}
+
+fn backfill_recording_keyframes(catalog: &RecordingCatalogHandle, recording: &LegacyRecording) {
+    let keyframes = match read_legacy_keyframes(&recording.path, &recording.id) {
+        Ok(keyframes) => keyframes,
+        Err(error) => {
             tracing::warn!(
                 recording_id = recording.id,
                 path = %recording.path.display(),
                 %error,
-                "unable to commit legacy recording keyframes",
+                "unable to backfill legacy recording keyframes",
             );
+            return;
         }
+    };
+    if let Err(error) = catalog.backfill_keyframes(&recording.id, keyframes) {
+        tracing::warn!(
+            recording_id = recording.id,
+            path = %recording.path.display(),
+            %error,
+            "unable to commit legacy recording keyframes",
+        );
     }
+}
+
+fn backfill_finalization(
+    catalog: &RecordingCatalogHandle,
+    recording: &LegacyRecording,
+) -> anyhow::Result<()> {
+    // File size and identity were refreshed before the maintenance thread started.
+    if recording.needs_finalization_refresh {
+        catalog.update_recording_path(&recording.id, &recording.path, true)?;
+    }
+    Ok(())
 }
 
 async fn backfill_recording_file_sizes(
@@ -7406,7 +7432,7 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    fn test_fragment() -> CatalogFragment {
+    pub(super) fn test_fragment() -> CatalogFragment {
         CatalogFragment {
             recording_id: "recording-1".to_owned(),
             sequence: 1,
@@ -7536,7 +7562,7 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    fn test_keyframe() -> CatalogKeyframe {
+    pub(super) fn test_keyframe() -> CatalogKeyframe {
         CatalogKeyframe {
             recording_id: "recording-1".to_owned(),
             fragment_sequence: 1,
@@ -7858,7 +7884,7 @@ pub(crate) mod tests {
         (initialization, fragments)
     }
 
-    async fn query_count(connection: &turso::Connection, sql: &str) -> i64 {
+    pub(super) async fn query_count(connection: &turso::Connection, sql: &str) -> i64 {
         connection
             .query(sql, ())
             .await
