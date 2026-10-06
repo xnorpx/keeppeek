@@ -70,6 +70,9 @@ fn open_recording_catalog(storage_config: &StorageConfig) -> anyhow::Result<Reco
     } else {
         RecordingCatalog::open(&storage_config.recording_catalog_path)?
     };
+    catalog
+        .handle()
+        .request_retention_settings(storage_config.retention.as_ref())?;
     if storage_config.long_term_path.is_dir() {
         let archive =
             crate::storage::long_term::inspection::Archive::open(&storage_config.long_term_path)?;

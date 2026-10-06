@@ -2184,6 +2184,37 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
+    fn native_candidate_restores_retention_without_moving_target_storage() {
+        let (directory, bundle_path, target_config, _) = activatable_fixture("candidate-retention");
+        let source_config = directory.join("source/config.toml");
+        std::fs::write(&source_config,
+            "[storage]\nlong_term_path='source-media'\n[storage.retention.default]\ncontinuous_days=1.0\n[storage.retention.default.events]\nperson=30.0\n").unwrap();
+        std::fs::write(&target_config, "[storage]\nlong_term_path='target-media'\n").unwrap();
+        let (bundle, _) = backup::create_bundle(
+            Cursor::new(Vec::new()),
+            backup::CreateBundleOptions {
+                config_path: &source_config,
+                sections: &[],
+                created_at_unix_ms: 1,
+            },
+        )
+        .unwrap();
+        std::fs::write(&bundle_path, bundle.into_inner()).unwrap();
+        let before = std::fs::read(&target_config).unwrap();
+        let candidate =
+            backup::inspect_configuration_candidate(&bundle_path, &target_config).unwrap();
+        let source = config::load_config(&source_config).unwrap();
+        let restored = candidate.configuration;
+        assert_eq!(restored.storage.retention, source.storage.retention);
+        assert_eq!(
+            restored.storage.long_term_path.as_deref(),
+            Some("target-media")
+        );
+        assert_eq!(std::fs::read(&target_config).unwrap(), before);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_candidate_resolves_archive_secrets_and_preserves_target_storage() {
         let (directory, bundle_path, target_config, _) = activatable_fixture("candidate-secrets");
         let source_config = directory.join("source/config.toml");

@@ -1,0 +1,43 @@
+{
+  "equivalent_source_commit": "dc472d05b4444935f44057799a011ca9969979ef",
+  "build_identity_note": "Release built at b34c299 with pending c4f7eeb/48b9881 source changes; merge adds only Docker workflow action version. Listed source hashes identify the measured implementation.",
+  "source_sha256": {
+    "src/storage/catalog.rs": "eaeb0bb25cfbb1dcd5efca00a7b55da680e63aa200b03d74314ef83a4763e87a",
+    "src/storage/catalog/locations/recordings.rs": "d1d7f83c4cd7cc688526a8c9dcd6caa647d15602e2284e0315cd6b123796b2bb",
+    "src/storage/catalog/locations/recordings/bytes.rs": "74214bcfa46e99f9a68371b81d3ef11ecb78428e2c2858370e92bbd53ca9ea9a",
+    "src/storage/engine.rs": "a6e35b004b8472e7f52985a520529a0f2a39c0123542bdb64a9ffb194ba16f4d",
+    "src/storage/medium_term.rs": "34cb8b24ac6238b0d60623bdcc9e3e5b8aee020f390e1cac97f64cdddb96c8d9",
+    "examples/recording_retention_ingest.rs": "39480782d370e59700bd239d3fecf89e851cc4aa18a691fe53d246fa1b2136fe",
+    "examples/recording_retention_ingest/support.rs": "0e1248edec2f7a0cfbffa7fdc8e6553c2178650ed97eba4767f5fc748e02e1c2",
+    "examples/recording_retention_runtime.rs": "71870b457ddf29d03c6bc7dc0a87f732bcb2a6ca2318ee6672c25d46aa8be2d3",
+    "examples/recording_legacy_bytes_query.rs": "0c0d2ebaa6c4cbfb081d216a071a9f4f0cabca1803459b78b5b05a59ce3f1ec3",
+    "examples/recording_legacy_bytes_query/stages.rs": "7d88a17ee3effa77763e0f63c46559639595ef8bb7db3e475ad07e30bce4c3b3"
+  },
+  "binary_sha256": {
+    "recording_retention_runtime.exe": "620dae56e34526a9dada59b876ebc8919e29f8f52d391d1d61cf9d6374db1b84",
+    "recording_retention_ingest.exe": "a204b579d428f4c6ec421a884793ff958dfa343c03a1919b09fdbe5a07106855",
+    "recording_legacy_bytes_query.exe": "03c9b38e11ea1fb536e82426c654f63b009a44b686e3b617a0810709a23effc9"
+  },
+  "preserved_baseline_binary_sha256": "bebf89ea2455c85bd50e4b2bf78e531b4b2acd1713b102d9b5a2432971816ab7",
+  "baseline_source_commit": "b877bdd674c32dc1f84e92356f9c35d67197ea14",
+  "environment_reference": "runtime-environment.json",
+  "archive_ingest_scope": "Closed original 127-camera/30-day fixture; disabled retention; five warm-ups and thirty samples; historical count and exact new-media byte growth checked. Prior qualification/profiling left contemporary media rows in the same archive.",
+  "archive_disabled_p95_us": 471039,
+  "archive_absolute_budget_passed": true,
+  "fresh_regression_budget_status": "baseline before338687us/after362495us; enabled396287us(+17.01%) passes; disabled515071us(+52.08%) fails. Same-root follow-up in progress.",
+  "full_repository_gate_status": "passed on dc472d05 before same-root follow-up",
+  "fresh_full_archive_qualification_status": "pending",
+  "host_concurrency_note": "Other-agent Cargo work observed just after fresh runs; no claim of an idle host or causal attribution.",
+  "full_repository_gate_result": {
+    "rust_passed": 3253,
+    "rust_skipped": 26,
+    "rust_slow": 3,
+    "rust_seconds": 674.827,
+    "bun_passed": 409,
+    "component_visual_passed": 259,
+    "compatibility_passed": 57,
+    "playwright_passed": 284,
+    "playwright_skipped": 2,
+    "auth_fixture_sha256": "9f8e8e0ee6064b2aee8c5c1f935bc3162d75b4bf541fe9b4df7975a1aea31eee"
+  }
+}

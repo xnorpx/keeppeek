@@ -4,6 +4,44 @@ use super::{Manager, Publication, Reply, Request, VolumeHealth, VolumeState};
 use crate::storage::catalog::locations::recordings::{Action, Job, Reason};
 
 impl Manager {
+    pub(crate) fn queue_recording_expiry(
+        &self,
+        id: &super::super::VolumeId,
+        recording_id: &str,
+    ) -> anyhow::Result<()> {
+        let volume = self
+            .inner
+            .configuration
+            .volumes
+            .iter()
+            .find(|volume| volume.id == *id)
+            .ok_or_else(|| anyhow::anyhow!("expiry volume is not configured"))?;
+        if !matches!(volume.state, VolumeState::Enabled | VolumeState::Draining) {
+            return Ok(());
+        }
+        let observations = self.inner.observations(std::slice::from_ref(id))?;
+        if observations
+            .first()
+            .is_none_or(|volume| volume.health != VolumeHealth::Online)
+        {
+            return Ok(());
+        }
+        if matches!(
+            self.inner
+                .catalog
+                .volume_location(Request::RecordingRetention(Action::Expire {
+                    volume: id.to_string(),
+                    recording_id: recording_id.into(),
+                }))?,
+            Reply::RecordingRetirement(Some(_))
+        ) {
+            self.inner
+                .rescan_requested
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        Ok(())
+    }
+
     pub(super) fn check_recording_pressure(&self) {
         // ponytail: Inspect at most 32 configured volumes in the existing periodic scan.
         for volume in &self.inner.configuration.volumes {

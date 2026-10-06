@@ -103,6 +103,12 @@ Choose a browser-compatible H.264 substream even when the main evidence stream i
 stores the camera's encoded media without re-encoding it, so browser support still determines which
 recordings can play directly.
 
+Recording admission and media retention are separate. The current camera modes and event
+pre-recording do not implement independent continuous, motion, alert and detection retention
+deadlines. Storage pressure can shorten available coverage. The
+[recording policy audit](https://github.com/xnorpx/keeppeek/blob/main/docs/recording-policy-audit.md)
+tracks verified behavior, missing retention rules and their implementation owners under #168.
+
 ## Prove recording integrity
 
 Open **Recording integrity** to inspect the fleet before footage is needed. The workspace reports:

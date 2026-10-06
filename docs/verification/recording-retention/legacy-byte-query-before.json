@@ -1,0 +1,38 @@
+{
+  "source_commit": "0f75eb63cec014d67e1a0445382360127bbde9ec",
+  "workload": "closed failed 127-source/30-day synthetic catalog; no named allocations; five localization measurements per query; not an acceptance benchmark",
+  "runs": [
+    {
+      "bytes": 27827893,
+      "name": "original",
+      "plan": [
+        "SCAN recording_files AS r",
+        "SEARCH a USING INDEX sqlite_autoindex_storage_volume_allocations_3 (kind=?)"
+      ],
+      "raw_us": [1685657, 438421, 438891, 472650, 635794]
+    },
+    {
+      "bytes": 27827893,
+      "name": "sum_without_index",
+      "plan": ["SCAN recording_files"],
+      "raw_us": [127301, 128038, 139886, 136213, 130765]
+    },
+    {
+      "bytes": 27827893,
+      "name": "sum_with_covering_index",
+      "plan": [
+        "SCAN recording_files USING COVERING INDEX recording_legacy_bytes_probe"
+      ],
+      "raw_us": [103075, 101640, 80136, 95141, 82166]
+    },
+    {
+      "bytes": 27827893,
+      "name": "original_with_index",
+      "plan": [
+        "SCAN recording_files AS r",
+        "SEARCH a USING INDEX sqlite_autoindex_storage_volume_allocations_3 (kind=?)"
+      ],
+      "raw_us": [1074036, 755260, 626510, 626511, 744107]
+    }
+  ]
+}

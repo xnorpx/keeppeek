@@ -1,0 +1,23 @@
+{
+  "cargo_incremental": 0,
+  "cpu": "AMD Ryzen 5 5600G with Radeon Graphics",
+  "source_commit": "cd870b2b26df28d71011703d57a6dc9a9bc8e7a8",
+  "samples": 30,
+  "workload": "one finalized file with one overlapping motion event and 50000 closed historical events",
+  "warmup": 5,
+  "median_us": 966655,
+  "thread_stack_bytes": 2097152,
+  "date": "2026-10-05",
+  "p95_us": 1183743,
+  "harness": "baseline.rs",
+  "profile": "debug",
+  "installed_ram_bytes": 16473337856,
+  "accepted_ac7_budget": null,
+  "historical_events": 50000,
+  "platform": "Windows",
+  "metadata_only": true,
+  "max_us": 1193983,
+  "rust": "1.99.0",
+  "seed_ms": 92764,
+  "harness_sha256": "335F42F71861792F2BF1256871555298486379A606E1665E39C2741758922A6B"
+}

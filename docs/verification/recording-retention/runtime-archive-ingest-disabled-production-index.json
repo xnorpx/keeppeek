@@ -1,0 +1,615 @@
+{
+  "catalog_states": [
+    {
+      "after": {
+        "all_file_bytes": 44327413,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367308
+      },
+      "before": {
+        "all_file_bytes": 43869093,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367292
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 44785733,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367324
+      },
+      "before": {
+        "all_file_bytes": 44327413,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367308
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 45244053,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367340
+      },
+      "before": {
+        "all_file_bytes": 44785733,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367324
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 45702373,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367356
+      },
+      "before": {
+        "all_file_bytes": 45244053,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367340
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 46160693,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367372
+      },
+      "before": {
+        "all_file_bytes": 45702373,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367356
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 46619013,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367388
+      },
+      "before": {
+        "all_file_bytes": 46160693,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367372
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 47077333,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367404
+      },
+      "before": {
+        "all_file_bytes": 46619013,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367388
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 47535653,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367420
+      },
+      "before": {
+        "all_file_bytes": 47077333,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367404
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 47993973,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367436
+      },
+      "before": {
+        "all_file_bytes": 47535653,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367420
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 48452293,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367452
+      },
+      "before": {
+        "all_file_bytes": 47993973,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367436
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 48910613,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367468
+      },
+      "before": {
+        "all_file_bytes": 48452293,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367452
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 49368933,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367484
+      },
+      "before": {
+        "all_file_bytes": 48910613,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367468
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 49827253,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367500
+      },
+      "before": {
+        "all_file_bytes": 49368933,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367484
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 50285573,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367516
+      },
+      "before": {
+        "all_file_bytes": 49827253,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367500
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 50743893,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367532
+      },
+      "before": {
+        "all_file_bytes": 50285573,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367516
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 51202213,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367548
+      },
+      "before": {
+        "all_file_bytes": 50743893,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367532
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 51660533,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367564
+      },
+      "before": {
+        "all_file_bytes": 51202213,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367548
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 52118853,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367580
+      },
+      "before": {
+        "all_file_bytes": 51660533,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367564
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 52577173,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367596
+      },
+      "before": {
+        "all_file_bytes": 52118853,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367580
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 53035493,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367612
+      },
+      "before": {
+        "all_file_bytes": 52577173,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367596
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 53493813,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367628
+      },
+      "before": {
+        "all_file_bytes": 53035493,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367612
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 53952133,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367644
+      },
+      "before": {
+        "all_file_bytes": 53493813,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367628
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 54410453,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367660
+      },
+      "before": {
+        "all_file_bytes": 53952133,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367644
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 54868773,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367676
+      },
+      "before": {
+        "all_file_bytes": 54410453,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367660
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 55327093,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367692
+      },
+      "before": {
+        "all_file_bytes": 54868773,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367676
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 55785413,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367708
+      },
+      "before": {
+        "all_file_bytes": 55327093,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367692
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 56243733,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367724
+      },
+      "before": {
+        "all_file_bytes": 55785413,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367708
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 56702053,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367740
+      },
+      "before": {
+        "all_file_bytes": 56243733,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367724
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 57160373,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367756
+      },
+      "before": {
+        "all_file_bytes": 56702053,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367740
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 57618693,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367772
+      },
+      "before": {
+        "all_file_bytes": 57160373,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367756
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 58077013,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367788
+      },
+      "before": {
+        "all_file_bytes": 57618693,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367772
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 58535333,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367804
+      },
+      "before": {
+        "all_file_bytes": 58077013,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367788
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 58993653,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367820
+      },
+      "before": {
+        "all_file_bytes": 58535333,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367804
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 59451973,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367836
+      },
+      "before": {
+        "all_file_bytes": 58993653,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367820
+      }
+    },
+    {
+      "after": {
+        "all_file_bytes": 59910293,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367852
+      },
+      "before": {
+        "all_file_bytes": 59451973,
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 367836
+      }
+    }
+  ],
+  "codec": "H264",
+  "dimensions": [
+    320,
+    240
+  ],
+  "existing_archive": true,
+  "frames_per_run": 240,
+  "logical_duration_seconds": 16,
+  "max_us": 1420287,
+  "median_us": 629759,
+  "p95_us": 1136639,
+  "raw_us": [
+    530996,
+    647734,
+    635637,
+    593220,
+    573788,
+    643488,
+    626090,
+    645889,
+    722984,
+    778891,
+    1419386,
+    773956,
+    664673,
+    703138,
+    660146,
+    581593,
+    595742,
+    629493,
+    609252,
+    604273,
+    603239,
+    1095597,
+    584601,
+    1135844,
+    694802,
+    604299,
+    646856,
+    565585,
+    626099,
+    600582
+  ],
+  "retention_activated": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+  ],
+  "retention_requested": false,
+  "runs": 30,
+  "scope": "accelerated ingest plus engine shutdown flush; fresh or caller-owned existing catalog as reported; frame generation, catalog startup, verified runtime activation and sample verification excluded; no live pacing; existing archive mode retains its historical metadata and reuses its catalog authority",
+  "warmup_runs": 5,
+  "written_bytes": [
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320,
+    458320
+  ]
+}

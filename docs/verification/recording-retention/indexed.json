@@ -1,0 +1,29 @@
+{
+  "cargo_incremental": 0,
+  "cpu": "AMD Ryzen 5 5600G with Radeon Graphics",
+  "samples": 30,
+  "workload": "one finalized file with one overlapping motion event and 50000 closed historical events",
+  "warmup": 5,
+  "median_us": 19279,
+  "thread_stack_bytes": 2097152,
+  "source": "equivalent to the bounded event index change",
+  "date": "2026-10-05",
+  "p95_us": 22031,
+  "harness": "examples/recording_retention_query.rs",
+  "profile": "debug",
+  "installed_ram_bytes": 16473337856,
+  "accepted_ac7_budget": null,
+  "historical_events": 50000,
+  "platform": "Windows",
+  "metadata_only": true,
+  "max_us": 22159,
+  "index_preparation_ms": 95492,
+  "rust": "1.99.0",
+  "seed_ms": 144131,
+  "source_files_sha256": {
+    "src/storage/catalog/event_write.rs": "6514946DD0E27D095954B56E344A97173FFE4B68F2CD5EA2D624D15BE7E4615F",
+    "src/storage/catalog/retention.rs": "D31D9BD7F01E6A86821BD9A823FAB818331DC8CEB17759E7E50EEB5AC756A2B7",
+    "src/storage/catalog/retention/event_index.rs": "AF2E929D57627E532A8B821CBE715E23C23659DFA15D78B3B05A3CF383ED8287",
+    "examples/recording_retention_query.rs": "B73836F310493BFA1B96F3676F8949A234611663E23A221C841FC13E172A5917"
+  }
+}

@@ -299,6 +299,23 @@ impl Lease {
     /// Refuses retained, copied, or replaced catalogs before ordinary schema initialization.
     pub(crate) fn verify(&self, connection: &turso::Connection) -> anyhow::Result<Authority> {
         self.check_connection(connection)?;
+        self.verify_record(connection)
+    }
+
+    /// Checks authority while the caller holds a catalog write transaction.
+    pub(crate) fn verify_transaction(
+        &self,
+        connection: &turso::Connection,
+    ) -> anyhow::Result<Authority> {
+        anyhow::ensure!(
+            !connection.is_autocommit()?,
+            "catalog authority requires an active transaction"
+        );
+        self.check_connection_identity(connection)?;
+        self.verify_record(connection)
+    }
+
+    fn verify_record(&self, connection: &turso::Connection) -> anyhow::Result<Authority> {
         let record = required(connection)?;
         anyhow::ensure!(
             !record.fenced,
@@ -466,6 +483,10 @@ impl Lease {
             connection.is_autocommit()?,
             "catalog authority requires an independent transaction"
         );
+        self.check_connection_identity(connection)
+    }
+
+    fn check_connection_identity(&self, connection: &turso::Connection) -> anyhow::Result<()> {
         self.revalidate()?;
         let mut rows = pollster::block_on(connection.query("PRAGMA database_list", ()))?;
         for _ in 0..16 {

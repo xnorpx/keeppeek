@@ -1,0 +1,169 @@
+{
+  "capture_overflow": false,
+  "error": null,
+  "ingest": {
+    "after": {
+      "all_file_bytes": 93825973,
+      "historical": 365760,
+      "pending": 0,
+      "recordings": 369036
+    },
+    "before": {
+      "all_file_bytes": 93367653,
+      "historical": 365760,
+      "pending": 0,
+      "recordings": 369020
+    },
+    "elapsed_us": 351304,
+    "retention_activated": false,
+    "scope": "one diagnostic sample, not acceptance statistics",
+    "written_bytes": 458320
+  },
+  "scope": "one diagnostic sample; nested stage durations overlap; only measured ingest/engine-shutdown window; raw stage capture bounded; not acceptance statistics",
+  "stages": {
+    "finalize": {
+      "calls": 16,
+      "median_us": 19295,
+      "p95_us": 26511,
+      "raw_us": [
+        26509,
+        19127,
+        19453,
+        19633,
+        19715,
+        20775,
+        18446,
+        18495,
+        21432,
+        20255,
+        17930,
+        19212,
+        19281,
+        17976,
+        18725,
+        19409
+      ],
+      "total_us": 316373
+    },
+    "insert_fragment_with_keyframe": {
+      "calls": 16,
+      "median_us": 1609,
+      "p95_us": 2835,
+      "raw_us": [
+        2835,
+        1557,
+        1620,
+        1528,
+        1661,
+        1368,
+        1632,
+        1655,
+        2159,
+        1363,
+        1397,
+        1611,
+        1609,
+        1600,
+        1634,
+        1491
+      ],
+      "total_us": 26720
+    },
+    "legacy_bytes": {
+      "calls": 16,
+      "median_us": 130,
+      "p95_us": 148,
+      "raw_us": [
+        137,
+        127,
+        129,
+        134,
+        133,
+        128,
+        107,
+        145,
+        129,
+        131,
+        107,
+        137,
+        132,
+        148,
+        130,
+        94
+      ],
+      "total_us": 2048
+    },
+    "try_enforce_storage_limit": {
+      "calls": 16,
+      "median_us": 1753,
+      "p95_us": 2509,
+      "raw_us": [
+        1526,
+        1783,
+        1883,
+        1637,
+        1763,
+        1863,
+        1787,
+        2508,
+        1659,
+        1728,
+        1753,
+        1906,
+        1316,
+        2194,
+        1440,
+        1677
+      ],
+      "total_us": 28423
+    },
+    "update_recording_path": {
+      "calls": 16,
+      "median_us": 11439,
+      "p95_us": 14471,
+      "raw_us": [
+        14466,
+        11826,
+        11663,
+        11321,
+        11451,
+        12713,
+        11082,
+        11307,
+        14065,
+        11438,
+        10981,
+        11829,
+        10933,
+        11261,
+        10896,
+        11699
+      ],
+      "total_us": 188931
+    },
+    "upsert_recording": {
+      "calls": 16,
+      "median_us": 3833,
+      "p95_us": 6935,
+      "raw_us": [
+        6935,
+        3833,
+        3724,
+        4490,
+        4995,
+        4571,
+        3339,
+        2893,
+        3486,
+        5102,
+        3320,
+        3412,
+        4102,
+        3546,
+        4427,
+        3940
+      ],
+      "total_us": 66115
+    }
+  }
+}

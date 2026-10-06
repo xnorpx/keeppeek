@@ -319,11 +319,7 @@ fn preflight_uses_the_search_worker_when_the_writer_queue_is_full() {
         let (write_tx, write_rx) = mpsc::sync_channel(1);
         write_tx.send(Command::Shutdown).unwrap();
         let (search_tx, search_rx) = mpsc::sync_channel(1);
-        let handle = RecordingCatalogHandle {
-            readers: std::sync::Arc::new(crate::storage::catalog::readers::Registry::default()),
-            tx: write_tx,
-            search_tx,
-        };
+        let handle = RecordingCatalogHandle::test_handle(write_tx, search_tx);
         let connection = fixture.database.connect().unwrap();
         let worker = std::thread::spawn(move || {
             let SearchCommand::Maintenance(ReadRequest::Preflight {
@@ -364,11 +360,7 @@ fn full_and_disconnected_read_queues_fail_without_admitting_preflight_work() {
         let (write_tx, _write_rx) = mpsc::sync_channel(1);
         let (search_tx, search_rx) = mpsc::sync_channel(1);
         search_tx.send(SearchCommand::Shutdown).unwrap();
-        let handle = RecordingCatalogHandle {
-            readers: std::sync::Arc::new(crate::storage::catalog::readers::Registry::default()),
-            tx: write_tx,
-            search_tx,
-        };
+        let handle = RecordingCatalogHandle::test_handle(write_tx, search_tx);
         let error = handle
             .recording_deletion_preflight("administrator", "z".repeat(32), &archive)
             .unwrap_err();
@@ -547,11 +539,7 @@ fn search_errors_do_not_expose_internal_paths_to_the_preflight_caller() {
         let archive = Archive::open(&fixture.root).unwrap();
         let (write_tx, _write_rx) = mpsc::sync_channel(1);
         let (search_tx, search_rx) = mpsc::sync_channel(1);
-        let handle = RecordingCatalogHandle {
-            readers: std::sync::Arc::new(crate::storage::catalog::readers::Registry::default()),
-            tx: write_tx,
-            search_tx,
-        };
+        let handle = RecordingCatalogHandle::test_handle(write_tx, search_tx);
         let diagnostic_path = fixture.root.join("private-camera.mp4");
         let worker = std::thread::spawn(move || {
             let SearchCommand::Maintenance(ReadRequest::Preflight { reply, .. }) =

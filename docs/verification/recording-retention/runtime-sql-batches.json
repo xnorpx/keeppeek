@@ -1,0 +1,278 @@
+{
+  "runs": 30,
+  "samples": [
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 164242
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 161944
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 159661
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 149727
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 166562
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 163206
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 159730
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 140710
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 151192
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 136393
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 122970
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 110866
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 135607
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 100903
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 68116
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 68174
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 80653
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 109867
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 86139
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 70103
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 77836
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 72980
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 74409
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 82673
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 81262
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 65211
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 76778
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 93305
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 74140
+    },
+    {
+      "counts": {
+        "compilations": 209,
+        "executions": 1265
+      },
+      "evaluated": 8,
+      "quarantined": 0,
+      "raw_us": 91443
+    }
+  ],
+  "scope": "first35 complete bounded eight-record runtime activation calls over existing127-camera30-day archive; native compilation and VM instruction-zero program starts include transactions, authority, traversal, evidence, commitments and bookkeeping; trigger/internal programs included; timing contains tracing overhead and is not performance-budget evidence; activation remains incomplete after profile",
+  "untimed_index_preparation_batches": 1,
+  "warmup_runs": 5
+}
