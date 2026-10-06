@@ -16,7 +16,7 @@ use windows::{
             self,
             Authorization::{
                 ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-                GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+                GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
             },
         },
         Storage::FileSystem::*,
@@ -149,6 +149,26 @@ fn user_sid() -> io::Result<Vec<usize>> {
 
 const fn token_sid(buffer: &[usize]) -> Security::PSID {
     unsafe { (*buffer.as_ptr().cast::<Security::TOKEN_USER>()).User.Sid }
+}
+
+pub(in crate::storage) fn initialize_file_owner(file: &impl AsRawHandle) -> io::Result<()> {
+    let user = user_sid()?;
+    // Elevated tokens can default to Administrators. Set the owner only on a newly created handle.
+    // SAFETY: The caller retains the file handle, and the SID buffer lives through this call.
+    unsafe {
+        SetSecurityInfo(
+            handle(file),
+            SE_FILE_OBJECT,
+            Security::OWNER_SECURITY_INFORMATION,
+            Some(token_sid(&user)),
+            None,
+            None,
+            None,
+        )
+    }
+    .ok()
+    .map_err(|error| operation_error("initialize file owner", error))?;
+    validate_security(handle(file), false)
 }
 
 fn user_string(buffer: &[usize]) -> io::Result<String> {
