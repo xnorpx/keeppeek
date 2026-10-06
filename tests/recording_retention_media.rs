@@ -15,6 +15,9 @@ use std::{
 // Use a future UTC epoch so the production clock separates matching lifetimes from disabled rules.
 const FUTURE_EPOCH_MS: i64 = 3_000_000_000_000;
 
+#[path = "recording_retention_media/missing.rs"]
+mod missing;
+
 fn parameter_sets(track: &mp4::Mp4Track, codec: VideoCodec) -> Result<Vec<u8>> {
     let sets = match codec {
         VideoCodec::H264 => {

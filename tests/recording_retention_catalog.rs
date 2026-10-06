@@ -5,6 +5,9 @@ use keeppeek::storage::metadata::{EventSource, TimelineEvent};
 use keeppeek::storage::retention::{MAX_EVENTS, Reason};
 use keeppeek::storage::retention::{Policy, Predicate, Rule};
 
+#[path = "recording_retention_catalog/cold.rs"]
+mod cold;
+
 struct Fixture(PathBuf);
 
 impl Fixture {

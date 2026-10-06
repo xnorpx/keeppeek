@@ -2398,6 +2398,25 @@ async fn delete_recording(
 ) -> anyhow::Result<()> {
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
+        let mut rows = connection
+            .query(
+                "SELECT protected FROM recording_files WHERE id=?1",
+                [recording_id],
+            )
+            .await?;
+        let protected = rows
+            .next()
+            .await?
+            .map(|row| row.get::<i64>(0))
+            .transpose()?
+            .unwrap_or(0);
+        drop(rows);
+        anyhow::ensure!(
+            protected == 0,
+            "protected recording prevents startup reconciliation"
+        );
+        // Missing media does not release an existing retention obligation.
+        retention::ensure_cleanup_allowed(connection, recording_id).await?;
         record_deletion(
             connection,
             recording_id,
