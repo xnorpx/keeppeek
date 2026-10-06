@@ -327,7 +327,8 @@ jobs:
   rust-test:
     name: Rust Test (${{ matrix.os }}, ${{ matrix.suite }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # ponytail: Keep serial Windows tests; allow time for a cold build and integration tests.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && matrix.suite == 'core' && 45 || 30 }}
     strategy:
       fail-fast: true
       matrix:
