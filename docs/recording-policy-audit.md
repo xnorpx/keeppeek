@@ -23,8 +23,8 @@ retention interaction/display, duration rules, recording control, export options
 codec compatibility, reconciliation, accounting, mounts/cache, and emergency cleanup.
 Each row has one implementation/evidence owner. Related features may contribute tests without
 becoming a second owner. The retention contract below is approved; final classification review
-remains pending. Runtime qualification evidence is recorded below; final-head validation
-and maintainer review must be complete before issue closure.
+remains pending. Runtime qualification and the completed canonical gate are recorded
+below; maintainer review must be complete before issue closure.
 
 ## Outcome matrix
 
@@ -70,12 +70,12 @@ accept the consequence and workaround before that classification replaces Partia
 | Original criterion            | Current evidence                                                                                                                                         | Remaining closure evidence                                                                                                                           |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | AC-1 reviewed complete matrix | R01?R27 now reflect the runtime implementation, with scope, evidence and one owner per row.                                                              | Maintainer review/date and final reference-heading review.                                                                                           |
-| AC-2 accepted policy examples | Conservative, reduced-storage and exact-event examples have UTC/deadline/byte catalog fixtures and real-media evidence.                                  | Final-head validation; equivalence is restricted to the approved canonical selectors and whole-file contract.                                        |
-| AC-3 deterministic expiry     | Overlap, fractional/zero durations, revisions, late events, restart and genuine old-schema migration preserve committed floors.                          | Final-head validation.                                                                                                                               |
-| AC-4 decodable event coverage | Exact case mapping below combines #268 pre/post evidence with current decoded H.264/H.265, missing-media/evidence and late/revised/overlap fixtures.     | Final-head validation; detector-service availability is not claimed.                                                                                 |
+| AC-2 accepted policy examples | Conservative, reduced-storage and exact-event examples have UTC/deadline/byte catalog fixtures and real-media evidence.                                  | Maintainer review of the approved canonical selector and whole-file contract mapping.                                                                |
+| AC-3 deterministic expiry     | Overlap, fractional/zero durations, revisions, late events, restart and genuine old-schema migration preserve committed floors.                          | Maintainer acceptance review.                                                                                                                        |
+| AC-4 decodable event coverage | Exact case mapping below combines #268 pre/post evidence with current decoded H.264/H.265, missing-media/evidence and late/revised/overlap fixtures.     | Maintainer review; detector-service availability is not claimed.                                                                                     |
 | AC-5 authoritative control    | Configured-disabled/privacy fencing and retained-file obligations have separate authorities; effective-control boundary below records precedence.        | #202 owns persistent profile activation and source/reason/expiry/state API/UI qualification. No generic external control interface is approved here. |
 | AC-6 related feature evidence | Linked-owner table records evidence and remaining limitations; #127/#131 remain open with their original Alpha scope.                                    | Maintainer review of the linked-owner evidence and limitations.                                                                                      |
-| AC-7 scale bound              | Release 127-source/30-day samples meet approved latency/RSS/ingest limits; paired native SQL profiles report compilations and program starts separately. | Final-head validation and review of the recorded environments/scope; SQL diagnostic timings are not latency acceptance evidence.                     |
+| AC-7 scale bound              | Release 127-source/30-day samples meet approved latency/RSS/ingest limits; paired native SQL profiles report compilations and program starts separately. | Maintainer review of the recorded environments/scope; SQL diagnostic timings are not latency acceptance evidence.                                    |
 
 ### Linked-owner review on 2026-10-05
 
@@ -642,6 +642,32 @@ then current source; run `recording_retention_cold <catalog>` between them.
 The `runtime` second argument selects complete current runtime calls. Diagnostics
 accept only generated temporary archive paths. The final full Windows gate and
 new-head CI remain pending until their results are recorded.
+
+### Final canonical verification
+
+The unchanged Windows `check.bat` completed with exit 0 at `cb4342a` on
+2026-10-06: 3,257 Rust tests (26 configured skips), 409 Bun, 259 component/visual,
+57 compatibility and 284 Playwright tests (two capability skips), plus strict
+Clippy, dependency, format, Python and UI static checks. Rust 1.99.0,
+`CARGO_INCREMENTAL=0`, slow tests and four Rust workers were used. The verified
+library authentication fixture is identified in the build manifest; it contains
+`server::authentication_browser_fixture::issue123_browser_fixture`.
+
+The preceding run passed Rust/UI quality but failed three browser cases: two
+missing-control timeouts and one recorded-frame timeout. All three passed
+unchanged in isolation and then in the unchanged complete gate. Their cause is
+not established; failed artifacts and logs remain preserved. A separate earlier
+fixture-selection mistake used a bin test executable without the authentication
+test; Cargo rebuilt the correct library target, and all eight authentication
+browser cases passed before the complete rerun. No assertions, timeouts or
+configuration thresholds were weakened.
+
+Published implementation head `cb4342a` has 39 successful CI checks, three
+configured skips and one neutral result, including the Book, Security and Visual
+Regression jobs. This documentation-only closeout identifies that equivalent
+implementation build; current PR status records checks for the final published
+head. Automated reviews found no unresolved concrete defects. Human maintainer
+matrix review and #202 control evidence remain outstanding; #168 is not closed.
 
 ### Event-coverage acceptance mapping
 
