@@ -42,16 +42,14 @@
     "examples/recording_retention_sql/counter.rs": "e50c65b8340a83f986d1b3e1784d053148cc09e7d44fca30334348ec485815d1"
   },
   "equivalent_source_commit": "25201d9",
-  "auth_fixture_sha256": "f6f867258b013208c8f0adb9af98a4a95c6da2091c0672bf6080e6b3c78df2a7",
   "focused_validation": {
     "catalog_tests": 12,
     "media_tests": 3,
     "missing_source_real_media_cases": 6,
     "native_counter_calibration": "passed",
     "deterministic_pre_fix_regression": "fails after completed startup maintenance atf3200b0",
-    "full_gate": "3257 Rust tests passed (3 slow,26 configured skips),697.948s; stopped at three redundant_pub_crate errors in diagnostic example. Visibility fixed and workspace Clippy passed; full canonical rerun pending."
+    "full_gate": "At a0ac14d:3257Rust passed549.028s,26configured skips; workspaceClippy/dependency/format/static/UI quality passed. Playwright stopped on incorrect preselected bin fixture. Complete rerun pending with verified lib fixture. Correct lib fixture validated; canonical rerun log keeppeek-168-final-library-check.log."
   },
-  "auth_fixture_path": "E:\\src\\keeppeek-168-runtime\\target\\debug\\deps\\keeppeek-423792bfecdc67a4.exe",
   "discarded_gate": "Initial full gate intentionally interrupted: selected stale1e6 authentication fixture; restarted with freshly compiled4237 binary. No complete-gate claim from interrupted run.",
   "preserved_gate_io_failure": {
     "first_run": "Two volume-growth tests failed during database open with I/O error(sync):uncategorized error before guard path",
@@ -66,5 +64,12 @@
     "examples/recording_retention_sql/counter.rs": "974caf48f8b67945e926d16e96193fb6082a28682222d897326ab0712750e659",
     "examples/recording_retention_sql/runtime.rs": "aae4d5b364b16de258e83b2f0d54f9f30ce04546f4b91978231f750180bee50b"
   },
-  "fresh_review": "2026-10-06 adversarial startup-guard/media/cold/SQL and final matrix reviews: no unresolved concrete defects; not human maintainer approval."
+  "fresh_review": "2026-10-06 adversarial startup-guard/media/cold/SQL and final matrix reviews: no unresolved concrete defects; not human maintainer approval.",
+  "discarded_auth_fixture_path": "E:\\src\\keeppeek-168-runtime\\target\\debug\\deps\\keeppeek-423792bfecdc67a4.exe",
+  "discarded_auth_fixture_sha256": "f6f867258b013208c8f0adb9af98a4a95c6da2091c0672bf6080e6b3c78df2a7",
+  "authentication_fixture_selection_error": "The423792bfecdc67a4 executable is a bin test target and contains no issue123_browser_fixture. Canonical run passed Rust/static/UI stages then Playwright failed startup:276passed,1failed,2skipped,7notrun. Correct library target was rebuilt using the exact run-e2e.ts cargo arguments; no product/test code changes.",
+  "auth_fixture_path": "E:\\src\\keeppeek-168-runtime\\target\\debug\\deps\\keeppeek-1e6a276cc181a3ce.exe",
+  "auth_fixture_sha256": "aadb8a85f4ecc2757cf86b6343fbd5f015243d219cd1aa76c388550e1a90c551",
+  "auth_fixture_target": "Cargo compiler-artifact kind lib/profile test; --list confirms server::authentication_browser_fixture::issue123_browser_fixture",
+  "focused_authentication_library_recheck": "All eight external-authentication Playwright cases passed with verified library fixture; no product/test changes."
 }
