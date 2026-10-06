@@ -126,17 +126,19 @@ async fn begin(
         JOIN recording_files r ON r.id=a.object_id JOIN storage_volume_bindings b ON b.id=a.volume_id
         WHERE a.volume_id=?1 AND a.kind='recording' AND a.state='published' AND b.writable=1
         AND r.finalized=1 AND r.protected=0 AND r.cleanup_pending=0
+        AND NOT EXISTS(SELECT 1 FROM recording_retention_decisions d WHERE d.recording_id=r.id AND d.deadline_ms>?2)
         AND NOT EXISTS(SELECT 1 FROM storage_recording_retirements WHERE recording_id=r.id)
         AND NOT EXISTS(SELECT 1 FROM recording_maintenance_claims c WHERE c.active=1 AND (c.recording_id=r.id OR replace(c.path,char(92),'/')=a.destination_path COLLATE NOCASE))
         AND NOT EXISTS(SELECT 1 FROM storage_volume_moves m WHERE m.kind='recording' AND m.object_id=r.id AND (m.phase NOT IN ('complete','cancelled') OR m.receipt_acknowledged=0))
         AND NOT EXISTS(SELECT 1 FROM storage_volume_moves m WHERE m.source_operation=a.operation AND m.phase IN ('published','retiring','complete'))
-        ORDER BY r.started_at_ms,r.id LIMIT 1", [volume]).await?;
+        ORDER BY r.started_at_ms,r.id LIMIT 1", turso::params![volume, super::super::retention::now_ms()?]).await?;
     let Some(row) = rows.next().await? else {
         return Ok(None);
     };
     let operation: String = row.get(0)?;
     let recording: String = row.get(1)?;
     drop(rows);
+    super::super::retention::ensure_cleanup_allowed(connection, &recording).await?;
     connection.execute("INSERT INTO storage_recording_retirements(operation,recording_id,volume_id,reason) VALUES (?1,?2,?3,?4)", turso::params![operation.clone(), recording, volume, reason.deletion().as_str()]).await?;
     connection
         .execute(
@@ -153,6 +155,10 @@ async fn load(connection: &turso::Connection, operation: &str) -> anyhow::Result
     let Some(row) = rows.next().await? else {
         return Ok(None);
     };
+    let complete = row.get::<i64>(8)? != 0;
+    if !complete {
+        super::super::retention::ensure_cleanup_allowed(connection, &row.get::<String>(0)?).await?;
+    }
     Ok(Some(Job {
         operation: operation.into(),
         location: Location {
@@ -171,7 +177,7 @@ async fn load(connection: &turso::Connection, operation: &str) -> anyhow::Result
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("invalid recording digest"))?,
         },
-        complete: row.get::<i64>(8)? != 0,
+        complete,
         acknowledged: row.get::<i64>(9)? != 0,
     }))
 }
