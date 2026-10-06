@@ -11,9 +11,10 @@
 		pathname: string;
 		administrator?: boolean;
 		fixed?: boolean;
+		ondashboard?: (event: MouseEvent) => void;
 	};
 
-	let { pathname, administrator = true, fixed = true }: Props = $props();
+	let { pathname, administrator = true, fixed = true, ondashboard }: Props = $props();
 
 	const allItems = [
 		{
@@ -81,6 +82,7 @@
 		{@const active = matchesRoute(item.paths)}
 		<a
 			href={item.href}
+			onclick={item.href === resolve('/') ? ondashboard : undefined}
 			aria-current={active ? 'page' : undefined}
 			class="flex min-w-0 flex-col items-center justify-center {active
 				? 'gap-[5px] text-xs leading-[14px] font-semibold text-primary-soft'
