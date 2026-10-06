@@ -1,6 +1,11 @@
 //! Journals volume-scoped recording retirement before filesystem removal.
 
 use super::{Kind, Location, Object, Publication, Reply, bump_revision, to_u64};
+mod bytes;
+
+#[cfg(test)]
+#[path = "recordings/bytes_tests.rs"]
+mod bytes_tests;
 
 impl super::RecordingCatalogHandle {
     pub(crate) fn legacy_recording_bytes(&self) -> anyhow::Result<u64> {
@@ -11,7 +16,21 @@ impl super::RecordingCatalogHandle {
     }
 }
 
+#[tracing::instrument(level = "trace", skip_all)]
 pub(super) async fn legacy_bytes(connection: &turso::Connection) -> anyhow::Result<u64> {
+    let mut owners = connection
+        .query(
+            "SELECT 1 FROM storage_volume_allocations
+        INDEXED BY storage_active_recording_allocations
+        WHERE kind='recording' AND state!='cancelled' LIMIT 1",
+            (),
+        )
+        .await?;
+    let named = owners.next().await?.is_some();
+    drop(owners);
+    if !named && let Some(total) = bytes::read(connection).await? {
+        return Ok(total);
+    }
     let mut rows = connection.query("SELECT COALESCE(SUM(file_bytes),0) FROM recording_files r
         WHERE NOT EXISTS(SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
             AND (a.object_id=r.id OR a.destination_path=replace(r.path,char(92),'/') COLLATE NOCASE))", ()).await?;
@@ -98,6 +117,7 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
         "INTEGER NOT NULL DEFAULT 0 CHECK(retention_expiry IN(0,1))",
     )
     .await?;
+    bytes::initialize(connection).await?;
     Ok(())
 }
 
