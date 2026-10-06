@@ -2362,13 +2362,15 @@ async fn claim_cleanup_candidate(
                 "SELECT id, path, file_bytes, cleanup_pending
                  FROM recording_files
                  WHERE finalized = 1 AND protected = 0
+                   AND NOT EXISTS (SELECT 1 FROM recording_retention_decisions d
+                                   WHERE d.recording_id=recording_files.id AND d.deadline_ms>?1)
                    AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
                        AND (a.object_id=recording_files.id OR a.destination_path=replace(recording_files.path,char(92),'/') COLLATE NOCASE))
                    AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims
                                    WHERE recording_id = recording_files.id AND active = 1)
                  ORDER BY cleanup_pending DESC, started_at_ms, id
                  LIMIT 1",
-                (),
+                turso::params![retention::now_ms()?],
             )
             .await?;
         let candidate = rows
@@ -2384,6 +2386,9 @@ async fn claim_cleanup_candidate(
             })
             .transpose()?;
         drop(rows);
+        if let Some(candidate) = &candidate {
+            retention::ensure_cleanup_allowed(connection, &candidate.recording_id).await?;
+        }
         if let Some(candidate) = &candidate
             && !candidate.pending
         {

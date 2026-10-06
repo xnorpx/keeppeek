@@ -129,7 +129,8 @@ impl RecordingCatalogHandle {
     }
 
     /// Commits current canonical evidence without shortening an existing deadline.
-    /// Revisions must increase when rules change. This does not activate a policy or fence cleanup.
+    /// Revisions must increase when rules change. This does not activate a policy.
+    /// Automatic cleanup preserves committed deadlines until they expire.
     pub fn commit_retention(
         &self,
         recording_id: &str,
@@ -213,6 +214,26 @@ fn validate_identity(value: &str) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn now_ms() -> Result<i64> {
+    Ok(i64::try_from(
+        time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000,
+    )?)
+}
+
+pub(super) async fn ensure_cleanup_allowed(connection: &turso::Connection, id: &str) -> Result<()> {
+    if let Some(previous) = read_previous(connection, id).await? {
+        let now = now_ms()?;
+        ensure!(
+            previous
+                .decision
+                .deadline_ms
+                .is_none_or(|deadline| deadline <= now),
+            "committed retention deadline prevents automatic cleanup"
+        );
+    }
+    Ok(())
+}
+
 async fn commit(
     connection: &turso::Connection,
     id: &str,
@@ -282,7 +303,9 @@ async fn recording_snapshot(connection: &turso::Connection, id: &str) -> Result<
                 started_at_ms, ended_at_ms, protected
          FROM recording_files WHERE id = ?1 AND finalized = 1 AND cleanup_pending = 0
            AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims
-                           WHERE recording_id = ?1 AND active = 1)",
+                           WHERE recording_id = ?1 AND active = 1)
+           AND NOT EXISTS (SELECT 1 FROM storage_recording_retirements
+                           WHERE recording_id = ?1 AND complete = 0)",
             turso::params![id],
         )
         .await?;
@@ -390,6 +413,135 @@ async fn write_decision(
 #[cfg(test)]
 mod tests {
     use super::super::RecordingCatalog;
+
+    fn cleanup_recording(
+        root: &std::path::Path,
+        id: &str,
+        start: i64,
+    ) -> super::super::CatalogRecording {
+        let file = root.join(format!("{id}.mp4"));
+        std::fs::write(&file, b"media").unwrap();
+        super::super::CatalogRecording {
+            id: id.into(),
+            stream_id: "front/main".into(),
+            source_id: Some("front".into()),
+            logical_stream_id: Some("main".into()),
+            started_at_ms: start,
+            ended_at_ms: Some(start + 100),
+            path: file.to_string_lossy().into_owned(),
+            init_offset: 0,
+            init_len: 0,
+            finalized: true,
+        }
+    }
+
+    #[test]
+    fn automatic_cleanup_preserves_committed_deadlines_across_restart() {
+        use crate::storage::retention::{Policy, Predicate, Rule};
+        let root = std::env::temp_dir().join(format!("retention-cleanup-{}", uuid::Uuid::new_v4()));
+        let path = root.join("catalog.db");
+        let catalog = RecordingCatalog::open(&path).unwrap();
+        let handle = catalog.handle();
+        for (id, start) in [("held", 1000), ("eligible", 2000)] {
+            handle
+                .upsert_recording(cleanup_recording(&root, id, start))
+                .unwrap();
+        }
+        let policy = Policy::new(vec![
+            Rule::new("continuous", i64::MAX as u64 - 1100, Predicate::Continuous).unwrap(),
+        ])
+        .unwrap();
+        let before = handle.commit_retention("held", 1, &policy).unwrap();
+        {
+            let owner = handle.retention.upgrade().unwrap();
+            let connection = owner.connection.lock().unwrap();
+            // Simulate an older cleanup admission so ordinary cancellation stays available.
+            pollster::block_on(
+                connection
+                    .execute_batch("UPDATE recording_files SET cleanup_pending=1 WHERE id='held'"),
+            )
+            .unwrap();
+        }
+        catalog.shutdown();
+        let catalog = RecordingCatalog::open(&path).unwrap();
+        let handle = catalog.handle();
+        assert_eq!(
+            handle
+                .pending_cleanup_candidate()
+                .unwrap()
+                .unwrap()
+                .recording_id,
+            "held"
+        );
+        handle.cancel_cleanup("held").unwrap();
+        let candidate = handle.claim_cleanup_candidate().unwrap().unwrap();
+        assert_eq!(candidate.recording_id, "eligible");
+        let store = crate::storage::long_term::LongTermStore::new(root.clone());
+        assert_eq!(store.remove_catalog_recording(&candidate.path).unwrap(), 5);
+        handle
+            .complete_cleanup(
+                "eligible",
+                super::super::CatalogDeletionReason::ArchiveLimit,
+            )
+            .unwrap();
+        assert!(!root.join("eligible.mp4").exists());
+        assert!(handle.claim_cleanup_candidate().unwrap().is_none());
+        assert_eq!(std::fs::read(root.join("held.mp4")).unwrap(), b"media");
+        assert_eq!(handle.retention_decision("held").unwrap(), Some(before));
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn corrupt_retention_metadata_blocks_cleanup_and_recovers_after_repair() {
+        use crate::storage::retention::{Policy, Predicate, Rule};
+        let root = std::env::temp_dir().join(format!(
+            "retention-invalid-cleanup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let catalog = RecordingCatalog::open(&root.join("catalog.db")).unwrap();
+        let handle = catalog.handle();
+        let file = root.join("recording.mp4");
+        handle
+            .upsert_recording(cleanup_recording(&root, "recording", 1000))
+            .unwrap();
+        let policy = Policy::new(vec![
+            Rule::new("continuous", 1, Predicate::Continuous).unwrap(),
+        ])
+        .unwrap();
+        let before = handle.commit_retention("recording", 1, &policy).unwrap();
+        let owner = handle.retention.upgrade().unwrap();
+        {
+            let connection = owner.connection.lock().unwrap();
+            pollster::block_on(connection.execute_batch(
+                "UPDATE recording_retention_decisions SET matching_rules_json='broken' WHERE recording_id='recording'",
+            )).unwrap();
+        }
+        assert!(handle.claim_cleanup_candidate().is_err());
+        assert!(handle.pending_cleanup_candidate().unwrap().is_none());
+        assert_eq!(std::fs::read(&file).unwrap(), b"media");
+        {
+            let connection = owner.connection.lock().unwrap();
+            pollster::block_on(connection.execute_batch(
+                "UPDATE recording_retention_decisions SET matching_rules_json='[\"continuous\"]' WHERE recording_id='recording'",
+            )).unwrap();
+        }
+        assert_eq!(
+            handle.retention_decision("recording").unwrap(),
+            Some(before)
+        );
+        assert_eq!(
+            handle
+                .claim_cleanup_candidate()
+                .unwrap()
+                .unwrap()
+                .recording_id,
+            "recording"
+        );
+        drop(owner);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn in_flight_retention_keeps_the_catalog_authority_until_completion() {

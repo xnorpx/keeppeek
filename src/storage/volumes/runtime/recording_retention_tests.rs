@@ -2,6 +2,124 @@ use super::*;
 use crate::storage::catalog::locations::recordings::{Action, Job, Reason};
 use crate::storage::{CatalogFragment, CatalogRecording, RecordingCatalog};
 
+#[test]
+fn committed_retention_deadlines_fence_named_capacity_and_disk_pressure() -> anyhow::Result<()> {
+    use crate::storage::retention::{Policy, Predicate, Rule};
+    for reason in [Reason::Capacity, Reason::DiskPressure] {
+        let (_root, catalog, manager) = tests::fixture(1024)?;
+        let (held, held_path) = recording(&manager, &catalog, 1000, true)?;
+        let (eligible, eligible_path) = recording(&manager, &catalog, 2000, true)?;
+        let policy = Policy::new(vec![Rule::new(
+            "continuous",
+            i64::MAX as u64 - 1100,
+            Predicate::Continuous,
+        )?])?;
+        let before = catalog.handle().commit_retention(&held.id, 1, &policy)?;
+        let Reply::RecordingRetirement(Some(job)) =
+            catalog
+                .handle()
+                .volume_location(Request::RecordingRetention(Action::Begin {
+                    volume: "primary".into(),
+                    reason,
+                }))?
+        else {
+            anyhow::bail!("eligible recording retirement missing");
+        };
+        assert_eq!(job.location.object.id, eligible.id);
+        assert!(manager.finish_recording_retirement(&job.operation)?);
+        assert!(!eligible_path.exists());
+        assert_eq!(std::fs::read(&held_path)?, b"initdata");
+        assert_eq!(catalog.handle().retention_decision(&held.id)?, Some(before));
+        assert!(matches!(
+            catalog
+                .handle()
+                .volume_location(Request::RecordingRetention(Action::Begin {
+                    volume: "primary".into(),
+                    reason
+                },))?,
+            Reply::RecordingRetirement(None)
+        ));
+        drop(manager);
+        catalog.shutdown();
+    }
+    Ok(())
+}
+
+#[test]
+fn admitted_named_retirement_rejects_a_new_retention_commitment() -> anyhow::Result<()> {
+    use crate::storage::retention::{Policy, Predicate, Rule};
+    let (_root, catalog, manager) = tests::fixture(1024)?;
+    let (object, path) = recording(&manager, &catalog, 1000, true)?;
+    let expired = Policy::new(vec![Rule::new("continuous", 1, Predicate::Continuous)?])?;
+    let before = catalog.handle().commit_retention(&object.id, 1, &expired)?;
+    let job = begin(&catalog, "primary")?;
+    let policy = Policy::new(vec![Rule::new(
+        "continuous",
+        i64::MAX as u64 - 1100,
+        Predicate::Continuous,
+    )?])?;
+    assert!(
+        catalog
+            .handle()
+            .commit_retention(&object.id, 2, &policy)
+            .is_err()
+    );
+    assert_eq!(
+        catalog.handle().retention_decision(&object.id)?,
+        Some(before)
+    );
+    assert_eq!(std::fs::read(&path)?, b"initdata");
+    assert!(manager.finish_recording_retirement(&job.operation)?);
+    drop(manager);
+    catalog.shutdown();
+    Ok(())
+}
+
+#[test]
+fn restart_preserves_a_future_deadline_on_a_previously_admitted_retirement() -> anyhow::Result<()> {
+    use crate::storage::retention::{Policy, Predicate, Rule};
+    let (root, catalog, manager) = tests::fixture(1024)?;
+    let (object, path) = recording(&manager, &catalog, 1000, true)?;
+    let policy = Policy::new(vec![Rule::new(
+        "continuous",
+        i64::MAX as u64 - 1100,
+        Predicate::Continuous,
+    )?])?;
+    let before = catalog.handle().commit_retention(&object.id, 1, &policy)?;
+    let configuration = manager.configuration().clone();
+    drop(manager);
+    catalog.shutdown();
+    let operation = {
+        let mut authority =
+            crate::storage::catalog::authority::Lease::acquire(&root.join("catalog.db"))?;
+        let connection = authority.connect()?;
+        authority.verify(&connection)?;
+        // Simulate a retirement admitted by the version that ignored committed deadlines.
+        pollster::block_on(connection.execute(
+            "INSERT INTO storage_recording_retirements(operation,recording_id,volume_id,reason)
+             SELECT operation,object_id,volume_id,'archive_limit' FROM storage_volume_allocations
+             WHERE kind='recording' AND object_id=?1",
+            [object.id.as_str()],
+        ))?;
+        let mut rows = pollster::block_on(connection.query(
+            "SELECT operation FROM storage_recording_retirements WHERE recording_id=?1",
+            [object.id.as_str()],
+        ))?;
+        pollster::block_on(rows.next())?.unwrap().get::<String>(0)?
+    };
+    let catalog = RecordingCatalog::open(&root.join("catalog.db"))?;
+    let manager = Manager::new(configuration, catalog.handle())?;
+    assert!(manager.finish_recording_retirement(&operation).is_err());
+    assert_eq!(std::fs::read(&path)?, b"initdata");
+    assert_eq!(
+        catalog.handle().retention_decision(&object.id)?,
+        Some(before)
+    );
+    drop(manager);
+    catalog.shutdown();
+    Ok(())
+}
+
 fn recording(
     manager: &Manager,
     catalog: &RecordingCatalog,

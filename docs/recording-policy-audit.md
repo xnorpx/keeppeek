@@ -77,8 +77,8 @@ accept the consequence and workaround before that classification replaces Partia
 ## Approved retention contract
 
 The maintainer approved these product semantics on 2026-10-05. The resolver implementation
-below does not yet activate them in the application. Existing recordings and size-pressure
-behavior remain unchanged until settings and durable cleanup integration are qualified.
+below does not yet activate operator settings in the application. Size-pressure cleanup preserves
+explicitly committed deadlines; files without commitments retain the existing cleanup behavior.
 Protected `api/` changes require separate current-task approval.
 
 1. Keep #168 as the retention-policy owner. Use bounded camera-local rules in `config.toml`
@@ -170,7 +170,7 @@ An open event extends to the recording's end; a finite pulse covers one millisec
 
 The resolver alone does not qualify restart, late-revision, disk-space or real-media retention
 behavior. The catalog increment below adds persistence; active configuration, automatic
-reevaluation, cleanup enforcement, file-granularity byte reporting and control integration remain
+reevaluation, automatic expiry, file-granularity byte reporting and control integration remain
 necessary before #168 can close. AC-7 still needs explicit numeric budgets and runtime measurement.
 
 ### Durable catalog commitments
@@ -219,6 +219,29 @@ that already owns its connection keeps the catalog locked until that connection 
 Retention reads and commits verify the existing authority. Commit verification runs inside the
 write transaction, so an offline handoff fence rejects the operation without leaving a transaction
 open or changing its prior commitment. These guards do not activate retention cleanup.
+
+### Automatic cleanup admission
+
+Legacy archive cleanup and named-volume capacity or disk-pressure retirement now exclude files
+with a committed future retention deadline. Admission validates stored decision metadata before
+it changes cleanup ownership. Invalid metadata blocks admission without deleting the file.
+The existing write transactions serialize admission with retention commitments. An admitted
+named-volume retirement rejects a later commitment, preserving the previous ledger entry.
+
+Named-volume restart recovery also checks the deadline before resuming an incomplete retirement.
+Legacy pending-claim inspection remains available so the owner can cancel an interrupted claim;
+new admission still validates the deadline. Protection and maintenance ownership retain their
+existing behavior. These checks preserve committed obligations but do not activate configuration
+or introduce an expiry job. Archive-scale candidate-selection performance remains unqualified.
+
+Regression fixtures cover physical file preservation across catalog restart, independent capacity
+and disk-pressure admissions, both admission/commit orderings, an older interrupted retirement,
+and corrupt-metadata rollback followed by recovery after repair.
+
+Observed on 2026-10-05, Windows, Rust 1.99.0, incremental compilation disabled: all 25
+`cargo test --lib retention` matches, all eight resolver acceptance tests, and all eleven catalog
+acceptance tests pass. `cargo clippy --lib --tests -- -D warnings` passes. These results do not
+replace the full repository gate or the outstanding #168 runtime acceptance criteria.
 
 ### Bounded canonical event traversal
 
