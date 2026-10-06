@@ -1,0 +1,70 @@
+{
+  "base_commit": "f3200b0db03190d7f3e5be74d0e0953a648ad85d",
+  "production_diff": "startup reconciliation transaction adds protection and unexpired-deadline guard; diagnostic examples and tests added",
+  "source_sha256": {
+    "src/storage/catalog.rs": "c309d00a8c99f16313983b37e75cb85841640f29ba649073be7c9518241c195c",
+    "examples/recording_retention_sql.rs": "95400c0f3fd5568f72835abf5883a45659615046e84a1c493d1ee66326287887",
+    "examples/recording_retention_sql/counter.rs": "e50c65b8340a83f986d1b3e1784d053148cc09e7d44fca30334348ec485815d1",
+    "examples/recording_retention_cold.rs": "4788967a616ea37598324e185496fde506ed21d6688080eceb03537a79ed4e06",
+    "tests/recording_retention_catalog/cold.rs": "dc46f576871759ea36502b9aeac0f8320733a12a838209ca973bb127d252fd1d",
+    "tests/recording_retention_media/missing.rs": "dfc29c61f921b909f74a243ee1d5f2f0f80826559b62a30d1ba999e2ba4e20a7",
+    "tests/fixtures/recording_retention_b877.sql": "1a5ca5c103b3aabdc8c8aa19b0f3decda8322835e3049e5e965d6e06fe470a5d"
+  },
+  "binary_sha256": {
+    "recording_retention_sql.exe": "044968ecf6c448645acc99d9e95d825f3e7f276c649f035f94093ed07f8798d0",
+    "recording_retention_cold.exe": "27da7105328beb017f2364aeba06be2c32306c548d9ae6e884a2d863b2783284"
+  },
+  "baseline_commit": "b877bdd674c32dc1f84e92356f9c35d67197ea14",
+  "baseline_sql_binary_sha256": "e6a30f4f02f5e306fe369f7daf057798e9e0be10fa640376c5857566029b4194",
+  "baseline_sql_sources": {
+    "examples/recording_retention_sql.rs": "95400c0f3fd5568f72835abf5883a45659615046e84a1c493d1ee66326287887",
+    "examples/recording_retention_sql/counter.rs": "e50c65b8340a83f986d1b3e1784d053148cc09e7d44fca30334348ec485815d1"
+  },
+  "scope": "diagnostic native compilations/program starts; timings contain tracing overhead; not performance-budget samples; shared host, no whole-host isolation claim",
+  "preparation": "canonical index reconciled in bounded256-entry batches outside measurements; initial rejected pending-index attempt produces no accepted samples",
+  "qualified_exit_codes": {
+    "baseline_sql": 0,
+    "cold_archive": 0,
+    "current_sql": 0
+  },
+  "artifact_root": "C:\\Users\\xnorp\\AppData\\Local\\Temp\\retention-scale-baseline-9b2ebd2b-cf90-4670-8383-1ba4c7f1c24d",
+  "reports_sha256": {
+    "runtime-sql-before.json": "46aa3fe7a88e3da22040694e7836f46e4c8dea826ba9d1ce2ab90c43f61ceaeb",
+    "runtime-cold-archive.json": "389300a6899593a13b4cc80a50c30940f414f213c500f3e361f0430062445163",
+    "runtime-sql-after.json": "6410f0ab31ae4cbb0d5dee1357d9a5991ef84be93730681977d5d8efe3b7c776",
+    "runtime-sql-batches.json": "a06e86628ef7ea0b460e60cad1d4b8d6d1c23e75d85e15923cfdb52a1489d8cc"
+  },
+  "runtime_batch_exit_code": 0,
+  "runtime_batch_binary_sha256": "a5e6cb71628b3ac781e6ee49f4d1230f43eb919d2015d5dd1a1ec41f691d2b93",
+  "runtime_batch_source_sha256": {
+    "examples/recording_retention_sql.rs": "06da6382b403bde81baa8230519bba988edf4d472446b1346e636e74fb15c6f5",
+    "examples/recording_retention_sql/runtime.rs": "7f1475043865646c5a658961e091d268c55c41c4eee2471ff220a96eaab98c7c",
+    "examples/recording_retention_sql/counter.rs": "e50c65b8340a83f986d1b3e1784d053148cc09e7d44fca30334348ec485815d1"
+  },
+  "equivalent_source_commit": "25201d9",
+  "auth_fixture_sha256": "f6f867258b013208c8f0adb9af98a4a95c6da2091c0672bf6080e6b3c78df2a7",
+  "focused_validation": {
+    "catalog_tests": 12,
+    "media_tests": 3,
+    "missing_source_real_media_cases": 6,
+    "native_counter_calibration": "passed",
+    "deterministic_pre_fix_regression": "fails after completed startup maintenance atf3200b0",
+    "full_gate": "3257 Rust tests passed (3 slow,26 configured skips),697.948s; stopped at three redundant_pub_crate errors in diagnostic example. Visibility fixed and workspace Clippy passed; full canonical rerun pending."
+  },
+  "auth_fixture_path": "E:\\src\\keeppeek-168-runtime\\target\\debug\\deps\\keeppeek-423792bfecdc67a4.exe",
+  "discarded_gate": "Initial full gate intentionally interrupted: selected stale1e6 authentication fixture; restarted with freshly compiled4237 binary. No complete-gate claim from interrupted run.",
+  "preserved_gate_io_failure": {
+    "first_run": "Two volume-growth tests failed during database open with I/O error(sync):uncategorized error before guard path",
+    "targeted_recheck": "4passed5.719seconds",
+    "fresh_full_recheck": "Both originally failed cases passed at0.974seconds and1.383seconds",
+    "cause": "not established; no suppression/assertion/configuration weakening"
+  },
+  "upstream_merge_commit": "53b91a96817cd8183b0c2d945012f5c2888dc494",
+  "upstream_merge_scope": "Only6 taiki install-action SHA updates across3 workflows; source/test/harness hashes unchanged",
+  "final_diagnostic_visibility_fix": "Private example modules use pub item visibility as required by redundant_pub_crate; no runtime/counting behavior changes. Measurement source hashes above remain the original measured binaries.",
+  "final_diagnostic_source_sha256": {
+    "examples/recording_retention_sql/counter.rs": "974caf48f8b67945e926d16e96193fb6082a28682222d897326ab0712750e659",
+    "examples/recording_retention_sql/runtime.rs": "aae4d5b364b16de258e83b2f0d54f9f30ce04546f4b91978231f750180bee50b"
+  },
+  "fresh_review": "2026-10-06 adversarial startup-guard/media/cold/SQL and final matrix reviews: no unresolved concrete defects; not human maintainer approval."
+}
