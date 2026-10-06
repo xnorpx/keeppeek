@@ -511,7 +511,32 @@ skips, three slow; 612.673 seconds), the same 409/259/57 UI unit counts, 284
 Playwright tests with two capability skips, and the required static checks. Its
 prebuilt authentication fixture SHA-256 is
 `27bcc5f1ca3b36bb84f36444f64601573dd8b7e77a1e0595df28e6002e8f50db`.
-Fresh full-scale qualification remains in progress.
+The fresh [full-scale report](./verification/recording-retention/runtime-full-report.json)
+completed on equivalent source `6435559`: 127 cameras, main/sub streams,
+365,760 historical recordings and 91,440 hourly canonical events over 30 days.
+Initial eight-item reconciliation p95 is 78.207 ms (46,430 measured calls),
+restart/31-day extension p95 is 62.943 ms (45,715 measured calls), and complete
+late-event publication/reconciliation p95 is 70.399 ms (30 samples after five
+warm-ups). Sampled evaluation peak RSS is 103,653,376 bytes initially and
+95,641,600 bytes after restart. All meet the approved limits. Initial full
+sweep takes 2,654,172 ms; the restarted sweep takes 2,167,843 ms. These are
+bounded-call latency results, not a claim that full archive activation is instant.
+Catalog startup with index rebuild takes 95.280 seconds; restart open takes
+11.613 seconds. Columns already exist: full old-schema migration remains open.
+
+Archive ingest p95 is 350.719 ms enabled and 395.263 ms disabled, with exact
+240 frames, sixteen files and 458,320 written bytes per sample. Both pass the
+800-ms limit. Enabled is 11.27% below disabled at current source, establishing
+only enablement overhead. Disabled samples follow enabled samples and begin
+with 560 additional recording rows. The fresh-catalog `b877` controls above
+establish fresh-catalog regression only; the pre-feature full-archive comparison
+requires its own matching archive control and remains pending.
+
+Policy disable drains successfully, and the exact committed 31-day floor
+survives restart, disable and both ingest modes. Historical metadata is
+synthetic and future-dated to exclude physical expiry; real H.264 is used for
+ingest. These results do not qualify cold migration, total SQL statement counts,
+named-volume parity or combined missing-producer real-media coverage.
 
 ### Event-coverage acceptance mapping
 
