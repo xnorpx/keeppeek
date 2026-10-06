@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { goto, onNavigate } from '$app/navigation';
-	import { page } from '$app/state';
+	import { navigating, page } from '$app/state';
 	import { onMount, tick } from 'svelte';
 	import type { CameraHealth, CameraListItem, LiveQuality } from '$lib/types';
 	import { useControlClient } from '$lib/control-context';
@@ -106,7 +106,11 @@
 	let focusedCameraId: string | null = $state(null);
 	let lastViewerCameraId = '';
 	let viewerSelectionReady = $state(initialRequestedCameraId.length > 0);
-	let cameraViewActive = $derived(view === 'viewer');
+	// Reuse the ready wall as soon as navigation starts, before route loading completes.
+	let cameraViewActive = $derived(
+		view === 'viewer' &&
+			(navigating.to?.url.pathname !== resolve('/') || wallRevealState === 'staging')
+	);
 	let broadcastTalkbackActive = $derived(livePeer.talkbackActive);
 	let broadcastTalkbackError = $derived(livePeer.talkbackError);
 	let broadcastTalkbackGroup = $state('');
@@ -280,7 +284,6 @@
 		) {
 			const currentTransition = peekViewState.transition;
 			if (currentTransition) peekViewState.finishTransition(currentTransition);
-			// ponytail: Let route teardown remove focus. Clearing it here reactivates the Viewer.
 			return;
 		}
 		const cameraFrames = captureCameraFrames();
@@ -340,7 +343,12 @@
 	$effect(() => {
 		const requestedExists = cameras.some((camera) => camera.id === requestedCameraId);
 		if (!cameraViewActive) {
-			if (legacyRootCameraId && requestedCameraId === legacyRootCameraId && requestedExists) {
+			if (
+				page.url.pathname === resolve('/') &&
+				legacyRootCameraId &&
+				requestedCameraId === legacyRootCameraId &&
+				requestedExists
+			) {
 				void goto(viewerHref(requestedCameraId), { replaceState: true });
 			}
 			return;
@@ -958,7 +966,8 @@
 
 	function closeFocus() {
 		if (focusedCameraId === null || focusReturnPending) return;
-		const returnToDashboard = page.url.pathname === resolve('/viewer');
+		const returnToDashboard =
+			page.url.pathname === resolve('/viewer') && navigating.to?.url.pathname !== resolve('/');
 		if (returnToDashboard) {
 			void goto(resolve('/'));
 			return;
