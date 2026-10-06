@@ -1,0 +1,106 @@
+{
+  "after": [
+    {
+      "rows": 366320,
+      "sha256": "f9f40bdcc064c4aee787fba3195f7f610587e33282e9502f940b3b3783ba96d4",
+      "table": "recording_files"
+    },
+    {
+      "rows": 560,
+      "sha256": "64ee5dc03a662a01cbdc75470d0cea325ec5f0ef5ad32b83d2eaff9f5c28a689",
+      "table": "recording_fragments"
+    },
+    {
+      "rows": 560,
+      "sha256": "c1f573d0783e01209622f649048f2d7e8e8edff305ac9d199ce8e0471de91a6f",
+      "table": "recording_keyframes"
+    },
+    {
+      "rows": 91475,
+      "sha256": "d8b5e5bd9f38b6fb41beb55b555084861dbb32af6b15c453200c4e2d144fb4a1",
+      "table": "recording_events"
+    },
+    {
+      "rows": 1,
+      "sha256": "a9c8f0918725601104305a5fad69cfb47b6f1d2de707cb2fc4286376d59d2227",
+      "table": "recording_retention_decisions"
+    },
+    {
+      "rows": 560,
+      "sha256": "22c403adb27671bbcd2b170c4afbea6362250cc0c30316f0fe7c98e01a844eee",
+      "table": "encoded_media"
+    }
+  ],
+  "before": [
+    {
+      "rows": 366320,
+      "sha256": "f9f40bdcc064c4aee787fba3195f7f610587e33282e9502f940b3b3783ba96d4",
+      "table": "recording_files"
+    },
+    {
+      "rows": 560,
+      "sha256": "64ee5dc03a662a01cbdc75470d0cea325ec5f0ef5ad32b83d2eaff9f5c28a689",
+      "table": "recording_fragments"
+    },
+    {
+      "rows": 560,
+      "sha256": "c1f573d0783e01209622f649048f2d7e8e8edff305ac9d199ce8e0471de91a6f",
+      "table": "recording_keyframes"
+    },
+    {
+      "rows": 91475,
+      "sha256": "d8b5e5bd9f38b6fb41beb55b555084861dbb32af6b15c453200c4e2d144fb4a1",
+      "table": "recording_events"
+    },
+    {
+      "rows": 1,
+      "sha256": "a9c8f0918725601104305a5fad69cfb47b6f1d2de707cb2fc4286376d59d2227",
+      "table": "recording_retention_decisions"
+    },
+    {
+      "rows": 560,
+      "sha256": "22c403adb27671bbcd2b170c4afbea6362250cc0c30316f0fe7c98e01a844eee",
+      "table": "encoded_media"
+    }
+  ],
+  "complete": true,
+  "index_complete": true,
+  "index_current_before_restart": true,
+  "index_resume_us": 6149,
+  "index_resumed_batches": 1,
+  "open_and_maintenance_us": 12700873,
+  "open_us": 10583343,
+  "restarted": [
+    {
+      "rows": 366320,
+      "sha256": "f9f40bdcc064c4aee787fba3195f7f610587e33282e9502f940b3b3783ba96d4",
+      "table": "recording_files"
+    },
+    {
+      "rows": 560,
+      "sha256": "64ee5dc03a662a01cbdc75470d0cea325ec5f0ef5ad32b83d2eaff9f5c28a689",
+      "table": "recording_fragments"
+    },
+    {
+      "rows": 560,
+      "sha256": "c1f573d0783e01209622f649048f2d7e8e8edff305ac9d199ce8e0471de91a6f",
+      "table": "recording_keyframes"
+    },
+    {
+      "rows": 91475,
+      "sha256": "d8b5e5bd9f38b6fb41beb55b555084861dbb32af6b15c453200c4e2d144fb4a1",
+      "table": "recording_events"
+    },
+    {
+      "rows": 1,
+      "sha256": "a9c8f0918725601104305a5fad69cfb47b6f1d2de707cb2fc4286376d59d2227",
+      "table": "recording_retention_decisions"
+    },
+    {
+      "rows": 560,
+      "sha256": "22c403adb27671bbcd2b170c4afbea6362250cc0c30316f0fe7c98e01a844eee",
+      "table": "encoded_media"
+    }
+  ],
+  "scope": "actual pre-runtime generated b877 catalog; exact ordered digests of all legacy fields, fragments, keyframes, canonical evidence, protections, committed decisions and 560 encoded H264 files before/after cold runtime schema migration and maintenance; index readiness recorded before restart and verified afterward; new derived columns excluded; historical media is synthetic"
+}

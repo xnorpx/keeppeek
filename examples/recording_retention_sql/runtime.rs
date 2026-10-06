@@ -3,7 +3,7 @@
 use super::*;
 use keeppeek::storage::retention::settings::Settings;
 
-pub(super) fn measure(path: &Path) -> Result<()> {
+pub fn measure(path: &Path) -> Result<()> {
     let counter = counter::Counter::default();
     let subscriber = tracing_subscriber::registry().with(counter.layer());
     tracing::subscriber::with_default(subscriber, || {

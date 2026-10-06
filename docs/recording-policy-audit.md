@@ -2,8 +2,10 @@
 
 This is the working evidence ledger for [#168](https://github.com/xnorpx/keeppeek/issues/168).
 It records implemented behavior and gaps; it does not approve a new retention policy or certify
-the Alpha candidate. Audit baseline: `872defab438a3d69c0c57fc3b48907fe818b8afd`, retrieved
-2026-10-05. All source/test paths below refer to that KeepPeek commit unless noted otherwise.
+the Alpha candidate. The initial audit used `872defab438a3d69c0c57fc3b48907fe818b8afd` on
+2026-10-05. The outcome matrix below includes the runtime implementation through `25201d9`
+and its subsequent CI-only upstream merge. Historical reports retain their recorded source
+versions; current qualification and its exact provenance are recorded below.
 The four classifications are **Equivalent**, **Partial**, **Gap**, and **Intentional divergence**.
 An equivalent outcome requires behavior evidence; a source symbol alone is insufficient.
 
@@ -21,7 +23,8 @@ retention interaction/display, duration rules, recording control, export options
 codec compatibility, reconciliation, accounting, mounts/cache, and emergency cleanup.
 Each row has one implementation/evidence owner. Related features may contribute tests without
 becoming a second owner. The retention contract below is approved; final classification review
-and runtime acceptance remain pending.
+remains pending. Runtime qualification evidence is recorded below; final-head validation
+and maintainer review must be complete before issue closure.
 
 ## Outcome matrix
 
@@ -34,17 +37,17 @@ audited KeepPeek commit, within the codec/filesystem/browser limits of the linke
 | R01 | Recording enablement        | Equivalent             | `off` admits no media; `sub`, `main`, and `both` select their configured streams. `CameraRecordingPolicy::decide`, `src/storage/recording_policy.rs`. | `storage::engine::tests::recording_admission_enforces_modes_and_keyframe_aligned_event_boost`; historical pass in #268. This is admission, not a retention schedule.                                                                                | #168  |
 | R02 | Encoded media               | Equivalent             | Original H.264/H.265 samples become indexed MP4 media without video transcoding. `storage::engine`, `MediumTermWriter`.                               | `event_boost_round_trips_h264_h265_h264_with_audio_and_catalog` in `src/storage/engine.rs`; historical pass in #268. Unsupported browser decoding remains R20.                                                                                      | #168  |
 | R03 | UTC layout                  | Equivalent             | A timestamp selects camera/date/hour storage paths rather than the reference's directory ordering. `layout::segment_path`.                            | `src/storage/layout.rs::tests::segment_path_format`; source fixture. Equivalent time addressing does not promise identical paths.                                                                                                                   | #168  |
-| R04 | Conservative example        | Partial                | `sub`/`main`/`both` preserve continuous admitted media; byte pressure can shorten coverage.                                                           | R01 plus `StorageSafetyPolicy::evaluate`; independent class deadlines are missing. No accepted exact retained-interval fixture yet.                                                                                                                 | #168  |
-| R05 | Reduced-storage example     | Partial                | `event-only` selects an event stream; `event-boost` replaces sub GOPs with main in one logical recording.                                             | `event_only_idle_selects_nothing_and_repeated_events_extend_once`; #268 historical pass. Event admission is not motion-class retention.                                                                                                             | #168  |
-| R06 | Alerts-only example         | Partial                | Accepted events can open `event-only` recording; no dedicated alert classification/retention contract exists.                                         | `EventRecordings::note_event` in `src/storage/event_recording.rs`; missing class-predicate/deadline acceptance.                                                                                                                                     | #168  |
+| R04 | Conservative example        | Equivalent             | Continuous rules retain admitted whole files until their committed deadline; holds and prior floors dominate shortening.                              | Accepted interval/byte fixtures in `tests/recording_retention_catalog` and decoded H.264/H.265 fixtures in `tests/recording_retention_media`; whole-file over-retention is owner-approved.                                                          | #168  |
+| R05 | Reduced-storage example     | Equivalent             | Continuous and canonical motion evidence select independent configured lifetimes for the same finalized file.                                         | Accepted policy examples and exact UTC/deadline/byte fixtures; real-media missing-evidence cases retain only actual canonical evidence. This does not certify detector-service availability.                                                        | #168  |
+| R06 | Alerts-only example         | Equivalent             | Exact canonical event-type selectors retain matching files; zero disables a rule and absent settings inherit.                                         | Approved canonical selector contract and catalog/media fixtures. This equivalence covers the accepted lifetime outcome, not Frigate alert classification or separate capture windows (R07).                                                         | #168  |
 | R07 | Class-specific capture      | Partial                | Camera-level pre-history and post-event duration apply to accepted events.                                                                            | [Pre-recording verification](pre-recording-verification.md), #268. Separate alert/detection windows are not implemented.                                                                                                                            | #172  |
 | R08 | Capture eligibility         | Partial                | Retained keyframes, media availability, deadline, decoder epoch and byte budget bound selected media.                                                 | `event_preroll_h264_is_independently_decodable`, `event_preroll_h265_is_independently_decodable`; historical pass. No `active_objects` retention eligibility model.                                                                                 | #168  |
 | R09 | Capture display             | Partial                | Timeline coverage and health show available media/shortening reasons rather than implying requested footage exists.                                   | #268 desktop/mobile screenshots; `book/src/recording-and-evidence.md`. An event's displayed bounds do not certify all surrounding retained coverage.                                                                                                | #172  |
-| R10 | Continuous/motion durations | Gap                    | Storage safety has byte/percentage/free-space thresholds, not independently evaluated class lifetimes.                                                | `StorageSafetyPolicy::evaluate`, `src/storage/safety.rs`; missing retention resolver and durable deadline metadata.                                                                                                                                 | #168  |
-| R11 | Object/event durations      | Gap                    | Canonical events exist; no accepted alert/detection predicate maps them to recording expiration.                                                      | `src/storage/events.rs`, `src/storage/catalog.rs`; source only. Class mapping needs an owner decision.                                                                                                                                              | #168  |
-| R12 | Maximum deadline            | Gap                    | Catalog cleanup orders eligible files under pressure; no rule-overlap deadline resolver exists.                                                       | `RecordingCatalogHandle::claim_cleanup_candidate`; missing overlap/restart/policy-revision fixtures.                                                                                                                                                | #168  |
-| R13 | Fractional durations        | Gap                    | Event durations are integer seconds, but no retained-media lifetime model implements precise sub-day class expiry.                                    | `src/cameras/mod.rs`, `src/config.rs`; missing checked-duration resolver.                                                                                                                                                                           | #168  |
-| R14 | Overlap deduplication       | Partial                | Repeated event admission writes each selected frame once to one recording.                                                                            | `overlapping_media_event_storm_writes_each_frame_once_to_one_catalog_recording`; #268 historical pass. Deduplicated class-based retention is not proven.                                                                                            | #168  |
+| R10 | Continuous/motion durations | Equivalent             | Checked global/camera durations resolve continuous and canonical motion deadlines independently. `src/storage/retention`.                             | Catalog and settings tests cover inheritance, zero, sub-day durations and committed floors; actual encoded files remain independently decodable. Whole-file granularity is approved.                                                                | #168  |
+| R11 | Object/event durations      | Equivalent             | Accepted exact canonical event-type selectors map matching evidence to durable file deadlines.                                                        | Catalog/media tests cover person-only, motion-only, absent, late and revised evidence. No fabricated detector evidence or unsupported Frigate classification is implied.                                                                            | #168  |
+| R12 | Maximum deadline            | Equivalent             | Latest matching deadline wins; holds and previously committed floors survive shortening, zero-day activation and restart.                             | Overlap/revision/restart catalog fixtures and genuine pre-runtime cold-schema migration preserve deadlines, identities and media bytes.                                                                                                             | #168  |
+| R13 | Fractional durations        | Equivalent             | Checked durations support precise sub-day expiry over half-open UTC intervals.                                                                        | Resolver/settings/catalog tests cover fractional, zero and invalid durations and shared boundaries. Whole-file over-retention remains explicit.                                                                                                     | #168  |
+| R14 | Overlap deduplication       | Equivalent             | Overlapping evidence updates one recording obligation without duplicating encoded media.                                                              | Catalog overlap fixtures and real H.264/H.265 retained-byte/decoded-coverage checks supplement #268 admission evidence.                                                                                                                             | #168  |
 | R15 | Runtime schedules/control   | Partial                | Configured modes and server privacy schedules exist. Named profile activation remains open in #202.                                                   | #265/#125 and `src/storage/engine/event/tests.rs::worker_rejects_queued_media_after_a_complete_privacy_cycle`; historical pass. No approved arbitrary scheduler/control state table.                                                                | #168  |
 | R16 | Range/event exports         | Equivalent             | Administrator export produces a durable searchable job with cancellation/failure handling.                                                            | #189/#113; `src/storage/playback.rs::tests::cancelled_export_removes_partial_file_and_can_retry`; historical CI. Container/codec limits remain documented.                                                                                          | #113  |
 | R17 | Export survival             | Partial                | Protected catalog media is excluded from ordinary cleanup; exports have a separate job/artifact lifecycle.                                            | `cleanup_candidates_exclude_active_and_protected_recordings`, `src/storage/catalog.rs`; source fixture. Do not infer indefinite exported-file preservation from source protection.                                                                  | #113  |
@@ -54,7 +57,7 @@ audited KeepPeek commit, within the codec/filesystem/browser limits of the linke
 | R21 | Media reconciliation        | Partial                | Explicit owned reports/remedies and recoverable deletion jobs exist.                                                                                  | #232/#233/#133; `reconciliation_protocol_requires_owned_reports_and_explicit_remedies`. [Maintenance limits](../book/src/recording-maintenance.md) retain trust/filesystem/recovery qualification limits.                                           | #133  |
 | R22 | Recording accounting        | Equivalent             | Catalog-attributed bytes and filesystem free capacity are distinct observations.                                                                      | #190/#122, `coverage_snapshot_retains_cleanup_evidence_after_restart`, `StorageSafetyPolicy::evaluate`; historical CI. Attribution is not a complete disk scan.                                                                                     | #122  |
 | R23 | Other disk consumers        | Equivalent             | Non-KeepPeek usage reduces actual headroom without being attributed to recording bytes.                                                               | `src/storage/safety.rs::tests::reserve_accounts_for_non_keeppeek_disk_usage`; source fixture. Missing/stale capacity remains an explicit observation.                                                                                               | #112  |
-| R24 | Mount identity              | Partial                | Capacity queries use the nearest existing parent of the configured root. Named-volume ownership is in progress.                                       | `filesystem_capacity_queries_the_nearest_existing_parent`; #129/PR #269 owns placement/root recovery. Existing capacity does not prove the intended external volume is mounted.                                                                     | #129  |
+| R24 | Mount identity              | Partial                | Named-volume placement/ownership from merged PR #269 supplements nearest-existing-parent capacity queries.                                            | #129 owns remaining platform/root recovery qualification. Capacity and catalog identity do not by themselves prove the intended external volume is mounted.                                                                                         | #129  |
 | R25 | Cache boundary              | Partial                | `ShortTermBuffer` and bounded encoded pre-history are separate from durable writer/catalog progress.                                                  | #268 budget/pressure tests; `src/storage/short_term.rs`, `src/storage/event_recording.rs`. No tmpfs layout is required or implemented as a parity feature.                                                                                          | #168  |
 | R26 | Stale disk metrics          | Partial                | Reconciliation is explicit; startup preserves interrupted evidence.                                                                                   | `startup_preserves_interrupted_recording_for_explicit_reconciliation`, #233. Arbitrary external deletion does not instantly update catalog attribution.                                                                                             | #133  |
 | R27 | Emergency cleanup           | Intentional divergence | Oldest eligible finalized catalog files are removed to a recovery target; protected/active files remain excluded and recording can pause.             | `startup_cleanup_removes_only_oldest_catalog_media_to_recovery_target`, `cleanup_pauses_recording_when_no_eligible_media_remains`; source fixtures. The maintainer approved preserving protected evidence and pausing under unrecoverable pressure. | #112  |
@@ -64,15 +67,15 @@ accept the consequence and workaround before that classification replaces Partia
 
 ## Acceptance ledger
 
-| Original criterion            | Current evidence                                                                       | Remaining closure evidence                                                                                          |
-| ----------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| AC-1 reviewed complete matrix | R01–R27 cover the retrieved page and identify code/evidence/owner.                     | Maintainer review/date; reconcile any changed reference headings before closure.                                    |
-| AC-2 accepted policy examples | Admission examples R04–R06 are explicitly Partial.                                     | Accepted class predicates and exact retained interval/byte fixtures.                                                |
-| AC-3 deterministic expiry     | R10–R14 distinguish existing admission from missing lifetime rules.                    | Resolver, persistence, revision/late-event reevaluation, restart and migration tests.                               |
-| AC-4 decodable event coverage | #268 real H.264/H.265, codec/audio transition, overlap, budget and privacy fixtures.   | Map revised-event semantics and every requested boundary to exact evidence; no assumption that all AC-4 cases pass. |
-| AC-5 authoritative control    | Configured admission and #125 fail-closed fencing; #39 durable CAS/watch is available. | Accepted control/precedence state table and #202 profile-specific evidence.                                         |
-| AC-6 related feature evidence | R16–R27 identify existing owners and unresolved limitations.                           | Final owner-specific evidence; #127/#131 remain open.                                                               |
-| AC-7 scale bound              | #268 measures pre-roll ingest, not retention evaluation.                               | Accepted latency/query/memory/ingest budgets and 127-source/30-day retention harness.                               |
+| Original criterion            | Current evidence                                                                                                                                         | Remaining closure evidence                                                                                                                           |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AC-1 reviewed complete matrix | R01?R27 now reflect the runtime implementation, with scope, evidence and one owner per row.                                                              | Maintainer review/date and final reference-heading review.                                                                                           |
+| AC-2 accepted policy examples | Conservative, reduced-storage and exact-event examples have UTC/deadline/byte catalog fixtures and real-media evidence.                                  | Final-head validation; equivalence is restricted to the approved canonical selectors and whole-file contract.                                        |
+| AC-3 deterministic expiry     | Overlap, fractional/zero durations, revisions, late events, restart and genuine old-schema migration preserve committed floors.                          | Final-head validation.                                                                                                                               |
+| AC-4 decodable event coverage | Exact case mapping below combines #268 pre/post evidence with current decoded H.264/H.265, missing-media/evidence and late/revised/overlap fixtures.     | Final-head validation; detector-service availability is not claimed.                                                                                 |
+| AC-5 authoritative control    | Configured-disabled/privacy fencing and retained-file obligations have separate authorities; effective-control boundary below records precedence.        | #202 owns persistent profile activation and source/reason/expiry/state API/UI qualification. No generic external control interface is approved here. |
+| AC-6 related feature evidence | Linked-owner table records evidence and remaining limitations; #127/#131 remain open with their original Alpha scope.                                    | Maintainer review of the linked-owner evidence and limitations.                                                                                      |
+| AC-7 scale bound              | Release 127-source/30-day samples meet approved latency/RSS/ingest limits; paired native SQL profiles report compilations and program starts separately. | Final-head validation and review of the recorded environments/scope; SQL diagnostic timings are not latency acceptance evidence.                     |
 
 ### Linked-owner review on 2026-10-05
 
@@ -313,9 +316,10 @@ and physical MP4 expiry without capacity pressure. Named-volume reader leases
 remain enforced by their owner. Legacy reader access retains the existing legacy
 contract; this increment does not establish named-owner reader parity there.
 
-These implementation details do not close the issue. Full archive measurements,
-cold old-schema migration qualification, complete event-coverage mapping,
-effective runtime-control acceptance and final maintainer review remain explicit.
+These implementation details alone do not close the issue. The later qualification
+sections below supply archive measurements, cold migration and event-coverage
+mapping. Effective runtime-control ownership and final maintainer review remain
+explicit in the current acceptance ledger.
 
 `tests/recording_retention_media.rs` writes the repository's H.264 and H.265 camera
 fixtures through `MediumTermWriter`, maps the relative media timeline to a fixed
@@ -560,8 +564,84 @@ existing regression module is `cfg(test)` and excluded from release.
 Policy disable drains successfully, and the exact committed 31-day floor
 survives restart, disable and both ingest modes. Historical metadata is
 synthetic and future-dated to exclude physical expiry; real H.264 is used for
-ingest. These results do not qualify cold migration, total SQL statement counts,
-named-volume parity or combined missing-producer real-media coverage.
+ingest. This particular archive timing run does not qualify cold migration or
+total SQL work; the separate diagnostics and media cases below provide that
+evidence within their stated scope. Named-volume parity is not claimed.
+
+### Cold migration, missing evidence and complete SQL work qualification
+
+The 2026-10-06 closeout adds a transaction-level startup reconciliation guard:
+missing media cannot discard a protected catalog row or an unexpired committed
+deadline. The deterministic pre-fix regression at `f3200b0` waits for startup
+maintenance and loses the stored decision; the repaired regression preserves
+both missing references, protection, exact byte accounting and the committed
+floor through index migration, restart and zero-day runtime policy activation.
+Unprotected stale rows without a retained obligation still follow the existing
+startup reconciliation contract. Explicit maintenance remedies are unchanged.
+
+`cold_pre_runtime_schema_preserves_offline_references_holds_and_committed_floor_across_restart`
+starts from the pinned pre-runtime definitions in
+`tests/fixtures/recording_retention_b877.sql`, including an existing decision.
+It does not simulate a cold upgrade by dropping an index from current tables.
+The [full cold archive report](./verification/recording-retention/runtime-cold-archive.json)
+upgrades an actual generated `b877` catalog: 365,760 historical rows plus 560
+real H.264 recordings, 91,475 canonical events and a known non-NULL 31-day floor.
+All legacy recording fields (including identity/finalization), fragments,
+keyframes, canonical event fields, protections and committed decisions have
+identical ordered SHA-256 digests before upgrade, after startup maintenance and
+after restart. All 560 encoded media files also have identical combined hashes
+and exact catalog/file lengths. Catalog open takes 10.583343 seconds; open plus
+maintenance takes 12.700873 seconds. The pre-feature index was already prepared:
+this report verifies index readiness across restart, and does not claim a cold
+index rebuild. The smaller committed regression independently verifies bounded
+index migration interrupted by restart.
+
+`missing_source_and_absent_motion_or_object_producers_do_not_fabricate_media_or_evidence`
+passes six real-media cases: H.264/H.265 with neither evidence producer, motion
+only or person only. Three independently decoded clips occupy adjacent fixed
+UTC intervals. A committed floor precedes removal of the middle clip; startup
+maintenance completes before assertions. Matching late evidence does not
+recreate missing source bytes. Surviving clips keep exact bytes and two-second
+intervals, evidence selects 1/7/30-day lifetimes correctly, the missing recording
+identity remains, and export rejects the unavailable file. These fixtures cover
+absent canonical evidence and missing media; they do not assert detector-service
+availability or fabricate unavailable lead-in. The focused suite passes all
+12 catalog and three media tests, plus the SQL-counter calibration.
+
+The SQL diagnostic counts native compilations separately from VM program starts
+at instruction zero, including trigger/internal programs. It reads no SQL text,
+instructions or parameter values. Calibration observes six caller statements
+plus Turso's internal schema read, verifies one compilation/three executions of
+a reused statement, and excludes work outside the measurement scope.
+[Before](./verification/recording-retention/runtime-sql-before.json) and
+[after](./verification/recording-retention/runtime-sql-after.json) use the same
+archive and commitment: five warm-ups and thirty samples each. Native
+compilations are 11 in both; program starts are 140 before and 141 after.
+Canonical index preparation occurs outside the measured calls. Counts include
+all native work within the stated operation, rather than equating the 130 indexed
+candidate seeks with total SQL work.
+
+The [runtime call profile](./verification/recording-retention/runtime-sql-batches.json)
+measures thirty complete eight-record calls after five warm-ups over that
+archive. Each evaluates eight records with zero quarantines, compiles 209
+statements and starts 1,265 native programs, including traversal, transactions,
+authority, evidence, commitments and bookkeeping. This profiles the first 35
+activation calls; it does not claim completion of the full sweep or query totals
+for every archive phase. Trace timings include instrumentation overhead and do
+not replace the release latency/ingest measurements above. The event-candidate
+bound remains 130 indexed seeks and 257 candidates per file, with separately
+approved latency/RSS/ingest limits unchanged.
+
+The [build manifest](./verification/recording-retention/runtime-cold-sql-environment.json)
+records exact source/binary/report hashes and exit codes. The
+[direct harness](./verification/recording-retention/runtime-sql-direct-harness.rs)
+and [counter](./verification/recording-retention/runtime-sql-counter.rs) used for
+the paired data are retained. Reproduce with Rust 1.99.0, incremental compilation
+disabled, release `recording_retention_sql <closed generated catalog>` on `b877`
+then current source; run `recording_retention_cold <catalog>` between them.
+The `runtime` second argument selects complete current runtime calls. Diagnostics
+accept only generated temporary archive paths. The final full Windows gate and
+new-head CI remain pending until their results are recorded.
 
 ### Event-coverage acceptance mapping
 
@@ -574,10 +654,10 @@ named-volume parity or combined missing-producer real-media coverage.
 | Unavailable lead-in      | `snapshots_distinguish_history_from_pending_replay_and_expire_silent_streams` verifies startup, missing-keyframe and duration-eviction reasons with zero available coverage. `snapshot_reasons_recover_when_history_refills` verifies recovery. These are metadata fixtures, not a complete missing-source real-media scenario.                                        |
 
 The named tests above passed in the runtime increment's full Windows gate.
-AC-4 remains partial: no combined real-media fixture certifies missing source
-media or every missing motion/object producer scenario. Existing server reason
-codes and browser rendering provide honest coverage diagnostics; they do not
-create source media or detection evidence. This limitation remains owned by #168.
+The combined real-media missing-source/absent-evidence fixture above completes
+this coverage mapping. Existing server reason codes and browser rendering remain
+covered by their canonical tests. No fixture claims to create source media or
+detection evidence when unavailable.
 
 ### Bounded canonical event traversal
 

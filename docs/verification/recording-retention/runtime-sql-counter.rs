@@ -13,16 +13,16 @@ struct Totals {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
-pub struct Counts {
+pub(super) struct Counts {
     pub compilations: u64,
     pub executions: u64,
 }
 
 #[derive(Clone, Default)]
-pub struct Counter(Arc<Totals>);
+pub(super) struct Counter(Arc<Totals>);
 
 impl Counter {
-    pub fn layer<S>(&self) -> impl Layer<S>
+    pub(super) fn layer<S>(&self) -> impl Layer<S>
     where
         S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
     {
@@ -41,7 +41,7 @@ impl Counter {
         }
     }
 
-    pub fn measure<T>(&self, operation: impl FnOnce() -> T) -> (T, Counts) {
+    pub(super) fn measure<T>(&self, operation: impl FnOnce() -> T) -> (T, Counts) {
         let before = self.snapshot();
         let span = tracing::debug_span!("retention_sql_measured");
         let entered = span.enter();
