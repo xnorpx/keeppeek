@@ -1,0 +1,163 @@
+{
+  "catalog": "\\\\?\\C:\\Users\\xnorp\\AppData\\Local\\Temp\\retention-scale-baseline-9b2ebd2b-cf90-4670-8383-1ba4c7f1c24d\\catalog.db",
+  "native_sql_counts": [
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    },
+    {
+      "compilations": 11,
+      "executions": 140
+    }
+  ],
+  "raw_us": [
+    6898,
+    5867,
+    6804,
+    6708,
+    3957,
+    3696,
+    6019,
+    5597,
+    6099,
+    3940,
+    5346,
+    6005,
+    6171,
+    5765,
+    5787,
+    5170,
+    3778,
+    3718,
+    3802,
+    3856,
+    4241,
+    3793,
+    3735,
+    3865,
+    3760,
+    3746,
+    3722,
+    3725,
+    6300,
+    6950
+  ],
+  "recording_id": "cam-000-00006-main",
+  "runs": 30,
+  "scope": "full native compilation and instruction-zero program-start count inside synchronous commitment including transaction/authority/evidence/decision statements; SQL text/parameters are not retained; calibration excludes empty batch tails; not SQL VM trigger opcode counts; timing includes tracing overhead; startup excluded",
+  "untimed_index_preparation_batches": 358,
+  "untimed_index_preparation_us": 25349680,
+  "warmup_runs": 5
+}
