@@ -27,6 +27,16 @@
       "independently_decoded_frames": 240
     }
   },
-  "budget": "not yet approved; observed values are not pass/fail qualification",
+  "budget": {
+    "accepted_date": "2026-10-05",
+    "eight_item_reconciliation_p95_ms": 250,
+    "single_camera_late_event_reconciliation_p95_ms": 1000,
+    "sampled_evaluation_rss_bytes": 268435456,
+    "event_index_seeks_per_file": 130,
+    "event_candidates_per_file": 257,
+    "ingest_240_frame_16_file_p95_ms": 800,
+    "ingest_p95_increase_percent": 30,
+    "scope": "Windows limits; indexed seeks are not total SQL statements; full archive measurement pending"
+  },
   "scope": "fresh-catalog ingest; full archive metadata workload reported separately"
 }

@@ -1,0 +1,485 @@
+{
+  "catalog_states": [
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 365776
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 365760
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 365792
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 365776
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 365808
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 365792
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 29,
+        "recordings": 365824
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 13,
+        "recordings": 365808
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 21,
+        "recordings": 365840
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 11,
+        "recordings": 365824
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 365856
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 1,
+        "recordings": 365840
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 365872
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 365856
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 23,
+        "recordings": 365888
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 7,
+        "recordings": 365872
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 365904
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 365888
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 365920
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 8,
+        "recordings": 365904
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 365936
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 365920
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 365952
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 365936
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 365968
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 365952
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 365984
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 365968
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366000
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 365984
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366016
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 366000
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366032
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 366016
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366048
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 366032
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366064
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 366048
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366080
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 366064
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366096
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 366080
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366112
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 366096
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 24,
+        "recordings": 366128
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 9,
+        "recordings": 366112
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366144
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 8,
+        "recordings": 366128
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 29,
+        "recordings": 366160
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 13,
+        "recordings": 366144
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 29,
+        "recordings": 366176
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 13,
+        "recordings": 366160
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 29,
+        "recordings": 366192
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 14,
+        "recordings": 366176
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 21,
+        "recordings": 366208
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 9,
+        "recordings": 366192
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366224
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 1,
+        "recordings": 366208
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366240
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 366224
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366256
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 366240
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366272
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 366256
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 25,
+        "recordings": 366288
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 9,
+        "recordings": 366272
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 17,
+        "recordings": 366304
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 8,
+        "recordings": 366288
+      }
+    },
+    {
+      "after": {
+        "historical": 365760,
+        "pending": 16,
+        "recordings": 366320
+      },
+      "before": {
+        "historical": 365760,
+        "pending": 0,
+        "recordings": 366304
+      }
+    }
+  ],
+  "codec": "H264",
+  "dimensions": [320, 240],
+  "existing_archive": true,
+  "frames_per_run": 240,
+  "logical_duration_seconds": 16,
+  "max_us": 15302655,
+  "median_us": 7802879,
+  "p95_us": 15114239,
+  "raw_us": [
+    7647893, 7772888, 8660750, 8307353, 7946279, 7649061, 7354070, 7237677,
+    7206576, 7343169, 7246694, 7330587, 7328704, 7337894, 7599514, 9177465,
+    10142100, 10073658, 14640302, 15108415, 15300088, 7608789, 7598030, 7801262,
+    9042592, 8519698, 8640593, 8948403, 8805986, 8426947
+  ],
+  "retention_activated": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+  ],
+  "retention_requested": true,
+  "runs": 30,
+  "scope": "accelerated ingest plus engine shutdown flush; fresh or caller-owned existing catalog as reported; frame generation, catalog startup, verified runtime activation and sample verification excluded; no live pacing; existing archive mode retains its historical metadata and reuses its catalog authority",
+  "warmup_runs": 5,
+  "written_bytes": [
+    458320, 458320, 458320, 458320, 458320, 458320, 458320, 458320, 458320,
+    458320, 458320, 458320, 458320, 458320, 458320, 458320, 458320, 458320,
+    458320, 458320, 458320, 458320, 458320, 458320, 458320, 458320, 458320,
+    458320, 458320, 458320, 458320, 458320, 458320, 458320, 458320
+  ]
+}

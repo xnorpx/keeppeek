@@ -121,10 +121,14 @@ Protected `api/` changes require separate current-task approval.
    runtime request then selects its mode. #202 owns profile activation. A generic scheduler or
    external recording-toggle feature has no accepted interface here; choose its owner/scope
    before implementing one. Do not overload state-store documents to bypass API approval.
-6. Decide the numeric AC-7 budget before runtime acceptance. Proposal for review: 127 sources,
-   30 days, fixed event density/overlap, release build, 30 measured rounds after warmup; report
-   p50/p95/max evaluation latency, queries per batch, peak memory and ingest delta. No invented
-   pass/fail threshold or pre-roll benchmark substitutes for that decision.
+6. The owner accepted the proposed Windows limits on 2026-10-05: p95 at most
+   250 ms per eight-item reconciliation call, 1 second per complete single-camera
+   late-event reconciliation, sampled evaluation RSS at most 256 MiB, and
+   at most 130 indexed event seeks and 257 candidates per file. A 240-frame,
+   16-file ingest-and-flush sample must have p95 at most 800 ms and at most
+   30% increase over its matching baseline. Measure the 127-source/30-day
+   release fixture and retain raw samples. Indexed seeks are not total SQL
+   statements; total query-count qualification remains separate.
 
 ### Interval fixtures and remaining integration
 
@@ -268,7 +272,7 @@ replace the full repository gate or the outstanding #168 runtime acceptance crit
 
 ### Runtime settings, reevaluation and expiry
 
-The runtime increment passed the complete Windows `check.bat` on 2026-10-05
+The runtime increment at `0f75eb6` passed the complete Windows `check.bat` on 2026-10-05
 with Rust 1.99.0, incremental compilation disabled and slow tests enabled:
 3,246 Rust tests (26 configured skips), workspace Clippy and dependency checks,
 Rust/TOML/Python formatting, UI static checks, 409 Bun tests, 259 browser
@@ -277,7 +281,8 @@ component/visual tests, 57 compatibility tests and 284 Playwright tests
 SHA-256 `9c583b5a9574154bee795b26c0120c5bb9196a938915b4b69d9e531886ad82c6`.
 The unchanged runtime sources and benchmark sources also passed the expanded
 one-camera/one-day archive smoke run. The 127-camera/30-day release measurement
-is pending; these passing checks do not establish AC-7 or full issue completion.
+failed qualification as recorded below; these passing checks do not establish AC-7
+or full issue completion. The subsequent accounting fix needs its own full gate.
 
 The draft runtime implementation adds optional global and camera-specific
 `storage.retention` settings to the existing configuration. The configuration
@@ -308,9 +313,9 @@ and physical MP4 expiry without capacity pressure. Named-volume reader leases
 remain enforced by their owner. Legacy reader access retains the existing legacy
 contract; this increment does not establish named-owner reader parity there.
 
-These implementation details do not close the issue. Final-head repository gates,
-full real-media interval/byte examples, effective runtime-control acceptance and
-the approved 127-source/30-day numeric performance budgets still need evidence.
+These implementation details do not close the issue. Full archive measurements,
+cold old-schema migration qualification, complete event-coverage mapping,
+effective runtime-control acceptance and final maintainer review remain explicit.
 
 `tests/recording_retention_media.rs` writes the repository's H.264 and H.265 camera
 fixtures through `MediumTermWriter`, maps the relative media timeline to a fixed
@@ -369,7 +374,8 @@ in `docs/verification/recording-retention/runtime-*.json`.
 | Current runtime, unconfigured   |     304.639 |  313.855 |              +16.65% |
 | Current runtime, enabled        |     311.551 |  334.335 |              +24.26% |
 
-These are measured costs, not an accepted budget or a full-archive ingest claim.
+These fresh-catalog costs meet the subsequently approved 800-ms and 30% p95
+limits. They are not a full-archive ingest claim.
 The benchmark distinguishes baseline schema absence from actual enabled/disabled
 runtime state. It performs startup and verified activation before timing.
 
@@ -394,6 +400,134 @@ restores them from persisted policies. Unconfigured event writes avoid these
 hooks. The existing 256-event shutdown regression failed with unconditional hooks
 and passed unchanged after this correction; retention activation, restart and
 hook removal also have a catalog regression.
+
+### Full archive failure and accounting repair
+
+The first release run at equivalent runtime source `0f75eb6` seeded 127 cameras,
+30 days, 365,760 historical recording rows and 91,440 events. Initial activation,
+steady/late-event assertions, restart during the thirty-to-thirty-one-day extension,
+the exact committed floor and policy disablement passed. All 35 enabled ingest
+samples retained 240 frames and sixteen files. Enabled p95 was **15.114 seconds**,
+which fails the approved 800-ms limit. Disabled sample 25 failed the sixteen-record
+assertion. No complete disabled distribution or successful combined report exists.
+The [failure manifest](./verification/recording-retention/runtime-archive-failure-before.json)
+and [completed enabled samples](./verification/recording-retention/runtime-archive-ingest-enabled-before.json)
+preserve this result. The original harness wrote metadata timings only at the end;
+the failed run therefore lost those distributions. The revised harness checkpoints
+each completed phase and every ingest sample and captures warning/error diagnostics.
+
+A [native query probe](./verification/recording-retention/legacy-byte-query-before.json)
+localized repeated work in legacy byte accounting. The original ownership-filtered
+sum measured 438–1,686 ms in five localization runs. It runs on segment finalization.
+A covering-index sum still took 80–103 ms per call, repeated across sixteen files;
+that alone cannot establish the ingest limit. These are localization measurements,
+not a qualified thirty-sample before/after benchmark. The cause of the no-media
+sample remains provisional until direct diagnostics or repeated validation resolve it.
+
+The repair maintains an exact all-file byte total in the catalog transaction.
+Legacy-only accounting uses it when no active named recording allocation exists;
+named ownership retains the original ID/path exclusion query. Overflow or malformed
+input makes the total unavailable without rejecting otherwise valid named writes.
+Bootstrap scans at most one million rows with a two-second elapsed check and constant
+application memory; an incomplete total remains unavailable and uses the original
+query. The check does not interrupt a native row read. Schema/bootstrap/hooks install
+atomically, update arithmetic subtracts the old value before adding the new one,
+and rollback covers failed commits. Native backups include the total and hooks.
+Cleanup cadence, quotas and safety deadlines are preserved.
+
+Six native regressions pass: bootstrap and byte changes, rollback/overflow, normalized
+path and ID ownership, cancelled allocations, reopen, representable named accounting
+with an overflowing global total, near-limit replacement and failed initialization.
+Workspace/all-target/all-feature Clippy passes. The archive harness requires an
+available accounting total and verifies its growth against actual MP4 bytes.
+The repaired accounting query measured p95 3.283 ms over thirty samples. Archive
+ingest still failed the 800-ms limit: p95 807.423 ms with the probe index and
+1,136.639 ms after its removal. Both distributions are retained in
+[the first repaired run](./verification/recording-retention/runtime-archive-ingest-disabled-after.json)
+and [the production-index run](./verification/recording-retention/runtime-archive-ingest-disabled-production-index.json).
+All samples preserved sixteen files, 240 frames and exact accounting growth.
+
+A [bounded diagnostic trace](./verification/recording-retention/runtime-archive-stage-before.json)
+then observed 128 path-update calls during one sixteen-file ingest window.
+Startup maintenance repeated public updates for already-complete finalized rows,
+after synchronous size/identity refresh. The repair skips these actor transactions
+when both finalization timestamps exist, while preserving missing-timestamp repair,
+interrupted rename recovery, missing/offline-file handling and keyframe backfill.
+A regression reproduced the redundant call before the fix and passed afterward,
+including restored timestamps, identity, bytes and coverage. All 22 startup/recovery
+tests and strict workspace/all-target/all-feature Clippy pass. The
+[repaired diagnostic trace](./verification/recording-retention/runtime-archive-stage-after.json)
+observes 32 path updates for sixteen files, including each writer finalization and
+the existing same-root publication update. Diagnostic traces are single samples,
+not acceptance distributions.
+
+The [uninstrumented archive rerun](./verification/recording-retention/runtime-archive-ingest-disabled-startup-fixed.json)
+passes the 800-ms ingest limit: thirty measured samples after five warm-ups give
+median 414.719 ms, p95 471.039 ms and maximum 476.927 ms. Every sample retains
+sixteen files, 240 frames and 458,320 bytes, with exact accounting growth and no
+historical-row loss. The earlier missing-media failure did not recur; its original
+cause remains unproven.
+
+Fresh-catalog remeasurement remains unresolved against the older 269.055-ms
+baseline: [disabled p95 417.791 ms](./verification/recording-retention/runtime-ingest-disabled-accounting-fixed.json)
+is +55.28%, and [enabled p95 487.167 ms](./verification/recording-retention/runtime-ingest-enabled-accounting-fixed.json)
+is +81.07%. Both pass 800 ms but fail the separate 30% regression limit in that
+comparison. Other-agent Cargo work was observed on this shared host just after
+these runs; its contribution is not established. The first matching controls
+measured baseline p95 338.687/362.495 ms, disabled 515.071 ms (+52.08%) and enabled
+396.287 ms (+17.01%). Disabled mode still failed the regression limit.
+
+Successful writer finalization already commits the catalog path, identity, size,
+timestamps and coverage. Same-root publication now skips its duplicate update;
+distinct-root relocation keeps the update. Existing named-publication handling and
+safety-limit enforcement are unchanged. The new regression observed two updates
+before the fix and one afterward, for both direct and buffered writes; relocation
+retains two updates with exact metadata and coverage. Pinned-evidence finalization
+and retention fencing also pass, alongside strict Clippy. The
+[new trace](./verification/recording-retention/runtime-archive-stage-same-root.json)
+observes sixteen path updates for sixteen files.
+
+At equivalent source `6435559`, matching baseline controls on both sides of the
+current runs give p95 [344.063 ms](./verification/recording-retention/runtime-same-root-baseline-before.json)
+and [395.775 ms](./verification/recording-retention/runtime-same-root-baseline-after.json).
+Against the lower control, [disabled p95 327.423 ms](./verification/recording-retention/runtime-same-root-disabled.json)
+is -4.84%, and [enabled p95 327.167 ms](./verification/recording-retention/runtime-same-root-enabled.json)
+is -4.91%. Both pass 800 ms and the 30% regression limit; they also pass relative
+to the original 269.055-ms baseline. All four blocks use five warm-ups and thirty
+measured samples, preserving identical file/frame counts and byte totals.
+
+The [same-root archive rerun](./verification/recording-retention/runtime-archive-ingest-same-root.json)
+reports median 372.479 ms, p95 765.439 ms and maximum 845.823 ms; p95 passes 800 ms.
+The new full gate began just before this process exited, so possible end-of-run
+overlap is recorded rather than claiming complete isolation. A fresh full archive
+run with this agent's builds stopped remains the final qualification gate.
+
+The complete Windows gate at prior source `dc472d05` passed 3,253 Rust tests
+(26 configured skips, three slow), 409 Bun tests, 259 component/visual tests,
+57 compatibility tests and 284 Playwright tests (two capability skips), plus
+Clippy/dependency/format/static checks. The complete Windows gate for the same-root
+fix at equivalent source `6435559` also passes: 3,255 Rust tests (26 configured
+skips, three slow; 612.673 seconds), the same 409/259/57 UI unit counts, 284
+Playwright tests with two capability skips, and the required static checks. Its
+prebuilt authentication fixture SHA-256 is
+`27bcc5f1ca3b36bb84f36444f64601573dd8b7e77a1e0595df28e6002e8f50db`.
+Fresh full-scale qualification remains in progress.
+
+### Event-coverage acceptance mapping
+
+| AC-4 case                | Verification and observed scope                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Keyframe-limited lead-in | `event_preroll_h264_is_independently_decodable` and its H.265 counterpart request 1.3 seconds before a 2.5-second trigger. The retained clip starts at the 2-second keyframe; independent decoding, audio bounds and catalog seek pass. See `docs/pre-recording-verification.md`.                                                                                      |
+| Post-capture boundary    | `deadline_finalization_clamps_the_last_mp4_video_sample` verifies the exclusive deadline; `selected_replay_bypasses_short_term_aging_and_silent_deadline_finalizes` verifies finalization after silent input for both selected streams.                                                                                                                                |
+| Overlapping events       | `overlapping_media_event_storm_writes_each_frame_once_to_one_catalog_recording` verifies 1,001 triggers, one finalized recording, ordered unique samples and decoding.                                                                                                                                                                                                 |
+| Late/revised evidence    | `retention_examples_expire_only_unmatched_decodable_media_without_pressure` verifies late matching evidence and person-to-motion revision, advancing the event revision while preserving the earlier thirty-day floor, exact bytes, two-second coverage, recording identity and 30 decoded frames for each codec. This does not backfill media absent at capture time. |
+| Unavailable lead-in      | `snapshots_distinguish_history_from_pending_replay_and_expire_silent_streams` verifies startup, missing-keyframe and duration-eviction reasons with zero available coverage. `snapshot_reasons_recover_when_history_refills` verifies recovery. These are metadata fixtures, not a complete missing-source real-media scenario.                                        |
+
+The named tests above passed in the runtime increment's full Windows gate.
+AC-4 remains partial: no combined real-media fixture certifies missing source
+media or every missing motion/object producer scenario. Existing server reason
+codes and browser rendering provide honest coverage diagnostics; they do not
+create source media or detection evidence. This limitation remains owned by #168.
 
 ### Bounded canonical event traversal
 
