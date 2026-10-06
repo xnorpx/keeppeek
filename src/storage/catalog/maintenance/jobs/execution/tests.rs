@@ -7,6 +7,17 @@ use crate::storage::catalog::{BUSY_TIMEOUT, initialize_schema, recording_file_id
 use crate::storage::long_term::inspection::Archive;
 use std::{path::PathBuf, time::Instant};
 
+async fn cleanup_candidate(
+    connection: &turso::Connection,
+) -> anyhow::Result<Option<crate::storage::catalog::CatalogCleanupCandidate>> {
+    crate::storage::catalog::claim_cleanup_candidate(
+        connection,
+        &crate::storage::catalog::readers::Registry::default(),
+        &crate::storage::catalog::CleanupFilter::default(),
+    )
+    .await
+}
+
 struct Fixture {
     _database: turso::Database,
     connection: turso::Connection,
@@ -252,7 +263,7 @@ fn cancellation_releases_unstarted_objects_but_keeps_started_reservations() {
         );
         assert!(rows.next().await.unwrap().is_none());
         drop(rows);
-        let candidate = crate::storage::catalog::claim_cleanup_candidate(&fixture.connection)
+        let candidate = cleanup_candidate(&fixture.connection)
             .await
             .unwrap()
             .unwrap();
@@ -316,7 +327,7 @@ fn claimed_recordings_are_excluded_from_playback_and_export_resolution() {
             .is_empty()
         );
         assert!(
-            crate::storage::catalog::claim_cleanup_candidate(&fixture.connection)
+            cleanup_candidate(&fixture.connection)
                 .await
                 .unwrap()
                 .is_none()

@@ -1,6 +1,37 @@
 use super::*;
 use crate::storage::catalog::locations::recordings::{Action, Job, Reason};
+use crate::storage::volumes::VolumeId;
 use crate::storage::{CatalogFragment, CatalogRecording, RecordingCatalog};
+
+#[test]
+fn configured_expiry_retires_named_recording_without_capacity_pressure() -> anyhow::Result<()> {
+    let (_root, catalog, manager) = tests::fixture(1024)?;
+    let (expired, expired_path) = recording(&manager, &catalog, 1000, true)?;
+    let (protected, protected_path) = recording(&manager, &catalog, 2000, true)?;
+    let handle = catalog.handle();
+    handle.set_recording_protected(&protected.id, true)?;
+    let settings = toml::from_str("[default]\ncontinuous_days=0.0")?;
+    handle.request_retention_settings(Some(&settings))?;
+    for _ in 0..32 {
+        if !handle.reconcile_retention_runtime(4)?.pending {
+            break;
+        }
+    }
+    let volume = VolumeId::parse("primary")?;
+    manager.queue_recording_expiry(&volume, &protected.id)?;
+    manager.queue_recording_expiry(&volume, &expired.id)?;
+    let worker = worker::Worker::start(manager.clone())?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while expired_path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!expired_path.exists());
+    assert_eq!(std::fs::read(&protected_path)?, b"initdata");
+    worker.shutdown()?;
+    drop(manager);
+    catalog.shutdown();
+    Ok(())
+}
 
 #[test]
 fn committed_retention_deadlines_fence_named_capacity_and_disk_pressure() -> anyhow::Result<()> {

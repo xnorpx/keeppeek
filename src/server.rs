@@ -12861,20 +12861,11 @@ fn save_runtime_settings(
             .storage_config
             .long_term_path
             .join(".event-thumbnails");
-    let recording_catalog_path = if state.storage_config.metadata.is_some() {
-        if Path::new(&recording_catalog_path) != state.storage_config.recording_catalog_path {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "Managed metadata requires a confirmed relocation",
-            ));
-        }
-        None
-    } else {
-        (!recording_catalog_is_default
-            || Path::new(&recording_catalog_path) != state.storage_config.recording_catalog_path)
-            .then_some(recording_catalog_path)
-    };
+    let recording_catalog_path = settings_recording_catalog_path(
+        state,
+        recording_catalog_path,
+        recording_catalog_is_default,
+    )?;
     let event_thumbnail_path = (!event_thumbnail_is_default
         || Path::new(&event_thumbnail_path) != state.storage_config.event_thumbnail_path)
         .then_some(event_thumbnail_path);
@@ -12882,6 +12873,7 @@ fn save_runtime_settings(
         host,
         port: update.port,
         storage: StorageToml {
+            retention: preserved_retention_settings(config_path)?,
             medium_term_path: Some(medium_term_path),
             metadata: state.storage_config.metadata.clone(),
             named_volumes: state
@@ -12992,6 +12984,42 @@ fn save_runtime_settings(
         config: sanitized_config(&saved, &storage, camera_count, &state.camera_entries()),
         restart_required: true,
     })
+}
+
+fn settings_recording_catalog_path(
+    state: &ServerState,
+    path: String,
+    is_default: bool,
+) -> Result<Option<String>, ControlCommandError> {
+    if state.storage_config.metadata.is_some() {
+        if Path::new(&path) != state.storage_config.recording_catalog_path {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                409,
+                "Managed metadata requires a confirmed relocation",
+            ));
+        }
+        Ok(None)
+    } else {
+        Ok(
+            (!is_default || Path::new(&path) != state.storage_config.recording_catalog_path)
+                .then_some(path),
+        )
+    }
+}
+
+fn preserved_retention_settings(
+    path: &Path,
+) -> Result<Option<crate::storage::retention::settings::Settings>, ControlCommandError> {
+    config::load_config(path)
+        .map(|config| config.storage.retention)
+        .map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "Cannot preserve retention settings from the current configuration",
+            )
+        })
 }
 
 fn save_camera_settings(

@@ -3,6 +3,7 @@ use crate::privacy::PrivacyRegistry;
 #[doc(hidden)]
 pub mod admission_benchmark;
 mod event;
+mod retention;
 use super::event_recording::{EventOutput, EventRecordings, EventSettings, QueuedEventFrame};
 use crate::{
     cameras::CameraRecordingMode,
@@ -44,6 +45,7 @@ const QUEUED_MEDIA_BYTES_CAPACITY: usize = 64 * 1_048_576;
 
 #[derive(Clone)]
 pub struct StorageConfig {
+    pub retention: Option<super::retention::settings::Settings>,
     pub metadata: Option<crate::config::MetadataBinding>,
     pub metadata_history_path: Option<PathBuf>,
     pub named_volumes: Option<super::volumes::VolumeConfiguration>,
@@ -117,6 +119,7 @@ impl StorageConfig {
             .unwrap_or_else(|| long_term_path.join(".event-thumbnails"));
         Self {
             metadata: toml.metadata.clone(),
+            retention: toml.retention.clone(),
             metadata_history_path,
             named_volumes: toml.named_volumes.clone(),
             volume_runtime: None,
@@ -162,6 +165,7 @@ impl StorageConfig {
         &mut self,
         catalog: RecordingCatalogHandle,
     ) -> anyhow::Result<()> {
+        catalog.request_retention_settings(self.retention.as_ref())?;
         let configuration = self
             .named_volumes
             .as_ref()
@@ -609,6 +613,7 @@ impl StorageHandle {
 }
 
 pub struct StorageEngine {
+    retention: Option<retention::Worker>,
     tx: StorageCommandSender,
     demand: RecordingDemand,
     admission: RecordingAdmission,
@@ -649,6 +654,14 @@ impl StorageEngine {
         let health = RecordingHealthRegistry::default();
         let demand = RecordingDemand::new(DEMAND_INACTIVITY_GRACE);
         let admission = RecordingAdmission::new(health.clone());
+        let retention = match retention::Worker::start(config.clone(), catalog.clone()) {
+            Ok(worker) => worker,
+            Err(error) => {
+                health.storage().cleanup_failed(&error.to_string());
+                tracing::error!(%error,"retention runtime failed to start");
+                None
+            }
+        };
         let worker_demand = demand.clone();
         let worker_health = health.clone();
         let worker_privacy = admission.privacy.clone();
@@ -672,6 +685,7 @@ impl StorageEngine {
             demand,
             admission,
             health,
+            retention,
             thread: Some(thread),
         }
     }
@@ -716,6 +730,9 @@ impl StorageEngine {
     }
 
     fn shutdown_inner(&mut self) {
+        if let Some(worker) = self.retention.take() {
+            worker.shutdown();
+        }
         tracing::debug!("sending shutdown command to storage writer thread");
         self.tx.send_control(Command::Shutdown);
         if let Some(handle) = self.thread.take() {
@@ -958,27 +975,14 @@ impl WriterWorker {
             .catalog
             .clone()
             .ok_or_else(|| anyhow::anyhow!("recording catalog is unavailable for safe cleanup"))?;
+        let Some(_owner) = catalog.try_legacy_cleanup_owner()? else {
+            return Ok(());
+        };
         let injected_capacity = capacity.is_some();
         let mut capacity = self.cleanup_capacity(&catalog, capacity)?;
         let policy = self.config.safety_policy();
-        let mut evaluation = policy.evaluate(capacity);
-
-        if let Some(candidate) = catalog.pending_cleanup_candidate()? {
-            if !candidate.path.exists() {
-                self.safety
-                    .cleanup_started(StorageCleanupReason::Reconciliation);
-                catalog.complete_cleanup(
-                    &candidate.recording_id,
-                    crate::storage::catalog::CatalogDeletionReason::Reconciliation,
-                )?;
-                capacity.keeppeek_bytes =
-                    capacity.keeppeek_bytes.saturating_sub(candidate.file_bytes);
-                self.safety.cleanup_finished(1, candidate.file_bytes);
-                evaluation = policy.evaluate(capacity);
-            } else if !evaluation.cleanup_required {
-                catalog.cancel_cleanup(&candidate.recording_id)?;
-            }
-        }
+        self.reconcile_pending_cleanup(&catalog, &mut capacity)?;
+        let evaluation = policy.evaluate(capacity);
 
         self.safety.observe(trigger, capacity, evaluation);
         if !evaluation.cleanup_required {
@@ -1043,6 +1047,35 @@ impl WriterWorker {
             keeppeek_bytes = capacity.keeppeek_bytes,
             "storage cleanup restored configured headroom",
         );
+        Ok(())
+    }
+
+    fn reconcile_pending_cleanup(
+        &self,
+        catalog: &RecordingCatalogHandle,
+        capacity: &mut FilesystemCapacity,
+    ) -> anyhow::Result<()> {
+        if let Some(candidate) = catalog.pending_cleanup_candidate()? {
+            if !candidate.path.exists() {
+                self.safety
+                    .cleanup_started(StorageCleanupReason::Reconciliation);
+                catalog.complete_cleanup(
+                    &candidate.recording_id,
+                    crate::storage::catalog::CatalogDeletionReason::Reconciliation,
+                )?;
+                capacity.keeppeek_bytes =
+                    capacity.keeppeek_bytes.saturating_sub(candidate.file_bytes);
+                self.safety.cleanup_finished(1, candidate.file_bytes);
+            } else if !candidate.retention_expiry
+                && !self
+                    .config
+                    .safety_policy()
+                    .evaluate(*capacity)
+                    .cleanup_required
+            {
+                catalog.cancel_cleanup(&candidate.recording_id)?;
+            }
+        }
         Ok(())
     }
 
@@ -1593,6 +1626,7 @@ mod tests {
             .join("test-output")
             .join(name);
         StorageConfig {
+            retention: None,
             metadata: None,
             metadata_history_path: None,
             named_volumes: None,

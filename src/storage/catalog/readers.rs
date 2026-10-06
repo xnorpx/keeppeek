@@ -452,25 +452,6 @@ pub(super) async fn ensure_recording_idle(
     Ok(())
 }
 
-pub(super) async fn ensure_cleanup_idle(
-    connection: &turso::Connection,
-    registry: &Registry,
-) -> anyhow::Result<()> {
-    let mut rows = connection.query(
-        "SELECT id, path FROM recording_files WHERE finalized = 1 AND protected = 0
-         AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
-             AND (a.object_id=recording_files.id OR a.destination_path=replace(recording_files.path,char(92),'/') COLLATE NOCASE))
-         AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = recording_files.id AND active = 1)
-         ORDER BY cleanup_pending DESC, started_at_ms, id LIMIT 1", ()).await?;
-    if let Some(row) = rows.next().await? {
-        anyhow::ensure!(
-            !registry.conflicts(&row.get::<String>(0)?, &row.get::<String>(1)?)?,
-            "cleanup candidate has active readers"
-        );
-    }
-    Ok(())
-}
-
 pub(super) async fn ensure_job_idle(
     connection: &turso::Connection,
     registry: &Registry,

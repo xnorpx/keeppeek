@@ -511,6 +511,8 @@ const fn default_battery_wake_stale_after_secs() -> u64 {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<crate::storage::retention::settings::Settings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<MetadataBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub named_volumes: Option<crate::storage::volumes::VolumeConfiguration>,
@@ -939,6 +941,7 @@ const fn default_cleanup_hysteresis_gb() -> u64 {
 impl Default for StorageToml {
     fn default() -> Self {
         Self {
+            retention: None,
             metadata: None,
             named_volumes: None,
             medium_term_path: None,
@@ -1618,18 +1621,7 @@ pub(crate) fn update_settings_with_volume_draft(
         "event_thumbnail_max_mb".to_owned(),
         toml::Value::Integer(i64::try_from(settings.storage.event_thumbnail_max_mb)?),
     );
-    storage.insert(
-        "short_term_secs".to_owned(),
-        toml::Value::Integer(i64::try_from(settings.storage.short_term_secs)?),
-    );
-    storage.insert(
-        "medium_term_secs".to_owned(),
-        toml::Value::Integer(i64::try_from(settings.storage.medium_term_secs)?),
-    );
-    storage.insert(
-        "flush_interval_secs".to_owned(),
-        toml::Value::Integer(i64::try_from(settings.storage.flush_interval_secs)?),
-    );
+    persist_storage_lifetimes(storage, &settings.storage)?;
     storage.insert(
         "write_buffer_bytes".to_owned(),
         toml::Value::Integer(i64::try_from(settings.storage.write_buffer_bytes)?),
@@ -1692,6 +1684,29 @@ pub(crate) fn update_settings_with_volume_draft(
     }
     write_private_file_atomically(path, serialized.as_bytes())?;
     Ok(updated)
+}
+
+fn persist_storage_lifetimes(
+    storage: &mut toml::Table,
+    settings: &StorageToml,
+) -> anyhow::Result<()> {
+    match &settings.retention {
+        Some(retention) => {
+            retention.validate()?;
+            storage.insert("retention".into(), toml::Value::try_from(retention)?);
+        }
+        None => {
+            storage.remove("retention");
+        }
+    }
+    for (field, value) in [
+        ("short_term_secs", settings.short_term_secs),
+        ("medium_term_secs", settings.medium_term_secs),
+        ("flush_interval_secs", settings.flush_interval_secs),
+    ] {
+        storage.insert(field.into(), toml::Value::Integer(i64::try_from(value)?));
+    }
+    Ok(())
 }
 
 /// Loads and resolves the application configuration without writing it.
@@ -1839,6 +1854,9 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     resolve_toml_secret_references(&mut resolved, secrets)?;
     let mut config: Config = resolved.try_into()?;
     config.storage.validate_pre_recording_budgets()?;
+    if let Some(retention) = &config.storage.retention {
+        retention.validate()?;
+    }
     metadata::validate(&config.storage)?;
     storage_volumes::validate(config.storage.named_volumes.as_ref())?;
     if let Some(external_auth) = &config.external_auth {
@@ -3608,6 +3626,45 @@ mod tests {
     }
 
     #[test]
+    fn retention_settings_round_trip_preserves_private_references_and_rejects_invalid_writes() {
+        let directory =
+            std::env::temp_dir().join(format!("retention-config-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            br#"
+            host = "{secret:BIND_HOST}"
+            [storage.retention.default]
+            continuous_days = 1.0
+            [storage.retention.default.events]
+            person = 30.0
+        "#,
+        )
+        .unwrap();
+        write_private_file(&secrets_path(&path), b"BIND_HOST='127.0.0.1'\n").unwrap();
+        let mut config = load_config(&path).unwrap();
+        let before = config.storage.retention.clone();
+        update_settings(&path, &config).unwrap();
+        assert_eq!(load_config(&path).unwrap().storage.retention, before);
+        let saved = std::fs::read(&path).unwrap();
+        let text = String::from_utf8(saved.clone()).unwrap();
+        assert!(text.contains("{secret:BIND_HOST}"));
+        assert!(!text.contains("127.0.0.1"));
+        config
+            .storage
+            .retention
+            .as_mut()
+            .unwrap()
+            .default
+            .as_mut()
+            .unwrap()
+            .continuous_days = Some(-1.0);
+        assert!(update_settings(&path, &config).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), saved);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn camera_profile_parses_explicit_backend_and_transport() {
         let config: CameraConfig = toml::from_str(
             r#"
@@ -3676,8 +3733,7 @@ mod tests {
             host: "127.0.0.1".to_owned(),
             port: 3200,
             storage: StorageToml {
-                named_volumes: None,
-                metadata: None,
+                retention: None,
                 medium_term_path: None,
                 long_term_path: None,
                 recording_catalog_path: Some("/metadata/recordings.db".to_owned()),
@@ -3695,6 +3751,7 @@ mod tests {
                 cleanup_hysteresis_gb: 2,
                 pre_recording_stream_max_bytes: default_pre_recording_stream_max_bytes(),
                 pre_recording_global_max_bytes: default_pre_recording_global_max_bytes(),
+                ..StorageToml::default()
             },
             ..Config::default()
         };
