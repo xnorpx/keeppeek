@@ -97,6 +97,8 @@ fn sample(
     let activated = await_active(&catalog_path, enabled)?;
     let before = catalog_stats(&catalog_path)?;
     let started = Instant::now();
+    let measured = tracing::trace_span!("recording_ingest_measured");
+    let measured = measured.enter();
     for second in 0..16_u64 {
         for (index, frame) in frames.iter().enumerate() {
             let timestamp =
@@ -122,18 +124,18 @@ fn sample(
         }
     }
     engine.shutdown();
+    drop(measured);
     let elapsed_us = u64::try_from(started.elapsed().as_micros())?;
     let after = catalog_stats(&catalog_path)?;
-    ensure!(
-        after.recordings == before.recordings + 16,
-        "ingest did not publish exactly sixteen records"
-    );
-    ensure!(
-        after.historical == before.historical,
-        "ingest changed historical metadata count"
-    );
+    verify_growth(&before, &after, existing.is_some())?;
     catalog.shutdown();
     let bytes = verify_media(root)?;
+    if let (Some(before), Some(after)) = (before.all_file_bytes, after.all_file_bytes) {
+        ensure!(
+            before.checked_add(bytes) == Some(after),
+            "accounting did not match written media bytes"
+        );
+    }
     Ok(Sample {
         elapsed_us,
         bytes,
@@ -143,9 +145,46 @@ fn sample(
     })
 }
 
-pub fn measure(root: &Path, enabled: bool, existing: Option<&Path>) -> Result<serde_json::Value> {
+fn verify_growth(before: &Stats, after: &Stats, archive: bool) -> Result<()> {
+    ensure!(
+        after.recordings == before.recordings + 16,
+        "ingest did not publish exactly sixteen records: before={}, after={}",
+        before.recordings,
+        after.recordings
+    );
+    ensure!(
+        after.historical == before.historical,
+        "ingest changed historical metadata count"
+    );
+    if archive {
+        ensure!(
+            before.all_file_bytes.is_some() && after.all_file_bytes.is_some(),
+            "archive accounting total unavailable; fast-path qualification invalid"
+        );
+    }
+    Ok(())
+}
+
+pub fn measure(
+    root: &Path,
+    enabled: bool,
+    existing: Option<&Path>,
+    runs: usize,
+) -> Result<serde_json::Value> {
+    ensure!(
+        matches!(runs, 1 | 35),
+        "use one diagnostic or thirty-five acceptance samples"
+    );
     std::fs::create_dir_all(root)?;
     let frames = frames()?;
+    if runs == 1 {
+        let sample = sample(&root.join("sample-0"), enabled, &frames, existing)?;
+        return Ok(
+            json!({"scope":"one diagnostic sample, not acceptance statistics","elapsed_us":sample.elapsed_us,
+            "written_bytes":sample.bytes,"retention_activated":sample.activated,
+            "before":sample.before,"after":sample.after}),
+        );
+    }
     let mut samples = Histogram::<u64>::new(3)?;
     let mut raw = Vec::with_capacity(30);
     let mut bytes = Vec::with_capacity(35);
@@ -165,6 +204,13 @@ pub fn measure(root: &Path, enabled: bool, existing: Option<&Path>) -> Result<se
             samples.record(sample.elapsed_us.max(1))?;
             raw.push(sample.elapsed_us);
         }
+        let checkpoint = json!({"complete":false,"completed_samples":round+1,
+            "warmup_runs":5,"raw_us":raw,"written_bytes":bytes,
+            "retention_activated":activations,"catalog_states":catalog_states});
+        std::fs::write(
+            root.join("progress.json"),
+            serde_json::to_vec_pretty(&checkpoint)?,
+        )?;
         eprintln!("completed_sample={round} enabled={enabled}");
     }
     let report = json!({"existing_archive":existing.is_some(),"retention_requested":enabled,"retention_activated":activations,"warmup_runs":5,"runs":30,
@@ -251,6 +297,7 @@ struct Stats {
     recordings: u64,
     historical: u64,
     pending: Option<u64>,
+    all_file_bytes: Option<u64>,
 }
 
 struct Sample {
@@ -294,10 +341,28 @@ fn catalog_stats(path: &Path) -> Result<Stats> {
     } else {
         None
     };
+    let mut rows = pollster::block_on(connection.query(
+        "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='recording_legacy_byte_total'",
+        (),
+    ))?;
+    let total_exists = pollster::block_on(rows.next())?.is_some();
+    drop(rows);
+    let all_file_bytes = if total_exists {
+        let mut rows = pollster::block_on(connection.query(
+            "SELECT total_bytes FROM recording_legacy_byte_total WHERE singleton=1",
+            (),
+        ))?;
+        let row = pollster::block_on(rows.next())?
+            .ok_or_else(|| anyhow::anyhow!("accounting row missing"))?;
+        row.get::<Option<i64>>(0)?.map(u64::try_from).transpose()?
+    } else {
+        None
+    };
     Ok(Stats {
         recordings,
         historical,
         pending,
+        all_file_bytes,
     })
 }
 

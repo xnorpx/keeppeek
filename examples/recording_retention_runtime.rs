@@ -14,6 +14,11 @@ mod ingest;
 const SEGMENT_MS: i64 = 1_800_000;
 
 fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(std::io::stderr)
+        .try_init()
+        .map_err(|error| anyhow::anyhow!("benchmark tracing initialization failed: {error}"))?;
     let sources = argument(1, 127, 127)?;
     let days = argument(2, 30, 30)?;
     let root = std::env::temp_dir().join(format!("retention-scale-{}", uuid::Uuid::new_v4()));
@@ -253,14 +258,26 @@ fn run(root: &Path, sources: u32, days: u32) -> Result<()> {
         "[default]\ncontinuous_days=1.0\nmotion_days=7.0\n[default.events]\nperson=30.0",
     )?;
     let baseline_rss = rss(&mut resources);
+    let mut report = json!({"sources":sources,"days":days,"streams":2,"segment_ms":SEGMENT_MS,
+        "historical_recordings":files,"events":events,"event_density":"one camera-wide motion/person event per hour",
+        "protected":"first main/sub segment of each day","seed_ms":seed_ms,"baseline_rss_bytes":baseline_rss,
+        "startup_with_index_rebuild_us":startup_with_index_rebuild_us,
+        "startup_scope":"complete catalog reopen including four runtime recording index rebuilds over seeded archive; columns already present; not full old-schema migration qualification",
+        "os":std::env::consts::OS,"arch":std::env::consts::ARCH,"complete":false,
+        "scope":"synthetic historical metadata; per-batch histograms; one full sweep per phase; real H264 ingest against the same archive; no physical deletion or live pacing"});
     ensure!(
         handle.request_retention_settings(Some(&settings))?,
         "initial transition rejected"
     );
     let initial = reconcile(&handle, limit, &mut resources)?;
+    report["initial_activation"] = initial;
+    write_report(root, "initial", &report)?;
     let steady = steady(&handle, &settings)?;
     let late_events = late_events(&handle, days)?;
     verify_extension(&handle, 30)?;
+    report["steady_commitment"] = steady;
+    report["late_events"] = late_events;
+    write_report(root, "late-events", &report)?;
     let extended: Settings = toml::from_str(
         "[default]\ncontinuous_days=1.0\nmotion_days=7.0\n[default.events]\nperson=31.0",
     )?;
@@ -276,24 +293,37 @@ fn run(root: &Path, sources: u32, days: u32) -> Result<()> {
     let handle = catalog.handle();
     let restarted = reconcile(&handle, limit, &mut resources)?;
     verify_extension(&handle, 31)?;
-    let (rollback, archive_ingest, disabled_ingest) =
-        archive_ingest(root, &path, catalog, limit, &mut resources)?;
-    let report = json!({"sources":sources,"days":days,"streams":2,"segment_ms":SEGMENT_MS,
-        "historical_recordings":files,"events":events,"event_density":"one camera-wide motion/person event per hour",
-        "protected":"first main/sub segment of each day","seed_ms":seed_ms,"baseline_rss_bytes":baseline_rss,
-        "startup_with_index_rebuild_us":startup_with_index_rebuild_us,
-        "startup_scope":"complete catalog reopen including four runtime recording index rebuilds over seeded archive; columns already present; not full old-schema migration qualification",
-        "initial_activation":initial,"steady_commitment":steady,"late_events":late_events,"restart_open_us":reopen_us,
-        "restarted_extension":restarted,"disable_rollback":rollback,
-        "archive_ingest_enabled":archive_ingest,"archive_ingest_disabled":disabled_ingest,
-        "os":std::env::consts::OS,"arch":std::env::consts::ARCH,
-        "scope":"synthetic historical metadata; per-batch histograms; one full sweep per phase; real H264 ingest against the same archive; no physical deletion or live pacing"});
+    report["restart_open_us"] = json!(reopen_us);
+    report["restarted_extension"] = restarted;
+    write_report(root, "restarted", &report)?;
+    finish_archive(root, &path, catalog, limit, &mut resources, report)
+}
+
+fn finish_archive(
+    root: &Path,
+    path: &Path,
+    catalog: RecordingCatalog,
+    limit: u64,
+    resources: &mut sysinfo::System,
+    mut report: serde_json::Value,
+) -> Result<()> {
+    let (rollback, enabled, disabled) = archive_ingest(root, path, catalog, limit, resources)?;
+    report["disable_rollback"] = rollback;
+    report["archive_ingest_enabled"] = enabled;
+    report["archive_ingest_disabled"] = disabled;
+    report["complete"] = json!(true);
     println!("{}", serde_json::to_string_pretty(&report)?);
-    std::fs::write(
-        root.join("report.json"),
-        serde_json::to_vec_pretty(&report)?,
-    )?;
+    write_report(root, "report", &report)?;
     eprintln!("artifact_directory={}", root.display());
+    Ok(())
+}
+
+fn write_report(root: &Path, phase: &str, report: &serde_json::Value) -> Result<()> {
+    // ponytail: Save completed phases directly so a later failure retains their measurements.
+    std::fs::write(
+        root.join(format!("{phase}.json")),
+        serde_json::to_vec_pretty(report)?,
+    )?;
     Ok(())
 }
 
@@ -348,7 +378,7 @@ fn archive_ingest(
     resources: &mut sysinfo::System,
 ) -> Result<(serde_json::Value, serde_json::Value, serde_json::Value)> {
     catalog.shutdown();
-    let enabled = ingest::measure(&root.join("ingest-enabled"), true, Some(path))?;
+    let enabled = ingest::measure(&root.join("ingest-enabled"), true, Some(path), 35)?;
     let catalog = RecordingCatalog::open(path)?;
     let handle = catalog.handle();
     ensure!(
@@ -358,7 +388,7 @@ fn archive_ingest(
     let rollback = reconcile(&handle, limit, resources)?;
     verify_extension(&handle, 31)?;
     catalog.shutdown();
-    let disabled = ingest::measure(&root.join("ingest-disabled"), false, Some(path))?;
+    let disabled = ingest::measure(&root.join("ingest-disabled"), false, Some(path), 35)?;
     let catalog = RecordingCatalog::open(path)?;
     verify_extension(&catalog.handle(), 31)?;
     catalog.shutdown();
