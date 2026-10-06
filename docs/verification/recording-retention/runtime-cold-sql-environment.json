@@ -48,7 +48,7 @@
     "missing_source_real_media_cases": 6,
     "native_counter_calibration": "passed",
     "deterministic_pre_fix_regression": "fails after completed startup maintenance atf3200b0",
-    "full_gate": "At a0ac14d:3257Rust passed549.028s,26configured skips; workspaceClippy/dependency/format/static/UI quality passed. Playwright stopped on incorrect preselected bin fixture. Complete rerun pending with verified lib fixture. Correct lib fixture validated; canonical rerun log keeppeek-168-final-library-check.log."
+    "full_gate": "PASSED: check.bat exit0 at cb4342a;3257Rust,26configured skips;409Bun,259component/visual,57compatibility,284Playwright,2capability skips;strict workspace Clippy/dependency/format/static/Python checks included."
   },
   "discarded_gate": "Initial full gate intentionally interrupted: selected stale1e6 authentication fixture; restarted with freshly compiled4237 binary. No complete-gate claim from interrupted run.",
   "preserved_gate_io_failure": {
@@ -71,5 +71,20 @@
   "auth_fixture_path": "E:\\src\\keeppeek-168-runtime\\target\\debug\\deps\\keeppeek-1e6a276cc181a3ce.exe",
   "auth_fixture_sha256": "aadb8a85f4ecc2757cf86b6343fbd5f015243d219cd1aa76c388550e1a90c551",
   "auth_fixture_target": "Cargo compiler-artifact kind lib/profile test; --list confirms server::authentication_browser_fixture::issue123_browser_fixture",
-  "focused_authentication_library_recheck": "All eight external-authentication Playwright cases passed with verified library fixture; no product/test changes."
+  "focused_authentication_library_recheck": "All eight external-authentication Playwright cases passed with verified library fixture; no product/test changes.",
+  "final_gate_source_commit": "cb4342afc64271d81405ae9e9989dd73603ae237",
+  "final_gate_log_path": "C:\\Users\\xnorp\\AppData\\Local\\Temp\\keeppeek-168-final-unchanged-check.log",
+  "final_gate_log_sha256": "08b15b890910f4fc0ee6278c491399751490c0bf91c8a5af101f6274951925a4",
+  "preserved_browser_recheck": {
+    "correct_library_run": "281passed,3failed,2skipped: two missing-control timeouts and one recorded-frame timeout",
+    "focused_recheck": "All three unchanged cases pass one-worker recheck",
+    "unchanged_full_gate": "284passed,2capability skips;canonical exit0",
+    "cause": "not established; artifacts preserved, no assertion/timeout/configuration changes"
+  },
+  "verified_implementation_head_ci": {
+    "head": "cb4342afc64271d81405ae9e9989dd73603ae237",
+    "success": 39,
+    "skipped": 3,
+    "neutral": 1
+  }
 }
