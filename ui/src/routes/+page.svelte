@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import { goto, onNavigate } from '$app/navigation';
+	import { afterNavigate, goto, onNavigate } from '$app/navigation';
 	import { navigating, page } from '$app/state';
 	import { onMount, tick } from 'svelte';
 	import type { CameraHealth, CameraListItem, LiveQuality } from '$lib/types';
@@ -302,6 +302,10 @@
 			cameraId: destinationCameraId
 		});
 		await preloadTransitionFrame(dataUrl);
+	});
+	afterNavigate(({ from, to }) => {
+		if (from?.url.pathname !== resolve('/viewer') || to?.url.pathname !== resolve('/')) return;
+		if (focusedCameraId === null) focusWallCamera(lastViewerCameraId);
 	});
 	$effect(() => {
 		if (loading || !livePlansReady) return;
@@ -993,13 +997,13 @@
 		focusRuntimeNotice = null;
 		scheduleLivePlanReconcile();
 		if (previousCameraId !== null) {
-			void tick().then(() => {
-				if (!componentActive) return;
-				document
-					.querySelector<HTMLElement>(`[data-peek-focus="${CSS.escape(previousCameraId)}"]`)
-					?.focus();
-			});
+			void tick().then(() => focusWallCamera(previousCameraId));
 		}
+	}
+
+	function focusWallCamera(cameraId: string): void {
+		if (!componentActive) return;
+		document.querySelector<HTMLElement>(`[data-peek-focus="${CSS.escape(cameraId)}"]`)?.focus();
 	}
 
 	function cameraHref(cameraId: string): string {
