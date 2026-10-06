@@ -4,6 +4,26 @@ import { mockControlPeer, type HealthFixture } from './fixtures/control-peer';
 import { presentMockVideoFrame } from './fixtures/media';
 import { mixedCameras, mixedHealth, mockMixedHealth } from './fixtures/peek';
 
+const frontDoorVideoCamera = {
+	...mixedCameras[0],
+	profiles: [
+		{
+			name: 'Main',
+			stream: 'main' as const,
+			encoding: 'h264' as const,
+			resolution: '1920x1080',
+			framerate: 25
+		},
+		{
+			name: 'Sub',
+			stream: 'sub' as const,
+			encoding: 'h264' as const,
+			resolution: '640x360',
+			framerate: 15
+		}
+	]
+};
+
 async function expectFrontDoorCameraInformation(page: Page, scope: Locator) {
 	const trigger = scope.getByRole('button', { name: 'Front Door camera information' });
 	await expect(trigger).toHaveAttribute('data-peek-camera-label', 'Front Door');
@@ -256,6 +276,32 @@ test('separates Dashboard and Viewer while remembering the last camera', async (
 	await expect(page.getByRole('region', { name: 'Porch focus' })).toBeVisible();
 });
 
+test('returns to Dashboard after entering Viewer through a legacy camera link', async ({
+	page
+}) => {
+	const cameraHealth = mixedHealth.cameras?.[0];
+	if (!cameraHealth) throw new Error('mixed health fixture must include Front Door');
+	await mockControlPeer(page, {
+		cameras: [frontDoorVideoCamera],
+		health: { ...mixedHealth, cameras: [cameraHealth] }
+	});
+	await page.goto('/?camera=front-door');
+	await expect(page).toHaveURL(/\/viewer\?camera=front-door$/);
+	const focus = page.getByRole('region', { name: 'Front Door focus' });
+	await expect(focus).toBeVisible();
+	const wall = page.locator('[data-peek-wall]');
+	await presentMockVideoFrame(wall.locator('video'));
+	await expect(wall).toHaveAttribute('data-peek-wall-reveal', 'frames');
+
+	await page.getByRole('link', { name: 'Dashboard', exact: true }).click();
+	await expect(page).toHaveURL(/\/$/);
+	await expect(focus).toHaveCount(0);
+	await expect(wall).toHaveAttribute('aria-hidden', 'false');
+	await page.getByRole('link', { name: 'Viewer', exact: true }).click();
+	await expect(page).toHaveURL(/\/viewer\?camera=front-door$/);
+	await expect(focus).toBeVisible();
+});
+
 test('renders the focus filmstrip as video-only camera switches', async ({ page }) => {
 	await mockMixedHealth(page);
 	await page.goto('/');
@@ -383,27 +429,9 @@ test('keeps mixed Peek states usable at the authored mobile viewport', async ({ 
 test('returns from Viewer to the coordinated Dashboard wall', async ({ page }) => {
 	const cameraHealth = mixedHealth.cameras?.[0];
 	if (!cameraHealth) throw new Error('mixed health fixture must include Front Door');
-	const camera = {
-		...mixedCameras[0],
-		profiles: [
-			{
-				name: 'Main',
-				stream: 'main' as const,
-				encoding: 'h264' as const,
-				resolution: '1920x1080',
-				framerate: 25
-			},
-			{
-				name: 'Sub',
-				stream: 'sub' as const,
-				encoding: 'h264' as const,
-				resolution: '640x360',
-				framerate: 15
-			}
-		]
-	};
+
 	await mockControlPeer(page, {
-		cameras: [camera],
+		cameras: [frontDoorVideoCamera],
 		health: { ...mixedHealth, cameras: [cameraHealth] }
 	});
 	await page.goto('/');
