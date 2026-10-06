@@ -1,0 +1,105 @@
+{
+  "base_commit": "0f75eb63cec014d67e1a0445382360127bbde9ec",
+  "workload": "same closed synthetic archive after transactional byte-total implementation; actual catalog API has five warmups and thirty samples; native localization queries have five samples",
+  "runs": [
+    {
+      "bytes": 27827893,
+      "name": "original",
+      "plan": [
+        "SCAN recording_files AS r",
+        "SEARCH a USING INDEX sqlite_autoindex_storage_volume_allocations_3 (kind=?)"
+      ],
+      "raw_us": [
+        931081,
+        422796,
+        409603,
+        405264,
+        403395
+      ]
+    },
+    {
+      "bytes": 27827893,
+      "name": "sum_without_index",
+      "plan": [
+        "SCAN recording_files USING COVERING INDEX recording_legacy_bytes_probe"
+      ],
+      "raw_us": [
+        36379,
+        36022,
+        35788,
+        35201,
+        35631
+      ]
+    },
+    {
+      "bytes": 27827893,
+      "name": "sum_with_covering_index",
+      "plan": [
+        "SCAN recording_files USING COVERING INDEX recording_legacy_bytes_probe"
+      ],
+      "raw_us": [
+        36423,
+        36167,
+        35532,
+        36327,
+        35706
+      ]
+    },
+    {
+      "bytes": 27827893,
+      "name": "original_with_index",
+      "plan": [
+        "SCAN recording_files AS r",
+        "SEARCH a USING INDEX sqlite_autoindex_storage_volume_allocations_3 (kind=?)"
+      ],
+      "raw_us": [
+        414395,
+        408955,
+        414949,
+        407675,
+        406819
+      ]
+    },
+    {
+      "bytes": 27827893,
+      "max_us": 3321,
+      "median_us": 2649,
+      "name": "catalog_legacy_bytes_api",
+      "p95_us": 3283,
+      "raw_us": [
+        3320,
+        2779,
+        2906,
+        2559,
+        2641,
+        3282,
+        2648,
+        2703,
+        2651,
+        2670,
+        3093,
+        2745,
+        2676,
+        2891,
+        2441,
+        2976,
+        2450,
+        2888,
+        2839,
+        2543,
+        2507,
+        110,
+        2411,
+        2446,
+        2554,
+        2757,
+        2362,
+        2548,
+        2355,
+        2608
+      ],
+      "runs": 30,
+      "warmups": 5
+    }
+  ]
+}
