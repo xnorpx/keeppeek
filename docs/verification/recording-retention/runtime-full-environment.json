@@ -1,0 +1,21 @@
+{
+  "source_commit": "8c3f94a79f56294baffd8a2918d5822f5b0a5ae4",
+  "implementation_equivalent_source": "643555982a98e789f1cc317ce7e01557ce4ef5a6",
+  "fixture_root": "C:\\Users\\xnorp\\AppData\\Local\\Temp\\retention-scale-3424491c-4526-4cbb-a065-81bf9f9d4280",
+  "complete": true,
+  "scope": "synthetic future-dated historical metadata; real H264 ingestion; no physical expiry or cold-schema qualification",
+  "binary_sha256": "7383f22d89cc1f2dc8608cbded356b59051604a73c209d303eb799d5f08aec91",
+  "reports": {
+    "runtime-full-ingest-enabled.json": "feb82135fc3ba9431ea4c9d5f2db92e227abb1ad2774958dfaebdae7defd61fd",
+    "runtime-full-initial.json": "4ec0a925039ed87239193553f6976712ea6712ef8a97e65eb43f66fc08fbf452",
+    "runtime-full-late-events.json": "f8e1b469afc190452ff6dc0837dd49199c10591d99be98378aae426cc1b8d407",
+    "runtime-full-report.json": "662975f14231e1eac42e9ee695ff4b2e65ae2fdaa2f3249d148589811f1e4fc3",
+    "runtime-full-restarted.json": "cf1977f00e75762bee77eb34a5ef7f80133674973c0ef910bd5e11836727b095"
+  },
+  "ci_run": "https://github.com/xnorpx/keeppeek/actions/runs/37460302967",
+  "ci_states": {
+    "success": 39,
+    "skipped": 3,
+    "neutral": 1
+  }
+}
