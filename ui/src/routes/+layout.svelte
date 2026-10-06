@@ -381,6 +381,21 @@
 			return;
 		return livePeer.hold();
 	});
+
+	function returnToDashboard(event: MouseEvent): void {
+		if (!viewerActive || event.defaultPrevented || event.button !== 0) return;
+		if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+		const anchor = event.currentTarget;
+		if (!(anchor instanceof HTMLAnchorElement)) return;
+		if (anchor.hasAttribute('download') || (anchor.target && anchor.target !== '_self')) return;
+		if (anchor.hasAttribute('data-sveltekit-reload')) return;
+		const destination = new URL(anchor.href);
+		if (destination.origin !== page.url.origin || destination.pathname !== resolve('/')) return;
+		if (destination.search || destination.hash) return;
+		// The ready wall must not wait for the link router's repaint fallback before navigation starts.
+		event.preventDefault();
+		void goto(resolve('/'));
+	}
 </script>
 
 {#if verificationWindow}
@@ -410,6 +425,7 @@
 					tabindex={railFocusIndex === 0 ? 0 : -1}
 					class="grid h-[30px] w-[34px] shrink-0 place-items-center rounded-sm bg-primary font-mono text-[10px] font-semibold text-primary-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none"
 					aria-label="Dashboard"
+					onclick={returnToDashboard}
 					aria-current={dashboardActive ? 'page' : undefined}
 					onfocus={() => (railFocusIndex = 0)}
 					onkeydown={(event) => moveRailFocus(event, 0)}
@@ -609,7 +625,11 @@
 			</div>
 
 			{#if !mobileRouteOwnsBottom}
-				<MobileNavigation pathname={page.url.pathname} {administrator} />
+				<MobileNavigation
+					pathname={page.url.pathname}
+					{administrator}
+					ondashboard={returnToDashboard}
+				/>
 			{/if}
 		</div>
 	</Tooltip.Provider>
