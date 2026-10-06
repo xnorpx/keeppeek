@@ -21,7 +21,7 @@ use std::{
     fs::File,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
@@ -207,6 +207,14 @@ pub(crate) struct CatalogCleanupCandidate {
     pub path: PathBuf,
     pub file_bytes: u64,
     pub pending: bool,
+    pub retention_expiry: bool,
+}
+
+#[derive(Default)]
+struct CleanupFilter {
+    expiry_root: Option<PathBuf>,
+    recording_id: Option<String>,
+    deadline: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -262,6 +270,7 @@ pub(crate) struct CatalogCoverageSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CatalogDeletionReason {
     ArchiveLimit,
+    RetentionExpiry,
     DiskPressure,
     Reconciliation,
     Migration,
@@ -272,6 +281,7 @@ impl CatalogDeletionReason {
     const fn as_str(self) -> &'static str {
         match self {
             Self::ArchiveLimit => "archive_limit",
+            Self::RetentionExpiry => "retention_expiry",
             Self::DiskPressure => "disk_pressure",
             Self::Reconciliation => "reconciliation",
             Self::Migration => "migration",
@@ -282,6 +292,7 @@ impl CatalogDeletionReason {
     fn parse(value: &str) -> Option<Self> {
         match value {
             "archive_limit" => Some(Self::ArchiveLimit),
+            "retention_expiry" => Some(Self::RetentionExpiry),
             "disk_pressure" => Some(Self::DiskPressure),
             "reconciliation" => Some(Self::Reconciliation),
             "migration" => Some(Self::Migration),
@@ -335,6 +346,7 @@ pub(crate) struct CatalogStreamCoverage {
 
 #[derive(Clone)]
 pub struct RecordingCatalogHandle {
+    legacy_cleanup: Arc<Mutex<()>>,
     readers: Arc<readers::Registry>,
     tx: SyncSender<Command>,
     search_tx: SyncSender<SearchCommand>,
@@ -527,6 +539,7 @@ enum Command {
         reply: SyncSender<anyhow::Result<()>>,
     },
     ClaimCleanupCandidate {
+        filter: CleanupFilter,
         reply: SyncSender<anyhow::Result<Option<CatalogCleanupCandidate>>>,
     },
     PendingCleanupCandidate {
@@ -636,6 +649,7 @@ impl RecordingCatalog {
         let retention_connection = retention::connect(&database, Arc::clone(&lease))?;
         let readers = Arc::new(readers::Registry::new(&lease));
         let handle = RecordingCatalogHandle {
+            legacy_cleanup: Arc::default(),
             readers: Arc::clone(&readers),
             tx,
             search_tx,
@@ -851,6 +865,7 @@ impl RecordingCatalogHandle {
         Self {
             tx,
             search_tx,
+            legacy_cleanup: Arc::default(),
             readers: Arc::new(readers::Registry::default()),
             retention: std::sync::Weak::new(),
             retention_shutdown: Arc::new(AtomicBool::new(false)),
@@ -1339,12 +1354,43 @@ impl RecordingCatalogHandle {
     pub(crate) fn claim_cleanup_candidate(
         &self,
     ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
+        self.claim_automatic_cleanup(CleanupFilter::default())
+    }
+
+    pub(crate) fn claim_expired_recording(
+        &self,
+        root: &Path,
+        recording_id: &str,
+    ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
+        self.claim_automatic_cleanup(CleanupFilter {
+            expiry_root: Some(root.to_path_buf()),
+            recording_id: Some(recording_id.into()),
+            deadline: None,
+        })
+    }
+
+    pub(crate) fn try_legacy_cleanup_owner(&self) -> anyhow::Result<Option<MutexGuard<'_, ()>>> {
+        match self.legacy_cleanup.try_lock() {
+            Ok(owner) => Ok(Some(owner)),
+            Err(std::sync::TryLockError::WouldBlock) => Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                Err(anyhow::anyhow!("legacy cleanup owner is poisoned"))
+            }
+        }
+    }
+
+    fn claim_automatic_cleanup(
+        &self,
+        mut filter: CleanupFilter,
+    ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
+        let deadline = std::time::Instant::now() + BUSY_TIMEOUT;
+        filter.deadline = Some(deadline);
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
-            .send(Command::ClaimCleanupCandidate { reply })
+            .try_send(Command::ClaimCleanupCandidate { filter, reply })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
         response
-            .recv()
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
@@ -1353,10 +1399,10 @@ impl RecordingCatalogHandle {
     ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
-            .send(Command::PendingCleanupCandidate { reply })
+            .try_send(Command::PendingCleanupCandidate { reply })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
         response
-            .recv()
+            .recv_timeout(BUSY_TIMEOUT)
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
@@ -1367,14 +1413,14 @@ impl RecordingCatalogHandle {
     ) -> anyhow::Result<()> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
-            .send(Command::CompleteCleanup {
+            .try_send(Command::CompleteCleanup {
                 recording_id: recording_id.to_owned(),
                 reason,
                 reply,
             })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
         response
-            .recv()
+            .recv_timeout(BUSY_TIMEOUT)
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
@@ -1880,11 +1926,9 @@ fn run_catalog(
                     delete_recording(&connection, &recording_id).await
                 }));
             }
-            Command::ClaimCleanupCandidate { reply } => {
-                let _ = reply.send(pollster::block_on(async {
-                    readers::ensure_cleanup_idle(&connection, &readers).await?;
-                    claim_cleanup_candidate(&connection).await
-                }));
+            Command::ClaimCleanupCandidate { filter, reply } => {
+                let claim = claim_cleanup_candidate(&connection, &readers, &filter);
+                let _ = reply.send(pollster::block_on(claim));
             }
             Command::PendingCleanupCandidate { reply } => {
                 let _ = reply.send(pollster::block_on(pending_cleanup_candidate(&connection)));
@@ -2354,64 +2398,124 @@ async fn delete_recording(
 
 async fn claim_cleanup_candidate(
     connection: &turso::Connection,
+    readers: &readers::Registry,
+    filter: &CleanupFilter,
 ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
+    anyhow::ensure!(
+        filter
+            .deadline
+            .is_none_or(|deadline| std::time::Instant::now() < deadline),
+        "automatic cleanup request exceeded its time budget"
+    );
     connection.execute_batch("BEGIN IMMEDIATE").await?;
-    let result = async {
-        let mut rows = connection
-            .query(
-                "SELECT id, path, file_bytes, cleanup_pending
-                 FROM recording_files
-                 WHERE finalized = 1 AND protected = 0
-                   AND NOT EXISTS (SELECT 1 FROM recording_retention_decisions d
-                                   WHERE d.recording_id=recording_files.id AND d.deadline_ms>?1)
-                   AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
-                       AND (a.object_id=recording_files.id OR a.destination_path=replace(recording_files.path,char(92),'/') COLLATE NOCASE))
-                   AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims
-                                   WHERE recording_id = recording_files.id AND active = 1)
-                 ORDER BY cleanup_pending DESC, started_at_ms, id
-                 LIMIT 1",
-                turso::params![retention::now_ms()?],
-            )
-            .await?;
-        let candidate = rows
-            .next()
-            .await?
-            .map(|row| {
-                anyhow::Ok(CatalogCleanupCandidate {
-                    recording_id: row.get(0)?,
-                    path: PathBuf::from(row.get::<String>(1)?),
-                    file_bytes: to_u64(row.get(2)?, "cleanup candidate file bytes")?,
-                    pending: row.get::<i64>(3)? != 0,
-                })
-            })
-            .transpose()?;
-        drop(rows);
-        if let Some(candidate) = &candidate {
-            retention::ensure_cleanup_allowed(connection, &candidate.recording_id).await?;
-        }
-        if let Some(candidate) = &candidate
-            && !candidate.pending
-        {
-            connection
-                .execute(
-                    "UPDATE recording_files SET cleanup_pending = 1 WHERE id = ?1",
-                    turso::params![candidate.recording_id.clone()],
-                )
-                .await?;
-        }
-        anyhow::Ok(candidate)
-    }
-    .await;
+    let result = select_cleanup_candidate(connection, readers, filter).await;
+    let result = result.and_then(|candidate| {
+        anyhow::ensure!(
+            filter
+                .deadline
+                .is_none_or(|deadline| std::time::Instant::now() < deadline),
+            "automatic cleanup request exceeded its time budget"
+        );
+        Ok(candidate)
+    });
     match result {
         Ok(candidate) => {
             connection.execute_batch("COMMIT").await?;
             Ok(candidate)
         }
         Err(error) => {
-            let _ = connection.execute_batch("ROLLBACK").await;
+            connection.execute_batch("ROLLBACK").await?;
             Err(error)
         }
     }
+}
+
+async fn select_cleanup_candidate(
+    connection: &turso::Connection,
+    readers: &readers::Registry,
+    filter: &CleanupFilter,
+) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
+    let expiry_root = filter.expiry_root.as_deref();
+    if let Some(candidate) = pending_cleanup_candidate(connection).await? {
+        if expiry_root.is_some() && !candidate.retention_expiry {
+            return Ok(None);
+        }
+        retention::ensure_cleanup_allowed(connection, &candidate.recording_id).await?;
+        readers::ensure_recording_idle(
+            connection,
+            readers,
+            &candidate.recording_id,
+            &candidate.path.to_string_lossy(),
+        )
+        .await?;
+        return Ok(Some(candidate));
+    }
+    retention::runtime::ensure_admission_ready(connection).await?;
+    let candidate = find_cleanup_candidate(connection, filter).await?;
+    if let Some(candidate) = &candidate {
+        retention::ensure_cleanup_allowed(connection, &candidate.recording_id).await?;
+        readers::ensure_recording_idle(
+            connection,
+            readers,
+            &candidate.recording_id,
+            &candidate.path.to_string_lossy(),
+        )
+        .await?;
+        connection.execute("UPDATE recording_files SET cleanup_pending=1,cleanup_retention_expiry=?2 WHERE id=?1",
+            turso::params![candidate.recording_id.as_str(),i64::from(candidate.retention_expiry)]).await?;
+    }
+    Ok(candidate)
+}
+
+async fn find_cleanup_candidate(
+    connection: &turso::Connection,
+    filter: &CleanupFilter,
+) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
+    let expiry_root = filter.expiry_root.as_deref();
+    let prefix = expiry_root.map(|root| {
+        format!(
+            "{}/",
+            root.to_string_lossy()
+                .replace('\\', "/")
+                .trim_end_matches('/')
+        )
+    });
+    let mut rows = connection
+            .query(
+                format!("SELECT id, path, file_bytes, cleanup_pending
+                 FROM recording_files
+                 WHERE finalized = 1 AND protected = 0 AND retention_pending=0
+                   AND (?2 IS NULL OR (substr(replace(path,char(92),'/'),1,length(?2))=?2 COLLATE NOCASE
+                       AND EXISTS(SELECT 1 FROM recording_retention_policies p WHERE p.camera_id=recording_files.source_id OR p.camera_id='')
+                       AND retention_generation=(SELECT generation FROM recording_retention_runtime WHERE singleton=1)
+                       AND EXISTS(SELECT 1 FROM recording_retention_decisions d WHERE d.recording_id=recording_files.id)))
+                   AND NOT EXISTS (SELECT 1 FROM recording_retention_camera_work w WHERE w.camera_id=recording_files.source_id)
+                   AND NOT EXISTS (SELECT 1 FROM recording_retention_decisions d
+                                   WHERE d.recording_id=recording_files.id AND d.deadline_ms>?1)
+                   AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
+                       AND (a.object_id=recording_files.id OR a.destination_path=replace(recording_files.path,char(92),'/') COLLATE NOCASE))
+                   AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims
+                                   WHERE recording_id = recording_files.id AND active = 1)
+                 {} ORDER BY cleanup_pending DESC, started_at_ms, id
+                 LIMIT 1",if filter.recording_id.is_some(){"AND id=?3"} else {"AND ?3 IS NULL"}),
+                turso::params![retention::now_ms()?,prefix.as_deref(),filter.recording_id.as_deref()],
+            )
+            .await?;
+    let candidate = rows
+        .next()
+        .await?
+        .map(|row| {
+            anyhow::Ok(CatalogCleanupCandidate {
+                recording_id: row.get(0)?,
+                path: PathBuf::from(row.get::<String>(1)?),
+                file_bytes: to_u64(row.get(2)?, "cleanup candidate file bytes")?,
+                pending: row.get::<i64>(3)? != 0,
+                retention_expiry: expiry_root.is_some(),
+            })
+        })
+        .transpose()?;
+    drop(rows);
+    anyhow::Ok(candidate)
 }
 
 async fn pending_cleanup_candidate(
@@ -2419,7 +2523,7 @@ async fn pending_cleanup_candidate(
 ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
     let mut rows = connection
         .query(
-            "SELECT id, path, file_bytes
+            "SELECT id, path, file_bytes,cleanup_retention_expiry
              FROM recording_files
              WHERE finalized = 1 AND protected = 0 AND cleanup_pending = 1
                AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
@@ -2437,6 +2541,7 @@ async fn pending_cleanup_candidate(
                 path: PathBuf::from(row.get::<String>(1)?),
                 file_bytes: to_u64(row.get(2)?, "pending cleanup file bytes")?,
                 pending: true,
+                retention_expiry: row.get::<i64>(3)? != 0,
             })
         })
         .transpose()
@@ -2451,13 +2556,14 @@ async fn complete_cleanup(
     let result = async {
         let mut rows = connection
             .query(
-                "SELECT 1 FROM recording_files WHERE id = ?1 AND cleanup_pending = 1",
+                "SELECT cleanup_retention_expiry FROM recording_files WHERE id = ?1 AND cleanup_pending = 1",
                 turso::params![recording_id],
             )
             .await?;
-        let pending = rows.next().await?.is_some();
+        let pending = rows.next().await?.map(|row|row.get::<i64>(0)).transpose()?;
         drop(rows);
-        if pending {
+        if let Some(expiry)=pending {
+            let reason=if expiry!=0 {CatalogDeletionReason::RetentionExpiry} else {reason};
             record_deletion(connection, recording_id, reason).await?;
             connection
                 .execute(
@@ -2515,7 +2621,7 @@ async fn record_deletion(
 async fn cancel_cleanup(connection: &turso::Connection, recording_id: &str) -> anyhow::Result<()> {
     connection
         .execute(
-            "UPDATE recording_files SET cleanup_pending = 0 WHERE id = ?1",
+            "UPDATE recording_files SET cleanup_pending = 0,cleanup_retention_expiry=0 WHERE id = ?1",
             turso::params![recording_id],
         )
         .await?;

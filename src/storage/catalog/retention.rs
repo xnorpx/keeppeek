@@ -12,6 +12,7 @@ use crate::storage::metadata::TimelineEvent;
 use crate::storage::retention::{Interval, MAX_EVENTS, MAX_RULES, Policy, Reason, Recording};
 
 pub(super) mod event_index;
+pub mod runtime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredDecision {
@@ -87,6 +88,7 @@ pub(super) async fn initialize(connection: &turso::Connection) -> Result<()> {
         )
         .await?;
     event_index::initialize(connection).await?;
+    runtime::initialize(connection).await?;
     Ok(())
 }
 
@@ -240,6 +242,16 @@ async fn commit(
     revision: u64,
     policy: &Policy,
 ) -> Result<StoredDecision> {
+    commit_snapshot(connection, id, revision, policy, true).await
+}
+
+async fn commit_snapshot(
+    connection: &turso::Connection,
+    id: &str,
+    revision: u64,
+    policy: &Policy,
+    requires_events: bool,
+) -> Result<StoredDecision> {
     let snapshot = recording_snapshot(connection, id).await?;
     let previous = read_previous(connection, id).await?;
     let fingerprint = Sha256::digest(serde_json::to_vec(policy)?);
@@ -254,7 +266,11 @@ async fn commit(
             "retention policy revision was reused with different rules"
         );
     }
-    let events = matching_events(connection, &snapshot).await?;
+    let events = if requires_events {
+        matching_events(connection, &snapshot).await?
+    } else {
+        Vec::new()
+    };
     let event_revision = event_revision(connection).await?;
     let resolved = policy.resolve(
         Recording {

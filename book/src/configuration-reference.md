@@ -418,6 +418,59 @@ directory. Unindexed images and temporary files are excluded from this quota and
 at startup. Missing image files retain their catalog references so that restoring an unavailable
 thumbnail directory does not require rebuilding event metadata.
 
+### Recording retention rules
+
+Optional `[storage.retention]` rules set independent recording lifetimes in days.
+Without this section, recordings keep the existing capacity-based cleanup behavior.
+
+```toml
+[storage.retention.default]
+continuous_days = 1.0
+motion_days = 7.0
+
+[storage.retention.default.events]
+person = 30.0
+
+[storage.retention.cameras."192.0.2.10"]
+continuous_days = 0.0
+```
+
+`default` supplies global rules. Each `cameras` entry overrides rules for the exact
+catalog camera identity, which is the camera IP address for RTSP recordings.
+Omitted fields inherit defaults; explicit zero disables that rule. Event entries
+use exact canonical event `kind` strings. Motion rules match canonical motion
+events. Stream-specific events apply to their matching logical recording stream;
+events without a stream apply to all recording streams for that camera.
+
+Durations must be finite, nonnegative, and representable as whole milliseconds
+within a signed 64-bit lifetime. Settings allow at most 127 camera overrides and
+16 effective rules per camera. Event selectors contain 1–128 ASCII letters,
+digits, underscores, hyphens, or periods. Unknown fields are rejected.
+Numeric durations do not accept secret references.
+
+The longest matching rule sets a whole-file deadline from the recording end.
+Files can therefore retain unrelated footage beside a matching event. Protection
+blocks automatic deletion. Shorter settings, removed rules, or corrected events
+never shorten an already committed deadline. Files whose event evidence exceeds
+the bounded evaluation limit remain excluded from automatic cleanup until their
+evidence can be evaluated successfully.
+
+Apply file edits through the existing configuration activation/restart workflow;
+there is no file watcher or separate retention settings file. Activation persists
+a bounded catalog sweep and fences new cleanup admissions until evaluation
+finishes. Finalized recordings and event changes then receive automatic
+reevaluation. Expiry removes eligible whole files even when storage has spare
+capacity. Interrupted cleanup resumes through the existing storage owner.
+
+To diagnose activation, inspect structured log events `retention_started` and
+`retention_activation_ready`, correlated by `run_id`. The first reports whether
+retention is enabled and the settings request was accepted; the second reports
+whether initial evaluation encountered quarantined files. Per-file evaluation
+warnings identify the recording and cause. Expiry logs identify removed recordings
+and whole-file bytes. These answer whether activation finished, which evidence
+needs repair, and whether expiry made progress. The worker logs no serialized
+configuration or event payloads.
+
 ### Named storage volumes
 
 `[storage.named_volumes]` stores volume and placement definitions in `config.toml`.

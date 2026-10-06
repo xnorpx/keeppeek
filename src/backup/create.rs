@@ -190,6 +190,35 @@ mod tests {
     use std::io::{Cursor, Read as _};
 
     #[test]
+    fn configuration_bundle_preserves_retention_rules() {
+        let directory = test_directory();
+        let config_path = directory.join("config.toml");
+        let source = "[storage.retention.default]\ncontinuous_days=1.0\n[storage.retention.default.events]\nperson=30.0\n";
+        std::fs::write(&config_path, source).unwrap();
+        std::fs::write(config::secrets_path(&config_path), "").unwrap();
+        let (bundle, _) = create_bundle(
+            Cursor::new(Vec::new()),
+            CreateBundleOptions {
+                config_path: &config_path,
+                sections: &[],
+                created_at_unix_ms: 1,
+            },
+        )
+        .unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bundle.into_inner())).unwrap();
+        let mut saved = String::new();
+        archive
+            .by_name("config.toml")
+            .unwrap()
+            .read_to_string(&mut saved)
+            .unwrap();
+        let before: config::Config = toml::from_str(source).unwrap();
+        let after: config::Config = toml::from_str(&saved).unwrap();
+        assert_eq!(after.storage.retention, before.storage.retention);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn creates_deterministic_native_configuration_bundle() {
         let directory = test_directory();
         let config_path = directory.join("config.toml");

@@ -1,0 +1,32 @@
+{
+  "baseline_commit": "b877bdd674c32dc1f84e92356f9c35d67197ea14",
+  "rust_toolchain": "1.99.0",
+  "cargo_incremental": false,
+  "build_jobs": 4,
+  "profile": "release",
+  "os": "Windows 11 Pro 26200 x86_64",
+  "cpu": "AMD Ryzen 5 5600G, 6 cores, 12 logical processors",
+  "ram_bytes": 16473337856,
+  "data_storage": "C: NTFS on MTFDHBA1T0QFD-1AX1AABHA NVMe, 1TB",
+  "build_storage": "E: ReFS on a file-backed virtual disk",
+  "ingest_harness_sha256": "715792a44c7463c6cd05dbc81dc16ca3d07316894b11423b0b1a8d154e776568",
+  "encoded_payload_validation": {
+    "baseline": {
+      "files": 16,
+      "mdat_sha256": "7efcdebb696fc6414e4d14b6b58c5ede827d3e862a686107704cc4b292b9066b",
+      "independently_decoded_frames": 240
+    },
+    "disabled": {
+      "files": 16,
+      "mdat_sha256": "7efcdebb696fc6414e4d14b6b58c5ede827d3e862a686107704cc4b292b9066b",
+      "independently_decoded_frames": 240
+    },
+    "enabled": {
+      "files": 16,
+      "mdat_sha256": "7efcdebb696fc6414e4d14b6b58c5ede827d3e862a686107704cc4b292b9066b",
+      "independently_decoded_frames": 240
+    }
+  },
+  "budget": "not yet approved; observed values are not pass/fail qualification",
+  "scope": "fresh-catalog ingest; full archive metadata workload reported separately"
+}

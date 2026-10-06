@@ -973,9 +973,9 @@ fn build_gaps(context: GapBuildContext<'_>, ranges: &[CoverageRange]) -> Vec<Rec
             deletion.start_ms < gap.observed_end_ms && deletion.end_ms > gap.start_ms
         }) {
             gap.cause = match deletion.reason {
-                CatalogDeletionReason::ArchiveLimit | CatalogDeletionReason::DiskPressure => {
-                    RecordingGapCause::RetentionDeletion
-                }
+                CatalogDeletionReason::ArchiveLimit
+                | CatalogDeletionReason::DiskPressure
+                | CatalogDeletionReason::RetentionExpiry => RecordingGapCause::RetentionDeletion,
                 CatalogDeletionReason::Reconciliation => RecordingGapCause::CatalogMismatch,
                 CatalogDeletionReason::Migration => RecordingGapCause::Migration,
                 CatalogDeletionReason::Unknown => RecordingGapCause::Unknown,
@@ -989,6 +989,9 @@ fn build_gaps(context: GapBuildContext<'_>, ranges: &[CoverageRange]) -> Vec<Rec
 
 const fn deletion_explanation(reason: CatalogDeletionReason) -> &'static str {
     match reason {
+        CatalogDeletionReason::RetentionExpiry => {
+            "Footage was removed after its committed retention deadline expired"
+        }
         CatalogDeletionReason::ArchiveLimit => {
             "Footage was removed to enforce the configured archive size limit"
         }

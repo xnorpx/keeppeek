@@ -74,11 +74,34 @@ accept the consequence and workaround before that classification replaces Partia
 | AC-6 related feature evidence | R16–R27 identify existing owners and unresolved limitations.                           | Final owner-specific evidence; #127/#131 remain open.                                                               |
 | AC-7 scale bound              | #268 measures pre-roll ingest, not retention evaluation.                               | Accepted latency/query/memory/ingest budgets and 127-source/30-day retention harness.                               |
 
+### Linked-owner review on 2026-10-05
+
+The original owners retain their acceptance scope. Closed tracker state does not
+replace the qualification evidence or imply support outside documented limits.
+
+| Owner            | Observed evidence                                                                                                                                                                                                                                          | Remaining limitation and owner                                                                                                                                                                                                                             |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #112 safety      | Merged [#163](https://github.com/xnorpx/keeppeek/pull/163), merge `318467fa94f7b87d38b6034057ad19d750522614`; its eight-row acceptance table and final `e9a7749` gate report cover thresholds, editing, protected cleanup, recovery and health.            | Its issue still has unchecked historical checklist items. Current-candidate disk/filesystem and recovery qualification remains #145.                                                                                                                       |
+| #113 exports     | Merged [#189](https://github.com/xnorpx/keeppeek/pull/189), merge `2c96b9672679c9f267fce1113cf076a1f8e1d597`; #113's acceptance and completion checklist is checked.                                                                                       | Export history does not establish #127 timelapse or #131 adaptive playback.                                                                                                                                                                                |
+| #127 timelapse   | Open; its sampling, provenance, cancellation and export acceptance is unchecked.                                                                                                                                                                           | #127 owns this gap in Alpha; no implementation is duplicated here.                                                                                                                                                                                         |
+| #131 adaptation  | Open; its aligned-variant, hysteresis, decoder and resource acceptance is unchecked.                                                                                                                                                                       | #131 owns this gap in Alpha; browser compatibility alone does not establish adaptation.                                                                                                                                                                    |
+| #133 maintenance | Merged #232/#233 and later [PR automation](https://github.com/xnorpx/keeppeek/actions/runs/34722005032) and [main automation](https://github.com/xnorpx/keeppeek/actions/runs/34722240086), both successful at `4df9a94e2a09fbc02346af363ea79f6b8027d8a2`. | The issue's historical checklist and older draft narrative are not a completed qualification ledger. The maintenance book records scope, relationships, native/filesystem trust boundaries and recovery limits; #145 owns current-candidate qualification. |
+
+### Effective-control boundary
+
+| Precedence                      | Existing authority                                       | Accepted result and outstanding work                                                                                                                                                                             |
+| ------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Configured recording permission | `CameraRecordingPolicy::decide`                          | Configured Off denies media admission. A later runtime request cannot grant permission.                                                                                                                          |
+| Privacy                         | `PrivacyRegistry` and storage admission fencing          | Active privacy denies admission and clears reusable pre-history. #125 supplies the existing fail-closed schedule foundation.                                                                                     |
+| Permitted mode selection        | Configured camera mode and #202's profile owner          | Current configured selection works. Persistent profile activation, source/reason/expiry/current-state exposure and its API/UI qualification remain #202; this PR adds no generic scheduler or external override. |
+| Retained-file eligibility       | Current holds, retention commitments and deletion owners | Holds dominate expiry. Policy changes preserve prior committed floors, and automatic cleanup must pass current authority and owner checks. This governs finalized media, not permission to record new media.     |
+
 ## Approved retention contract
 
-The maintainer approved these product semantics on 2026-10-05. The resolver implementation
-below does not yet activate operator settings in the application. Size-pressure cleanup preserves
-explicitly committed deadlines; files without commitments retain the existing cleanup behavior.
+The maintainer approved these product semantics on 2026-10-05. The draft runtime implementation
+activates optional persisted retention settings through the existing restart workflow.
+Size-pressure cleanup preserves committed deadlines; cameras without an applicable policy
+retain the existing cleanup behavior.
 Protected `api/` changes require separate current-task approval.
 
 1. Keep #168 as the retention-policy owner. Use bounded camera-local rules in `config.toml`
@@ -242,6 +265,135 @@ Observed on 2026-10-05, Windows, Rust 1.99.0, incremental compilation disabled: 
 `cargo test --lib retention` matches, all eight resolver acceptance tests, and all eleven catalog
 acceptance tests pass. `cargo clippy --lib --tests -- -D warnings` passes. These results do not
 replace the full repository gate or the outstanding #168 runtime acceptance criteria.
+
+### Runtime settings, reevaluation and expiry
+
+The runtime increment passed the complete Windows `check.bat` on 2026-10-05
+with Rust 1.99.0, incremental compilation disabled and slow tests enabled:
+3,246 Rust tests (26 configured skips), workspace Clippy and dependency checks,
+Rust/TOML/Python formatting, UI static checks, 409 Bun tests, 259 browser
+component/visual tests, 57 compatibility tests and 284 Playwright tests
+(two existing capability skips). The gate used the prebuilt auth fixture with
+SHA-256 `9c583b5a9574154bee795b26c0120c5bb9196a938915b4b69d9e531886ad82c6`.
+The unchanged runtime sources and benchmark sources also passed the expanded
+one-camera/one-day archive smoke run. The 127-camera/30-day release measurement
+is pending; these passing checks do not establish AC-7 or full issue completion.
+
+The draft runtime implementation adds optional global and camera-specific
+`storage.retention` settings to the existing configuration. The configuration
+reference describes inheritance, explicit zeros, exact event selectors and limits.
+Existing settings commands preserve this unexposed section from the current file;
+retention activation uses the existing configuration activation/restart workflow.
+No protected API contract changes are included.
+
+Activation persists the accepted settings transition before replacing the active
+policy map. Old-generation pending files and event windows finish first. Later
+events use a separate queued generation, so continuous publication cannot keep
+extending the old work window. Each global sweep has a fixed high-water ID;
+finalizations behind its cursor retain their pending flags. Overflow schedules
+another bounded sweep without resetting the current cursor. Work survives restart.
+
+The background worker evaluates at most eight records per call in separate
+transactions and obtains at most eight indexed expiry candidates. Invalid or
+oversized evidence quarantines the affected file while other work progresses.
+Canonical repairs enqueue reevaluation. Cleanup admission checks current policy
+generation, pending event work, protection, ownership and committed deadlines.
+Expiry removes whole files through legacy cleanup or the named-volume retirement
+journal. Admitted legacy expiry recovery runs before a later policy activation.
+
+Focused tests cover activation fencing, accepted-transition ordering, live events,
+restart, shorter policies, finalization behind the cursor, protection release,
+native expiry query plans, evidence overflow and repair, configuration round trips,
+and physical MP4 expiry without capacity pressure. Named-volume reader leases
+remain enforced by their owner. Legacy reader access retains the existing legacy
+contract; this increment does not establish named-owner reader parity there.
+
+These implementation details do not close the issue. Final-head repository gates,
+full real-media interval/byte examples, effective runtime-control acceptance and
+the approved 127-source/30-day numeric performance budgets still need evidence.
+
+`tests/recording_retention_media.rs` writes the repository's H.264 and H.265 camera
+fixtures through `MediumTermWriter`, maps the relative media timeline to a fixed
+UTC epoch after stopping its catalog owner, and retains the same complete bytes.
+Continuous, motion and selected-person cases retain one two-second file with the
+latest expected one-, seven- or thirty-day deadline. A matching 100-ms event expands
+to that complete two-second file; the test does not claim exact event-only bytes.
+FFmpeg must decode all 30 frames and treat decoder errors as failures. Events are
+published after the file finalizes. The person case then publishes revision two
+with its kind changed to motion; bounded runtime reevaluation must advance the
+event revision, preserve the prior thirty-day commitment and identical media,
+keep one catalog identity, and decode all thirty frames again.
+
+The companion selection fixture compares conservative, reduced-storage and
+alerts-only policies over two separately indexed, decodable files. Its fixed
+future UTC epoch lets the production clock preserve matching lifetimes while
+disabled nonmatching rules expire the other file. It checks physical removal,
+unchanged selected bytes, exact retained intervals and distinct catalog identities
+without capacity pressure. This fixture does not add a production clock override.
+
+`examples/recording_retention_runtime.rs` defines a metadata-only scale harness:
+127 sources, two streams, 30 days of 30-minute files, one canonical event per hour,
+and the first segment of each day protected. It measures initial activation,
+30 commitment evaluations and 30 late-event reconciliations after five warmups,
+a restarted full-policy extension, validated disabling and sampled process RSS.
+Full sweeps report per-batch histograms and one observed total per phase; they are
+not 30 independent full-sweep measurements. The histogram measures catalog reconciliation. The same harness also runs real
+H.264 ingest against that historical catalog with retention enabled and disabled,
+reusing `cam-000/sub` and preserving its catalog authority. Each phase adds sixteen
+verified records per sample; before/after counters verify historical record-count
+preservation and disclose pending reconciliation work. Ingest timers exclude these
+counter reads and startup. Historical timestamps are fixed in the future so the
+production clock cannot expire synthetic rows. Actual recording counts and backlog
+are reported; this is an accelerated workload with synthetic historical metadata.
+Physical deletion and live pacing remain separate qualification workloads. No numeric acceptance budget is implied.
+
+`examples/recording_retention_ingest.rs` separately measures accelerated real H.264
+input and engine shutdown flush into fresh catalogs. The existing frame generator
+supplies a 15-frame GOP repeated sixteen times. Each of five warmups and thirty
+measured runs must retain all 240 MP4 samples. Runtime builds verify policy
+activation before timing; a baseline without the runtime schema reports null
+activation. Frame generation, startup, activation and verification are untimed.
+This workload does not qualify live pacing or contention against the full archive.
+
+Release measurements compare production base `b877bdd` with this runtime build
+using the identical harness and encoded input. Each sample ingests 240 H.264
+frames into sixteen independently decodable files, then flushes shutdown. All
+35 runs per mode retain 458,320 bytes. Independent decoding of each mode's
+representative output yields 240 frames; every file's encoded `mdat` payload
+has the same SHA-256 across modes. The source, environment and raw reports are
+in `docs/verification/recording-retention/runtime-*.json`.
+
+| Fresh-catalog workload          | Median (ms) | P95 (ms) | P95 change from b877 |
+| ------------------------------- | ----------: | -------: | -------------------: |
+| b877 without the runtime schema |     246.399 |  269.055 |             Baseline |
+| Current runtime, unconfigured   |     304.639 |  313.855 |              +16.65% |
+| Current runtime, enabled        |     311.551 |  334.335 |              +24.26% |
+
+These are measured costs, not an accepted budget or a full-archive ingest claim.
+The benchmark distinguishes baseline schema absence from actual enabled/disabled
+runtime state. It performs startup and verified activation before timing.
+
+To reproduce the baseline, copy the archived `runtime-ingest-harness.rs` as the ingest example to a detached b877
+worktree and build with Rust 1.99.0, `CARGO_INCREMENTAL=0`, four build jobs and
+`cargo build --release --example recording_retention_ingest`. Run the resulting
+binary with `enabled`; its activation entries must be null. Current `enabled`
+and `disabled` runs report true and false, respectively. Each run retains its
+reports and synthetic media under the printed temporary artifact directory.
+
+The metadata harness seeds a fresh fixture before installing four new recording
+indexes and the runtime file hooks. Its complete initial catalog reopen includes
+native index construction and is measured separately from reconciliation. Columns
+already exist in the fixture; this does not certify full old-schema migration.
+Native schema/index operations are not interrupted by the runtime's per-transaction
+elapsed checks. The runtime report retains raw histogram bins and thirty steady
+and late-event timings; empty post-warmup histograms report null latency values.
+
+Event reevaluation hooks exist only while an active policy uses event evidence.
+Activation changes the hooks in the same transaction as the policies; restart
+restores them from persisted policies. Unconfigured event writes avoid these
+hooks. The existing 256-event shutdown regression failed with unconditional hooks
+and passed unchanged after this correction; retention activation, restart and
+hook removal also have a catalog regression.
 
 ### Bounded canonical event traversal
 
