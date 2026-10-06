@@ -106,11 +106,6 @@
 	let focusedCameraId: string | null = $state(null);
 	let lastViewerCameraId = '';
 	let viewerSelectionReady = $state(initialRequestedCameraId.length > 0);
-	// Reuse the ready wall as soon as navigation starts, before route loading completes.
-	let cameraViewActive = $derived(
-		view === 'viewer' &&
-			(navigating.to?.url.pathname !== resolve('/') || wallRevealState === 'staging')
-	);
 	let broadcastTalkbackActive = $derived(livePeer.talkbackActive);
 	let broadcastTalkbackError = $derived(livePeer.talkbackError);
 	let broadcastTalkbackGroup = $state('');
@@ -188,6 +183,11 @@
 	let healthRefreshInFlight = false;
 	let focusReturnPending = $state(false);
 	let wallRevealed = $derived(wallRevealState !== 'staging');
+	// Reuse the ready wall as soon as navigation starts, before route loading completes.
+	let cameraViewActive = $derived(
+		view === 'viewer' &&
+			(navigating.to?.url.pathname !== resolve('/') || wallRevealState === 'staging')
+	);
 	let focusedCamera = $derived(
 		focusedCameraId === null
 			? null
