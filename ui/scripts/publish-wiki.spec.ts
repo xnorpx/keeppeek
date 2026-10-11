@@ -73,7 +73,7 @@ async function writeTree(
 			const source =
 				value.pages.find((item) => `${item.name}.md` === output)?.source ??
 				(output === 'Home.md' || output === '_Sidebar.md' ? output : undefined);
-			const marker = source ? wikiOwnershipMarker(source, value.sourceCommit) : '';
+			const marker = source ? wikiOwnershipMarker(source) : '';
 			await writeFile(target, output.startsWith('assets/') ? '<svg />\n' : `${marker}${content}`);
 		}
 	}
@@ -157,6 +157,15 @@ describe('wiki publication', () => {
 		await writeTree(generated, value, 'generated page\n');
 
 		expect(syncWikiDirectory(wiki, generated, commit)).toEqual([]);
+	});
+
+	it('keeps unchanged pages stable when the source commit advances', async () => {
+		const current = manifest([page('book/src/start.md', 'Start')]);
+		const next = { ...current, sourceCommit: 'f'.repeat(40) };
+		await writeTree(wiki, current, 'same generated page\n');
+		await writeTree(generated, next, 'same generated page\n');
+
+		expect(syncWikiDirectory(wiki, generated, next.sourceCommit)).toEqual(['Wiki-Manifest.json']);
 	});
 
 	it('rejects an outdated build before replacing any Wiki files', async () => {

@@ -260,18 +260,13 @@ function checkForManualConflicts(
 	}
 }
 
-function verifyOwnedFileMarker(
-	wikiRoot: string,
-	output: string,
-	source: string,
-	sourceCommit: string
-): void {
+function verifyOwnedFileMarker(wikiRoot: string, output: string, source: string): void {
 	const file = checkedFilePath(wikiRoot, output);
 	if (!pathExists(file)) return;
 	if (lstatSync(file).size > MAX_OUTPUT_FILE_BYTES) {
 		throw new Error(`Existing Wiki file is too large: ${output}`);
 	}
-	const marker = Buffer.from(wikiOwnershipMarker(source, sourceCommit));
+	const marker = Buffer.from(wikiOwnershipMarker(source));
 	const contents = readFileSync(file);
 	if (!contents.subarray(0, marker.length).equals(marker)) {
 		throw new Error(`Generated Wiki ownership marker does not match: ${output}`);
@@ -280,15 +275,10 @@ function verifyOwnedFileMarker(
 
 function verifyOwnedFiles(wikiRoot: string, manifest: WikiBuildManifest): void {
 	for (const page of manifest.pages) {
-		verifyOwnedFileMarker(
-			wikiRoot,
-			`${page.name}.md`,
-			page.source,
-			manifest.sourceCommit
-		);
+		verifyOwnedFileMarker(wikiRoot, `${page.name}.md`, page.source);
 	}
-	verifyOwnedFileMarker(wikiRoot, HOME_FILE, HOME_FILE, manifest.sourceCommit);
-	verifyOwnedFileMarker(wikiRoot, SIDEBAR_FILE, SIDEBAR_FILE, manifest.sourceCommit);
+	verifyOwnedFileMarker(wikiRoot, HOME_FILE, HOME_FILE);
+	verifyOwnedFileMarker(wikiRoot, SIDEBAR_FILE, SIDEBAR_FILE);
 }
 
 function copyWikiTree(source: string, destination: string): void {
@@ -389,7 +379,10 @@ export function syncWikiDirectory(
 		);
 	}
 	const newFiles = readGeneratedFiles(generatedRoot, generated);
-	const stage = path.join(path.dirname(wikiRoot), `.${path.basename(wikiRoot)}.stage-${randomUUID()}`);
+	const stage = path.join(
+		path.dirname(wikiRoot),
+		`.${path.basename(wikiRoot)}.stage-${randomUUID()}`
+	);
 	mkdirSync(stage);
 	try {
 		copyWikiTree(wikiRoot, stage);
@@ -449,13 +442,9 @@ function runCli(): void {
 	const manifest = readWikiManifest(generatedRoot);
 	const changed = syncWikiDirectory(wikiRoot, generatedRoot, sourceCommit);
 	if (changed.length) {
-		execFileSync('git', [
-			'add',
-			'--all',
-			'--force',
-			'--',
-			...changed.map(gitLiteralPathspec)
-		], { cwd: wikiRoot });
+		execFileSync('git', ['add', '--all', '--force', '--', ...changed.map(gitLiteralPathspec)], {
+			cwd: wikiRoot
+		});
 		console.log(`Staged ${changed.length} generated Wiki files from ${manifest.sourceCommit}.`);
 	} else {
 		console.log('Wiki output is unchanged.');

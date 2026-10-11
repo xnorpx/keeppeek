@@ -12,7 +12,11 @@ independent viewers, inference services, and integrations consume or publish med
 
 ## Documentation
 
-The [KeepPeek Book](https://xnorpx.github.io/keeppeek/) is the primary documentation.
+The [KeepPeek Wiki](https://github.com/xnorpx/keeppeek/wiki) is the primary documentation. Its
+pages are generated from the Markdown source in [`book/src/`](book/src/SUMMARY.md) and the selected
+[`docs/`](docs/wiki-publishing.md) guides; edit those files in a reviewed pull request rather than
+editing Wiki pages directly. The [mdBook on GitHub Pages](https://xnorpx.github.io/keeppeek/) remains
+an automatically generated mirror.
 The public protocol is
 documented separately in the [`api/` directory](api/README.md).
 The [evidence export lifecycle](docs/evidence-exports.md) documents durable history, duplicate

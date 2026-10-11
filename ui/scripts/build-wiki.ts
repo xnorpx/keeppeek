@@ -53,8 +53,8 @@ function sha256(contents: Uint8Array): string {
 	return createHash('sha256').update(contents).digest('hex');
 }
 
-export function wikiOwnershipMarker(source: string, sourceCommit: string): string {
-	return `<!-- KeepPeek Wiki source ${sha256(Buffer.from(source))} ${sourceCommit} -->\n\n`;
+export function wikiOwnershipMarker(source: string): string {
+	return `<!-- KeepPeek Wiki source ${sha256(Buffer.from(source))} -->\n\n`;
 }
 
 function isWithin(parent: string, child: string): boolean {
@@ -268,7 +268,7 @@ function renderSourcePages(
 		writeFile(
 			stage,
 			`${page.name}.md`,
-			Buffer.from(`${wikiOwnershipMarker(page.source, sourceCommit)}${converted.markdown}`, 'utf8')
+			Buffer.from(`${wikiOwnershipMarker(page.source)}${converted.markdown}`, 'utf8')
 		);
 		pageRecords.push({ ...page, sha256: sha256(source) });
 		for (const asset of converted.assets) {
@@ -303,12 +303,8 @@ function writeBuildManifest(
 	assetRecords: Map<string, WikiBuildAsset>
 ): WikiBuildManifest {
 	const navigation = navigationMarkdown(pages, sourceCommit);
-	writeFile(stage, HOME, Buffer.from(`${wikiOwnershipMarker(HOME, sourceCommit)}${navigation.home}`));
-	writeFile(
-		stage,
-		SIDEBAR,
-		Buffer.from(`${wikiOwnershipMarker(SIDEBAR, sourceCommit)}${navigation.sidebar}`)
-	);
+	writeFile(stage, HOME, Buffer.from(`${wikiOwnershipMarker(HOME)}${navigation.home}`));
+	writeFile(stage, SIDEBAR, Buffer.from(`${wikiOwnershipMarker(SIDEBAR)}${navigation.sidebar}`));
 	const assets = [...assetRecords.values()].sort((left, right) =>
 		comparePaths(left.destination, right.destination)
 	);

@@ -65,6 +65,28 @@ jobs:
           grep --extended-regexp 'src="mermaid-[^"]+\.min\.js"' book/book/users-and-design-choices.html
           grep --extended-regexp 'src="mermaid-init-[^"]+\.js"' book/book/users-and-design-choices.html
 
+  wiki:
+    name: Wiki source and generated pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Test and build Wiki pages
+        working-directory: ui
+        run: bun run wiki:check
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: generated-wiki-pages
+          path: target/wiki/
+          if-no-files-found: error
+          retention-days: 7
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

@@ -39,18 +39,23 @@ and validates the output before cloning the separate Wiki Git repository. The wr
 used only by the final normal `git push` step. The workflow has `contents: read`; the main
 repository's `GITHUB_TOKEN` is not used to write the Wiki.
 
+Configure the `wiki-publishing` environment to allow deployments from `main` only, and store
+`WIKI_PUBLISH_TOKEN` as an environment secret there.
+
 Before relying on automatic publication, a repository owner must enable the Wiki and create an
-initial page so GitHub creates the Wiki Git repository. The owner must then test a write credential
-against that repository and configure it as the `WIKI_PUBLISH_TOKEN` Actions secret. Use a
+initial page so GitHub creates the Wiki Git repository. Confirm that the public Wiki Git remote can
+be cloned without credentials, then test a write credential against that remote and configure it as
+the `WIKI_PUBLISH_TOKEN` Actions secret. Use a
 repository-restricted automation identity and the narrowest permission that actually supports Wiki
 Git pushes. Do not assume that the main repository's `GITHUB_TOKEN` or a particular token type can
 write the separate Wiki repository. Record the identity owner and expiry in the repository's
 credential inventory, and rotate the secret before it expires. Never put the credential in a URL,
 workflow log, or repository file.
 
-This workflow is not live-verified until the Wiki is enabled and the owner has confirmed that the
-configured credential can clone and push the Wiki remote. Missing or denied credentials, a disabled
-Wiki, and a concurrent remote update fail the workflow visibly. Publication never force-pushes.
+This workflow is not live-verified until the Wiki is enabled and the owner has confirmed that an
+unauthenticated clone and authenticated push to the Wiki remote both work. Missing or denied
+credentials, a disabled Wiki, and a concurrent remote update fail the workflow visibly. Publication
+never force-pushes.
 Generated file conflicts with manually maintained Wiki pages also fail rather than overwrite them.
 Create the initial page with a name other than `Home` so the first generated Home page has no
 conflict.

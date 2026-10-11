@@ -158,10 +158,17 @@ finalizes recordings, and produces decodable output.
 
 ## Update the book and design evidence
 
-The book lives in `book/src`; `SUMMARY.md` controls its navigation. Document the current behavior
-and the practical task it enables, including authorization, persistence, limits, and failure
-recovery. Update the [feature guide](./feature-guide.md) when adding a screen or changing where a
-task starts. Fill operational chapters with instructions rather than leaving empty placeholders.
+The canonical documentation source lives in `book/src`; `SUMMARY.md` controls its navigation. The
+[KeepPeek Wiki](https://github.com/xnorpx/keeppeek/wiki) is generated from that book and the selected
+`docs/` guides. Edit the source files in this repository and submit a reviewed pull request; do not
+edit generated Wiki pages directly. See the [Wiki publishing guide](../../docs/wiki-publishing.md)
+for page mapping, local preview, and recovery. GitHub Pages remains an automatically generated
+mdBook mirror.
+
+Document the current behavior and the practical task it enables, including authorization,
+persistence, limits, and failure recovery. Update the [feature guide](./feature-guide.md) when adding
+a screen or changing where a task starts. Fill operational chapters with instructions rather than
+leaving empty placeholders.
 
 Keep serialized fields, defaults, and examples synchronized with the
 [configuration reference](./configuration-reference.md). Protocol declarations and engineering
