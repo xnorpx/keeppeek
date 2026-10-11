@@ -444,7 +444,13 @@
 	});
 
 	afterNavigate(({ from, to }) => {
-		if (from?.route.id === '/keep' && to?.route.id === '/keep' && to.url.search !== appliedSearch) {
+		if (
+			from &&
+			from.route.id === '/keep' &&
+			to?.route.id === '/keep' &&
+			from.url.href !== to.url.href &&
+			to.url.search !== appliedSearch
+		) {
 			void initialize(to.url.search);
 		}
 	});
