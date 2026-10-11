@@ -153,10 +153,12 @@ export default defineConfig({
 						'src/lib/api.spec.ts',
 						'src/lib/capability-state.spec.ts',
 						'src/lib/control-client.spec.ts',
+						'src/lib/control-client-runtime-profiles.spec.ts',
 						'src/lib/home-assistant/connection-manager.spec.ts',
 						'src/lib/home-assistant/direct-http.spec.ts',
 						'src/lib/home-assistant/direct-peer.spec.ts',
-						'src/lib/home-assistant/direct-session.spec.ts'
+						'src/lib/home-assistant/direct-session.spec.ts',
+						'src/lib/runtime-profiles.spec.ts'
 					]
 				}
 			},
