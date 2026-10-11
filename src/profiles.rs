@@ -160,18 +160,6 @@ pub fn resolve_camera_policy(
         FieldSource::Base
     };
 
-    let profile_recording_mode = profile.and_then(|overrides| overrides.recording_mode);
-    let (recording_mode, recording_mode_source) = if base.recording_mode == CameraRecordingMode::Off
-    {
-        (CameraRecordingMode::Off, FieldSource::Base)
-    } else if !available {
-        (CameraRecordingMode::Off, available_source)
-    } else if let Some(mode) = profile_recording_mode {
-        (mode, FieldSource::Profile)
-    } else {
-        (base.recording_mode, FieldSource::Base)
-    };
-
     let profile_privacy = profile.and_then(|overrides| overrides.privacy_enforced);
     let (privacy_enforced, privacy_source) = if base.privacy_enforced {
         (true, FieldSource::Base)
@@ -179,6 +167,20 @@ pub fn resolve_camera_policy(
         (enforced, FieldSource::Profile)
     } else {
         (false, FieldSource::Base)
+    };
+
+    let profile_recording_mode = profile.and_then(|overrides| overrides.recording_mode);
+    let (recording_mode, recording_mode_source) = if base.recording_mode == CameraRecordingMode::Off
+    {
+        (CameraRecordingMode::Off, FieldSource::Base)
+    } else if privacy_enforced {
+        (CameraRecordingMode::Off, privacy_source)
+    } else if !available {
+        (CameraRecordingMode::Off, available_source)
+    } else if let Some(mode) = profile_recording_mode {
+        (mode, FieldSource::Profile)
+    } else {
+        (base.recording_mode, FieldSource::Base)
     };
 
     let profile_suppression = profile.and_then(|overrides| overrides.notifications_suppressed);
