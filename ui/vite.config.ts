@@ -3,9 +3,12 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
 import tailwindcss from '@tailwindcss/vite';
+import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 
 const apiTarget = process.env.KEEPPEEK_API_TARGET ?? 'http://localhost:3000';
+const buildDir = process.env.KEEPPEEK_UI_BUILD_DIR ?? 'build';
 const isCI = Boolean(process.env.CI);
 const uiRoot = resolve('.');
 const fontSourceRoots = [
@@ -14,7 +17,18 @@ const fontSourceRoots = [
 ];
 
 export default defineConfig({
-	plugins: [tailwindcss(), sveltekit()],
+	plugins: [
+		tailwindcss(),
+		sveltekit({
+			preprocess: vitePreprocess({ script: true }),
+			adapter: adapter({
+				pages: buildDir,
+				assets: buildDir,
+				fallback: 'index.html',
+				strict: false
+			})
+		})
+	],
 	optimizeDeps: {
 		include: [
 			'bits-ui',

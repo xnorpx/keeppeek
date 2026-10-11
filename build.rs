@@ -31,7 +31,6 @@ const UI_INPUTS: &[&str] = &[
     "ui/bunfig.toml",
     "ui/components.json",
     "ui/package.json",
-    "ui/svelte.config.js",
     "ui/tsconfig.json",
     "ui/vite.config.ts",
 ];
