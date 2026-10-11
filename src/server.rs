@@ -107,7 +107,7 @@ mod health_snapshot;
 mod logging;
 mod mqtt_integration;
 mod native_events;
-mod peek_layouts;
+pub(super) mod peek_layouts;
 pub(crate) mod recording_coverage;
 mod recording_maintenance;
 mod runtime_configuration;
@@ -9038,6 +9038,7 @@ pub struct ServerState {
     oidc_issuer_budgets: crate::access::oidc::IssuerBudgets,
     privacy: Arc<PrivacyRegistry>,
     runtime_profiles: Arc<RwLock<crate::profiles::ProfileRegistry>>,
+    runtime_profile_status: Arc<RwLock<crate::profiles::RuntimeProfileStatus>>,
     privacy_sources: Arc<RwLock<BTreeMap<String, PrivacySource>>>,
     privacy_epochs: Arc<Mutex<HashMap<IpAddr, u64>>>,
     privacy_override_states: Arc<Mutex<HashMap<IpAddr, bool>>>,
@@ -9199,6 +9200,11 @@ impl ServerState {
             oidc_issuer_budgets: crate::access::oidc::IssuerBudgets::default(),
             privacy,
             runtime_profiles: Arc::new(RwLock::new(config.runtime_profiles.clone())),
+            runtime_profile_status: Arc::new(RwLock::new(crate::profiles::RuntimeProfileStatus {
+                revision: config.runtime_profiles.revision,
+                active_profile_id: config.runtime_profiles.active_profile_id.clone(),
+                cameras: BTreeMap::new(),
+            })),
             privacy_sources: Arc::new(RwLock::new(privacy_sources)),
             privacy_epochs: Arc::new(Mutex::new(HashMap::new())),
             privacy_override_states: Arc::new(Mutex::new(HashMap::new())),
@@ -9670,6 +9676,7 @@ impl ServerState {
     }
 
     pub fn with_camera_runtime(mut self, runtime: KeepPeekControl) -> Self {
+        self.runtime_profile_status = runtime.runtime_profile_status_handle();
         self.camera_runtime = Some(runtime);
         self
     }

@@ -1,13 +1,17 @@
 use crate::storage::metadata::EventAttachment;
 use serde::Serialize;
-use std::sync::atomic::Ordering;
+use std::{
+    collections::BTreeSet,
+    sync::atomic::Ordering,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use super::{
     Lifecycle, LogicalId, ProcessSummary, RulePolicy, RuleStoreError, Stage, Transition,
-    cooldown_keys, logical_id,
+    cooldown_keys, decrement_counter, logical_id,
     model::{
         Action, AttachmentPolicy, Candidate, Channel, MatchResult, RateLimit, RateLimitScope, Rule,
-        Severity, Trigger,
+        Severity, Suppression, Trigger,
     },
     state::{
         InboxReceipt, LogicalNotification, MAX_OPERATIONAL_INTERVALS, MAX_PENDING_OUTBOX,
@@ -105,6 +109,18 @@ impl Store {
             .then(|| available_attachment(&candidate))
             .flatten();
         let mut state = self.lock_state();
+        if self
+            .profile_suppressed_sources
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&candidate.source_id)
+        {
+            for (result, _) in &mut matches {
+                if *result == MatchResult::Match {
+                    *result = MatchResult::Suppressed(Suppression::RuntimeProfile);
+                }
+            }
+        }
         state.prune(candidate.occurred_at_ms)?;
         Self::normalize_operational_interval(&mut state, &mut candidate)?;
         let summary = self.process_in_state(&mut state, &candidate, matches, attachment.as_ref());
@@ -112,6 +128,71 @@ impl Store {
         drop(state);
         self.record_process_metrics(summary);
         Ok(summary)
+    }
+
+    pub(super) fn set_profile_suppressed_sources(
+        &self,
+        source_ids: BTreeSet<String>,
+    ) -> anyhow::Result<usize> {
+        if source_ids.len() > 127
+            || source_ids
+                .iter()
+                .any(|source_id| source_id.trim().is_empty() || source_id.len() > 256)
+        {
+            anyhow::bail!("runtime profile notification suppression exceeds its camera bounds");
+        }
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+            .unwrap_or(i64::MAX);
+        let mut state = self.lock_state();
+        *self
+            .profile_suppressed_sources
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = source_ids.clone();
+        let suppressed = state
+            .outbox
+            .iter()
+            .filter_map(|(id, item)| {
+                if !item.status.pending() {
+                    return None;
+                }
+                let logical = state.logical.get(&item.logical_id)?;
+                source_ids.contains(&logical.source_id).then_some((
+                    *id,
+                    item.logical_id.clone(),
+                    logical.rule_id.clone(),
+                    logical.highest_revision,
+                    item.stage,
+                ))
+            })
+            .collect::<Vec<_>>();
+        for (id, logical_id, rule_id, revision, stage) in &suppressed {
+            if let Some(item) = state.outbox.get_mut(id) {
+                item.status = OutboxStatus::Suppressed;
+                item.last_reason = Some(Suppression::RuntimeProfile.as_str().to_owned());
+                item.updated_at_ms = now_ms;
+            }
+            state.push_history(PendingHistoryEntry {
+                logical_id,
+                rule_id,
+                revision: *revision,
+                stage: *stage,
+                outcome: "suppressed",
+                reason: Some(Suppression::RuntimeProfile.as_str()),
+                occurred_at_ms: now_ms,
+                next_eligible_at_ms: None,
+            });
+        }
+        drop(state);
+        if !suppressed.is_empty() {
+            decrement_counter(
+                &self.metrics.pending_deliveries,
+                u64::try_from(suppressed.len()).unwrap_or(u64::MAX),
+            );
+        }
+        Ok(suppressed.len())
     }
 
     fn normalize_operational_interval(
@@ -1459,6 +1540,79 @@ mod tests {
         assert_eq!(metrics.notifications_replaced, 1);
         assert_eq!(metrics.notifications_suppressed, 2);
         drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn runtime_profile_suppression_records_history_cancels_queued_delivery_and_restores_rules() {
+        let directory = test_dir("runtime-profile-notification-suppression");
+        let store = Store::open(&directory.join("config.toml")).unwrap();
+        activate(&store, rule(CooldownScope::Event));
+        assert_eq!(
+            store
+                .process(candidate(
+                    Trigger::EventCreated,
+                    "front-door",
+                    "event-1",
+                    1,
+                    Stage::Preliminary,
+                    1_000,
+                ))
+                .unwrap()
+                .queued_attempts,
+            2
+        );
+
+        assert_eq!(
+            store
+                .set_profile_suppressed_sources(BTreeSet::from(["front-door".to_owned()]))
+                .unwrap(),
+            2
+        );
+        assert!(
+            store
+                .lock_state()
+                .outbox
+                .values()
+                .all(|item| item.status == OutboxStatus::Suppressed)
+        );
+        assert_eq!(
+            history_count(&store, Some("suppressed"), &["runtime_profile"]),
+            2
+        );
+        assert_eq!(
+            store
+                .process(candidate(
+                    Trigger::EventCreated,
+                    "front-door",
+                    "event-2",
+                    1,
+                    Stage::Preliminary,
+                    2_000,
+                ))
+                .unwrap()
+                .suppressed,
+            1
+        );
+
+        store
+            .set_profile_suppressed_sources(BTreeSet::new())
+            .unwrap();
+        assert_eq!(
+            store
+                .process(candidate(
+                    Trigger::EventCreated,
+                    "front-door",
+                    "event-3",
+                    1,
+                    Stage::Preliminary,
+                    3_000,
+                ))
+                .unwrap()
+                .created,
+            1
+        );
+        assert_eq!(store.rules("owner-1").unwrap().len(), 1);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

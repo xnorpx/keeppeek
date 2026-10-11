@@ -278,11 +278,11 @@ pub fn run(
     let mut keeppeek = KeepPeekLoop::new(shutdown.clone(), Some(storage_engine.handle()));
     keeppeek.set_live(webrtc.live());
     keeppeek.set_privacy_registry(server_state.privacy_registry());
-    keeppeek.set_runtime_profiles(cfg.runtime_profiles.clone());
     keeppeek.set_event_store(event_store);
     keeppeek.set_health_registry(health_registry);
     keeppeek.set_status_sender(router_tx.clone());
     keeppeek.set_notifications(notification_handle.clone());
+    keeppeek.set_runtime_profiles(cfg.runtime_profiles.clone());
     keeppeek.set_event_forwarder(event_forwarder_handle.clone());
     if let Some(battery_wake) = &battery_wake {
         keeppeek.set_battery_wake(battery_wake.handle());

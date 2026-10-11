@@ -49,13 +49,15 @@ pub struct BaseCameraPolicy {
     pub notifications_enabled: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum FieldSource {
     Base,
     Profile,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct EffectiveCameraPolicy {
     pub available: bool,
     pub recording_mode: CameraRecordingMode,
@@ -65,6 +67,31 @@ pub struct EffectiveCameraPolicy {
     pub recording_mode_source: FieldSource,
     pub privacy_source: FieldSource,
     pub notifications_source: FieldSource,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeApplicationState {
+    Pending,
+    Applied,
+    Degraded,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CameraRuntimeApplication {
+    pub camera_id: String,
+    pub state: RuntimeApplicationState,
+    pub policy: EffectiveCameraPolicy,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeProfileStatus {
+    pub revision: u64,
+    pub active_profile_id: Option<String>,
+    pub cameras: BTreeMap<String, CameraRuntimeApplication>,
 }
 
 impl ProfileRegistry {

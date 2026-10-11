@@ -14,7 +14,7 @@ use std::{
 };
 
 #[path = "state_store_profiles.rs"]
-mod profiles;
+pub(super) mod profiles;
 
 pub(super) const CAPABILITY_ID: &str = "keeppeek.state-store.v1";
 pub(super) const MAX_NAMESPACE_CHARS: usize = 128;

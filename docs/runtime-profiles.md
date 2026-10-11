@@ -1,14 +1,16 @@
 # Runtime profiles implementation contract
 
 This document tracks [#202](https://github.com/xnorpx/keeppeek/issues/202).
-Runtime profiles are partially implemented. The server can persist and validate bounded
-definitions and administrators can select a preconfigured profile or Base through the existing
-WebRTC state-store command. Selection is revisioned and durable; profile privacy overrides feed
-the existing media privacy gate. The active recording mode now reaches live recording admission
-on startup and profile activation, while configured `Off` and profile privacy remain dominant.
-Profile CRUD, UI, camera availability, notification application, per-camera convergence status,
-and full client watch projections remain incomplete. The baseline for this implementation is
-current `main` plus the branch commits listed in the PR.
+Runtime profiles are partially implemented. Administrators can create, rename, edit, delete, and
+activate bounded definitions through the existing WebRTC state-store command and the settings UI.
+Selection is revisioned and durable; privacy overrides feed the existing media privacy gate; and
+recording, camera availability, and notification suppression reach their current runtime owners.
+The shell and settings surfaces watch active-profile and per-camera application state. The full
+127-camera document layout, stable camera identity migration, asynchronous supersession, complete
+privacy leak matrix, camera-filtered observations, browser external-client/reconnect coverage, and
+capacity/performance evidence remain incomplete. A degraded runtime result does not roll back the
+durable desired profile. The baseline for this implementation is current `main` plus the branch
+commits listed in the PR.
 
 ## Scope
 
@@ -32,9 +34,9 @@ arbitrary user metadata are not valid profile fields.
 | Settings-backed state                          | `src/server/state_store_settings.rs`                                           | The existing adapter implements only `service/state-store-test/` and its two-field test schema. It is a worked example, not a pluggable profile registry. Profile commits must atomically update multiple projected entries and publish them under the same configuration lock.                                                                             |
 | Stable camera identity                         | `src/server/configuration.rs`, `src/config.rs`, `src/keeppeek.rs`              | Current configured IDs and runtime ownership use camera IP addresses. Resolve the identity/migration checkpoint before persisting long-lived profile references; #95 owns same-IP child/channel support.                                                                                                                                                    |
 | Recording mode                                 | `src/storage/engine/event.rs::StorageHandle::configure_camera_event_recording` | Implemented through the current event-recording owner on startup and profile activation, preserving Base stream and pre/post settings. The KeepPeek loop acknowledges application and rolls back on failed persistence. Storage-worker degradation status, profile observability, and automatic reapplication after Base configuration changes remain open. |
-| Camera availability                            | `src/server.rs::start_runtime_camera`, `src/keeppeek.rs`                       | Establish an acknowledged, bounded start/stop operation. Existing stop waits for workers without a deadline; caller timeout does not cancel queued work. Configuration-plan activation restarts cameras and is not a profile adapter.                                                                                                                       |
-| Privacy                                        | `src/privacy.rs::PrivacyRegistry`                                              | Add an internal profile input to the existing decision owner. Calling `PrivacyGate::activate` alone is insufficient: schedule evaluation can replace that decision.                                                                                                                                                                                         |
-| Notifications                                  | `src/notifications/orchestrator.rs`, `src/notifications/delivery.rs`           | Enforce the profile input at candidate admission and queued delivery without editing notification rules.                                                                                                                                                                                                                                                    |
+| Camera availability                            | `src/server.rs::start_runtime_camera`, `src/keeppeek.rs`                       | Profile availability starts/stops loop-owned workers while retaining Base camera definitions and exposes a per-camera result. Existing stop waits for workers without a deadline; caller timeout does not cancel queued work. Configuration-plan activation restarts cameras and is not a profile adapter.                                                  |
+| Privacy                                        | `src/privacy.rs::PrivacyRegistry`                                              | Profile inputs share the registry decision with schedules; a profile `false` does not weaken an active schedule. The complete tagged-byte leak matrix, restart-after-failed-transition behavior, and per-operation failure coverage remain required.                                                                                                        |
+| Notifications                                  | `src/notifications/orchestrator.rs`, `src/notifications/delivery.rs`           | Candidate admission records `runtime_profile` suppression history and activation cancels pending outbox deliveries without editing notification rules. A delivery already claimed before the activation transition is not preempted; the end-to-end queue race still needs qualification.                                                                   |
 
 The issue's source plan predates the merged state store. At this baseline the generic
 limits are 64 KiB per encoded value, 64 entries/64 KiB per snapshot, 1,024 entries per
@@ -153,10 +155,10 @@ the current server slice does not claim those results.
 
 Remaining work:
 
-- Resolve identity, runtime-safe field classification, settings quota, and watch filtering.
-- Implement and test staged CAS commits, restart recovery, and unchanged state after failure.
-- Verify all runtime domains, supersession, privacy byte barriers, and Base changes; add storage-worker failure and Base-change reapplication evidence.
-- Add UI CRUD, shell status, provenance, external-client updates, and reconnect tests.
+- Resolve stable camera identity, runtime-safe field classification, combined settings quota, and measured 16 KiB multipart registry/status projections.
+- Implement and test staged CAS commits, restart recovery, supersession, old-revision completion rejection, and unchanged accepted state after failed persistence.
+- Verify the notification delivery race including already-claimed sends, privacy byte barriers across every media operation, Base changes, storage-worker failure, and Base-change reapplication.
+- Add desktop/mobile Playwright coverage for CRUD, external-client activation, reconnect/restart, accessibility, and ordered desired/applied state; verify camera-filtered watch updates.
 - Run canonical Windows validation and the release-build 30-activation benchmark.
 
 Server acknowledgement plus watch publication must be at most 250 ms p95. Connected

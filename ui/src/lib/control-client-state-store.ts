@@ -416,11 +416,12 @@ export class ControlClientStateStore {
 	}
 
 	private async closeRecord(record: WatchRecord): Promise<void> {
+		const shouldUnwatch = record.status === 'active' || record.status === 'rewatching';
 		record.generation += 1;
 		record.status = 'closed';
 		const handle = handleOf(record);
 		if (this.#watches.get(record.watchId) === handle) this.#watches.delete(record.watchId);
-		if (this.#disposed) return;
+		if (this.#disposed || !shouldUnwatch) return;
 		try {
 			await this.#sendRequest(
 				stateStoreCommand({
