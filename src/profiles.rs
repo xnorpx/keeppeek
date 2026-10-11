@@ -68,6 +68,10 @@ pub struct EffectiveCameraPolicy {
 }
 
 impl ProfileRegistry {
+    pub fn is_empty(&self) -> bool {
+        self.revision == 0 && self.active_profile_id.is_none() && self.profiles.is_empty()
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.revision <= i64::MAX as u64,
