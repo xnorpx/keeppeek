@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { afterNavigate, goto, pushState } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { navigating, page } from '$app/state';
 	import { onMount, tick, untrack } from 'svelte';
@@ -196,7 +196,7 @@
 	function openMobilePanel(panel: MobilePanel): void {
 		mobileReturnFocus =
 			document.activeElement instanceof HTMLElement ? document.activeElement : null;
-		pushState('', { ...page.state, keepMobilePanel: panel });
+		void goto(page.url, { state: { ...page.state, keepMobilePanel: panel }, shallow: true });
 	}
 
 	function closeMobilePanel(): void {

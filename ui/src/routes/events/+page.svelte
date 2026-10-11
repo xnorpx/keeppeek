@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { afterNavigate, goto, pushState } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { navigating, page } from '$app/state';
 	import { onDestroy, onMount, tick } from 'svelte';
@@ -1055,7 +1055,7 @@
 			}))
 		};
 		const url = `${resolve('/events')}?${search}`;
-		if (mode === 'push') pushState(url, state);
+		if (mode === 'push') void goto(url, { state, shallow: true });
 		else void goto(url, { state, shallow: true, replace: true });
 	}
 
