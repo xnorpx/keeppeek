@@ -26,6 +26,7 @@ pub struct PrivacyGate {
 #[derive(Debug, Default)]
 struct PrivacyState {
     schedules: BTreeMap<String, PrivacySchedule>,
+    profile_overrides: BTreeMap<String, bool>,
     gates: BTreeMap<String, std::sync::Arc<PrivacyGate>>,
 }
 
@@ -53,7 +54,11 @@ impl PrivacyRegistry {
             .map(|camera_id| (camera_id.clone(), std::sync::Arc::new(PrivacyGate::new())))
             .collect();
         Ok(Self {
-            state: Arc::new(RwLock::new(PrivacyState { schedules, gates })),
+            state: Arc::new(RwLock::new(PrivacyState {
+                schedules,
+                profile_overrides: BTreeMap::new(),
+                gates,
+            })),
             aliases: Arc::new(RwLock::new(BTreeMap::new())),
         })
     }
@@ -76,6 +81,7 @@ impl PrivacyRegistry {
         state.gates = replacement_state
             .schedules
             .keys()
+            .chain(state.profile_overrides.keys())
             .map(|camera_id| {
                 (
                     camera_id.clone(),
@@ -87,6 +93,53 @@ impl PrivacyRegistry {
             })
             .collect();
         state.schedules = replacement_state.schedules.clone();
+        Ok(())
+    }
+
+    /// Replaces profile privacy inputs; false values never weaken a schedule.
+    pub fn replace_profile_overrides(
+        &self,
+        overrides: BTreeMap<String, bool>,
+    ) -> anyhow::Result<()> {
+        if overrides.len() > 127 {
+            anyhow::bail!("profile privacy overrides cannot contain more than 127 cameras");
+        }
+        for camera_id in overrides.keys() {
+            if camera_id.trim().is_empty() || camera_id.len() > 256 {
+                anyhow::bail!("profile privacy camera keys must contain 1 to 256 bytes");
+            }
+        }
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Utc::now();
+        let affected = state
+            .profile_overrides
+            .keys()
+            .chain(overrides.keys())
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        for camera_id in &affected {
+            state
+                .gates
+                .entry(camera_id.clone())
+                .or_insert_with(|| Arc::new(PrivacyGate::new()));
+        }
+        for camera_id in affected {
+            let profile_active = overrides.get(&camera_id).copied().unwrap_or(false);
+            let scheduled_active = state
+                .schedules
+                .get(&camera_id)
+                .map(|schedule| schedule.is_active_unchecked(now))
+                .transpose()
+                .map(|scheduled| scheduled.unwrap_or(false))
+                .unwrap_or(true);
+            if let Some(gate) = state.gates.get(&camera_id) {
+                gate.set_active(profile_active || scheduled_active);
+            }
+        }
+        state.profile_overrides = overrides;
         Ok(())
     }
 
@@ -111,10 +164,23 @@ impl PrivacyRegistry {
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(schedule) = state.schedules.get(&configured_id) else {
+        let profile_active = state
+            .profile_overrides
+            .get(&configured_id)
+            .copied()
+            .unwrap_or(false);
+        let schedule = state.schedules.get(&configured_id);
+        if schedule.is_none() && !profile_active {
+            if let Some(gate) = state.gates.get(&configured_id) {
+                return Ok((false, gate.set_active(false)));
+            }
             return Ok((false, 0));
-        };
-        let active = schedule.is_active_unchecked(instant)?;
+        }
+        let active = profile_active
+            || schedule
+                .map(|schedule| schedule.is_active_unchecked(instant))
+                .transpose()?
+                .unwrap_or(false);
         let gate = state
             .gates
             .get(&configured_id)
@@ -496,6 +562,52 @@ mod tests {
             .unwrap();
         assert_eq!(first, second);
         assert!(first.0);
+    }
+
+    #[test]
+    fn profile_privacy_activates_the_existing_media_gate_and_can_be_cleared() {
+        let registry = PrivacyRegistry::default();
+        registry
+            .replace_profile_overrides(BTreeMap::from([("front".to_owned(), true)]))
+            .unwrap();
+        let now = Utc::now();
+        let gate = registry.gate("front").unwrap();
+        assert!(!gate.allows(gate.epoch()));
+        let (active, epoch) = registry.decision("front", now).unwrap();
+        assert!(active);
+        assert!(!gate.allows(epoch));
+
+        registry
+            .replace_profile_overrides(BTreeMap::from([("front".to_owned(), false)]))
+            .unwrap();
+        assert!(gate.allows(gate.epoch()));
+        let (active, epoch) = registry.decision("front", now).unwrap();
+        assert!(!active);
+        assert!(gate.allows(epoch));
+    }
+
+    #[test]
+    fn profile_privacy_cannot_weaken_scheduled_privacy() {
+        let mut schedules = BTreeMap::new();
+        schedules.insert(
+            "front".to_owned(),
+            schedule(PrivacyWindow {
+                weekdays: vec![1],
+                start: "00:00".into(),
+                end: "23:59".into(),
+            }),
+        );
+        let registry = PrivacyRegistry::new(schedules).unwrap();
+        registry
+            .replace_profile_overrides(BTreeMap::from([("front".to_owned(), false)]))
+            .unwrap();
+
+        let (active, epoch) = registry
+            .decision("front", "2026-09-22T05:15:00Z".parse().unwrap())
+            .unwrap();
+
+        assert!(active);
+        assert!(!registry.gate("front").unwrap().allows(epoch));
     }
 
     fn schedule(window: PrivacyWindow) -> PrivacySchedule {

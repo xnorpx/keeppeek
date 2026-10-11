@@ -420,6 +420,21 @@ describe('ControlClientStateStore', () => {
 		expect(transport.sent.map((command) => storeAction(command).case)).toEqual(['watch', 'watch']);
 	});
 
+	it('closes a disconnected watch without reconnecting to unwatch', async () => {
+		const transport = new FakeTransport((action) => {
+			if (action.case === 'watch') return snapshotResult(action.value.watchId, []);
+			return unwatchResult('unused');
+		});
+		const client = new ControlClientStateStore((command) => transport.send(command));
+		const watch = await client.watch(namespace);
+
+		client.handleConnectionClosed();
+		await watch.close();
+
+		expect(watch.status).toBe('closed');
+		expect(transport.sent.map((command) => storeAction(command).case)).toEqual(['watch']);
+	});
+
 	it('cancels a reconnect in flight when disposed', async () => {
 		const gate = deferred<Result>();
 		let watchCalls = 0;

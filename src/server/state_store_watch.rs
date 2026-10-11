@@ -271,7 +271,8 @@ impl WatchRegistry {
                     terminate.push((key.clone(), Some(CloseReason::BufferOverflow)));
                     continue;
                 }
-                let notification = update_notification(watch, event, sequence);
+                let projected_event = project_event_for_watch(state, watch.session_id, event);
+                let notification = update_notification(watch, &projected_event, sequence);
                 match enqueue(watch.session_id, notification.clone()) {
                     EnqueueOutcome::Sent => {
                         sent.push((watch.session_id, notification));
@@ -402,6 +403,59 @@ fn update_notification(watch: &Watch, event: &WatchEvent, sequence: u64) -> prot
     }
 }
 
+fn project_event_for_watch(
+    state: &ServerState,
+    session_id: SessionId,
+    event: &WatchEvent,
+) -> WatchEvent {
+    if event.namespace != super::state_store::profiles::NAMESPACE
+        || event.key != super::state_store::profiles::STATUS_KEY
+    {
+        return event.clone();
+    }
+    let WatchEventKind::Put(_) = &event.kind else {
+        return event.clone();
+    };
+    let principal = state
+        .api_session_owners
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&session_id)
+        .map(|session| session.principal.clone());
+    if principal
+        .as_ref()
+        .is_some_and(|principal| principal.role == AccessRole::Administrator)
+    {
+        return event.clone();
+    }
+    let visible_camera_ids = principal
+        .as_ref()
+        .and_then(|principal| super::camera_access::for_principal(state, principal).ok())
+        .and_then(|policy| super::camera_access::query_cameras(state, &policy, &[]).ok())
+        .map(|cameras| {
+            cameras
+                .into_iter()
+                .map(|camera| camera.info.id)
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let mut projected = event.clone();
+    if let WatchEventKind::Put(entry) = &mut projected.kind {
+        let mut value = super::peek_layouts::struct_to_json(entry.value.clone());
+        if let Some(cameras) = value
+            .as_object_mut()
+            .and_then(|value| value.get_mut("cameras"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            cameras.retain(|camera_id, _| visible_camera_ids.contains(camera_id));
+            if let Ok(filtered) = super::peek_layouts::json_to_struct(value) {
+                entry.value = filtered;
+            }
+        }
+    }
+    projected
+}
+
 fn closed_notification(watch: &Watch, reason: CloseReason) -> proto::Notification {
     proto::Notification {
         event: Some(notification::Event::StateStoreWatchClosed(
@@ -527,6 +581,47 @@ mod tests {
             Some(notification::Event::StateStoreWatchClosed(closed)) => closed,
             other => panic!("expected a watch close, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn profile_status_watch_hides_cameras_without_user_visibility() {
+        let state = ServerState::empty();
+        let session_id = SessionId::from_u64(20_299);
+        let mut principal = ApiPrincipal::local(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        principal.role = AccessRole::User;
+        state
+            .api_session_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session_id, session_record(principal));
+        let value = serde_json::json!({
+            "revision": "1",
+            "active_profile_id": "away",
+            "cameras": { "192.0.2.5": { "camera_id": "192.0.2.5" } }
+        });
+        let event = WatchEvent {
+            namespace: super::super::state_store::profiles::NAMESPACE.to_owned(),
+            key: super::super::state_store::profiles::STATUS_KEY.to_owned(),
+            revision: 1,
+            kind: WatchEventKind::Put(StoredEntry {
+                namespace: super::super::state_store::profiles::NAMESPACE.to_owned(),
+                key: super::super::state_store::profiles::STATUS_KEY.to_owned(),
+                schema: super::super::state_store::profiles::STATUS_SCHEMA.to_owned(),
+                value: super::super::peek_layouts::json_to_struct(value).unwrap(),
+                revision: 1,
+                updated_ms: NOW_MS,
+                expires_ms: None,
+                owner_id: "server".to_owned(),
+            }),
+        };
+
+        let projected = project_event_for_watch(&state, session_id, &event);
+        let WatchEventKind::Put(entry) = projected.kind else {
+            panic!("status projection must keep its entry update");
+        };
+        let value = super::super::peek_layouts::struct_to_json(entry.value);
+        assert_eq!(value["cameras"], serde_json::json!({}));
+        assert_eq!(value["active_profile_id"], "away");
     }
 
     #[test]

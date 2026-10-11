@@ -13,6 +13,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[path = "state_store_profiles.rs"]
+pub(super) mod profiles;
+
 pub(super) const CAPABILITY_ID: &str = "keeppeek.state-store.v1";
 pub(super) const MAX_NAMESPACE_CHARS: usize = 128;
 pub(super) const MAX_KEY_CHARS: usize = 256;
@@ -669,6 +672,11 @@ pub(super) fn dispatch(
     principal: &ApiPrincipal,
     command: proto::StateStoreCommand,
 ) -> Result<control_ok::Result, ControlCommandError> {
+    if let Some(namespace) = command_namespace(&command)
+        && profiles::is_adapter_namespace(namespace)
+    {
+        return profiles::dispatch(state, session_id, principal, command);
+    }
     if let Some(namespace) = command_namespace(&command)
         && super::state_store_settings::is_adapter_namespace(namespace)
     {

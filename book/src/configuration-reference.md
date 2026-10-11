@@ -50,33 +50,41 @@ Root fields must appear before a table header or they belong to that table.
 
 ## Section index
 
-| TOML section                                       | Owning type                                         | Ownership                                     |
-| -------------------------------------------------- | --------------------------------------------------- | --------------------------------------------- |
-| Root fields                                        | `Config`                                            | Operator settings                             |
-| `[access]`                                         | `AccessConfig`                                      | Administrator security policy                 |
-| `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                |
-| `[storage]`                                        | `StorageToml`                                       | Recording paths, retention, and safety        |
-| `[battery_wake]`                                   | `BatteryWakeConfig`                                 | Reolink battery-camera wake service           |
-| `[logging]`                                        | `LoggingConfig`                                     | Service log destination                       |
-| `[operational_events]`                             | `OperationalEventsConfig`                           | Health-event timing                           |
-| `[operational_events.cameras."<camera-id-or-ip>"]` | `OperationalEventOverride`                          | Per-camera timing overrides                   |
-| `[privacy.default]`                                | `PrivacySchedule`                                   | Inherited server-enforced recurring privacy   |
-| `[privacy.cameras."<camera-id-or-ip>"]`            | `PrivacySchedule`                                   | Per-camera server-enforced recurring privacy  |
-| `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision     |
-| `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                        |
-| `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                               |
-| `[<namespace>.<camera-key>.events]`                | `EventConfig`                                       | Native camera event selection and filters     |
-| `[access_credentials]`                             | `PersistedAccessCatalog`                            | Server-managed credential records             |
-| `[peek_layouts]`                                   | `StoredRegistry`                                    | Server-managed layouts and per-user selection |
-| `[configuration_templates]`                        | `StoredTemplateDocument`                            | Server-managed camera templates               |
-| `[notifications]`                                  | `NotificationConfiguration`                         | Server-managed rule drafts and active rules   |
-| `[storage_migration]`                              | `StorageMigration`                                  | Server-managed pending storage move           |
+| TOML section                                       | Owning type                                         | Ownership                                        |
+| -------------------------------------------------- | --------------------------------------------------- | ------------------------------------------------ |
+| Root fields                                        | `Config`                                            | Operator settings                                |
+| `[access]`                                         | `AccessConfig`                                      | Administrator security policy                    |
+| `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                   |
+| `[storage]`                                        | `StorageToml`                                       | Recording paths, retention, and safety           |
+| `[battery_wake]`                                   | `BatteryWakeConfig`                                 | Reolink battery-camera wake service              |
+| `[logging]`                                        | `LoggingConfig`                                     | Service log destination                          |
+| `[operational_events]`                             | `OperationalEventsConfig`                           | Health-event timing                              |
+| `[operational_events.cameras."<camera-id-or-ip>"]` | `OperationalEventOverride`                          | Per-camera timing overrides                      |
+| `[privacy.default]`                                | `PrivacySchedule`                                   | Inherited server-enforced recurring privacy      |
+| `[privacy.cameras."<camera-id-or-ip>"]`            | `PrivacySchedule`                                   | Per-camera server-enforced recurring privacy     |
+| `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision        |
+| `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                           |
+| `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                                  |
+| `[<namespace>.<camera-key>.events]`                | `EventConfig`                                       | Native camera event selection and filters        |
+| `[access_credentials]`                             | `PersistedAccessCatalog`                            | Server-managed credential records                |
+| `[peek_layouts]`                                   | `StoredRegistry`                                    | Server-managed layouts and per-user selection    |
+| `[configuration_templates]`                        | `StoredTemplateDocument`                            | Server-managed camera templates                  |
+| `[notifications]`                                  | `NotificationConfiguration`                         | Server-managed rule drafts and active rules      |
+| `[runtime_profiles]`                               | `ProfileRegistry`                                   | Server-managed profile definitions and selection |
+| `[storage_migration]`                              | `StorageMigration`                                  | Server-managed pending storage move              |
 
 `homekit` is a reserved root section, not an implemented HomeKit configuration schema. Do not use
 it as a camera namespace. Every other non-reserved root table is interpreted as a camera namespace;
 `cameras` is the conventional name, not the only allowed one. A typo in a section name can therefore
 be interpreted as camera configuration. Some structs ignore unknown fields, so successful TOML
 parsing alone does not prove a field has an effect.
+
+`[runtime_profiles]` is server-managed internal data. Its registry is bounded to 32 profiles, and
+each profile can target at most 127 cameras with sparse runtime-safe overrides. Do not edit this
+section manually. The current partial implementation lets an Administrator activate an already
+defined profile or Base through WebRTC state store; privacy overrides apply through the existing
+media gate. UI management and convergence for recording, notifications, and camera availability
+remain unavailable until #202 is complete.
 
 Sources: [configuration](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs),
 [cameras](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs), and the subsystem sources

@@ -90,6 +90,7 @@ pub(super) enum OutboxStatus {
     Delivered,
     Failed,
     Expired,
+    Suppressed,
 }
 
 impl OutboxStatus {
