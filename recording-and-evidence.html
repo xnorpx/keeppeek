@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-11f96c56.js";
+            window.path_to_searchindex_js = "searchindex-e990159f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -269,6 +269,11 @@ does not need conversion or deletion, and disabling pre-recording does not remov
 <p>Choose a browser-compatible H.264 substream even when the main evidence stream is H.265. KeepPeek
 stores the camera’s encoded media without re-encoding it, so browser support still determines which
 recordings can play directly.</p>
+<p>Recording admission and media retention are separate. The current camera modes and event
+pre-recording do not implement independent continuous, motion, alert and detection retention
+deadlines. Storage pressure can shorten available coverage. The
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/recording-policy-audit.md">recording policy audit</a>
+tracks verified behavior, missing retention rules and their implementation owners under #168.</p>
 <h2 id="prove-recording-integrity"><a class="header" href="#prove-recording-integrity">Prove recording integrity</a></h2>
 <p>Open <strong>Recording integrity</strong> to inspect the fleet before footage is needed. The workspace reports:</p>
 <ul>
