@@ -1341,6 +1341,7 @@ fn server_capabilities(
         capability_ids.push(peek_layouts::CAPABILITY_ID.to_owned());
         capability_ids.push(CONFIGURATION_CAPABILITY_ID.to_owned());
         capability_ids.push("keeppeek.recording.pre-roll.v1".to_owned());
+        capability_ids.push("keeppeek.runtime-profiles.v1".to_owned());
     }
     if state.backup_manager.is_some() {
         capability_ids.push("keeppeek.backup.v1".to_owned());
@@ -9036,6 +9037,7 @@ pub struct ServerState {
     oidc_cache: Arc<Mutex<crate::access::oidc::Cache>>,
     oidc_issuer_budgets: crate::access::oidc::IssuerBudgets,
     privacy: Arc<PrivacyRegistry>,
+    runtime_profiles: Arc<RwLock<crate::profiles::ProfileRegistry>>,
     privacy_sources: Arc<RwLock<BTreeMap<String, PrivacySource>>>,
     privacy_epochs: Arc<Mutex<HashMap<IpAddr, u64>>>,
     privacy_override_states: Arc<Mutex<HashMap<IpAddr, bool>>>,
@@ -9173,6 +9175,9 @@ impl ServerState {
         let privacy = PrivacyRegistry::new(privacy_schedules)
             .expect("privacy configuration must be validated before server startup");
         let privacy = Arc::new(privacy);
+        privacy
+            .replace_profile_overrides(config.runtime_profiles.active_privacy_overrides())
+            .expect("profile privacy configuration must be bounded before startup");
         webrtc.set_privacy_registry(privacy.clone());
         for camera in &entries {
             if let Ok(camera_ip) = camera.info.ip.parse::<IpAddr>() {
@@ -9193,6 +9198,7 @@ impl ServerState {
             oidc_cache: Arc::new(Mutex::new(crate::access::oidc::Cache::default())),
             oidc_issuer_budgets: crate::access::oidc::IssuerBudgets::default(),
             privacy,
+            runtime_profiles: Arc::new(RwLock::new(config.runtime_profiles.clone())),
             privacy_sources: Arc::new(RwLock::new(privacy_sources)),
             privacy_epochs: Arc::new(Mutex::new(HashMap::new())),
             privacy_override_states: Arc::new(Mutex::new(HashMap::new())),
@@ -13807,7 +13813,54 @@ mod tests {
     use crate::{
         api::proto::{health_command, stored_media_command},
         health::CameraHealthReason,
+        profiles::{CameraProfileOverride, RuntimeProfile},
     };
+
+    #[test]
+    fn active_profile_privacy_is_restored_into_the_server_media_gate() {
+        let mut config = Config::default();
+        config.runtime_profiles = crate::profiles::ProfileRegistry {
+            revision: 1,
+            active_profile_id: Some("away".to_owned()),
+            profiles: BTreeMap::from([(
+                "away".to_owned(),
+                RuntimeProfile {
+                    id: "away".to_owned(),
+                    name: "Away".to_owned(),
+                    revision: 1,
+                    cameras: BTreeMap::from([(
+                        "front-door".to_owned(),
+                        CameraProfileOverride {
+                            privacy_enforced: Some(true),
+                            ..CameraProfileOverride::default()
+                        },
+                    )]),
+                },
+            )]),
+        };
+        let state = ServerState::new(
+            &config,
+            &HashMap::new(),
+            &HashMap::new(),
+            &StorageConfig::default(),
+            RecordingDemand::new(Duration::ZERO),
+            WebRtc::new(),
+        );
+
+        let (active, epoch) = state
+            .privacy_registry()
+            .decision("front-door", chrono::Utc::now())
+            .unwrap();
+
+        assert!(active);
+        assert!(
+            !state
+                .privacy_registry()
+                .gate("front-door")
+                .unwrap()
+                .allows(epoch)
+        );
+    }
 
     pub(super) fn fixture_video_keyframe(name: &str, media_type: mp4::MediaType) -> bytes::Bytes {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

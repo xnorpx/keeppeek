@@ -172,3 +172,39 @@ fn profile_fields_reject_unknown_configuration() {
     );
     assert!(decoded.is_err());
 }
+
+#[test]
+fn only_the_active_profile_contributes_privacy_overrides() {
+    let active = profile(BTreeMap::from([(
+        "front".to_owned(),
+        CameraProfileOverride {
+            privacy_enforced: Some(true),
+            ..CameraProfileOverride::default()
+        },
+    )]));
+    let inactive = RuntimeProfile {
+        id: "home".to_owned(),
+        name: "Home".to_owned(),
+        revision: 1,
+        cameras: BTreeMap::from([(
+            "back".to_owned(),
+            CameraProfileOverride {
+                privacy_enforced: Some(true),
+                ..CameraProfileOverride::default()
+            },
+        )]),
+    };
+    let registry = ProfileRegistry {
+        revision: 2,
+        active_profile_id: Some("away".to_owned()),
+        profiles: BTreeMap::from([
+            ("away".to_owned(), active.clone()),
+            ("home".to_owned(), inactive),
+        ]),
+    };
+
+    assert_eq!(
+        registry.active_privacy_overrides(),
+        BTreeMap::from([("front".to_owned(), true)])
+    );
+}
