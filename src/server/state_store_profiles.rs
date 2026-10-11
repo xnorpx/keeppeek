@@ -1,15 +1,19 @@
 use super::*;
 use crate::{access::ClientClassificationReason, config, config::Config};
 use prost_types::{Value, value::Kind};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(in crate::server) const NAMESPACE: &str = "service/runtime-profiles/";
 pub(super) const ACTIVE_SCHEMA: &str = "keeppeek.runtime-profiles.active.v1";
-pub(super) const REGISTRY_SCHEMA: &str = "keeppeek.runtime-profiles.registry.v1";
+pub(super) const REGISTRY_SCHEMA: &str = "keeppeek.runtime-profiles.registry.v2";
+const PROFILE_PART_SCHEMA: &str = "keeppeek.runtime-profiles.part.v1";
 pub(in crate::server) const STATUS_SCHEMA: &str = "keeppeek.runtime-profiles.status.v1";
 const ACTIVE_KEY: &str = "active";
 const REGISTRY_KEY: &str = "registry";
 pub(in crate::server) const STATUS_KEY: &str = "status";
+const PROFILE_PART_TARGETS: usize = 16;
+const PROFILE_DOCUMENT_BYTES_MAX: usize = 16 * 1_024;
 
 pub(super) fn is_adapter_namespace(namespace: &str) -> bool {
     namespace == NAMESPACE
@@ -38,11 +42,11 @@ pub(super) fn dispatch(
                     &request.key,
                 ));
             }
-            if request.key == REGISTRY_KEY && !admin {
+            if (request.key == REGISTRY_KEY || request.key.starts_with("profiles/")) && !admin {
                 return Err(registry_error(
                     Error::NotAuthorized,
                     NAMESPACE,
-                    REGISTRY_KEY,
+                    &request.key,
                 ));
             }
             let registry = config::load_config(config_path)
@@ -54,6 +58,8 @@ pub(super) fn dispatch(
                 ACTIVE_KEY => active_entry(registry),
                 REGISTRY_KEY => registry_entry(registry)
                     .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?,
+                key if key.starts_with("profiles/") => profile_part_entry(&registry, key)
+                    .map_err(|error| registry_error(error, NAMESPACE, key))?,
                 STATUS_KEY => status_entry(visible_status(state, principal)).map_err(|error| {
                     registry_error(Error::Storage(error.to_string()), NAMESPACE, STATUS_KEY)
                 })?,
@@ -418,6 +424,13 @@ fn put_registry(
     let value = request
         .value
         .ok_or_else(|| invalid("runtime profile registry is required"))?;
+    if value.encoded_len() > MAX_VALUE_BYTES {
+        return Err(registry_error(
+            Error::Invalid(Invalid::ValueTooLarge),
+            NAMESPACE,
+            REGISTRY_KEY,
+        ));
+    }
     let mut registry_value = super::super::peek_layouts::struct_to_json(value);
     normalize_revision_fields(&mut registry_value, false)
         .map_err(|_| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY))?;
@@ -804,13 +817,30 @@ fn visible_status(
 }
 
 fn registry_entry(registry: crate::profiles::ProfileRegistry) -> Result<StoredEntry, Error> {
-    let mut value =
-        serde_json::to_value(&registry).map_err(|error| Error::Storage(error.to_string()))?;
-    normalize_revision_fields(&mut value, true)
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let value = super::super::peek_layouts::json_to_struct(value)
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    if value.encoded_len() > MAX_VALUE_BYTES {
+    let profiles = registry
+        .profiles
+        .iter()
+        .map(|(id, profile)| {
+            Ok((
+                id.clone(),
+                serde_json::json!({
+                    "id": profile.id,
+                    "name": profile.name,
+                    "revision": profile.revision.to_string(),
+                    "target_count": profile.cameras.len(),
+                    "part_count": profile.cameras.len().div_ceil(PROFILE_PART_TARGETS),
+                    "digest": profile_digest(profile)?,
+                }),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, Error>>()?;
+    let value = super::super::peek_layouts::json_to_struct(serde_json::json!({
+        "revision": registry.revision.to_string(),
+        "active_profile_id": registry.active_profile_id,
+        "profiles": profiles,
+    }))
+    .map_err(|error| Error::Storage(error.to_string()))?;
+    if value.encoded_len() > PROFILE_DOCUMENT_BYTES_MAX {
         return Err(Error::Invalid(Invalid::ValueTooLarge));
     }
     Ok(StoredEntry {
@@ -823,6 +853,85 @@ fn registry_entry(registry: crate::profiles::ProfileRegistry) -> Result<StoredEn
         expires_ms: None,
         owner_id: "server".to_owned(),
     })
+}
+
+fn profile_part_entry(
+    registry: &crate::profiles::ProfileRegistry,
+    key: &str,
+) -> Result<StoredEntry, Error> {
+    let mut segments = key.split('/');
+    if segments.next() != Some("profiles") {
+        return Err(Error::Invalid(Invalid::Key));
+    }
+    let profile_id = segments.next().ok_or(Error::Invalid(Invalid::Key))?;
+    let generation = segments
+        .next()
+        .ok_or(Error::Invalid(Invalid::Key))?
+        .parse::<u64>()
+        .map_err(|_| Error::Invalid(Invalid::Key))?;
+    let part_index = segments
+        .next()
+        .ok_or(Error::Invalid(Invalid::Key))?
+        .parse::<usize>()
+        .map_err(|_| Error::Invalid(Invalid::Key))?;
+    if segments.next().is_some() {
+        return Err(Error::Invalid(Invalid::Key));
+    }
+    super::validate_key(key)?;
+    let profile = registry.profiles.get(profile_id).ok_or(Error::NotFound)?;
+    if profile.revision != generation {
+        return Err(Error::Conflict {
+            current_revision: profile.revision,
+        });
+    }
+    let part_count = profile.cameras.len().div_ceil(PROFILE_PART_TARGETS);
+    if part_index >= part_count {
+        return Err(Error::NotFound);
+    }
+    let cameras = profile
+        .cameras
+        .iter()
+        .skip(part_index * PROFILE_PART_TARGETS)
+        .take(PROFILE_PART_TARGETS)
+        .map(|(camera_id, override_)| (camera_id.clone(), override_))
+        .collect::<BTreeMap<_, _>>();
+    let value = super::super::peek_layouts::json_to_struct(serde_json::json!({
+        "profile_id": profile.id,
+        "generation": profile.revision.to_string(),
+        "part_index": part_index,
+        "part_count": part_count,
+        "digest": profile_digest(profile)?,
+        "cameras": cameras,
+    }))
+    .map_err(|error| Error::Storage(error.to_string()))?;
+    if value.encoded_len() > PROFILE_DOCUMENT_BYTES_MAX {
+        return Err(Error::Invalid(Invalid::ValueTooLarge));
+    }
+    Ok(StoredEntry {
+        namespace: NAMESPACE.to_owned(),
+        key: key.to_owned(),
+        schema: PROFILE_PART_SCHEMA.to_owned(),
+        value,
+        revision: profile.revision,
+        updated_ms: 0,
+        expires_ms: None,
+        owner_id: "server".to_owned(),
+    })
+}
+
+fn profile_digest(profile: &crate::profiles::RuntimeProfile) -> Result<String, Error> {
+    let mut value =
+        serde_json::to_value(profile).map_err(|error| Error::Storage(error.to_string()))?;
+    normalize_revision_fields(&mut value, true)
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let bytes = serde_json::to_vec(&value).map_err(|error| Error::Storage(error.to_string()))?;
+    let digest = Sha256::digest(bytes);
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").map_err(|error| Error::Storage(error.to_string()))?;
+    }
+    Ok(encoded)
 }
 
 fn normalize_revision_fields(value: &mut serde_json::Value, encode: bool) -> anyhow::Result<()> {
@@ -934,7 +1043,9 @@ mod tests {
         registry: &crate::profiles::ProfileRegistry,
         expected_revision: u64,
     ) -> proto::StateStoreCommand {
-        let value = super::registry_entry(registry.clone()).unwrap().value;
+        let mut value = serde_json::to_value(registry).unwrap();
+        normalize_revision_fields(&mut value, true).unwrap();
+        let value = super::super::super::peek_layouts::json_to_struct(value).unwrap();
         proto::StateStoreCommand {
             action: Some(state_store_command::Action::Put(proto::PutState {
                 namespace: NAMESPACE.to_owned(),
@@ -972,6 +1083,15 @@ mod tests {
             action: Some(state_store_command::Action::Get(proto::GetState {
                 namespace: NAMESPACE.to_owned(),
                 key: STATUS_KEY.to_owned(),
+            })),
+        }
+    }
+
+    fn get_key(key: &str) -> proto::StateStoreCommand {
+        proto::StateStoreCommand {
+            action: Some(state_store_command::Action::Get(proto::GetState {
+                namespace: NAMESPACE.to_owned(),
+                key: key.to_owned(),
             })),
         }
     }
@@ -1366,10 +1486,19 @@ mod tests {
                 super::super::super::camera_entry(&camera_config(ip), None)
             }));
         }
-        assert_eq!(
-            registry_entry(registry.clone()),
-            Err(Error::Invalid(Invalid::ValueTooLarge))
-        );
+        let header = registry_entry(registry.clone()).unwrap();
+        assert!(header.value.encoded_len() <= PROFILE_DOCUMENT_BYTES_MAX);
+        for profile in registry.profiles.values() {
+            let part_count = profile.cameras.len().div_ceil(PROFILE_PART_TARGETS);
+            for part_index in 0..part_count {
+                let key = format!("profiles/{}/{}/{part_index}", profile.id, profile.revision);
+                let part = profile_part_entry(&registry, &key).unwrap();
+                assert!(
+                    part.value.encoded_len() <= PROFILE_DOCUMENT_BYTES_MAX,
+                    "profile part exceeds the bound: {key}"
+                );
+            }
+        }
 
         let before = config::load_config(&fixture.config_path())
             .unwrap()
@@ -1393,5 +1522,87 @@ mod tests {
                 .runtime_profiles,
             before
         );
+    }
+
+    #[test]
+    fn administrator_reads_bounded_profile_parts_and_users_cannot_read_definitions() {
+        let fixture = Fixture::new();
+        let registry = crate::profiles::ProfileRegistry {
+            revision: 5,
+            active_profile_id: Some("away".to_owned()),
+            profiles: BTreeMap::from([(
+                "away".to_owned(),
+                RuntimeProfile {
+                    id: "away".to_owned(),
+                    name: "Away".to_owned(),
+                    revision: 3,
+                    cameras: BTreeMap::from([(
+                        "192.0.2.10".to_owned(),
+                        crate::profiles::CameraProfileOverride {
+                            availability: Some(false),
+                            ..Default::default()
+                        },
+                    )]),
+                },
+            )]),
+        };
+        let mut root = config::load_configuration_table(&fixture.config_path()).unwrap();
+        root.insert(
+            "runtime_profiles".to_owned(),
+            toml::Value::try_from(&registry).unwrap(),
+        );
+        config::write_configuration_table(&fixture.config_path(), &root).unwrap();
+
+        let admin = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let summary = super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_211),
+            &admin,
+            get_key(REGISTRY_KEY),
+        )
+        .unwrap();
+        let control_ok::Result::StateStoreResult(summary) = summary else {
+            panic!("registry Get must return a StateStore result");
+        };
+        let Some(state_store_result::Result::Entry(summary)) = summary.result else {
+            panic!("registry Get must return a summary entry");
+        };
+        assert_eq!(summary.schema, REGISTRY_SCHEMA);
+        let mut summary_value = summary.value.unwrap();
+        let profiles = summary_value.fields.remove("profiles").unwrap();
+        let Some(Kind::StructValue(profiles)) = profiles.kind else {
+            panic!("profile summary must be a struct");
+        };
+        let Some(Kind::StructValue(away)) = profiles.fields["away"].kind.as_ref() else {
+            panic!("profile summary must not be a camera definition");
+        };
+        assert!(!away.fields.contains_key("cameras"));
+
+        let part = super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_211),
+            &admin,
+            get_key("profiles/away/3/0"),
+        )
+        .unwrap();
+        let control_ok::Result::StateStoreResult(part) = part else {
+            panic!("profile part Get must return a StateStore result");
+        };
+        let Some(state_store_result::Result::Entry(part)) = part.result else {
+            panic!("profile part Get must return an entry");
+        };
+        assert_eq!(part.schema, PROFILE_PART_SCHEMA);
+        assert!(part.value.unwrap().fields.contains_key("cameras"));
+
+        let mut user = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        user.role = AccessRole::User;
+        let error = super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_212),
+            &user,
+            get_key("profiles/away/3/0"),
+        )
+        .expect_err("Users must not read profile definitions");
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
     }
 }

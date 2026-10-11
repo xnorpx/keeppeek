@@ -585,7 +585,7 @@ function encodedRuntimeProfileEntry(
 	revision: bigint
 ): number[] {
 	const schema = {
-		registry: 'keeppeek.runtime-profiles.registry.v1',
+		registry: 'keeppeek.runtime-profiles.registry.v2',
 		active: 'keeppeek.runtime-profiles.active.v1',
 		status: 'keeppeek.runtime-profiles.status.v1'
 	}[key];
