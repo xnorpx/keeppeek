@@ -34,8 +34,14 @@ describe('Board 27 mobile administration story', () => {
 		];
 		expect(settingsLinks).toHaveLength(11);
 		expect(settingsLinks.map((link) => Math.round(link.getBoundingClientRect().height))).toEqual([
-			52, 52, 52, 52, 52, 52, 52, 46, 46, 46, 46
+			44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44
 		]);
+		const viewportBounds = frame!
+			.querySelector('[data-mobile-settings-viewport]')!
+			.getBoundingClientRect();
+		for (const link of settingsLinks) {
+			expect(link.getBoundingClientRect().bottom).toBeLessThanOrEqual(viewportBounds.bottom);
+		}
 	});
 
 	it('renders unavailable identity evidence without Paper fixture people or tokens', async () => {

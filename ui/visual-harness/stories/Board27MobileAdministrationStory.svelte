@@ -54,7 +54,7 @@
 	<MobileDeviceStatusBar />
 	{#if state === 'index'}
 		<MobileSettingsHeader title="More" />
-		<div class="min-h-0 flex-1 overflow-hidden">
+		<div class="min-h-0 flex-1 overflow-hidden" data-mobile-settings-viewport>
 			<MobileSettingsIndex {config} />
 		</div>
 		<MobileNavigation pathname="/settings" fixed={false} />
