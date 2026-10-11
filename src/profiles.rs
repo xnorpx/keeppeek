@@ -72,6 +72,24 @@ impl ProfileRegistry {
         self.revision == 0 && self.active_profile_id.is_none() && self.profiles.is_empty()
     }
 
+    pub fn active_privacy_overrides(&self) -> BTreeMap<String, bool> {
+        self.active_profile_id
+            .as_ref()
+            .and_then(|profile_id| self.profiles.get(profile_id))
+            .map(|profile| {
+                profile
+                    .cameras
+                    .iter()
+                    .filter_map(|(camera_id, overrides)| {
+                        overrides
+                            .privacy_enforced
+                            .map(|enforced| (camera_id.clone(), enforced))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.revision <= i64::MAX as u64,

@@ -1,8 +1,12 @@
 # Runtime profiles implementation contract
 
 This document tracks [#202](https://github.com/xnorpx/keeppeek/issues/202).
-Runtime profiles are not available in this build. The implementation baseline is
-`26ef522`; the requirements below describe the proposed feature, not supported settings.
+Runtime profiles are partially implemented. The server can persist and validate bounded
+definitions and administrators can select a preconfigured profile or Base through the existing
+WebRTC state-store command. Selection is revisioned and durable; profile privacy overrides feed
+the existing media privacy gate. Profile CRUD, UI, recording and notification application,
+per-camera convergence status, and full client watch projections remain incomplete. The baseline
+for this implementation is current `main` plus the branch commits listed in the PR.
 
 ## Scope
 
