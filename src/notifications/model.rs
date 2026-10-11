@@ -371,6 +371,7 @@ impl Rule {
 pub enum Suppression {
     OutsideSchedule,
     QuietHours,
+    RuntimeProfile,
 }
 
 impl Suppression {
@@ -378,6 +379,7 @@ impl Suppression {
         match self {
             Self::OutsideSchedule => "outside_schedule",
             Self::QuietHours => "quiet_hours",
+            Self::RuntimeProfile => "runtime_profile",
         }
     }
 }

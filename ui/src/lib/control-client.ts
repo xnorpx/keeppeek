@@ -23,6 +23,7 @@ import type { MqttSettingsUpdate } from './integrations';
 import { MqttControlClient } from './control-client-mqtt';
 import { RecordingMaintenanceClient } from './control-client-maintenance';
 import { PeekLayoutControlClient } from './control-client-peek-layouts';
+import { RuntimeProfilesControlClient } from './control-client-runtime-profiles';
 import { CameraAccessControlClient } from './control-client-camera-access';
 import type { PeekLayoutRegistry } from './peek-layout';
 import type {
@@ -609,9 +610,14 @@ export class ControlClient {
 		(event) => recordingEvent(event, new Map<string, ChunkAccumulator>(), () => {})
 	);
 	#stateStore = new ControlClientStateStore((command) => this.request(command));
+	#runtimeProfiles = new RuntimeProfilesControlClient(this.#stateStore);
 
 	get stateStore(): ControlClientStateStore {
 		return this.#stateStore;
+	}
+
+	get runtimeProfiles(): RuntimeProfilesControlClient {
+		return this.#runtimeProfiles;
 	}
 
 	onCapabilities(listener: CapabilityListener): () => void {

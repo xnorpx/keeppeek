@@ -28,6 +28,7 @@
 			case 'backups':
 			case 'groups':
 			case 'notifications':
+			case 'runtime-profiles':
 			case 'access':
 				return '—';
 			case 'integrations':

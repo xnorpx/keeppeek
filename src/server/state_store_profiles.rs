@@ -3,9 +3,13 @@ use crate::{access::ClientClassificationReason, config, config::Config};
 use prost_types::{Value, value::Kind};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) const NAMESPACE: &str = "service/runtime-profiles/";
+pub(in crate::server) const NAMESPACE: &str = "service/runtime-profiles/";
 pub(super) const ACTIVE_SCHEMA: &str = "keeppeek.runtime-profiles.active.v1";
+pub(super) const REGISTRY_SCHEMA: &str = "keeppeek.runtime-profiles.registry.v1";
+pub(in crate::server) const STATUS_SCHEMA: &str = "keeppeek.runtime-profiles.status.v1";
 const ACTIVE_KEY: &str = "active";
+const REGISTRY_KEY: &str = "registry";
+pub(in crate::server) const STATUS_KEY: &str = "status";
 
 pub(super) fn is_adapter_namespace(namespace: &str) -> bool {
     namespace == NAMESPACE
@@ -27,21 +31,47 @@ pub(super) fn dispatch(
     let admin = principal.role == AccessRole::Administrator;
     let result = match command.action {
         Some(state_store_command::Action::Get(request)) => {
-            if request.namespace != NAMESPACE || request.key != ACTIVE_KEY {
+            if request.namespace != NAMESPACE {
                 return Err(registry_error(
-                    Error::Invalid(Invalid::Key),
+                    Error::Invalid(Invalid::Namespace),
                     &request.namespace,
                     &request.key,
                 ));
             }
-            let entry = active_entry(
-                config::load_config(config_path)
-                    .map_err(|error| {
-                        registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
-                    })?
-                    .runtime_profiles,
-            );
+            if request.key == REGISTRY_KEY && !admin {
+                return Err(registry_error(
+                    Error::NotAuthorized,
+                    NAMESPACE,
+                    REGISTRY_KEY,
+                ));
+            }
+            let registry = config::load_config(config_path)
+                .map_err(|error| {
+                    registry_error(Error::Storage(error.to_string()), NAMESPACE, &request.key)
+                })?
+                .runtime_profiles;
+            let entry = match request.key.as_str() {
+                ACTIVE_KEY => active_entry(registry),
+                REGISTRY_KEY => registry_entry(registry).map_err(|error| {
+                    registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
+                })?,
+                STATUS_KEY => status_entry(visible_status(state, principal)).map_err(|error| {
+                    registry_error(Error::Storage(error.to_string()), NAMESPACE, STATUS_KEY)
+                })?,
+                _ => {
+                    return Err(registry_error(
+                        Error::Invalid(Invalid::Key),
+                        NAMESPACE,
+                        &request.key,
+                    ));
+                }
+            };
             entry_result(entry)
+        }
+        Some(state_store_command::Action::Put(request))
+            if request.namespace == NAMESPACE && request.key == REGISTRY_KEY =>
+        {
+            return put_registry(state, session_id, principal, request);
         }
         Some(state_store_command::Action::Put(request)) => {
             if request.namespace != NAMESPACE || request.key != ACTIVE_KEY {
@@ -151,11 +181,6 @@ pub(super) fn dispatch(
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .active_privacy_overrides();
-            let previous_registry = state
-                .runtime_profiles
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
             let next_privacy = current.runtime_profiles.active_privacy_overrides();
             let mut restrictive_privacy = previous_privacy.clone();
             for (camera_id, enforced) in &next_privacy {
@@ -170,20 +195,6 @@ pub(super) fn dispatch(
                 .map_err(|error| {
                     registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
                 })?;
-            if let Some(runtime) = &state.camera_runtime
-                && let Err(error) = runtime.set_runtime_profiles(current.runtime_profiles.clone())
-            {
-                runtime.set_runtime_profiles(previous_registry).ok();
-                state
-                    .privacy
-                    .replace_profile_overrides(previous_privacy)
-                    .ok();
-                return Err(registry_error(
-                    Error::Storage(error.to_string()),
-                    NAMESPACE,
-                    ACTIVE_KEY,
-                ));
-            }
             root.insert(
                 "runtime_profiles".to_owned(),
                 toml::Value::try_from(&current.runtime_profiles).map_err(|error| {
@@ -191,9 +202,6 @@ pub(super) fn dispatch(
                 })?,
             );
             if let Err(error) = config::write_configuration_table(config_path, &root) {
-                if let Some(runtime) = &state.camera_runtime {
-                    runtime.set_runtime_profiles(previous_registry).ok();
-                }
                 state
                     .privacy
                     .replace_profile_overrides(previous_privacy)
@@ -209,12 +217,34 @@ pub(super) fn dispatch(
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                 current.runtime_profiles.clone();
-            state
-                .privacy
-                .replace_profile_overrides(next_privacy)
-                .map_err(|error| {
-                    registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
-                })?;
+            mark_runtime_status_pending(state, &current.runtime_profiles);
+            publish_status_event(state, now_ms());
+            let runtime_result = state
+                .camera_runtime
+                .as_ref()
+                .map(|runtime| runtime.set_runtime_profiles(current.runtime_profiles.clone()));
+            let applications = runtime_result
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .cloned();
+            if runtime_result.as_ref().is_some_and(|result| result.is_ok()) {
+                state
+                    .privacy
+                    .replace_profile_overrides(next_privacy)
+                    .map_err(|error| {
+                        registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
+                    })?;
+            }
+            let runtime_error = runtime_result
+                .as_ref()
+                .and_then(|result| result.as_ref().err().map(|error| error.to_string()));
+            update_runtime_status(
+                state,
+                &current.runtime_profiles,
+                applications,
+                runtime_error,
+                runtime_result.is_none(),
+            );
             let audit_target = current.runtime_profiles.active_profile_id.clone();
             let entry = active_entry(current.runtime_profiles);
             let classification = state
@@ -247,6 +277,7 @@ pub(super) fn dispatch(
                 false,
                 now_ms(),
             );
+            publish_status_event(state, now_ms());
             entry_result(entry)
         }
         Some(state_store_command::Action::Watch(request)) => {
@@ -267,7 +298,10 @@ pub(super) fn dispatch(
             } else {
                 request.key_prefix.as_str()
             };
-            if key_prefix != ACTIVE_KEY {
+            if key_prefix != ACTIVE_KEY
+                && key_prefix != STATUS_KEY
+                && (key_prefix != REGISTRY_KEY || !admin)
+            {
                 return Err(registry_error(
                     Error::Invalid(Invalid::Key),
                     NAMESPACE,
@@ -281,7 +315,17 @@ pub(super) fn dispatch(
                     registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
                 })?
                 .runtime_profiles;
-            let entry = active_entry(registry.clone());
+            let entry = if key_prefix == REGISTRY_KEY {
+                registry_entry(registry.clone()).map_err(|error| {
+                    registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
+                })?
+            } else if key_prefix == STATUS_KEY {
+                status_entry(visible_status(state, principal)).map_err(|error| {
+                    registry_error(Error::Storage(error.to_string()), NAMESPACE, STATUS_KEY)
+                })?
+            } else {
+                active_entry(registry.clone())
+            };
             let message = proto::StateWatchSnapshot {
                 watch_id: request.watch_id.clone(),
                 namespace: NAMESPACE.to_owned(),
@@ -341,6 +385,232 @@ fn parse_active_profile_id(value: &Struct) -> Result<Option<String>, Error> {
     }
 }
 
+fn put_registry(
+    state: &ServerState,
+    session_id: SessionId,
+    principal: &ApiPrincipal,
+    request: proto::PutState,
+) -> Result<control_ok::Result, ControlCommandError> {
+    if request.schema != REGISTRY_SCHEMA {
+        return Err(registry_error(
+            Error::Invalid(Invalid::Schema),
+            NAMESPACE,
+            REGISTRY_KEY,
+        ));
+    }
+    let layout = validate_namespace(NAMESPACE)
+        .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?;
+    authorize_write(
+        &layout,
+        &principal.id(),
+        principal.role == AccessRole::Administrator,
+    )
+    .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?;
+    if request.ttl.is_some() || request.expected_revision.is_none() {
+        return Err(registry_error(
+            Error::Invalid(if request.ttl.is_some() {
+                Invalid::Ttl
+            } else {
+                Invalid::Schema
+            }),
+            NAMESPACE,
+            REGISTRY_KEY,
+        ));
+    }
+    let value = request
+        .value
+        .ok_or_else(|| invalid("runtime profile registry is required"))?;
+    let mut registry_value = super::super::peek_layouts::struct_to_json(value);
+    normalize_revision_fields(&mut registry_value, false)
+        .map_err(|_| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY))?;
+    let mut candidate: crate::profiles::ProfileRegistry = serde_json::from_value(registry_value)
+        .map_err(|_| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY))?;
+
+    let Some(config_path) = state.camera_config_path.as_deref() else {
+        return Err(registry_error(
+            Error::Storage("runtime profile settings are unavailable".to_owned()),
+            NAMESPACE,
+            REGISTRY_KEY,
+        ));
+    };
+    let _guard = super::super::state_store_settings::lock_config(&state.config_update)
+        .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?;
+    let mut root = config::load_configuration_table(config_path).map_err(|error| {
+        registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
+    })?;
+    let current: Config = config::load_config(config_path).map_err(|error| {
+        registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
+    })?;
+    let previous_registry = current.runtime_profiles;
+    if request.expected_revision != Some(previous_registry.revision) {
+        return Err(registry_error(
+            Error::Conflict {
+                current_revision: previous_registry.revision,
+            },
+            NAMESPACE,
+            REGISTRY_KEY,
+        ));
+    }
+    if candidate.active_profile_id != previous_registry.active_profile_id {
+        return Err(registry_error(
+            Error::Invalid(Invalid::Schema),
+            NAMESPACE,
+            REGISTRY_KEY,
+        ));
+    }
+    let camera_ids = state
+        .camera_entries()
+        .into_iter()
+        .map(|camera| camera.info.id)
+        .collect::<BTreeSet<_>>();
+    candidate
+        .validate_targets(&camera_ids)
+        .map_err(|_| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY))?;
+    for (profile_id, profile) in &mut candidate.profiles {
+        profile.revision = match previous_registry.profiles.get(profile_id) {
+            Some(previous) if previous == profile => previous.revision,
+            Some(previous) => previous.revision.checked_add(1).ok_or_else(|| {
+                registry_error(
+                    Error::Storage("runtime profile revision is exhausted".to_owned()),
+                    NAMESPACE,
+                    REGISTRY_KEY,
+                )
+            })?,
+            None => 1,
+        };
+    }
+    candidate.revision = previous_registry
+        .revision
+        .checked_add(1)
+        .filter(|revision| *revision <= i64::MAX as u64)
+        .ok_or_else(|| {
+            registry_error(
+                Error::Storage("runtime profile revision is exhausted".to_owned()),
+                NAMESPACE,
+                REGISTRY_KEY,
+            )
+        })?;
+    candidate
+        .validate()
+        .map_err(|_| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY))?;
+
+    let previous_privacy = previous_registry.active_privacy_overrides();
+    let next_privacy = candidate.active_privacy_overrides();
+    let mut restrictive_privacy = previous_privacy.clone();
+    for (camera_id, enforced) in &next_privacy {
+        restrictive_privacy
+            .entry(camera_id.clone())
+            .and_modify(|previous| *previous |= *enforced)
+            .or_insert(*enforced);
+    }
+    state
+        .privacy
+        .replace_profile_overrides(restrictive_privacy)
+        .map_err(|error| {
+            registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
+        })?;
+    root.insert(
+        "runtime_profiles".to_owned(),
+        toml::Value::try_from(&candidate).map_err(|error| {
+            registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
+        })?,
+    );
+    if let Err(error) = config::write_configuration_table(config_path, &root) {
+        state
+            .privacy
+            .replace_profile_overrides(previous_privacy)
+            .ok();
+        return Err(registry_error(
+            Error::Storage(error.to_string()),
+            NAMESPACE,
+            REGISTRY_KEY,
+        ));
+    }
+    *state
+        .runtime_profiles
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = candidate.clone();
+    mark_runtime_status_pending(state, &candidate);
+    publish_status_event(state, now_ms());
+    let runtime_result = state
+        .camera_runtime
+        .as_ref()
+        .map(|runtime| runtime.set_runtime_profiles(candidate.clone()));
+    let applications = runtime_result
+        .as_ref()
+        .and_then(|result| result.as_ref().ok())
+        .cloned();
+    if runtime_result.as_ref().is_some_and(|result| result.is_ok()) {
+        state
+            .privacy
+            .replace_profile_overrides(next_privacy)
+            .map_err(|error| {
+                registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
+            })?;
+    }
+    let runtime_error = runtime_result
+        .as_ref()
+        .and_then(|result| result.as_ref().err().map(|error| error.to_string()));
+    update_runtime_status(
+        state,
+        &candidate,
+        applications,
+        runtime_error,
+        runtime_result.is_none(),
+    );
+
+    let classification = state
+        .api_session_owners
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&session_id)
+        .map_or(ClientClassificationReason::UnknownSession, |session| {
+            session.classification.reason
+        });
+    super::super::record_access_audit(
+        state,
+        i64::try_from(now_ms()).unwrap_or(i64::MAX),
+        Some(&principal.id()),
+        Some(principal.role),
+        "runtime_profile_registry_updated",
+        None,
+        "accepted",
+        classification,
+    );
+    let registry_entry = registry_entry(candidate.clone()).map_err(|error| {
+        registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
+    })?;
+    let active_entry = active_entry(candidate);
+    publish_events(
+        state,
+        Some(WatchEvent {
+            namespace: NAMESPACE.to_owned(),
+            key: REGISTRY_KEY.to_owned(),
+            revision: registry_entry.revision,
+            kind: WatchEventKind::Put(registry_entry.clone()),
+        }),
+        Vec::new(),
+        false,
+        now_ms(),
+    );
+    publish_status_event(state, now_ms());
+    publish_events(
+        state,
+        Some(WatchEvent {
+            namespace: NAMESPACE.to_owned(),
+            key: ACTIVE_KEY.to_owned(),
+            revision: active_entry.revision,
+            kind: WatchEventKind::Put(active_entry),
+        }),
+        Vec::new(),
+        false,
+        now_ms(),
+    );
+    Ok(control_ok::Result::StateStoreResult(entry_result(
+        registry_entry,
+    )))
+}
+
 fn active_entry(registry: crate::profiles::ProfileRegistry) -> StoredEntry {
     let profile_id = registry.active_profile_id.unwrap_or_default();
     StoredEntry {
@@ -360,6 +630,228 @@ fn active_entry(registry: crate::profiles::ProfileRegistry) -> StoredEntry {
         expires_ms: None,
         owner_id: "server".to_owned(),
     }
+}
+
+fn update_runtime_status(
+    state: &ServerState,
+    profiles: &crate::profiles::ProfileRegistry,
+    applications: Option<Vec<crate::profiles::CameraRuntimeApplication>>,
+    runtime_error: Option<String>,
+    runtime_unavailable: bool,
+) {
+    let mut cameras = applications
+        .unwrap_or_default()
+        .into_iter()
+        .map(|application| (application.camera_id.clone(), application))
+        .collect::<BTreeMap<_, _>>();
+    if runtime_error.is_some() || runtime_unavailable {
+        let configs = state
+            .camera_config_path
+            .as_deref()
+            .and_then(|path| config::load_cameras(path).ok())
+            .map(|configs| configs.into_values().flatten().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for entry in state.camera_entries() {
+            let camera_id = entry.info.id.clone();
+            if cameras.contains_key(&camera_id) {
+                continue;
+            }
+            let base_config = configs
+                .iter()
+                .find(|camera| camera.ip.to_string() == camera_id);
+            let base = crate::profiles::BaseCameraPolicy {
+                available: true,
+                recording_mode: base_config
+                    .map_or_else(crate::cameras::CameraRecordingMode::default, |camera| {
+                        camera.recording_mode
+                    }),
+                privacy_enforced: false,
+                notifications_enabled: true,
+            };
+            let profile_override = profiles
+                .active_profile_id
+                .as_ref()
+                .and_then(|profile_id| profiles.profiles.get(profile_id))
+                .and_then(|profile| profile.cameras.get(&camera_id));
+            cameras.insert(
+                camera_id.clone(),
+                crate::profiles::CameraRuntimeApplication {
+                    camera_id,
+                    state: crate::profiles::RuntimeApplicationState::Degraded,
+                    policy: crate::profiles::resolve_camera_policy(&base, profile_override),
+                    reason: Some(
+                        runtime_error
+                            .clone()
+                            .unwrap_or_else(|| "camera runtime is unavailable".to_owned())
+                            .chars()
+                            .take(256)
+                            .collect(),
+                    ),
+                },
+            );
+        }
+    }
+    for application in cameras.values_mut() {
+        let privacy_active = state
+            .privacy
+            .decision(&application.camera_id, chrono::Utc::now());
+        match privacy_active {
+            Ok((active, _)) => {
+                application.policy.privacy_enforced = active;
+                application.policy.privacy_source = if active
+                    && profiles
+                        .active_profile_id
+                        .as_ref()
+                        .and_then(|profile_id| profiles.profiles.get(profile_id))
+                        .and_then(|profile| profile.cameras.get(&application.camera_id))
+                        .is_some_and(|camera| camera.privacy_enforced == Some(true))
+                {
+                    crate::profiles::FieldSource::Profile
+                } else {
+                    crate::profiles::FieldSource::Base
+                };
+            }
+            Err(error) => {
+                application.policy.privacy_enforced = true;
+                application.state = crate::profiles::RuntimeApplicationState::Degraded;
+                application.reason = Some(error.to_string().chars().take(256).collect());
+            }
+        }
+    }
+    *state
+        .runtime_profile_status
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        crate::profiles::RuntimeProfileStatus {
+            revision: profiles.revision,
+            active_profile_id: profiles.active_profile_id.clone(),
+            cameras,
+        };
+}
+
+fn mark_runtime_status_pending(state: &ServerState, profiles: &crate::profiles::ProfileRegistry) {
+    let mut status = state
+        .runtime_profile_status
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    status.revision = profiles.revision;
+    status.active_profile_id = profiles.active_profile_id.clone();
+    for application in status.cameras.values_mut() {
+        application.state = crate::profiles::RuntimeApplicationState::Pending;
+        application.reason = None;
+    }
+}
+
+fn publish_status_event(state: &ServerState, updated_ms: u64) {
+    let status = state
+        .runtime_profile_status
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Ok(entry) = status_entry(status) {
+        publish_events(
+            state,
+            Some(WatchEvent {
+                namespace: NAMESPACE.to_owned(),
+                key: STATUS_KEY.to_owned(),
+                revision: entry.revision,
+                kind: WatchEventKind::Put(entry),
+            }),
+            Vec::new(),
+            false,
+            updated_ms,
+        );
+    }
+}
+
+fn status_entry(status: crate::profiles::RuntimeProfileStatus) -> anyhow::Result<StoredEntry> {
+    let revision = status.revision;
+    let mut value = serde_json::to_value(status)?;
+    normalize_revision_fields(&mut value, true)?;
+    let value = super::super::peek_layouts::json_to_struct(value)?;
+    Ok(StoredEntry {
+        namespace: NAMESPACE.to_owned(),
+        key: STATUS_KEY.to_owned(),
+        schema: STATUS_SCHEMA.to_owned(),
+        value,
+        revision,
+        updated_ms: 0,
+        expires_ms: None,
+        owner_id: "server".to_owned(),
+    })
+}
+
+fn visible_status(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+) -> crate::profiles::RuntimeProfileStatus {
+    let mut status = state
+        .runtime_profile_status
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if principal.role == AccessRole::Administrator {
+        return status;
+    }
+    let visible_camera_ids = super::super::camera_access::for_principal(state, principal)
+        .ok()
+        .and_then(|policy| super::super::camera_access::query_cameras(state, &policy, &[]).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|camera| camera.info.id)
+        .collect::<BTreeSet<_>>();
+    status
+        .cameras
+        .retain(|camera_id, _| visible_camera_ids.contains(camera_id));
+    status
+}
+
+fn registry_entry(registry: crate::profiles::ProfileRegistry) -> anyhow::Result<StoredEntry> {
+    let mut value = serde_json::to_value(&registry)?;
+    normalize_revision_fields(&mut value, true)?;
+    let value = super::super::peek_layouts::json_to_struct(value)?;
+    Ok(StoredEntry {
+        namespace: NAMESPACE.to_owned(),
+        key: REGISTRY_KEY.to_owned(),
+        schema: REGISTRY_SCHEMA.to_owned(),
+        value,
+        revision: registry.revision,
+        updated_ms: 0,
+        expires_ms: None,
+        owner_id: "server".to_owned(),
+    })
+}
+
+fn normalize_revision_fields(value: &mut serde_json::Value, encode: bool) -> anyhow::Result<()> {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (name, field) in fields {
+                if name == "revision" {
+                    *field = if encode {
+                        let revision = field
+                            .as_u64()
+                            .ok_or_else(|| anyhow::anyhow!("invalid profile revision"))?;
+                        serde_json::Value::String(revision.to_string())
+                    } else {
+                        let revision = field
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("invalid profile revision"))?
+                            .parse::<u64>()?;
+                        serde_json::Value::Number(revision.into())
+                    };
+                } else {
+                    normalize_revision_fields(field, encode)?;
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                normalize_revision_fields(value, encode)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -435,12 +927,48 @@ mod tests {
         }
     }
 
+    fn put_registry(
+        registry: &crate::profiles::ProfileRegistry,
+        expected_revision: u64,
+    ) -> proto::StateStoreCommand {
+        let value = super::registry_entry(registry.clone()).unwrap().value;
+        proto::StateStoreCommand {
+            action: Some(state_store_command::Action::Put(proto::PutState {
+                namespace: NAMESPACE.to_owned(),
+                key: REGISTRY_KEY.to_owned(),
+                schema: REGISTRY_SCHEMA.to_owned(),
+                value: Some(value),
+                expected_revision: Some(expected_revision),
+                ttl: None,
+            })),
+        }
+    }
+
     fn watch_active(watch_id: &str) -> proto::StateStoreCommand {
         proto::StateStoreCommand {
             action: Some(state_store_command::Action::Watch(proto::WatchState {
                 watch_id: watch_id.to_owned(),
                 namespace: NAMESPACE.to_owned(),
                 key_prefix: ACTIVE_KEY.to_owned(),
+            })),
+        }
+    }
+
+    fn watch_status(watch_id: &str) -> proto::StateStoreCommand {
+        proto::StateStoreCommand {
+            action: Some(state_store_command::Action::Watch(proto::WatchState {
+                watch_id: watch_id.to_owned(),
+                namespace: NAMESPACE.to_owned(),
+                key_prefix: STATUS_KEY.to_owned(),
+            })),
+        }
+    }
+
+    fn get_status() -> proto::StateStoreCommand {
+        proto::StateStoreCommand {
+            action: Some(state_store_command::Action::Get(proto::GetState {
+                namespace: NAMESPACE.to_owned(),
+                key: STATUS_KEY.to_owned(),
             })),
         }
     }
@@ -497,6 +1025,49 @@ mod tests {
     }
 
     #[test]
+    fn runtime_failure_after_durable_activation_keeps_desired_revision() {
+        let fixture = Fixture::new();
+        let runtime = crate::keeppeek::KeepPeekLoop::new(crate::shutdown::Shutdown::new(), None);
+        let control = runtime.control();
+        drop(runtime);
+        let state = fixture.state.clone().with_camera_runtime(control);
+        let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+
+        let result = super::super::dispatch(
+            &state,
+            SessionId::from_u64(20_210),
+            &principal,
+            put_active("away", 0),
+        )
+        .expect("durable activation should succeed despite a post-commit runtime failure");
+        let control_ok::Result::StateStoreResult(result) = result else {
+            panic!("activation must return a state-store result");
+        };
+        let Some(state_store_result::Result::Entry(entry)) = result.result else {
+            panic!("activation must return the desired active entry");
+        };
+
+        assert_eq!(entry.revision, 1);
+        assert_eq!(
+            config::load_config(&fixture.config_path())
+                .unwrap()
+                .runtime_profiles
+                .active_profile_id
+                .as_deref(),
+            Some("away")
+        );
+        assert_eq!(
+            state
+                .runtime_profile_status
+                .read()
+                .unwrap()
+                .active_profile_id
+                .as_deref(),
+            Some("away")
+        );
+    }
+
+    #[test]
     fn activation_is_administrator_only() {
         let fixture = Fixture::new();
         let mut principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
@@ -518,6 +1089,115 @@ mod tests {
                 .active_profile_id,
             None
         );
+    }
+
+    #[test]
+    fn registry_put_updates_definitions_with_server_revisions() {
+        let fixture = Fixture::new();
+        let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let session = SessionId::from_u64(20_205);
+        let mut registry = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        registry.profiles.get_mut("away").unwrap().name = "Away from home".to_owned();
+
+        let result = super::super::dispatch(
+            &fixture.state,
+            session,
+            &principal,
+            put_registry(&registry, 0),
+        )
+        .unwrap();
+        let control_ok::Result::StateStoreResult(result) = result else {
+            panic!("profile registry update must return a state-store result");
+        };
+        let Some(state_store_result::Result::Entry(entry)) = result.result else {
+            panic!("profile registry update must return an entry");
+        };
+        assert_eq!(entry.key, REGISTRY_KEY);
+        assert_eq!(entry.revision, 1);
+
+        let saved = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        assert_eq!(saved.revision, 1);
+        assert_eq!(saved.profiles["away"].revision, 2);
+        assert_eq!(saved.profiles["away"].name, "Away from home");
+        assert!(
+            fixture
+                .state
+                .access_manager
+                .list_audit(10)
+                .iter()
+                .any(|event| {
+                    event.action == "runtime_profile_registry_updated" && event.result == "accepted"
+                })
+        );
+
+        let stale = super::super::dispatch(
+            &fixture.state,
+            session,
+            &principal,
+            put_registry(&registry, 0),
+        )
+        .expect_err("stale registry writes must be rejected");
+        assert_eq!(stale.code, proto::ErrorCode::Rejected);
+        assert_eq!(
+            config::load_config(&fixture.config_path())
+                .unwrap()
+                .runtime_profiles
+                .revision,
+            1
+        );
+    }
+
+    #[test]
+    fn registry_put_rejects_stale_and_active_profile_deletion() {
+        let fixture = Fixture::new();
+        let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let session = SessionId::from_u64(20_206);
+        super::super::dispatch(&fixture.state, session, &principal, put_active("away", 0))
+            .expect("activation must use the active profile path");
+        let active = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        assert_eq!(active.active_profile_id.as_deref(), Some("away"));
+
+        let mut remove_active = active;
+        remove_active.profiles.remove("away");
+        let error = super::super::dispatch(
+            &fixture.state,
+            session,
+            &principal,
+            put_registry(&remove_active, 0),
+        )
+        .expect_err("active profile deletion must be rejected");
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+
+        let current = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        assert_eq!(current.active_profile_id.as_deref(), Some("away"));
+        assert_eq!(current.revision, 1);
+    }
+
+    #[test]
+    fn users_cannot_read_or_update_the_profile_registry() {
+        let fixture = Fixture::new();
+        let mut principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        principal.role = AccessRole::User;
+        let registry = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+
+        let error = super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_207),
+            &principal,
+            put_registry(&registry, 0),
+        )
+        .expect_err("User profile registry updates must be denied");
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
     }
 
     #[test]
@@ -546,5 +1226,35 @@ mod tests {
                 .state_store_watches
                 .owns_watch(session, "active")
         );
+    }
+
+    #[test]
+    fn users_can_read_and_watch_runtime_application_status() {
+        let fixture = Fixture::new();
+        let session = SessionId::from_u64(20_209);
+        let mut principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        principal.role = AccessRole::User;
+
+        let get =
+            super::super::dispatch(&fixture.state, session, &principal, get_status()).unwrap();
+        let control_ok::Result::StateStoreResult(get) = get else {
+            panic!("status get must return a state-store result");
+        };
+        let Some(state_store_result::Result::Entry(entry)) = get.result else {
+            panic!("status get must return an entry");
+        };
+        assert_eq!(entry.schema, STATUS_SCHEMA);
+
+        let watch =
+            super::super::dispatch(&fixture.state, session, &principal, watch_status("status"))
+                .unwrap();
+        let control_ok::Result::StateStoreResult(watch) = watch else {
+            panic!("status watch must return a state-store result");
+        };
+        let Some(state_store_result::Result::Watch(snapshot)) = watch.result else {
+            panic!("status watch must return a snapshot");
+        };
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(snapshot.entries[0].schema, STATUS_SCHEMA);
     }
 }

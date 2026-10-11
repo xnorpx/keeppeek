@@ -1132,6 +1132,9 @@ impl Store {
                     .delivery_failures
                     .fetch_add(1, Ordering::Relaxed);
             }
+            OutboxStatus::Suppressed => {
+                decrement_counter(&self.metrics.pending_deliveries, 1);
+            }
             OutboxStatus::Pending | OutboxStatus::Delivering => {
                 unreachable!("delivery outcome produced a non-terminal transition: {status:?}")
             }

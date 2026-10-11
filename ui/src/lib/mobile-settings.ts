@@ -7,6 +7,7 @@ export type MobileSettingsRenderTarget =
 	| 'groups'
 	| 'integrations'
 	| 'notifications'
+	| 'runtime-profiles'
 	| 'storage';
 
 export type MobileSettingsSection = {
@@ -26,6 +27,14 @@ export const mobileSettingsSections = Object.freeze<MobileSettingsSection[]>([
 		href: '#dashboards',
 		renderTarget: 'dashboards',
 		keywords: ['dashboards', 'peek', 'layouts', 'grids', 'live views', 'access']
+	},
+	{
+		id: 'runtime-profiles',
+		label: 'Runtime profiles',
+		group: 'administration',
+		href: '#runtime-profiles',
+		renderTarget: 'runtime-profiles',
+		keywords: ['profiles', 'camera mode', 'away', 'privacy', 'recording']
 	},
 	{
 		id: 'storage',

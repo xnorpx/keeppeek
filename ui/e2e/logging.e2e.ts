@@ -134,7 +134,7 @@ test('views, filters, captures, persists, clears, and exports logs', async ({ pa
 	await page.getByRole('tab', { name: 'Browser / Svelte' }).click();
 	await expect(page.getByText('browser capture failed token=[REDACTED]')).toBeVisible();
 	await expect(page.getByText('global browser failure', { exact: true })).toBeVisible();
-	await expect(page.getByText('browser.promise.unhandled', { exact: true })).toBeVisible();
+	await expect(page.getByText('browser.promise.unhandled', { exact: true }).first()).toBeVisible();
 
 	await page.reload();
 	await page.getByRole('tab', { name: 'Browser / Svelte' }).click();
