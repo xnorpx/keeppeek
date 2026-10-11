@@ -328,7 +328,13 @@ for (const viewportSize of [
 			await page.locator('[data-event-card="front-door:person-high"]').tap();
 			const detail = page.getByRole('complementary', { name: 'Event detail' });
 			await expect(detail.locator('[data-event-preview-image]')).toBeVisible();
+			// CDP input bypasses locator stability checks. Decode before measuring gesture coordinates.
+			await detail.locator('[data-event-preview-image]').evaluate(async (image) => {
+				if (!(image instanceof HTMLImageElement)) throw new Error('Expected event preview image');
+				await image.decode();
+			});
 			const viewport = detail.getByRole('application', { name: 'Digital zoom viewport' });
+			await viewport.scrollIntoViewIfNeeded();
 			const bounds = await viewport.boundingBox();
 			expect(bounds).not.toBeNull();
 			const centerX = bounds!.x + bounds!.width / 2;

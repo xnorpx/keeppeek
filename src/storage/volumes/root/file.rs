@@ -47,13 +47,15 @@ impl Root {
             use cap_std::fs::OpenOptionsExt;
             use windows::Win32::{
                 Foundation::{GENERIC_READ, GENERIC_WRITE},
-                Storage::FileSystem::{DELETE, FILE_SHARE_READ},
+                Storage::FileSystem::{DELETE, FILE_SHARE_READ, WRITE_OWNER},
             };
             options
-                .access_mode(GENERIC_READ.0 | GENERIC_WRITE.0 | DELETE.0)
+                .access_mode(GENERIC_READ.0 | GENERIC_WRITE.0 | DELETE.0 | WRITE_OWNER.0)
                 .share_mode(FILE_SHARE_READ.0);
         }
         let file = self.directory.open_with(key, &options)?.into_std();
+        #[cfg(windows)]
+        crate::storage::long_term::inspection::removal::windows::initialize_file_owner(&file)?;
         let identity = file_identity(&file)?;
         let owned = OwnedFile {
             root: Self {
@@ -631,6 +633,24 @@ pub(super) mod tests {
         std::fs::rename(&path, path.with_extension("retained"))?;
         std::fs::create_dir_all(&child)?;
         assert!(owned.evidence().is_err());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn newly_created_file_is_owned_by_the_user_and_can_be_removed() -> anyhow::Result<()> {
+        use crate::storage::long_term::inspection::removal::windows;
+        let (path, root) = fixture()?;
+        let key = format!("{}.mp4", uuid::Uuid::new_v4());
+        let mut owned = root.create_file(&key)?;
+        owned.file_mut().write_all(b"retained")?;
+        owned.file_mut().sync_all()?;
+        assert!(root.create_file(&key).is_err());
+        drop(owned);
+        let selected = windows::exclusive_file(&root.directory, std::ffi::OsStr::new(&key))?;
+        assert_eq!(selected.metadata()?.len(), 8);
+        windows::remove(selected)?;
+        assert!(!path.join(key).exists());
         Ok(())
     }
 
