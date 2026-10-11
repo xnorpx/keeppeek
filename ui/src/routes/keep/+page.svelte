@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { afterNavigate, pushState, replaceState } from '$app/navigation';
+	import { afterNavigate, goto, pushState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { navigating, page } from '$app/state';
 	import { onMount, tick, untrack } from 'svelte';
@@ -2089,7 +2089,7 @@
 					});
 		// The base path is resolved before the query string is appended.
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
-		replaceState(`${resolve('/keep')}?${search}`, page.state);
+		void goto(`${resolve('/keep')}?${search}`, { state: page.state, shallow: true, replace: true });
 		appliedSearch = `?${search}`;
 	}
 
