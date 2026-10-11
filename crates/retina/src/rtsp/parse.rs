@@ -112,6 +112,53 @@ fn incomplete_or_invalid<'i, I: Input<'i>>(input: &I) -> FeedError {
     }
 }
 
+fn line_exceeds_size_limit<'i, I: Input<'i>>(
+    input: &I,
+    start: usize,
+    max_line_bytes: usize,
+) -> bool {
+    let remaining_bytes = input.len() - start;
+    let bytes_to_check = remaining_bytes.min(max_line_bytes.saturating_add(1));
+    for offset in 0..bytes_to_check {
+        let byte = input.byte_at(start + offset);
+        if byte == b'\r'
+            && offset + 1 < remaining_bytes
+            && input.byte_at(start + offset + 1) == b'\n'
+        {
+            return offset.saturating_add(2) > max_line_bytes;
+        }
+        if byte == b'\n' {
+            return false;
+        }
+    }
+    remaining_bytes > max_line_bytes
+}
+
+fn head_exceeds_size_limit<'i, I: Input<'i>>(input: &I, max_head_bytes: usize) -> bool {
+    let mut start = 0;
+    loop {
+        if start > max_head_bytes {
+            return true;
+        }
+        if start == input.len() {
+            return false;
+        }
+        if input.byte_at(start) == b'$' {
+            return false;
+        }
+        if input.byte_at(start) != b'\r' {
+            return line_exceeds_size_limit(input, start, max_head_bytes.saturating_sub(start));
+        }
+        if start + 1 == input.len() {
+            return input.len() > max_head_bytes;
+        }
+        if input.byte_at(start + 1) != b'\n' {
+            return false;
+        }
+        start += 2;
+    }
+}
+
 /// Builder for [`Parser`]. Obtain via [`Parser::builder`].
 pub struct ParserBuilder {
     max_message_size: usize,
@@ -203,6 +250,11 @@ impl Parser {
                 ParserState::Idle => {
                     let checkpoint = *input;
                     let before = input.len();
+                    if self.max_message_size != usize::MAX
+                        && head_exceeds_size_limit(input, self.max_message_size)
+                    {
+                        return Err(invalid("message-too-large"));
+                    }
                     match parse_head(input) {
                         Ok(None) => return Ok(None), // clean EOF between messages
                         Ok(Some(Message::Data(data))) => {
@@ -222,9 +274,6 @@ impl Parser {
                         }
                         Err(FeedError::Incomplete(_)) => {
                             *input = checkpoint;
-                            if before > self.max_message_size {
-                                return Err(invalid("message-too-large"));
-                            }
                             return Err(FeedError::Incomplete(None));
                         }
                         Err(e) => return Err(e),
@@ -241,6 +290,15 @@ impl Parser {
                     };
                     let checkpoint = *input;
                     let before = input.len();
+                    if self.max_message_size != usize::MAX
+                        && line_exceeds_size_limit(
+                            input,
+                            0,
+                            self.max_message_size.saturating_sub(head_bytes),
+                        )
+                    {
+                        return Err(invalid("message-too-large").context(context));
+                    }
                     match parse_header_line(input) {
                         Ok(Some((name, value))) => {
                             head_bytes += before - input.len();
@@ -270,9 +328,6 @@ impl Parser {
                             self.state = ParserState::Body(msg, body_len as usize);
                         }
                         Err(FeedError::Incomplete(_)) => {
-                            if head_bytes.saturating_add(before) > self.max_message_size {
-                                return Err(invalid("message-too-large").context(context));
-                            }
                             *input = checkpoint;
                             self.state = ParserState::Head { msg, head_bytes };
                             return Err(FeedError::Incomplete(None));
