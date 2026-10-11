@@ -8,6 +8,11 @@ describe('Bun test selection', () => {
 			expect(isVitestCompatTest(testFile)).toBe(true);
 			expect(isBunCompatibleTest(testFile)).toBe(false);
 		}
+		for (const name of ['control-client-runtime-profiles', 'runtime-profiles']) {
+			const testFile = `src/lib/${name}.spec.ts`;
+			expect(isVitestCompatTest(testFile)).toBe(true);
+			expect(isBunCompatibleTest(testFile)).toBe(false);
+		}
 		expect(isBunCompatibleTest('src/lib/home-assistant/config.spec.ts')).toBe(true);
 	});
 
@@ -16,7 +21,9 @@ describe('Bun test selection', () => {
 		for (const testFile of [
 			'src\\lib\\api.spec.ts',
 			'src\\lib\\capability-state.spec.ts',
-			'src\\lib\\control-client.spec.ts'
+			'src\\lib\\control-client.spec.ts',
+			'src\\lib\\control-client-runtime-profiles.spec.ts',
+			'src\\lib\\runtime-profiles.spec.ts'
 		]) {
 			expect(isBunCompatibleTest(testFile)).toBe(false);
 		}
