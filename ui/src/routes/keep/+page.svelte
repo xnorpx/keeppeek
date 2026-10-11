@@ -196,7 +196,7 @@
 	function openMobilePanel(panel: MobilePanel): void {
 		mobileReturnFocus =
 			document.activeElement instanceof HTMLElement ? document.activeElement : null;
-		void goto(page.url, { state: { ...page.state, keepMobilePanel: panel }, shallow: true });
+		void goto(page.url.href, { state: { ...page.state, keepMobilePanel: panel }, shallow: true });
 	}
 
 	function closeMobilePanel(): void {
