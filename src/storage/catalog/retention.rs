@@ -36,11 +36,22 @@ struct Snapshot {
     protected: bool,
 }
 
-pub(super) fn connect(database: &turso::Database) -> Result<Arc<Mutex<turso::Connection>>> {
+pub(super) struct Connection {
+    connection: Mutex<turso::Connection>,
+    authority: Arc<super::authority::Lease>,
+}
+
+pub(super) fn connect(
+    database: &turso::Database,
+    authority: Arc<super::authority::Lease>,
+) -> Result<Arc<Connection>> {
     let connection = database.connect()?;
     connection.busy_timeout(super::BUSY_TIMEOUT)?;
     pollster::block_on(connection.execute_batch("PRAGMA foreign_keys = ON"))?;
-    Ok(Arc::new(Mutex::new(connection)))
+    Ok(Arc::new(Connection {
+        connection: Mutex::new(connection),
+        authority,
+    }))
 }
 
 pub(super) async fn initialize(connection: &turso::Connection) -> Result<()> {
@@ -142,11 +153,13 @@ impl RecordingCatalogHandle {
             .upgrade()
             .context("retention catalog is closed")?;
         let connection = owner
+            .connection
             .try_lock()
             .map_err(|_| anyhow::anyhow!("retention catalog is busy or poisoned"))?;
         pollster::block_on(async {
             connection.execute_batch("BEGIN IMMEDIATE").await?;
             let result = async {
+                owner.authority.verify_transaction(&connection)?;
                 let decision = commit(&connection, recording_id, policy_revision, policy).await?;
                 self.check_retention_available(started)?;
                 connection.execute_batch("COMMIT").await?;
@@ -173,8 +186,10 @@ impl RecordingCatalogHandle {
             .upgrade()
             .context("retention catalog is closed")?;
         let connection = owner
+            .connection
             .try_lock()
             .map_err(|_| anyhow::anyhow!("retention catalog is busy or poisoned"))?;
+        owner.authority.verify(&connection)?;
         let previous = pollster::block_on(read_previous(&connection, recording_id));
         self.check_retention_available(started)?;
         Ok(previous?.map(|previous| previous.decision))

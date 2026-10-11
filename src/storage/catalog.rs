@@ -350,7 +350,7 @@ pub struct RecordingCatalogHandle {
     readers: Arc<readers::Registry>,
     tx: SyncSender<Command>,
     search_tx: SyncSender<SearchCommand>,
-    retention: std::sync::Weak<std::sync::Mutex<turso::Connection>>,
+    retention: std::sync::Weak<retention::Connection>,
     retention_shutdown: Arc<AtomicBool>,
 }
 
@@ -358,7 +358,7 @@ pub struct RecordingCatalog {
     handle: RecordingCatalogHandle,
     thread: Option<JoinHandle<()>>,
     maintenance_shutdown: Arc<AtomicBool>,
-    retention_connection: Option<Arc<std::sync::Mutex<turso::Connection>>>,
+    retention_connection: Option<Arc<retention::Connection>>,
     maintenance: Option<JoinHandle<()>>,
     search_thread: Option<JoinHandle<()>>,
 }
@@ -652,7 +652,7 @@ impl RecordingCatalog {
         let (search_tx, search_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let readers = Arc::new(readers::Registry::new(&lease));
         let maintenance_shutdown = Arc::new(AtomicBool::new(false));
-        let retention_connection = retention::connect(&database)?;
+        let retention_connection = retention::connect(&database, Arc::clone(&lease))?;
         let handle = RecordingCatalogHandle {
             legacy_cleanup: Arc::default(),
             tx,
@@ -2999,6 +2999,12 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
 
 async fn prepare_catalog(connection: &turso::Connection) -> anyhow::Result<Vec<LegacyRecording>> {
     initialize_schema(connection).await?;
+    prepare_legacy_backfill(connection).await
+}
+
+async fn prepare_legacy_backfill(
+    connection: &turso::Connection,
+) -> anyhow::Result<Vec<LegacyRecording>> {
     let recordings = legacy_recordings_without_keyframes(connection).await?;
     backfill_recording_file_sizes(connection, &recordings).await?;
     Ok(recordings)
