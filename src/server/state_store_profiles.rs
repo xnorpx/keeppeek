@@ -52,9 +52,8 @@ pub(super) fn dispatch(
                 .runtime_profiles;
             let entry = match request.key.as_str() {
                 ACTIVE_KEY => active_entry(registry),
-                REGISTRY_KEY => registry_entry(registry).map_err(|error| {
-                    registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
-                })?,
+                REGISTRY_KEY => registry_entry(registry)
+                    .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?,
                 STATUS_KEY => status_entry(visible_status(state, principal)).map_err(|error| {
                     registry_error(Error::Storage(error.to_string()), NAMESPACE, STATUS_KEY)
                 })?,
@@ -316,9 +315,8 @@ pub(super) fn dispatch(
                 })?
                 .runtime_profiles;
             let entry = if key_prefix == REGISTRY_KEY {
-                registry_entry(registry.clone()).map_err(|error| {
-                    registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
-                })?
+                registry_entry(registry.clone())
+                    .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?
             } else if key_prefix == STATUS_KEY {
                 status_entry(visible_status(state, principal)).map_err(|error| {
                     registry_error(Error::Storage(error.to_string()), NAMESPACE, STATUS_KEY)
@@ -493,6 +491,8 @@ fn put_registry(
     candidate
         .validate()
         .map_err(|_| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY))?;
+    let registry_entry = registry_entry(candidate.clone())
+        .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?;
 
     let previous_privacy = previous_registry.active_privacy_overrides();
     let next_privacy = candidate.active_privacy_overrides();
@@ -577,9 +577,6 @@ fn put_registry(
         "accepted",
         classification,
     );
-    let registry_entry = registry_entry(candidate.clone()).map_err(|error| {
-        registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
-    })?;
     let active_entry = active_entry(candidate);
     publish_events(
         state,
@@ -806,10 +803,16 @@ fn visible_status(
     status
 }
 
-fn registry_entry(registry: crate::profiles::ProfileRegistry) -> anyhow::Result<StoredEntry> {
-    let mut value = serde_json::to_value(&registry)?;
-    normalize_revision_fields(&mut value, true)?;
-    let value = super::super::peek_layouts::json_to_struct(value)?;
+fn registry_entry(registry: crate::profiles::ProfileRegistry) -> Result<StoredEntry, Error> {
+    let mut value =
+        serde_json::to_value(&registry).map_err(|error| Error::Storage(error.to_string()))?;
+    normalize_revision_fields(&mut value, true)
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let value = super::super::peek_layouts::json_to_struct(value)
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    if value.encoded_len() > MAX_VALUE_BYTES {
+        return Err(Error::Invalid(Invalid::ValueTooLarge));
+    }
     Ok(StoredEntry {
         namespace: NAMESPACE.to_owned(),
         key: REGISTRY_KEY.to_owned(),
@@ -969,6 +972,96 @@ mod tests {
             action: Some(state_store_command::Action::Get(proto::GetState {
                 namespace: NAMESPACE.to_owned(),
                 key: STATUS_KEY.to_owned(),
+            })),
+        }
+    }
+
+    fn full_registry() -> (crate::profiles::ProfileRegistry, Vec<String>) {
+        let camera_ids = (1..=127)
+            .map(|last| format!("10.20.0.{last}"))
+            .collect::<Vec<_>>();
+        let mut profiles = BTreeMap::from([(
+            "away".to_owned(),
+            RuntimeProfile {
+                id: "away".to_owned(),
+                name: "Away".to_owned(),
+                revision: 1,
+                cameras: BTreeMap::new(),
+            },
+        )]);
+        for profile_index in 0..31 {
+            let id = format!("profile-{profile_index:02}");
+            let cameras = camera_ids
+                .iter()
+                .map(|camera_id| {
+                    (
+                        camera_id.clone(),
+                        crate::profiles::CameraProfileOverride {
+                            availability: Some(true),
+                            recording_mode: Some(crate::cameras::CameraRecordingMode::Both),
+                            privacy_enforced: Some(true),
+                            notifications_suppressed: Some(false),
+                        },
+                    )
+                })
+                .collect();
+            profiles.insert(
+                id.clone(),
+                RuntimeProfile {
+                    id,
+                    name: format!("Profile {profile_index:02}"),
+                    revision: 1,
+                    cameras,
+                },
+            );
+        }
+        (
+            crate::profiles::ProfileRegistry {
+                revision: 0,
+                active_profile_id: None,
+                profiles,
+            },
+            camera_ids,
+        )
+    }
+
+    fn camera_config(ip: std::net::IpAddr) -> crate::cameras::CameraConfig {
+        crate::cameras::CameraConfig {
+            ip,
+            name: None,
+            display_name: None,
+            manufacturer: None,
+            username: String::new(),
+            password: String::new(),
+            onvif_port: None,
+            http_port: None,
+            main_rtsp_url: None,
+            sub_rtsp_url: None,
+            uid: None,
+            backend: Default::default(),
+            transport: Default::default(),
+            events: Default::default(),
+            record_generic_motion_events: false,
+            recording_mode: Default::default(),
+            event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
+        }
+    }
+
+    fn profile_registry_put(
+        registry: &crate::profiles::ProfileRegistry,
+    ) -> proto::StateStoreCommand {
+        let mut value = serde_json::to_value(registry).unwrap();
+        normalize_revision_fields(&mut value, true).unwrap();
+        proto::StateStoreCommand {
+            action: Some(state_store_command::Action::Put(proto::PutState {
+                namespace: NAMESPACE.to_owned(),
+                key: REGISTRY_KEY.to_owned(),
+                schema: REGISTRY_SCHEMA.to_owned(),
+                value: Some(super::super::super::peek_layouts::json_to_struct(value).unwrap()),
+                expected_revision: Some(registry.revision),
+                ttl: None,
             })),
         }
     }
@@ -1256,5 +1349,49 @@ mod tests {
         };
         assert_eq!(snapshot.entries.len(), 1);
         assert_eq!(snapshot.entries[0].schema, STATUS_SCHEMA);
+    }
+
+    #[test]
+    fn maximum_registry_put_rejects_before_persisting_an_untransportable_value() {
+        let fixture = Fixture::new();
+        let (registry, camera_ids) = full_registry();
+        {
+            let mut cameras = fixture
+                .state
+                .cameras
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cameras.extend(camera_ids.iter().map(|camera_id| {
+                let ip = camera_id.parse().unwrap();
+                super::super::super::camera_entry(&camera_config(ip), None)
+            }));
+        }
+        assert_eq!(
+            registry_entry(registry.clone()),
+            Err(Error::Invalid(Invalid::ValueTooLarge))
+        );
+
+        let before = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        let result = super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_210),
+            &ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into()),
+            profile_registry_put(&registry),
+        );
+
+        assert!(
+            result
+                .err()
+                .is_some_and(|error| error.code == proto::ErrorCode::InvalidRequest),
+            "oversized registry must be rejected before durable mutation"
+        );
+        assert_eq!(
+            config::load_config(&fixture.config_path())
+                .unwrap()
+                .runtime_profiles,
+            before
+        );
     }
 }
