@@ -21,6 +21,7 @@ use url::Url;
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_USER_AGENT: &str = concat!("retina_", env!("CARGO_PKG_VERSION"));
 const MAX_PENDING_UDP_DATAGRAMS: usize = 64;
+const RTSP_FRAMER_INPUT_CHUNK_SIZE: usize = 4096;
 
 /// A pair of caller-supplied clocks associated with an I/O event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,6 +282,7 @@ pub struct FramedMessage {
 pub struct RtspFramer {
     parser: Parser,
     buffer: BytesMut,
+    max_message_size: Option<usize>,
 }
 
 impl RtspFramer {
@@ -289,14 +291,32 @@ impl RtspFramer {
         Self {
             parser: Parser::builder().max_message_size(max_message_size).build(),
             buffer: BytesMut::new(),
+            max_message_size: Some(max_message_size),
         }
     }
 
     /// Appends TCP bytes and returns every newly completed RTSP message.
     pub fn push(&mut self, data: &[u8]) -> Result<Vec<FramedMessage>, CoreError> {
-        self.buffer.extend_from_slice(data);
         let mut messages = Vec::new();
+        let chunk_size = self
+            .max_message_size
+            .map_or(data.len(), |_| RTSP_FRAMER_INPUT_CHUNK_SIZE);
+        let mut offset = 0;
 
+        loop {
+            if offset < data.len() {
+                let end = offset + chunk_size.min(data.len() - offset);
+                self.buffer.extend_from_slice(&data[offset..end]);
+                offset = end;
+            }
+            self.drain_messages(&mut messages)?;
+            if offset == data.len() {
+                return Ok(messages);
+            }
+        }
+    }
+
+    fn drain_messages(&mut self, messages: &mut Vec<FramedMessage>) -> Result<(), CoreError> {
         loop {
             let initial_len = self.buffer.len();
             let mut input = Contiguous::new(&self.buffer, true);
@@ -313,13 +333,14 @@ impl RtspFramer {
                     if consumed > 0 {
                         self.buffer.advance(consumed);
                     }
-                    break;
+                    return Ok(());
                 }
-                Err(error) => return Err(CoreError::Framing(error.to_string())),
+                Err(error) => {
+                    self.buffer = BytesMut::new();
+                    return Err(CoreError::Framing(error.to_string()));
+                }
             }
         }
-
-        Ok(messages)
     }
 }
 
@@ -2217,6 +2238,25 @@ mod tests {
             .push(b"RTSP/1.0 200 OK\r\nX: a header value that exceeds the configured limit")
             .unwrap_err();
         assert!(matches!(error, CoreError::Framing(_)));
+        assert!(client.framer.buffer.is_empty());
+    }
+
+    #[test]
+    fn framer_limits_large_input_without_rejecting_concatenated_messages() {
+        let mut oversized_header = b"RTSP/1.0 200 OK\r\nX: ".to_vec();
+        oversized_header.extend(std::iter::repeat_n(b'a', 1024));
+        oversized_header.extend_from_slice(b"\r\n\r\n");
+        let mut framer = RtspFramer::with_max_message_size(64);
+        assert!(matches!(
+            framer.push(&oversized_header),
+            Err(CoreError::Framing(_))
+        ));
+        assert!(framer.buffer.is_empty());
+
+        let message = b"RTSP/1.0 200 OK\r\n\r\n";
+        let messages = [message.as_slice(); 4].concat();
+        let mut framer = RtspFramer::with_max_message_size(message.len());
+        assert_eq!(framer.push(&messages).unwrap().len(), 4);
     }
 
     #[test]
@@ -2224,7 +2264,7 @@ mod tests {
         const DATA: &[u8] = b"$\x05\x00\x03abc";
 
         for split_at in 0..=DATA.len() {
-            let mut framer = RtspFramer::default();
+            let mut framer = RtspFramer::with_max_message_size(1);
             let mut messages = framer.push(&DATA[..split_at]).unwrap();
             messages.extend(framer.push(&DATA[split_at..]).unwrap());
             assert_eq!(messages.len(), 1);

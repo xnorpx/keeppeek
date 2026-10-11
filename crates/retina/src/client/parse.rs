@@ -507,12 +507,20 @@ fn parse_server_port(server_port: &str) -> Result<u16, ()> {
 
 fn parse_session_id(id: &str, session_str: &str) -> Result<Box<str>, String> {
     let id = id.trim();
-    if id.is_empty() || crate::rtsp::msg::HeaderValue::try_from(id).is_err() {
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_graphic()) {
         return Err(format!(
             "Empty or invalid session id in Session header {session_str:?}"
         ));
     }
     Ok(id.into())
+}
+
+fn parse_rtp_info_ssrc(value: &str) -> Option<u32> {
+    let value = value.trim();
+    if value.len() != 8 || !value.bytes().any(|byte| byte.is_ascii_alphabetic()) {
+        return None;
+    }
+    u32::from_str_radix(value, 16).ok()
 }
 
 /// Parses a `SETUP` response.
@@ -672,8 +680,10 @@ pub fn parse_play(
                     Ok(v) => state.initial_rtptime = Some(v),
                     Err(_) => warn!("Unparseable rtptime in RTP-Info header {rtp_info:?}"),
                 },
-                // RTSP/1.0 does not define `ssrc` in `RTP-Info`; servers also
-                // disagree on its radix, so learn it from SETUP or RTP.
+                "ssrc" if state.ssrc.is_none() => match parse_rtp_info_ssrc(value) {
+                    Some(ssrc) => state.ssrc = Some(ssrc),
+                    None => warn!("Ignoring ambiguous or invalid ssrc in RTP-Info {rtp_info:?}"),
+                },
                 _ => {}
             }
         }
@@ -1055,8 +1065,7 @@ mod tests {
         match &p.streams[1].state {
             StreamState::Init(state) => {
                 assert_eq!(state.initial_rtptime, Some(3075976528));
-                // `ssrc` is not defined in RTSP/1.0 `RTP-Info`.
-                assert_eq!(state.ssrc, None);
+                assert_eq!(state.ssrc, Some(0x9fc9fff8));
             }
             _ => panic!(),
         };
@@ -1520,6 +1529,24 @@ mod tests {
     }
 
     #[test]
+    fn session_id_rejects_spaces_and_controls() {
+        for id in ["bad session", "bad\tsession", "bad\u{1f}session", "bad\u{7f}session"] {
+            assert!(
+                parse_session_id(id, id).is_err(),
+                "expected invalid session id {id:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn session_id_accepts_rfc_2326_graphic_characters() {
+        assert_eq!(
+            &*parse_session_id("A0-_~+$@,.\"!*'()", "A0-_~+$@,.\"!*'()").unwrap(),
+            "A0-_~+$@,.\"!*'()"
+        );
+    }
+
+    #[test]
     fn setup_ignores_unparseable_transport_ssrc() {
         let setup_response = response(
             b"RTSP/1.0 200 OK\r\n\
@@ -1573,6 +1600,27 @@ mod tests {
         assert_eq!(state.initial_seq, Some(13210));
         assert_eq!(state.initial_rtptime, Some(1_067_824_145));
         assert_eq!(state.ssrc, Some(0xffff_ef2d));
+    }
+
+    #[test]
+    fn play_ignores_ambiguous_numeric_rtp_info_ssrc() {
+        let base =
+            "rtsp://192.168.5.111:554/cam/realmonitor?channel=1&subtype=1&unicast=true&proto=Onvif";
+        let mut presentation = parse_describe(
+            base,
+            include_bytes!("testdata/dahua_describe_h264_aac_onvif.txt"),
+        )
+        .unwrap();
+        presentation.streams[0].state = dummy_stream_state_init(None);
+        let play_response = response(
+            b"RTSP/1.0 200 OK\r\n\
+              RTP-Info: url=trackID=0;ssrc=12345678\r\n\r\n",
+        );
+        super::parse_play(&play_response.0, &mut presentation).unwrap();
+        let StreamState::Init(state) = &presentation.streams[0].state else {
+            panic!();
+        };
+        assert_eq!(state.ssrc, None);
     }
 
     /// Some Hikvision cameras send SSRC with a leading space in the
