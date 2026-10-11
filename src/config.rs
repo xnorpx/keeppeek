@@ -115,6 +115,12 @@ pub struct Config {
     #[serde(default)]
     pub privacy: PrivacyConfig,
 
+    #[serde(
+        default,
+        skip_serializing_if = "crate::profiles::ProfileRegistry::is_empty"
+    )]
+    pub(crate) runtime_profiles: crate::profiles::ProfileRegistry,
+
     #[serde(default)]
     pub(crate) event_forwarder: EventForwarderConfig,
 
@@ -987,6 +993,7 @@ impl Default for Config {
             logging: LoggingConfig::default(),
             operational_events: OperationalEventsConfig::default(),
             privacy: PrivacyConfig::default(),
+            runtime_profiles: crate::profiles::ProfileRegistry::default(),
             event_forwarder: EventForwarderConfig::default(),
             isapi_callbacks: None,
             source: toml::Table::new(),
@@ -1853,6 +1860,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     let mut resolved = toml::Value::Table(runtime);
     resolve_toml_secret_references(&mut resolved, secrets)?;
     let mut config: Config = resolved.try_into()?;
+    config.runtime_profiles.validate()?;
     config.storage.validate_pre_recording_budgets()?;
     if let Some(retention) = &config.storage.retention {
         retention.validate()?;
@@ -2079,6 +2087,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
             | "notifications"
             | "peek_layouts"
             | "configuration_templates"
+            | "runtime_profiles"
             | "isapi_callbacks"
             | "camera_defaults"
             | "privacy"
@@ -2688,7 +2697,61 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profiles::{CameraProfileOverride, RuntimeProfile};
     use crate::storage::{CatalogRecording, RecordingCatalog};
+
+    #[test]
+    fn runtime_profile_registry_round_trips_through_the_configuration_writer() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-runtime-profile-config-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+        let mut config = Config::default();
+        config.runtime_profiles = crate::profiles::ProfileRegistry {
+            revision: 2,
+            active_profile_id: Some("away".to_owned()),
+            profiles: BTreeMap::from([(
+                "away".to_owned(),
+                RuntimeProfile {
+                    id: "away".to_owned(),
+                    name: "Away".to_owned(),
+                    revision: 2,
+                    cameras: BTreeMap::from([(
+                        "front-door".to_owned(),
+                        CameraProfileOverride {
+                            recording_mode: Some(CameraRecordingMode::EventOnly),
+                            ..CameraProfileOverride::default()
+                        },
+                    )]),
+                },
+            )]),
+        };
+        let root: toml::Table = toml::Value::try_from(&config)
+            .unwrap()
+            .as_table()
+            .unwrap()
+            .clone();
+
+        write_configuration_table(&path, &root).unwrap();
+        let loaded = load_config(&path).unwrap();
+        assert_eq!(loaded.runtime_profiles, config.runtime_profiles);
+
+        let mut invalid = root.clone();
+        invalid
+            .get_mut("runtime_profiles")
+            .unwrap()
+            .as_table_mut()
+            .unwrap()
+            .insert(
+                "active_profile_id".to_owned(),
+                toml::Value::String("missing".to_owned()),
+            );
+        write_private_file(&path, toml::to_string(&invalid).unwrap().as_bytes()).unwrap();
+        assert!(load_config(&path).is_err());
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn operational_event_policy_resolves_camera_override_and_validates_order() {
