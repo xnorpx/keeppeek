@@ -50,4 +50,10 @@ describe('wiki manifest', () => {
 		);
 		expect(() => parseBookSummary('# Empty\n')).toThrow(/contains no pages/i);
 	});
+
+	it('rejects control characters in generated wiki page names', () => {
+		expect(() => buildWikiManifest('- [Invalid](./bad\u0001name.md)')).toThrow(
+			/invalid wiki page name/i
+		);
+	});
 });

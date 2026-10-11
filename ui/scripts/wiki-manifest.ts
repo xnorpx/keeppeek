@@ -83,6 +83,14 @@ function wikiName(source: string, kind: WikiPage['kind']): string {
 	return `${kind === 'docs' ? 'Engineering-' : ''}${stem[0].toLocaleUpperCase('en-US')}${stem.slice(1)}`;
 }
 
+function hasControlCharacters(value: string): boolean {
+	for (const character of value) {
+		const codePoint = character.codePointAt(0)!;
+		if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) return true;
+	}
+	return false;
+}
+
 function validatePages(pages: WikiPage[]): WikiPage[] {
 	if (!pages.length) throw new Error('Wiki manifest contains no pages');
 	if (pages.length > MAX_WIKI_PAGES) {
@@ -94,7 +102,8 @@ function validatePages(pages: WikiPage[]): WikiPage[] {
 		if (
 			!page.name ||
 			page.name.length > 100 ||
-			/[\\/:*?"<>|\u0000-\u001f]/.test(page.name) ||
+			/[\\/:*?"<>|]/.test(page.name) ||
+			hasControlCharacters(page.name) ||
 			page.name.trim() !== page.name ||
 			page.name === '.' ||
 			page.name === '..'
