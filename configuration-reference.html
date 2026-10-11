@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e990159f.js";
+            window.path_to_searchindex_js = "searchindex-72691835.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -245,6 +245,7 @@ Root fields must appear before a table header or they belong to that table.</p>
 <tr><td><code>[peek_layouts]</code></td><td><code>StoredRegistry</code></td><td>Server-managed layouts and per-user selection</td></tr>
 <tr><td><code>[configuration_templates]</code></td><td><code>StoredTemplateDocument</code></td><td>Server-managed camera templates</td></tr>
 <tr><td><code>[notifications]</code></td><td><code>NotificationConfiguration</code></td><td>Server-managed rule drafts and active rules</td></tr>
+<tr><td><code>[runtime_profiles]</code></td><td><code>ProfileRegistry</code></td><td>Server-managed profile definitions and selection</td></tr>
 <tr><td><code>[storage_migration]</code></td><td><code>StorageMigration</code></td><td>Server-managed pending storage move</td></tr>
 </tbody>
 </table>
@@ -254,6 +255,12 @@ it as a camera namespace. Every other non-reserved root table is interpreted as 
 <code>cameras</code> is the conventional name, not the only allowed one. A typo in a section name can therefore
 be interpreted as camera configuration. Some structs ignore unknown fields, so successful TOML
 parsing alone does not prove a field has an effect.</p>
+<p><code>[runtime_profiles]</code> is server-managed internal data. Its registry is bounded to 32 profiles, and
+each profile can target at most 127 cameras with sparse runtime-safe overrides. Do not edit this
+section manually. The current partial implementation lets an Administrator activate an already
+defined profile or Base through WebRTC state store; privacy overrides apply through the existing
+media gate. UI management and convergence for recording, notifications, and camera availability
+remain unavailable until #202 is complete.</p>
 <p>Sources: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config.rs">configuration</a>,
 <a href="https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs">cameras</a>, and the subsystem sources
 linked below. <code>Config.source</code> is an in-memory copy of the original TOML table, marked <code>serde(skip)</code>;
