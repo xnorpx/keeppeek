@@ -3,12 +3,14 @@ import type { StateEntry } from './proto/webrtc_pb';
 export const runtimeProfilesNamespace = 'service/runtime-profiles/';
 export const runtimeProfilesRegistryKey = 'registry';
 export const runtimeProfilesActiveKey = 'active';
-export const runtimeProfilesRegistrySchema = 'keeppeek.runtime-profiles.registry.v1';
+export const runtimeProfilesRegistrySchema = 'keeppeek.runtime-profiles.registry.v2';
 export const runtimeProfilesActiveSchema = 'keeppeek.runtime-profiles.active.v1';
 export const runtimeProfilesStatusKey = 'status';
 export const runtimeProfilesStatusSchema = 'keeppeek.runtime-profiles.status.v1';
+export const runtimeProfilePartSchema = 'keeppeek.runtime-profiles.part.v1';
 export const maxRuntimeProfiles = 32;
 export const maxProfileCameras = 127;
+export const maxRuntimeProfilePartCameras = 16;
 
 export const profileRecordingModes = [
 	'off',
@@ -41,6 +43,22 @@ export type RuntimeProfileRegistry = {
 	profiles: Record<string, RuntimeProfile>;
 };
 
+export type RuntimeProfileManifest = {
+	revision: string;
+	active_profile_id: string | null;
+	profiles: Record<
+		string,
+		{
+			id: string;
+			name: string;
+			revision: string;
+			target_count: number;
+			part_count: number;
+			digest: string;
+		}
+	>;
+};
+
 export type RuntimeProfileStatus = {
 	revision: string;
 	active_profile_id: string | null;
@@ -65,7 +83,7 @@ export type CameraRuntimeApplication = {
 
 type UnknownRecord = Record<string, unknown>;
 
-export function runtimeProfileRegistryFromEntry(entry: StateEntry): RuntimeProfileRegistry {
+export function runtimeProfileManifestFromEntry(entry: StateEntry): RuntimeProfileManifest {
 	if (
 		entry.namespace !== runtimeProfilesNamespace ||
 		entry.key !== runtimeProfilesRegistryKey ||
@@ -79,26 +97,29 @@ export function runtimeProfileRegistryFromEntry(entry: StateEntry): RuntimeProfi
 	if (profileEntries.length > maxRuntimeProfiles) {
 		throw new Error('Server returned too many runtime profiles.');
 	}
-	const profiles: Record<string, RuntimeProfile> = {};
+	const profiles: RuntimeProfileManifest['profiles'] = {};
 	for (const [key, rawProfile] of profileEntries) {
 		const profile = record(rawProfile, 'runtime profile');
 		const id = boundedText(profile.id, 'runtime profile ID', 128);
 		if (key !== id) throw new Error('Server returned mismatched runtime profile IDs.');
-		const camerasValue = record(profile.cameras, 'runtime profile cameras');
-		const cameraEntries = Object.entries(camerasValue);
-		if (cameraEntries.length > maxProfileCameras) {
-			throw new Error('Server returned too many camera overrides.');
-		}
-		const cameras: Record<string, CameraProfileOverride> = {};
-		for (const [cameraId, rawOverride] of cameraEntries) {
-			cameras[cameraId] = cameraOverride(rawOverride);
-		}
 		profiles[id] = {
 			id,
 			name: boundedText(profile.name, 'runtime profile name', 80),
 			revision: revisionText(profile.revision, 'runtime profile revision'),
-			cameras
+			target_count: boundedInteger(
+				profile.target_count,
+				'runtime profile target count',
+				maxProfileCameras
+			),
+			part_count: boundedInteger(profile.part_count, 'runtime profile part count', 8),
+			digest: digestText(profile.digest, 'runtime profile digest')
 		};
+		if (
+			profiles[id].part_count !==
+			Math.ceil(profiles[id].target_count / maxRuntimeProfilePartCameras)
+		) {
+			throw new Error('Server returned inconsistent runtime profile part count.');
+		}
 	}
 	const activeProfileId = value.active_profile_id;
 	if (activeProfileId !== null && typeof activeProfileId !== 'string') {
@@ -112,6 +133,49 @@ export function runtimeProfileRegistryFromEntry(entry: StateEntry): RuntimeProfi
 		active_profile_id: activeProfileId,
 		profiles
 	};
+}
+
+export function runtimeProfilePartKey(
+	profileId: string,
+	generation: string,
+	index: number
+): string {
+	return `profiles/${profileId}/${generation}/${index}`;
+}
+
+export function runtimeProfilePartFromEntry(
+	entry: StateEntry,
+	expected: { profileId: string; generation: string; index: number; count: number; digest: string }
+): Record<string, CameraProfileOverride> {
+	const key = runtimeProfilePartKey(expected.profileId, expected.generation, expected.index);
+	if (
+		entry.namespace !== runtimeProfilesNamespace ||
+		entry.key !== key ||
+		entry.schema !== runtimeProfilePartSchema
+	) {
+		throw new Error('Server returned unexpected runtime profile part metadata.');
+	}
+	const value = record(entry.value, 'runtime profile part');
+	if (
+		value.profile_id !== expected.profileId ||
+		revisionText(value.generation, 'runtime profile part generation') !== expected.generation ||
+		boundedInteger(value.part_index, 'runtime profile part index', 7) !== expected.index ||
+		boundedInteger(value.part_count, 'runtime profile part count', 8) !== expected.count ||
+		digestText(value.digest, 'runtime profile part digest') !== expected.digest
+	) {
+		throw new Error('Server returned a mismatched runtime profile part.');
+	}
+	const camerasValue = record(value.cameras, 'runtime profile cameras');
+	const cameraEntries = Object.entries(camerasValue);
+	if (cameraEntries.length > maxRuntimeProfilePartCameras) {
+		throw new Error('Server returned too many camera overrides in a profile part.');
+	}
+	return Object.fromEntries(
+		cameraEntries.map(([cameraId, rawOverride]) => [
+			boundedText(cameraId, 'camera ID', 256),
+			cameraOverride(rawOverride)
+		])
+	);
 }
 
 export function runtimeProfileRegistryToWire(
@@ -237,16 +301,17 @@ export function profileOverrideIsEmpty(override: CameraProfileOverride): boolean
 function cameraOverride(value: unknown): CameraProfileOverride {
 	const wire = record(value, 'camera override');
 	const override: CameraProfileOverride = {};
-	if (wire.availability !== undefined) override.availability = boolean(wire.availability);
-	if (wire.recording_mode !== undefined) {
+	if (wire.availability !== undefined && wire.availability !== null)
+		override.availability = boolean(wire.availability);
+	if (wire.recording_mode !== undefined && wire.recording_mode !== null) {
 		if (!profileRecordingModes.includes(wire.recording_mode as ProfileRecordingMode)) {
 			throw new Error('Server returned an invalid profile recording mode.');
 		}
 		override.recording_mode = wire.recording_mode as ProfileRecordingMode;
 	}
-	if (wire.privacy_enforced !== undefined)
+	if (wire.privacy_enforced !== undefined && wire.privacy_enforced !== null)
 		override.privacy_enforced = boolean(wire.privacy_enforced);
-	if (wire.notifications_suppressed !== undefined) {
+	if (wire.notifications_suppressed !== undefined && wire.notifications_suppressed !== null) {
 		override.notifications_suppressed = boolean(wire.notifications_suppressed);
 	}
 	if (profileOverrideIsEmpty(override))
@@ -270,6 +335,20 @@ function boundedText(value: unknown, label: string, maximum: number): string {
 
 function revisionText(value: unknown, label: string): string {
 	if (typeof value !== 'string' || !/^(0|[1-9]\d*)$/.test(value)) {
+		throw new Error(`Server returned an invalid ${label}.`);
+	}
+	return value;
+}
+
+function boundedInteger(value: unknown, label: string, maximum: number): number {
+	if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > maximum) {
+		throw new Error(`Server returned an invalid ${label}.`);
+	}
+	return value;
+}
+
+function digestText(value: unknown, label: string): string {
+	if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
 		throw new Error(`Server returned an invalid ${label}.`);
 	}
 	return value;

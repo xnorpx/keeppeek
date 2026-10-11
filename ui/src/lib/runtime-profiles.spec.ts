@@ -10,8 +10,8 @@ import {
 	runtimeProfilesStatusKey,
 	runtimeProfilesStatusSchema,
 	runtimeProfileFromEntry,
-	runtimeProfileRegistryFromEntry,
-	runtimeProfileRegistryToWire,
+	runtimeProfileManifestFromEntry,
+	runtimeProfilePartFromEntry,
 	runtimeProfileStatusFromEntry
 } from './runtime-profiles';
 
@@ -42,8 +42,8 @@ function statusEntry(value: Record<string, unknown>): StateEntry {
 }
 
 describe('runtime profile state', () => {
-	it('round trips large revisions as decimal strings and preserves sparse overrides', () => {
-		const registry = runtimeProfileRegistryFromEntry(
+	it('parses registry summaries with large revisions and bounded parts', () => {
+		const registry = runtimeProfileManifestFromEntry(
 			registryEntry({
 				revision: '9007199254740993',
 				active_profile_id: 'away',
@@ -52,9 +52,9 @@ describe('runtime profile state', () => {
 						id: 'away',
 						name: 'Away',
 						revision: '9007199254740992',
-						cameras: {
-							front_door: { recording_mode: 'main', privacy_enforced: true }
-						}
+						target_count: 17,
+						part_count: 2,
+						digest: 'a'.repeat(64)
 					}
 				}
 			})
@@ -62,14 +62,33 @@ describe('runtime profile state', () => {
 
 		expect(registry.revision).toBe('9');
 		expect(registry.profiles.away.revision).toBe('9007199254740992');
-		expect(registry.profiles.away.cameras.front_door).toEqual({
-			recording_mode: 'main',
-			privacy_enforced: true
-		});
-		expect(runtimeProfileRegistryToWire(registry)).toMatchObject({
-			revision: '9',
-			active_profile_id: 'away'
-		});
+		expect(registry.profiles.away.part_count).toBe(2);
+	});
+
+	it('parses bounded profile parts and ignores null optional fields', () => {
+		const cameras = runtimeProfilePartFromEntry(
+			{
+				namespace: runtimeProfilesNamespace,
+				key: 'profiles/away/7/0',
+				schema: 'keeppeek.runtime-profiles.part.v1',
+				value: {
+					profile_id: 'away',
+					generation: '7',
+					part_index: 0,
+					part_count: 1,
+					digest: 'b'.repeat(64),
+					cameras: {
+						front_door: { recording_mode: 'main', privacy_enforced: true, availability: null }
+					}
+				},
+				revision: 7n,
+				updatedMs: 0n,
+				expiresMs: undefined,
+				ownerId: 'server'
+			} as unknown as StateEntry,
+			{ profileId: 'away', generation: '7', index: 0, count: 1, digest: 'b'.repeat(64) }
+		);
+		expect(cameras.front_door).toEqual({ recording_mode: 'main', privacy_enforced: true });
 	});
 
 	it('validates the active profile projection schema and base value', () => {
