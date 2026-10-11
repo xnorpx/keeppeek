@@ -85,6 +85,30 @@ fn profile_cannot_disable_an_active_privacy_boundary() {
 
     assert!(effective.privacy_enforced);
     assert_eq!(effective.privacy_source, FieldSource::Base);
+    assert_eq!(effective.recording_mode, CameraRecordingMode::Off);
+    assert_eq!(effective.recording_mode_source, FieldSource::Base);
+}
+
+#[test]
+fn profile_privacy_disables_recording_until_the_profile_is_deactivated() {
+    let base = BaseCameraPolicy {
+        available: true,
+        recording_mode: CameraRecordingMode::Both,
+        privacy_enforced: false,
+        notifications_enabled: true,
+    };
+    let overlay = CameraProfileOverride {
+        availability: None,
+        recording_mode: Some(CameraRecordingMode::Main),
+        privacy_enforced: Some(true),
+        notifications_suppressed: None,
+    };
+
+    let effective = resolve_camera_policy(&base, Some(&overlay));
+
+    assert!(effective.privacy_enforced);
+    assert_eq!(effective.recording_mode, CameraRecordingMode::Off);
+    assert_eq!(effective.recording_mode_source, FieldSource::Profile);
 }
 
 #[test]
