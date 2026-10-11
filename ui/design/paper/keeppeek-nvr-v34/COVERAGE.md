@@ -62,7 +62,7 @@
 | `peek.desktop.focus-history`     | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.focus-history.png`     | Approved `d9df5deffcf00880c0ead49aa5b8056c525ab3042c4cefb38528697d09a9f5c3` |
 | `peek.desktop.history-keep`      | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.history-keep.png`      | Approved `353243f1de4363cf3d9d8f29d4d8f8d8eaa761b6e84d19f781d3df05df39648f` |
 | `peek.waiting.first-keyframe`    | `visual-harness/.loki/reference/chrome.desktop/peek.waiting.first-keyframe.png`    | Approved `b41263a3034f5e4943a67825053acae19b6bc13d086ae187215ad70e51595e7f` |
-| `settings.mobile.administration` | `visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png`  | Approved `a97fe92d7783151d8379742d416f70ecde305a1ac9334d541cf3cf1f1450b5a3` |
+| `settings.mobile.administration` | `visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png`  | Approved `2c9e0df9ee843765bf7e2ddecffbab59186934c701b447c9aa77a4954d4f85dc` |
 | `settings.waiting.applying`      | `visual-harness/.loki/reference/chrome.desktop/settings.waiting.applying.png`      | Approved `21053c2823fc72bd151e5dab22cbd8c49372e495f3b8ffb89907a4e4b3fa6509` |
 
 ## Deliberate Capability Gates

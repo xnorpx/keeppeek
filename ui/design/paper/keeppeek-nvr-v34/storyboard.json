@@ -1360,8 +1360,8 @@
 					},
 					"lokiReference": {
 						"source": "visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png",
-						"bytes": 37423,
-						"sha256": "a97fe92d7783151d8379742d416f70ecde305a1ac9334d541cf3cf1f1450b5a3",
+						"bytes": 39459,
+						"sha256": "2c9e0df9ee843765bf7e2ddecffbab59186934c701b447c9aa77a4954d4f85dc",
 						"approvedAt": "2026-08-30",
 						"approvedBy": "GitHub Copilot",
 						"paperTokenHash": "cf3b1cd7",
