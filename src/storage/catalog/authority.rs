@@ -311,6 +311,28 @@ impl Lease {
         Ok(record.authority)
     }
 
+    /// Checks authority while the caller holds a catalog write transaction.
+    pub(crate) fn verify_transaction(
+        &self,
+        connection: &turso::Connection,
+    ) -> anyhow::Result<Authority> {
+        anyhow::ensure!(
+            !connection.is_autocommit()?,
+            "catalog authority requires an active transaction"
+        );
+        self.check_connection_identity(connection)?;
+        let record = required(connection)?;
+        anyhow::ensure!(
+            !record.fenced,
+            "catalog authority is fenced for offline handoff"
+        );
+        anyhow::ensure!(
+            record.identity == self.file_identity()?,
+            "catalog authority file identity changed"
+        );
+        Ok(record.authority)
+    }
+
     /// Fences the source before snapshotting. Exact retries retain the original destination.
     pub(crate) fn fence(
         &self,
@@ -466,6 +488,10 @@ impl Lease {
             connection.is_autocommit()?,
             "catalog authority requires an independent transaction"
         );
+        self.check_connection_identity(connection)
+    }
+
+    fn check_connection_identity(&self, connection: &turso::Connection) -> anyhow::Result<()> {
         self.revalidate()?;
         let mut rows = pollster::block_on(connection.query("PRAGMA database_list", ()))?;
         for _ in 0..16 {
