@@ -371,6 +371,11 @@ export type ControlRequests = {
 	mediaUnsubscriptions: string[][];
 	peekLayoutReads: number;
 	peekLayoutUpdates: JsonObject[];
+	runtimeProfileWrites: Array<{
+		key: string;
+		expectedRevision: bigint | undefined;
+		value: JsonObject;
+	}>;
 	configurationActions: string[];
 	configurationPlans: Array<{ target: string; change: string }>;
 	publishCapabilities(capabilityIds: readonly string[]): Promise<void>;
@@ -840,6 +845,7 @@ export async function mockControlPeer(
 		mediaUnsubscriptions: [],
 		peekLayoutReads: 0,
 		peekLayoutUpdates: [],
+		runtimeProfileWrites: [],
 		configurationActions: [],
 		configurationPlans: [],
 		publishCapabilities: async (capabilityIds) => {
@@ -1098,6 +1104,11 @@ export async function mockControlPeer(
 				runtimeProfileValues[action.value.key] &&
 				action.value.value
 			) {
+				requests.runtimeProfileWrites.push({
+					key: action.value.key,
+					expectedRevision: action.value.expectedRevision,
+					value: structuredClone(action.value.value)
+				});
 				runtimeProfileValues[action.value.key] = structuredClone(action.value.value);
 				runtimeProfileRevisions[action.value.key] = runtimeProfileRevisions[action.value.key]! + 1n;
 				return encodedRuntimeProfileEntry(
