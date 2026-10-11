@@ -2707,25 +2707,27 @@ mod tests {
             rand::random::<u64>()
         ));
         let path = directory.join("config.toml");
-        let mut config = Config::default();
-        config.runtime_profiles = crate::profiles::ProfileRegistry {
-            revision: 2,
-            active_profile_id: Some("away".to_owned()),
-            profiles: BTreeMap::from([(
-                "away".to_owned(),
-                RuntimeProfile {
-                    id: "away".to_owned(),
-                    name: "Away".to_owned(),
-                    revision: 2,
-                    cameras: BTreeMap::from([(
-                        "front-door".to_owned(),
-                        CameraProfileOverride {
-                            recording_mode: Some(CameraRecordingMode::EventOnly),
-                            ..CameraProfileOverride::default()
-                        },
-                    )]),
-                },
-            )]),
+        let config = Config {
+            runtime_profiles: crate::profiles::ProfileRegistry {
+                revision: 2,
+                active_profile_id: Some("away".to_owned()),
+                profiles: BTreeMap::from([(
+                    "away".to_owned(),
+                    RuntimeProfile {
+                        id: "away".to_owned(),
+                        name: "Away".to_owned(),
+                        revision: 2,
+                        cameras: BTreeMap::from([(
+                            "front-door".to_owned(),
+                            CameraProfileOverride {
+                                recording_mode: Some(CameraRecordingMode::EventOnly),
+                                ..CameraProfileOverride::default()
+                            },
+                        )]),
+                    },
+                )]),
+            },
+            ..Config::default()
         };
         let root: toml::Table = toml::Value::try_from(&config)
             .unwrap()
@@ -2737,7 +2739,7 @@ mod tests {
         let loaded = load_config(&path).unwrap();
         assert_eq!(loaded.runtime_profiles, config.runtime_profiles);
 
-        let mut invalid = root.clone();
+        let mut invalid = root;
         invalid
             .get_mut("runtime_profiles")
             .unwrap()

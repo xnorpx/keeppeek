@@ -197,10 +197,7 @@ fn only_the_active_profile_contributes_privacy_overrides() {
     let registry = ProfileRegistry {
         revision: 2,
         active_profile_id: Some("away".to_owned()),
-        profiles: BTreeMap::from([
-            ("away".to_owned(), active.clone()),
-            ("home".to_owned(), inactive),
-        ]),
+        profiles: BTreeMap::from([("away".to_owned(), active), ("home".to_owned(), inactive)]),
     };
 
     assert_eq!(
