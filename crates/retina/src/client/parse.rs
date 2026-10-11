@@ -1530,7 +1530,12 @@ mod tests {
 
     #[test]
     fn session_id_rejects_spaces_and_controls() {
-        for id in ["bad session", "bad\tsession", "bad\u{1f}session", "bad\u{7f}session"] {
+        for id in [
+            "bad session",
+            "bad\tsession",
+            "bad\u{1f}session",
+            "bad\u{7f}session",
+        ] {
             assert!(
                 parse_session_id(id, id).is_err(),
                 "expected invalid session id {id:?} to be rejected"
