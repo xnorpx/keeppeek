@@ -1,13 +1,13 @@
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { remark } from 'remark';
 import remarkGfm from 'remark-gfm';
 import type { WikiPage } from './wiki-manifest';
 
 const REPOSITORY = 'https://github.com/xnorpx/keeppeek';
-const MAX_MARKDOWN_BYTES = 2 * 1024 * 1024;
+export const MAX_WIKI_MARKDOWN_BYTES = 2 * 1024 * 1024;
 const MAX_LINK_TARGET_BYTES = 20 * 1024 * 1024;
-const MAX_ASSET_BYTES = 20 * 1024 * 1024;
+export const MAX_WIKI_ASSET_BYTES = 20 * 1024 * 1024;
 const MAX_MARKDOWN_NODES = 200_000;
 
 type MarkdownNode = {
@@ -75,6 +75,25 @@ function checkedRepositoryFilePath(
 	if (info.size > maxBytes)
 		throw new Error(`Repository source exceeds ${maxBytes} bytes: ${source}`);
 	return sourcePath;
+}
+
+export function assertDocumentationFile(repositoryRoot: string, source: string): void {
+	const documentationRoot = source.startsWith('book/src/')
+		? 'book/src'
+		: source.startsWith('docs/')
+			? 'docs'
+			: undefined;
+	if (!documentationRoot) throw new Error(`Not a documentation source file: ${source}`);
+	const root = realpathSync(repositoryRoot);
+	const sourceRoot = path.resolve(root, ...documentationRoot.split('/'));
+	if (lstatSync(sourceRoot).isSymbolicLink()) {
+		throw new Error(`Documentation source root cannot be a symbolic link: ${documentationRoot}`);
+	}
+	const canonicalRoot = realpathSync(sourceRoot);
+	const canonicalSource = canonicalRepositoryPath(root, source);
+	if (!isWithin(canonicalRoot, canonicalSource)) {
+		throw new Error(`Documentation source escapes ${documentationRoot}: ${source}`);
+	}
 }
 
 export function readRepositoryFile(
@@ -268,22 +287,20 @@ function routeDestination(
 	const source = blobTarget
 		? blobTarget.source
 		: resolveLocalSource(options.repositoryRoot, options.page.source, urlPath);
-	if (blobTarget) {
-		checkedRepositoryFilePath(options.repositoryRoot, source, MAX_LINK_TARGET_BYTES);
-	} else if (nodeType === 'image') {
-		const contents = readRepositoryFile(options.repositoryRoot, source, MAX_ASSET_BYTES);
-		if (!source.startsWith('book/src/') && !source.startsWith('docs/')) {
-			throw new Error(`Image source is outside the documentation roots: ${source}`);
-		}
+	if (nodeType === 'image') {
+		assertDocumentationFile(options.repositoryRoot, source);
+		const contents = readRepositoryFile(options.repositoryRoot, source, MAX_WIKI_ASSET_BYTES);
 		const destination = `assets/${source}`;
 		if (!assets.has(source) && assets.size >= 100) {
 			throw new Error('Wiki page exceeds the 100-asset limit');
 		}
 		assets.set(source, { source, destination });
-		if (contents.byteLength > MAX_ASSET_BYTES) {
-			throw new Error(`Wiki image exceeds ${MAX_ASSET_BYTES} bytes: ${source}`);
+		if (contents.byteLength > MAX_WIKI_ASSET_BYTES) {
+			throw new Error(`Wiki image exceeds ${MAX_WIKI_ASSET_BYTES} bytes: ${source}`);
 		}
 		return `${encodedPath(destination)}${suffix}`;
+	} else if (blobTarget) {
+		checkedRepositoryFilePath(options.repositoryRoot, source, MAX_LINK_TARGET_BYTES);
 	} else {
 		checkedRepositoryFilePath(options.repositoryRoot, source, MAX_LINK_TARGET_BYTES);
 	}
@@ -322,8 +339,8 @@ export function convertMarkdown(markdown: string, options: MarkdownOptions): Con
 	if (!/^[0-9a-f]{40}$/i.test(options.sourceCommit)) {
 		throw new Error(`Invalid source commit: ${options.sourceCommit}`);
 	}
-	if (Buffer.byteLength(markdown, 'utf8') > MAX_MARKDOWN_BYTES) {
-		throw new Error(`Markdown exceeds ${MAX_MARKDOWN_BYTES} bytes: ${options.page.source}`);
+	if (Buffer.byteLength(markdown, 'utf8') > MAX_WIKI_MARKDOWN_BYTES) {
+		throw new Error(`Markdown exceeds ${MAX_WIKI_MARKDOWN_BYTES} bytes: ${options.page.source}`);
 	}
 	if (/\{\{#/.test(markdown)) {
 		throw new Error(`Unsupported mdBook directive in ${options.page.source}`);

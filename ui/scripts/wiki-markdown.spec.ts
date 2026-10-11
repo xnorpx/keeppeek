@@ -136,5 +136,9 @@ describe('wiki markdown conversion', () => {
 		await writeFile(path.join(outside, 'secret.svg'), '<svg />\n');
 		await symlink(path.join(outside, 'secret.svg'), path.join(root, 'book/src/images/escape.svg'));
 		expect(() => convert('![Escape](./images/escape.svg)')).toThrow(/escapes the repository/i);
+
+		await writeFile(path.join(root, 'private.svg'), '<svg>private</svg>\n');
+		await symlink(path.join(root, 'private.svg'), path.join(root, 'book/src/images/private.svg'));
+		expect(() => convert('![Private](./images/private.svg)')).toThrow(/escapes book\/src/i);
 	});
 });

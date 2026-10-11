@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-const MAX_WIKI_PAGES = 100;
+export const MAX_WIKI_PAGES = 100;
 const RESERVED_NAMES = new Set(['home', '_sidebar', 'wiki-manifest']);
 
 export const WIKI_DOC_SOURCES = [
@@ -77,7 +77,7 @@ export function parseBookSummary(summary: string): SummaryPage[] {
 	return pages;
 }
 
-function wikiName(source: string, kind: WikiPage['kind']): string {
+export function wikiPageName(source: string, kind: WikiPage['kind']): string {
 	const stem = path.posix.basename(source, '.md');
 	if (!stem || stem === 'SUMMARY') throw new Error(`Invalid wiki source path: ${source}`);
 	return `${kind === 'docs' ? 'Engineering-' : ''}${stem[0].toLocaleUpperCase('en-US')}${stem.slice(1)}`;
@@ -121,15 +121,18 @@ function validatePages(pages: WikiPage[]): WikiPage[] {
 	return pages;
 }
 
-export function buildWikiManifest(summary: string): WikiPage[] {
+export function buildWikiManifest(
+	summary: string,
+	docsSources: readonly string[] = WIKI_DOC_SOURCES
+): WikiPage[] {
 	const bookPages = parseBookSummary(summary).map((page) => ({
 		...page,
-		name: wikiName(page.source, 'book'),
+		name: wikiPageName(page.source, 'book'),
 		kind: 'book' as const
 	}));
-	const docsPages = WIKI_DOC_SOURCES.map((source) => ({
+	const docsPages = docsSources.map((source) => ({
 		source,
-		name: wikiName(source, 'docs'),
+		name: wikiPageName(source, 'docs'),
 		title: path.posix
 			.basename(source, '.md')
 			.split('-')

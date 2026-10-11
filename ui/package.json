@@ -26,6 +26,7 @@
 		"format": "prettier --write .",
 		"format:check": "prettier --check .",
 		"format:markdown:check": "prettier --check \"../**/*.md\"",
+		"wiki:build": "bun scripts/build-wiki.ts target/wiki",
 		"registry:check": "bun scripts/check-public-registries.ts",
 		"paper:check": "bun scripts/check-paper-storyboard.ts",
 		"paper:typecheck": "tsc --ignoreConfig --noEmit --strict --skipLibCheck --moduleResolution bundler --module esnext --target esnext --types node scripts/check-paper-storyboard.ts scripts/check-visual-harness.ts scripts/paper-coverage.ts scripts/generate-paper-coverage.ts",
