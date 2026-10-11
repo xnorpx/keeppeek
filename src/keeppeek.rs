@@ -170,6 +170,10 @@ enum KeepPeekCommand {
         camera: Camera,
         reply: SyncSender<anyhow::Result<()>>,
     },
+    SetRuntimeProfiles {
+        profiles: crate::profiles::ProfileRegistry,
+        reply: SyncSender<anyhow::Result<()>>,
+    },
 }
 
 /// Controls cameras owned by the running KeepPeek loop.
@@ -216,6 +220,24 @@ impl KeepPeekControl {
             .recv_timeout(CAMERA_CONTROL_TIMEOUT)
             .map_err(|error| {
                 anyhow::anyhow!("KeepPeek loop did not accept the camera restart request: {error}")
+            })?
+    }
+
+    pub fn set_runtime_profiles(
+        &self,
+        profiles: crate::profiles::ProfileRegistry,
+    ) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.tx
+            .send(KeepPeekCommand::SetRuntimeProfiles {
+                profiles,
+                reply: reply_tx,
+            })
+            .map_err(|_| anyhow::anyhow!("KeepPeek loop is no longer running"))?;
+        reply_rx
+            .recv_timeout(CAMERA_CONTROL_TIMEOUT)
+            .map_err(|error| {
+                anyhow::anyhow!("KeepPeek loop did not acknowledge profile activation: {error}")
             })?
     }
 }
@@ -351,6 +373,7 @@ pub struct KeepPeekLoop {
     event_forwarder: Option<EventForwarderHandle>,
     privacy: Option<std::sync::Arc<PrivacyRegistry>>,
     camera_names: HashMap<String, String>,
+    runtime_profiles: crate::profiles::ProfileRegistry,
 }
 
 impl KeepPeekLoop {
@@ -379,6 +402,7 @@ impl KeepPeekLoop {
             event_forwarder: None,
             privacy: None,
             camera_names: HashMap::new(),
+            runtime_profiles: crate::profiles::ProfileRegistry::default(),
         }
     }
 
@@ -394,6 +418,10 @@ impl KeepPeekLoop {
 
     pub(crate) fn set_privacy_registry(&mut self, privacy: std::sync::Arc<PrivacyRegistry>) {
         self.privacy = Some(privacy);
+    }
+
+    pub fn set_runtime_profiles(&mut self, profiles: crate::profiles::ProfileRegistry) {
+        self.runtime_profiles = profiles;
     }
 
     pub fn set_event_store(&mut self, events: EventStore) {
@@ -479,7 +507,7 @@ impl KeepPeekLoop {
         if let Some(storage) = &self.storage {
             storage.configure_camera_event_recording(
                 &camera.config.ip.to_string(),
-                camera.config.recording_mode,
+                self.effective_recording_mode(&camera.config),
                 camera.config.event_recording_stream,
                 Duration::from_secs(camera.config.event_pre_recording_duration_secs),
                 Duration::from_secs(camera.config.event_recording_duration_secs),
@@ -510,6 +538,36 @@ impl KeepPeekLoop {
             .expect("registered camera workers")
             .configuration = Some(camera.config.clone());
         self.add_camera_workers(camera, route, enable_main, enable_sub);
+        Ok(())
+    }
+
+    fn effective_recording_mode(
+        &self,
+        camera: &crate::cameras::CameraConfig,
+    ) -> crate::cameras::CameraRecordingMode {
+        effective_recording_mode(&self.runtime_profiles, camera)
+    }
+
+    fn apply_runtime_profiles(
+        &mut self,
+        profiles: crate::profiles::ProfileRegistry,
+    ) -> anyhow::Result<()> {
+        profiles.validate()?;
+        if let Some(storage) = &self.storage {
+            for (camera_ip, workers) in &self.camera_workers {
+                let Some(camera) = workers.configuration.as_ref() else {
+                    continue;
+                };
+                storage.configure_camera_event_recording(
+                    &camera_ip.to_string(),
+                    effective_recording_mode(&profiles, camera),
+                    camera.event_recording_stream,
+                    Duration::from_secs(camera.event_pre_recording_duration_secs),
+                    Duration::from_secs(camera.event_recording_duration_secs),
+                );
+            }
+        }
+        self.runtime_profiles = profiles;
         Ok(())
     }
 
@@ -1337,6 +1395,10 @@ impl KeepPeekLoop {
                     let result = self.restart_camera(&camera);
                     let _ = reply.send(result);
                 }
+                KeepPeekCommand::SetRuntimeProfiles { profiles, reply } => {
+                    let result = self.apply_runtime_profiles(profiles);
+                    let _ = reply.send(result);
+                }
             }
         }
     }
@@ -1347,6 +1409,28 @@ fn event_deep_link(camera_id: &str, event_id: &str) -> String {
     query.append_pair("camera", camera_id);
     query.append_pair("event", event_id);
     format!("/events?{}", query.finish())
+}
+
+fn effective_recording_mode(
+    profiles: &crate::profiles::ProfileRegistry,
+    camera: &crate::cameras::CameraConfig,
+) -> crate::cameras::CameraRecordingMode {
+    let camera_id = camera.ip.to_string();
+    let overlay = profiles
+        .active_profile_id
+        .as_ref()
+        .and_then(|profile_id| profiles.profiles.get(profile_id))
+        .and_then(|profile| profile.cameras.get(&camera_id));
+    crate::profiles::resolve_camera_policy(
+        &crate::profiles::BaseCameraPolicy {
+            available: true,
+            recording_mode: camera.recording_mode,
+            privacy_enforced: false,
+            notifications_enabled: true,
+        },
+        overlay,
+    )
+    .recording_mode
 }
 
 fn unix_time_ms() -> i64 {
@@ -1450,6 +1534,65 @@ mod tests {
         );
         assert!(
             resolve_camera_route(CameraBackend::ReoProto, CameraTransport::Tcp, false).is_err()
+        );
+    }
+
+    #[test]
+    fn active_profile_recording_mode_respects_base_disabled_and_profile_privacy() {
+        let mut camera = runtime_rtsp_camera(
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .unwrap()
+                .local_addr()
+                .unwrap(),
+        )
+        .config;
+        camera.recording_mode = crate::cameras::CameraRecordingMode::Both;
+        let mut profiles = crate::profiles::ProfileRegistry {
+            revision: 1,
+            active_profile_id: Some("away".to_owned()),
+            profiles: [(
+                "away".to_owned(),
+                crate::profiles::RuntimeProfile {
+                    id: "away".to_owned(),
+                    name: "Away".to_owned(),
+                    revision: 1,
+                    cameras: [(
+                        camera.ip.to_string(),
+                        crate::profiles::CameraProfileOverride {
+                            recording_mode: Some(crate::cameras::CameraRecordingMode::Main),
+                            ..Default::default()
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+        assert_eq!(
+            effective_recording_mode(&profiles, &camera),
+            crate::cameras::CameraRecordingMode::Main
+        );
+
+        camera.recording_mode = crate::cameras::CameraRecordingMode::Off;
+        assert_eq!(
+            effective_recording_mode(&profiles, &camera),
+            crate::cameras::CameraRecordingMode::Off
+        );
+
+        camera.recording_mode = crate::cameras::CameraRecordingMode::Both;
+        profiles
+            .profiles
+            .get_mut("away")
+            .unwrap()
+            .cameras
+            .get_mut(&camera.ip.to_string())
+            .unwrap()
+            .privacy_enforced = Some(true);
+        assert_eq!(
+            effective_recording_mode(&profiles, &camera),
+            crate::cameras::CameraRecordingMode::Off
         );
     }
 

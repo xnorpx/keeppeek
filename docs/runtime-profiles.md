@@ -4,9 +4,11 @@ This document tracks [#202](https://github.com/xnorpx/keeppeek/issues/202).
 Runtime profiles are partially implemented. The server can persist and validate bounded
 definitions and administrators can select a preconfigured profile or Base through the existing
 WebRTC state-store command. Selection is revisioned and durable; profile privacy overrides feed
-the existing media privacy gate. Profile CRUD, UI, recording and notification application,
-per-camera convergence status, and full client watch projections remain incomplete. The baseline
-for this implementation is current `main` plus the branch commits listed in the PR.
+the existing media privacy gate. The active recording mode now reaches live recording admission
+on startup and profile activation, while configured `Off` and profile privacy remain dominant.
+Profile CRUD, UI, camera availability, notification application, per-camera convergence status,
+and full client watch projections remain incomplete. The baseline for this implementation is
+current `main` plus the branch commits listed in the PR.
 
 ## Scope
 
@@ -24,15 +26,15 @@ arbitrary user metadata are not valid profile fields.
 
 ## Baseline readiness
 
-| Boundary                                       | Existing owner                                                                 | Required integration                                                                                                                                                                                                                                                                                            |
-| ---------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Durable generic state and acknowledged watches | `src/server/state_store.rs`, `state_store_durable.rs`, `state_store_watch.rs`  | Reuse watch response barriers, acknowledgements, revocation, and reconnect behavior.                                                                                                                                                                                                                            |
-| Settings-backed state                          | `src/server/state_store_settings.rs`                                           | The existing adapter implements only `service/state-store-test/` and its two-field test schema. It is a worked example, not a pluggable profile registry. Profile commits must atomically update multiple projected entries and publish them under the same configuration lock.                                 |
-| Stable camera identity                         | `src/server/configuration.rs`, `src/config.rs`, `src/keeppeek.rs`              | Current configured IDs and runtime ownership use camera IP addresses. Resolve the identity/migration checkpoint before persisting long-lived profile references; #95 owns same-IP child/channel support.                                                                                                        |
-| Recording mode                                 | `src/storage/engine/event.rs::StorageHandle::configure_camera_event_recording` | Apply through the current event-recording owner, preserving Base stream and pre/post settings. The older `configure_camera_recording` only updates the legacy path; active event recording can bypass an Off override sent there. Add acknowledged failure reporting and reapply the overlay when Base changes. |
-| Camera availability                            | `src/server.rs::start_runtime_camera`, `src/keeppeek.rs`                       | Establish an acknowledged, bounded start/stop operation. Existing stop waits for workers without a deadline; caller timeout does not cancel queued work. Configuration-plan activation restarts cameras and is not a profile adapter.                                                                           |
-| Privacy                                        | `src/privacy.rs::PrivacyRegistry`                                              | Add an internal profile input to the existing decision owner. Calling `PrivacyGate::activate` alone is insufficient: schedule evaluation can replace that decision.                                                                                                                                             |
-| Notifications                                  | `src/notifications/orchestrator.rs`, `src/notifications/delivery.rs`           | Enforce the profile input at candidate admission and queued delivery without editing notification rules.                                                                                                                                                                                                        |
+| Boundary                                       | Existing owner                                                                 | Required integration                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Durable generic state and acknowledged watches | `src/server/state_store.rs`, `state_store_durable.rs`, `state_store_watch.rs`  | Reuse watch response barriers, acknowledgements, revocation, and reconnect behavior.                                                                                                                                                                                                                                                                        |
+| Settings-backed state                          | `src/server/state_store_settings.rs`                                           | The existing adapter implements only `service/state-store-test/` and its two-field test schema. It is a worked example, not a pluggable profile registry. Profile commits must atomically update multiple projected entries and publish them under the same configuration lock.                                                                             |
+| Stable camera identity                         | `src/server/configuration.rs`, `src/config.rs`, `src/keeppeek.rs`              | Current configured IDs and runtime ownership use camera IP addresses. Resolve the identity/migration checkpoint before persisting long-lived profile references; #95 owns same-IP child/channel support.                                                                                                                                                    |
+| Recording mode                                 | `src/storage/engine/event.rs::StorageHandle::configure_camera_event_recording` | Implemented through the current event-recording owner on startup and profile activation, preserving Base stream and pre/post settings. The KeepPeek loop acknowledges application and rolls back on failed persistence. Storage-worker degradation status, profile observability, and automatic reapplication after Base configuration changes remain open. |
+| Camera availability                            | `src/server.rs::start_runtime_camera`, `src/keeppeek.rs`                       | Establish an acknowledged, bounded start/stop operation. Existing stop waits for workers without a deadline; caller timeout does not cancel queued work. Configuration-plan activation restarts cameras and is not a profile adapter.                                                                                                                       |
+| Privacy                                        | `src/privacy.rs::PrivacyRegistry`                                              | Add an internal profile input to the existing decision owner. Calling `PrivacyGate::activate` alone is insufficient: schedule evaluation can replace that decision.                                                                                                                                                                                         |
+| Notifications                                  | `src/notifications/orchestrator.rs`, `src/notifications/delivery.rs`           | Enforce the profile input at candidate admission and queued delivery without editing notification rules.                                                                                                                                                                                                                                                    |
 
 The issue's source plan predates the merged state store. At this baseline the generic
 limits are 64 KiB per encoded value, 64 entries/64 KiB per snapshot, 1,024 entries per
@@ -147,13 +149,13 @@ Both tests passed; none were skipped. No production behavior or dependency chang
 Focused Clippy with `-D warnings`, repository Rust formatting, Markdown formatting, and
 `mdbook build book` also passed. The protected API and UI trees have no diff. The full
 runtime/browser gate and activation performance benchmark remain required for the feature;
-this serialization-only slice does not claim those results.
+the current server slice does not claim those results.
 
 Remaining work:
 
 - Resolve identity, runtime-safe field classification, settings quota, and watch filtering.
 - Implement and test staged CAS commits, restart recovery, and unchanged state after failure.
-- Verify all runtime domains, supersession, privacy byte barriers, and Base changes.
+- Verify all runtime domains, supersession, privacy byte barriers, and Base changes; add storage-worker failure and Base-change reapplication evidence.
 - Add UI CRUD, shell status, provenance, external-client updates, and reconnect tests.
 - Run canonical Windows validation and the release-build 30-activation benchmark.
 
