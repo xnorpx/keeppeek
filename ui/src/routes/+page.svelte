@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import { goto, onNavigate } from '$app/navigation';
-	import { page } from '$app/state';
+	import { afterNavigate, goto, onNavigate } from '$app/navigation';
+	import { navigating, page } from '$app/state';
 	import { onMount, tick } from 'svelte';
 	import type { CameraHealth, CameraListItem, LiveQuality } from '$lib/types';
 	import { useControlClient } from '$lib/control-context';
@@ -106,7 +106,6 @@
 	let focusedCameraId: string | null = $state(null);
 	let lastViewerCameraId = '';
 	let viewerSelectionReady = $state(initialRequestedCameraId.length > 0);
-	let cameraViewActive = $derived(view === 'viewer');
 	let broadcastTalkbackActive = $derived(livePeer.talkbackActive);
 	let broadcastTalkbackError = $derived(livePeer.talkbackError);
 	let broadcastTalkbackGroup = $state('');
@@ -184,6 +183,11 @@
 	let healthRefreshInFlight = false;
 	let focusReturnPending = $state(false);
 	let wallRevealed = $derived(wallRevealState !== 'staging');
+	// Reuse the ready wall as soon as navigation starts, before route loading completes.
+	let cameraViewActive = $derived(
+		view === 'viewer' &&
+			(navigating.to?.url.pathname !== resolve('/') || wallRevealState === 'staging')
+	);
 	let focusedCamera = $derived(
 		focusedCameraId === null
 			? null
@@ -280,7 +284,6 @@
 		) {
 			const currentTransition = peekViewState.transition;
 			if (currentTransition) peekViewState.finishTransition(currentTransition);
-			// ponytail: Let route teardown remove focus. Clearing it here reactivates the Viewer.
 			return;
 		}
 		const cameraFrames = captureCameraFrames();
@@ -299,6 +302,10 @@
 			cameraId: destinationCameraId
 		});
 		await preloadTransitionFrame(dataUrl);
+	});
+	afterNavigate(({ from, to }) => {
+		if (from?.url.pathname !== resolve('/viewer') || to?.url.pathname !== resolve('/')) return;
+		if (focusedCameraId === null) focusWallCamera(lastViewerCameraId);
 	});
 	$effect(() => {
 		if (loading || !livePlansReady) return;
@@ -340,7 +347,12 @@
 	$effect(() => {
 		const requestedExists = cameras.some((camera) => camera.id === requestedCameraId);
 		if (!cameraViewActive) {
-			if (legacyRootCameraId && requestedCameraId === legacyRootCameraId && requestedExists) {
+			if (
+				page.url.pathname === resolve('/') &&
+				legacyRootCameraId &&
+				requestedCameraId === legacyRootCameraId &&
+				requestedExists
+			) {
 				void goto(viewerHref(requestedCameraId), { replaceState: true });
 			}
 			return;
@@ -958,7 +970,8 @@
 
 	function closeFocus() {
 		if (focusedCameraId === null || focusReturnPending) return;
-		const returnToDashboard = page.url.pathname === resolve('/viewer');
+		const returnToDashboard =
+			page.url.pathname === resolve('/viewer') && navigating.to?.url.pathname !== resolve('/');
 		if (returnToDashboard) {
 			void goto(resolve('/'));
 			return;
@@ -984,13 +997,13 @@
 		focusRuntimeNotice = null;
 		scheduleLivePlanReconcile();
 		if (previousCameraId !== null) {
-			void tick().then(() => {
-				if (!componentActive) return;
-				document
-					.querySelector<HTMLElement>(`[data-peek-focus="${CSS.escape(previousCameraId)}"]`)
-					?.focus();
-			});
+			void tick().then(() => focusWallCamera(previousCameraId));
 		}
+	}
+
+	function focusWallCamera(cameraId: string): void {
+		if (!componentActive) return;
+		document.querySelector<HTMLElement>(`[data-peek-focus="${CSS.escape(cameraId)}"]`)?.focus();
 	}
 
 	function cameraHref(cameraId: string): string {
