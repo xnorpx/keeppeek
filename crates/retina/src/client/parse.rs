@@ -564,7 +564,7 @@ pub fn parse_setup(response: &crate::rtsp::msg::Response) -> Result<SetupRespons
         if let Some(v) = part.strip_prefix("ssrc=") {
             let v = v.trim();
             match u32::from_str_radix(v, 16) {
-                Ok(value) if v.len() > 4 => ssrc = Some(value),
+                Ok(value) if (5..=8).contains(&v.len()) => ssrc = Some(value),
                 _ => warn!("Ignoring nonconforming ssrc in Transport header {transport_str:?}"),
             }
         } else if let Some(interleaved) = part.strip_prefix("interleaved=") {
@@ -1536,6 +1536,17 @@ mod tests {
             b"RTSP/1.0 200 OK\r\n\
               Session: 1234\r\n\
               Transport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=A046\r\n\r\n",
+        );
+        let setup = parse_setup(&setup_response.0).unwrap();
+        assert_eq!(setup.ssrc, None);
+    }
+
+    #[test]
+    fn setup_ignores_transport_ssrc_longer_than_32_bits() {
+        let setup_response = response(
+            b"RTSP/1.0 200 OK\r\n\
+              Session: 1234\r\n\
+              Transport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=000000001\r\n\r\n",
         );
         let setup = parse_setup(&setup_response.0).unwrap();
         assert_eq!(setup.ssrc, None);
