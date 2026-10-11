@@ -19,6 +19,7 @@ pub(crate) mod metrics;
 mod notifications;
 pub(crate) mod operational_events;
 pub mod privacy;
+pub mod profiles;
 pub mod reolink;
 pub mod rtsp;
 pub mod runtime;

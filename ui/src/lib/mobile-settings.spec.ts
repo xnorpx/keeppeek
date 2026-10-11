@@ -6,9 +6,10 @@ import {
 } from '$lib/mobile-settings';
 
 describe('mobile settings navigation', () => {
-	it('lists the eleven server-wide administration sections', () => {
+	it('lists the twelve server-wide administration sections', () => {
 		expect(mobileSettingsSections.map((section) => section.label)).toEqual([
 			'Dashboards',
+			'Runtime profiles',
 			'Storage & retention',
 			'Backup & restore',
 			'Event sources',
@@ -32,11 +33,11 @@ describe('mobile settings navigation', () => {
 		expect(filterMobileSettingsSections('rollback').map((section) => section.id)).toEqual([
 			'backups'
 		]);
-		expect(filterMobileSettingsSections('  ')).toHaveLength(11);
+		expect(filterMobileSettingsSections('  ')).toHaveLength(12);
 	});
 
 	it('hides backup navigation when the Administrator capability is unavailable', () => {
-		expect(filterMobileSettingsSections('', false)).toHaveLength(10);
+		expect(filterMobileSettingsSections('', false)).toHaveLength(11);
 		expect(filterMobileSettingsSections('rollback', false)).toEqual([]);
 		expect(mobileSettingsFocus('#backups', false)).toBeNull();
 	});

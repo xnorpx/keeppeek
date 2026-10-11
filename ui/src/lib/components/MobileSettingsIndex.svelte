@@ -28,6 +28,7 @@
 			case 'backups':
 			case 'groups':
 			case 'notifications':
+			case 'runtime-profiles':
 			case 'access':
 				return '—';
 			case 'integrations':
@@ -98,7 +99,7 @@
 						{#each administration as section (section.id)}
 							<a
 								href={section.href}
-								class="flex h-[52px] items-center gap-[11px] px-[14px] focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
+								class="flex h-[44px] items-center gap-[11px] px-[14px] focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
 							>
 								<span class="size-2 shrink-0 {indicatorClass(section)}"></span>
 								<span class="min-w-0 flex-1 text-md leading-[18px]">{section.label}</span>
@@ -122,7 +123,7 @@
 						{#each system as section (section.id)}
 							<a
 								href={section.href}
-								class="flex h-[46px] items-center px-[14px] focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
+								class="flex h-[44px] items-center px-[14px] focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
 							>
 								<span class="min-w-0 flex-1 text-md leading-[18px]">{section.label}</span>
 							</a>

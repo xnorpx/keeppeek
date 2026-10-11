@@ -454,7 +454,7 @@ fn registry_command_error(error: RegistryError, namespace: &str, key: &str) -> C
     }
 }
 
-fn json_to_struct(value: serde_json::Value) -> anyhow::Result<Struct> {
+pub(super) fn json_to_struct(value: serde_json::Value) -> anyhow::Result<Struct> {
     let serde_json::Value::Object(fields) = value else {
         anyhow::bail!("state value is not an object");
     };
@@ -485,7 +485,7 @@ fn json_to_value(value: serde_json::Value) -> Value {
     Value { kind: Some(kind) }
 }
 
-fn struct_to_json(value: Struct) -> serde_json::Value {
+pub(super) fn struct_to_json(value: Struct) -> serde_json::Value {
     serde_json::Value::Object(
         value
             .fields

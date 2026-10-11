@@ -7,6 +7,7 @@
 	import { downloadDiagnosticsBundle } from '$lib/diagnostics-bundle';
 	import type {
 		CameraCatalogInfo,
+		ConfigurationSnapshot,
 		SanitizedConfig,
 		ServerHealthResponse,
 		SettingsConfigUpdate
@@ -25,6 +26,7 @@
 	import NotificationsSection from '$lib/components/NotificationsSection.svelte';
 	import PeekDashboardSettings from '$lib/components/PeekDashboardSettings.svelte';
 	import StorageRetentionSection from '$lib/components/StorageRetentionSection.svelte';
+	import RuntimeProfilesSection from '$lib/components/RuntimeProfilesSection.svelte';
 	import StorageSettingsEditor from '$lib/components/StorageSettingsEditor.svelte';
 	import NamedVolumesSection from '$lib/components/storage-volumes/NamedVolumesSection.svelte';
 	import SettingsApplyingState from '$lib/components/SettingsApplyingState.svelte';
@@ -52,6 +54,7 @@
 	const capabilities = useCapabilityState();
 
 	let config = $state.raw<SanitizedConfig | null>(null);
+	let configurationSnapshot = $state.raw<ConfigurationSnapshot | null>(null);
 	let serverHealth = $state.raw<ServerHealthResponse | null>(null);
 	let serverHealthError = $state<string | null>(null);
 	let catalogInfo = $state.raw<CameraCatalogInfo | null>(null);
@@ -133,12 +136,15 @@
 				})
 			);
 			const catalogRequest = controlClient.getCameraCatalog().catch(() => null);
-			const [nextConfig, nextHealth, nextCatalogInfo] = await Promise.all([
-				controlClient.getRuntimeConfiguration(),
-				healthRequest,
-				catalogRequest
-			]);
+			const [nextConfig, nextHealth, nextCatalogInfo, nextConfigurationSnapshot] =
+				await Promise.all([
+					controlClient.getRuntimeConfiguration(),
+					healthRequest,
+					catalogRequest,
+					controlClient.getConfigurationSnapshot().catch(() => null)
+				]);
 			config = nextConfig;
+			configurationSnapshot = nextConfigurationSnapshot;
 			serverHealth = nextHealth.value;
 			serverHealthError = nextHealth.error;
 			catalogInfo = nextCatalogInfo;
@@ -465,6 +471,13 @@
 
 			<div class={mobileSectionClass('dashboards')}>
 				<PeekDashboardSettings controller={controlClient} health={serverHealth} />
+			</div>
+
+			<div class={mobileSectionClass('runtime-profiles')}>
+				<RuntimeProfilesSection
+					cameras={configurationSnapshot?.cameras.map((camera) => camera.camera) ?? []}
+					{administrator}
+				/>
 			</div>
 
 			<Card.Root class="hidden md:grid">

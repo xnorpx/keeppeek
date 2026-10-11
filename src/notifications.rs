@@ -100,6 +100,10 @@ enum Command {
     Publish {
         candidate: Box<model::Candidate>,
     },
+    SetProfileSuppressedSources {
+        source_ids: std::collections::BTreeSet<String>,
+        reply: SyncSender<anyhow::Result<usize>>,
+    },
     Test {
         rule_id: String,
         owner_id: String,
@@ -263,6 +267,29 @@ impl Handle {
                 );
             }
         }
+    }
+
+    pub fn set_profile_suppressed_sources(
+        &self,
+        source_ids: std::collections::BTreeSet<String>,
+    ) -> anyhow::Result<usize> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.tx
+            .try_send(Command::SetProfileSuppressedSources {
+                source_ids,
+                reply: reply_tx,
+            })
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => {
+                    anyhow::anyhow!("notification profile update queue is full")
+                }
+                mpsc::TrySendError::Disconnected(_) => {
+                    anyhow::anyhow!("notification runtime is no longer running")
+                }
+            })?;
+        reply_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|error| {
+            anyhow::anyhow!("runtime profile notification update timed out: {error}")
+        })?
     }
 
     pub(crate) fn metric_snapshot(&self) -> crate::metrics::NotificationMetricsSnapshot {
@@ -541,6 +568,9 @@ fn run(store: store::Store, rx: Receiver<Command>) {
                         "notification candidate evaluation failed"
                     );
                 }
+            }
+            Command::SetProfileSuppressedSources { source_ids, reply } => {
+                let _ = reply.send(store.set_profile_suppressed_sources(source_ids));
             }
             Command::Test {
                 rule_id,

@@ -282,6 +282,7 @@ pub fn run(
     keeppeek.set_health_registry(health_registry);
     keeppeek.set_status_sender(router_tx.clone());
     keeppeek.set_notifications(notification_handle.clone());
+    keeppeek.set_runtime_profiles(cfg.runtime_profiles.clone());
     keeppeek.set_event_forwarder(event_forwarder_handle.clone());
     if let Some(battery_wake) = &battery_wake {
         keeppeek.set_battery_wake(battery_wake.handle());

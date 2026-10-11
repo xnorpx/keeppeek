@@ -1,8 +1,8 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::{self, Write as _},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, atomic::Ordering},
+    sync::{Arc, Mutex, MutexGuard, RwLock, atomic::Ordering},
 };
 
 use super::{NotificationMetrics, decrement_counter, model::Rule, state::RuntimeState};
@@ -83,6 +83,7 @@ pub(super) struct Store {
     pub(super) metrics: Arc<NotificationMetrics>,
     config_update: Arc<Mutex<()>>,
     state: Arc<Mutex<RuntimeState>>,
+    pub(super) profile_suppressed_sources: Arc<RwLock<BTreeSet<String>>>,
 }
 
 impl Store {
@@ -113,6 +114,7 @@ impl Store {
             metrics,
             config_update,
             state: Arc::new(Mutex::new(RuntimeState::new(rules))),
+            profile_suppressed_sources: Arc::new(RwLock::new(BTreeSet::new())),
         };
         if migrate_legacy {
             let mut state = store.lock_state();

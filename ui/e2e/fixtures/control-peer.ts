@@ -165,6 +165,7 @@ import {
 	StorageSafetyHealthSnapshotSchema,
 	StorageWriteProbeResultSchema,
 	StateEntrySchema,
+	StateWatchSnapshotSchema,
 	StateStoreErrorCode,
 	StateStoreErrorSchema,
 	StateStoreResultSchema,
@@ -572,6 +573,58 @@ function encodedPeekLayoutState(
 	});
 }
 
+function encodedRuntimeProfileEntry(
+	requestId: bigint,
+	key: string,
+	value: JsonObject,
+	revision: bigint
+): number[] {
+	const schema = {
+		registry: 'keeppeek.runtime-profiles.registry.v1',
+		active: 'keeppeek.runtime-profiles.active.v1',
+		status: 'keeppeek.runtime-profiles.status.v1'
+	}[key];
+	if (!schema) throw new Error(`unsupported runtime profile key: ${key}`);
+	return encodedOk(requestId, {
+		case: 'stateStoreResult',
+		value: create(StateStoreResultSchema, {
+			result: {
+				case: 'entry',
+				value: create(StateEntrySchema, {
+					namespace: 'service/runtime-profiles/',
+					key,
+					schema,
+					value,
+					revision,
+					ownerId: 'server'
+				})
+			}
+		})
+	});
+}
+
+function encodedRuntimeProfileWatch(
+	requestId: bigint,
+	watchId: string,
+	keyPrefix: string
+): number[] {
+	return encodedOk(requestId, {
+		case: 'stateStoreResult',
+		value: create(StateStoreResultSchema, {
+			result: {
+				case: 'watch',
+				value: create(StateWatchSnapshotSchema, {
+					watchId,
+					namespace: 'service/runtime-profiles/',
+					keyPrefix,
+					snapshotRevision: 1n,
+					entries: []
+				})
+			}
+		})
+	});
+}
+
 function encodedPeekLayoutConflict(requestId: bigint, currentRevision: bigint): number[] {
 	const detail = create(StateStoreErrorSchema, {
 		namespace: 'keeppeek.peek-layouts',
@@ -845,6 +898,16 @@ export async function mockControlPeer(
 		? structuredClone(options.peekLayoutRegistry)
 		: undefined;
 	let peekLayoutRevision = options.peekLayoutRevision ?? 1n;
+	const runtimeProfileValues: Record<string, JsonObject> = {
+		registry: { revision: '1', active_profile_id: null, profiles: {} },
+		active: { profile_id: '' },
+		status: { revision: '1', active_profile_id: null, cameras: {} }
+	};
+	const runtimeProfileRevisions: Record<string, bigint> = {
+		registry: 1n,
+		active: 1n,
+		status: 1n
+	};
 	const configurationSnapshots = [...(options.configurationSnapshots ?? [])];
 	const configurationTemplateResults = [...(options.configurationTemplateResults ?? [])];
 	let currentConfigurationSnapshot: ConfigurationSnapshot | undefined;
@@ -1017,6 +1080,40 @@ export async function mockControlPeer(
 		}
 		if (request.command.case === 'stateStoreCommand') {
 			const action = request.command.value.action;
+			if (
+				action.case === 'get' &&
+				action.value.namespace === 'service/runtime-profiles/' &&
+				runtimeProfileValues[action.value.key]
+			) {
+				return encodedRuntimeProfileEntry(
+					request.requestId,
+					action.value.key,
+					runtimeProfileValues[action.value.key],
+					runtimeProfileRevisions[action.value.key]!
+				);
+			}
+			if (
+				action.case === 'put' &&
+				action.value.namespace === 'service/runtime-profiles/' &&
+				runtimeProfileValues[action.value.key] &&
+				action.value.value
+			) {
+				runtimeProfileValues[action.value.key] = structuredClone(action.value.value);
+				runtimeProfileRevisions[action.value.key] = runtimeProfileRevisions[action.value.key]! + 1n;
+				return encodedRuntimeProfileEntry(
+					request.requestId,
+					action.value.key,
+					runtimeProfileValues[action.value.key],
+					runtimeProfileRevisions[action.value.key]!
+				);
+			}
+			if (action.case === 'watch' && action.value.namespace === 'service/runtime-profiles/') {
+				return encodedRuntimeProfileWatch(
+					request.requestId,
+					action.value.watchId,
+					action.value.keyPrefix
+				);
+			}
 			if (action.case === 'get' && action.value.namespace === 'keeppeek.peek-layouts') {
 				requests.peekLayoutReads += 1;
 				await peekLayoutGetGates.shift();
