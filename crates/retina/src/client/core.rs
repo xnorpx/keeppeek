@@ -58,9 +58,6 @@ pub struct ClientOptions {
     pub response_timeout: Duration,
     /// Credentials to use when the RTSP server requests Digest authentication.
     pub credentials: Option<super::Credentials>,
-    /// Maximum size in bytes of an RTSP request or response, including headers and body.
-    /// `None` allows any size.
-    pub max_message_size: Option<usize>,
 }
 
 impl Default for ClientOptions {
@@ -68,7 +65,6 @@ impl Default for ClientOptions {
         Self {
             response_timeout: DEFAULT_RESPONSE_TIMEOUT,
             credentials: None,
-            max_message_size: None,
         }
     }
 }
@@ -406,6 +402,7 @@ struct PendingUdpDatagram {
 /// A runtime-neutral RTSP control-plane client.
 pub struct RtspClient {
     options: ClientOptions,
+    max_message_size: Option<usize>,
     phase: Phase,
     next_connection: u64,
     next_cseq: u32,
@@ -428,9 +425,19 @@ impl Default for RtspClient {
 impl RtspClient {
     /// Creates a new client with caller-controlled I/O and time.
     pub fn new(options: ClientOptions) -> Self {
-        let framer = make_rtsp_framer(&options);
+        Self::new_with_message_limit(options, None)
+    }
+
+    /// Creates a client that rejects RTSP messages larger than `max_message_size` bytes.
+    pub fn with_max_message_size(options: ClientOptions, max_message_size: usize) -> Self {
+        Self::new_with_message_limit(options, Some(max_message_size))
+    }
+
+    fn new_with_message_limit(options: ClientOptions, max_message_size: Option<usize>) -> Self {
+        let framer = make_rtsp_framer(max_message_size);
         Self {
             options,
+            max_message_size,
             phase: Phase::Idle,
             next_connection: 1,
             next_cseq: 1,
@@ -524,7 +531,7 @@ impl RtspClient {
                 let connection = TcpConnectionId(self.next_connection);
                 self.next_connection += 1;
                 self.next_cseq = 1;
-                self.framer = make_rtsp_framer(&self.options);
+                self.framer = make_rtsp_framer(self.max_message_size);
                 self.presentation = None;
                 self.channels = ChannelMappings::default();
                 self.session = None;
@@ -1589,10 +1596,8 @@ impl RtspClient {
     }
 }
 
-fn make_rtsp_framer(options: &ClientOptions) -> RtspFramer {
-    options
-        .max_message_size
-        .map_or_else(RtspFramer::default, RtspFramer::with_max_message_size)
+fn make_rtsp_framer(max_message_size: Option<usize>) -> RtspFramer {
+    max_message_size.map_or_else(RtspFramer::default, RtspFramer::with_max_message_size)
 }
 
 fn connect_target(url: &Url) -> Result<TcpConnectTarget, CoreError> {
@@ -2199,15 +2204,17 @@ mod tests {
     }
 
     #[test]
-    fn client_options_limit_rtsp_message_size() {
-        let options = ClientOptions {
-            max_message_size: Some(64),
-            ..ClientOptions::default()
-        };
-        let (mut client, _, _) = describe_client_with_options(options);
+    fn client_message_size_limit_rejects_complete_and_incomplete_messages() {
+        let mut framer = RtspFramer::with_max_message_size(64);
+        let error = framer
+            .push(b"RTSP/1.0 200 OK\r\nContent-Length: 1000\r\n\r\n")
+            .unwrap_err();
+        assert!(matches!(error, CoreError::Framing(_)));
+
+        let mut client = RtspClient::with_max_message_size(ClientOptions::default(), 64);
         let error = client
             .framer
-            .push(b"RTSP/1.0 200 OK\r\nContent-Length: 1000\r\n\r\n")
+            .push(b"RTSP/1.0 200 OK\r\nX: a header value that exceeds the configured limit")
             .unwrap_err();
         assert!(matches!(error, CoreError::Framing(_)));
     }
