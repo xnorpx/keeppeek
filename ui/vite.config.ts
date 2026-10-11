@@ -21,6 +21,7 @@ export default defineConfig({
 		tailwindcss(),
 		sveltekit({
 			preprocess: vitePreprocess({ script: true }),
+			alias: { $lib: 'src/lib' },
 			adapter: adapter({
 				pages: buildDir,
 				assets: buildDir,
