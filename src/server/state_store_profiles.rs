@@ -151,6 +151,11 @@ pub(super) fn dispatch(
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .active_privacy_overrides();
+            let previous_registry = state
+                .runtime_profiles
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let next_privacy = current.runtime_profiles.active_privacy_overrides();
             let mut restrictive_privacy = previous_privacy.clone();
             for (camera_id, enforced) in &next_privacy {
@@ -165,6 +170,20 @@ pub(super) fn dispatch(
                 .map_err(|error| {
                     registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
                 })?;
+            if let Some(runtime) = &state.camera_runtime
+                && let Err(error) = runtime.set_runtime_profiles(current.runtime_profiles.clone())
+            {
+                runtime.set_runtime_profiles(previous_registry).ok();
+                state
+                    .privacy
+                    .replace_profile_overrides(previous_privacy)
+                    .ok();
+                return Err(registry_error(
+                    Error::Storage(error.to_string()),
+                    NAMESPACE,
+                    ACTIVE_KEY,
+                ));
+            }
             root.insert(
                 "runtime_profiles".to_owned(),
                 toml::Value::try_from(&current.runtime_profiles).map_err(|error| {
@@ -172,6 +191,9 @@ pub(super) fn dispatch(
                 })?,
             );
             if let Err(error) = config::write_configuration_table(config_path, &root) {
+                if let Some(runtime) = &state.camera_runtime {
+                    runtime.set_runtime_profiles(previous_registry).ok();
+                }
                 state
                     .privacy
                     .replace_profile_overrides(previous_privacy)
