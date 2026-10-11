@@ -353,7 +353,7 @@
 				requestedCameraId === legacyRootCameraId &&
 				requestedExists
 			) {
-				void goto(viewerHref(requestedCameraId), { replaceState: true });
+				void goto(viewerHref(requestedCameraId), { replace: true });
 			}
 			return;
 		}
@@ -367,7 +367,7 @@
 		if (!cameraId) return;
 		if (focusedCameraId !== cameraId) activateFocus(cameraId);
 		if (requestedCameraId !== cameraId) {
-			void goto(viewerHref(cameraId), { replaceState: true, noScroll: true, keepFocus: true });
+			void goto(viewerHref(cameraId), { replace: true, reset: false });
 		}
 	});
 
@@ -943,12 +943,12 @@
 	function openFocus(cameraId: string): void {
 		if (!cameraViewActive) {
 			rememberViewerCamera(cameraId);
-			void goto(viewerHref(cameraId), { noScroll: true, keepFocus: true });
+			void goto(viewerHref(cameraId), { reset: false });
 			return;
 		}
 		activateFocus(cameraId);
 		if (requestedCameraId !== cameraId) {
-			void goto(viewerHref(cameraId), { noScroll: true, keepFocus: true });
+			void goto(viewerHref(cameraId), { reset: false });
 		}
 	}
 
