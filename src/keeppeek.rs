@@ -1550,25 +1550,21 @@ mod tests {
         let mut profiles = crate::profiles::ProfileRegistry {
             revision: 1,
             active_profile_id: Some("away".to_owned()),
-            profiles: [(
+            profiles: std::collections::BTreeMap::from([(
                 "away".to_owned(),
                 crate::profiles::RuntimeProfile {
                     id: "away".to_owned(),
                     name: "Away".to_owned(),
                     revision: 1,
-                    cameras: [(
+                    cameras: std::collections::BTreeMap::from([(
                         camera.ip.to_string(),
                         crate::profiles::CameraProfileOverride {
                             recording_mode: Some(crate::cameras::CameraRecordingMode::Main),
                             ..Default::default()
                         },
-                    )]
-                    .into_iter()
-                    .collect(),
+                    )]),
                 },
-            )]
-            .into_iter()
-            .collect(),
+            )]),
         };
         assert_eq!(
             effective_recording_mode(&profiles, &camera),

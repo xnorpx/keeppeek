@@ -422,14 +422,12 @@ mod tests {
                 key: ACTIVE_KEY.to_owned(),
                 schema: ACTIVE_SCHEMA.to_owned(),
                 value: Some(Struct {
-                    fields: [(
+                    fields: BTreeMap::from([(
                         "profile_id".to_owned(),
                         Value {
                             kind: Some(Kind::StringValue(profile_id.to_owned())),
                         },
-                    )]
-                    .into_iter()
-                    .collect(),
+                    )]),
                 }),
                 expected_revision: Some(expected_revision),
                 ttl: None,

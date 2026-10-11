@@ -13818,25 +13818,27 @@ mod tests {
 
     #[test]
     fn active_profile_privacy_is_restored_into_the_server_media_gate() {
-        let mut config = Config::default();
-        config.runtime_profiles = crate::profiles::ProfileRegistry {
-            revision: 1,
-            active_profile_id: Some("away".to_owned()),
-            profiles: BTreeMap::from([(
-                "away".to_owned(),
-                RuntimeProfile {
-                    id: "away".to_owned(),
-                    name: "Away".to_owned(),
-                    revision: 1,
-                    cameras: BTreeMap::from([(
-                        "front-door".to_owned(),
-                        CameraProfileOverride {
-                            privacy_enforced: Some(true),
-                            ..CameraProfileOverride::default()
-                        },
-                    )]),
-                },
-            )]),
+        let config = Config {
+            runtime_profiles: crate::profiles::ProfileRegistry {
+                revision: 1,
+                active_profile_id: Some("away".to_owned()),
+                profiles: BTreeMap::from([(
+                    "away".to_owned(),
+                    RuntimeProfile {
+                        id: "away".to_owned(),
+                        name: "Away".to_owned(),
+                        revision: 1,
+                        cameras: BTreeMap::from([(
+                            "front-door".to_owned(),
+                            CameraProfileOverride {
+                                privacy_enforced: Some(true),
+                                ..CameraProfileOverride::default()
+                            },
+                        )]),
+                    },
+                )]),
+            },
+            ..Config::default()
         };
         let state = ServerState::new(
             &config,
