@@ -111,7 +111,7 @@ export function previousEventBrowserWindow(
 }
 
 export function parseEventBrowserFilters(
-	params: URLSearchParams,
+	params: Pick<URLSearchParams, 'get'>,
 	fallbackDate: string
 ): EventBrowserFilters {
 	const requestedDate = params.get('date');
