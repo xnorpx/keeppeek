@@ -15,7 +15,15 @@ if (testFiles.length === 0) throw new Error('No Bun-compatible tests were found'
 
 console.log(`Running ${testFiles.length} Bun-compatible test files in parallel`);
 const testProcess = Bun.spawn(
-	[process.execPath, 'test', '--parallel', '--only-failures', ...testFiles],
+	[
+		process.execPath,
+		'test',
+		'--parallel',
+		'--only-failures',
+		'--tsconfig-override',
+		'./tsconfig.json',
+		...testFiles
+	],
 	{
 		cwd: workspaceRoot,
 		stdin: 'inherit',
