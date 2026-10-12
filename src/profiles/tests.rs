@@ -166,11 +166,37 @@ fn registry_enforces_profile_and_target_bounds() {
 }
 
 #[test]
-fn profile_fields_reject_unknown_configuration() {
-    let decoded = serde_json::from_str::<CameraProfileOverride>(
-        r#"{"availability":true,"password":"secret"}"#,
-    );
-    assert!(decoded.is_err());
+fn profile_override_accepts_only_runtime_safe_fields() {
+    let allowed = [
+        r#"{"availability":true}"#,
+        r#"{"recording_mode":"both"}"#,
+        r#"{"privacy_enforced":true}"#,
+        r#"{"notifications_suppressed":true}"#,
+    ];
+    for document in allowed {
+        assert!(
+            serde_json::from_str::<CameraProfileOverride>(document).is_ok(),
+            "runtime-safe override was rejected: {document}"
+        );
+    }
+
+    let forbidden = [
+        r#"{"ip":"192.0.2.10"}"#,
+        r#"{"address":"rtsp://camera/stream"}"#,
+        r#"{"username":"operator"}"#,
+        r#"{"password":"secret"}"#,
+        r#"{"secret":"camera-secret"}"#,
+        r#"{"detector":"model"}"#,
+        r#"{"storage_path":"/archive"}"#,
+        r#"{"notification_rules":[]}"#,
+        r#"{"metadata":{"custom":true}}"#,
+    ];
+    for document in forbidden {
+        assert!(
+            serde_json::from_str::<CameraProfileOverride>(document).is_err(),
+            "non-runtime configuration was accepted: {document}"
+        );
+    }
 }
 
 #[test]
