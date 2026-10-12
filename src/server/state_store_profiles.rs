@@ -1123,6 +1123,11 @@ fn update_runtime_status(
     runtime_error: Option<String>,
     runtime_unavailable: bool,
 ) {
+    let configured_camera_ids = state
+        .camera_entries()
+        .into_iter()
+        .map(|camera| camera.info.id)
+        .collect::<BTreeSet<_>>();
     let mut cameras = applications
         .unwrap_or_default()
         .into_iter()
@@ -1175,7 +1180,36 @@ fn update_runtime_status(
             );
         }
     }
+    if let Some(profile) = profiles
+        .active_profile_id
+        .as_ref()
+        .and_then(|profile_id| profiles.profiles.get(profile_id))
+    {
+        for (camera_id, profile_override) in &profile.cameras {
+            if configured_camera_ids.contains(camera_id) || cameras.contains_key(camera_id) {
+                continue;
+            }
+            let base = crate::profiles::BaseCameraPolicy {
+                available: true,
+                recording_mode: crate::cameras::CameraRecordingMode::default(),
+                privacy_enforced: false,
+                notifications_enabled: true,
+            };
+            cameras.insert(
+                camera_id.clone(),
+                crate::profiles::CameraRuntimeApplication {
+                    camera_id: camera_id.clone(),
+                    state: crate::profiles::RuntimeApplicationState::Degraded,
+                    policy: crate::profiles::resolve_camera_policy(&base, Some(profile_override)),
+                    reason: Some("configured camera is missing".to_owned()),
+                },
+            );
+        }
+    }
     for application in cameras.values_mut() {
+        if !configured_camera_ids.contains(&application.camera_id) {
+            continue;
+        }
         let privacy_active = state
             .privacy
             .decision(&application.camera_id, chrono::Utc::now());
@@ -1819,6 +1853,41 @@ mod tests {
                 .as_deref(),
             Some("away")
         );
+    }
+
+    #[test]
+    fn active_profile_status_reports_removed_camera_targets_as_degraded() {
+        let fixture = Fixture::new();
+        let mut profiles = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        profiles.active_profile_id = Some("away".to_owned());
+        profiles.profiles.get_mut("away").unwrap().cameras.insert(
+            "removed-camera".to_owned(),
+            crate::profiles::CameraProfileOverride {
+                availability: Some(false),
+                privacy_enforced: Some(true),
+                ..Default::default()
+            },
+        );
+
+        update_runtime_status(&fixture.state, &profiles, Some(Vec::new()), None, false);
+
+        let status = fixture.state.runtime_profile_status.read().unwrap();
+        let removed = status
+            .cameras
+            .get("removed-camera")
+            .expect("active profile's removed target must remain visible");
+        assert_eq!(
+            removed.state,
+            crate::profiles::RuntimeApplicationState::Degraded
+        );
+        assert_eq!(
+            removed.reason.as_deref(),
+            Some("configured camera is missing")
+        );
+        assert!(!removed.policy.available);
+        assert!(removed.policy.privacy_enforced);
     }
 
     #[test]
