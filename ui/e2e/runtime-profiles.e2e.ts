@@ -86,3 +86,25 @@ test('User sees profile state but has no profile mutation or activation controls
 	).toBeVisible();
 	await expect(page.locator('#runtime-profiles')).toHaveCount(0);
 });
+
+test('authorized WebRTC profile activation reaches another connected client', async ({ page }) => {
+	test.setTimeout(60_000);
+	await page.goto('/');
+	await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+	const result = await page.evaluate(async () => {
+		const modulePath = '/e2e/fixtures/runtime-profiles-browser.ts';
+		const fixture = (await import(
+			modulePath
+		)) as typeof import('./fixtures/runtime-profiles-browser');
+		return fixture.activateFromAnotherClient();
+	});
+	expect(result.activeProfileId).toMatch(/^e2e-[a-f0-9-]+$/);
+	expect(result.observed).toContainEqual({
+		profileId: result.activeProfileId,
+		revision: result.activatedRevision
+	});
+	expect(result.readerActive).toEqual({
+		profileId: result.activeProfileId,
+		revision: result.activatedRevision
+	});
+});

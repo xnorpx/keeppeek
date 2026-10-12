@@ -5,10 +5,12 @@ Runtime profiles are partially implemented. Administrators can create, rename, e
 activate bounded definitions through the existing WebRTC state-store command and the settings UI.
 Selection is revisioned and durable; privacy overrides feed the existing media privacy gate; and
 recording, camera availability, and notification suppression reach their current runtime owners.
-The shell and settings surfaces watch active-profile and per-camera application state. The full
-127-camera document layout, stable camera identity migration, asynchronous supersession, complete
-privacy leak matrix, camera-filtered observations, browser external-client/reconnect coverage, and
-capacity/performance evidence remain incomplete. Reads return bounded profile parts, and writes can
+The shell and settings surfaces watch active-profile and per-camera application state. A real-server
+browser test now proves that one authorized WebRTC client can activate a profile and a second
+connected client receives the active-state watch update. The full 127-camera document layout,
+stable camera identity migration, asynchronous supersession, complete privacy leak matrix,
+camera-filtered observations, UI-driven activation, reconnect coverage, and capacity/performance
+evidence remain incomplete. Reads return bounded profile parts, and writes can
 stage bounded Administrator-owned parts before one atomic configuration commit. Staging is an
 in-memory cache with a two-minute expiry; an interrupted staging operation leaves the accepted
 registry unchanged. A degraded runtime result does not roll back the durable desired profile. The
@@ -154,7 +156,8 @@ Reproduce with `cargo test --locked -p keeppeek --test runtime_profiles_capacity
 Both tests passed; none were skipped. No production behavior or dependency changed.
 
 Focused Clippy with `-D warnings`, repository Rust formatting, Markdown formatting, and
-`mdbook build book` also passed. The protected API and UI trees have no diff. The full
+`mdbook build book` also passed. The protected `api/` tree has no diff; UI changes include runtime
+profile client tests and the real-server two-client activation test. The full
 runtime/browser gate and activation performance benchmark remain required for the feature;
 the current server slice does not claim those results.
 
@@ -163,7 +166,7 @@ Remaining work:
 - Resolve stable camera identity, runtime-safe field classification, combined settings quota, and measured 16 KiB multipart registry/status projections. Profile parts are currently bounded projections of the durable configuration, not independent durable StateStore entries.
 - Extend staged-write qualification with restart tests, supersession, old-revision completion rejection, and unchanged accepted state after failed persistence. The current draft cache is process-local and the final CAS commit remains configuration-file atomic.
 - Verify the notification delivery race including already-claimed sends, privacy byte barriers across every media operation, Base changes, storage-worker failure, and Base-change reapplication.
-- Add desktop/mobile Playwright coverage for CRUD, external-client activation, reconnect/restart, accessibility, and ordered desired/applied state; verify camera-filtered watch updates.
+- Add desktop/mobile Playwright coverage for visible-UI CRUD and activation, reconnect/restart, accessibility, and ordered desired/applied state; verify camera-filtered watch updates. The current real-server test covers direct client activation and active-state watch convergence only.
 - Run canonical Windows validation and the release-build 30-activation benchmark.
 
 Server acknowledgement plus watch publication must be at most 250 ms p95. Connected
