@@ -75,9 +75,12 @@ namespace `service/runtime-profiles/`; an unqualified namespace is rejected by t
 state store. Reject control characters, unknown fields,
 unknown write schemas, duplicate cameras, and unresolved targets before committing.
 
-Current recording modes also include `event-only`, added after the issue's five-mode plan.
-The final field matrix must resolve its eligibility explicitly; omitting it or routing event
-modes through the legacy admission map would misrepresent current recording behavior.
+The server override schema accepts only availability, recording mode, privacy enforcement, and
+notification suppression. A Rust boundary test exercises each accepted field and rejects
+representative identity, credential, detector, storage, notification-rule, and arbitrary-metadata
+fields. Current recording modes also include `event-only`, added after the issue's five-mode plan.
+The complete field classification must still resolve each candidate explicitly; omitting it or
+routing event modes through the legacy admission map would misrepresent current recording behavior.
 
 | Document             | Fields and limits                                                                                                                                                                                                          |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
