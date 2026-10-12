@@ -87,6 +87,8 @@ test('User sees profile state but has no profile mutation or activation controls
 	await expect(page.locator('#runtime-profiles')).toHaveCount(0);
 });
 
+test.describe.configure({ mode: 'serial' });
+
 test('authorized WebRTC profile activation reaches another connected client', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.goto('/');
@@ -107,4 +109,27 @@ test('authorized WebRTC profile activation reaches another connected client', as
 		profileId: result.activeProfileId,
 		revision: result.activatedRevision
 	});
+});
+
+test('Administrator creates, activates, and removes a profile through Settings', async ({
+	page
+}) => {
+	test.setTimeout(60_000);
+	await page.goto('/settings');
+	const profiles = page.locator('#runtime-profiles');
+	await expect(profiles.getByRole('heading', { name: 'Runtime profiles' })).toBeVisible();
+	await profiles.getByLabel('Create a profile').fill('E2E Away');
+	await profiles.getByRole('button', { name: 'Create profile' }).click();
+	await expect(profiles.getByText('Stable profile ID: e2e-away', { exact: true })).toBeVisible();
+	await profiles.getByRole('button', { name: 'Save profile changes' }).click();
+	await expect(profiles.getByRole('status')).toContainText('Runtime profile changes saved.');
+	await profiles.getByRole('button', { name: 'Activate' }).click();
+	await expect(profiles.getByRole('status')).toContainText('Activated E2E Away.');
+	await expect(profiles.getByText(/Active policy: E2E Away/)).toBeVisible();
+	await profiles.getByRole('button', { name: 'Select Base' }).click();
+	await expect(profiles.getByRole('status')).toContainText('Base policy selected.');
+	await expect(profiles.getByText(/Active policy: Base/)).toBeVisible();
+	await profiles.getByRole('button', { name: 'Delete' }).click();
+	await profiles.getByRole('button', { name: 'Save profile changes' }).click();
+	await expect(profiles.getByLabel('Edit profile')).toHaveCount(0);
 });
