@@ -133,3 +133,26 @@ test('Administrator creates, activates, and removes a profile through Settings',
 	await profiles.getByRole('button', { name: 'Save profile changes' }).click();
 	await expect(profiles.getByLabel('Edit profile')).toHaveCount(0);
 });
+
+test('Administrator manages runtime profiles on mobile with the keyboard', async ({ page }) => {
+	test.setTimeout(60_000);
+	await page.setViewportSize({ width: 390, height: 844 });
+	await page.goto('/settings');
+	await page.getByRole('link', { name: /Runtime profiles/ }).click();
+	const profiles = page.locator('#runtime-profiles');
+	await expect(profiles.getByRole('heading', { name: 'Runtime profiles' })).toBeVisible();
+	await profiles.getByLabel('Create a profile').fill('Mobile Away');
+	await profiles.getByRole('button', { name: 'Create profile' }).press('Enter');
+	await expect(profiles.getByText('Stable profile ID: mobile-away', { exact: true })).toBeVisible();
+	await profiles.getByRole('button', { name: 'Save profile changes' }).press('Enter');
+	await expect(profiles.getByRole('status')).toContainText('Runtime profile changes saved.');
+	await profiles.getByRole('button', { name: 'Activate' }).press('Space');
+	await expect(profiles.getByRole('status')).toContainText('Activated Mobile Away.');
+	await expect(profiles.getByText(/Active policy: Mobile Away/)).toBeVisible();
+	await profiles.getByRole('button', { name: 'Select Base' }).press('Enter');
+	await expect(profiles.getByRole('status')).toContainText('Base policy selected.');
+	await profiles.getByRole('button', { name: 'Delete' }).click();
+	await expect(profiles.getByRole('option', { name: 'Mobile Away' })).toHaveCount(0);
+	await profiles.getByRole('button', { name: 'Save profile changes' }).click();
+	await expect(profiles.getByRole('option', { name: 'Mobile Away' })).toHaveCount(0);
+});
