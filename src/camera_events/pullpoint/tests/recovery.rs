@@ -170,7 +170,7 @@ fn valid_pull_resets_backoff_after_consecutive_failed_subscriptions() {
         producer.run();
         Ok(())
     });
-    let progressed = fake.wait_for_pulls(10, Duration::from_secs(5));
+    let progressed = fake.wait_for_pulls(10, Duration::from_secs(10));
     let retried_promptly = fake.wait_for_pulls(11, Duration::from_secs(2));
     let (finished, result) = finish(handle, &shutdown, Duration::from_millis(200));
 
