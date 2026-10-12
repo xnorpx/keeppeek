@@ -299,9 +299,24 @@ fn authority_compaction_preserves_normal_open_and_advances_generation() {
     assert_eq!(authority.generation, 2);
     drop(connection);
     drop(lease);
-    super::super::RecordingCatalog::open(&path)
-        .unwrap()
-        .shutdown();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match super::super::RecordingCatalog::open(&path) {
+            Ok(catalog) => {
+                catalog.shutdown();
+                break;
+            }
+            Err(error)
+                if error
+                    .to_string()
+                    .contains("catalog authority lease is unavailable")
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => panic!("compacted catalog did not reopen: {error}"),
+        }
+    }
 }
 
 #[test]
