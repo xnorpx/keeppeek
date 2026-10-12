@@ -237,7 +237,7 @@ fn parse_media(base_url: &Url, media_description: &Media) -> Result<Stream, Stri
         .fmt
         .split_ascii_whitespace()
         .next()
-        .unwrap();
+        .ok_or_else(|| "media description has no format".to_string())?;
     let rtp_payload_type = u8::from_str_radix(rtp_payload_type_str, 10)
         .map_err(|_| format!("invalid RTP payload type {rtp_payload_type_str:?}"))?;
     if (rtp_payload_type & 0x80) != 0 {
@@ -505,6 +505,24 @@ fn parse_server_port(server_port: &str) -> Result<u16, ()> {
     Err(())
 }
 
+fn parse_session_id(id: &str, session_str: &str) -> Result<Box<str>, String> {
+    let id = id.trim();
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(format!(
+            "Empty or invalid session id in Session header {session_str:?}"
+        ));
+    }
+    Ok(id.into())
+}
+
+fn parse_rtp_info_ssrc(value: &str) -> Option<u32> {
+    let value = value.trim();
+    if value.len() != 8 || !value.bytes().any(|byte| byte.is_ascii_alphabetic()) {
+        return None;
+    }
+    u32::from_str_radix(value, 16).ok()
+}
+
 /// Parses a `SETUP` response.
 /// `session_id` is checked for assignment or reassignment.
 /// Returns an assigned interleaved channel id (implying the next channel id
@@ -518,7 +536,7 @@ pub fn parse_setup(response: &crate::rtsp::msg::Response) -> Result<SetupRespons
     let session_str: &str = session;
     let session = match session_str.split_once(';') {
         None => SessionHeader {
-            id: session_str.into(),
+            id: parse_session_id(session_str, session_str)?,
             timeout_sec: 60, // default
         },
         Some((id, timeout_str)) => {
@@ -533,7 +551,7 @@ pub fn parse_setup(response: &crate::rtsp::msg::Response) -> Result<SetupRespons
                     ));
                 }
                 SessionHeader {
-                    id: id.into(),
+                    id: parse_session_id(id, session_str)?,
                     timeout_sec,
                 }
             } else {
@@ -553,8 +571,10 @@ pub fn parse_setup(response: &crate::rtsp::msg::Response) -> Result<SetupRespons
     for part in transport_str.split(';') {
         if let Some(v) = part.strip_prefix("ssrc=") {
             let v = v.trim();
-            let v = u32::from_str_radix(v, 16).map_err(|_| format!("Unparseable ssrc {v}"))?;
-            ssrc = Some(v);
+            match u32::from_str_radix(v, 16) {
+                Ok(value) if (5..=8).contains(&v.len()) => ssrc = Some(value),
+                _ => warn!("Ignoring nonconforming ssrc in Transport header {transport_str:?}"),
+            }
         } else if let Some(interleaved) = part.strip_prefix("interleaved=") {
             let mut channels = interleaved.splitn(2, '-');
             let n = channels.next().expect("splitn returns at least one part");
@@ -660,12 +680,10 @@ pub fn parse_play(
                     Ok(v) => state.initial_rtptime = Some(v),
                     Err(_) => warn!("Unparseable rtptime in RTP-Info header {rtp_info:?}"),
                 },
-                "ssrc" => {
-                    let value = value.trim();
-                    let ssrc = u32::from_str_radix(value, 16)
-                        .map_err(|_| format!("Unparseable ssrc {value}"))?;
-                    state.ssrc = Some(ssrc);
-                }
+                "ssrc" if state.ssrc.is_none() => match parse_rtp_info_ssrc(value) {
+                    Some(ssrc) => state.ssrc = Some(ssrc),
+                    None => warn!("Ignoring ambiguous or invalid ssrc in RTP-Info {rtp_info:?}"),
+                },
                 _ => {}
             }
         }
@@ -1465,6 +1483,149 @@ mod tests {
             }
             _ => panic!(),
         };
+    }
+
+    #[test]
+    fn sdp_media_without_format_is_skipped() {
+        let url = Url::parse("rtsp://127.0.0.1/").unwrap();
+        let (response, body) = sdp_response(
+            b"v=0\nm=video 0 RTP/AVP \nm=video 0 RTP/AVP 96\na=rtpmap:96 H264/90000\n",
+        );
+        let presentation = super::parse_describe(url, &response, &body).unwrap();
+        assert_eq!(presentation.streams.len(), 1);
+        assert_eq!(presentation.streams[0].encoding_name(), "h264");
+    }
+
+    #[test]
+    fn malformed_sdp_is_reported_without_panicking() {
+        let url = Url::parse("rtsp://127.0.0.1/").unwrap();
+        let (response, body) = sdp_response(b"v=0\n \na=x\n");
+        let error = super::parse_describe(url, &response, &body)
+            .err()
+            .expect("malformed SDP must be rejected");
+        assert!(error.starts_with("Unable to parse SDP"), "{error}");
+    }
+
+    #[test]
+    fn setup_trims_session_id_before_semicolon() {
+        let setup_response = response(
+            b"RTSP/1.0 200 OK\r\n\
+              Session: 1 ;timeout=60\r\n\
+              Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n",
+        );
+        let setup = parse_setup(&setup_response.0).unwrap();
+        assert_eq!(&*setup.session.id, "1");
+    }
+
+    #[test]
+    fn setup_rejects_empty_session_id() {
+        let setup_response = response(
+            b"RTSP/1.0 200 OK\r\n\
+              Session: ;timeout=60\r\n\
+              Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n",
+        );
+        let error = parse_setup(&setup_response.0).unwrap_err();
+        assert!(error.contains("invalid session id"), "{error}");
+    }
+
+    #[test]
+    fn session_id_rejects_spaces_and_controls() {
+        for id in [
+            "bad session",
+            "bad\tsession",
+            "bad\u{1f}session",
+            "bad\u{7f}session",
+        ] {
+            assert!(
+                parse_session_id(id, id).is_err(),
+                "expected invalid session id {id:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn session_id_accepts_rfc_2326_graphic_characters() {
+        assert_eq!(
+            &*parse_session_id("A0-_~+$@,.\"!*'()", "A0-_~+$@,.\"!*'()").unwrap(),
+            "A0-_~+$@,.\"!*'()"
+        );
+    }
+
+    #[test]
+    fn setup_ignores_unparseable_transport_ssrc() {
+        let setup_response = response(
+            b"RTSP/1.0 200 OK\r\n\
+              Session: 1234\r\n\
+              Transport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=0x6f7c\r\n\r\n",
+        );
+        let setup = parse_setup(&setup_response.0).unwrap();
+        assert_eq!(setup.ssrc, None);
+    }
+
+    #[test]
+    fn setup_ignores_four_digit_transport_ssrc() {
+        let setup_response = response(
+            b"RTSP/1.0 200 OK\r\n\
+              Session: 1234\r\n\
+              Transport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=A046\r\n\r\n",
+        );
+        let setup = parse_setup(&setup_response.0).unwrap();
+        assert_eq!(setup.ssrc, None);
+    }
+
+    #[test]
+    fn setup_ignores_transport_ssrc_longer_than_32_bits() {
+        let setup_response = response(
+            b"RTSP/1.0 200 OK\r\n\
+              Session: 1234\r\n\
+              Transport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=000000001\r\n\r\n",
+        );
+        let setup = parse_setup(&setup_response.0).unwrap();
+        assert_eq!(setup.ssrc, None);
+    }
+
+    #[test]
+    fn play_ignores_ssrc_in_rtsp_1_rtp_info() {
+        let base =
+            "rtsp://192.168.5.111:554/cam/realmonitor?channel=1&subtype=1&unicast=true&proto=Onvif";
+        let mut presentation = parse_describe(
+            base,
+            include_bytes!("testdata/dahua_describe_h264_aac_onvif.txt"),
+        )
+        .unwrap();
+        presentation.streams[0].state = dummy_stream_state_init(Some(0xffff_ef2d));
+        let play_response = response(
+            b"RTSP/1.0 200 OK\r\n\
+              RTP-Info: url=trackID=0;seq=13210;rtptime=1067824145;ssrc=4294962989\r\n\r\n",
+        );
+        super::parse_play(&play_response.0, &mut presentation).unwrap();
+        let StreamState::Init(state) = &presentation.streams[0].state else {
+            panic!();
+        };
+        assert_eq!(state.initial_seq, Some(13210));
+        assert_eq!(state.initial_rtptime, Some(1_067_824_145));
+        assert_eq!(state.ssrc, Some(0xffff_ef2d));
+    }
+
+    #[test]
+    fn play_ignores_ambiguous_numeric_rtp_info_ssrc() {
+        let base =
+            "rtsp://192.168.5.111:554/cam/realmonitor?channel=1&subtype=1&unicast=true&proto=Onvif";
+        let mut presentation = parse_describe(
+            base,
+            include_bytes!("testdata/dahua_describe_h264_aac_onvif.txt"),
+        )
+        .unwrap();
+        presentation.streams[0].state = dummy_stream_state_init(None);
+        let play_response = response(
+            b"RTSP/1.0 200 OK\r\n\
+              RTP-Info: url=trackID=0;ssrc=12345678\r\n\r\n",
+        );
+        super::parse_play(&play_response.0, &mut presentation).unwrap();
+        let StreamState::Init(state) = &presentation.streams[0].state else {
+            panic!();
+        };
+        assert_eq!(state.ssrc, None);
     }
 
     /// Some Hikvision cameras send SSRC with a leading space in the
