@@ -164,7 +164,7 @@ the current server slice does not claim those results.
 Remaining work:
 
 - Resolve stable camera identity, runtime-safe field classification, combined settings quota, and measured 16 KiB multipart registry/status projections. Profile parts are currently bounded projections of the durable configuration, not independent durable StateStore entries.
-- Extend staged-write qualification with restart tests, supersession, old-revision completion rejection, and unchanged accepted state after failed persistence. The current draft cache is process-local and the final CAS commit remains configuration-file atomic.
+- Extend staged-write qualification with supersession, old-revision completion rejection, and unchanged accepted state after failed persistence. A Rust restart test now writes an active profile to `config.toml`, reloads it into a fresh `ServerState`, and checks the privacy gate; restart restoration for recording, availability, notifications, and failure cases remains open. The current draft cache is process-local and the final CAS commit remains configuration-file atomic.
 - Verify the notification delivery race including already-claimed sends, privacy byte barriers across every media operation, Base changes, storage-worker failure, and Base-change reapplication.
 - Add desktop/mobile Playwright coverage for visible-UI CRUD and activation, reconnect/restart, accessibility, and ordered desired/applied state; verify camera-filtered watch updates. The current real-server test covers direct client activation and active-state watch convergence only.
 - Run canonical Windows validation and the release-build 30-activation benchmark.
