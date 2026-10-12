@@ -632,12 +632,12 @@ jobs:
       - name: Install Chromium
         run: bunx playwright install --with-deps chromium
       - name: Download shared Playwright binaries and fixtures
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ui-e2e-linux
           path: target
       - name: Download shared authentication browser fixture
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ui-authentication-e2e-linux
           path: target/e2e-authentication
@@ -681,7 +681,7 @@ jobs:
       - name: Install Chromium
         run: bunx playwright install --with-deps chromium
       - name: Download verified Linux binaries and card
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ui-e2e-linux
           path: target
@@ -755,7 +755,7 @@ jobs:
         working-directory: examples/object_detection_service
         run: python generate_protos.py
       - name: Download shared Playwright binaries and fixtures
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ui-e2e-linux
           path: target
@@ -1022,7 +1022,7 @@ jobs:
       - name: Download coverage reports
         if: always()
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: coverage-reports
           path: quality-reports/coverage
