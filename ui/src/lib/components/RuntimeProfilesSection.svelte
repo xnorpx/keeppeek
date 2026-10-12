@@ -292,7 +292,7 @@
 			</div>
 
 			{#if runtimeStatus}
-				<div class="space-y-2" aria-label="Runtime profile convergence">
+				<div role="region" class="space-y-2" aria-label="Runtime profile convergence">
 					<p class="text-sm font-medium">
 						Camera application status for revision {runtimeStatus.revision}
 					</p>
