@@ -1037,6 +1037,24 @@ test('keeps confirmed settings visible and locked while a WebRTC update is apply
 	await expect(page.getByText('3201', { exact: true })).toBeVisible();
 });
 
+test('creates, saves, and activates a runtime profile in settings', async ({ page }) => {
+	await mockControlPeer(page, {
+		cameras: [],
+		health: { cameras: [] },
+		runtimeConfiguration: metadataRuntimeConfiguration()
+	});
+	await page.goto('/settings');
+	const profiles = page.locator('#runtime-profiles');
+	await expect(profiles.getByRole('heading', { name: 'Runtime profiles' })).toBeVisible();
+	await profiles.getByLabel('Create a profile').fill('Away');
+	await profiles.getByRole('button', { name: 'Create profile' }).click();
+	await expect(profiles.getByText('Stable profile ID: away', { exact: true })).toBeVisible();
+	await profiles.getByRole('button', { name: 'Save profile changes' }).click();
+	await expect(profiles.getByRole('status')).toContainText('Runtime profile changes saved.');
+	await profiles.getByRole('button', { name: 'Activate' }).click();
+	await expect(profiles.getByRole('status')).toContainText('Activated Away.');
+});
+
 function metadataRuntimeConfiguration() {
 	return {
 		host: '0.0.0.0',
