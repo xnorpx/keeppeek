@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cameras::CameraRecordingMode;
 
@@ -163,6 +163,46 @@ fn registry_enforces_profile_and_target_bounds() {
     };
 
     assert!(registry.validate().is_err());
+}
+
+#[test]
+fn registry_preserves_removed_camera_targets_but_rejects_new_unknown_targets() {
+    let known_camera_ids = BTreeSet::from(["10.0.0.2".to_owned()]);
+    let previous = ProfileRegistry {
+        revision: 1,
+        active_profile_id: None,
+        profiles: BTreeMap::from([(
+            "away".to_owned(),
+            profile(BTreeMap::from([(
+                "10.0.0.1".to_owned(),
+                CameraProfileOverride {
+                    availability: Some(false),
+                    ..CameraProfileOverride::default()
+                },
+            )])),
+        )]),
+    };
+    let mut candidate = previous.clone();
+    candidate.profiles.get_mut("away").unwrap().name = "Renamed".to_owned();
+
+    assert!(
+        candidate
+            .validate_targets(&known_camera_ids, &previous)
+            .is_ok()
+    );
+
+    candidate.profiles.get_mut("away").unwrap().cameras.insert(
+        "10.0.0.3".to_owned(),
+        CameraProfileOverride {
+            availability: Some(false),
+            ..CameraProfileOverride::default()
+        },
+    );
+    assert!(
+        candidate
+            .validate_targets(&known_camera_ids, &previous)
+            .is_err()
+    );
 }
 
 #[test]

@@ -931,7 +931,7 @@ fn put_registry(
         .map(|camera| camera.info.id)
         .collect::<BTreeSet<_>>();
     candidate
-        .validate_targets(&camera_ids)
+        .validate_targets(&camera_ids, &previous_registry)
         .map_err(|_| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY))?;
     for (profile_id, profile) in &mut candidate.profiles {
         profile.revision = match previous_registry.profiles.get(profile_id) {
@@ -1898,6 +1898,67 @@ mod tests {
         assert_eq!(stale.code, proto::ErrorCode::Rejected);
         assert_eq!(
             config::load_config(&fixture.config_path())
+                .unwrap()
+                .runtime_profiles
+                .revision,
+            1
+        );
+    }
+
+    #[test]
+    fn registry_edits_preserve_removed_camera_targets_without_accepting_new_unknown_targets() {
+        let fixture = Fixture::new();
+        let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let path = fixture.config_path();
+        let mut config_value = config::load_config(&path).unwrap();
+        config_value
+            .runtime_profiles
+            .profiles
+            .get_mut("away")
+            .unwrap()
+            .cameras
+            .insert(
+                "192.0.2.10".to_owned(),
+                crate::profiles::CameraProfileOverride {
+                    availability: Some(false),
+                    ..crate::profiles::CameraProfileOverride::default()
+                },
+            );
+        let root: toml::Table = toml::Value::try_from(&config_value)
+            .unwrap()
+            .as_table()
+            .unwrap()
+            .clone();
+        config::write_configuration_table(&path, &root).unwrap();
+
+        let mut registry = config_value.runtime_profiles;
+        registry.profiles.get_mut("away").unwrap().name = "Away renamed".to_owned();
+        super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_207),
+            &principal,
+            put_registry(&registry, 0),
+        )
+        .expect("a pre-existing target must not block later profile edits");
+
+        let mut registry = config::load_config(&path).unwrap().runtime_profiles;
+        registry.profiles.get_mut("away").unwrap().cameras.insert(
+            "192.0.2.11".to_owned(),
+            crate::profiles::CameraProfileOverride {
+                availability: Some(false),
+                ..crate::profiles::CameraProfileOverride::default()
+            },
+        );
+        let error = super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_207),
+            &principal,
+            put_registry(&registry, 1),
+        )
+        .expect_err("new targets must still identify configured cameras");
+        assert_eq!(error.code, proto::ErrorCode::InvalidRequest);
+        assert_eq!(
+            config::load_config(&path)
                 .unwrap()
                 .runtime_profiles
                 .revision,
