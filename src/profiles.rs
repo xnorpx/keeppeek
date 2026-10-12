@@ -140,12 +140,16 @@ impl ProfileRegistry {
         Ok(())
     }
 
-    pub fn validate_targets(&self, camera_ids: &BTreeSet<String>) -> Result<()> {
+    pub fn validate_targets(&self, camera_ids: &BTreeSet<String>, previous: &Self) -> Result<()> {
         self.validate()?;
-        for profile in self.profiles.values() {
+        for (profile_id, profile) in &self.profiles {
             for camera_id in profile.cameras.keys() {
+                let retained_missing_target = previous
+                    .profiles
+                    .get(profile_id)
+                    .is_some_and(|profile| profile.cameras.contains_key(camera_id));
                 ensure!(
-                    camera_ids.contains(camera_id),
+                    camera_ids.contains(camera_id) || retained_missing_target,
                     "profile references an unknown camera"
                 );
             }
