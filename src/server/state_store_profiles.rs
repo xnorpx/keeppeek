@@ -867,25 +867,6 @@ fn put_registry(
             REGISTRY_KEY,
         ));
     }
-    let mut registry_value = super::super::peek_layouts::struct_to_json(value);
-    let (mut candidate, draft_id, draft_profiles) = if registry_value.get("draft_id").is_some() {
-        let staged = staged_registry_candidate(state, &principal.id(), registry_value)
-            .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?;
-        (
-            staged.candidate,
-            Some(staged.draft_id),
-            Some(staged.expected_profiles),
-        )
-    } else {
-        normalize_revision_fields(&mut registry_value, false).map_err(|_| {
-            registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY)
-        })?;
-        let candidate = serde_json::from_value(registry_value).map_err(|_| {
-            registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY)
-        })?;
-        (candidate, None, None)
-    };
-
     let Some(config_path) = state.camera_config_path.as_deref() else {
         return Err(registry_error(
             Error::Storage("runtime profile settings are unavailable".to_owned()),
@@ -911,6 +892,24 @@ fn put_registry(
             REGISTRY_KEY,
         ));
     }
+    let mut registry_value = super::super::peek_layouts::struct_to_json(value);
+    let (mut candidate, draft_id, draft_profiles) = if registry_value.get("draft_id").is_some() {
+        let staged = staged_registry_candidate(state, &principal.id(), registry_value)
+            .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?;
+        (
+            staged.candidate,
+            Some(staged.draft_id),
+            Some(staged.expected_profiles),
+        )
+    } else {
+        normalize_revision_fields(&mut registry_value, false).map_err(|_| {
+            registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY)
+        })?;
+        let candidate = serde_json::from_value(registry_value).map_err(|_| {
+            registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY)
+        })?;
+        (candidate, None, None)
+    };
     if candidate.revision != previous_registry.revision {
         return Err(registry_error(
             Error::Invalid(Invalid::Schema),
@@ -2292,6 +2291,70 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(drafts.drafts.is_empty());
         assert_eq!(drafts.bytes, 0);
+    }
+
+    #[test]
+    fn stale_staged_registry_commit_reports_conflict_after_its_draft_was_consumed() {
+        let fixture = Fixture::new();
+        let camera_id = "192.0.2.10";
+        let camera_ip = camera_id.parse().unwrap();
+        fixture
+            .state
+            .cameras
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(super::super::super::camera_entry(
+                &camera_config(camera_ip),
+                None,
+            ));
+
+        let mut registry = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        registry.profiles.insert(
+            "new-profile".to_owned(),
+            RuntimeProfile {
+                id: "new-profile".to_owned(),
+                name: "New profile".to_owned(),
+                revision: 1,
+                cameras: BTreeMap::from([(
+                    camera_id.to_owned(),
+                    crate::profiles::CameraProfileOverride {
+                        availability: Some(false),
+                        ..Default::default()
+                    },
+                )]),
+            },
+        );
+        let profile = registry.profiles.get("new-profile").unwrap();
+        let draft_id = "debdac58-2e3f-4330-b408-acf9090cdf93";
+        let session = SessionId::from_u64(20_213);
+        let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        super::super::dispatch(
+            &fixture.state,
+            session,
+            &principal,
+            profile_draft_part_put(draft_id, profile, 0),
+        )
+        .unwrap();
+
+        let commit = staged_profile_registry_put(&registry, draft_id, 0);
+        super::super::dispatch(&fixture.state, session, &principal, commit.clone())
+            .expect("first staged commit should persist");
+        let accepted = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        assert_eq!(accepted.revision, 1);
+
+        let stale = super::super::dispatch(&fixture.state, session, &principal, commit)
+            .expect_err("a retry of the consumed stale draft must report a CAS conflict");
+        assert_eq!(stale.code, proto::ErrorCode::Rejected);
+        assert_eq!(
+            config::load_config(&fixture.config_path())
+                .unwrap()
+                .runtime_profiles,
+            accepted
+        );
     }
 
     #[test]
