@@ -33,9 +33,18 @@ export async function activateFromAnotherClient() {
 	let watch: StateStoreWatch | undefined;
 	let registrySaved = false;
 	try {
-		const registry = await writer.runtimeProfiles.getRegistry();
+		let registry = await writer.runtimeProfiles.getRegistry();
 		if (registry.profiles && Object.keys(registry.profiles).length !== 0) {
-			throw new Error('Runtime-profile E2E requires an empty profile registry.');
+			const active = await writer.runtimeProfiles.getActive();
+			if (active.profileId !== null) {
+				await writer.runtimeProfiles.activate(null, active.revision);
+			}
+			registry = await writer.runtimeProfiles.getRegistry();
+			await writer.runtimeProfiles.saveRegistry({
+				...registry,
+				active_profile_id: null,
+				profiles: {}
+			});
 		}
 		const candidate: RuntimeProfileRegistry = {
 			...registry,
