@@ -7,6 +7,63 @@ import type { CameraSettings } from '$lib/types';
 import RuntimeProfilesSectionFixture from './RuntimeProfilesSection.fixture.svelte';
 
 describe('RuntimeProfilesSection', () => {
+	it('shows a degraded runtime reason for a removed active target', async () => {
+		const registry: RuntimeProfileRegistry = {
+			revision: '3',
+			active_profile_id: 'away',
+			profiles: {
+				away: {
+					id: 'away',
+					name: 'Away',
+					revision: '2',
+					cameras: { '192.0.2.10': { availability: false } }
+				}
+			}
+		};
+		const client = {
+			runtimeProfiles: {
+				getActive: vi.fn().mockResolvedValue({ profileId: 'away', revision: '3' }),
+				getStatus: vi.fn().mockResolvedValue({
+					revision: '3',
+					active_profile_id: 'away',
+					cameras: {
+						'192.0.2.10': {
+							camera_id: '192.0.2.10',
+							state: 'degraded',
+							reason: 'configured camera is missing',
+							policy: {
+								available: false,
+								recording_mode: 'event-boost',
+								privacy_enforced: false,
+								notifications_enabled: true,
+								available_source: 'profile',
+								recording_mode_source: 'base',
+								privacy_source: 'base',
+								notifications_source: 'base'
+							}
+						}
+					}
+				}),
+				getRegistry: vi.fn().mockResolvedValue(registry),
+				watchActive: vi.fn().mockResolvedValue({ close: vi.fn() }),
+				watchStatus: vi.fn().mockResolvedValue({ close: vi.fn() }),
+				watchRegistry: vi.fn().mockResolvedValue({ close: vi.fn() }),
+				saveRegistry: vi.fn(),
+				activate: vi.fn()
+			}
+		} as unknown as ControlClient;
+
+		await render(RuntimeProfilesSectionFixture, {
+			props: { client, cameras: [] as CameraSettings[] }
+		});
+
+		const convergence = page.getByRole('region', { name: 'Runtime profile convergence' });
+		await expect.element(convergence).toBeVisible();
+		await expect.element(convergence.getByText('192.0.2.10', { exact: true })).toBeVisible();
+		await expect.element(page.getByLabelText('degraded policy application')).toBeVisible();
+		await expect.element(convergence.getByText('configured camera is missing')).toBeVisible();
+	});
+
 	it('shows and removes a profile target that is no longer configured', async () => {
 		const registry: RuntimeProfileRegistry = {
 			revision: '1',
