@@ -13828,7 +13828,7 @@ mod tests {
     };
 
     #[test]
-    fn active_profile_privacy_is_restored_into_the_server_media_gate() {
+    fn persisted_active_profile_privacy_is_restored_into_the_server_media_gate() {
         let config = Config {
             runtime_profiles: crate::profiles::ProfileRegistry {
                 revision: 1,
@@ -13851,6 +13851,19 @@ mod tests {
             },
             ..Config::default()
         };
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-active-profile-restart-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let config_path = directory.join("config.toml");
+        let root: toml::Table = toml::Value::try_from(&config)
+            .unwrap()
+            .as_table()
+            .unwrap()
+            .clone();
+        crate::config::write_configuration_table(&config_path, &root).unwrap();
+        let config = crate::config::load_config(&config_path).unwrap();
         let state = ServerState::new(
             &config,
             &HashMap::new(),
@@ -13873,6 +13886,16 @@ mod tests {
                 .unwrap()
                 .allows(epoch)
         );
+        assert_eq!(
+            state
+                .runtime_profiles
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .active_profile_id
+                .as_deref(),
+            Some("away")
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     pub(super) fn fixture_video_keyframe(name: &str, media_type: mp4::MediaType) -> bytes::Bytes {
