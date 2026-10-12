@@ -19,6 +19,7 @@ test('real workflow persists explicit bulk scope and shares bookmarks across loc
 		)) as typeof import('./fixtures/event-workflow-browser');
 		return helpers.seedEventWorkflow(24);
 	});
+	const bookmarkNote = `Incident <door> & follow-up (${fixture.zone})`;
 	const url = `/events?date=${fixture.date}&zone=${fixture.zone}`;
 	await page.goto(url);
 	await expect(page.locator('[data-event-card]')).toHaveCount(18);
@@ -51,14 +52,14 @@ test('real workflow persists explicit bulk scope and shares bookmarks across loc
 	await page.locator(`[data-event-card="${firstKey}"]`).click();
 	const detail = page.getByRole('complementary', { name: 'Event detail' });
 	await detail.getByRole('button', { name: 'Edit bookmark note', exact: true }).click();
-	await detail.getByRole('textbox', { name: 'Bookmark note' }).fill('Incident <door> & follow-up');
+	await detail.getByRole('textbox', { name: 'Bookmark note' }).fill(bookmarkNote);
 	await detail.getByRole('button', { name: 'Save bookmark note', exact: true }).click();
-	await expect(detail.getByText('Incident <door> & follow-up', { exact: true })).toBeVisible();
+	await expect(detail.getByText(bookmarkNote, { exact: true })).toBeVisible();
 	await expect(
 		detail.getByText('Recording unavailable; metadata only', { exact: true })
 	).toBeVisible();
 	await page.reload();
-	await expect(detail.getByText('Incident <door> & follow-up', { exact: true })).toBeVisible();
+	await expect(detail.getByText(bookmarkNote, { exact: true })).toBeVisible();
 	await page.getByRole('button', { name: 'Close event detail', exact: true }).click();
 	await page.getByLabel('Review filter', { exact: true }).selectOption('reviewed');
 	await expect(page.locator('[data-workflow-count]')).toHaveText('2 matching');
@@ -83,7 +84,7 @@ test('real workflow persists explicit bulk scope and shares bookmarks across loc
 	await page.goBack();
 	await expect(page).toHaveURL(/review=reviewed/);
 	await expect(page.getByLabel('Review filter', { exact: true })).toHaveValue('reviewed');
-	await expect(detail.getByText('Incident <door> & follow-up', { exact: true })).toBeVisible();
+	await expect(detail.getByText(bookmarkNote, { exact: true })).toBeVisible();
 	await page.getByRole('button', { name: 'Close event detail', exact: true }).click();
 	await expect(
 		page.getByRole('button', { name: 'Mark 1 selected reviewed', exact: true })
@@ -91,7 +92,7 @@ test('real workflow persists explicit bulk scope and shares bookmarks across loc
 	await page.getByRole('button', { name: 'Saved bookmarks', exact: true }).click();
 	const library = page.getByRole('dialog', { name: 'Saved bookmarks', exact: true });
 	await expect(library.locator(`[data-saved-bookmark="${firstKey}"]`)).toBeVisible();
-	await expect(library.getByText('Incident <door> & follow-up', { exact: true })).toBeVisible();
+	await expect(library.getByText(bookmarkNote, { exact: true })).toBeVisible();
 	await library.getByRole('button', { name: 'Close saved bookmarks', exact: true }).click();
 	const screenshot = testInfo.outputPath('event-workflow-desktop.png');
 	await page.screenshot({ path: screenshot });
