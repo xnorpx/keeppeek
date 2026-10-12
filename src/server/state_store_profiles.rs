@@ -1955,6 +1955,33 @@ mod tests {
     }
 
     #[test]
+    fn profile_overrides_reject_every_camera_configuration_field_except_recording_mode() {
+        let camera: crate::cameras::CameraConfig =
+            serde_json::from_value(serde_json::json!({"ip": "192.0.2.8"}))
+                .expect("minimal camera configuration should deserialize");
+        // ponytail: derive the candidate fields so new camera settings stay outside profile input.
+        let mut candidate_fields = serde_json::to_value(camera)
+            .expect("camera configuration should serialize")
+            .as_object()
+            .expect("camera configuration should be an object")
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        candidate_fields.insert("events".to_owned());
+
+        for field in candidate_fields {
+            if field == "recording_mode" {
+                continue;
+            }
+            let value = serde_json::json!({field.clone(): null});
+            assert!(
+                serde_json::from_value::<crate::profiles::CameraProfileOverride>(value).is_err(),
+                "camera configuration field {field} must not be a profile override"
+            );
+        }
+    }
+
+    #[test]
     fn users_can_watch_only_the_active_profile_projection() {
         let fixture = Fixture::new();
         let mut principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
