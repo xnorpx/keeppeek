@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { StateEntry } from './proto/webrtc_pb';
 import { RuntimeProfilesControlClient } from './control-client-runtime-profiles';
-import { runtimeProfilesNamespace, runtimeProfilesRegistrySchema } from './runtime-profiles';
+import {
+	runtimeProfilesNamespace,
+	runtimeProfilesRegistrySchema,
+	runtimeProfilesRegistryKey,
+	runtimeProfilePartSchema,
+	type RuntimeProfileManifest
+} from './runtime-profiles';
 import type { ControlClientStateStore } from './control-client-state-store';
 
 describe('RuntimeProfilesControlClient', () => {
@@ -66,6 +72,77 @@ describe('RuntimeProfilesControlClient', () => {
 		expect(registry.profiles.night.revision).toBe('2');
 		expect(maxActiveGets).toBeLessThanOrEqual(4);
 	});
+
+	it('saves large registries as bounded profile parts before the revisioned commit', async () => {
+		const initialManifest: RuntimeProfileManifest = {
+			revision: '0',
+			active_profile_id: null,
+			profiles: {}
+		};
+		let manifest: RuntimeProfileManifest = initialManifest;
+		let manifestEntryRevision = 0n;
+		const writes: Array<{ key: string; schema: string; value: Record<string, unknown> }> = [];
+		const stateStore = {
+			get: async (_namespace: string, key: string) => {
+				if (key === runtimeProfilesRegistryKey) {
+					return entry(key, runtimeProfilesRegistrySchema, manifest, manifestEntryRevision);
+				}
+				const match = /^profiles\/([^/]+)\/(\d+)\/(\d+)$/.exec(key);
+				if (match === null) throw new Error(`Unexpected key ${key}`);
+				const [, profileId, generation, rawIndex] = match;
+				const index = Number(rawIndex);
+				const staged = writes.find(({ key: stagedKey }) =>
+					stagedKey.endsWith(`/${profileId}/${index}`)
+				);
+				if (staged === undefined) throw new Error(`Missing staged part ${key}`);
+				const profile = manifest.profiles[profileId];
+				if (profile === undefined) throw new Error(`Unknown profile ${profileId}`);
+				return entry(
+					key,
+					runtimeProfilePartSchema,
+					{
+						profile_id: profileId,
+						generation,
+						part_index: index,
+						part_count: profile.part_count,
+						digest: profile.digest,
+						cameras: staged.value.cameras
+					},
+					1n
+				);
+			},
+			put: async (_namespace: string, key: string, input: { schema: string; value: unknown }) => {
+				const value = input.value as Record<string, unknown>;
+				writes.push({ key, schema: input.schema, value });
+				if (key === runtimeProfilesRegistryKey) {
+					const { draft_id: _draftId, ...committed } = value;
+					manifest = {
+						...(committed as unknown as RuntimeProfileManifest),
+						revision: '1'
+					};
+					manifestEntryRevision = 1n;
+				}
+				return entry(key, input.schema, value, 1n);
+			}
+		} as unknown as ControlClientStateStore;
+		const { definition } = await profile('away', 35, '1');
+
+		const saved = await new RuntimeProfilesControlClient(stateStore).saveRegistry({
+			revision: '0',
+			active_profile_id: null,
+			profiles: { away: definition }
+		});
+
+		const stagedWrites = writes.filter(({ key }) => key.startsWith('drafts/'));
+		const commit = writes.find(({ key }) => key === runtimeProfilesRegistryKey);
+		expect(stagedWrites).toHaveLength(3);
+		expect(stagedWrites.map(({ value }) => Object.keys(value.cameras as object).length)).toEqual([
+			16, 16, 3
+		]);
+		expect(commit?.value).toMatchObject({ revision: '0', active_profile_id: null });
+		expect(saved.revision).toBe('1');
+		expect(Object.keys(saved.profiles.away.cameras)).toHaveLength(35);
+	});
 });
 
 function entry(key: string, schema: string, value: unknown, revision: bigint): StateEntry {
@@ -81,11 +158,11 @@ function entry(key: string, schema: string, value: unknown, revision: bigint): S
 	} as unknown as StateEntry;
 }
 
-async function profile(id: string, count: number) {
+async function profile(id: string, count: number, revision = '2') {
 	const definition = {
 		id,
 		name: id,
-		revision: '2',
+		revision,
 		cameras: Object.fromEntries(
 			Array.from({ length: count }, (_, index) => [
 				`camera_${String(index).padStart(3, '0')}`,
@@ -110,7 +187,7 @@ async function profile(id: string, count: number) {
 		cameras: Object.fromEntries(Object.entries(cameraWire).sort(([a], [b]) => (a < b ? -1 : 1))),
 		id,
 		name: id,
-		revision: '2'
+		revision
 	});
 	const bytes = new Uint8Array(
 		await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical))

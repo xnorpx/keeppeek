@@ -8,6 +8,7 @@ export const runtimeProfilesActiveSchema = 'keeppeek.runtime-profiles.active.v1'
 export const runtimeProfilesStatusKey = 'status';
 export const runtimeProfilesStatusSchema = 'keeppeek.runtime-profiles.status.v1';
 export const runtimeProfilePartSchema = 'keeppeek.runtime-profiles.part.v1';
+export const runtimeProfileDraftPartSchema = 'keeppeek.runtime-profiles.draft-part.v1';
 export const maxRuntimeProfiles = 32;
 export const maxProfileCameras = 127;
 export const maxRuntimeProfilePartCameras = 16;
@@ -176,31 +177,6 @@ export function runtimeProfilePartFromEntry(
 			cameraOverride(rawOverride)
 		])
 	);
-}
-
-export function runtimeProfileRegistryToWire(
-	registry: RuntimeProfileRegistry
-): Record<string, unknown> {
-	return {
-		revision: registry.revision,
-		active_profile_id: registry.active_profile_id,
-		profiles: Object.fromEntries(
-			Object.entries(registry.profiles).map(([id, profile]) => [
-				id,
-				{
-					id: profile.id,
-					name: profile.name,
-					revision: profile.revision,
-					cameras: Object.fromEntries(
-						Object.entries(profile.cameras).map(([cameraId, override]) => [
-							cameraId,
-							{ ...override }
-						])
-					)
-				}
-			])
-		)
-	};
 }
 
 export function runtimeProfileFromEntry(entry: StateEntry): {

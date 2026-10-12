@@ -1,19 +1,92 @@
 use super::*;
 use crate::{access::ClientClassificationReason, config, config::Config};
 use prost_types::{Value, value::Kind};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 
 pub(in crate::server) const NAMESPACE: &str = "service/runtime-profiles/";
 pub(super) const ACTIVE_SCHEMA: &str = "keeppeek.runtime-profiles.active.v1";
 pub(super) const REGISTRY_SCHEMA: &str = "keeppeek.runtime-profiles.registry.v2";
 const PROFILE_PART_SCHEMA: &str = "keeppeek.runtime-profiles.part.v1";
+const PROFILE_DRAFT_PART_SCHEMA: &str = "keeppeek.runtime-profiles.draft-part.v1";
 pub(in crate::server) const STATUS_SCHEMA: &str = "keeppeek.runtime-profiles.status.v1";
 const ACTIVE_KEY: &str = "active";
 const REGISTRY_KEY: &str = "registry";
 pub(in crate::server) const STATUS_KEY: &str = "status";
 const PROFILE_PART_TARGETS: usize = 16;
 const PROFILE_DOCUMENT_BYTES_MAX: usize = 16 * 1_024;
+const PROFILE_DRAFT_TTL: Duration = Duration::from_secs(120);
+const PROFILE_DRAFT_COUNT_MAX: usize = 4;
+const PROFILE_DRAFT_PARTS_MAX: usize = crate::profiles::MAX_PROFILES
+    * crate::profiles::MAX_PROFILE_TARGETS.div_ceil(PROFILE_PART_TARGETS);
+const PROFILE_DRAFT_BYTES_MAX: usize = 8 * 1_024 * 1_024;
+
+#[derive(Debug, Default)]
+pub(in crate::server) struct RuntimeProfileDrafts {
+    drafts: HashMap<String, RuntimeProfileDraft>,
+    bytes: usize,
+}
+
+#[derive(Debug)]
+struct RuntimeProfileDraft {
+    owner_id: String,
+    created: Instant,
+    parts: BTreeMap<(String, usize), RuntimeProfileDraftPart>,
+    bytes: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RuntimeProfileDraftPart {
+    profile_id: String,
+    generation: u64,
+    part_index: usize,
+    part_count: usize,
+    digest: String,
+    cameras: BTreeMap<String, crate::profiles::CameraProfileOverride>,
+    bytes: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeProfileDraftPartWire {
+    draft_id: String,
+    profile_id: String,
+    generation: String,
+    part_index: usize,
+    part_count: usize,
+    digest: String,
+    cameras: BTreeMap<String, crate::profiles::CameraProfileOverride>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeProfileDraftManifest {
+    draft_id: String,
+    revision: u64,
+    active_profile_id: Option<String>,
+    profiles: BTreeMap<String, RuntimeProfileDraftManifestProfile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeProfileDraftManifestProfile {
+    id: String,
+    name: String,
+    revision: u64,
+    target_count: usize,
+    part_count: usize,
+    digest: String,
+}
+
+struct StagedProfileRegistry {
+    candidate: crate::profiles::ProfileRegistry,
+    draft_id: String,
+    expected_profiles: BTreeMap<String, (u64, String)>,
+}
 
 pub(super) fn is_adapter_namespace(namespace: &str) -> bool {
     namespace == NAMESPACE
@@ -77,6 +150,11 @@ pub(super) fn dispatch(
             if request.namespace == NAMESPACE && request.key == REGISTRY_KEY =>
         {
             return put_registry(state, session_id, principal, request);
+        }
+        Some(state_store_command::Action::Put(request))
+            if request.namespace == NAMESPACE && request.key.starts_with("drafts/") =>
+        {
+            return put_profile_draft(state, principal, request);
         }
         Some(state_store_command::Action::Put(request)) => {
             if request.namespace != NAMESPACE || request.key != ACTIVE_KEY {
@@ -389,6 +467,364 @@ fn parse_active_profile_id(value: &Struct) -> Result<Option<String>, Error> {
     }
 }
 
+fn put_profile_draft(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    request: proto::PutState,
+) -> Result<control_ok::Result, ControlCommandError> {
+    let (draft_id, profile_id, part_index) = parse_draft_part_key(&request.key)
+        .map_err(|error| registry_error(error, NAMESPACE, &request.key))?;
+    if request.schema != PROFILE_DRAFT_PART_SCHEMA {
+        return Err(registry_error(
+            Error::Invalid(Invalid::Schema),
+            NAMESPACE,
+            &request.key,
+        ));
+    }
+    if request.ttl.is_some() {
+        return Err(registry_error(
+            Error::Invalid(Invalid::Ttl),
+            NAMESPACE,
+            &request.key,
+        ));
+    }
+    let layout = validate_namespace(NAMESPACE)
+        .map_err(|error| registry_error(error, NAMESPACE, &request.key))?;
+    authorize_write(
+        &layout,
+        &principal.id(),
+        principal.role == AccessRole::Administrator,
+    )
+    .map_err(|error| registry_error(error, NAMESPACE, &request.key))?;
+    let value = request
+        .value
+        .ok_or_else(|| invalid("runtime profile draft part is required"))?;
+    let bytes = value.encoded_len();
+    if bytes > PROFILE_DOCUMENT_BYTES_MAX {
+        return Err(registry_error(
+            Error::Invalid(Invalid::ValueTooLarge),
+            NAMESPACE,
+            &request.key,
+        ));
+    }
+    let mut json = super::super::peek_layouts::struct_to_json(value);
+    normalize_draft_integer_fields(&mut json)
+        .map_err(|_| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, &request.key))?;
+    let wire: RuntimeProfileDraftPartWire = serde_json::from_value(json)
+        .map_err(|_| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, &request.key))?;
+    let generation = wire
+        .generation
+        .parse::<u64>()
+        .ok()
+        .filter(|generation| *generation > 0 && *generation <= i64::MAX as u64)
+        .ok_or_else(|| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, &request.key))?;
+    if wire.draft_id != draft_id
+        || wire.profile_id != profile_id
+        || wire.part_index != part_index
+        || wire.part_count == 0
+        || wire.part_count > crate::profiles::MAX_PROFILE_TARGETS.div_ceil(PROFILE_PART_TARGETS)
+        || wire.part_index >= wire.part_count
+        || wire.cameras.is_empty()
+        || wire.cameras.len() > PROFILE_PART_TARGETS
+        || !is_profile_digest(&wire.digest)
+    {
+        return Err(registry_error(
+            Error::Invalid(Invalid::Schema),
+            NAMESPACE,
+            &request.key,
+        ));
+    }
+    let part = RuntimeProfileDraftPart {
+        profile_id,
+        generation,
+        part_index,
+        part_count: wire.part_count,
+        digest: wire.digest,
+        cameras: wire.cameras,
+        bytes,
+    };
+    let now = Instant::now();
+    let mut drafts = state
+        .runtime_profile_drafts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    purge_profile_drafts(&mut drafts, now);
+    let existing = drafts.drafts.get(&draft_id);
+    if existing.is_some_and(|draft| draft.owner_id != principal.id()) {
+        return Err(registry_error(
+            Error::NotAuthorized,
+            NAMESPACE,
+            &request.key,
+        ));
+    }
+    let existing_part =
+        existing.and_then(|draft| draft.parts.get(&(part.profile_id.clone(), part.part_index)));
+    if let Some(existing_part) = existing_part {
+        if existing_part == &part {
+            return Ok(control_ok::Result::StateStoreResult(entry_result(
+                profile_draft_entry(&draft_id, &part, &principal.id()),
+            )));
+        }
+        return Err(registry_error(
+            Error::Conflict {
+                current_revision: 1,
+            },
+            NAMESPACE,
+            &request.key,
+        ));
+    }
+    if existing.is_none() && drafts.drafts.len() >= PROFILE_DRAFT_COUNT_MAX {
+        return Err(registry_error(
+            Error::Invalid(Invalid::StoreFull),
+            NAMESPACE,
+            &request.key,
+        ));
+    }
+    if drafts.bytes.saturating_add(bytes) > PROFILE_DRAFT_BYTES_MAX
+        || existing.is_some_and(|draft| draft.parts.len() >= PROFILE_DRAFT_PARTS_MAX)
+    {
+        return Err(registry_error(
+            Error::Invalid(Invalid::StoreFull),
+            NAMESPACE,
+            &request.key,
+        ));
+    }
+    let draft = drafts
+        .drafts
+        .entry(draft_id.clone())
+        .or_insert_with(|| RuntimeProfileDraft {
+            owner_id: principal.id(),
+            created: now,
+            parts: BTreeMap::new(),
+            bytes: 0,
+        });
+    draft.bytes += bytes;
+    draft
+        .parts
+        .insert((part.profile_id.clone(), part.part_index), part.clone());
+    drafts.bytes += bytes;
+    Ok(control_ok::Result::StateStoreResult(entry_result(
+        profile_draft_entry(&draft_id, &part, &principal.id()),
+    )))
+}
+
+fn parse_draft_part_key(key: &str) -> Result<(String, String, usize), Error> {
+    let mut segments = key.split('/');
+    if segments.next() != Some("drafts") {
+        return Err(Error::Invalid(Invalid::Key));
+    }
+    let draft_id = segments.next().ok_or(Error::Invalid(Invalid::Key))?;
+    let profile_id = segments.next().ok_or(Error::Invalid(Invalid::Key))?;
+    let part_index = segments
+        .next()
+        .ok_or(Error::Invalid(Invalid::Key))?
+        .parse::<usize>()
+        .map_err(|_| Error::Invalid(Invalid::Key))?;
+    if segments.next().is_some()
+        || uuid::Uuid::parse_str(draft_id).is_err()
+        || draft_id.len() != 36
+        || profile_id.is_empty()
+        || profile_id.len() > 128
+    {
+        return Err(Error::Invalid(Invalid::Key));
+    }
+    super::validate_key(key)?;
+    Ok((draft_id.to_owned(), profile_id.to_owned(), part_index))
+}
+
+fn is_profile_digest(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn purge_profile_drafts(drafts: &mut RuntimeProfileDrafts, now: Instant) {
+    drafts.drafts.retain(|_, draft| {
+        if now.saturating_duration_since(draft.created) < PROFILE_DRAFT_TTL {
+            return true;
+        }
+        drafts.bytes = drafts.bytes.saturating_sub(draft.bytes);
+        false
+    });
+}
+
+fn profile_draft_entry(
+    draft_id: &str,
+    part: &RuntimeProfileDraftPart,
+    owner_id: &str,
+) -> StoredEntry {
+    let value = super::super::peek_layouts::json_to_struct(serde_json::json!({
+        "draft_id": draft_id,
+        "profile_id": part.profile_id,
+        "generation": part.generation.to_string(),
+        "part_index": part.part_index,
+        "part_count": part.part_count,
+        "digest": part.digest,
+        "cameras": part.cameras,
+    }))
+    .expect("profile draft part was already encoded");
+    StoredEntry {
+        namespace: NAMESPACE.to_owned(),
+        key: format!("drafts/{draft_id}/{}/{:}", part.profile_id, part.part_index),
+        schema: PROFILE_DRAFT_PART_SCHEMA.to_owned(),
+        value,
+        revision: 1,
+        updated_ms: 0,
+        expires_ms: None,
+        owner_id: owner_id.to_owned(),
+    }
+}
+
+fn staged_registry_candidate(
+    state: &ServerState,
+    owner_id: &str,
+    mut value: serde_json::Value,
+) -> Result<StagedProfileRegistry, Error> {
+    normalize_revision_fields(&mut value, false).map_err(|_| Error::Invalid(Invalid::Schema))?;
+    normalize_draft_integer_fields(&mut value).map_err(|_| Error::Invalid(Invalid::Schema))?;
+    let manifest: RuntimeProfileDraftManifest =
+        serde_json::from_value(value).map_err(|_| Error::Invalid(Invalid::Schema))?;
+    if uuid::Uuid::parse_str(&manifest.draft_id).is_err()
+        || manifest.draft_id.len() != 36
+        || manifest.profiles.len() > crate::profiles::MAX_PROFILES
+    {
+        return Err(Error::Invalid(Invalid::Schema));
+    }
+    let expected_part_count = manifest
+        .profiles
+        .values()
+        .try_fold(0usize, |count, profile| {
+            if profile.target_count > crate::profiles::MAX_PROFILE_TARGETS
+                || profile.part_count != profile.target_count.div_ceil(PROFILE_PART_TARGETS)
+                || !is_profile_digest(&profile.digest)
+            {
+                return None;
+            }
+            count.checked_add(profile.part_count)
+        })
+        .ok_or(Error::Invalid(Invalid::Schema))?;
+    if expected_part_count > PROFILE_DRAFT_PARTS_MAX {
+        return Err(Error::Invalid(Invalid::Schema));
+    }
+    let now = Instant::now();
+    let mut drafts = state
+        .runtime_profile_drafts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    purge_profile_drafts(&mut drafts, now);
+    let draft = drafts.drafts.get(&manifest.draft_id);
+    if let Some(draft) = draft {
+        if draft.owner_id != owner_id {
+            return Err(Error::NotAuthorized);
+        }
+        if draft.parts.len() != expected_part_count {
+            return Err(Error::Invalid(Invalid::Schema));
+        }
+    } else if expected_part_count != 0 {
+        return Err(Error::NotFound);
+    }
+    let mut profiles = BTreeMap::new();
+    let mut expected_profiles = BTreeMap::new();
+    for (key, metadata) in manifest.profiles {
+        if key != metadata.id {
+            return Err(Error::Invalid(Invalid::Schema));
+        }
+        let mut cameras = BTreeMap::new();
+        for part_index in 0..metadata.part_count {
+            let part = draft
+                .and_then(|draft| draft.parts.get(&(metadata.id.clone(), part_index)))
+                .ok_or(Error::Invalid(Invalid::Schema))?;
+            if part.profile_id != metadata.id
+                || part.generation != metadata.revision
+                || part.part_index != part_index
+                || part.part_count != metadata.part_count
+                || part.digest != metadata.digest
+            {
+                return Err(Error::Invalid(Invalid::Schema));
+            }
+            for (camera_id, override_) in &part.cameras {
+                if cameras
+                    .insert(camera_id.clone(), override_.clone())
+                    .is_some()
+                {
+                    return Err(Error::Invalid(Invalid::Schema));
+                }
+            }
+        }
+        if cameras.len() != metadata.target_count {
+            return Err(Error::Invalid(Invalid::Schema));
+        }
+        profiles.insert(
+            key.clone(),
+            crate::profiles::RuntimeProfile {
+                id: metadata.id,
+                name: metadata.name,
+                revision: metadata.revision,
+                cameras,
+            },
+        );
+        expected_profiles.insert(key, (metadata.revision, metadata.digest));
+    }
+    Ok(StagedProfileRegistry {
+        candidate: crate::profiles::ProfileRegistry {
+            revision: manifest.revision,
+            active_profile_id: manifest.active_profile_id,
+            profiles,
+        },
+        draft_id: manifest.draft_id,
+        expected_profiles,
+    })
+}
+
+fn normalize_draft_integer_fields(value: &mut serde_json::Value) -> anyhow::Result<()> {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (name, field) in fields {
+                if matches!(name.as_str(), "part_index" | "part_count" | "target_count") {
+                    let maximum = match name.as_str() {
+                        "part_index" => PROFILE_PART_TARGETS - 1,
+                        "part_count" => {
+                            crate::profiles::MAX_PROFILE_TARGETS.div_ceil(PROFILE_PART_TARGETS)
+                        }
+                        "target_count" => crate::profiles::MAX_PROFILE_TARGETS,
+                        _ => unreachable!(),
+                    };
+                    let number = field
+                        .as_f64()
+                        .filter(|number| {
+                            number.is_finite()
+                                && *number >= 0.0
+                                && *number <= maximum as f64
+                                && number.fract() == 0.0
+                        })
+                        .ok_or_else(|| anyhow::anyhow!("invalid profile draft count"))?;
+                    *field = serde_json::Value::Number((number as u64).into());
+                } else {
+                    normalize_draft_integer_fields(field)?;
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                normalize_draft_integer_fields(value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn remove_profile_draft(state: &ServerState, draft_id: &str) {
+    let mut drafts = state
+        .runtime_profile_drafts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(draft) = drafts.drafts.remove(draft_id) {
+        drafts.bytes = drafts.bytes.saturating_sub(draft.bytes);
+    }
+}
+
 fn put_registry(
     state: &ServerState,
     session_id: SessionId,
@@ -432,10 +868,23 @@ fn put_registry(
         ));
     }
     let mut registry_value = super::super::peek_layouts::struct_to_json(value);
-    normalize_revision_fields(&mut registry_value, false)
-        .map_err(|_| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY))?;
-    let mut candidate: crate::profiles::ProfileRegistry = serde_json::from_value(registry_value)
-        .map_err(|_| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY))?;
+    let (mut candidate, draft_id, draft_profiles) = if registry_value.get("draft_id").is_some() {
+        let staged = staged_registry_candidate(state, &principal.id(), registry_value)
+            .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?;
+        (
+            staged.candidate,
+            Some(staged.draft_id),
+            Some(staged.expected_profiles),
+        )
+    } else {
+        normalize_revision_fields(&mut registry_value, false).map_err(|_| {
+            registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY)
+        })?;
+        let candidate = serde_json::from_value(registry_value).map_err(|_| {
+            registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY)
+        })?;
+        (candidate, None, None)
+    };
 
     let Some(config_path) = state.camera_config_path.as_deref() else {
         return Err(registry_error(
@@ -458,6 +907,13 @@ fn put_registry(
             Error::Conflict {
                 current_revision: previous_registry.revision,
             },
+            NAMESPACE,
+            REGISTRY_KEY,
+        ));
+    }
+    if candidate.revision != previous_registry.revision {
+        return Err(registry_error(
+            Error::Invalid(Invalid::Schema),
             NAMESPACE,
             REGISTRY_KEY,
         ));
@@ -501,6 +957,21 @@ fn put_registry(
                 REGISTRY_KEY,
             )
         })?;
+    if let Some(draft_profiles) = draft_profiles.as_ref()
+        && (candidate.profiles.len() != draft_profiles.len()
+            || candidate.profiles.iter().any(|(id, profile)| {
+                draft_profiles.get(id).is_none_or(|(revision, digest)| {
+                    *revision != profile.revision
+                        || profile_digest(profile).as_deref() != Ok(digest.as_str())
+                })
+            }))
+    {
+        return Err(registry_error(
+            Error::Invalid(Invalid::Schema),
+            NAMESPACE,
+            REGISTRY_KEY,
+        ));
+    }
     candidate
         .validate()
         .map_err(|_| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY))?;
@@ -538,6 +1009,9 @@ fn put_registry(
             NAMESPACE,
             REGISTRY_KEY,
         ));
+    }
+    if let Some(draft_id) = draft_id {
+        remove_profile_draft(state, &draft_id);
     }
     *state
         .runtime_profiles
@@ -1100,16 +1574,8 @@ mod tests {
         let camera_ids = (1..=127)
             .map(|last| format!("10.20.0.{last}"))
             .collect::<Vec<_>>();
-        let mut profiles = BTreeMap::from([(
-            "away".to_owned(),
-            RuntimeProfile {
-                id: "away".to_owned(),
-                name: "Away".to_owned(),
-                revision: 1,
-                cameras: BTreeMap::new(),
-            },
-        )]);
-        for profile_index in 0..31 {
+        let mut profiles = BTreeMap::new();
+        for profile_index in 0..32 {
             let id = format!("profile-{profile_index:02}");
             let cameras = camera_ids
                 .iter()
@@ -1181,6 +1647,81 @@ mod tests {
                 schema: REGISTRY_SCHEMA.to_owned(),
                 value: Some(super::super::super::peek_layouts::json_to_struct(value).unwrap()),
                 expected_revision: Some(registry.revision),
+                ttl: None,
+            })),
+        }
+    }
+
+    fn profile_draft_part_put(
+        draft_id: &str,
+        profile: &crate::profiles::RuntimeProfile,
+        part_index: usize,
+    ) -> proto::StateStoreCommand {
+        let cameras = profile
+            .cameras
+            .iter()
+            .skip(part_index * PROFILE_PART_TARGETS)
+            .take(PROFILE_PART_TARGETS)
+            .map(|(camera_id, override_)| (camera_id.clone(), override_))
+            .collect::<BTreeMap<_, _>>();
+        let value = super::super::super::peek_layouts::json_to_struct(serde_json::json!({
+            "draft_id": draft_id,
+            "profile_id": profile.id,
+            "generation": profile.revision.to_string(),
+            "part_index": part_index,
+            "part_count": profile.cameras.len().div_ceil(PROFILE_PART_TARGETS),
+            "digest": profile_digest(profile).unwrap(),
+            "cameras": cameras,
+        }))
+        .unwrap();
+        proto::StateStoreCommand {
+            action: Some(state_store_command::Action::Put(proto::PutState {
+                namespace: NAMESPACE.to_owned(),
+                key: format!("drafts/{draft_id}/{}/{part_index}", profile.id),
+                schema: PROFILE_DRAFT_PART_SCHEMA.to_owned(),
+                value: Some(value),
+                expected_revision: None,
+                ttl: None,
+            })),
+        }
+    }
+
+    fn staged_profile_registry_put(
+        registry: &crate::profiles::ProfileRegistry,
+        draft_id: &str,
+        expected_revision: u64,
+    ) -> proto::StateStoreCommand {
+        let profiles = registry
+            .profiles
+            .iter()
+            .map(|(id, profile)| {
+                (
+                    id.clone(),
+                    serde_json::json!({
+                        "id": profile.id,
+                        "name": profile.name,
+                        "revision": profile.revision.to_string(),
+                        "target_count": profile.cameras.len(),
+                        "part_count": profile.cameras.len().div_ceil(PROFILE_PART_TARGETS),
+                        "digest": profile_digest(profile).unwrap(),
+                    }),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let value = super::super::super::peek_layouts::json_to_struct(serde_json::json!({
+            "draft_id": draft_id,
+            "revision": registry.revision.to_string(),
+            "active_profile_id": registry.active_profile_id,
+            "profiles": profiles,
+        }))
+        .unwrap();
+        proto::StateStoreCommand {
+            action: Some(state_store_command::Action::Put(proto::PutState {
+                namespace: NAMESPACE.to_owned(),
+                key: REGISTRY_KEY.to_owned(),
+                schema: REGISTRY_SCHEMA.to_owned(),
+                value: Some(value),
+                expected_revision: Some(expected_revision),
                 ttl: None,
             })),
         }
@@ -1522,6 +2063,104 @@ mod tests {
                 .runtime_profiles,
             before
         );
+    }
+
+    #[test]
+    fn administrator_commits_a_large_profile_registry_from_bounded_parts() {
+        let fixture = Fixture::new();
+        let (registry, camera_ids) = full_registry();
+        {
+            let mut cameras = fixture
+                .state
+                .cameras
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cameras.extend(camera_ids.iter().map(|camera_id| {
+                let ip = camera_id.parse().unwrap();
+                super::super::super::camera_entry(&camera_config(ip), None)
+            }));
+        }
+        let direct = profile_registry_put(&registry);
+        let Some(state_store_command::Action::Put(direct)) = direct.action else {
+            unreachable!();
+        };
+        assert!(direct.value.unwrap().encoded_len() > super::MAX_VALUE_BYTES);
+
+        let draft_id = "debdac58-2e3f-4330-b408-acf9090cdf93";
+        let admin = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        for profile in registry.profiles.values() {
+            let part_count = profile.cameras.len().div_ceil(PROFILE_PART_TARGETS);
+            for part_index in 0..part_count {
+                let result = super::super::dispatch(
+                    &fixture.state,
+                    SessionId::from_u64(20_211),
+                    &admin,
+                    profile_draft_part_put(draft_id, profile, part_index),
+                )
+                .unwrap();
+                assert!(matches!(
+                    result,
+                    control_ok::Result::StateStoreResult(proto::StateStoreResult {
+                        result: Some(state_store_result::Result::Entry(_))
+                    })
+                ));
+            }
+        }
+
+        let result = super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_211),
+            &admin,
+            staged_profile_registry_put(&registry, draft_id, 0),
+        )
+        .unwrap();
+        assert!(matches!(
+            result,
+            control_ok::Result::StateStoreResult(proto::StateStoreResult {
+                result: Some(state_store_result::Result::Entry(_))
+            })
+        ));
+        let mut expected = registry;
+        expected.revision = 1;
+        assert_eq!(
+            config::load_config(&fixture.config_path())
+                .unwrap()
+                .runtime_profiles,
+            expected
+        );
+        let drafts = fixture
+            .state
+            .runtime_profile_drafts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(drafts.drafts.is_empty());
+        assert_eq!(drafts.bytes, 0);
+    }
+
+    #[test]
+    fn users_cannot_create_profile_drafts() {
+        let fixture = Fixture::new();
+        let (registry, _) = full_registry();
+        let profile = registry.profiles.get("profile-00").unwrap();
+        let mut principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        principal.role = AccessRole::User;
+
+        let error = super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_212),
+            &principal,
+            profile_draft_part_put("debdac58-2e3f-4330-b408-acf9090cdf93", profile, 0),
+        )
+        .expect_err("Users must not stage runtime profile definitions");
+
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+        let drafts = fixture
+            .state
+            .runtime_profile_drafts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(drafts.drafts.is_empty());
+        assert_eq!(drafts.bytes, 0);
     }
 
     #[test]

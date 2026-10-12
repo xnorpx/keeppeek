@@ -81,10 +81,11 @@ parsing alone does not prove a field has an effect.
 
 `[runtime_profiles]` is server-managed internal data. Its registry is bounded to 32 profiles, and
 each profile can target at most 127 cameras with sparse runtime-safe overrides. Do not edit this
-section manually. The current partial implementation lets an Administrator activate an already
-defined profile or Base through WebRTC state store; privacy overrides apply through the existing
-media gate. UI management and convergence for recording, notifications, and camera availability
-remain unavailable until #202 is complete.
+section manually. The partial implementation supports Administrator management and activation
+through WebRTC StateStore, including bounded definition reads and staged bounded writes. Privacy,
+recording, notifications, and camera availability reach their current runtime owners, but complete
+restart, conflict, camera identity, privacy leak, browser reconnect, and capacity qualification
+remain open under #202.
 
 Sources: [configuration](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs),
 [cameras](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs), and the subsystem sources

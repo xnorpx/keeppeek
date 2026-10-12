@@ -8,9 +8,11 @@ recording, camera availability, and notification suppression reach their current
 The shell and settings surfaces watch active-profile and per-camera application state. The full
 127-camera document layout, stable camera identity migration, asynchronous supersession, complete
 privacy leak matrix, camera-filtered observations, browser external-client/reconnect coverage, and
-capacity/performance evidence remain incomplete. A degraded runtime result does not roll back the
-durable desired profile. The baseline for this implementation is current `main` plus the branch
-commits listed in the PR.
+capacity/performance evidence remain incomplete. Reads return bounded profile parts, and writes can
+stage bounded Administrator-owned parts before one atomic configuration commit. Staging is an
+in-memory cache with a two-minute expiry; an interrupted staging operation leaves the accepted
+registry unchanged. A degraded runtime result does not roll back the durable desired profile. The
+baseline for this implementation is current `main` plus the branch commits listed in the PR.
 
 ## Scope
 
@@ -77,14 +79,14 @@ Current recording modes also include `event-only`, added after the issue's five-
 The final field matrix must resolve its eligibility explicitly; omitting it or routing event
 modes through the legacy admission map would misrepresent current recording behavior.
 
-| Document             | Fields and limits                                                                                                                                                                    |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `registry`           | Up to 32 summaries: ID, name, definition revision, target count. No camera overrides.                                                                                                |
-| Profile manifest     | ID, name, generation, expected prior definition revision, target count, and up to eight part hashes.                                                                                 |
-| Definition part      | Generation, part index, and at most 16 camera overrides. Each override contains camera ID and optional availability, recording mode, privacy, and notification suppression fields.   |
-| Draft manifest/parts | At most eight concurrent drafts, each with one manifest and eight parts. Expire drafts after a fixed bounded interval without removing accepted generations.                         |
-| `active`             | Base or profile ID, definition generation, desired generation, and expected observed-part count.                                                                                     |
-| Eight observed parts | Up to 16 cameras each, desired generation, pending/applied/degraded state, effective values, Base/profile provenance flags, bounded retry count, and error code of at most 96 bytes. |
+| Document             | Fields and limits                                                                                                                                                                                                          |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `registry`           | Up to 32 summaries: ID, name, definition revision, target count. No camera overrides.                                                                                                                                      |
+| Profile manifest     | ID, name, generation, expected prior definition revision, target count, and up to eight part hashes.                                                                                                                       |
+| Definition part      | Generation, part index, and at most 16 camera overrides. Each override contains camera ID and optional availability, recording mode, privacy, and notification suppression fields.                                         |
+| Draft parts          | At most four Administrator-owned drafts and 8 MiB total staged data. Each draft holds at most 256 parts of at most 16 camera overrides each. Drafts expire after two minutes and are never persisted as accepted profiles. |
+| `active`             | Base or profile ID, definition generation, desired generation, and expected observed-part count.                                                                                                                           |
+| Eight observed parts | Up to 16 cameras each, desired generation, pending/applied/degraded state, effective values, Base/profile provenance flags, bounded retry count, and error code of at most 96 bytes.                                       |
 
 Retain current and previous definition parts, one current manifest per profile, and the
 bounded draft area. The upper bound is 544 definition entries + 72 draft entries + 10
@@ -142,8 +144,8 @@ All 626 projected values occupy 3,791,324 encoded bytes. Their broad snapshot oc
 4,097,516 bytes and exceeds both snapshot limits. Each of the ten actual narrow prefixes
 selects exactly one entry and fits the proposed snapshot budget. These results establish
 standalone serialization headroom, not combined generic/settings quota admission or latency.
-Internal identity bindings, staged-expiry bookkeeping, and TOML file overhead still require
-measurement when their implementation is defined.
+The in-memory staging cache is bounded independently of the generic StateStore quota. TOML file
+size, live StateStore capacity, and staged-commit latency still require measurement.
 
 Reproduce with `cargo test --locked -p keeppeek --test runtime_profiles_capacity -- --nocapture`.
 Both tests passed; none were skipped. No production behavior or dependency changed.
@@ -155,8 +157,8 @@ the current server slice does not claim those results.
 
 Remaining work:
 
-- Resolve stable camera identity, runtime-safe field classification, combined settings quota, and measured 16 KiB multipart registry/status projections.
-- Implement and test staged CAS commits, restart recovery, supersession, old-revision completion rejection, and unchanged accepted state after failed persistence.
+- Resolve stable camera identity, runtime-safe field classification, combined settings quota, and measured 16 KiB multipart registry/status projections. Profile parts are currently bounded projections of the durable configuration, not independent durable StateStore entries.
+- Extend staged-write qualification with restart tests, supersession, old-revision completion rejection, and unchanged accepted state after failed persistence. The current draft cache is process-local and the final CAS commit remains configuration-file atomic.
 - Verify the notification delivery race including already-claimed sends, privacy byte barriers across every media operation, Base changes, storage-worker failure, and Base-change reapplication.
 - Add desktop/mobile Playwright coverage for CRUD, external-client activation, reconnect/restart, accessibility, and ordered desired/applied state; verify camera-filtered watch updates.
 - Run canonical Windows validation and the release-build 30-activation benchmark.
