@@ -8,11 +8,12 @@ import {
 	runtimeProfilesRegistryKey,
 	runtimeProfilesRegistrySchema,
 	runtimeProfilesStatusKey,
+	runtimeProfileDraftPartSchema,
 	runtimeProfileManifestFromEntry,
 	runtimeProfilePartFromEntry,
 	runtimeProfilePartKey,
 	runtimeProfileFromEntry,
-	runtimeProfileRegistryToWire,
+	maxRuntimeProfilePartCameras,
 	runtimeProfileStatusFromEntry,
 	type RuntimeProfileManifest,
 	type RuntimeProfileStatus,
@@ -63,10 +64,84 @@ export class RuntimeProfilesControlClient {
 	}
 
 	async saveRegistry(registry: RuntimeProfileRegistry): Promise<RuntimeProfileRegistry> {
+		const draftId = crypto.randomUUID();
+		const profiles = Object.fromEntries(
+			Object.entries(registry.profiles).map(([id, profile]) => [
+				id,
+				{ ...profile, revision: nextRevision(profile.revision) }
+			])
+		);
+		const candidate = { ...registry, profiles };
+		const summaries = await Promise.all(
+			Object.values(profiles).map(async (profile) => ({
+				profile,
+				partCount: Math.ceil(Object.keys(profile.cameras).length / maxRuntimeProfilePartCameras),
+				digest: await digestProfile(profile)
+			}))
+		);
+		const partWrites = summaries.flatMap(({ profile, partCount, digest }) => {
+			const cameraEntries = Object.entries(profile.cameras).sort(([left], [right]) =>
+				left < right ? -1 : left > right ? 1 : 0
+			);
+			return Array.from({ length: partCount }, (_, partIndex) => {
+				const cameras = Object.fromEntries(
+					cameraEntries
+						.slice(
+							partIndex * maxRuntimeProfilePartCameras,
+							(partIndex + 1) * maxRuntimeProfilePartCameras
+						)
+						.map(([cameraId, override]) => [
+							cameraId,
+							{
+								availability: override.availability ?? null,
+								recording_mode: override.recording_mode ?? null,
+								privacy_enforced: override.privacy_enforced ?? null,
+								notifications_suppressed: override.notifications_suppressed ?? null
+							}
+						])
+				);
+				return {
+					key: `drafts/${draftId}/${profile.id}/${partIndex}`,
+					value: {
+						draft_id: draftId,
+						profile_id: profile.id,
+						generation: profile.revision,
+						part_index: partIndex,
+						part_count: partCount,
+						digest,
+						cameras
+					}
+				};
+			});
+		});
+		await mapBounded(partWrites, profilePartFetchConcurrency, async ({ key, value }) =>
+			this.stateStore.put(runtimeProfilesNamespace, key, {
+				schema: runtimeProfileDraftPartSchema,
+				value: value as JsonObject
+			})
+		);
+		const value = {
+			draft_id: draftId,
+			revision: candidate.revision,
+			active_profile_id: candidate.active_profile_id,
+			profiles: Object.fromEntries(
+				summaries.map(({ profile, partCount, digest }) => [
+					profile.id,
+					{
+						id: profile.id,
+						name: profile.name,
+						revision: profile.revision,
+						target_count: Object.keys(profile.cameras).length,
+						part_count: partCount,
+						digest
+					}
+				])
+			)
+		};
 		await this.stateStore.put(runtimeProfilesNamespace, runtimeProfilesRegistryKey, {
 			schema: runtimeProfilesRegistrySchema,
-			value: runtimeProfileRegistryToWire(registry) as JsonObject,
-			expectedRevision: BigInt(registry.revision)
+			value: value as JsonObject,
+			expectedRevision: BigInt(candidate.revision)
 		});
 		return this.getRegistry();
 	}
@@ -174,6 +249,14 @@ export class RuntimeProfilesControlClient {
 			profiles: Object.fromEntries(definitions)
 		};
 	}
+}
+
+function nextRevision(revision: string): string {
+	const value = BigInt(revision);
+	if (value < 0n || value >= 9_223_372_036_854_775_807n) {
+		throw new Error('Runtime profile revision is exhausted.');
+	}
+	return (value + 1n).toString();
 }
 
 async function mapBounded<T, R>(
