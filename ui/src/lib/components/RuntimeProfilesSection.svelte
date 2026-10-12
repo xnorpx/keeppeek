@@ -36,6 +36,14 @@
 		[...cameras].sort((left, right) => left.id.localeCompare(right.id))
 	);
 	const selectedProfile = $derived(draft?.profiles[selectedProfileId] ?? null);
+	const configuredCameraIds = $derived(new Set(orderedCameras.map((camera) => camera.id)));
+	const missingProfileTargets = $derived.by(() =>
+		selectedProfile
+			? Object.keys(selectedProfile.cameras)
+					.filter((cameraId) => !configuredCameraIds.has(cameraId))
+					.sort()
+			: []
+	);
 
 	onMount(() => {
 		let registryWatch: { close: () => Promise<void> } | undefined;
@@ -142,6 +150,20 @@
 		}
 		if (profileOverrideIsEmpty(override)) delete cameras[cameraId];
 		else cameras[cameraId] = override;
+		draft = {
+			...draft,
+			profiles: {
+				...draft.profiles,
+				[selectedProfile.id]: { ...selectedProfile, cameras }
+			}
+		};
+		dirty = true;
+	}
+
+	function removeMissingTarget(cameraId: string): void {
+		if (!draft || !selectedProfile || !missingProfileTargets.includes(cameraId)) return;
+		const cameras = { ...selectedProfile.cameras };
+		delete cameras[cameraId];
 		draft = {
 			...draft,
 			profiles: {
@@ -378,6 +400,33 @@
 						{#if selectedProfile}
 							<div class="space-y-3">
 								<h3 class="text-sm font-semibold">Camera overrides</h3>
+								{#if missingProfileTargets.length > 0}
+									<div
+										role="region"
+										aria-label="Unavailable profile targets"
+										class="border-warning space-y-2 rounded-sm border px-3 py-3"
+									>
+										<p class="text-sm text-text-muted">
+											These targets no longer match a configured camera. Their stored overrides are
+											not applied. Remove them from this profile to clear the stale settings.
+										</p>
+										<ul class="divide-y divide-hairline rounded-sm border border-hairline">
+											{#each missingProfileTargets as cameraId (cameraId)}
+												<li class="flex min-w-0 flex-wrap items-center justify-between gap-2 p-2">
+													<span class="min-w-0 truncate font-mono text-sm">{cameraId}</span>
+													<button
+														type="button"
+														class="min-h-11 rounded-sm border border-destructive px-3 text-sm text-destructive focus-visible:outline-2 focus-visible:outline-primary"
+														aria-label="Remove unavailable target {cameraId}"
+														onclick={() => removeMissingTarget(cameraId)}
+													>
+														Remove
+													</button>
+												</li>
+											{/each}
+										</ul>
+									</div>
+								{/if}
 								{#if orderedCameras.length === 0}
 									<p class="text-sm text-text-muted">
 										Add a camera before assigning profile overrides.
