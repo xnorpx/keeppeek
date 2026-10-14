@@ -33,7 +33,7 @@ runs:
           $attempt = 1
           while ($attempt -le 3) {
             choco install ffmpeg --no-progress --yes
-            if ($LASTEXITCODE -eq 0) { break }
+            if (Get-Command ffmpeg -ErrorAction SilentlyContinue) { break }
             if ($attempt -eq 3) { throw 'Unable to install FFmpeg' }
             Start-Sleep -Seconds 10
             $attempt++
