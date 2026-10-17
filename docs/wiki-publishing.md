@@ -11,7 +11,8 @@ requires manual content updates.
 
 `book/src/SUMMARY.md` defines book chapter order and navigation. The Wiki generator in
 `ui/scripts/` defines the selected engineering pages explicitly. Book pages use their source
-basename without `.md`; engineering pages use `Engineering-` followed by that basename. Names are
+basename without `.md`, with spaces replaced by hyphens; engineering pages use `Engineering-`
+followed by that basename. Names are
 case-insensitively unique. New chapters must appear in `SUMMARY.md`; new engineering pages must
 be selected in the generator manifest. Never rename a published page casually: inbound links
 depend on its name.
@@ -26,7 +27,7 @@ remain Markdown; GitHub renders the diagrams natively.
 the publisher's ownership boundary, not an editable source. Generated files belong under ignored
 `target/wiki/`, never `book/src/` or `docs/`.
 
-Generation is bounded to 256 source pages, 2 MiB per Markdown input, 32 MiB per asset, 128 MiB
+Generation is bounded to 256 source pages, 2 MiB per Markdown input, 16 MiB per asset, 64 MiB
 total, and 1,024 generated files. Oversized input, missing targets, duplicate names, unsafe paths,
 symlinks, and unsupported mdBook includes fail validation instead of producing incomplete pages.
 The Markdown parser is the exact-pinned `mdast-util-from-markdown` development dependency; source
@@ -85,6 +86,8 @@ Publication is blocked until the repository owner completes these steps:
    pages. If the placeholder `Home.md` conflicts, deliberately remove it in a reviewed Wiki
    commit after backing it up. Preserve unrelated pages. Do not remove `.wiki-manifest.json`
    after a successful publication.
+   The publisher also rejects alternate top-level extensions with the same page name, such as
+   `Home.markdown` or `Home.textile`. It conservatively treats any alternate extension as a conflict.
 6. Run **Publish documentation to Wiki** manually on `main`, inspect the run and Wiki commit,
    and complete the live verification below before announcing the Wiki as canonical.
 

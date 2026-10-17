@@ -173,6 +173,26 @@ describe('publishWiki', () => {
 		expect(readFileSync(join(wiki, 'Assets/manual.svg'), 'utf8')).toBe('<svg>Manual</svg>');
 	});
 
+	test.each(['Home.markdown', 'home.textile', 'HOME.rst', 'Home.png'])(
+		'refuses a manual top-level Wiki title alias %s without changing content',
+		(path) => {
+			commitManual(path, 'Preserve the manual page');
+			const head = git(wiki, 'rev-parse', 'HEAD');
+			expect(() => publishWiki(generated, wiki)).toThrow(/collision/i);
+			expect(readFileSync(join(wiki, path), 'utf8')).toBe('Preserve the manual page');
+			expect(existsSync(join(wiki, 'Home.md'))).toBe(false);
+			expect(existsSync(join(wiki, '.wiki-manifest.json'))).toBe(false);
+			expect(git(wiki, 'rev-parse', 'HEAD')).toBe(head);
+			expect(git(wiki, 'status', '--porcelain')).toBe('');
+		}
+	);
+
+	test('rejects incoming alternate-extension Wiki title aliases before writing', () => {
+		generate({ 'Home.md': '# Home\n', 'Home.markdown': 'Alternate home' });
+		expect(() => publishWiki(generated, wiki)).toThrow(/collision/i);
+		expect(existsSync(join(wiki, 'Home.md'))).toBe(false);
+	});
+
 	test('rejects incoming paths with differently cased names for the same directory', () => {
 		generate({
 			'Home.md': '# Home\n',

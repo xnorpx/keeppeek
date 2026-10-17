@@ -47,9 +47,11 @@ export const limits = {
 	nodes: 100_000,
 	depth: 128,
 	sourceBytes: 2 * 1024 * 1024,
-	assetBytes: 32 * 1024 * 1024,
-	totalBytes: 128 * 1024 * 1024,
+	assetBytes: 16 * 1024 * 1024,
+	totalBytes: 64 * 1024 * 1024,
 	assets: 1024,
+	files: 1024,
+	manifestBytes: 1024 * 1024,
 	pathBytes: 4096
 } as const;
 

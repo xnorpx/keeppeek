@@ -83,7 +83,27 @@ type Context = Awaited<ReturnType<typeof loadPages>> & {
 	root: string;
 	sourceCommit: string;
 	assets: Map<string, Buffer>;
+	fragmentAnchors: Map<string, Set<string>>;
 };
+
+async function validateFragment(context: Context, path: string, fragment: string): Promise<void> {
+	let anchors = context.markdown.get(path)?.anchors ?? context.fragmentAnchors.get(path);
+	if (!anchors) {
+		if (context.fragmentAnchors.size >= limits.pages)
+			throw new Error('Markdown anchor source count exceeds limit');
+		const bytes = await sourceFile(
+			context.root,
+			path,
+			Math.min(limits.sourceBytes, limits.totalBytes - context.total)
+		);
+		context.total += bytes.length;
+		anchors = parseMarkdown(
+			new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
+		).anchors;
+		context.fragmentAnchors.set(path, anchors);
+	}
+	if (!anchors.has(fragment)) throw new Error(`Missing fragment: ${path}#${fragment}`);
+}
 
 async function resolveDestination(
 	context: Context,
@@ -96,10 +116,9 @@ async function resolveDestination(
 	await noSymlinks(absolute);
 	const stat = await lstat(absolute);
 	const page = context.pages[target.path];
+	if (target.fragment && (page || /\.md$/i.test(target.path)))
+		await validateFragment(context, target.path, target.fragment);
 	if (page) {
-		if (target.fragment && !context.markdown.get(target.path)!.anchors.has(target.fragment)) {
-			throw new Error(`Missing fragment: ${target.path}#${target.fragment}`);
-		}
 		return `${wikiUrl}/${encodeURIComponent(page)}${target.suffix}`;
 	}
 	const media = /\.(?:png|jpe?g|gif|svg|webp|avif|ico|mp4|webm|mov|mp3|wav|ogg|woff2?)$/i.test(
@@ -199,6 +218,41 @@ async function expose(stage: string, output: string): Promise<void> {
 	if (previous) await rm(backup, { recursive: true });
 }
 
+export function validateWikiFiles(files: ReadonlyMap<string, Uint8Array>): void {
+	if (files.size > limits.files) throw new Error('Wiki output file count exceeds limit');
+	const names = new Set<string>();
+	let total = 0;
+	for (const [path, bytes] of files) {
+		const parts = path.split('/');
+		if (
+			sourcePath(path) !== path ||
+			parts.length > 16 ||
+			parts.some(
+				(part) =>
+					/[. ]$/.test(part) ||
+					part.toLowerCase().startsWith('.git') ||
+					part.toLowerCase() === '.wiki-manifest.json'
+			)
+		) {
+			throw new Error(`Unsafe Wiki output path: ${path}`);
+		}
+		const folded = path.toLowerCase();
+		if (names.has(folded)) throw new Error(`Wiki output case collision: ${path}`);
+		names.add(folded);
+		if (bytes.byteLength > limits.assetBytes)
+			throw new Error(`Wiki output file size exceeds limit: ${path}`);
+		total += bytes.byteLength;
+		if (total > limits.totalBytes) throw new Error('Wiki output total size exceeds limit');
+	}
+	for (const path of names) {
+		const parts = path.split('/');
+		for (let index = 1; index < parts.length; index++) {
+			if (names.has(parts.slice(0, index).join('/')))
+				throw new Error(`Wiki file/directory path collision: ${path}`);
+		}
+	}
+}
+
 export async function buildWiki(options: BuildWikiOptions): Promise<WikiManifest> {
 	const root = resolve(options.root);
 	const output = resolve(options.output);
@@ -221,7 +275,14 @@ export async function buildWiki(options: BuildWikiOptions): Promise<WikiManifest
 	try {
 		stage = await mkdtemp(join(dirname(output), `.${basename(output)}.stage-`));
 		const loaded = await loadPages(root, options.docs ?? selectedDocs);
-		const files = await render({ ...loaded, root, sourceCommit, assets: new Map() });
+		const files = await render({
+			...loaded,
+			root,
+			sourceCommit,
+			assets: new Map(),
+			fragmentAnchors: new Map()
+		});
+		validateWikiFiles(files);
 		const manifest: WikiManifest = {
 			schemaVersion: 1,
 			sourceCommit,
@@ -234,7 +295,10 @@ export async function buildWiki(options: BuildWikiOptions): Promise<WikiManifest
 			await mkdir(dirname(join(stage, path)), { recursive: true });
 			await writeFile(join(stage, path), bytes, { flag: 'wx' });
 		}
-		await writeFile(join(stage, '.wiki-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, {
+		const serialized = `${JSON.stringify(manifest, null, 2)}\n`;
+		if (Buffer.byteLength(serialized) > limits.manifestBytes)
+			throw new Error('Wiki manifest size exceeds limit');
+		await writeFile(join(stage, '.wiki-manifest.json'), serialized, {
 			flag: 'wx'
 		});
 		await expose(stage, output);

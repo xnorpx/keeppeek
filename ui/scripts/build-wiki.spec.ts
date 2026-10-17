@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import {
 	mkdir,
 	mkdtemp,
@@ -10,9 +11,10 @@ import {
 	writeFile
 } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
-import { buildWiki } from './build-wiki';
-import { bookPages, wikiName } from './wiki-manifest';
-import { parseMarkdown } from './wiki-markdown';
+import { buildWiki, validateWikiFiles } from './build-wiki';
+import { bookPages, limits, wikiName } from './wiki-manifest';
+import { localTarget, parseMarkdown } from './wiki-markdown';
+import { publishWiki } from './publish-wiki';
 
 const scratchRoot = resolve(import.meta.dirname, '../../target/wiki-tests');
 const scratch: string[] = [];
@@ -67,27 +69,155 @@ describe('Wiki manifest', () => {
 });
 
 describe('Wiki generation', () => {
+	it('resolves direct repository and own-source links without changing external URLs', () => {
+		expect(localTarget('book/src/start.md', '#start')).toEqual({
+			path: 'book/src/start.md',
+			suffix: '#start',
+			fragment: 'start'
+		});
+		expect(
+			localTarget(
+				'book/src/start.md',
+				'https://github.com/xnorpx/keeppeek/blob/main/README.md#keeppeek'
+			)
+		).toEqual({ path: 'README.md', suffix: '#keeppeek', fragment: 'keeppeek' });
+		expect(
+			localTarget('book/src/start.md', 'https://example.org/README.md#missing')
+		).toBeUndefined();
+	});
+
+	it.each([2, 10_000])('does not recursively unwrap %i nested repository prefixes', (count) => {
+		const prefix = 'https://github.com/xnorpx/keeppeek/blob/main/';
+		expect(localTarget('book/src/start.md', `${prefix.repeat(count)}README.md`)).toBeUndefined();
+	});
+
+	it('checks unselected Markdown fragments without copying their source', async () => {
+		const root = await fixture('[Readme](../../README.md#keeppeek)\n[Again](../../README.md#more)');
+		await writeFile(resolve(root, 'README.md'), '# KeepPeek\n\n## More\n');
+		const output = resolve(root, 'target/wiki');
+		const manifest = await buildWiki({ root, output, sourceCommit: commit, docs: [] });
+		expect(await readFile(resolve(output, 'start.md'), 'utf8')).toContain(
+			`/blob/${commit}/README.md#keeppeek`
+		);
+		expect(manifest.pages['README.md']).toBeUndefined();
+		expect(manifest.files['README.md']).toBeUndefined();
+		await writeFile(resolve(root, 'book/src/start.md'), '[Readme](../../README.md#nonexistent)');
+		await expect(buildWiki({ root, output, sourceCommit: commit, docs: [] })).rejects.toThrow(
+			'Missing fragment: README.md#nonexistent'
+		);
+	});
+
+	it('bounds the number of cached unselected Markdown anchor sets', async () => {
+		const root = await fixture();
+		const links: string[] = [];
+		for (let index = 0; index <= limits.pages; index++) {
+			const path = `extra-${index}.md`;
+			await writeFile(resolve(root, path), '# Extra\n');
+			links.push(`[Extra](../../${path}#extra)`);
+		}
+		await writeFile(resolve(root, 'book/src/start.md'), links.join('\n'));
+		await expect(
+			buildWiki({ root, output: resolve(root, 'target/wiki'), sourceCommit: commit, docs: [] })
+		).rejects.toThrow(/anchor.*count.*limit/i);
+	});
+
+	it.each([false, true])(
+		'bounds cumulative fragment source reads and reuses cached anchors (repeated=%s)',
+		async (repeated) => {
+			const root = await fixture();
+			const markdown = `# Extra\n\n<!--${'x'.repeat(limits.sourceBytes - 32)}-->\n`;
+			const links: string[] = [];
+			const count = Math.ceil(limits.totalBytes / Buffer.byteLength(markdown)) + 1;
+			for (let index = 0; index < count; index++) {
+				const path = repeated ? 'extra.md' : `extra-${index}.md`;
+				if (!repeated || index === 0) await writeFile(resolve(root, path), markdown);
+				links.push(`[Extra](../../${path}#extra)`);
+			}
+			await writeFile(resolve(root, 'book/src/start.md'), links.join('\n'));
+			const build = buildWiki({
+				root,
+				output: resolve(root, 'target/wiki'),
+				sourceCommit: commit,
+				docs: []
+			});
+			if (repeated) await expect(build).resolves.toMatchObject({ schemaVersion: 1 });
+			else await expect(build).rejects.toThrow(/size/i);
+		},
+		30_000
+	);
+
+	it('rejects oversized unselected fragment targets before parsing them', async () => {
+		const root = await fixture('[Readme](../../README.md#keeppeek)');
+		await writeFile(resolve(root, 'README.md'), '# KeepPeek\n');
+		await truncate(resolve(root, 'README.md'), limits.sourceBytes + 1);
+		await expect(
+			buildWiki({ root, output: resolve(root, 'target/wiki'), sourceCommit: commit, docs: [] })
+		).rejects.toThrow(/size/i);
+	});
+
+	it('matches publisher limits for file count, per-file bytes and total output bytes', () => {
+		expect(() =>
+			validateWikiFiles(
+				new Map(Array.from({ length: 1025 }, (_, index) => [`${index}.md`, Buffer.alloc(0)]))
+			)
+		).toThrow(/count/i);
+		const bytes = Buffer.alloc(16 * 1024 * 1024);
+		const files = new Map(Array.from({ length: 4 }, (_, index) => [`${index}.md`, bytes]));
+		expect(() => validateWikiFiles(files)).not.toThrow();
+		files.set('extra.md', Buffer.alloc(1));
+		expect(() => validateWikiFiles(files)).toThrow(/total/i);
+		expect(() => validateWikiFiles(new Map([['huge.md', Buffer.alloc(bytes.length + 1)]]))).toThrow(
+			/size/i
+		);
+	});
+
+	it('rejects publisher-incompatible output paths and case-insensitive asset collisions', () => {
+		for (const path of [
+			'assets/.github/image.png',
+			'assets/trailing./image.png',
+			`${'a/'.repeat(16)}image.png`
+		]) {
+			expect(() => validateWikiFiles(new Map([[path, Buffer.alloc(0)]]))).toThrow(/path/i);
+		}
+		expect(() =>
+			validateWikiFiles(
+				new Map([
+					['assets/a.png', Buffer.alloc(0)],
+					['assets/A.png', Buffer.alloc(0)]
+				])
+			)
+		).toThrow(/collision/i);
+	});
+
 	it('handles HTML attributes, image references, Unicode and escaped targets without changing external bytes', async () => {
 		const external = '[external](https://example.org/?a=1&amp;b=2 "Title")';
 		const root = await fixture(
 			`# Start\n${external}\n` +
 				'<img alt="a > b src=\'missing.svg\'" data-src="missing.svg" src="images/a%20b.svg">\n' +
-				'![reference][asset]\n\n[asset]: images/diagram.bin\n' +
+				'![reference][asset]\n\n[asset]: images/diagram\n' +
 				'[Unicode](nested/caf%C3%A9%20%28a%29.md#héllo)\n' +
+				'[selected Unicode](nested/caf%C3%A9%20guide.md#h%C3%A9llo)\n' +
 				'[parentheses](nested/café%20\\(a\\).md#héllo)\n' +
 				'<https://github.com/xnorpx/keeppeek/blob/main/docs/guide.md>\n' +
 				'`{{#include absent}}`\n'
 		);
-		await writeFile(resolve(root, 'book/src/images/diagram.bin'), 'image');
+		await writeFile(resolve(root, 'book/src/images/diagram'), 'image');
 		await writeFile(resolve(root, 'book/src/nested/café (a).md'), '# Héllo\n');
+		await writeFile(resolve(root, 'book/src/nested/café guide.md'), '# Héllo\n');
+		const summary = resolve(root, 'book/src/SUMMARY.md');
+		await writeFile(
+			summary,
+			`${await readFile(summary, 'utf8')}\n- [Unicode](nested/caf%C3%A9%20guide.md)\n`
+		);
 		const output = resolve(root, 'target/wiki');
 		await buildWiki({ root, output, sourceCommit: commit, docs: ['docs/guide.md'] });
 		const start = await readFile(resolve(output, 'start.md'), 'utf8');
 		expect(start).toContain(external);
 		expect(start).toContain('alt="a > b src=\'missing.svg\'" data-src="missing.svg"');
 		expect(start).toContain(
-			'[asset]: https://raw.githubusercontent.com/wiki/xnorpx/keeppeek/assets/book/src/images/diagram.bin'
+			'[asset]: https://raw.githubusercontent.com/wiki/xnorpx/keeppeek/assets/book/src/images/diagram'
 		);
+		expect(start).toContain('/wiki/caf%C3%A9-guide#h%C3%A9llo');
 		expect(start).toContain(`<https://github.com/xnorpx/keeppeek/wiki/Engineering-guide>`);
 		expect(start).toContain(`/blob/${commit}/book/src/nested/caf%C3%A9%20%28a%29.md#héllo`);
 		expect(start).toContain('`{{#include absent}}`');
@@ -186,7 +316,7 @@ describe('Wiki generation', () => {
 		const root = await fixture('![image](images/large.png)');
 		const asset = resolve(root, 'book/src/images/large.png');
 		await writeFile(asset, '');
-		await truncate(asset, 32 * 1024 * 1024 + 1);
+		await truncate(asset, 16 * 1024 * 1024 + 1);
 		const output = resolve(root, 'target/wiki');
 		await expect(buildWiki({ root, output, sourceCommit: commit, docs: [] })).rejects.toThrow(
 			/size/i
@@ -242,5 +372,17 @@ describe('Wiki generation', () => {
 		const chapters = bookPages(await readFile(resolve(root, 'book/src/SUMMARY.md'), 'utf8'));
 		expect(chapters.every((path) => manifest.pages[path])).toBe(true);
 		expect(Object.keys(manifest.files).length).toBeGreaterThan(chapters.length + 2);
+		const wiki = await mkdtemp(`${scratchRoot}/checkout-`);
+		scratch.push(wiki);
+		const git = (...args: string[]) =>
+			execFileSync('git', ['-C', wiki, ...args], {
+				timeout: 10_000,
+				stdio: 'pipe'
+			});
+		git('init', '--quiet', '--initial-branch=main');
+		git('config', 'user.name', 'Wiki Test');
+		git('config', 'user.email', 'wiki-test@example.invalid');
+		expect(publishWiki(output, wiki, commit)).toBe(true);
+		expect(publishWiki(output, wiki, commit)).toBe(false);
 	}, 30_000);
 });
