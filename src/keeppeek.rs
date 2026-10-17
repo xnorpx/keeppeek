@@ -1306,6 +1306,8 @@ impl KeepPeekLoop {
                 camera,
                 resolve_configured_camera_route(&camera.config, camera.is_reolink)?,
             );
+            self.camera_definitions
+                .insert(camera.config.ip, camera.clone());
             return Ok(());
         }
         self.stop_camera(camera.config.ip);
@@ -1921,6 +1923,88 @@ mod tests {
         assert_eq!(
             effective_recording_mode(&profiles, &camera),
             crate::cameras::CameraRecordingMode::Off
+        );
+    }
+
+    #[test]
+    fn runtime_profile_base_restores_the_latest_event_only_camera_edit() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut camera = runtime_rtsp_camera(listener.local_addr().unwrap());
+        camera.config.events.mode = crate::cameras::events::EventMode::Disabled;
+        let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+        recorder.add_camera(&camera, true, true).unwrap();
+        let _initial_connection = accept_rtsp_connection(&listener);
+        edit_generic_motion_without_media_restart(&mut recorder, &mut camera);
+        let away = serde_json::from_value(serde_json::json!({
+            "revision": 1, "active_profile_id": "away", "profiles": {"away": {
+                "id": "away", "name": "Away", "revision": 1,
+                "cameras": {camera.config.ip.to_string(): {"availability": false}}
+            }}
+        }))
+        .unwrap();
+        recorder.apply_runtime_profiles(away).unwrap();
+        assert!(!recorder.camera_workers.contains_key(&camera.config.ip));
+        recorder
+            .apply_runtime_profiles(crate::profiles::ProfileRegistry {
+                revision: 2,
+                ..Default::default()
+            })
+            .unwrap();
+        let _restored_connection = accept_rtsp_connection(&listener);
+        let restored = recorder.camera_workers[&camera.config.ip]
+            .configuration
+            .clone()
+            .unwrap();
+        let retained_motion = recorder
+            .health
+            .events
+            .record_motion(camera.config.ip, false);
+        recorder.stop_camera(camera.config.ip);
+        assert!(camera.config.record_generic_motion_events);
+        assert!(
+            restored.record_generic_motion_events,
+            "Base must restore the accepted event edit after profile deactivation"
+        );
+        assert_eq!(restored.events, camera.config.events);
+        assert!(
+            retained_motion,
+            "restored event policy must retain generic motion"
+        );
+        assert!(
+            recorder.camera_definitions[&camera.config.ip]
+                .config
+                .record_generic_motion_events
+        );
+        assert_eq!(
+            recorder.camera_definitions[&camera.config.ip].config.events,
+            camera.config.events
+        );
+    }
+
+    fn edit_generic_motion_without_media_restart(recorder: &mut KeepPeekLoop, camera: &mut Camera) {
+        let media_worker = recorder.camera_workers[&camera.config.ip].handles[0]
+            .thread()
+            .id();
+        let mut durations_us = Vec::with_capacity(31);
+        for _ in 0..31 {
+            camera.config.record_generic_motion_events =
+                !camera.config.record_generic_motion_events;
+            camera.config.events.snapshots = !camera.config.events.snapshots;
+            let started = Instant::now();
+            recorder.restart_camera(camera).unwrap();
+            durations_us.push(started.elapsed().as_micros());
+            assert_eq!(
+                recorder.camera_workers[&camera.config.ip].handles[0]
+                    .thread()
+                    .id(),
+                media_worker
+            );
+        }
+        durations_us.sort_unstable();
+        eprintln!(
+            "31 event-only edits: median={}us p95={}us max={}us",
+            durations_us[15], durations_us[29], durations_us[30]
         );
     }
 

@@ -41,6 +41,10 @@ completion or runtime failure. If settings cannot be read, it logs a warning and
 that fallback cannot establish which cameras were deleted. Older reconciliation cannot replace a
 newer pending revision. These observations do not define stable-ID migration or resolve IP reuse.
 
+Events-only camera edits refresh the same accepted camera definition that availability transitions
+reuse. Returning to Base therefore retains edited event settings and generic-motion retention.
+The events-only path keeps its existing media workers; it replaces event workers as before.
+
 ## Scope
 
 An Administrator selects Base or exactly one named profile. Each profile contains sparse
