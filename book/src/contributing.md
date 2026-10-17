@@ -170,6 +170,15 @@ and the practical task it enables, including authorization, persistence, limits,
 recovery. Update the [feature guide](./feature-guide.md) when adding a screen or changing where a
 task starts. Fill operational chapters with instructions rather than leaving empty placeholders.
 
+Repository Markdown is the only editing source for the
+[Wiki](https://github.com/xnorpx/keeppeek/wiki) and the
+[mdBook site](https://xnorpx.github.io/keeppeek/). The Wiki also includes selected engineering pages
+from `docs/`; Pages remains the generated mdBook mirror. Submit documentation changes through a
+repository pull request. Do not edit generated Wiki pages directly.
+See [Wiki publishing](https://github.com/xnorpx/keeppeek/blob/main/docs/wiki-publishing.md)
+for page mapping, preview, credentials,
+publication status, and recovery.
+
 Keep serialized fields, defaults, and examples synchronized with the
 [configuration reference](./configuration-reference.md). Protocol declarations and engineering
 scenarios can describe capabilities that do not yet have a runtime handler. Check the server and
@@ -180,6 +189,9 @@ From the repository root, validate documentation with:
 ```sh
 bun run --cwd ui format:markdown:check
 mdbook build book
+bun run --cwd ui wiki:test
+bun run --cwd ui wiki:check
+bun run --cwd ui wiki:build
 ```
 
 Install `mdbook` and `mdbook-mermaid` and make both available on `PATH`; the book's configuration

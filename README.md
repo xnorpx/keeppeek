@@ -12,7 +12,11 @@ independent viewers, inference services, and integrations consume or publish med
 
 ## Documentation
 
-The [KeepPeek Book](https://xnorpx.github.io/keeppeek/) is the primary documentation.
+Read the [KeepPeek Wiki](https://github.com/xnorpx/keeppeek/wiki) or the
+[mdBook site](https://xnorpx.github.io/keeppeek/). Both are generated from repository Markdown:
+`book/src/` and the engineering pages selected from `docs/`. Edit those sources through a pull
+request, not the generated Wiki or Pages site. The mdBook site remains available while the Wiki's
+[initial publication and live verification](docs/wiki-publishing.md) are pending.
 The public protocol is
 documented separately in the [`api/` directory](api/README.md).
 The [evidence export lifecycle](docs/evidence-exports.md) documents durable history, duplicate
@@ -51,5 +55,5 @@ The KeepPeek server, first-party viewer, and other original KeepPeek code use th
 API definitions and documentation under [`api/`](api/README.md), plus bindings generated solely
 from them, are licensed under the [MIT License](api/LICENSE). Forked crates under
 [`crates/`](crates/README.md) retain their original upstream licenses. See the book's
-[open-source and licensing chapter](https://xnorpx.github.io/keeppeek/open-source-and-licensing.html)
+[open-source and licensing chapter](https://github.com/xnorpx/keeppeek/wiki/open-source-and-licensing)
 for details.
