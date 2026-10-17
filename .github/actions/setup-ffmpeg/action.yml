@@ -33,10 +33,13 @@ runs:
           $attempt = 1
           while ($attempt -le 3) {
             choco install ffmpeg --no-progress --yes
-            if ($LASTEXITCODE -eq 0) { break }
-            if ($attempt -eq 3) { throw 'Unable to install FFmpeg' }
+            if (Get-Command ffmpeg -ErrorAction SilentlyContinue) { break }
+            if ($attempt -eq 3) { break }
             Start-Sleep -Seconds 10
             $attempt++
           }
+        }
+        if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+          winget install --id Gyan.FFmpeg --exact --source winget --silent --accept-source-agreements --accept-package-agreements
         }
         ffmpeg -version

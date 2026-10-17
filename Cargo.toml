@@ -216,7 +216,7 @@ str0m = { version = "0.23.0", default-features = false, features = [
 ] }
 
 [dev-dependencies]
-rustls = { version = "=0.23.45", default-features = false, features = [
+rustls = { version = "=0.23.46", default-features = false, features = [
   "std",
   "tls12",
   "aws_lc_rs",
