@@ -184,7 +184,10 @@ export function localTarget(
 ): { path: string; suffix: string; fragment: string } | undefined {
 	const repositoryTarget =
 		/^https:\/\/github\.com\/xnorpx\/keeppeek\/(?:blob|tree)\/main\/(.*)$/.exec(url);
-	if (repositoryTarget) return localTarget('README.md', repositoryTarget[1]);
+	if (repositoryTarget) {
+		source = 'README.md';
+		url = repositoryTarget[1];
+	}
 	if (/^(https?:|mailto:|tel:|ftp:)/i.test(url) || url.startsWith('//')) return;
 	if (/^[a-z][a-z0-9+.-]*:/i.test(url)) throw new Error(`Unsupported URL scheme: ${url}`);
 	const separator = url.search(/[?#]/);

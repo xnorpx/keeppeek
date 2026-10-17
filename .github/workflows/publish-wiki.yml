@@ -75,10 +75,10 @@ jobs:
       - name: Publish one Wiki commit
         env:
           WIKI_PUBLISH_TOKEN: ${{ secrets.WIKI_PUBLISH_TOKEN }}
-          GIT_TERMINAL_PROMPT: '0'
-          GIT_CONFIG_COUNT: '2'
+          GIT_TERMINAL_PROMPT: "0"
+          GIT_CONFIG_COUNT: "2"
           GIT_CONFIG_KEY_0: credential.helper
-          GIT_CONFIG_VALUE_0: ''
+          GIT_CONFIG_VALUE_0: ""
           GIT_CONFIG_KEY_1: credential.https://github.com.helper
           GIT_CONFIG_VALUE_1: >-
             !f() { if [ "$1" = get ]; then

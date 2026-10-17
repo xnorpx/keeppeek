@@ -9,7 +9,7 @@ import {
 	unlinkSync,
 	writeFileSync
 } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const manifestName = '.wiki-manifest.json';
@@ -263,6 +263,13 @@ function assertNoCaseCollisions(wiki: string, paths: string[]): void {
 			directories.set(parent, names);
 		}
 	}
+	const rootNames = directories.get(wiki)!;
+	for (const name of rootNames.values()) {
+		const page = wikiPageFilename(rootNames, name);
+		if (page !== undefined && page !== name) {
+			throw new Error(`Manifest Wiki title collision: ${name}`);
+		}
+	}
 	let entries = 0;
 	for (const [directory, names] of directories) {
 		let handle;
@@ -275,7 +282,9 @@ function assertNoCaseCollisions(wiki: string, paths: string[]): void {
 		try {
 			for (let entry = handle.readSync(); entry; entry = handle.readSync()) {
 				if (++entries > filesMax * 34 + 1) throw new Error('Wiki directory entry limit exceeded.');
-				const expected = names.get(entry.name.toLowerCase());
+				const expected =
+					names.get(entry.name.toLowerCase()) ??
+					(directory === wiki ? wikiPageFilename(names, entry.name) : undefined);
 				if (expected !== undefined && expected !== entry.name) {
 					throw new Error(`Case-insensitive manual file collision: ${join(directory, entry.name)}`);
 				}
@@ -284,6 +293,14 @@ function assertNoCaseCollisions(wiki: string, paths: string[]): void {
 			handle.closeSync();
 		}
 	}
+}
+
+function wikiPageFilename(names: Map<string, string>, filename: string): string | undefined {
+	// Wiki titles omit markup extensions. Reject all alternate top-level extensions.
+	const extension = extname(filename);
+	return extension
+		? names.get(`${filename.slice(0, -extension.length).toLowerCase()}.md`)
+		: undefined;
 }
 
 function readOwnedFiles(
