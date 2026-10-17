@@ -178,15 +178,16 @@ fn fixture(path: &std::path::Path) -> (RecordingCatalog, moves::Intent, Location
     handle
         .volume_location(Request::Reserve(source.clone()))
         .unwrap();
-    let Reply::Location(Some(location)) = handle
-        .volume_location(Request::Publish(Publication {
+    let Reply::Location(Some(location)) = publish_with_retry(
+        &handle,
+        Publication {
             operation: source.operation,
             bytes: 40,
             file_identity: "source-file".into(),
             digest: [3; 32],
-        }))
-        .unwrap()
-    else {
+        },
+    )
+    .unwrap() else {
         panic!("missing source");
     };
     let intent = moves::Intent {
@@ -196,6 +197,25 @@ fn fixture(path: &std::path::Path) -> (RecordingCatalog, moves::Intent, Location
         destination: allocation(&handle, "move", "destination"),
     };
     (catalog, intent, location)
+}
+
+fn publish_with_retry(
+    handle: &super::RecordingCatalogHandle,
+    publication: Publication,
+) -> anyhow::Result<Reply> {
+    // ponytail: three attempts bound fixture delays; add more only if this timeout recurs.
+    let mut retries_remaining = 2;
+    loop {
+        let result = handle.volume_location(Request::Publish(publication.clone()));
+        if retries_remaining == 0
+            || !result.as_ref().is_err_and(|error| {
+                error.to_string() == "volume catalog outcome unknown; retry operation"
+            })
+        {
+            return result;
+        }
+        retries_remaining -= 1;
+    }
 }
 
 #[test]
