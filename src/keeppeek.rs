@@ -545,15 +545,7 @@ impl KeepPeekLoop {
                 .insert(camera.config.ip.to_string(), name.clone());
             self.camera_names.insert(name.clone(), name.clone());
         }
-        if let Some(storage) = &self.storage {
-            storage.configure_camera_event_recording(
-                &camera.config.ip.to_string(),
-                self.effective_recording_mode(&camera.config),
-                camera.config.event_recording_stream,
-                Duration::from_secs(camera.config.event_pre_recording_duration_secs),
-                Duration::from_secs(camera.config.event_recording_duration_secs),
-            );
-        }
+        self.configure_profile_recording(camera)?;
         let route_result = resolve_configured_camera_route(&camera.config, camera.is_reolink);
         let route = match route_result {
             Ok(route) => route,
@@ -570,6 +562,14 @@ impl KeepPeekLoop {
             self.record_camera_runtime_status(camera, Ok(()));
             return Ok(());
         }
+        let status_handle = self.runtime_profile_status.clone();
+        let status = status_handle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        anyhow::ensure!(
+            status.revision <= self.runtime_profiles.revision,
+            "runtime profile transition was superseded"
+        );
         if let Some(uid) = camera
             .config
             .uid
@@ -585,6 +585,7 @@ impl KeepPeekLoop {
             .expect("registered camera workers")
             .configuration = Some(camera.config.clone());
         self.add_camera_workers(camera, route, enable_main, enable_sub);
+        drop(status);
         self.record_camera_runtime_status(camera, Ok(()));
         Ok(())
     }
@@ -617,6 +618,9 @@ impl KeepPeekLoop {
             .runtime_profile_status
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if status.revision > self.runtime_profiles.revision {
+            return;
+        }
         status.revision = self.runtime_profiles.revision;
         status.active_profile_id = self.runtime_profiles.active_profile_id.clone();
         status.cameras.insert(camera_id, application);
@@ -658,11 +662,25 @@ impl KeepPeekLoop {
         policy
     }
 
-    fn apply_runtime_profiles(
+    fn begin_runtime_profiles(
         &mut self,
         profiles: crate::profiles::ProfileRegistry,
-    ) -> anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>> {
+    ) -> anyhow::Result<Vec<Camera>> {
         profiles.validate()?;
+        anyhow::ensure!(
+            profiles.revision > self.runtime_profiles.revision || profiles == self.runtime_profiles,
+            "runtime profile revision is stale or conflicts with the accepted registry"
+        );
+        let status_handle = self.runtime_profile_status.clone();
+        // ponytail: hold the fence across the bounded notification acknowledgement. Use a
+        // revision-aware notification command if this wait must become preemptible.
+        let mut status = status_handle
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        anyhow::ensure!(
+            status.revision <= profiles.revision,
+            "runtime profile transition was superseded"
+        );
         self.runtime_profiles = profiles;
         let suppressed_sources = active_notification_suppressions(&self.runtime_profiles);
         let has_suppressed_sources = !suppressed_sources.is_empty();
@@ -683,39 +701,54 @@ impl KeepPeekLoop {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        {
-            let mut status = self
-                .runtime_profile_status
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            status.revision = self.runtime_profiles.revision;
-            status.active_profile_id = self.runtime_profiles.active_profile_id.clone();
-            for camera in &cameras {
-                let camera_id = camera.config.ip.to_string();
-                status.cameras.insert(
-                    camera_id.clone(),
-                    crate::profiles::CameraRuntimeApplication {
-                        camera_id,
-                        state: crate::profiles::RuntimeApplicationState::Pending,
-                        policy: self.effective_camera_policy(&camera.config),
-                        reason: None,
-                    },
-                );
-            }
+        status.revision = self.runtime_profiles.revision;
+        status.active_profile_id = self.runtime_profiles.active_profile_id.clone();
+        for camera in &cameras {
+            let camera_id = camera.config.ip.to_string();
+            status.cameras.insert(
+                camera_id.clone(),
+                crate::profiles::CameraRuntimeApplication {
+                    camera_id,
+                    state: crate::profiles::RuntimeApplicationState::Pending,
+                    policy: self.effective_camera_policy(&camera.config),
+                    reason: None,
+                },
+            );
         }
+        Ok(cameras)
+    }
+
+    fn configure_profile_recording(&self, camera: &Camera) -> anyhow::Result<()> {
+        let status = self
+            .runtime_profile_status
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        anyhow::ensure!(
+            status.revision <= self.runtime_profiles.revision,
+            "runtime profile transition was superseded"
+        );
+        if let Some(storage) = &self.storage {
+            storage.configure_camera_event_recording(
+                &camera.config.ip.to_string(),
+                self.effective_recording_mode(&camera.config),
+                camera.config.event_recording_stream,
+                Duration::from_secs(camera.config.event_pre_recording_duration_secs),
+                Duration::from_secs(camera.config.event_recording_duration_secs),
+            );
+        }
+        Ok(())
+    }
+
+    fn apply_runtime_profiles(
+        &mut self,
+        profiles: crate::profiles::ProfileRegistry,
+    ) -> anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>> {
+        let cameras = self.begin_runtime_profiles(profiles)?;
         let mut applications = Vec::with_capacity(cameras.len());
         for camera in cameras {
+            self.configure_profile_recording(&camera)?;
             let camera_id = camera.config.ip.to_string();
             let policy = self.effective_camera_policy(&camera.config);
-            if let Some(storage) = &self.storage {
-                storage.configure_camera_event_recording(
-                    &camera_id,
-                    policy.recording_mode,
-                    camera.config.event_recording_stream,
-                    Duration::from_secs(camera.config.event_pre_recording_duration_secs),
-                    Duration::from_secs(camera.config.event_recording_duration_secs),
-                );
-            }
             let runtime_result = if policy.available {
                 if self.camera_workers.contains_key(&camera.config.ip) {
                     Ok(())
@@ -733,10 +766,12 @@ impl KeepPeekLoop {
                     Some(error.to_string().chars().take(256).collect()),
                 ),
             };
-            let (state, reason) = if !policy.notifications_enabled && notification_error.is_some() {
+            let (state, reason) = if !policy.notifications_enabled
+                && self.runtime_profile_notification_error.is_some()
+            {
                 (
                     crate::profiles::RuntimeApplicationState::Degraded,
-                    notification_error.clone(),
+                    self.runtime_profile_notification_error.clone(),
                 )
             } else {
                 (state, reason)
@@ -752,6 +787,10 @@ impl KeepPeekLoop {
             .runtime_profile_status
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        anyhow::ensure!(
+            status.revision <= self.runtime_profiles.revision,
+            "runtime profile transition was superseded"
+        );
         status.revision = self.runtime_profiles.revision;
         status.active_profile_id = self.runtime_profiles.active_profile_id.clone();
         status.cameras = applications
@@ -1866,6 +1905,194 @@ mod tests {
         );
         assert!(!recorder.camera_workers.contains_key(&camera.config.ip));
         assert!(recorder.camera_definitions.contains_key(&camera.config.ip));
+        let status = recorder.runtime_profile_status.read().unwrap().clone();
+        let stale_base = crate::profiles::ProfileRegistry {
+            revision: 2,
+            ..Default::default()
+        };
+        assert!(recorder.apply_runtime_profiles(stale_base).is_err());
+        assert!(!recorder.camera_workers.contains_key(&camera.config.ip));
+        assert_eq!(*recorder.runtime_profile_status.read().unwrap(), status);
+        assert_eq!(recorder.runtime_profiles.revision, 3);
+    }
+
+    #[test]
+    fn runtime_profile_disabled_camera_scale() {
+        let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+        let template = runtime_rtsp_camera("127.0.0.1:8554".parse().unwrap());
+        let mut targets = std::collections::BTreeMap::new();
+        for index in 1..=crate::profiles::MAX_PROFILE_TARGETS {
+            let mut camera = template.clone();
+            camera.config.ip = Ipv4Addr::new(192, 0, 2, u8::try_from(index).unwrap()).into();
+            targets.insert(
+                camera.config.ip.to_string(),
+                crate::profiles::CameraProfileOverride {
+                    availability: Some(false),
+                    ..Default::default()
+                },
+            );
+            recorder.camera_definitions.insert(camera.config.ip, camera);
+        }
+        let mut profiles = crate::profiles::ProfileRegistry {
+            revision: 1,
+            active_profile_id: Some("away".to_owned()),
+            profiles: std::collections::BTreeMap::from([(
+                "away".to_owned(),
+                crate::profiles::RuntimeProfile {
+                    id: "away".to_owned(),
+                    name: "Away".to_owned(),
+                    revision: 1,
+                    cameras: targets,
+                },
+            )]),
+        };
+        recorder.apply_runtime_profiles(profiles.clone()).unwrap();
+        let mut samples = Vec::with_capacity(30);
+        for revision in 2..=31 {
+            profiles.revision = revision;
+            let input = profiles.clone();
+            let started = Instant::now();
+            let applications = recorder.apply_runtime_profiles(input).unwrap();
+            samples.push(started.elapsed());
+            assert_eq!(applications.len(), crate::profiles::MAX_PROFILE_TARGETS);
+            assert!(
+                applications
+                    .iter()
+                    .all(|application| !application.policy.available
+                        && application.state == crate::profiles::RuntimeApplicationState::Applied)
+            );
+            assert_eq!(
+                recorder.runtime_profile_status.read().unwrap().revision,
+                revision
+            );
+        }
+        samples.sort_unstable();
+        eprintln!(
+            "127 disabled cameras, 30 transitions: median={}us p95={}us",
+            samples[15].as_micros(),
+            samples[28].as_micros()
+        );
+        assert!(recorder.camera_workers.is_empty());
+    }
+
+    #[test]
+    fn runtime_profile_supersession_preserves_newer_pending_status() {
+        let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+        let accepted = crate::profiles::ProfileRegistry {
+            revision: 2,
+            ..Default::default()
+        };
+        recorder.set_runtime_profiles(accepted.clone());
+        recorder.runtime_profile_status.write().unwrap().revision = 4;
+        let pending = recorder.runtime_profile_status.read().unwrap().clone();
+        let camera = runtime_rtsp_camera("127.0.0.1:8554".parse().unwrap());
+        recorder.record_camera_runtime_status(&camera, Ok(()));
+        assert_eq!(*recorder.runtime_profile_status.read().unwrap(), pending);
+        assert!(recorder.add_camera(&camera, true, true).is_err());
+        assert!(recorder.camera_workers.is_empty());
+        recorder.camera_definitions.clear();
+        let queued = crate::profiles::ProfileRegistry {
+            revision: 3,
+            ..Default::default()
+        };
+        assert!(recorder.apply_runtime_profiles(queued).is_err());
+        assert_eq!(recorder.runtime_profiles, accepted);
+        assert_eq!(*recorder.runtime_profile_status.read().unwrap(), pending);
+
+        let newest = crate::profiles::ProfileRegistry {
+            revision: 4,
+            ..Default::default()
+        };
+        assert!(recorder.apply_runtime_profiles(newest.clone()).is_ok());
+        assert!(recorder.apply_runtime_profiles(newest.clone()).is_ok());
+        assert_eq!(recorder.runtime_profiles, newest);
+        assert_eq!(recorder.runtime_profile_status.read().unwrap().revision, 4);
+    }
+
+    #[test]
+    fn runtime_profile_supersession_rejects_changed_same_revision() {
+        let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+        let accepted = crate::profiles::ProfileRegistry {
+            revision: 2,
+            ..Default::default()
+        };
+        recorder.set_runtime_profiles(accepted.clone());
+        let mut changed = accepted.clone();
+        changed.profiles.insert(
+            "away".to_owned(),
+            crate::profiles::RuntimeProfile {
+                id: "away".to_owned(),
+                name: "Away".to_owned(),
+                revision: 1,
+                cameras: Default::default(),
+            },
+        );
+        let status = recorder.runtime_profile_status.read().unwrap().clone();
+        assert!(recorder.apply_runtime_profiles(changed).is_err());
+        assert_eq!(recorder.runtime_profiles, accepted);
+        assert_eq!(*recorder.runtime_profile_status.read().unwrap(), status);
+    }
+
+    #[test]
+    fn runtime_profile_supersession_during_worker_stop_preserves_pending_status() {
+        let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let camera = runtime_rtsp_camera(listener.local_addr().unwrap());
+        let ip = camera.config.ip;
+        recorder.camera_definitions.insert(ip, camera);
+        let mut workers = CameraWorkers::new();
+        let shutdown = workers.shutdown.clone();
+        let (stopped_tx, stopped_rx) = mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = mpsc::sync_channel(1);
+        workers.handles.push(std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !shutdown.is_cancelled() {
+                assert!(Instant::now() < deadline, "camera stop was not requested");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            stopped_tx.send(()).unwrap();
+            resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }));
+        recorder.camera_workers.insert(ip, workers);
+        let status = recorder.runtime_profile_status.clone();
+        let profiles: crate::profiles::ProfileRegistry =
+            serde_json::from_value(serde_json::json!({
+                "revision": 1,
+                "active_profile_id": "away",
+                "profiles": { "away": {
+                    "id": "away", "name": "Away", "revision": 1,
+                    "cameras": { ip.to_string(): { "availability": false } }
+                }}
+            }))
+            .unwrap();
+        let transition = std::thread::spawn(move || {
+            let result = recorder.apply_runtime_profiles(profiles);
+            (recorder, result)
+        });
+        stopped_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let pending = {
+            let mut pending = status.write().unwrap();
+            pending.revision = 2;
+            pending.active_profile_id = None;
+            pending.clone()
+        };
+        resume_tx.send(()).unwrap();
+        let (mut recorder, result) = transition.join().unwrap();
+        assert!(result.is_err());
+        assert_eq!(*status.read().unwrap(), pending);
+        assert!(!recorder.camera_workers.contains_key(&ip));
+        assert!(
+            recorder
+                .apply_runtime_profiles(crate::profiles::ProfileRegistry {
+                    revision: 2,
+                    ..Default::default()
+                })
+                .is_ok()
+        );
+        assert!(recorder.camera_workers.contains_key(&ip));
+        let _connection = accept_rtsp_connection(&listener);
+        recorder.stop_camera(ip);
     }
 
     #[test]

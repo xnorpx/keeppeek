@@ -83,7 +83,9 @@ parsing alone does not prove a field has an effect.
 each profile can target at most 127 cameras with sparse runtime-safe overrides. Do not edit this
 section manually. The partial implementation supports Administrator management and activation
 through WebRTC StateStore, including bounded definition reads and staged bounded writes. Privacy,
-recording, notifications, and camera availability reach their current runtime owners, but complete
+recording, notifications, and camera availability reach their current runtime owners. Delayed
+profile commands cannot replace newer pending runtime status; an already running camera stop is
+not preempted. Complete
 restart, conflict, camera identity, privacy leak, browser reconnect, and capacity qualification
 remain open under #202.
 
