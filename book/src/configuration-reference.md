@@ -87,7 +87,9 @@ recording, notifications, and camera availability reach their current runtime ow
 profile commands cannot replace newer pending runtime status; an already running camera stop is
 not preempted. An active profile's saved target that is no longer configured remains degraded
 through startup, completion and live removal; re-adding the camera replaces that observation.
-Activating Base clears missing-target observations from the previously active profile. Complete
+Activating Base clears missing-target observations from the previously active profile.
+Events-only camera edits also remain in effect after a profile disables the camera and Base
+enables it again. Complete
 restart, conflict, camera identity, privacy leak, browser reconnect, and capacity qualification
 remain open under #202.
 
