@@ -364,75 +364,7 @@ pub(super) fn dispatch(
             entry_result(entry)
         }
         Some(state_store_command::Action::Watch(request)) => {
-            if request.namespace != NAMESPACE {
-                return Err(registry_error(
-                    Error::Invalid(Invalid::Namespace),
-                    &request.namespace,
-                    &request.watch_id,
-                ));
-            }
-            super::super::validate_client_id(&request.watch_id, "watch ID")?;
-            let key_prefix = if request.key_prefix.is_empty() {
-                if admin {
-                    ACTIVE_KEY
-                } else {
-                    return Err(registry_error(Error::NotAuthorized, NAMESPACE, ACTIVE_KEY));
-                }
-            } else {
-                request.key_prefix.as_str()
-            };
-            if key_prefix != ACTIVE_KEY
-                && key_prefix != STATUS_KEY
-                && (key_prefix != REGISTRY_KEY || !admin)
-            {
-                return Err(registry_error(
-                    Error::Invalid(Invalid::Key),
-                    NAMESPACE,
-                    key_prefix,
-                ));
-            }
-            let _guard = super::super::state_store_settings::lock_config(&state.config_update)
-                .map_err(|error| registry_error(error, NAMESPACE, &request.watch_id))?;
-            let registry = config::load_config(config_path)
-                .map_err(|error| {
-                    registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
-                })?
-                .runtime_profiles;
-            let entry = if key_prefix == REGISTRY_KEY {
-                registry_entry(registry.clone())
-                    .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?
-            } else if key_prefix == STATUS_KEY {
-                status_entry(visible_status(state, principal)).map_err(|error| {
-                    registry_error(Error::Storage(error.to_string()), NAMESPACE, STATUS_KEY)
-                })?
-            } else {
-                active_entry(registry.clone())
-            };
-            let message = proto::StateWatchSnapshot {
-                watch_id: request.watch_id.clone(),
-                namespace: NAMESPACE.to_owned(),
-                key_prefix: request.key_prefix.clone(),
-                snapshot_revision: registry.revision,
-                entries: vec![proto_entry(&entry)],
-            };
-            check_snapshot_bounds(
-                message.entries.len(),
-                message.encoded_len(),
-                NAMESPACE,
-                &request.watch_id,
-            )?;
-            state
-                .state_store_watches
-                .register(
-                    session_id,
-                    NAMESPACE.to_owned(),
-                    request.key_prefix,
-                    request.watch_id.clone(),
-                )
-                .map_err(|error| registry_error(error, NAMESPACE, &request.watch_id))?;
-            proto::StateStoreResult {
-                result: Some(state_store_result::Result::Watch(message)),
-            }
+            watch_profiles(state, session_id, principal, request)?
         }
         Some(state_store_command::Action::Delete(request)) => Err(registry_error(
             Error::NotAuthorized,
@@ -446,6 +378,105 @@ pub(super) fn dispatch(
         None => return Err(invalid("state store command has no action")),
     };
     Ok(control_ok::Result::StateStoreResult(result))
+}
+
+fn watch_profiles(
+    state: &ServerState,
+    session_id: SessionId,
+    principal: &ApiPrincipal,
+    request: proto::WatchState,
+) -> Result<proto::StateStoreResult, ControlCommandError> {
+    if request.namespace != NAMESPACE {
+        return Err(registry_error(
+            Error::Invalid(Invalid::Namespace),
+            &request.namespace,
+            &request.watch_id,
+        ));
+    }
+    super::super::validate_client_id(&request.watch_id, "watch ID")?;
+    let admin = principal.role == AccessRole::Administrator;
+    let key_prefix = if request.key_prefix.is_empty() && admin {
+        ACTIVE_KEY
+    } else {
+        request.key_prefix.as_str()
+    };
+    if key_prefix.is_empty() {
+        return Err(registry_error(Error::NotAuthorized, NAMESPACE, ACTIVE_KEY));
+    }
+    if key_prefix != ACTIVE_KEY
+        && key_prefix != STATUS_KEY
+        && (key_prefix != REGISTRY_KEY || !admin)
+    {
+        return Err(registry_error(
+            Error::Invalid(Invalid::Key),
+            NAMESPACE,
+            key_prefix,
+        ));
+    }
+    let _config_guard = super::super::state_store_settings::lock_config(&state.config_update)
+        .map_err(|error| registry_error(error, NAMESPACE, &request.watch_id))?;
+    let config_path = state
+        .camera_config_path
+        .as_deref()
+        .expect("profile dispatch checked configuration path");
+    let registry = config::load_config(config_path)
+        .map_err(|error| registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY))?
+        .runtime_profiles;
+    if key_prefix == STATUS_KEY {
+        let status = state
+            .runtime_profile_status
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry =
+            status_entry(project_status(state, principal, status.clone())).map_err(|error| {
+                registry_error(Error::Storage(error.to_string()), NAMESPACE, STATUS_KEY)
+            })?;
+        // Registration must precede any writer that could invalidate this snapshot.
+        #[cfg(test)]
+        tests::pause_status_registration(&request.watch_id);
+        let result = register_profile_watch(state, session_id, request, entry);
+        drop(status);
+        return result;
+    }
+    let entry = if key_prefix == REGISTRY_KEY {
+        registry_entry(registry).map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?
+    } else {
+        active_entry(registry)
+    };
+    register_profile_watch(state, session_id, request, entry)
+}
+
+fn register_profile_watch(
+    state: &ServerState,
+    session_id: SessionId,
+    request: proto::WatchState,
+    entry: StoredEntry,
+) -> Result<proto::StateStoreResult, ControlCommandError> {
+    let message = proto::StateWatchSnapshot {
+        watch_id: request.watch_id.clone(),
+        namespace: NAMESPACE.to_owned(),
+        key_prefix: request.key_prefix.clone(),
+        snapshot_revision: entry.revision,
+        entries: vec![proto_entry(&entry)],
+    };
+    check_snapshot_bounds(
+        message.entries.len(),
+        message.encoded_len(),
+        NAMESPACE,
+        &request.watch_id,
+    )?;
+    state
+        .state_store_watches
+        .register(
+            session_id,
+            NAMESPACE.to_owned(),
+            request.key_prefix,
+            request.watch_id.clone(),
+        )
+        .map_err(|error| registry_error(error, NAMESPACE, &request.watch_id))?;
+    Ok(proto::StateStoreResult {
+        result: Some(state_store_result::Result::Watch(message)),
+    })
 }
 
 fn parse_active_profile_id(value: &Struct) -> Result<Option<String>, Error> {
@@ -1259,13 +1290,13 @@ fn mark_runtime_status_pending(state: &ServerState, profiles: &crate::profiles::
     }
 }
 
-fn publish_status_event(state: &ServerState, updated_ms: u64) {
+pub(in crate::server) fn publish_status_event(state: &ServerState, updated_ms: u64) {
     let status = state
         .runtime_profile_status
         .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    if let Ok(entry) = status_entry(status) {
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Keep newer status writes behind this event's queue admission.
+    if let Ok(entry) = status_entry(status.clone()) {
         publish_events(
             state,
             Some(WatchEvent {
@@ -1279,6 +1310,7 @@ fn publish_status_event(state: &ServerState, updated_ms: u64) {
             updated_ms,
         );
     }
+    drop(status);
 }
 
 fn status_entry(status: crate::profiles::RuntimeProfileStatus) -> anyhow::Result<StoredEntry> {
@@ -1302,11 +1334,19 @@ fn visible_status(
     state: &ServerState,
     principal: &ApiPrincipal,
 ) -> crate::profiles::RuntimeProfileStatus {
-    let mut status = state
+    let status = state
         .runtime_profile_status
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
+    project_status(state, principal, status)
+}
+
+fn project_status(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    mut status: crate::profiles::RuntimeProfileStatus,
+) -> crate::profiles::RuntimeProfileStatus {
     if principal.role == AccessRole::Administrator {
         return status;
     }
@@ -1480,6 +1520,29 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_DIR_ID: AtomicU64 = AtomicU64::new(0);
+
+    type StatusWatchPause = (
+        String,
+        std::sync::mpsc::SyncSender<()>,
+        std::sync::mpsc::Receiver<()>,
+    );
+    static STATUS_WATCH_PAUSE: std::sync::Mutex<Option<StatusWatchPause>> =
+        std::sync::Mutex::new(None);
+
+    pub(super) fn pause_status_registration(watch_id: &str) {
+        let pause = {
+            let mut slot = STATUS_WATCH_PAUSE.lock().unwrap();
+            if slot.as_ref().is_some_and(|pause| pause.0 == watch_id) {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, ready, resume)) = pause {
+            ready.send(()).unwrap();
+            resume.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+    }
 
     struct Fixture {
         directory: std::path::PathBuf,
@@ -1758,6 +1821,123 @@ mod tests {
                 ttl: None,
             })),
         }
+    }
+
+    #[test]
+    fn runtime_completion_notifies_connected_profile_status_watchers() {
+        use prost::Message as _;
+        let fixture = Fixture::new();
+        let shutdown = crate::shutdown::Shutdown::new();
+        let mut runtime = crate::keeppeek::KeepPeekLoop::new(shutdown.clone(), None);
+        let control = runtime.control();
+        let state = fixture.state.clone().with_camera_runtime(control.clone());
+        let publisher = state.clone();
+        runtime.set_runtime_profile_status_publisher(move || {
+            publisher.publish_runtime_profile_status();
+        });
+        let mut first = connected_profile_status_watch(&state, 20_221);
+        let mut second = connected_profile_status_watch(&state, 20_222);
+        let worker = std::thread::spawn(move || runtime.run());
+        let started = Instant::now();
+        let result = control.set_runtime_profiles(crate::profiles::ProfileRegistry {
+            revision: 1,
+            ..Default::default()
+        });
+        let elapsed_us = started.elapsed().as_micros();
+        shutdown.cancel();
+        worker.join().unwrap();
+        assert!(result.is_ok());
+        let mut bytes = 0;
+        for frames in [first(), second()] {
+            assert_eq!(
+                frames.len(),
+                1,
+                "loop completion must reach each connected status watcher"
+            );
+            bytes += frames[0].len();
+            let envelope = proto::ControlEnvelope::decode(frames[0].as_slice()).unwrap();
+            let Some(proto::control_envelope::Message::Notification(notification)) =
+                envelope.message
+            else {
+                panic!("completion must be a notification");
+            };
+            let Some(proto::notification::Event::StateStoreWatchUpdate(update)) =
+                notification.event
+            else {
+                panic!("completion must be a watch update");
+            };
+            assert_eq!(update.watch_sequence, 1);
+            assert_eq!(update.revision, 1);
+            let entry = update.entry.unwrap();
+            assert_eq!(entry.key, STATUS_KEY);
+            assert_eq!(entry.schema, STATUS_SCHEMA);
+        }
+        eprintln!("profile completion: elapsed_us={elapsed_us} frames=2 bytes={bytes}");
+    }
+
+    fn connected_profile_status_watch(
+        state: &ServerState,
+        id: u64,
+    ) -> impl FnMut() -> Vec<Vec<u8>> {
+        let session = SessionId::from_u64(id);
+        state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(session, super::super::super::tests::local_test_session());
+        let pump = state.webrtc.stage_api_session_pump(session);
+        let result = super::super::dispatch(
+            state,
+            session,
+            &ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into()),
+            watch_status("runtime-status"),
+        )
+        .unwrap();
+        let control_ok::Result::StateStoreResult(result) = result else {
+            panic!("watch result expected")
+        };
+        let Some(state_store_result::Result::Watch(snapshot)) = result.result else {
+            panic!("snapshot expected")
+        };
+        assert_eq!(snapshot.entries[0].key, STATUS_KEY);
+        pump
+    }
+
+    #[test]
+    fn profile_status_snapshot_blocks_updates_until_watch_registration() {
+        let fixture = Fixture::new();
+        let state = fixture.state.clone();
+        let registration_state = state.clone();
+        let watch_id = "profile-status-snapshot-fence";
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+        *STATUS_WATCH_PAUSE.lock().unwrap() = Some((watch_id.to_owned(), ready_tx, resume_rx));
+        let registration = std::thread::spawn(move || {
+            super::super::dispatch(
+                &registration_state,
+                SessionId::from_u64(20_223),
+                &ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into()),
+                watch_status(watch_id),
+            )
+        });
+        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let fenced = matches!(
+            state.runtime_profile_status.try_write(),
+            Err(std::sync::TryLockError::WouldBlock)
+        );
+        resume_tx.send(()).unwrap();
+        let snapshot = registration.join().unwrap().unwrap();
+        assert!(
+            fenced,
+            "status writes must remain blocked between snapshot and registration"
+        );
+        assert!(matches!(snapshot, control_ok::Result::StateStoreResult(_)));
+        assert!(
+            state
+                .state_store_watches
+                .owns_watch(SessionId::from_u64(20_223), watch_id)
+        );
+        assert!(state.runtime_profile_status.try_write().is_ok());
     }
 
     #[test]

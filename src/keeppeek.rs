@@ -384,6 +384,7 @@ pub struct KeepPeekLoop {
     camera_names: HashMap<String, String>,
     runtime_profiles: crate::profiles::ProfileRegistry,
     runtime_profile_notification_error: Option<String>,
+    runtime_profile_status_publisher: Option<Box<dyn Fn() + Send + Sync>>,
     runtime_profile_status:
         std::sync::Arc<std::sync::RwLock<crate::profiles::RuntimeProfileStatus>>,
 }
@@ -417,6 +418,7 @@ impl KeepPeekLoop {
             camera_names: HashMap::new(),
             runtime_profiles: crate::profiles::ProfileRegistry::default(),
             runtime_profile_notification_error: None,
+            runtime_profile_status_publisher: None,
             runtime_profile_status: std::sync::Arc::new(std::sync::RwLock::new(
                 crate::profiles::RuntimeProfileStatus::default(),
             )),
@@ -458,6 +460,19 @@ impl KeepPeekLoop {
         status.revision = self.runtime_profiles.revision;
         status.active_profile_id = self.runtime_profiles.active_profile_id.clone();
         status.cameras.clear();
+    }
+
+    pub(crate) fn set_runtime_profile_status_publisher(
+        &mut self,
+        publish: impl Fn() + Send + Sync + 'static,
+    ) {
+        self.runtime_profile_status_publisher = Some(Box::new(publish));
+    }
+
+    fn publish_runtime_profile_status(&self) {
+        if let Some(publish) = &self.runtime_profile_status_publisher {
+            publish();
+        }
     }
 
     pub fn set_event_store(&mut self, events: EventStore) {
@@ -523,10 +538,13 @@ impl KeepPeekLoop {
 
     /// Profile 0 is treated as Main, all others as Sub.
     pub fn add_cameras(&mut self, cameras: &HashMap<IpAddr, Camera>) -> anyhow::Result<()> {
-        for camera in cameras.values() {
-            self.add_camera(camera, true, true)?;
-        }
-        Ok(())
+        let publisher = self.runtime_profile_status_publisher.take();
+        let result = cameras
+            .values()
+            .try_for_each(|camera| self.add_camera(camera, true, true));
+        self.runtime_profile_status_publisher = publisher;
+        self.publish_runtime_profile_status();
+        result
     }
 
     pub fn add_camera(
@@ -624,6 +642,8 @@ impl KeepPeekLoop {
         status.revision = self.runtime_profiles.revision;
         status.active_profile_id = self.runtime_profiles.active_profile_id.clone();
         status.cameras.insert(camera_id, application);
+        drop(status);
+        self.publish_runtime_profile_status();
     }
 
     fn effective_recording_mode(
@@ -740,6 +760,20 @@ impl KeepPeekLoop {
     }
 
     fn apply_runtime_profiles(
+        &mut self,
+        profiles: crate::profiles::ProfileRegistry,
+    ) -> anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>> {
+        // Coalesce camera results so a large batch cannot exhaust watch acknowledgements.
+        let publisher = self.runtime_profile_status_publisher.take();
+        let result = self.apply_runtime_profiles_inner(profiles);
+        self.runtime_profile_status_publisher = publisher;
+        if result.is_ok() {
+            self.publish_runtime_profile_status();
+        }
+        result
+    }
+
+    fn apply_runtime_profiles_inner(
         &mut self,
         profiles: crate::profiles::ProfileRegistry,
     ) -> anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>> {
@@ -1914,6 +1948,104 @@ mod tests {
         assert!(!recorder.camera_workers.contains_key(&camera.config.ip));
         assert_eq!(*recorder.runtime_profile_status.read().unwrap(), status);
         assert_eq!(recorder.runtime_profiles.revision, 3);
+    }
+
+    #[test]
+    fn runtime_profile_status_publisher_reports_camera_startup() {
+        let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+        let camera = runtime_rtsp_camera("127.0.0.1:8554".parse().unwrap());
+        let profiles = serde_json::from_value(serde_json::json!({
+            "revision": 1, "active_profile_id": "away", "profiles": {"away": {
+                "id": "away", "name": "Away", "revision": 1,
+                "cameras": {camera.config.ip.to_string(): {"availability": false}}
+            }}
+        }))
+        .unwrap();
+        recorder.set_runtime_profiles(profiles);
+        let observations = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = observations.clone();
+        let status = recorder.runtime_profile_status.clone();
+        recorder.set_runtime_profile_status_publisher(move || {
+            observed
+                .lock()
+                .unwrap()
+                .push(status.read().unwrap().clone());
+        });
+
+        recorder.add_camera(&camera, true, true).unwrap();
+
+        let observations = observations.lock().unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].revision, 1);
+        assert_eq!(
+            observations[0].cameras[&camera.config.ip.to_string()].state,
+            crate::profiles::RuntimeApplicationState::Applied
+        );
+        assert!(
+            !observations[0].cameras[&camera.config.ip.to_string()]
+                .policy
+                .available
+        );
+    }
+
+    #[test]
+    fn runtime_profile_status_publisher_coalesces_camera_batches_and_survives_rejection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+        let template = runtime_rtsp_camera("127.0.0.1:8554".parse().unwrap());
+        let mut cameras = HashMap::new();
+        let mut targets = std::collections::BTreeMap::new();
+        for index in 1..=crate::profiles::MAX_PROFILE_TARGETS {
+            let mut camera = template.clone();
+            camera.config.ip = Ipv4Addr::new(192, 0, 2, u8::try_from(index).unwrap()).into();
+            targets.insert(
+                camera.config.ip.to_string(),
+                crate::profiles::CameraProfileOverride {
+                    availability: Some(false),
+                    ..Default::default()
+                },
+            );
+            cameras.insert(camera.config.ip, camera);
+        }
+        let mut profiles = crate::profiles::ProfileRegistry {
+            revision: 1,
+            active_profile_id: Some("away".to_owned()),
+            profiles: std::collections::BTreeMap::from([(
+                "away".to_owned(),
+                crate::profiles::RuntimeProfile {
+                    id: "away".to_owned(),
+                    name: "Away".to_owned(),
+                    revision: 1,
+                    cameras: targets,
+                },
+            )]),
+        };
+        recorder.set_runtime_profiles(profiles.clone());
+        let publications = std::sync::Arc::new(AtomicUsize::new(0));
+        let published = publications.clone();
+        recorder.set_runtime_profile_status_publisher(move || {
+            published.fetch_add(1, Ordering::SeqCst);
+        });
+        recorder.add_cameras(&cameras).unwrap();
+        assert_eq!(publications.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            recorder
+                .runtime_profile_status
+                .read()
+                .unwrap()
+                .cameras
+                .len(),
+            127
+        );
+        profiles.revision = 2;
+        recorder.apply_runtime_profiles(profiles.clone()).unwrap();
+        assert_eq!(publications.load(Ordering::SeqCst), 2);
+        profiles.revision = 1;
+        assert!(recorder.apply_runtime_profiles(profiles.clone()).is_err());
+        assert_eq!(publications.load(Ordering::SeqCst), 2);
+        profiles.revision = 3;
+        recorder.apply_runtime_profiles(profiles).unwrap();
+        assert_eq!(publications.load(Ordering::SeqCst), 3);
     }
 
     #[test]
