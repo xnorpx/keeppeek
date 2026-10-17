@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d0944914.js";
+            window.path_to_searchindex_js = "searchindex-1e7da978.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -263,7 +263,9 @@ recording, notifications, and camera availability reach their current runtime ow
 profile commands cannot replace newer pending runtime status; an already running camera stop is
 not preempted. An active profile’s saved target that is no longer configured remains degraded
 through startup, completion and live removal; re-adding the camera replaces that observation.
-Activating Base clears missing-target observations from the previously active profile. Complete
+Activating Base clears missing-target observations from the previously active profile.
+Events-only camera edits also remain in effect after a profile disables the camera and Base
+enables it again. Complete
 restart, conflict, camera identity, privacy leak, browser reconnect, and capacity qualification
 remain open under #202.</p>
 <p>Sources: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config.rs">configuration</a>,
