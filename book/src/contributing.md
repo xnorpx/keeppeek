@@ -148,6 +148,13 @@ Playwright tests into non-overlapping jobs. The extended `Main` workflow runs af
 once per hour on `main`; it owns the opt-in slow Rust tests, ARM builds and tests, Windows installer
 lifecycles, Rust coverage and CodeQL, and full Playwright suites on macOS and Windows.
 
+Windows pull-request Rust jobs defer volume-runtime recovery, catalog maintenance/location,
+pending metadata handoff, and durable-store scale/quota/churn qualification to the full Windows
+Rust matrix on every push to `main` in the `CI` workflow. Linux and macOS still run those tests
+before merge. Windows PR checks retain the other Rust tests, including native storage-root/file
+checks and ordinary durable-store regressions. Local canonical checks still run the complete suite.
+This split changes scheduling, not test assertions or the required post-merge Windows coverage.
+
 During development, run the narrowest relevant test first. The final check covers repository
 formatting, Rust tests and lints, frontend checks, and the supported test suites. Document any test
 that cannot run in the pull request and explain why.
