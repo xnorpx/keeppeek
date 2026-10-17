@@ -184,7 +184,7 @@ prometheus-client = "0.25.0"
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.11"
 subtle = "2"
-zip = { version = "7.2.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "=1.1.5", features = ["process", "fs"] }
@@ -303,4 +303,4 @@ prost-build = "0.14"
 protoc-bin-vendored = "3.2.0"
 sha2 = "0.11"
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
-zip = { version = "7.2.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
