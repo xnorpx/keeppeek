@@ -111,7 +111,7 @@ fn configure_history(
             crate::cameras::EventRecordingStream::Main,
             Duration::from_secs(30),
             Duration::from_secs(60),
-        );
+        )?;
         feed(handle, source, &frames[..split], origin);
         producer_wait_ms += drain_channel(handle)?;
     }

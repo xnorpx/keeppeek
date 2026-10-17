@@ -146,13 +146,15 @@ impl Consumer {
 
 fn configure(handle: &StorageHandle, source: &str, enabled: bool) {
     #[cfg(feature = "event-preroll-benchmark-current")]
-    handle.configure_camera_event_recording(
-        source,
-        CameraRecordingMode::EventBoost,
-        crate::cameras::EventRecordingStream::Main,
-        Duration::from_secs(if enabled { 10 } else { 0 }),
-        Duration::from_secs(2),
-    );
+    handle
+        .configure_camera_event_recording(
+            source,
+            CameraRecordingMode::EventBoost,
+            crate::cameras::EventRecordingStream::Main,
+            Duration::from_secs(if enabled { 10 } else { 0 }),
+            Duration::from_secs(2),
+        )
+        .unwrap();
     #[cfg(not(feature = "event-preroll-benchmark-current"))]
     {
         assert!(!enabled, "historical baseline cannot enable pre-roll");

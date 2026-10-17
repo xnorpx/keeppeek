@@ -591,21 +591,34 @@ impl KeepPeekLoop {
                 .insert(camera.config.ip.to_string(), name.clone());
             self.camera_names.insert(name.clone(), name.clone());
         }
-        self.configure_profile_recording(camera)?;
-        let route_result = resolve_configured_camera_route(&camera.config, camera.is_reolink);
-        let route = match route_result {
-            Ok(route) => route,
-            Err(error) => {
-                let error = anyhow::anyhow!(
+        let recording_error = self.configure_profile_recording(camera)?;
+        let result = self.start_camera_runtime(camera, enable_main, enable_sub);
+        self.record_camera_runtime_status(
+            camera,
+            result
+                .as_ref()
+                .map_err(ToString::to_string)
+                .map(|_| ())
+                .and_then(|()| recording_error.map_or(Ok(()), Err)),
+        );
+        result
+    }
+
+    fn start_camera_runtime(
+        &mut self,
+        camera: &Camera,
+        enable_main: bool,
+        enable_sub: bool,
+    ) -> anyhow::Result<()> {
+        let route = resolve_configured_camera_route(&camera.config, camera.is_reolink).map_err(
+            |error| {
+                anyhow::anyhow!(
                     "invalid stream configuration for camera '{}': {error}",
                     camera.config.name.as_deref().unwrap_or("unnamed"),
-                );
-                self.record_camera_runtime_status(camera, Err(error.to_string()));
-                return Err(error);
-            }
-        };
+                )
+            },
+        )?;
         if !self.effective_camera_policy(&camera.config).available {
-            self.record_camera_runtime_status(camera, Ok(()));
             return Ok(());
         }
         let status_handle = self.runtime_profile_status.clone();
@@ -632,7 +645,6 @@ impl KeepPeekLoop {
             .configuration = Some(camera.config.clone());
         self.add_camera_workers(camera, route, enable_main, enable_sub);
         drop(status);
-        self.record_camera_runtime_status(camera, Ok(()));
         Ok(())
     }
 
@@ -766,7 +778,7 @@ impl KeepPeekLoop {
         Ok(cameras)
     }
 
-    fn configure_profile_recording(&self, camera: &Camera) -> anyhow::Result<()> {
+    fn configure_profile_recording(&self, camera: &Camera) -> anyhow::Result<Option<String>> {
         let status = self
             .runtime_profile_status
             .read()
@@ -775,16 +787,18 @@ impl KeepPeekLoop {
             status.revision <= self.runtime_profiles.revision,
             "runtime profile transition was superseded"
         );
-        if let Some(storage) = &self.storage {
-            storage.configure_camera_event_recording(
-                &camera.config.ip.to_string(),
-                self.effective_recording_mode(&camera.config),
-                camera.config.event_recording_stream,
-                Duration::from_secs(camera.config.event_pre_recording_duration_secs),
-                Duration::from_secs(camera.config.event_recording_duration_secs),
-            );
-        }
-        Ok(())
+        Ok(self.storage.as_ref().and_then(|storage| {
+            storage
+                .configure_camera_event_recording(
+                    &camera.config.ip.to_string(),
+                    self.effective_recording_mode(&camera.config),
+                    camera.config.event_recording_stream,
+                    Duration::from_secs(camera.config.event_pre_recording_duration_secs),
+                    Duration::from_secs(camera.config.event_recording_duration_secs),
+                )
+                .err()
+                .map(|error| error.to_string())
+        }))
     }
 
     fn apply_runtime_profiles(
@@ -808,24 +822,27 @@ impl KeepPeekLoop {
         let cameras = self.begin_runtime_profiles(profiles)?;
         let mut applications = Vec::with_capacity(cameras.len());
         for camera in cameras {
-            self.configure_profile_recording(&camera)?;
+            let recording_error = self.configure_profile_recording(&camera)?;
             let camera_id = camera.config.ip.to_string();
             let policy = self.effective_camera_policy(&camera.config);
             let runtime_result = if policy.available {
                 if self.camera_workers.contains_key(&camera.config.ip) {
                     Ok(())
                 } else {
-                    self.add_camera(&camera, true, true)
+                    self.start_camera_runtime(&camera, true, true)
                 }
             } else {
                 self.stop_camera(camera.config.ip);
                 Ok(())
             };
+            let runtime_result = runtime_result
+                .map_err(|error| error.to_string())
+                .and_then(|()| recording_error.map_or(Ok(()), Err));
             let (state, reason) = match runtime_result {
                 Ok(()) => (crate::profiles::RuntimeApplicationState::Applied, None),
                 Err(error) => (
                     crate::profiles::RuntimeApplicationState::Degraded,
-                    Some(error.to_string().chars().take(256).collect()),
+                    Some(error.chars().take(256).collect()),
                 ),
             };
             let (state, reason) = if !policy.notifications_enabled
@@ -1779,6 +1796,7 @@ fn unix_time_ms() -> i64 {
 mod tests {
     mod isapi;
     mod native;
+    mod recording_admission;
 
     use super::*;
     use crate::cameras::{CameraCapabilities, CameraConfig, CameraPorts, DeviceInfo, MediaProfile};
