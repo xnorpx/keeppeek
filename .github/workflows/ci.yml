@@ -28,7 +28,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: rustfmt
-      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
         with:
           tool: taplo@0.10.0
       - name: Check Rust formatting
@@ -93,7 +93,7 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
         with:
           tool: cargo-machete@0.9.2
       - run: cargo machete
@@ -345,7 +345,7 @@ jobs:
           fi
       - name: Upload Rust test log
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: rust-test-log-${{ matrix.os }}-${{ matrix.suite }}
           path: rust-test-results.log
@@ -544,7 +544,7 @@ jobs:
       - name: Build shared Playwright binaries and fixtures
         run: bun run test:e2e:prepare
       - name: Upload shared Playwright binaries and fixtures
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ui-e2e-linux
           path: |
@@ -603,7 +603,7 @@ jobs:
           test -x "$executable"
           cp -- "$executable" target/e2e-authentication/keeppeek-authentication-fixture
       - name: Upload shared authentication browser fixture
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ui-authentication-e2e-linux
           path: target/e2e-authentication/keeppeek-authentication-fixture
@@ -632,12 +632,12 @@ jobs:
       - name: Install Chromium
         run: bunx playwright install --with-deps chromium
       - name: Download shared Playwright binaries and fixtures
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ui-e2e-linux
           path: target
       - name: Download shared authentication browser fixture
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ui-authentication-e2e-linux
           path: target/e2e-authentication
@@ -650,7 +650,7 @@ jobs:
         run: bun run test:e2e:run -- --shard=${{ matrix.shard }}/4
       - name: Upload UI test reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ui-e2e-reports-${{ matrix.shard }}-of-4
           path: |
@@ -681,7 +681,7 @@ jobs:
       - name: Install Chromium
         run: bunx playwright install --with-deps chromium
       - name: Download verified Linux binaries and card
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ui-e2e-linux
           path: target
@@ -701,7 +701,7 @@ jobs:
             | xargs --no-run-if-empty docker volume rm --force
       - name: Upload sanitized Home Assistant evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: home-assistant-container-evidence
           path: |
@@ -755,7 +755,7 @@ jobs:
         working-directory: examples/object_detection_service
         run: python generate_protos.py
       - name: Download shared Playwright binaries and fixtures
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ui-e2e-linux
           path: target
@@ -772,7 +772,7 @@ jobs:
           --basetemp=${{ github.workspace }}/target/external-analysis-conformance
       - name: Upload conformance diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: external-analysis-conformance
           path: |
@@ -864,7 +864,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: coverage-reports
           path: ui/coverage
@@ -882,7 +882,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
         with:
           tool: cargo-audit@0.22.2
       - name: Audit locked Rust dependencies
@@ -1022,7 +1022,7 @@ jobs:
       - name: Download coverage reports
         if: always()
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: coverage-reports
           path: quality-reports/coverage
