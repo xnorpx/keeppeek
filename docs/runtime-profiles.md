@@ -16,6 +16,16 @@ in-memory cache with a two-minute expiry; an interrupted staging operation leave
 registry unchanged. A degraded runtime result does not roll back the durable desired profile. The
 baseline for this implementation is current `main` plus the branch commits listed in the PR.
 
+The camera loop rejects commands older than its accepted registry or the pending desired status.
+An identical revision can be retried; changed definitions at that revision are rejected. It checks
+for supersession between camera operations and before publishing completion, so an older operation
+cannot replace a newer pending status. Recording-policy admission and worker creation hold the
+status fence; publishing a newer pending revision waits for those synchronous admissions.
+Notification acknowledgement holds the fence for up to its existing five-second timeout. An already
+running worker stop or admitted notification command is not cancelled, including a notification
+command still queued after its acknowledgement times out. This fence does not establish the complete
+asynchronous convergence or privacy acceptance matrix.
+
 ## Scope
 
 An Administrator selects Base or exactly one named profile. Each profile contains sparse
