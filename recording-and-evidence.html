@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-1e7da978.js";
+            window.path_to_searchindex_js = "searchindex-0d947f67.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -259,6 +259,11 @@ health reports the requested and available history, retained bytes, and the curr
 Pending replay means media is queued; it does not prove a successful disk or catalog commit.
 Use Recording integrity and playback to inspect committed evidence. Audio packets crossing the
 selected video boundary are omitted without re-encoding.</p>
+<p>If a runtime profile reports a camera as <strong>Degraded</strong> because storage rejected its recording
+settings or could not queue the change, new recording input for that camera stops. Live viewing
+can continue, and other cameras still apply their profile changes. Correct the reported settings
+or restore storage availability, then retry the accepted profile. <strong>Applied</strong> confirms recording
+admission and queue acceptance; use Recording integrity and playback to verify retained footage.</p>
 <p>The default limits are 64 MiB per buffered stream and 256 MiB globally. Administrators can change
 them in advanced storage settings. History is not saved across restart. Privacy activation,
 reconnect, and storage pause discard stale history; recording resumes from a valid keyframe.
