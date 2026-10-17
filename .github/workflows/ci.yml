@@ -331,9 +331,11 @@ jobs:
           features=()
           threads=()
           post_merge_tests=()
-          # Windows recovery/scale qualification still runs on every push to main.
-          # Linux and macOS retain these tests in pull-request CI.
-          if [[ "$RUNNER_OS" == "Windows" && "$CI_EVENT_NAME" == "pull_request" ]]; then
+          # The full Windows suites still run on every push to main.
+          # Linux and macOS retain the full core suite in pull-request CI.
+          if [[ "$RUNNER_OS" == "Windows" \
+            && "$CI_EVENT_NAME" == "pull_request" \
+            && "${{ matrix.suite }}" == "durable-state" ]]; then
             for test_filter in \
               'storage::volumes::runtime::' \
               'storage::catalog::maintenance::' \
@@ -358,7 +360,15 @@ jobs:
             if [[ "$RUNNER_OS" != "Linux" ]]; then
               threads=(--test-threads=1)
             fi
-            cargo test --locked --all --lib --bins --tests "${features[@]}" -- --skip "$DURABLE_STATE_TESTS" "${threads[@]}" "${post_merge_tests[@]}" 2>&1 | tee rust-test-results.log
+            if [[ "$RUNNER_OS" == "Windows" && "$CI_EVENT_NAME" == "pull_request" ]]; then
+              cargo test --locked -p keeppeek --lib "${features[@]}" runtime_profile_ \
+                -- "${threads[@]}" 2>&1 | tee rust-test-results.log
+              cargo test --locked -p keeppeek --lib "${features[@]}" \
+                volume_roots_reject_windows_devices_and_ambiguous_paths \
+                -- "${threads[@]}" 2>&1 | tee -a rust-test-results.log
+            else
+              cargo test --locked --all --lib --bins --tests "${features[@]}" -- --skip "$DURABLE_STATE_TESTS" "${threads[@]}" "${post_merge_tests[@]}" 2>&1 | tee rust-test-results.log
+            fi
           fi
       - name: Upload Rust test log
         if: always()
