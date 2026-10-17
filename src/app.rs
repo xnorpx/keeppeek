@@ -472,6 +472,10 @@ fn with_camera_events(state: ServerState, keeppeek: &mut KeepPeekLoop) -> Server
     let state = state.with_camera_runtime(keeppeek.control());
     let publisher = state.clone();
     keeppeek.set_event_publisher(move |event| publisher.publish_camera_event(event));
+    let status_publisher = state.clone();
+    keeppeek.set_runtime_profile_status_publisher(move || {
+        status_publisher.publish_runtime_profile_status();
+    });
     state
 }
 

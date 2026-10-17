@@ -9685,6 +9685,10 @@ impl ServerState {
         self
     }
 
+    pub(crate) fn publish_runtime_profile_status(&self) {
+        state_store::profiles::publish_status_event(self, unix_time_ms());
+    }
+
     pub fn with_event_store(mut self, events: EventStore) -> Self {
         self.events = Some(events);
         self

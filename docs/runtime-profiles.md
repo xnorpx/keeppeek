@@ -26,6 +26,13 @@ running worker stop or admitted notification command is not cancelled, including
 command still queued after its acknowledgement times out. This fence does not establish the complete
 asynchronous convergence or privacy acceptance matrix.
 
+The application publishes loop-owned startup and profile-application results through the existing
+status watch. Startup and activation batches each produce one completion update, so 127 camera
+results do not consume 127 watch acknowledgements. Publication releases the status write lock
+before calling the server and holds a read fence through queue admission. Status snapshots hold
+the same fence through watch registration to prevent a missed update. Existing session authorization
+and camera visibility projections apply to these notifications.
+
 ## Scope
 
 An Administrator selects Base or exactly one named profile. Each profile contains sparse
@@ -167,6 +174,14 @@ size, live StateStore capacity, and staged-commit latency still require measurem
 
 Reproduce with `cargo test --locked -p keeppeek --test runtime_profiles_capacity -- --nocapture`.
 Both tests passed; none were skipped. No production behavior or dependency changed.
+
+The loop-completion regression decodes one status notification on each of two staged WebRTC API
+sessions. On Windows x64 with Rust 1.99.0 in a debug build (2026-10-17), one empty-registry
+completion took 458 microseconds and queued two frames totaling 418 bytes. These are local queue
+and framing measurements, not encrypted transport or browser latency. A separate 127-disabled-camera
+test verifies one publication per startup/activation batch and publisher restoration after a rejected
+revision. A deterministic registration test verifies that status writes cannot pass between snapshot
+creation and watch registration. Full live-camera and release-build latency qualification remains open.
 
 Focused Clippy with `-D warnings`, repository Rust formatting, Markdown formatting, and
 `mdbook build book` also passed. The protected `api/` tree has no diff; UI changes include runtime
