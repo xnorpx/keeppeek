@@ -1620,11 +1620,25 @@ mod tests {
 
     fn timeout_fixture() -> (String, mpsc::SyncSender<()>, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let thread = std::thread::spawn(move || {
-            let (_stream, _) = listener.accept().unwrap();
-            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((_stream, _)) => {
+                        let _ = release_rx.recv_timeout(Duration::from_secs(2));
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) => panic!("timeout fixture accept failed: {error}"),
+                }
+                match release_rx.recv_timeout(Duration::from_millis(10)) {
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    _ => return,
+                }
+            }
         });
         (
             format!("http://{address}/1/messages.json"),
@@ -2204,6 +2218,18 @@ mod tests {
             assert_eq!(result.outcome, expected);
             assert!(result.request_id.is_none());
         }
+    }
+
+    #[test]
+    fn timeout_fixture_shuts_down_without_a_client_connection() {
+        let (_messages_url, release_tx, fixture_thread) = timeout_fixture();
+        let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+        release_tx.send(()).unwrap();
+        std::thread::spawn(move || {
+            fixture_thread.join().unwrap();
+            finished_tx.send(()).unwrap();
+        });
+        finished_rx.recv_timeout(Duration::from_secs(3)).unwrap();
     }
 
     #[test]
