@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6dbafda2.js";
+            window.path_to_searchindex_js = "searchindex-65dd41b9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -308,6 +308,14 @@ finalizes recordings, and produces decodable output.</p>
 and the practical task it enables, including authorization, persistence, limits, and failure
 recovery. Update the <a href="./feature-guide.html">feature guide</a> when adding a screen or changing where a
 task starts. Fill operational chapters with instructions rather than leaving empty placeholders.</p>
+<p>Repository Markdown is the only editing source for the
+<a href="https://github.com/xnorpx/keeppeek/wiki">Wiki</a> and the
+<a href="https://xnorpx.github.io/keeppeek/">mdBook site</a>. The Wiki also includes selected engineering pages
+from <code>docs/</code>; Pages remains the generated mdBook mirror. Submit documentation changes through a
+repository pull request. Do not edit generated Wiki pages directly.
+See <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/wiki-publishing.md">Wiki publishing</a>
+for page mapping, preview, credentials,
+publication status, and recovery.</p>
 <p>Keep serialized fields, defaults, and examples synchronized with the
 <a href="./configuration-reference.html">configuration reference</a>. Protocol declarations and engineering
 scenarios can describe capabilities that do not yet have a runtime handler. Check the server and
@@ -315,6 +323,9 @@ client implementation before presenting those capabilities as available.</p>
 <p>From the repository root, validate documentation with:</p>
 <pre><code class="language-sh">bun run --cwd ui format:markdown:check
 mdbook build book
+bun run --cwd ui wiki:test
+bun run --cwd ui wiki:check
+bun run --cwd ui wiki:build
 </code></pre>
 <p>Install <code>mdbook</code> and <code>mdbook-mermaid</code> and make both available on <code>PATH</code>; the book’s configuration
 uses the Mermaid preprocessor. After building, open the generated book, follow the changed
