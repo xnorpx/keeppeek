@@ -1,3 +1,8 @@
 [[profile.default.overrides]]
 filter = 'package(=keeppeek) & test(=storage::catalog::maintenance::jobs::preflight::tests::maximum_preflight_is_complete_and_keeps_unknown_files_untouched)'
 threads-required = "num-test-threads"
+
+[[profile.default.overrides]]
+# Quota and churn workloads must not delay other tests' bounded storage operations.
+filter = 'package(=keeppeek) & test(/^server::state_store_durable::/)'
+threads-required = "num-test-threads"

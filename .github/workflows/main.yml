@@ -87,12 +87,12 @@ jobs:
         run: bun install --no-save --registry=https://registry.npmjs.org/
       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
         with:
-          tool: cargo-llvm-cov
+          tool: cargo-llvm-cov,nextest
       - uses: ./.github/actions/setup-ffmpeg
       - name: Generate Rust coverage
         run: |
           mkdir -p target/main-coverage/rust
-          cargo llvm-cov --locked --workspace --lib --bins --tests --lcov --output-path target/main-coverage/rust/lcov.info
+          cargo llvm-cov nextest --locked --workspace --lib --bins --tests --lcov --output-path target/main-coverage/rust/lcov.info
           cargo llvm-cov report --json --output-path target/main-coverage/rust/coverage.json
           cargo llvm-cov report --html --output-dir target/main-coverage/rust/html
       - name: Upload Rust coverage
