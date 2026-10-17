@@ -176,7 +176,7 @@ fn write_archive<W: Write + Seek>(
     if manifest.len() > usize::from(u16::MAX) {
         anyhow::bail!("backup manifest exceeds the ZIP comment limit");
     }
-    archive.set_comment(std::str::from_utf8(manifest)?);
+    archive.set_comment(std::str::from_utf8(manifest)?)?;
     archive.start_file(CONFIG_MEMBER_PATH, options)?;
     archive.write_all(config)?;
     archive.start_file(SECRETS_MEMBER_PATH, options)?;

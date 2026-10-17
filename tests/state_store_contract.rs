@@ -203,7 +203,9 @@ fn smuggled_database_member_is_rejected() {
     drop(source);
 
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    writer.set_comment(String::from_utf8(comment).expect("manifest comment must be UTF-8"));
+    writer
+        .set_comment(String::from_utf8(comment).expect("manifest comment must be UTF-8"))
+        .expect("ZIP archive comment must be set");
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
     for (name, contents) in [
