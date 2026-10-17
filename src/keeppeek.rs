@@ -695,7 +695,7 @@ impl KeepPeekLoop {
                 (self.notifications.is_none() && has_suppressed_sources)
                     .then(|| "notification runtime is unavailable".to_owned())
             });
-        self.runtime_profile_notification_error = notification_error.clone();
+        self.runtime_profile_notification_error = notification_error;
         let cameras = self
             .camera_definitions
             .values()
