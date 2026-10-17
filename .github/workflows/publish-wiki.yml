@@ -1,0 +1,100 @@
+name: Publish documentation to Wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - book/**
+      - docs/**
+      - assets/**
+      - README.md
+      - ui/scripts/*wiki*
+      - ui/package.json
+      - ui/.bun-version
+      - .github/workflows/publish-wiki.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-wiki
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      github.repository == 'xnorpx/keeppeek' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install documentation tooling
+        working-directory: ui
+        run: bun install --no-save --ignore-scripts --registry=https://registry.npmjs.org/
+      - name: Validate and generate Wiki
+        working-directory: ui
+        run: |
+          bun run wiki:typecheck
+          bun run wiki:test
+          bun run wiki:build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: wiki-publication
+          path: target/wiki/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: >-
+      github.repository == 'xnorpx/keeppeek' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    environment: wiki
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: ui/.bun-version
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: wiki-publication
+          path: ${{ runner.temp }}/wiki-generated
+      - name: Publish one Wiki commit
+        env:
+          WIKI_PUBLISH_TOKEN: ${{ secrets.WIKI_PUBLISH_TOKEN }}
+          GIT_TERMINAL_PROMPT: '0'
+          GIT_CONFIG_COUNT: '2'
+          GIT_CONFIG_KEY_0: credential.helper
+          GIT_CONFIG_VALUE_0: ''
+          GIT_CONFIG_KEY_1: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_1: >-
+            !f() { if [ "$1" = get ]; then
+            printf '%s\n' 'username=x-access-token';
+            printf '%s=%s\n' password "$WIKI_PUBLISH_TOKEN"; fi; }; f
+        run: |
+          set -eu
+          if [ -z "$WIKI_PUBLISH_TOKEN" ]; then
+            echo "::error::Configure the wiki environment WIKI_PUBLISH_TOKEN after validating Wiki write access. See docs/wiki-publishing.md."
+            exit 1
+          fi
+          git clone -- https://github.com/xnorpx/keeppeek.wiki.git "$RUNNER_TEMP/wiki-checkout"
+          git -C "$RUNNER_TEMP/wiki-checkout" config user.name 'KeepPeek documentation'
+          git -C "$RUNNER_TEMP/wiki-checkout" config user.email 'keeppeek-wiki@users.noreply.github.com'
+          previous_head=$(git -C "$RUNNER_TEMP/wiki-checkout" rev-parse HEAD)
+          bun ui/scripts/publish-wiki.ts "$RUNNER_TEMP/wiki-generated" "$RUNNER_TEMP/wiki-checkout"
+          if [ "$previous_head" != "$(git -C "$RUNNER_TEMP/wiki-checkout" rev-parse HEAD)" ]; then
+            git -C "$RUNNER_TEMP/wiki-checkout" push origin HEAD
+          fi
