@@ -33,6 +33,14 @@ before calling the server and holds a read fence through queue admission. Status
 the same fence through watch registration to prevent a missed update. Existing session authorization
 and camera visibility projections apply to these notifications.
 
+Saved targets absent from the configured cameras remain degraded with `configured camera is missing`
+after startup, profile completion and live removal. Re-adding the configured camera replaces this
+placeholder with its application result; activating Base clears inactive-profile placeholders.
+The server uses persisted camera settings rather than its retained discovery catalog when projecting
+completion or runtime failure. If settings cannot be read, it logs a warning and uses the catalog;
+that fallback cannot establish which cameras were deleted. Older reconciliation cannot replace a
+newer pending revision. These observations do not define stable-ID migration or resolve IP reuse.
+
 ## Scope
 
 An Administrator selects Base or exactly one named profile. Each profile contains sparse
@@ -191,7 +199,7 @@ the current server slice does not claim those results.
 
 Remaining work:
 
-- Resolve stable camera identity and ambiguous IP reuse, finish runtime-safe policy-input classification and the combined settings quota, and measure 16 KiB multipart registry/status projections. Settings exposes and removes previously saved targets that no longer match a camera, but runtime-status reporting for those targets remains open. Profile parts are currently bounded projections of the durable configuration, not independent durable StateStore entries.
+- Resolve stable camera identity and ambiguous IP reuse, finish runtime-safe policy-input classification and the combined settings quota, and measure 16 KiB multipart registry/status projections. Missing active targets now remain degraded through startup, completion and removal; stable-identity and unreadable-configuration recovery still need qualification. Profile parts are currently bounded projections of the durable configuration, not independent durable StateStore entries.
 - Extend staged-write qualification with supersession, old-revision completion rejection, and unchanged accepted state after failed persistence. A Rust restart test now writes an active profile to `config.toml`, reloads it into a fresh `ServerState`, and checks the privacy gate; restart restoration for recording, availability, notifications, and failure cases remains open. The current draft cache is process-local and the final CAS commit remains configuration-file atomic.
 - Verify the notification delivery race including already-claimed sends, privacy byte barriers across every media operation, Base changes, storage-worker failure, and Base-change reapplication.
 - Add desktop/mobile Playwright coverage for visible-UI CRUD and activation, reconnect/restart, accessibility, and ordered desired/applied state; verify camera-filtered watch updates. The current real-server test covers direct client activation and active-state watch convergence only.

@@ -543,8 +543,36 @@ impl KeepPeekLoop {
             .values()
             .try_for_each(|camera| self.add_camera(camera, true, true));
         self.runtime_profile_status_publisher = publisher;
+        self.reconcile_missing_profile_targets();
         self.publish_runtime_profile_status();
         result
+    }
+
+    fn reconcile_missing_profile_targets(&self) -> bool {
+        let configured_ids = self
+            .camera_definitions
+            .keys()
+            .map(ToString::to_string)
+            .collect();
+        let missing = self
+            .runtime_profiles
+            .missing_camera_applications(&configured_ids);
+        let mut status = self
+            .runtime_profile_status
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if status.revision > self.runtime_profiles.revision {
+            return false;
+        }
+        status
+            .cameras
+            .retain(|camera_id, _| configured_ids.contains(camera_id));
+        status.cameras.extend(
+            missing
+                .into_iter()
+                .map(|application| (application.camera_id.clone(), application)),
+        );
+        true
     }
 
     pub fn add_camera(
@@ -817,6 +845,23 @@ impl KeepPeekLoop {
                 reason,
             });
         }
+        let configured_ids = self
+            .camera_definitions
+            .keys()
+            .map(ToString::to_string)
+            .collect();
+        applications.extend(
+            self.runtime_profiles
+                .missing_camera_applications(&configured_ids),
+        );
+        self.complete_runtime_profiles(&applications)?;
+        Ok(applications)
+    }
+
+    fn complete_runtime_profiles(
+        &self,
+        applications: &[crate::profiles::CameraRuntimeApplication],
+    ) -> anyhow::Result<()> {
         let mut status = self
             .runtime_profile_status
             .write()
@@ -832,7 +877,7 @@ impl KeepPeekLoop {
             .cloned()
             .map(|application| (application.camera_id.clone(), application))
             .collect();
-        Ok(applications)
+        Ok(())
     }
 
     fn add_camera_workers(
@@ -1650,11 +1695,9 @@ impl KeepPeekLoop {
                 KeepPeekCommand::Stop { ip, reply } => {
                     self.camera_definitions.remove(&ip);
                     self.stop_camera(ip);
-                    self.runtime_profile_status
-                        .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .cameras
-                        .remove(&ip.to_string());
+                    if self.reconcile_missing_profile_targets() {
+                        self.publish_runtime_profile_status();
+                    }
                     let _ = reply.send(Ok(()));
                 }
                 KeepPeekCommand::StartCamera { camera, reply } => {
@@ -1948,6 +1991,129 @@ mod tests {
         assert!(!recorder.camera_workers.contains_key(&camera.config.ip));
         assert_eq!(*recorder.runtime_profile_status.read().unwrap(), status);
         assert_eq!(recorder.runtime_profiles.revision, 3);
+    }
+
+    #[test]
+    fn runtime_profile_missing_targets_survive_startup_and_completion() {
+        let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+        let profiles = missing_target_profiles();
+        recorder.set_runtime_profiles(profiles.clone());
+        recorder.add_cameras(&HashMap::new()).unwrap();
+        assert_missing_target_status(&recorder);
+        let applications = recorder.apply_runtime_profiles(profiles).unwrap();
+        assert_eq!(applications.len(), 1);
+        assert_missing_target_status(&recorder);
+        recorder
+            .apply_runtime_profiles(crate::profiles::ProfileRegistry {
+                revision: 2,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(
+            recorder
+                .runtime_profile_status
+                .read()
+                .unwrap()
+                .cameras
+                .is_empty()
+        );
+    }
+
+    fn missing_target_profiles() -> crate::profiles::ProfileRegistry {
+        serde_json::from_value(serde_json::json!({
+            "revision": 1, "active_profile_id": "away", "profiles": {"away": {
+                "id": "away", "name": "Away", "revision": 1,
+                "cameras": {"127.0.0.1": {"availability": false, "privacy_enforced": true}}
+            }}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn runtime_profile_missing_target_reconciliation_preserves_newer_pending_status() {
+        let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+        recorder.set_runtime_profiles(missing_target_profiles());
+        let camera = runtime_rtsp_camera("127.0.0.1:8554".parse().unwrap());
+        recorder.add_camera(&camera, true, true).unwrap();
+        let expected = {
+            let mut status = recorder.runtime_profile_status.write().unwrap();
+            status.revision = 2;
+            status.active_profile_id = None;
+            status.cameras.get_mut("127.0.0.1").unwrap().state =
+                crate::profiles::RuntimeApplicationState::Pending;
+            status.clone()
+        };
+        let publications = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let published = publications.clone();
+        recorder.set_runtime_profile_status_publisher(move || {
+            published.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let (reply, result) = mpsc::sync_channel(1);
+        recorder
+            .command_tx
+            .send(KeepPeekCommand::Stop {
+                ip: camera.config.ip,
+                reply,
+            })
+            .unwrap();
+        recorder.handle_commands();
+        result
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(*recorder.runtime_profile_status.read().unwrap(), expected);
+        assert_eq!(publications.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    fn assert_missing_target_status(recorder: &KeepPeekLoop) {
+        let status = recorder.runtime_profile_status.read().unwrap();
+        let application = status
+            .cameras
+            .get("127.0.0.1")
+            .expect("active missing target must remain visible");
+        assert_eq!(
+            application.state,
+            crate::profiles::RuntimeApplicationState::Degraded
+        );
+        assert_eq!(
+            application.reason.as_deref(),
+            Some("configured camera is missing")
+        );
+        assert!(!application.policy.available);
+        assert!(application.policy.privacy_enforced);
+    }
+
+    #[test]
+    fn runtime_profile_missing_targets_follow_removal_and_readdition() {
+        let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+        recorder.set_runtime_profiles(missing_target_profiles());
+        let camera = runtime_rtsp_camera("127.0.0.1:8554".parse().unwrap());
+        recorder.add_camera(&camera, true, true).unwrap();
+        assert_eq!(
+            recorder.runtime_profile_status.read().unwrap().cameras["127.0.0.1"].state,
+            crate::profiles::RuntimeApplicationState::Applied
+        );
+        let (reply, result) = mpsc::sync_channel(1);
+        recorder
+            .command_tx
+            .send(KeepPeekCommand::Stop {
+                ip: camera.config.ip,
+                reply,
+            })
+            .unwrap();
+        recorder.handle_commands();
+        result
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_missing_target_status(&recorder);
+        recorder.add_camera(&camera, true, true).unwrap();
+        let status = recorder.runtime_profile_status.read().unwrap();
+        assert_eq!(
+            status.cameras["127.0.0.1"].state,
+            crate::profiles::RuntimeApplicationState::Applied
+        );
+        assert!(status.cameras["127.0.0.1"].reason.is_none());
     }
 
     #[test]

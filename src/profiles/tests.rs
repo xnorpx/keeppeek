@@ -17,6 +17,48 @@ fn profile(overrides: BTreeMap<String, CameraProfileOverride>) -> RuntimeProfile
 }
 
 #[test]
+fn missing_profile_targets_are_bounded_and_only_active_unconfigured_targets_appear() {
+    let targets = (0..super::MAX_PROFILE_TARGETS)
+        .map(|index| {
+            (
+                format!("camera-{index}"),
+                CameraProfileOverride {
+                    availability: Some(false),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+    let mut registry = ProfileRegistry {
+        revision: 1,
+        active_profile_id: Some("away".to_owned()),
+        profiles: BTreeMap::from([("away".to_owned(), profile(targets))]),
+    };
+    registry.validate().unwrap();
+    let missing = registry.missing_camera_applications(&BTreeSet::new());
+    assert_eq!(missing.len(), 127);
+    assert!(
+        missing
+            .iter()
+            .all(|application| application.state == super::RuntimeApplicationState::Degraded)
+    );
+    let configured = BTreeSet::from(["camera-0".to_owned()]);
+    let missing = registry.missing_camera_applications(&configured);
+    assert_eq!(missing.len(), 126);
+    assert!(
+        missing
+            .iter()
+            .all(|application| application.camera_id != "camera-0")
+    );
+    registry.active_profile_id = None;
+    assert!(
+        registry
+            .missing_camera_applications(&BTreeSet::new())
+            .is_empty()
+    );
+}
+
+#[test]
 fn sparse_profile_overrides_preserve_base_values_and_provenance() {
     let base = BaseCameraPolicy {
         available: true,
