@@ -28,22 +28,6 @@ The [backup and restore guide](docs/backup-and-restore.md) documents sensitive t
 The [Home Assistant card guide](docs/home-assistant.md) covers the direct live-camera Lovelace
 card, HACS/manual installation, visual editor, CORS, and credential security.
 
-## Stop KeepPeek
-
-Stop all KeepPeek server processes for the current user on macOS or Linux:
-
-```sh
-./stop.sh
-```
-
-On Windows, stop the registered KeepPeek service and any standalone server processes:
-
-```bat
-.\stop.bat
-```
-
-Both commands succeed when KeepPeek is already stopped.
-
 ## License
 
 Copyright (C) 2026 Marcus Asteborg.
