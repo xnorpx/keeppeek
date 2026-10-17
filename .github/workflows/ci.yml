@@ -325,10 +325,27 @@ jobs:
         shell: bash
         env:
           DURABLE_STATE_TESTS: "server::state_store_durable::"
+          CI_EVENT_NAME: ${{ github.event_name }}
         run: |
           set -o pipefail
           features=()
           threads=()
+          post_merge_tests=()
+          # Windows recovery/scale qualification still runs on every push to main.
+          # Linux and macOS retain these tests in pull-request CI.
+          if [[ "$RUNNER_OS" == "Windows" && "$CI_EVENT_NAME" == "pull_request" ]]; then
+            for test_filter in \
+              'storage::volumes::runtime::' \
+              'storage::catalog::maintenance::' \
+              'storage::catalog::locations::' \
+              'config::metadata::pending::' \
+              'server::state_store_durable::qualification::' \
+              'server::state_store_durable::tests::continuous_churn_reuses_disk_without_restart' \
+              'server::state_store_durable::tests::churn_holds_a_steady_disk_ceiling_and_reclaims_quota'; do
+              echo "Windows post-merge qualification: $test_filter"
+              post_merge_tests+=(--skip "$test_filter")
+            done
+          fi
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             features=(--features macos-test-aws-crypto)
           fi
@@ -336,12 +353,12 @@ jobs:
             if [[ "$RUNNER_OS" != "Linux" ]]; then
               threads=(--test-threads=2)
             fi
-            cargo test --locked -p keeppeek --lib "${features[@]}" "$DURABLE_STATE_TESTS" -- "${threads[@]}" 2>&1 | tee rust-test-results.log
+            cargo test --locked -p keeppeek --lib "${features[@]}" "$DURABLE_STATE_TESTS" -- "${threads[@]}" "${post_merge_tests[@]}" 2>&1 | tee rust-test-results.log
           else
             if [[ "$RUNNER_OS" != "Linux" ]]; then
               threads=(--test-threads=1)
             fi
-            cargo test --locked --all --lib --bins --tests "${features[@]}" -- --skip "$DURABLE_STATE_TESTS" "${threads[@]}" 2>&1 | tee rust-test-results.log
+            cargo test --locked --all --lib --bins --tests "${features[@]}" -- --skip "$DURABLE_STATE_TESTS" "${threads[@]}" "${post_merge_tests[@]}" 2>&1 | tee rust-test-results.log
           fi
       - name: Upload Rust test log
         if: always()
