@@ -209,7 +209,10 @@ fn validate_camera_database_archive(bytes: &[u8]) -> io::Result<()> {
         let entry = archive
             .by_index(index)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let name = entry.name().to_owned();
+        let name = entry
+            .name()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+            .into_owned();
         if name.starts_with('/')
             || name.contains('\\')
             || name
