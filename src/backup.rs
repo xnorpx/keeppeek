@@ -1356,7 +1356,10 @@ fn validate_archive_entries<R: Read + Seek>(
         let entry = archive
             .by_index(index)
             .map_err(|error| anyhow::anyhow!("invalid KeepPeek backup ZIP entry: {error}"))?;
-        let name = entry.name().to_owned();
+        let name = entry
+            .name()
+            .map_err(|error| anyhow::anyhow!("invalid KeepPeek backup ZIP entry name: {error}"))?
+            .into_owned();
         if entry.is_symlink() {
             anyhow::bail!("KeepPeek backup contains symlink entry {name:?}");
         }

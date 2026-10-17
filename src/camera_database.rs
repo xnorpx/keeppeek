@@ -563,7 +563,10 @@ fn validate_archive_entries(archive: &mut ZipArchive<Cursor<&[u8]>>) -> anyhow::
         let entry = archive
             .by_index(index)
             .map_err(|error| anyhow::anyhow!("invalid camera database ZIP entry: {error}"))?;
-        let name = entry.name().to_owned();
+        let name = entry
+            .name()
+            .map_err(|error| anyhow::anyhow!("invalid camera database ZIP entry name: {error}"))?
+            .into_owned();
         if name.starts_with('/')
             || name.contains('\\')
             || name
