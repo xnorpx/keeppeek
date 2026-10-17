@@ -85,7 +85,9 @@ section manually. The partial implementation supports Administrator management a
 through WebRTC StateStore, including bounded definition reads and staged bounded writes. Privacy,
 recording, notifications, and camera availability reach their current runtime owners. Delayed
 profile commands cannot replace newer pending runtime status; an already running camera stop is
-not preempted. Complete
+not preempted. An active profile's saved target that is no longer configured remains degraded
+through startup, completion and live removal; re-adding the camera replaces that observation.
+Activating Base clears missing-target observations from the previously active profile. Complete
 restart, conflict, camera identity, privacy leak, browser reconnect, and capacity qualification
 remain open under #202.
 

@@ -1153,34 +1153,94 @@ fn update_runtime_status(
     runtime_error: Option<String>,
     runtime_unavailable: bool,
 ) {
-    let configured_camera_ids = state
-        .camera_entries()
-        .into_iter()
-        .map(|camera| camera.info.id)
-        .collect::<BTreeSet<_>>();
+    let configs = runtime_profile_camera_configs(state);
+    let configured_camera_ids: BTreeSet<String> = configs.as_ref().map_or_else(
+        || {
+            state
+                .camera_entries()
+                .into_iter()
+                .map(|camera| camera.info.id)
+                .collect()
+        },
+        |configs| configs.keys().cloned().collect(),
+    );
     let mut cameras = applications
         .unwrap_or_default()
         .into_iter()
+        .filter(|application| configured_camera_ids.contains(&application.camera_id))
         .map(|application| (application.camera_id.clone(), application))
         .collect::<BTreeMap<_, _>>();
     if runtime_error.is_some() || runtime_unavailable {
-        let configs = state
-            .camera_config_path
+        let reason = runtime_error
             .as_deref()
-            .and_then(|path| config::load_cameras(path).ok())
-            .map(|configs| configs.into_values().flatten().collect::<Vec<_>>())
-            .unwrap_or_default();
-        for entry in state.camera_entries() {
-            let camera_id = entry.info.id.clone();
-            if cameras.contains_key(&camera_id) {
-                continue;
-            }
-            let base_config = configs
-                .iter()
-                .find(|camera| camera.ip.to_string() == camera_id);
+            .unwrap_or("camera runtime is unavailable");
+        for application in degraded_runtime_applications(
+            profiles,
+            &configured_camera_ids,
+            configs.as_ref(),
+            reason,
+        ) {
+            cameras
+                .entry(application.camera_id.clone())
+                .or_insert(application);
+        }
+    }
+    for application in profiles.missing_camera_applications(&configured_camera_ids) {
+        cameras
+            .entry(application.camera_id.clone())
+            .or_insert(application);
+    }
+    project_runtime_privacy(state, profiles, &configured_camera_ids, &mut cameras);
+    let mut status = state
+        .runtime_profile_status
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if status.revision > profiles.revision {
+        return;
+    }
+    *status = crate::profiles::RuntimeProfileStatus {
+        revision: profiles.revision,
+        active_profile_id: profiles.active_profile_id.clone(),
+        cameras,
+    };
+}
+
+fn runtime_profile_camera_configs(
+    state: &ServerState,
+) -> Option<BTreeMap<String, crate::cameras::CameraConfig>> {
+    let path = state.camera_config_path.as_deref()?;
+    config::load_cameras(path).map_or_else(
+        |_| {
+            tracing::warn!(
+                "Unable to load configured cameras for runtime profile status; using catalog"
+            );
+            None
+        },
+        |configs| {
+            Some(
+                configs
+                    .into_values()
+                    .flatten()
+                    .map(|camera| (camera.ip.to_string(), camera))
+                    .collect(),
+            )
+        },
+    )
+}
+
+fn degraded_runtime_applications(
+    profiles: &crate::profiles::ProfileRegistry,
+    configured_ids: &BTreeSet<String>,
+    configs: Option<&BTreeMap<String, crate::cameras::CameraConfig>>,
+    reason: &str,
+) -> Vec<crate::profiles::CameraRuntimeApplication> {
+    configured_ids
+        .iter()
+        .map(|camera_id| {
             let base = crate::profiles::BaseCameraPolicy {
                 available: true,
-                recording_mode: base_config
+                recording_mode: configs
+                    .and_then(|configs| configs.get(camera_id))
                     .map_or_else(crate::cameras::CameraRecordingMode::default, |camera| {
                         camera.recording_mode
                     }),
@@ -1191,51 +1251,23 @@ fn update_runtime_status(
                 .active_profile_id
                 .as_ref()
                 .and_then(|profile_id| profiles.profiles.get(profile_id))
-                .and_then(|profile| profile.cameras.get(&camera_id));
-            cameras.insert(
-                camera_id.clone(),
-                crate::profiles::CameraRuntimeApplication {
-                    camera_id,
-                    state: crate::profiles::RuntimeApplicationState::Degraded,
-                    policy: crate::profiles::resolve_camera_policy(&base, profile_override),
-                    reason: Some(
-                        runtime_error
-                            .clone()
-                            .unwrap_or_else(|| "camera runtime is unavailable".to_owned())
-                            .chars()
-                            .take(256)
-                            .collect(),
-                    ),
-                },
-            );
-        }
-    }
-    if let Some(profile) = profiles
-        .active_profile_id
-        .as_ref()
-        .and_then(|profile_id| profiles.profiles.get(profile_id))
-    {
-        for (camera_id, profile_override) in &profile.cameras {
-            if configured_camera_ids.contains(camera_id) || cameras.contains_key(camera_id) {
-                continue;
+                .and_then(|profile| profile.cameras.get(camera_id));
+            crate::profiles::CameraRuntimeApplication {
+                camera_id: camera_id.clone(),
+                state: crate::profiles::RuntimeApplicationState::Degraded,
+                policy: crate::profiles::resolve_camera_policy(&base, profile_override),
+                reason: Some(reason.chars().take(256).collect()),
             }
-            let base = crate::profiles::BaseCameraPolicy {
-                available: true,
-                recording_mode: crate::cameras::CameraRecordingMode::default(),
-                privacy_enforced: false,
-                notifications_enabled: true,
-            };
-            cameras.insert(
-                camera_id.clone(),
-                crate::profiles::CameraRuntimeApplication {
-                    camera_id: camera_id.clone(),
-                    state: crate::profiles::RuntimeApplicationState::Degraded,
-                    policy: crate::profiles::resolve_camera_policy(&base, Some(profile_override)),
-                    reason: Some("configured camera is missing".to_owned()),
-                },
-            );
-        }
-    }
+        })
+        .collect()
+}
+
+fn project_runtime_privacy(
+    state: &ServerState,
+    profiles: &crate::profiles::ProfileRegistry,
+    configured_camera_ids: &BTreeSet<String>,
+    cameras: &mut BTreeMap<String, crate::profiles::CameraRuntimeApplication>,
+) {
     for application in cameras.values_mut() {
         if !configured_camera_ids.contains(&application.camera_id) {
             continue;
@@ -1266,15 +1298,6 @@ fn update_runtime_status(
             }
         }
     }
-    *state
-        .runtime_profile_status
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-        crate::profiles::RuntimeProfileStatus {
-            revision: profiles.revision,
-            active_profile_id: profiles.active_profile_id.clone(),
-            cameras,
-        };
 }
 
 fn mark_runtime_status_pending(state: &ServerState, profiles: &crate::profiles::ProfileRegistry) {
@@ -2031,6 +2054,115 @@ mod tests {
                 .active_profile_id
                 .as_deref(),
             Some("away")
+        );
+    }
+
+    #[test]
+    fn missing_profile_targets_ignore_deleted_catalog_cameras_during_runtime_failure() {
+        let fixture = Fixture::new();
+        let camera: crate::cameras::CameraConfig =
+            toml::from_str("ip='192.0.2.1'\nusername='fixture'\npassword='fixture'").unwrap();
+        fixture
+            .state
+            .upsert_camera(super::super::super::camera_entry(&camera, None));
+        let mut profiles = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        profiles.revision = 1;
+        profiles.active_profile_id = Some("away".to_owned());
+        profiles.profiles.get_mut("away").unwrap().cameras.insert(
+            camera.ip.to_string(),
+            crate::profiles::CameraProfileOverride {
+                privacy_enforced: Some(true),
+                ..Default::default()
+            },
+        );
+        update_runtime_status(
+            &fixture.state,
+            &profiles,
+            None,
+            Some("runtime timed out".to_owned()),
+            false,
+        );
+        let mut stale = fixture.state.runtime_profile_status.read().unwrap().cameras
+            [&camera.ip.to_string()]
+            .clone();
+        stale.state = crate::profiles::RuntimeApplicationState::Applied;
+        stale.reason = None;
+        update_runtime_status(&fixture.state, &profiles, Some(vec![stale]), None, false);
+        let status = fixture.state.runtime_profile_status.read().unwrap();
+        let application = &status.cameras[&camera.ip.to_string()];
+        assert_eq!(
+            application.state,
+            crate::profiles::RuntimeApplicationState::Degraded
+        );
+        assert_eq!(
+            application.reason.as_deref(),
+            Some("configured camera is missing")
+        );
+        assert!(application.policy.privacy_enforced);
+    }
+
+    #[test]
+    fn profile_status_uses_catalog_conservatively_when_configuration_is_unreadable() {
+        let fixture = Fixture::new();
+        let camera: crate::cameras::CameraConfig =
+            toml::from_str("ip='192.0.2.1'\nusername='fixture'\npassword='fixture'").unwrap();
+        fixture
+            .state
+            .upsert_camera(super::super::super::camera_entry(&camera, None));
+        let mut profiles = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        profiles.active_profile_id = Some("away".to_owned());
+        profiles.profiles.get_mut("away").unwrap().cameras.insert(
+            camera.ip.to_string(),
+            crate::profiles::CameraProfileOverride {
+                availability: Some(false),
+                ..Default::default()
+            },
+        );
+        std::fs::remove_file(fixture.config_path()).unwrap();
+        update_runtime_status(
+            &fixture.state,
+            &profiles,
+            None,
+            Some("runtime timed out".to_owned()),
+            false,
+        );
+        let status = fixture.state.runtime_profile_status.read().unwrap();
+        let application = &status.cameras[&camera.ip.to_string()];
+        assert_eq!(
+            application.state,
+            crate::profiles::RuntimeApplicationState::Degraded
+        );
+        assert_eq!(application.reason.as_deref(), Some("runtime timed out"));
+        assert!(!application.policy.available);
+    }
+
+    #[test]
+    fn runtime_status_projection_cannot_replace_newer_pending_revision() {
+        let fixture = Fixture::new();
+        let profiles = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        fixture
+            .state
+            .runtime_profile_status
+            .write()
+            .unwrap()
+            .revision = 2;
+        let expected = fixture.state.runtime_profile_status.read().unwrap().clone();
+        update_runtime_status(
+            &fixture.state,
+            &profiles,
+            None,
+            Some("late failure".to_owned()),
+            false,
+        );
+        assert_eq!(
+            *fixture.state.runtime_profile_status.read().unwrap(),
+            expected
         );
     }
 

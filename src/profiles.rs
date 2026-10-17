@@ -95,6 +95,38 @@ pub struct RuntimeProfileStatus {
 }
 
 impl ProfileRegistry {
+    pub(crate) fn missing_camera_applications(
+        &self,
+        configured_camera_ids: &BTreeSet<String>,
+    ) -> Vec<CameraRuntimeApplication> {
+        let Some(profile) = self
+            .active_profile_id
+            .as_ref()
+            .and_then(|profile_id| self.profiles.get(profile_id))
+        else {
+            return Vec::new();
+        };
+        profile
+            .cameras
+            .iter()
+            .filter(|(camera_id, _)| !configured_camera_ids.contains(*camera_id))
+            .map(|(camera_id, overrides)| CameraRuntimeApplication {
+                camera_id: camera_id.clone(),
+                state: RuntimeApplicationState::Degraded,
+                policy: resolve_camera_policy(
+                    &BaseCameraPolicy {
+                        available: true,
+                        recording_mode: CameraRecordingMode::default(),
+                        privacy_enforced: false,
+                        notifications_enabled: true,
+                    },
+                    Some(overrides),
+                ),
+                reason: Some("configured camera is missing".to_owned()),
+            })
+            .collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.revision == 0 && self.active_profile_id.is_none() && self.profiles.is_empty()
     }
