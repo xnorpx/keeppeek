@@ -92,9 +92,11 @@ selected video boundary are omitted without re-encoding.
 
 If a runtime profile reports a camera as **Degraded** because storage rejected its recording
 settings or could not queue the change, new recording input for that camera stops. Live viewing
-can continue, and other cameras still apply their profile changes. Correct the reported settings
-or restore storage availability, then retry the accepted profile. **Applied** confirms recording
-admission and queue acceptance; use Recording integrity and playback to verify retained footage.
+can continue, and other cameras still apply their profile changes. **Pending** means the recording
+writer has not yet accepted the configuration. A missing writer acknowledgement also reports
+Degraded and stops new recording input for the current request. Correct the reported settings or
+restore storage availability, then retry the accepted profile. **Applied** confirms that the writer
+accepted the recording configuration; use Recording integrity and playback to verify retained footage.
 
 The default limits are 64 MiB per buffered stream and 256 MiB globally. Administrators can change
 them in advanced storage settings. History is not saved across restart. Privacy activation,

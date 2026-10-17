@@ -31,6 +31,7 @@ pub use catalog::{
     RecordingCatalogHandle,
 };
 pub use demand::{RecordingDemand, RecordingDemandGuard};
+pub(crate) use engine::RecordingConfiguration;
 pub use engine::{StorageConfig, StorageEngine, StorageHandle};
 pub use events::EventStore;
 pub use frame::{AudioCodec, AudioFrame, MediaFrame, VideoCodec, VideoFrame};

@@ -206,6 +206,8 @@ enum Command {
         source: String,
         settings: EventSettings,
         fence: EventFence,
+        current: Arc<AtomicBool>,
+        reply: mpsc::SyncSender<Result<(), &'static str>>,
     },
     EventInput {
         identity: RecordingStreamIdentity,
@@ -360,12 +362,26 @@ struct WriteProgress {
 
 #[derive(Clone, Default)]
 struct RecordingAdmission {
-    policies: Arc<RwLock<HashMap<String, CameraRecordingPolicy>>>,
+    policies: Arc<RwLock<HashMap<String, RecordingPolicy>>>,
     discontinuous_streams: Arc<Mutex<HashMap<String, (String, String)>>>,
     health: RecordingHealthRegistry,
     privacy: Arc<RwLock<Option<Arc<PrivacyRegistry>>>>,
     events: Arc<Mutex<HashMap<String, EventAdmission>>>,
     events_enabled: Arc<AtomicBool>,
+}
+
+struct RecordingPolicy {
+    policy: CameraRecordingPolicy,
+    current: Arc<AtomicBool>,
+}
+
+impl RecordingPolicy {
+    fn new(mode: CameraRecordingMode, event_duration: Duration) -> Self {
+        Self {
+            policy: CameraRecordingPolicy::new(mode, event_duration),
+            current: Arc::new(AtomicBool::new(true)),
+        }
+    }
 }
 
 impl RecordingAdmission {
@@ -377,13 +393,18 @@ impl RecordingAdmission {
     }
 
     fn configure(&self, camera_id: &str, mode: CameraRecordingMode, event_duration: Duration) {
-        self.policies
+        let mut policies = self
+            .policies
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                camera_id.to_owned(),
-                CameraRecordingPolicy::new(mode, event_duration),
-            );
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.clear_event_admission(camera_id);
+        if let Some(previous) = policies.get(camera_id) {
+            previous.current.store(false, Ordering::Release);
+        }
+        policies.insert(
+            camera_id.to_owned(),
+            RecordingPolicy::new(mode, event_duration),
+        );
     }
 
     fn note_event_at(&self, camera_id: &str, now: Instant) {
@@ -394,7 +415,7 @@ impl RecordingAdmission {
         let Some(policy) = policies.get_mut(camera_id) else {
             return;
         };
-        policy.note_event(now);
+        policy.policy.note_event(now);
     }
 
     #[cfg(test)]
@@ -411,9 +432,11 @@ impl RecordingAdmission {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let policy = policies.entry(camera_id.to_owned()).or_insert_with(|| {
-            CameraRecordingPolicy::new(CameraRecordingMode::default(), Duration::from_secs(60))
+            RecordingPolicy::new(CameraRecordingMode::default(), Duration::from_secs(60))
         });
-        policy.decide(stream_id, is_video, is_video_keyframe, now)
+        policy
+            .policy
+            .decide(stream_id, is_video, is_video_keyframe, now)
     }
 
     fn ingest_at(
@@ -486,13 +509,13 @@ impl RecordingAdmission {
     }
 
     fn legacy_decision(
-        policies: &mut HashMap<String, CameraRecordingPolicy>,
+        policies: &mut HashMap<String, RecordingPolicy>,
         identity: &RecordingStreamIdentity,
         frame: &RecordingFrame,
         now: Instant,
     ) -> AdmissionDecision {
         if let Some(policy) = policies.get_mut(&identity.source_id) {
-            return policy.decide(
+            return policy.policy.decide(
                 &identity.stream_id,
                 frame.frame.is_video(),
                 frame.is_video_keyframe(),
@@ -502,8 +525,9 @@ impl RecordingAdmission {
         policies
             .entry(identity.source_id.clone())
             .or_insert_with(|| {
-                CameraRecordingPolicy::new(CameraRecordingMode::default(), Duration::from_secs(60))
+                RecordingPolicy::new(CameraRecordingMode::default(), Duration::from_secs(60))
             })
+            .policy
             .decide(
                 &identity.stream_id,
                 frame.frame.is_video(),
@@ -573,7 +597,7 @@ impl RecordingAdmission {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         policies
             .get(camera_id)
-            .map_or("sub", CameraRecordingPolicy::preferred_audio_stream)
+            .map_or("sub", |entry| entry.policy.preferred_audio_stream())
     }
 }
 
@@ -582,6 +606,16 @@ pub struct StorageHandle {
     tx: StorageCommandSender,
     admission: RecordingAdmission,
 }
+
+pub(crate) struct RecordingConfiguration {
+    source: String,
+    current: Arc<AtomicBool>,
+    handle: StorageHandle,
+    reply: mpsc::Receiver<Result<(), &'static str>>,
+}
+
+#[cfg(test)]
+type TestRecordingReplies = Vec<Option<Result<(), &'static str>>>;
 
 impl StorageHandle {
     #[cfg(test)]
@@ -593,6 +627,37 @@ impl StorageHandle {
         };
         (handle, move || {
             (0..capacity).take_while(|_| rx.try_recv().is_ok()).count()
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_ack_queue(
+        capacity: usize,
+    ) -> (
+        Self,
+        impl Fn(TestRecordingReplies) -> usize + Send + Sync + Clone,
+    ) {
+        let (tx, rx) = storage_command_channel(capacity, 4096);
+        let rx = Arc::new(Mutex::new(rx));
+        let handle = Self {
+            tx,
+            admission: RecordingAdmission::default(),
+        };
+        (handle, move |responses| {
+            let rx = rx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let count = responses.len();
+            for response in responses {
+                let Command::ConfigureEventRecording { reply, .. } = rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("writer test command did not arrive")
+                else {
+                    panic!("writer test expected a configuration command");
+                };
+                if let Some(response) = response {
+                    let _ = reply.try_send(response);
+                }
+            }
+            count
         })
     }
 
