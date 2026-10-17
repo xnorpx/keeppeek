@@ -952,6 +952,225 @@ fn failed_off_reclaims_writer_slot_on_tick_without_more_commands() {
 }
 
 #[test]
+fn writer_receipt_requires_processed_configuration() {
+    let config = storage_config(&format!("event-receipt-{}", uuid::Uuid::new_v4()));
+    let mut worker = WriterWorker::new(config, RecordingDemand::new(DEMAND_INACTIVITY_GRACE), None);
+    let (tx, rx) = storage_command_channel(2, 4096);
+    let handle = StorageHandle {
+        tx,
+        admission: RecordingAdmission::default(),
+    };
+    let receipt = handle
+        .request_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventOnly,
+            EventRecordingStream::Main,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    worker.handle_command(rx.try_recv().unwrap());
+    receipt.wait_until(Instant::now()).unwrap();
+    assert!(worker.event_sources.contains_key("camera"));
+    worker.handle_command(Command::Shutdown);
+}
+
+#[test]
+fn writer_receipt_timeout_closes_admission_and_fences_late_command() {
+    let config = storage_config(&format!("event-late-receipt-{}", uuid::Uuid::new_v4()));
+    let mut worker = WriterWorker::new(config, RecordingDemand::new(DEMAND_INACTIVITY_GRACE), None);
+    let (tx, rx) = storage_command_channel(2, 4096);
+    let handle = StorageHandle {
+        tx,
+        admission: RecordingAdmission::default(),
+    };
+    let receipt = handle
+        .request_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventOnly,
+            EventRecordingStream::Main,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    assert!(
+        receipt
+            .wait_until(Instant::now())
+            .unwrap_err()
+            .to_string()
+            .contains("acknowledge")
+    );
+    assert!(!handle.admission.has_event_recording("camera"));
+    worker.handle_command(rx.try_recv().unwrap());
+    assert!(!worker.event_sources.contains_key("camera"));
+    worker.handle_command(Command::Shutdown);
+}
+
+#[test]
+fn dropped_writer_reply_closes_matching_admission() {
+    let (tx, rx) = storage_command_channel(2, 4096);
+    let handle = StorageHandle {
+        tx,
+        admission: RecordingAdmission::default(),
+    };
+    let receipt = handle
+        .request_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventOnly,
+            EventRecordingStream::Main,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    drop(rx.try_recv().unwrap());
+    assert!(
+        receipt
+            .wait_until(Instant::now())
+            .unwrap_err()
+            .to_string()
+            .contains("disconnected")
+    );
+    assert!(!handle.admission.has_event_recording("camera"));
+}
+
+#[test]
+fn superseded_off_receipt_cannot_close_new_on_configuration() {
+    let config = storage_config(&format!("event-off-on-{}", uuid::Uuid::new_v4()));
+    let mut worker = WriterWorker::new(config, RecordingDemand::new(DEMAND_INACTIVITY_GRACE), None);
+    let (tx, rx) = storage_command_channel(3, 4096);
+    let handle = StorageHandle {
+        tx,
+        admission: RecordingAdmission::default(),
+    };
+    configure_event(&handle, "camera", CameraRecordingMode::EventOnly).unwrap();
+    worker.handle_command(rx.try_recv().unwrap());
+    let off = handle
+        .request_camera_event_recording(
+            "camera",
+            CameraRecordingMode::Off,
+            EventRecordingStream::Main,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    let on = handle
+        .request_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventOnly,
+            EventRecordingStream::Main,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    worker.handle_command(rx.try_recv().unwrap());
+    worker.handle_command(rx.try_recv().unwrap());
+    assert!(
+        off.wait_until(Instant::now())
+            .unwrap_err()
+            .to_string()
+            .contains("superseded")
+    );
+    on.wait_until(Instant::now()).unwrap();
+    assert!(handle.admission.has_event_recording("camera"));
+    assert!(worker.event_sources.contains_key("camera"));
+    worker.handle_command(Command::Shutdown);
+}
+
+#[test]
+fn legacy_recording_configuration_removes_pending_event_admission() {
+    for mode in [CameraRecordingMode::Sub, CameraRecordingMode::Off] {
+        let config = storage_config(&format!("event-legacy-{}", uuid::Uuid::new_v4()));
+        let mut worker =
+            WriterWorker::new(config, RecordingDemand::new(DEMAND_INACTIVITY_GRACE), None);
+        let (tx, rx) = storage_command_channel(4, 4096);
+        let handle = StorageHandle {
+            tx,
+            admission: RecordingAdmission::default(),
+        };
+        let receipt = handle
+            .request_camera_event_recording(
+                "camera",
+                CameraRecordingMode::EventOnly,
+                EventRecordingStream::Main,
+                Duration::ZERO,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+        handle.configure_camera_recording("camera", mode, Duration::from_secs(1));
+        assert!(!handle.admission.has_event_recording("camera"));
+        assert!(
+            receipt
+                .wait_until(Instant::now())
+                .unwrap_err()
+                .to_string()
+                .contains("superseded")
+        );
+        worker.handle_command(rx.try_recv().unwrap());
+        assert!(!worker.event_sources.contains_key("camera"));
+        handle.ingest_stream(
+            RecordingStreamIdentity::legacy("camera/sub"),
+            key_frame(Instant::now()),
+        );
+        assert_eq!(rx.try_recv().is_ok(), mode == CameraRecordingMode::Sub);
+        worker.handle_command(Command::Shutdown);
+    }
+}
+
+#[test]
+fn writer_capacity_rejection_clears_new_source_and_receipt_fails_closed() {
+    let config = storage_config(&format!("event-reject-{}", uuid::Uuid::new_v4()));
+    let mut worker = WriterWorker::new(config, RecordingDemand::new(DEMAND_INACTIVITY_GRACE), None);
+    let (first_tx, first_rx) = storage_command_channel(1, 4096);
+    let first = StorageHandle {
+        tx: first_tx,
+        admission: RecordingAdmission::default(),
+    };
+    for index in 0..127 {
+        configure_event(
+            &first,
+            &format!("camera{index}"),
+            CameraRecordingMode::EventOnly,
+        )
+        .unwrap();
+        worker.handle_command(first_rx.try_recv().unwrap());
+    }
+    let (second_tx, second_rx) = storage_command_channel(1, 4096);
+    let second = StorageHandle {
+        tx: second_tx,
+        admission: RecordingAdmission::default(),
+    };
+    let receipt = second
+        .request_camera_event_recording(
+            "camera127",
+            CameraRecordingMode::EventOnly,
+            EventRecordingStream::Main,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    worker.handle_command(second_rx.try_recv().unwrap());
+    assert!(
+        receipt
+            .wait_until(Instant::now())
+            .unwrap_err()
+            .to_string()
+            .contains("rejected")
+    );
+    assert!(!second.admission.has_event_recording("camera127"));
+    assert!(!worker.event_sources.contains_key("camera127"));
+    assert_eq!(worker.event_sources.len(), 127);
+    assert!(
+        worker
+            .event_recordings
+            .as_mut()
+            .unwrap()
+            .status("camera127", Instant::now())
+            .is_none()
+    );
+    worker.handle_command(Command::Shutdown);
+}
+
+#[test]
 fn event_configuration_admission_scale() {
     let config = storage_config(&format!("event-config-scale-{}", uuid::Uuid::new_v4()));
     let mut worker = WriterWorker::new(config, RecordingDemand::new(DEMAND_INACTIVITY_GRACE), None);

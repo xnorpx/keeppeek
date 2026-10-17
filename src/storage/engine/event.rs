@@ -137,6 +137,19 @@ fn settings_valid(source: &str, settings: EventSettings) -> bool {
 }
 
 impl RecordingAdmission {
+    pub(super) fn clear_event_admission(&self, source: &str) {
+        let mut events = self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = events.remove(source) {
+            entry.generations.enabled.store(false, Ordering::Release);
+            entry.generations.source.fetch_add(1, Ordering::AcqRel);
+            self.events_enabled
+                .store(!events.is_empty(), Ordering::Release);
+        }
+    }
+
     fn event_fence(&self, source: &str, entry: &EventAdmission) -> EventFence {
         let privacy = self
             .privacy
@@ -243,6 +256,64 @@ impl RecordingAdmission {
     }
 }
 
+impl RecordingConfiguration {
+    /// Waits for writer configuration acceptance before a shared batch deadline.
+    ///
+    /// # Errors
+    /// Returns an error on rejection, disconnect, timeout, or supersession. Failure closes
+    /// admission only when this receipt still identifies the current configuration.
+    pub(crate) fn wait_until(self, deadline: Instant) -> anyhow::Result<()> {
+        let response = if let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            self.reply.recv_timeout(remaining)
+        } else {
+            self.reply.try_recv().map_err(|error| match error {
+                mpsc::TryRecvError::Empty => mpsc::RecvTimeoutError::Timeout,
+                mpsc::TryRecvError::Disconnected => mpsc::RecvTimeoutError::Disconnected,
+            })
+        };
+        let mut policies = self
+            .handle
+            .admission
+            .policies
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = policies.get(&self.source).is_some_and(|policy| {
+            Arc::ptr_eq(&policy.current, &self.current) && self.current.load(Ordering::Acquire)
+        });
+        if !current {
+            anyhow::bail!("recording configuration was superseded");
+        }
+        match response {
+            Ok(Ok(())) => Ok(()),
+            failed => {
+                let reason = match failed {
+                    Ok(Err(reason)) => reason,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        "recording writer did not acknowledge configuration"
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        "recording writer acknowledgement disconnected"
+                    }
+                    Ok(Ok(())) => unreachable!("success handled above"),
+                };
+                let mut events = self
+                    .handle
+                    .admission
+                    .events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                self.handle.fail_closed_event_configuration(
+                    &self.source,
+                    &mut policies,
+                    &mut events,
+                    reason,
+                );
+                anyhow::bail!("{reason}");
+            }
+        }
+    }
+}
+
 impl StorageHandle {
     /// Accepts an event policy after validating admission and enqueueing its writer command.
     /// An error closes new recording ingress for this source; success does not acknowledge
@@ -255,6 +326,23 @@ impl StorageHandle {
         pre: Duration,
         post: Duration,
     ) -> anyhow::Result<()> {
+        self.request_camera_event_recording(source, mode, stream, pre, post)
+            .map(|_| ())
+    }
+
+    /// Enqueues a recording policy and returns its writer acknowledgement receipt.
+    ///
+    /// # Errors
+    /// Returns an error for invalid settings, exhausted admission, or queue failure.
+    /// New recording ingress closes on these errors; writer completion is checked by the receipt.
+    pub(crate) fn request_camera_event_recording(
+        &self,
+        source: &str,
+        mode: CameraRecordingMode,
+        stream: EventRecordingStream,
+        pre: Duration,
+        post: Duration,
+    ) -> anyhow::Result<RecordingConfiguration> {
         self.configure_event_settings(
             source,
             EventSettings {
@@ -270,7 +358,7 @@ impl StorageHandle {
         &self,
         source: &str,
         mut settings: EventSettings,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<RecordingConfiguration> {
         let mut rejection = None;
         if !settings_valid(source, settings) {
             self.reject_event_settings(source, &mut settings, "invalid event configuration");
@@ -291,14 +379,24 @@ impl StorageHandle {
             rejection = Some("event camera limit reached");
         }
         let fence = self.replace_event_admission(source, settings, &mut events);
+        if let Some(previous) = policies.get(source) {
+            previous.current.store(false, Ordering::Release);
+        }
+        let current = Arc::new(AtomicBool::new(true));
         policies.insert(
             source.to_owned(),
-            CameraRecordingPolicy::new(settings.mode, settings.post),
+            RecordingPolicy {
+                policy: CameraRecordingPolicy::new(settings.mode, settings.post),
+                current: current.clone(),
+            },
         );
+        let (reply, received) = mpsc::sync_channel(1);
         let queued = self.tx.tx.try_send(Command::ConfigureEventRecording {
             source: source.to_owned(),
             settings,
             fence,
+            current: current.clone(),
+            reply,
         });
         if let Err(error) = queued {
             let reason = match error {
@@ -310,7 +408,15 @@ impl StorageHandle {
             self.fail_closed_event_configuration(source, &mut policies, &mut events, reason);
             anyhow::bail!("{reason}");
         }
-        rejection.map_or(Ok(()), |reason| Err(anyhow::anyhow!(reason)))
+        rejection.map_or(
+            Ok(RecordingConfiguration {
+                source: source.to_owned(),
+                current,
+                handle: self.clone(),
+                reply: received,
+            }),
+            |reason| Err(anyhow::anyhow!(reason)),
+        )
     }
 
     fn replace_event_admission(
@@ -353,7 +459,7 @@ impl StorageHandle {
     fn fail_closed_event_configuration(
         &self,
         source: &str,
-        policies: &mut HashMap<String, CameraRecordingPolicy>,
+        policies: &mut HashMap<String, RecordingPolicy>,
         events: &mut HashMap<String, EventAdmission>,
         reason: &str,
     ) {
@@ -364,9 +470,12 @@ impl StorageHandle {
         self.admission
             .events_enabled
             .store(!events.is_empty(), Ordering::Release);
+        if let Some(previous) = policies.get(source) {
+            previous.current.store(false, Ordering::Release);
+        }
         policies.insert(
             source.to_owned(),
-            CameraRecordingPolicy::new(CameraRecordingMode::Off, Duration::from_secs(1)),
+            RecordingPolicy::new(CameraRecordingMode::Off, Duration::from_secs(1)),
         );
         self.admission.health.note_failure(source, reason);
     }
@@ -427,9 +536,25 @@ impl WriterWorker {
                 source,
                 settings,
                 fence,
+                current,
+                reply,
             } => {
                 self.reconcile_disabled_event_sources();
-                self.configure_event_runtime(source, settings, fence);
+                let result = if current.load(Ordering::Acquire) {
+                    self.configure_event_runtime(source.clone(), settings, fence)
+                } else {
+                    Err("recording configuration was superseded")
+                };
+                let result = if current.load(Ordering::Acquire) {
+                    result
+                } else {
+                    if enabled(settings) {
+                        self.remove_event_runtime_source(&source);
+                    }
+                    Err("recording configuration was superseded")
+                };
+                // Queue-only callers and timed-out waiters can drop their receipt before this reply.
+                let _ = reply.try_send(result);
             }
             Command::EventInput {
                 identity,
@@ -471,11 +596,11 @@ impl WriterWorker {
         source: String,
         settings: EventSettings,
         fence: EventFence,
-    ) {
+    ) -> Result<(), &'static str> {
         if fence.generations.source.load(Ordering::Acquire) != fence.observed
             || (enabled(settings) && !fence.generations.enabled.load(Ordering::Acquire))
         {
-            return;
+            return Err("recording configuration was superseded");
         }
         if enabled(settings) || self.event_sources.contains_key(&source) {
             self.cancel_event_writer(&source);
@@ -490,7 +615,8 @@ impl WriterWorker {
             if !runtime.configure(&source, settings) {
                 self.health
                     .note_failure(&source, "event recording configuration was rejected");
-                return;
+                self.remove_event_runtime_source(&source);
+                return Err("event recording configuration was rejected");
             }
             self.event_sources.insert(
                 source.clone(),
@@ -512,6 +638,27 @@ impl WriterWorker {
                 self.event_recordings = None;
             }
         }
+        Ok(())
+    }
+
+    fn remove_event_runtime_source(&mut self, source: &str) {
+        self.cancel_event_writer(source);
+        if let Some(runtime) = &mut self.event_recordings {
+            runtime.configure(
+                source,
+                EventSettings {
+                    mode: CameraRecordingMode::Off,
+                    stream: EventRecordingStream::Main,
+                    pre: Duration::ZERO,
+                    post: Duration::from_secs(1),
+                },
+            );
+        }
+        self.event_sources.remove(source);
+        self.health.clear_pre_recording(source);
+        if self.event_sources.is_empty() {
+            self.event_recordings = None;
+        }
     }
 
     fn reconcile_disabled_event_sources(&mut self) {
@@ -523,23 +670,7 @@ impl WriterWorker {
             .map(|(source, _)| source.clone())
             .collect();
         for source in disabled {
-            self.cancel_event_writer(&source);
-            if let Some(runtime) = &mut self.event_recordings {
-                runtime.configure(
-                    &source,
-                    EventSettings {
-                        mode: CameraRecordingMode::Off,
-                        stream: EventRecordingStream::Main,
-                        pre: Duration::ZERO,
-                        post: Duration::from_secs(1),
-                    },
-                );
-            }
-            self.event_sources.remove(&source);
-            self.health.clear_pre_recording(&source);
-        }
-        if self.event_sources.is_empty() {
-            self.event_recordings = None;
+            self.remove_event_runtime_source(&source);
         }
     }
 
