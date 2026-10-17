@@ -90,6 +90,12 @@ Pending replay means media is queued; it does not prove a successful disk or cat
 Use Recording integrity and playback to inspect committed evidence. Audio packets crossing the
 selected video boundary are omitted without re-encoding.
 
+If a runtime profile reports a camera as **Degraded** because storage rejected its recording
+settings or could not queue the change, new recording input for that camera stops. Live viewing
+can continue, and other cameras still apply their profile changes. Correct the reported settings
+or restore storage availability, then retry the accepted profile. **Applied** confirms recording
+admission and queue acceptance; use Recording integrity and playback to verify retained footage.
+
 The default limits are 64 MiB per buffered stream and 256 MiB globally. Administrators can change
 them in advanced storage settings. History is not saved across restart. Privacy activation,
 reconnect, and storage pause discard stale history; recording resumes from a valid keyframe.

@@ -584,6 +584,18 @@ pub struct StorageHandle {
 }
 
 impl StorageHandle {
+    #[cfg(test)]
+    pub(crate) fn with_test_queue(capacity: usize) -> (Self, impl Fn() -> usize) {
+        let (tx, rx) = storage_command_channel(capacity, 4096);
+        let handle = Self {
+            tx,
+            admission: RecordingAdmission::default(),
+        };
+        (handle, move || {
+            (0..capacity).take_while(|_| rx.try_recv().is_ok()).count()
+        })
+    }
+
     pub fn ingest(&self, camera_id: &str, frame: RecordingFrame) {
         self.ingest_stream(RecordingStreamIdentity::legacy(camera_id), frame);
     }

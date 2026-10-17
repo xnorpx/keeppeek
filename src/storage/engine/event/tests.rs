@@ -7,13 +7,15 @@ fn event_handle(capacity: usize, byte_limit: usize) -> (StorageHandle, StorageCo
         tx,
         admission: RecordingAdmission::default(),
     };
-    handle.configure_camera_event_recording(
-        "camera",
-        CameraRecordingMode::EventOnly,
-        EventRecordingStream::Main,
-        Duration::from_secs(1),
-        Duration::from_secs(1),
-    );
+    handle
+        .configure_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventOnly,
+            EventRecordingStream::Main,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .unwrap();
     assert!(matches!(
         rx.try_recv().unwrap(),
         Command::ConfigureEventRecording { .. }
@@ -42,17 +44,19 @@ fn concurrent_event_reconfiguration_keeps_frames_in_their_queued_epoch() {
         scope.spawn(|| {
             barrier.wait();
             for index in 0..128 {
-                handle.configure_camera_event_recording(
-                    "camera",
-                    CameraRecordingMode::EventOnly,
-                    if index % 2 == 0 {
-                        EventRecordingStream::Sub
-                    } else {
-                        EventRecordingStream::Main
-                    },
-                    Duration::ZERO,
-                    Duration::from_secs(1),
-                );
+                handle
+                    .configure_camera_event_recording(
+                        "camera",
+                        CameraRecordingMode::EventOnly,
+                        if index % 2 == 0 {
+                            EventRecordingStream::Sub
+                        } else {
+                            EventRecordingStream::Main
+                        },
+                        Duration::ZERO,
+                        Duration::from_secs(1),
+                    )
+                    .unwrap();
                 std::thread::yield_now();
             }
         });
@@ -104,13 +108,15 @@ fn event_only_routes_selected_stream_and_zero_preroll_boost_uses_legacy_queue() 
         key_frame(Instant::now()),
     );
     assert!(rx.try_recv().is_err());
-    handle.configure_camera_event_recording(
-        "camera",
-        CameraRecordingMode::EventBoost,
-        EventRecordingStream::Main,
-        Duration::ZERO,
-        Duration::ZERO,
-    );
+    handle
+        .configure_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventBoost,
+            EventRecordingStream::Main,
+            Duration::ZERO,
+            Duration::ZERO,
+        )
+        .unwrap();
     assert!(matches!(
         rx.try_recv().unwrap(),
         Command::ConfigureEventRecording { .. }
@@ -184,13 +190,15 @@ fn optional_main_queue_pressure_preserves_already_queued_continuous_sub() {
         tx,
         admission: RecordingAdmission::default(),
     };
-    handle.configure_camera_event_recording(
-        "camera",
-        CameraRecordingMode::EventBoost,
-        EventRecordingStream::Main,
-        Duration::from_secs(1),
-        Duration::from_secs(1),
-    );
+    handle
+        .configure_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventBoost,
+            EventRecordingStream::Main,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .unwrap();
     rx.try_recv().unwrap();
     handle.ingest_stream(
         RecordingStreamIdentity::legacy("camera/sub"),
@@ -220,13 +228,15 @@ fn optional_main_reserves_queue_slots_and_bytes_for_continuous_sub() {
         tx,
         admission: RecordingAdmission::default(),
     };
-    handle.configure_camera_event_recording(
-        "camera",
-        CameraRecordingMode::EventBoost,
-        EventRecordingStream::Main,
-        Duration::from_secs(1),
-        Duration::from_secs(1),
-    );
+    handle
+        .configure_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventBoost,
+            EventRecordingStream::Main,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .unwrap();
     rx.try_recv().unwrap();
     for _ in 0..3 {
         handle.ingest_stream(
@@ -286,13 +296,15 @@ fn assert_silent_event_only_finalization(stream: EventRecordingStream) {
         tx,
         admission: RecordingAdmission::default(),
     };
-    handle.configure_camera_event_recording(
-        "camera",
-        CameraRecordingMode::EventOnly,
-        stream,
-        Duration::from_secs(1),
-        Duration::from_millis(50),
-    );
+    handle
+        .configure_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventOnly,
+            stream,
+            Duration::from_secs(1),
+            Duration::from_millis(50),
+        )
+        .unwrap();
     worker.handle_command(rx.try_recv().unwrap());
     assert!(worker.pipelines.is_empty());
     assert!(!root.exists());
@@ -347,13 +359,15 @@ fn worker_rejects_queued_media_after_a_complete_privacy_cycle() {
         Arc::clone(&admission.privacy),
     );
     let handle = StorageHandle { tx, admission };
-    handle.configure_camera_event_recording(
-        "camera",
-        CameraRecordingMode::EventOnly,
-        EventRecordingStream::Main,
-        Duration::from_secs(1),
-        Duration::from_secs(1),
-    );
+    handle
+        .configure_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventOnly,
+            EventRecordingStream::Main,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .unwrap();
     worker.handle_command(rx.try_recv().unwrap());
     handle.ingest_stream(
         RecordingStreamIdentity::legacy("camera/main"),
@@ -411,13 +425,15 @@ fn shutdown_commits_delayed_continuous_sub_without_waiting_for_the_horizon() {
         tx,
         admission: RecordingAdmission::default(),
     };
-    handle.configure_camera_event_recording(
-        "camera",
-        CameraRecordingMode::EventBoost,
-        EventRecordingStream::Main,
-        Duration::from_secs(30),
-        Duration::from_secs(1),
-    );
+    handle
+        .configure_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventBoost,
+            EventRecordingStream::Main,
+            Duration::from_secs(30),
+            Duration::from_secs(1),
+        )
+        .unwrap();
     worker.handle_command(rx.try_recv().unwrap());
     let start = Instant::now() - Duration::from_secs(1);
     for offset in [0, 100, 200] {
@@ -478,13 +494,15 @@ fn live_keyframe_releases_a_replay_lease_when_the_history_budget_is_full() {
         tx,
         admission: RecordingAdmission::default(),
     };
-    handle.configure_camera_event_recording(
-        "camera",
-        CameraRecordingMode::EventOnly,
-        EventRecordingStream::Main,
-        Duration::from_secs(1),
-        Duration::from_secs(1),
-    );
+    handle
+        .configure_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventOnly,
+            EventRecordingStream::Main,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .unwrap();
     worker.handle_command(rx.try_recv().unwrap());
     handle.ingest_stream(
         RecordingStreamIdentity::legacy("camera/main"),
@@ -558,13 +576,15 @@ fn configured_worker(
         tx,
         admission: RecordingAdmission::default(),
     };
-    handle.configure_camera_event_recording(
-        "camera",
-        CameraRecordingMode::EventOnly,
-        EventRecordingStream::Main,
-        Duration::from_secs(1),
-        Duration::from_secs(1),
-    );
+    handle
+        .configure_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventOnly,
+            EventRecordingStream::Main,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .unwrap();
     worker.handle_command(rx.try_recv().unwrap());
     (handle, rx, worker, root)
 }
@@ -676,13 +696,15 @@ fn configuring_zero_preroll_preserves_an_existing_legacy_writer() {
         tx,
         admission: RecordingAdmission::default(),
     };
-    handle.configure_camera_event_recording(
-        "camera",
-        CameraRecordingMode::EventBoost,
-        EventRecordingStream::Main,
-        Duration::ZERO,
-        Duration::from_secs(1),
-    );
+    handle
+        .configure_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventBoost,
+            EventRecordingStream::Main,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .unwrap();
     worker.handle_command(rx.try_recv().unwrap());
     assert!(worker.event_recordings.is_none());
     assert_eq!(
@@ -712,13 +734,16 @@ fn invalid_programmatic_event_settings_disable_recording_instead_of_falling_back
         admission: RecordingAdmission::default(),
     };
     for (pre, post) in [(1, 0), (1, 3601), (31, 1)] {
-        handle.configure_camera_event_recording(
-            "camera",
-            CameraRecordingMode::EventOnly,
-            EventRecordingStream::Main,
-            Duration::from_secs(pre),
-            Duration::from_secs(post),
-        );
+        let error = handle
+            .configure_camera_event_recording(
+                "camera",
+                CameraRecordingMode::EventOnly,
+                EventRecordingStream::Main,
+                Duration::from_secs(pre),
+                Duration::from_secs(post),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid event configuration"));
         let Command::ConfigureEventRecording { settings, .. } = rx.try_recv().unwrap() else {
             panic!("configuration")
         };
@@ -745,13 +770,23 @@ fn event_registry_capacity_rejection_disables_the_unregistered_camera() {
     };
     for index in 0..128 {
         let source = format!("camera{index}");
-        handle.configure_camera_event_recording(
+        let result = handle.configure_camera_event_recording(
             &source,
             CameraRecordingMode::EventOnly,
             EventRecordingStream::Main,
             Duration::from_secs(1),
             Duration::from_secs(1),
         );
+        if index < 127 {
+            result.unwrap();
+        } else {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("event camera limit reached")
+            );
+        }
         let Command::ConfigureEventRecording { settings, .. } = rx.try_recv().unwrap() else {
             panic!("configuration")
         };
@@ -769,4 +804,185 @@ fn event_registry_capacity_rejection_disables_the_unregistered_camera() {
         key_frame(Instant::now()),
     );
     assert!(rx.try_recv().is_err());
+}
+
+fn configure_event(
+    handle: &StorageHandle,
+    source: &str,
+    mode: CameraRecordingMode,
+) -> anyhow::Result<()> {
+    handle.configure_camera_event_recording(
+        source,
+        mode,
+        EventRecordingStream::Main,
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    )
+}
+
+fn full_queue_rejection(
+    handle: &StorageHandle,
+    rx: &StorageCommandReceiver,
+    source: &str,
+) -> (anyhow::Error, Command) {
+    std::thread::scope(|scope| {
+        let (sent, received) = mpsc::sync_channel(1);
+        let configuring = scope.spawn(move || {
+            sent.send(configure_event(handle, source, CameraRecordingMode::Off))
+                .unwrap();
+        });
+        let result = received.recv_timeout(Duration::from_secs(5));
+        // Drain before joining so a regressed blocking send can finish and fail this test.
+        let queued = rx.try_recv().unwrap();
+        configuring.join().unwrap();
+        (
+            result
+                .expect("configuration must not wait for queue capacity")
+                .unwrap_err(),
+            queued,
+        )
+    })
+}
+
+#[test]
+fn full_configuration_queue_fails_closed_and_can_retry() {
+    let (tx, rx) = storage_command_channel(1, 4096);
+    let handle = StorageHandle {
+        tx,
+        admission: RecordingAdmission::default(),
+    };
+    configure_event(&handle, "camera", CameraRecordingMode::EventOnly).unwrap();
+    let (error, queued) = full_queue_rejection(&handle, &rx, "camera");
+    assert!(error.to_string().contains("queue is full"));
+    assert!(!handle.admission.has_event_recording("camera"));
+    assert!(matches!(
+        handle
+            .admission
+            .decide_at("camera", "main", true, true, Instant::now()),
+        AdmissionDecision::Ignore
+    ));
+    let Command::ConfigureEventRecording { fence, .. } = queued else {
+        panic!("configuration")
+    };
+    assert!(!fence.valid(), "failed Off must fence older queued enable");
+    configure_event(&handle, "camera", CameraRecordingMode::EventOnly).unwrap();
+    assert!(handle.admission.has_event_recording("camera"));
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        Command::ConfigureEventRecording { .. }
+    ));
+}
+
+#[test]
+fn disconnected_configuration_queue_fails_closed() {
+    let (tx, rx) = storage_command_channel(1, 4096);
+    let handle = StorageHandle {
+        tx,
+        admission: RecordingAdmission::default(),
+    };
+    configure_event(&handle, "camera", CameraRecordingMode::EventOnly).unwrap();
+    let Command::ConfigureEventRecording { fence, .. } = rx.try_recv().unwrap() else {
+        panic!("configuration")
+    };
+    drop(rx);
+    let error = configure_event(&handle, "camera", CameraRecordingMode::EventOnly).unwrap_err();
+    assert!(error.to_string().contains("disconnected"));
+    assert!(!handle.admission.has_event_recording("camera"));
+    assert!(!fence.valid());
+}
+
+#[test]
+fn failed_off_reclaims_writer_slot_before_next_configuration() {
+    let config = storage_config(&format!("event-reclaim-{}", uuid::Uuid::new_v4()));
+    let mut worker = WriterWorker::new(config, RecordingDemand::new(DEMAND_INACTIVITY_GRACE), None);
+    let (tx, rx) = storage_command_channel(1, 4096);
+    let handle = StorageHandle {
+        tx,
+        admission: RecordingAdmission::default(),
+    };
+    for index in 0..127 {
+        configure_event(
+            &handle,
+            &format!("camera{index}"),
+            CameraRecordingMode::EventOnly,
+        )
+        .unwrap();
+        worker.handle_command(rx.try_recv().unwrap());
+    }
+    assert_eq!(worker.event_sources.len(), 127);
+    assert!(handle.tx.tx.try_send(Command::FlushAll).is_ok());
+    let (_, queued) = full_queue_rejection(&handle, &rx, "camera0");
+    assert_eq!(worker.event_sources.len(), 127);
+    drop(queued);
+    configure_event(&handle, "camera127", CameraRecordingMode::EventOnly).unwrap();
+    worker.handle_command(rx.try_recv().unwrap());
+    assert!(!worker.event_sources.contains_key("camera0"));
+    assert!(worker.event_sources.contains_key("camera127"));
+    assert_eq!(worker.event_sources.len(), 127);
+    assert!(handle.tx.tx.try_send(Command::FlushAll).is_ok());
+    let (_, queued) = full_queue_rejection(&handle, &rx, "camera127");
+    drop(queued);
+    configure_event(&handle, "camera127", CameraRecordingMode::EventOnly).unwrap();
+    worker.handle_command(rx.try_recv().unwrap());
+    worker.drain_event_outputs(Instant::now() + Duration::from_millis(25));
+    assert!(worker.event_sources.contains_key("camera127"));
+    assert_eq!(worker.event_sources.len(), 127);
+    worker.handle_command(Command::Shutdown);
+}
+
+#[test]
+fn failed_off_reclaims_writer_slot_on_tick_without_more_commands() {
+    let config = storage_config(&format!("event-tick-reclaim-{}", uuid::Uuid::new_v4()));
+    let mut worker = WriterWorker::new(config, RecordingDemand::new(DEMAND_INACTIVITY_GRACE), None);
+    let (tx, rx) = storage_command_channel(1, 4096);
+    let handle = StorageHandle {
+        tx,
+        admission: RecordingAdmission::default(),
+    };
+    configure_event(&handle, "camera", CameraRecordingMode::EventOnly).unwrap();
+    worker.handle_command(rx.try_recv().unwrap());
+    assert!(handle.tx.tx.try_send(Command::FlushAll).is_ok());
+    let (_, queued) = full_queue_rejection(&handle, &rx, "camera");
+    drop(queued);
+    assert!(worker.event_sources.contains_key("camera"));
+    worker.drain_event_outputs(Instant::now());
+    assert!(!worker.event_sources.contains_key("camera"));
+    assert!(worker.event_recordings.is_none());
+    worker.handle_command(Command::Shutdown);
+}
+
+#[test]
+fn event_configuration_admission_scale() {
+    let config = storage_config(&format!("event-config-scale-{}", uuid::Uuid::new_v4()));
+    let mut worker = WriterWorker::new(config, RecordingDemand::new(DEMAND_INACTIVITY_GRACE), None);
+    let (tx, rx) = storage_command_channel(1, 4096);
+    let handle = StorageHandle {
+        tx,
+        admission: RecordingAdmission::default(),
+    };
+    let sources: Vec<_> = (0..127).map(|index| format!("camera{index}")).collect();
+    let mut samples = Vec::with_capacity(127 * 30);
+    for _ in 0..30 {
+        for source in &sources {
+            let started = Instant::now();
+            configure_event(&handle, source, CameraRecordingMode::EventOnly).unwrap();
+            worker.handle_command(rx.try_recv().unwrap());
+            samples.push(started.elapsed().as_micros());
+        }
+    }
+    samples.sort_unstable();
+    println!(
+        "127 event cameras, 30 configuration cycles: median={}us p95={}us max={}us",
+        samples[samples.len() / 2],
+        samples[samples.len() * 95 / 100],
+        samples.last().unwrap()
+    );
+    assert_eq!(worker.event_sources.len(), 127);
+    assert!(
+        worker
+            .event_sources
+            .values()
+            .all(|state| state.fence.valid())
+    );
+    worker.handle_command(Command::Shutdown);
 }

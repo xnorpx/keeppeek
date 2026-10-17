@@ -15,6 +15,7 @@ pub(super) struct EventAdmission {
 struct EventGenerations {
     source: AtomicU64,
     main: AtomicU64,
+    enabled: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -243,6 +244,9 @@ impl RecordingAdmission {
 }
 
 impl StorageHandle {
+    /// Accepts an event policy after validating admission and enqueueing its writer command.
+    /// An error closes new recording ingress for this source; success does not acknowledge
+    /// writer I/O or completion of the configuration command.
     pub fn configure_camera_event_recording(
         &self,
         source: &str,
@@ -250,7 +254,7 @@ impl StorageHandle {
         stream: EventRecordingStream,
         pre: Duration,
         post: Duration,
-    ) {
+    ) -> anyhow::Result<()> {
         self.configure_event_settings(
             source,
             EventSettings {
@@ -259,12 +263,18 @@ impl StorageHandle {
                 pre,
                 post,
             },
-        );
+        )
     }
 
-    fn configure_event_settings(&self, source: &str, mut settings: EventSettings) {
+    fn configure_event_settings(
+        &self,
+        source: &str,
+        mut settings: EventSettings,
+    ) -> anyhow::Result<()> {
+        let mut rejection = None;
         if !settings_valid(source, settings) {
             self.reject_event_settings(source, &mut settings, "invalid event configuration");
+            rejection = Some("invalid event configuration");
         }
         let mut policies = self
             .admission
@@ -278,40 +288,87 @@ impl StorageHandle {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if enabled(settings) && !events.contains_key(source) && events.len() >= 127 {
             self.reject_event_settings(source, &mut settings, "event camera limit reached");
+            rejection = Some("event camera limit reached");
         }
-        let (generations, queued_frames) = events.remove(source).map_or_else(
+        let fence = self.replace_event_admission(source, settings, &mut events);
+        policies.insert(
+            source.to_owned(),
+            CameraRecordingPolicy::new(settings.mode, settings.post),
+        );
+        let queued = self.tx.tx.try_send(Command::ConfigureEventRecording {
+            source: source.to_owned(),
+            settings,
+            fence,
+        });
+        if let Err(error) = queued {
+            let reason = match error {
+                mpsc::TrySendError::Full(_) => "event recording configuration queue is full",
+                mpsc::TrySendError::Disconnected(_) => {
+                    "event recording configuration queue is disconnected"
+                }
+            };
+            self.fail_closed_event_configuration(source, &mut policies, &mut events, reason);
+            anyhow::bail!("{reason}");
+        }
+        rejection.map_or(Ok(()), |reason| Err(anyhow::anyhow!(reason)))
+    }
+
+    fn replace_event_admission(
+        &self,
+        source: &str,
+        settings: EventSettings,
+        events: &mut HashMap<String, EventAdmission>,
+    ) -> EventFence {
+        let (generations, queued_frames, existed) = events.remove(source).map_or_else(
             || {
                 (
                     Arc::new(EventGenerations::default()),
                     Arc::new(AtomicUsize::new(0)),
+                    false,
                 )
             },
-            |entry| {
-                entry.generations.source.fetch_add(1, Ordering::AcqRel);
-                (entry.generations, entry.queued_frames)
-            },
+            |entry| (entry.generations, entry.queued_frames, true),
         );
+        let event_enabled = enabled(settings);
+        // ponytail: the shared marker lets the writer reclaim a failed Off without a retry queue.
+        generations.enabled.store(event_enabled, Ordering::Release);
+        if existed {
+            generations.source.fetch_add(1, Ordering::AcqRel);
+        }
         let entry = EventAdmission {
             settings,
             generations,
             queued_frames,
         };
         let fence = self.admission.event_fence(source, &entry);
-        if enabled(settings) {
+        if event_enabled {
             events.insert(source.to_owned(), entry);
+        }
+        self.admission
+            .events_enabled
+            .store(!events.is_empty(), Ordering::Release);
+        fence
+    }
+
+    fn fail_closed_event_configuration(
+        &self,
+        source: &str,
+        policies: &mut HashMap<String, CameraRecordingPolicy>,
+        events: &mut HashMap<String, EventAdmission>,
+        reason: &str,
+    ) {
+        if let Some(entry) = events.remove(source) {
+            entry.generations.enabled.store(false, Ordering::Release);
+            entry.generations.source.fetch_add(1, Ordering::AcqRel);
         }
         self.admission
             .events_enabled
             .store(!events.is_empty(), Ordering::Release);
         policies.insert(
             source.to_owned(),
-            CameraRecordingPolicy::new(settings.mode, settings.post),
+            CameraRecordingPolicy::new(CameraRecordingMode::Off, Duration::from_secs(1)),
         );
-        self.tx.send_control(Command::ConfigureEventRecording {
-            source: source.to_owned(),
-            settings,
-            fence,
-        });
+        self.admission.health.note_failure(source, reason);
     }
 
     fn reject_event_settings(&self, source: &str, settings: &mut EventSettings, reason: &str) {
@@ -371,6 +428,7 @@ impl WriterWorker {
                 settings,
                 fence,
             } => {
+                self.reconcile_disabled_event_sources();
                 self.configure_event_runtime(source, settings, fence);
             }
             Command::EventInput {
@@ -414,7 +472,9 @@ impl WriterWorker {
         settings: EventSettings,
         fence: EventFence,
     ) {
-        if fence.generations.source.load(Ordering::Acquire) != fence.observed {
+        if fence.generations.source.load(Ordering::Acquire) != fence.observed
+            || (enabled(settings) && !fence.generations.enabled.load(Ordering::Acquire))
+        {
             return;
         }
         if enabled(settings) || self.event_sources.contains_key(&source) {
@@ -451,6 +511,35 @@ impl WriterWorker {
             if self.event_sources.is_empty() {
                 self.event_recordings = None;
             }
+        }
+    }
+
+    fn reconcile_disabled_event_sources(&mut self) {
+        // ponytail: scan at most 127 sources on Configure and the existing 25 ms tick.
+        let disabled: Vec<_> = self
+            .event_sources
+            .iter()
+            .filter(|(_, state)| !state.fence.generations.enabled.load(Ordering::Acquire))
+            .map(|(source, _)| source.clone())
+            .collect();
+        for source in disabled {
+            self.cancel_event_writer(&source);
+            if let Some(runtime) = &mut self.event_recordings {
+                runtime.configure(
+                    &source,
+                    EventSettings {
+                        mode: CameraRecordingMode::Off,
+                        stream: EventRecordingStream::Main,
+                        pre: Duration::ZERO,
+                        post: Duration::from_secs(1),
+                    },
+                );
+            }
+            self.event_sources.remove(&source);
+            self.health.clear_pre_recording(&source);
+        }
+        if self.event_sources.is_empty() {
+            self.event_recordings = None;
         }
     }
 
@@ -540,6 +629,10 @@ impl WriterWorker {
             .is_none_or(|tick| now.saturating_duration_since(tick) >= Duration::from_millis(25))
         {
             self.event_tick = Some(now);
+            self.reconcile_disabled_event_sources();
+            if self.event_recordings.is_none() {
+                return 0;
+            }
             let sources: Vec<_> = self.event_sources.keys().cloned().collect();
             for source in sources {
                 self.sync_event_source(&source);
