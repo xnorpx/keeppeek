@@ -16,11 +16,17 @@ use crate::storage::{
 use sha2::{Digest, Sha256};
 use std::{io::Write, sync::Arc};
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Outcome {
+    Verified,
+    Unchanged,
+}
+
 pub(super) fn execute(
     catalog: &RecordingCatalogHandle,
     job: &Job,
     work: &Work<'_>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Outcome> {
     match job.action.as_str() {
         "evict" => evict(catalog, job, work),
         "restore" => restore(catalog, job, work),
@@ -54,14 +60,16 @@ fn source_root(job: &Job) -> anyhow::Result<Root> {
     Ok(root)
 }
 
-fn evict(catalog: &RecordingCatalogHandle, job: &Job, work: &Work<'_>) -> anyhow::Result<()> {
+fn evict(catalog: &RecordingCatalogHandle, job: &Job, work: &Work<'_>) -> anyhow::Result<Outcome> {
     work.check()?;
     let operation = job
         .source_retirement_operation
         .clone()
         .unwrap_or_else(|| ObjectId::random().to_string());
     let root = source_root(job)?;
-    if job.local_evicted != 1 {
+    let outcome = if job.local_evicted == 1 {
+        Outcome::Unchanged
+    } else {
         let path = if job.local_evicted == 2 {
             descriptor(job)?.path().to_string_lossy().into_owned()
         } else {
@@ -97,7 +105,8 @@ fn evict(catalog: &RecordingCatalogHandle, job: &Job, work: &Work<'_>) -> anyhow
             recording_id: job.recording_id.clone(),
             operation: operation.clone(),
         })?;
-    }
+        Outcome::Verified
+    };
     root.acknowledge_retirement(
         &job.source_relative_key,
         &job.source_identity,
@@ -105,7 +114,8 @@ fn evict(catalog: &RecordingCatalogHandle, job: &Job, work: &Work<'_>) -> anyhow
         job.digest,
         &operation,
     )?;
-    work.check()
+    work.check()?;
+    Ok(outcome)
 }
 
 fn verify_archive(job: &Job, work: &Work<'_>) -> anyhow::Result<()> {
@@ -120,10 +130,14 @@ fn verify_archive(job: &Job, work: &Work<'_>) -> anyhow::Result<()> {
     verify_version(&target, &version, job.digest, work)
 }
 
-fn restore(catalog: &RecordingCatalogHandle, job: &Job, work: &Work<'_>) -> anyhow::Result<()> {
+fn restore(
+    catalog: &RecordingCatalogHandle,
+    job: &Job,
+    work: &Work<'_>,
+) -> anyhow::Result<Outcome> {
     work.check()?;
     if job.local_evicted == 0 {
-        return Ok(());
+        return Ok(Outcome::Unchanged);
     }
     anyhow::ensure!(
         job.local_evicted == 1,
@@ -179,7 +193,7 @@ fn restore(catalog: &RecordingCatalogHandle, job: &Job, work: &Work<'_>) -> anyh
         version,
         digest: intent.digest,
     })?;
-    Ok(())
+    Ok(Outcome::Verified)
 }
 
 fn verify_version(

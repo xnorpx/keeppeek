@@ -389,9 +389,12 @@ impl Context {
             else {
                 anyhow::bail!("invalid archive action reply");
             };
-            super::operations::execute(&self.catalog, &started, work)?;
+            let outcome = super::operations::execute(&self.catalog, &started, work)?;
             self.catalog
                 .archive(Request::ActionComplete { id: job.id.clone() })?;
+            if outcome == super::operations::Outcome::Unchanged {
+                return Ok(());
+            }
         } else if job.kind == "probe" {
             let outcome =
                 transfer::probe(&self.catalog, job, self.settings.maximum_attempts, work)?;
