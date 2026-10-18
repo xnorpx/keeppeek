@@ -4,6 +4,7 @@ use crate::storage::{
     archive::{VerifiedReader, read_range},
 };
 
+mod health;
 mod performance;
 
 type Index = (String, i64, u64, i64, u64, u64, u64, u64, u64);
