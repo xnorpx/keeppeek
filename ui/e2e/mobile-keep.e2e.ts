@@ -26,7 +26,7 @@ test.describe('touch input', () => {
 	});
 
 	for (const width of [320, 390]) {
-		test(`mobile Keep shows recording history above navigation without scrolling at ${width}px`, async ({
+		test(`mobile Keep keeps playback failures and recording history above navigation without scrolling at ${width}px`, async ({
 			page
 		}, testInfo) => {
 			await page.setViewportSize({ width, height: 844 });
@@ -43,6 +43,20 @@ test.describe('touch input', () => {
 			await expect(timeline).toHaveAttribute('aria-busy', 'false');
 			await expect(eventCard).toBeVisible();
 			await expect(navigation).toBeVisible();
+			const player = page.getByRole('region', { name: 'Recorded video player' });
+			await expect(player.getByRole('alert')).toContainText(
+				'No recording initialization arrived within 3 seconds.'
+			);
+			await expect(
+				player.getByRole('button', { name: 'Retry playback', exact: true })
+			).toBeInViewport({
+				ratio: 1
+			});
+			await expect(
+				player.getByRole('button', { name: 'Close playback', exact: true })
+			).toBeInViewport({
+				ratio: 1
+			});
 			await page.evaluate(() => document.fonts.ready.then(() => undefined));
 			const [timelineBounds, eventBounds, navigationBounds] = await Promise.all([
 				timeline.boundingBox(),
