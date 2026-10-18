@@ -4,12 +4,27 @@ Captured during the 2026-09-12 Alpha audit from
 [KeepPeek — NVR Design System & Spec](https://app.paper.design/file/01M0B0VBH78TMTX40GCYYQ37SG/1-0).
 The manifest records the exact UTC export time; the audit continued into September 13 UTC.
 
-This bundle contains **40 NVR boards, 67 lossless PNGs at 1×, and the complete 82-token snapshot**.
+This bundle contains **44 NVR boards, 79 lossless PNGs at 1×, and the complete 82-token snapshot**.
 Boards 01–34 and 45 were refreshed from the live source. Board 46 was added in Paper to address
 mobile Keep's crowded command area. The six contract-only boards have JSX without image references.
 Archive boards 47–50 were added and visually reviewed in Paper on October 17, 2026 (October 18 UTC).
 Each new board records its own export time; earlier exports retain their original provenance.
-The shared file now contains 86 artboards across several products; those are not 86 NVR requirements.
+Recorded audio boards 57–60 were added and visually reviewed on October 18, 2026 UTC.
+The shared file now contains 96 artboards across several products; those are not 96 NVR requirements.
+Guest sharing boards 51–56 remain outside this branch's captured bundle.
+
+## Recorded audio design
+
+Boards 57–60 define per-camera recorded timing inheritance, a temporary Keep calibration preview,
+normalized container diagnostics and captured export timing, and retained drafts or unavailable
+states. Each includes a desktop frame and separate 390- and 320-pixel frames. Positive offsets
+delay audio, explicit zero differs from inheritance, and offsets use whole milliseconds within
+±5000 ms, with a warning beyond 1000 ms. Live correction remains unavailable.
+
+The twelve PNGs and four JSX exports are original Paper output with per-board timestamps and
+SHA-256 hashes. All earlier board metadata, artifacts, and the token snapshot are preserved.
+These references remain `proposal`; they do not certify decoded synchronization or runtime pixels.
+See [the recorded audio design record](../../../../../tasks/124-audio-sync-ui-design.md).
 
 ## Archive design
 
