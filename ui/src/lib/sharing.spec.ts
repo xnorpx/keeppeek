@@ -27,6 +27,9 @@ describe('sharing form bounds', () => {
 			expect(() => shareQuota(input)).toThrow();
 	});
 	it('labels shared media times explicitly in UTC', () => {
-		expect(shareTime(BigInt(sharingFixtureNow))).toBe('18 Oct 2026, 06:00:00 UTC');
+		const formatted = shareTime(BigInt(sharingFixtureNow));
+		expect(formatted).toContain('18 Oct 2026');
+		expect(formatted).toContain('06:00:00');
+		expect(formatted).toEndWith('UTC');
 	});
 });

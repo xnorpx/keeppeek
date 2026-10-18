@@ -86,7 +86,7 @@ impl ResponseAbortHandle {
         let mut state = self.state.lock().map_err(|_| poisoned())?;
         state.aborted = true;
         state.connection.as_ref().map_or(Ok(false), |connection| {
-            connection.shutdown(Shutdown::Both)?;
+            ignore_disconnected_shutdown(connection.shutdown(Shutdown::Both))?;
             Ok(true)
         })
     }
@@ -152,6 +152,13 @@ impl ResponseAbortHandle {
 
 fn poisoned() -> io::Error {
     io::Error::other("response cancellation state is poisoned")
+}
+
+fn ignore_disconnected_shutdown(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+        result => result,
+    }
 }
 
 struct ResponseWriter {
@@ -325,6 +332,17 @@ mod tests {
         assert!(
             terminated,
             "failed restoration must not leave a reusable connection"
+        );
+    }
+
+    #[test]
+    fn abort_accepts_an_already_disconnected_connection() {
+        assert!(ignore_disconnected_shutdown(Err(io::ErrorKind::NotConnected.into())).is_ok());
+        assert_eq!(
+            ignore_disconnected_shutdown(Err(io::Error::other("shutdown failed")))
+                .unwrap_err()
+                .to_string(),
+            "shutdown failed"
         );
     }
 }
