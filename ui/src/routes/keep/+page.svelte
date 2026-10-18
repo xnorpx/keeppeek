@@ -1068,6 +1068,7 @@
 		timestampMs: number,
 		version: number
 	): Promise<StoredMediaPlayback | null> {
+		rememberPlaybackTarget(segment, (timestampMs - segment.start_time_ms) / 1_000, scrubPlayIntent);
 		const current = storedPlayback;
 		if (
 			current &&
@@ -1077,14 +1078,21 @@
 		) {
 			if (scrubUsesFragmentFallback) await current.commitPlayback(false, 1);
 			else await current.enterScrub();
+			if (version !== scrubVersion || current !== storedPlayback) return null;
 			selected = segment;
-			return version === scrubVersion ? current : null;
+			observePlaybackStartup(current, playbackVersion, segment, timestampMs, false);
+			return current;
 		}
+		const playbackGeneration = prepareScrubPlaybackOpen();
 		const previous = storedPlayback;
 		previous?.setPlaying(false);
 		scrubOpenController?.abort();
 		const openController = new AbortController();
 		scrubOpenController = openController;
+		const ownsOpen = () =>
+			!openController.signal.aborted &&
+			version === scrubVersion &&
+			playbackGeneration === playbackVersion;
 		let playback: StoredMediaPlayback;
 		try {
 			playback = await controlClient.openStoredMedia({
@@ -1098,12 +1106,12 @@
 				signal: openController.signal
 			});
 		} catch (cause) {
-			if (openController.signal.aborted || version !== scrubVersion) return null;
+			if (!ownsOpen()) return null;
 			throw cause;
 		} finally {
 			if (scrubOpenController === openController) scrubOpenController = null;
 		}
-		if (version !== scrubVersion) {
+		if (!ownsOpen()) {
 			await playback.close().catch(() => undefined);
 			return null;
 		}
@@ -1113,13 +1121,25 @@
 		playbackAnchorMs = playback.anchorTimeMs;
 		pendingSeekSeconds = playback.initialOffsetSeconds;
 		attachKeyFramePreview(playback);
+		observePlaybackStartup(playback, playbackGeneration, segment, timestampMs, false);
 		if (previous && previous !== playback) await previous.close().catch(() => undefined);
 		return playback;
+	}
+
+	function prepareScrubPlaybackOpen(): number {
+		playbackOpenController?.abort();
+		playbackOpenController = null;
+		clearPlaybackStartupTimer();
+		playerError = null;
+		playbackStartupPhase = 'opening';
+		playbackContentType = null;
+		return ++playbackVersion;
 	}
 
 	function beginTimelineScrub(timestampMs: number): void {
 		scrubVersion += 1;
 		scrubOpenController?.abort();
+		clearPlaybackStartupTimer();
 		scrubPlayIntent = playbackIntent();
 		scrubbing = true;
 		playing = false;
@@ -1132,20 +1152,24 @@
 	}
 
 	async function finishTimelineScrub(timestampMs: number): Promise<void> {
+		const version = scrubVersion;
 		await queueTimelineScrub(timestampMs);
 		await scrubPump;
+		if (version !== scrubVersion) return;
 		const playback = storedPlayback;
 		if (!playback) {
 			scrubbing = false;
 			return;
 		}
 		await playback.commitPlayback(scrubPlayIntent, playbackRate);
+		if (version !== scrubVersion || playback !== storedPlayback) return;
 		playbackUrl = playback.url;
 		playbackAnchorMs = playback.anchorTimeMs;
 		pendingSeekSeconds = playback.initialOffsetSeconds;
 		pendingPlay = scrubPlayIntent;
 		playing = scrubPlayIntent;
 		scrubbing = false;
+		if (selected) observePlaybackStartup(playback, playbackVersion, selected, timestampMs);
 		await tick();
 		applyPendingSeek();
 	}
@@ -1157,6 +1181,14 @@
 		scrubTargetMs = null;
 		scrubbing = false;
 		playing = scrubPlayIntent;
+		if (storedPlayback && selected) {
+			observePlaybackStartup(
+				storedPlayback,
+				playbackVersion,
+				selected,
+				playheadMs ?? selected.start_time_ms
+			);
+		}
 		void storedPlayback?.commitPlayback(scrubPlayIntent, playbackRate);
 		if (scrubPlayIntent) void startReplay();
 	}
@@ -1284,8 +1316,10 @@
 		playback: StoredMediaPlayback,
 		version: number,
 		segment: RecordingSegment,
-		timestampMs: number
+		timestampMs: number,
+		startupDeadline = true
 	): void {
+		clearPlaybackStartupTimer();
 		detachPlaybackObservers();
 		playbackArchiveUnsubscribe = playback.onArchive((archive) => {
 			if (playback === storedPlayback) archivePlayback = archive;
@@ -1304,7 +1338,7 @@
 			if (version !== playbackVersion || playback !== storedPlayback) return;
 			playbackStartupPhase = event.phase;
 			playbackContentType = event.contentType;
-			armPlaybackStartupDeadline(version, segment, timestampMs, event.phase);
+			if (startupDeadline) armPlaybackStartupDeadline(version, segment, timestampMs, event.phase);
 		});
 	}
 
@@ -1778,6 +1812,9 @@
 	}
 	async function closePlaybackNotice() {
 		playbackVersion += 1;
+		scrubVersion += 1;
+		scrubTargetMs = null;
+		scrubbing = false;
 		targetLoadVersion += 1;
 		targetLoadController?.abort();
 		clearColdSeek();
