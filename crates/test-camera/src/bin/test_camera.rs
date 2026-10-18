@@ -88,6 +88,10 @@ struct CameraArgs {
 
 #[derive(Debug, Args)]
 struct SeedRecordingArgs {
+    /// Seed two bounded H.264/AAC calibration periods instead of looping video.
+    #[arg(long)]
+    calibration: bool,
+
     #[arg(long)]
     source: PathBuf,
 
@@ -138,6 +142,7 @@ fn seed(command: SeedRecordingArgs) -> anyhow::Result<()> {
         .map(|_| keeppeek::config::load().map(|(config, _)| config.storage))
         .transpose()?;
     seed_recording(&RecordingSeedOptions {
+        calibration: command.calibration,
         source: command.source,
         recordings: command.recordings.unwrap_or_default(),
         catalog: command.catalog.unwrap_or_default(),
