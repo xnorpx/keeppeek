@@ -361,6 +361,9 @@ test('local archive survives restart and plays evicted media before restoring it
 		await copyAndEvict(page, live, fixture, info, evidence);
 		await observeArchivedPlayback(page, fixture, info, evidence);
 		await restorePrimary(page, live, fixture, info, evidence);
+		evidence.timings.push(
+			await measureArchivePlayback(page, fixture.seededAtMs + 5000, 'local-restored')
+		);
 	} finally {
 		try {
 			await attachArchiveEvidence(info, page, fixture, evidence, context.browser()?.version());
