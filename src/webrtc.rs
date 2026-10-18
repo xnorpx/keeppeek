@@ -42,7 +42,9 @@ use str0m::{
     net::{Protocol, Receive},
 };
 
+mod bandwidth;
 mod session_registry;
+mod subscriptions;
 
 #[cfg(test)]
 pub(crate) mod test_queue;
@@ -216,6 +218,7 @@ pub(crate) struct MediaSubscriptionPlan {
     pub(crate) media_kind: crate::api::proto::MediaKind,
     pub(crate) source_session_id: String,
     pub(crate) camera_ip: IpAddr,
+    pub(crate) has_main_stream: bool,
     pub(crate) has_sub_stream: bool,
     pub(crate) recording_label: String,
     pub(crate) quality: StreamQuality,
@@ -395,6 +398,7 @@ pub(crate) struct Session {
 pub(crate) struct TrackPlan {
     pub(crate) track_id: TrackId,
     pub(crate) camera_ip: IpAddr,
+    pub(crate) has_main_stream: bool,
     pub(crate) has_sub_stream: bool,
     pub(crate) selected_stream: StreamKind,
     pub(crate) recording_label: String,
@@ -721,6 +725,7 @@ struct ApiSessionControl {
 struct ApiControlRuntime {
     dispatch_tx: Sender<BackgroundControlDispatch>,
     dispatch_rx: Receiver<BackgroundControlDispatch>,
+    control_output_ready: bool,
     outbound: VecDeque<QueuedControlOutput>,
     outbound_bytes: usize,
     outbound_messages: usize,
@@ -819,6 +824,7 @@ struct ApiMediaTrack {
 
 struct ApiAudioTrack {
     runtime: AudioTrackRuntime,
+    reserved_bitrate_bps: u64,
 }
 
 enum TrackDelivery {
@@ -893,6 +899,7 @@ impl TrackDelivery {
 
 #[derive(Default)]
 struct ApiMediaRuntime {
+    bandwidth: bandwidth::SessionBandwidth,
     available_video_mids: Vec<Mid>,
     available_audio_mids: Vec<Mid>,
     tracks: Vec<ApiMediaTrack>,
@@ -1223,18 +1230,7 @@ impl ApiMediaRuntime {
     }
 
     fn enqueue_stream_state(&mut self, track_id: &TrackId, stream: StreamKind) {
-        if let Err(error) = self.enqueue_control_notification(crate::api::proto::Notification {
-            event: Some(
-                crate::api::proto::notification::Event::SubscriptionStreamState(
-                    crate::api::proto::SubscriptionStreamState {
-                        subscription_id: track_id.0.clone(),
-                        active_variant_id: stream.to_string(),
-                    },
-                ),
-            ),
-        }) {
-            tracing::warn!(%error, "dropping subscription stream-state notification");
-        }
+        self.enqueue_live_state(track_id, stream);
     }
 
     fn flush_control_notifications(
@@ -1259,229 +1255,8 @@ impl ApiMediaRuntime {
         Ok(())
     }
 
-    fn subscribe(
-        &mut self,
-        session: &ApiSessionControl,
-        request: &crate::api::proto::SubscribeMedia,
-        plan: MediaSubscriptionPlan,
-    ) -> Result<crate::api::proto::SubscriptionResult, ControlHandlerError> {
-        if plan.media_kind == crate::api::proto::MediaKind::Audio {
-            return self.subscribe_audio(session, request, plan);
-        }
-        let track_id = TrackId::parse(request.subscription_id.clone()).map_err(|error| {
-            ControlHandlerError::new(ErrorCode::InvalidRequest, error.to_string())
-        })?;
-        let existing_index = self
-            .tracks
-            .iter()
-            .position(|track| track.runtime.track_id == track_id);
-        if let Some(index) = existing_index {
-            if self.tracks[index].source_session_id != plan.source_session_id {
-                return Err(ControlHandlerError::new(
-                    ErrorCode::InvalidRequest,
-                    "a media subscription replacement must keep the same source session",
-                ));
-            }
-            let transport_matches = matches!(
-                (
-                    &self.tracks[index].runtime.delivery,
-                    plan.delivery_transport
-                ),
-                (
-                    TrackDelivery::Rtp(_),
-                    crate::api::proto::DeliveryTransport::Rtp
-                ) | (
-                    TrackDelivery::ReliableData(_),
-                    crate::api::proto::DeliveryTransport::ReliableData
-                )
-            );
-            if !transport_matches {
-                return Err(ControlHandlerError::new(
-                    ErrorCode::InvalidRequest,
-                    "a media subscription replacement must keep its delivery transport",
-                ));
-            }
-            self.tracks[index]
-                .runtime
-                .subscription
-                .set_requested_quality(plan.quality);
-            session
-                .media_camera_ips
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(plan.camera_ip);
-            return Ok(subscription_result(
-                request.subscription_id.clone(),
-                &self.tracks[index].runtime.delivery,
-                plan.selected_variant_id,
-            ));
-        }
-
-        let delivery = match plan.delivery_transport {
-            crate::api::proto::DeliveryTransport::Rtp => {
-                TrackDelivery::Rtp(self.available_video_mids.pop().ok_or_else(|| {
-                    ControlHandlerError::new(
-                        ErrorCode::Unavailable,
-                        "no negotiated video MID is available",
-                    )
-                })?)
-            }
-            crate::api::proto::DeliveryTransport::ReliableData => {
-                TrackDelivery::ReliableData(Box::new(DataMediaBinding {
-                    stream_binding_id: format!("media:{}", request.subscription_id),
-                    codec: plan.codec.clone(),
-                    format: plan.format.clone(),
-                    configuration_revision: 1,
-                    next_frame_id: 1,
-                    source_clock: None,
-                    pending_configuration: None,
-                }))
-            }
-            _ => {
-                return Err(ControlHandlerError::new(
-                    ErrorCode::InvalidRequest,
-                    "media subscription plan has an unsupported delivery transport",
-                ));
-            }
-        };
-        let selected_variant_id = plan.selected_variant_id.clone();
-        let selected_stream = match selected_variant_id.as_str() {
-            "main" => StreamKind::Main,
-            "sub" => StreamKind::Sub,
-            _ => {
-                return Err(ControlHandlerError::new(
-                    ErrorCode::Internal,
-                    "media subscription plan selected an invalid variant",
-                ));
-            }
-        };
-        let initial_stream = if matches!(delivery, TrackDelivery::ReliableData(_)) {
-            selected_stream
-        } else {
-            initial_stream(plan.has_sub_stream)
-        };
-        let control = Arc::new(SessionControl::new(plan.quality, initial_stream));
-        let runtime = TrackRuntime::new(
-            TrackPlan {
-                track_id: track_id.clone(),
-                camera_ip: plan.camera_ip,
-                has_sub_stream: plan.has_sub_stream,
-                selected_stream,
-                recording_label: plan.recording_label,
-            },
-            delivery,
-            TrackDeps {
-                inner: session.inner.clone(),
-                session_id: session.session_id,
-                control,
-                poller: session.poller.clone(),
-                shutdown: session.shutdown.clone(),
-                recording_demand: session.recording_demand.clone(),
-            },
-        );
-        let track = ApiMediaTrack {
-            source_session_id: plan.source_session_id,
-            runtime,
-        };
-        self.tracks.push(track);
-        session
-            .media_camera_ips
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(plan.camera_ip);
-        self.enqueue_stream_state(&track_id, initial_stream);
-        Ok(subscription_result(
-            request.subscription_id.clone(),
-            &self
-                .tracks
-                .last()
-                .expect("media track was inserted before result creation")
-                .runtime
-                .delivery,
-            selected_variant_id,
-        ))
-    }
-
-    fn subscribe_audio(
-        &mut self,
-        session: &ApiSessionControl,
-        request: &crate::api::proto::SubscribeMedia,
-        plan: MediaSubscriptionPlan,
-    ) -> Result<crate::api::proto::SubscriptionResult, ControlHandlerError> {
-        let track_id = TrackId::parse(request.subscription_id.clone()).map_err(|error| {
-            ControlHandlerError::new(ErrorCode::InvalidRequest, error.to_string())
-        })?;
-        if self
-            .audio_tracks
-            .iter()
-            .any(|track| track.runtime.track_id == track_id)
-        {
-            return Err(ControlHandlerError::new(
-                ErrorCode::InvalidRequest,
-                "audio subscription replacement is not supported",
-            ));
-        }
-        let selected_stream = match plan.selected_variant_id.as_str() {
-            "main" => StreamKind::Main,
-            "sub" => StreamKind::Sub,
-            _ => {
-                return Err(ControlHandlerError::new(
-                    ErrorCode::Internal,
-                    "audio subscription selected an invalid variant",
-                ));
-            }
-        };
-        let delivery = match plan.delivery_transport {
-            crate::api::proto::DeliveryTransport::Rtp => {
-                TrackDelivery::Rtp(self.available_audio_mids.pop().ok_or_else(|| {
-                    ControlHandlerError::new(
-                        ErrorCode::Unavailable,
-                        "no negotiated audio MID is available",
-                    )
-                })?)
-            }
-            crate::api::proto::DeliveryTransport::ReliableData => {
-                TrackDelivery::ReliableData(Box::new(DataMediaBinding {
-                    stream_binding_id: format!("media:{}", request.subscription_id),
-                    codec: plan.codec,
-                    format: plan.format,
-                    configuration_revision: 1,
-                    next_frame_id: 1,
-                    source_clock: None,
-                    pending_configuration: None,
-                }))
-            }
-            _ => {
-                return Err(ControlHandlerError::new(
-                    ErrorCode::InvalidRequest,
-                    "audio subscription plan has an unsupported delivery transport",
-                ));
-            }
-        };
-        let runtime = AudioTrackRuntime::new(
-            session,
-            track_id,
-            Source {
-                camera_ip: plan.camera_ip,
-                stream: selected_stream,
-            },
-            delivery,
-        );
-        let result = subscription_result(
-            request.subscription_id.clone(),
-            &runtime.delivery,
-            plan.selected_variant_id,
-        );
-        self.audio_tracks.push(ApiAudioTrack { runtime });
-        session
-            .media_camera_ips
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(plan.camera_ip);
-        Ok(result)
-    }
-
     fn unsubscribe(&mut self, session: &ApiSessionControl, subscription_ids: &[String]) {
+        self.bandwidth.dirty = true;
         for subscription_id in subscription_ids {
             if let Some(index) = self
                 .tracks
@@ -1489,6 +1264,7 @@ impl ApiMediaRuntime {
                 .position(|track| track.runtime.track_id.0 == *subscription_id)
             {
                 let track = self.tracks.swap_remove(index);
+                self.discard_queued_stream_states(&track.runtime.track_id);
                 if let TrackDelivery::Rtp(mid) = track.runtime.delivery {
                     self.available_video_mids.push(mid);
                 }
@@ -1529,6 +1305,7 @@ fn subscription_result(
         delivery: Some(delivery.result()),
         selected_variant_id,
         selected_lineage: Vec::new(),
+        live_quality: None,
     }
 }
 
@@ -1812,6 +1589,7 @@ struct SourceSubscription {
     sender: SessionSender,
     active_source: Source,
     pending_source: Option<Source>,
+    variant_unavailable: bool,
     high_source: Source,
     low_source: Option<Source>,
     control: Option<Arc<SessionControl>>,
@@ -1882,6 +1660,7 @@ impl SourceSubscription {
             sender,
             active_source: source,
             pending_source: None,
+            variant_unavailable: false,
             high_source: source,
             low_source: None,
             control: None,
@@ -1916,6 +1695,7 @@ impl SourceSubscription {
             sender,
             active_source,
             pending_source: None,
+            variant_unavailable: false,
             high_source,
             low_source,
             control: Some(control),
@@ -1963,11 +1743,52 @@ impl SourceSubscription {
         })
     }
 
-    fn set_requested_quality(&self, quality: StreamQuality) {
-        if let Some(control) = &self.control {
+    fn set_requested_quality(&mut self, quality: StreamQuality) {
+        if let Some(control) = &self.control
+            && control.requested_quality.load(Ordering::Acquire) != quality.as_u8()
+        {
             control
                 .requested_quality
                 .store(quality.as_u8(), Ordering::Release);
+            self.upgrade_since = None;
+            self.downgrade_since = None;
+        }
+    }
+
+    fn native_sources(
+        camera_ip: IpAddr,
+        has_main_stream: bool,
+        has_sub_stream: bool,
+    ) -> (Source, Option<Source>) {
+        assert!(
+            has_main_stream || has_sub_stream,
+            "a native video variant is required"
+        );
+        let high_source = Source {
+            camera_ip,
+            stream: if has_main_stream {
+                StreamKind::Main
+            } else {
+                StreamKind::Sub
+            },
+        };
+        let low_source = (has_main_stream && has_sub_stream).then_some(Source {
+            camera_ip,
+            stream: StreamKind::Sub,
+        });
+        (high_source, low_source)
+    }
+
+    fn set_available_sources(&mut self, has_main_stream: bool, has_sub_stream: bool) {
+        let (high_source, low_source) =
+            Self::native_sources(self.high_source.camera_ip, has_main_stream, has_sub_stream);
+        if self.high_source != high_source || self.low_source != low_source {
+            self.cancel_pending_switch();
+            self.high_source = high_source;
+            self.low_source = low_source;
+            self.variant_unavailable = false;
+            self.upgrade_since = None;
+            self.downgrade_since = None;
         }
     }
 
@@ -1976,6 +1797,10 @@ impl SourceSubscription {
             StreamQuality::Auto | StreamQuality::High => self.high_source,
             StreamQuality::Low => self.low_source.unwrap_or(self.high_source),
         };
+        self.desired_source_bitrate(source)
+    }
+
+    fn desired_source_bitrate(&self, source: Source) -> Bitrate {
         let (average_bps, max_frame_bytes) = self.source_delivery_requirements(source);
         desired_egress_bitrate(average_bps, max_frame_bytes)
     }
@@ -2013,14 +1838,14 @@ impl SourceSubscription {
             )
     }
 
-    fn source_codec(&self, source: Source) -> Option<VideoCodec> {
+    fn source_keyframe(&self, source: Source) -> Option<MediaFrame> {
         self.inner
             .sources
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&source)
             .and_then(|state| state.keyframe.as_ref())
-            .map(|frame| frame.codec)
+            .cloned()
     }
 
     fn update_estimate(&self, bitrate: Bitrate) {
@@ -2036,12 +1861,18 @@ impl SourceSubscription {
             return;
         };
         let requested = StreamQuality::from_u8(control.requested_quality.load(Ordering::Acquire));
+        if requested != StreamQuality::Auto {
+            self.upgrade_since = None;
+            self.downgrade_since = None;
+        }
         let target = match requested {
             StreamQuality::Low => self.low_source.unwrap_or(self.high_source),
             StreamQuality::High => self.high_source,
             StreamQuality::Auto => self.automatic_source(now),
         };
-        if target == self.active_source || !self.codec_is_negotiated(rtc, video_mid, target) {
+        self.variant_unavailable =
+            target != self.active_source && !self.codec_is_negotiated(rtc, video_mid, target);
+        if target == self.active_source || self.variant_unavailable {
             self.cancel_pending_switch();
             return;
         }
@@ -2058,7 +1889,7 @@ impl SourceSubscription {
     fn startup_fallback(&self, active_codec_negotiated: bool) -> Option<Source> {
         (self.requested_quality() == Some(StreamQuality::High)
             && self.active_source != self.high_source
-            && self.source_codec(self.active_source).is_some()
+            && self.source_keyframe(self.active_source).is_some()
             && !active_codec_negotiated)
             .then_some(self.high_source)
     }
@@ -2073,6 +1904,7 @@ impl SourceSubscription {
             .map(|control| control.estimated_bitrate_bps.load(Ordering::Acquire))
             .unwrap_or(0);
         if estimate == 0 {
+            self.upgrade_since = None;
             return low_source;
         }
         let required = self.source_bitrate(self.high_source).as_u64();
@@ -2102,21 +1934,26 @@ impl SourceSubscription {
     }
 
     fn codec_is_negotiated(&self, rtc: &mut Rtc, video_mid: Option<Mid>, source: Source) -> bool {
-        let Some(mid) = video_mid else {
+        self.source_keyframe(source)
+            .is_some_and(|frame| self.frame_is_negotiated(rtc, video_mid, source, &frame))
+    }
+
+    fn frame_is_negotiated(
+        &self,
+        rtc: &mut Rtc,
+        video_mid: Option<Mid>,
+        source: Source,
+        frame: &MediaFrame,
+    ) -> bool {
+        let profile = frame.data.h264_profile_level_id();
+        if source != self.active_source
+            && self.requested_quality() == Some(StreamQuality::Auto)
+            && frame.codec == VideoCodec::H264
+            && profile.is_none()
+        {
             return false;
-        };
-        let Some(codec) = self.source_codec(source) else {
-            return false;
-        };
-        let codec = match codec {
-            VideoCodec::H264 => Codec::H264,
-            VideoCodec::H265 => Codec::H265,
-        };
-        rtc.writer(mid).is_some_and(|writer| {
-            writer
-                .payload_params()
-                .any(|params| params.spec().codec == codec)
-        })
+        }
+        negotiated_video_payload_type(rtc, video_mid, frame.codec, profile).is_some()
     }
 
     fn begin_switch(&mut self, target: Source) {
@@ -2182,6 +2019,25 @@ impl SourceSubscription {
             "WebRTC source switched"
         );
         true
+    }
+
+    fn finish_negotiated_switch(
+        &mut self,
+        rtc: &mut Rtc,
+        video_mid: Option<Mid>,
+        source: Source,
+        frame: &MediaFrame,
+    ) -> bool {
+        if self.pending_source != Some(source) || !frame.is_keyframe {
+            return false;
+        }
+        if !self.frame_is_negotiated(rtc, video_mid, source, frame) {
+            self.variant_unavailable = true;
+            self.cancel_pending_switch();
+            return false;
+        }
+        self.variant_unavailable = false;
+        self.finish_switch_on_frame(source, frame.is_keyframe)
     }
 
     fn finish_switch_on_frame(&mut self, source: Source, is_keyframe: bool) -> bool {
@@ -2251,6 +2107,8 @@ struct TrackDeps {
 }
 
 struct TrackRuntime {
+    receiver_limit_bps: Option<u64>,
+    reported_quality: Option<bandwidth::QualitySnapshot>,
     track_id: TrackId,
     delivery: TrackDelivery,
     rx: Receiver<SessionCommand>,
@@ -2284,14 +2142,11 @@ impl TrackRuntime {
             poller,
             shutdown,
         };
-        let high_source = Source {
-            camera_ip: plan.camera_ip,
-            stream: StreamKind::Main,
-        };
-        let low_source = plan.has_sub_stream.then_some(Source {
-            camera_ip: plan.camera_ip,
-            stream: StreamKind::Sub,
-        });
+        let (high_source, low_source) = SourceSubscription::native_sources(
+            plan.camera_ip,
+            plan.has_main_stream,
+            plan.has_sub_stream,
+        );
         let subscription = match &delivery {
             TrackDelivery::ReliableData(_) => {
                 let source = Source {
@@ -2314,6 +2169,8 @@ impl TrackRuntime {
             ),
         };
         Self {
+            receiver_limit_bps: None,
+            reported_quality: None,
             track_id: plan.track_id,
             delivery,
             rx,
@@ -2334,6 +2191,16 @@ impl TrackRuntime {
         self.recovering_queue_gap = false;
         self.received_source_frame = false;
         self.keyframe_gate.reset();
+    }
+
+    fn update_subscription(&mut self, plan: &MediaSubscriptionPlan) {
+        self.reported_quality = None;
+        self.subscription.variant_unavailable = false;
+        self.subscription.set_requested_quality(plan.quality);
+        if self.delivery.mid().is_some() {
+            self.subscription
+                .set_available_sources(plan.has_main_stream, plan.has_sub_stream);
+        }
     }
 }
 
@@ -3569,6 +3436,7 @@ fn run_api_session(
     let mut control_runtime = ApiControlRuntime {
         dispatch_tx,
         dispatch_rx,
+        control_output_ready: false,
         outbound: VecDeque::new(),
         outbound_bytes: 0,
         outbound_messages: 0,
@@ -3915,7 +3783,7 @@ fn drive_track_runtime(
     {
         let switched_stream = if track
             .subscription
-            .finish_switch_on_frame(source, frame.is_keyframe)
+            .finish_negotiated_switch(rtc, mid, source, &frame)
         {
             track.reset_source_state();
             Some(source.stream)
@@ -4246,14 +4114,9 @@ fn drain_api_outputs(
     control_runtime: &mut ApiControlRuntime,
 ) -> anyhow::Result<Instant> {
     loop {
-        flush_control_channel_outputs(control_runtime, media, |payload| {
-            let Some(mut channel) = rtc.channel(channels.control) else {
-                anyhow::bail!("WebRTC control channel disappeared before queued delivery");
-            };
-            Ok(channel.write(true, payload)?)
-        })?;
+        flush_api_control_outputs(rtc, channels, control_runtime, media)?;
         media.flush_outbound(rtc, channels)?;
-        match rtc.poll_output()? {
+        match bandwidth::poll_api_output(rtc, media, Instant::now())? {
             Output::Timeout(deadline) => {
                 for action in std::mem::take(&mut control_runtime.after_send) {
                     action();
@@ -4372,6 +4235,7 @@ fn drain_api_outputs(
                             notifications: Vec::new(),
                         })?;
                     }
+                    control_runtime.control_output_ready = true;
                 }
             }
             Output::Event(Event::ChannelData(data)) if data.id == channels.control => {
@@ -4485,6 +4349,24 @@ fn enqueue_control_dispatch(
     control_runtime: &mut ApiControlRuntime,
 ) -> anyhow::Result<()> {
     control_runtime.enqueue(dispatch)
+}
+
+fn flush_api_control_outputs(
+    rtc: &mut Rtc,
+    channels: SessionChannels,
+    control_runtime: &mut ApiControlRuntime,
+    media: &mut ApiMediaRuntime,
+) -> anyhow::Result<()> {
+    // Bandwidth feedback can arrive before the initial capabilities have been queued.
+    if !control_runtime.control_output_ready {
+        return Ok(());
+    }
+    flush_control_channel_outputs(control_runtime, media, |payload| {
+        let Some(mut channel) = rtc.channel(channels.control) else {
+            anyhow::bail!("WebRTC control channel disappeared before queued delivery");
+        };
+        Ok(channel.write(true, payload)?)
+    })
 }
 
 fn flush_control_outputs(
@@ -4673,7 +4555,7 @@ fn drive_session(
                     source,
                     frame,
                 }) => {
-                    if subscription.finish_switch_on_frame(source, frame.is_keyframe) {
+                    if subscription.finish_negotiated_switch(rtc, video_mid, source, &frame) {
                         media_clock.reset_source();
                         last_frame_sequence = None;
                         recovering_queue_gap = false;
@@ -5187,27 +5069,18 @@ impl MediaClock {
     }
 }
 
-fn write_frame(
+fn negotiated_video_payload_type(
     rtc: &mut Rtc,
     video_mid: Option<Mid>,
-    frame: &MediaFrame,
-    media_clock: &mut MediaClock,
-) -> anyhow::Result<bool> {
-    let Some(mid) = video_mid else {
-        return Ok(false);
-    };
-    let codec = match frame.codec {
+    source_codec: VideoCodec,
+    h264_profile_level_id: Option<u32>,
+) -> Option<str0m::media::Pt> {
+    let mid = video_mid?;
+    let codec = match source_codec {
         VideoCodec::H264 => Codec::H264,
         VideoCodec::H265 => Codec::H265,
     };
-    if matches!(frame.codec, VideoCodec::H264)
-        && frame.is_keyframe
-        && let Some(profile_level_id) = frame.data.h264_profile_level_id()
-    {
-        media_clock.h264_profile_level_id = Some(profile_level_id);
-    }
-    let h264_profile_level_id = media_clock.h264_profile_level_id;
-    let Some(payload_type) = rtc.writer(mid).and_then(|writer| {
+    rtc.writer(mid).and_then(|writer| {
         writer
             .payload_params()
             .find(|params| {
@@ -5231,7 +5104,30 @@ fn write_frame(
                 })
             })
             .map(|params| params.pt())
-    }) else {
+    })
+}
+
+fn write_frame(
+    rtc: &mut Rtc,
+    video_mid: Option<Mid>,
+    frame: &MediaFrame,
+    media_clock: &mut MediaClock,
+) -> anyhow::Result<bool> {
+    let Some(mid) = video_mid else {
+        return Ok(false);
+    };
+    if matches!(frame.codec, VideoCodec::H264)
+        && frame.is_keyframe
+        && let Some(profile_level_id) = frame.data.h264_profile_level_id()
+    {
+        media_clock.h264_profile_level_id = Some(profile_level_id);
+    }
+    let Some(payload_type) = negotiated_video_payload_type(
+        rtc,
+        video_mid,
+        frame.codec,
+        media_clock.h264_profile_level_id,
+    ) else {
         return Ok(false);
     };
 
@@ -5246,7 +5142,7 @@ fn write_frame(
             frame.data.annexb(),
         )?;
     if first_write {
-        tracing::debug!(?codec, ?payload_type, "wrote first WebRTC video frame");
+        tracing::debug!(codec = ?frame.codec, ?payload_type, "wrote first WebRTC video frame");
     }
     Ok(true)
 }
@@ -7137,6 +7033,7 @@ mod tests {
         let mut runtime = ApiControlRuntime {
             dispatch_tx,
             dispatch_rx,
+            control_output_ready: false,
             outbound: VecDeque::new(),
             outbound_bytes: 0,
             outbound_messages: 0,
@@ -7264,6 +7161,7 @@ mod tests {
         let mut control_runtime = ApiControlRuntime {
             dispatch_tx,
             dispatch_rx,
+            control_output_ready: false,
             outbound: VecDeque::new(),
             outbound_bytes: 0,
             outbound_messages: 0,
@@ -7317,6 +7215,7 @@ mod tests {
                             crate::api::proto::SubscriptionStreamState {
                                 subscription_id,
                                 active_variant_id,
+                                ..
                             }
                         )
                     )
@@ -7354,6 +7253,7 @@ mod tests {
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
         };
         let mut media = ApiMediaRuntime {
+            bandwidth: bandwidth::SessionBandwidth::default(),
             available_video_mids: vec![Mid::from("video_0")],
             available_audio_mids: Vec::new(),
             tracks: Vec::new(),
@@ -7380,6 +7280,7 @@ mod tests {
                     media_kind: crate::api::proto::MediaKind::Video,
                     source_session_id: request.source_session_id.clone(),
                     camera_ip,
+                    has_main_stream: true,
                     has_sub_stream: true,
                     recording_label: "front-door".to_owned(),
                     quality: StreamQuality::Auto,
@@ -7417,6 +7318,7 @@ mod tests {
                         crate::api::proto::SubscriptionStreamState {
                             subscription_id,
                             active_variant_id,
+                            ..
                         }
                     )
                 )
@@ -7434,6 +7336,7 @@ mod tests {
                     media_kind: crate::api::proto::MediaKind::Video,
                     source_session_id: request.source_session_id.clone(),
                     camera_ip,
+                    has_main_stream: true,
                     has_sub_stream: true,
                     recording_label: "front-door".to_owned(),
                     quality: StreamQuality::High,
@@ -7538,6 +7441,7 @@ mod tests {
                     media_kind: crate::api::proto::MediaKind::Video,
                     source_session_id: request.source_session_id.clone(),
                     camera_ip,
+                    has_main_stream: true,
                     has_sub_stream: true,
                     recording_label: "front-door".to_owned(),
                     quality: StreamQuality::Low,
@@ -7668,6 +7572,7 @@ mod tests {
                     media_kind: crate::api::proto::MediaKind::Video,
                     source_session_id: main_request.source_session_id.clone(),
                     camera_ip,
+                    has_main_stream: true,
                     has_sub_stream: true,
                     recording_label: "front-door".to_owned(),
                     quality: StreamQuality::High,

@@ -12,6 +12,11 @@ The in-band WebRTC data-channel contract is defined by [webrtc.proto](webrtc.pro
 [webrtc.md](webrtc.md). The SDP data-channel topology required to establish a session is defined
 in [sdp-offer.md](sdp-offer.md).
 
+Native live subscriptions can include optional `LiveQualityDiagnostics` in their result and
+stream-state notifications. Session network capacity, per-Auto-track allocation, active and
+pending variants, and the selection reason are separate runtime facts. See
+[live quality diagnostics](webrtc.md#live-quality-diagnostics).
+
 ## License
 
 All API definitions and documentation in this directory are licensed under the MIT License. See
