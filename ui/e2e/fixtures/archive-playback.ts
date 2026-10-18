@@ -58,14 +58,15 @@ async function presentedFrame(video: Locator, previousSource = '') {
 export async function measureArchivePlayback(
 	page: Page,
 	moment: number,
-	storage: 'local' | 'archive-initial' | 'archive-repeat'
+	storage: 'local' | 'archive-initial' | 'archive-repeat' | 'local-restored'
 ) {
 	await page.goto(
 		`/keep?camera=${encodeURIComponent(cardSourceIds[0])}&stream=sub&at=${moment}&date=${new Date(moment).toISOString().slice(0, 10)}`
 	);
 	const notice = page.getByRole('status', { name: 'Archive playback', exact: true });
-	if (storage === 'local') await expect(notice).toHaveCount(0);
-	else await expect(notice).toBeVisible();
+	const archived = storage === 'archive-initial' || storage === 'archive-repeat';
+	if (archived) await expect(notice).toBeVisible();
+	else await expect(notice).toHaveCount(0);
 	const video = page.getByRole('region', { name: 'Recorded video player' }).locator('video');
 	const initial = await presentedFrame(video);
 	const pause = page.getByRole('button', { name: 'Pause recording', exact: true });
@@ -80,7 +81,8 @@ export async function measureArchivePlayback(
 	await position.click({ position: { x: bounds.width * 0.75, y: bounds.height / 2 } });
 	await expect.poll(async () => Number(await position.inputValue())).toBeGreaterThan(25);
 	const seek = await presentedFrame(video, initial.source);
-	if (storage !== 'local') await expect(notice).toBeVisible();
+	if (archived) await expect(notice).toBeVisible();
+	else await expect(notice).toHaveCount(0);
 	await expect(
 		page.getByRole('region', { name: 'Recorded video player' }).getByRole('alert')
 	).toHaveCount(0);
