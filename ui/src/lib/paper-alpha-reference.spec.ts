@@ -45,7 +45,15 @@ type TokenSnapshot = {
 
 const uiRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const snapshotRoot = resolve(uiRoot, 'design/paper/keeppeek-nvr-alpha');
-const requiredBoards = [...Array.from({ length: 34 }, (_, index) => index + 1), 45, 46];
+const requiredBoards = [
+	...Array.from({ length: 34 }, (_, index) => index + 1),
+	45,
+	46,
+	47,
+	48,
+	49,
+	50
+];
 const contractOnlyBoards = new Set([1, 2, 3, 5, 28, 32]);
 const supplementalScenarios = [
 	'settings.desktop.storage-setup-reviewed',
@@ -54,7 +62,18 @@ const supplementalScenarios = [
 	'recordings.desktop.integrity',
 	'keep.mobile.compact-default',
 	'keep.mobile.playback-options',
-	'keep.mobile.camera-date'
+	'keep.mobile.camera-date',
+	'settings.desktop.archive-setup',
+	'settings.desktop.archive-jobs',
+	'settings.archive.offline',
+	'settings.archive.evict-confirmation',
+	'keep.desktop.archive-playback',
+	'keep.mobile.archive-playback',
+	'keep.archive.preparing',
+	'keep.archive.unavailable',
+	'settings.mobile.archive-setup',
+	'settings.mobile.archive-jobs',
+	'settings.mobile.archive-recovery'
 ];
 const maximumArtifactBytes = 64 * 1024 * 1024;
 // Concurrent Windows builds can stall disk reads while these tests hash the full export bundle.

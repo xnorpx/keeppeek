@@ -7,13 +7,13 @@
 		"pageId": "1-0",
 		"tokenHash": "b35ec365",
 		"tokenCount": 82,
-		"artboardCount": 82
+		"artboardCount": 86
 	},
 	"scope": {
 		"product": "KeepPeek NVR",
 		"boardNumbers": [
 			1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
-			27, 28, 29, 30, 31, 32, 33, 34, 45, 46
+			27, 28, 29, 30, 31, 32, 33, 34, 45, 46, 47, 48, 49, 50
 		],
 		"excludedProducts": ["Native iOS and Android viewers", "KeepPeek Vision", "KeepPeek Service"]
 	},
@@ -26,7 +26,7 @@
 		{
 			"number": 1,
 			"nodeId": "1-0",
-			"name": "01 — Brief \u0026 Positioning",
+			"name": "01 — Brief & Positioning",
 			"width": 1440,
 			"height": 1255,
 			"jsx": {
@@ -103,7 +103,7 @@
 		{
 			"number": 6,
 			"nodeId": "MX-0",
-			"name": "06 — App Shell \u0026 Dashboard",
+			"name": "06 — App Shell & Dashboard",
 			"width": 1600,
 			"height": 1210,
 			"jsx": {
@@ -128,7 +128,7 @@
 		{
 			"number": 7,
 			"nodeId": "TS-0",
-			"name": "07 — Camera page \u0026amp; PTZ",
+			"name": "07 — Camera page &amp; PTZ",
 			"width": 1600,
 			"height": 2409,
 			"jsx": {
@@ -333,7 +333,7 @@
 		{
 			"number": 13,
 			"nodeId": "233-0",
-			"name": "13 — Settings: storage \u0026amp; retention",
+			"name": "13 — Settings: storage &amp; retention",
 			"width": 1600,
 			"height": 2636,
 			"jsx": {
@@ -395,7 +395,7 @@
 		{
 			"number": 15,
 			"nodeId": "2GO-0",
-			"name": "15 — Health: server \u0026amp; client",
+			"name": "15 — Health: server &amp; client",
 			"width": 1600,
 			"height": 1599,
 			"jsx": {
@@ -420,7 +420,7 @@
 		{
 			"number": 16,
 			"nodeId": "2O3-0",
-			"name": "16 — Settings: access \u0026amp; roles",
+			"name": "16 — Settings: access &amp; roles",
 			"width": 1600,
 			"height": 2763,
 			"jsx": {
@@ -507,7 +507,7 @@
 		{
 			"number": 19,
 			"nodeId": "35C-0",
-			"name": "19 — Groups \u0026amp; two-way audio",
+			"name": "19 — Groups &amp; two-way audio",
 			"width": 1600,
 			"height": 1208,
 			"jsx": {
@@ -543,7 +543,7 @@
 		{
 			"number": 20,
 			"nodeId": "39R-0",
-			"name": "20 - Settings: system, logs \u0026 configuration ZIP",
+			"name": "20 - Settings: system, logs & configuration ZIP",
 			"width": 1600,
 			"height": 1499,
 			"jsx": {
@@ -579,7 +579,7 @@
 		{
 			"number": 21,
 			"nodeId": "3CX-0",
-			"name": "21 — First run \u0026amp; empty states",
+			"name": "21 — First run &amp; empty states",
 			"width": 1600,
 			"height": 1141,
 			"jsx": {
@@ -677,7 +677,7 @@
 		{
 			"number": 24,
 			"nodeId": "40G-0",
-			"name": "24 — Mobile: Camera \u0026 PTZ",
+			"name": "24 — Mobile: Camera & PTZ",
 			"width": 1600,
 			"height": 1144,
 			"jsx": {
@@ -1071,7 +1071,7 @@
 		{
 			"number": 45,
 			"nodeId": "9TT-0",
-			"name": "45 — Recording integrity \u0026 coverage",
+			"name": "45 — Recording integrity & coverage",
 			"width": 1600,
 			"height": 1397,
 			"jsx": {
@@ -1139,6 +1139,188 @@
 					"status": "proposal"
 				}
 			]
+		},
+		{
+			"number": 47,
+			"nodeId": "BAX-0",
+			"name": "47 — Archive: setup & local target",
+			"width": 1600,
+			"height": 1106,
+			"exportedAt": "2026-10-18T03:33:58.440Z",
+			"jsx": {
+				"source": "boards/47-archive-setup.jsx.txt",
+				"bytes": 29227,
+				"sha256": "72efbae57827397faad1945049f4ab55abfb3e4d41ac0de2016366d4661649da"
+			},
+			"references": [
+				{
+					"scenarioId": "settings.desktop.archive-setup",
+					"nodeId": "BB4-0",
+					"source": "references/47-archive-setup.png",
+					"bytes": 160577,
+					"sha256": "c00671b11250e9d8089b02bb82fa797adc4d1a49b6e358aabebf6da485921ade",
+					"width": 1440,
+					"height": 842,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
+		},
+		{
+			"number": 48,
+			"nodeId": "BET-0",
+			"name": "48 — Archive: jobs, recovery & eviction",
+			"width": 1600,
+			"height": 1220,
+			"exportedAt": "2026-10-18T03:33:58.440Z",
+			"jsx": {
+				"source": "boards/48-archive-jobs-recovery.jsx.txt",
+				"bytes": 22388,
+				"sha256": "2b85b0fdf03ed785c561530c38b8602661317b66ed4b657611fdbece654fb50c"
+			},
+			"references": [
+				{
+					"scenarioId": "settings.desktop.archive-jobs",
+					"nodeId": "BF0-0",
+					"source": "references/48-archive-jobs.png",
+					"bytes": 90427,
+					"sha256": "2e8999e0fa2bd3c3772397dc3f4ef54a7382d173d90070bb21247948c851e864",
+					"width": 1440,
+					"height": 670,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "settings.archive.offline",
+					"nodeId": "BH4-0",
+					"source": "references/48-archive-offline.png",
+					"bytes": 28118,
+					"sha256": "1de0ef0690ae9856b6ad35252efb6c01ed5725f1f79e5658c2222272523e792f",
+					"width": 600,
+					"height": 212,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "settings.archive.evict-confirmation",
+					"nodeId": "BH5-0",
+					"source": "references/48-archive-eviction-confirmation.png",
+					"bytes": 34227,
+					"sha256": "b792e40a4fd4edd804c905c0629d8cd89d8935bcd3485e28351b2745245b6727",
+					"width": 600,
+					"height": 254,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
+		},
+		{
+			"number": 49,
+			"nodeId": "BHT-0",
+			"name": "49 — Archive: Keep playback & mobile",
+			"width": 1600,
+			"height": 1184,
+			"exportedAt": "2026-10-18T03:33:58.440Z",
+			"jsx": {
+				"source": "boards/49-archive-playback.jsx.txt",
+				"bytes": 36936,
+				"sha256": "8a9b39d66cbf0d46ca05f282d3cf23fef1f487f677873c006d23ff294c040bce"
+			},
+			"references": [
+				{
+					"scenarioId": "keep.desktop.archive-playback",
+					"nodeId": "BI1-0",
+					"source": "references/49-archive-playback-desktop.png",
+					"bytes": 48751,
+					"sha256": "93801cf1f6a4f9419fe7e65bd6918c72e3d6511a1c4806774a21a5fcefa2a9bb",
+					"width": 1002,
+					"height": 694,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "keep.mobile.archive-playback",
+					"nodeId": "BJ5-0",
+					"source": "references/49-archive-playback-mobile.png",
+					"bytes": 44946,
+					"sha256": "4500431863f93b8f1ba574ff240a39d7f1978d24a7f12048f099223dd4134ba4",
+					"width": 390,
+					"height": 718,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "keep.archive.preparing",
+					"nodeId": "BM9-0",
+					"source": "references/49-archive-preparing.png",
+					"bytes": 18501,
+					"sha256": "1bfd8478ec8d0524082425ebf7acd898fa8affffe07e0527159772657bbe06ff",
+					"width": 600,
+					"height": 170,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "keep.archive.unavailable",
+					"nodeId": "BMA-0",
+					"source": "references/49-archive-unavailable.png",
+					"bytes": 20404,
+					"sha256": "0f0206e208ac35ae64e5411ebf8c68b9d29e89d79926c95e4e84c5d33dcf2d32",
+					"width": 600,
+					"height": 170,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
+		},
+		{
+			"number": 50,
+			"nodeId": "BMN-0",
+			"name": "50 — Archive: mobile administration",
+			"width": 1600,
+			"height": 1072,
+			"exportedAt": "2026-10-18T03:33:58.440Z",
+			"jsx": {
+				"source": "boards/50-archive-mobile-administration.jsx.txt",
+				"bytes": 22650,
+				"sha256": "1999cb72485a7464c8e094e924224e07c973f0184f4db602cf9ecc0450ac11a8"
+			},
+			"references": [
+				{
+					"scenarioId": "settings.mobile.archive-setup",
+					"nodeId": "BMU-0",
+					"source": "references/50-archive-mobile-setup.png",
+					"bytes": 53805,
+					"sha256": "83af8c36c2e45ea74b019b9f915deada73889f3436a46134846f630582fee861",
+					"width": 390,
+					"height": 703,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "settings.mobile.archive-jobs",
+					"nodeId": "BMV-0",
+					"source": "references/50-archive-mobile-jobs.png",
+					"bytes": 57348,
+					"sha256": "07242c35bc1d787417e445c96d7f2ab7da6920fe2146315761568a11fa8438dd",
+					"width": 390,
+					"height": 772,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "settings.mobile.archive-recovery",
+					"nodeId": "BMW-0",
+					"source": "references/50-archive-mobile-recovery.png",
+					"bytes": 54370,
+					"sha256": "6bb081152fd9d64a1282838defbb9b143a4704ea53b34d8cc00a7fb943c93851",
+					"width": 390,
+					"height": 643,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
 		}
-	]
+	],
+	"updatedAt": "2026-10-18T03:33:58.440Z"
 }
