@@ -299,6 +299,7 @@ export interface RecordingEventsResponse {
 }
 
 export interface SanitizedStorage {
+	archive?: import('./proto/webrtc_pb').ArchiveSettings;
 	named_volumes?: import('./proto/webrtc_pb').StorageVolumeConfiguration;
 	medium_term_path: string;
 	long_term_path: string;

@@ -27,6 +27,11 @@ import {
 	StorageVolumeRole,
 	StorageVolumeState
 } from './proto/webrtc_pb';
+import {
+	ArchiveCommandSchema,
+	ArchiveResultSchema,
+	ArchiveSettingsSchema
+} from './proto/webrtc_pb';
 import type { Request } from './proto/webrtc_pb';
 import type { RecordingEvent } from './types';
 
@@ -35,6 +40,50 @@ const unusedEventMapper = (): RecordingEvent => {
 };
 
 describe('control client system mapping', () => {
+	it('preserves archive references and exact byte limits through revisioned settings updates', async () => {
+		const archive = create(ArchiveSettingsSchema, {
+			targetId: '{secret:TARGET}',
+			root: '{secret:ROOT}',
+			sourceIds: ['{secret:SOURCE}'],
+			maximumPendingBytes: 9_000_000_000_000_000_000n
+		});
+		const config = create(SanitizedRuntimeConfigurationSchema, {
+			storage: { archive },
+			recordingEstimate: {}
+		});
+		let sent: Request['command'] | undefined;
+		const client = new SystemControlClient(async (command) => {
+			sent = command;
+			return {
+				case: 'runtimeConfigurationResult',
+				value: create(RuntimeConfigurationResultSchema, { config })
+			};
+		}, unusedEventMapper);
+		const mapped = await client.getRuntimeConfiguration();
+		expect(mapped.storage.archive).toEqual(archive);
+		await client.updateRuntimeConfiguration({
+			...mapped,
+			expected_configuration_revision: 'revision',
+			move_existing_recordings: false
+		});
+		if (sent?.case !== 'runtimeConfigurationCommand' || sent.value.action.case !== 'update')
+			throw new Error('Expected settings update');
+		expect(sent.value.action.value.storage?.archive).toEqual(archive);
+		expect(sent.value.action.value.expectedConfigurationRevision).toBe('revision');
+	});
+	it('routes archive operations and rejects an unrelated control response', async () => {
+		const command = create(ArchiveCommandSchema, { action: { case: 'probe', value: {} } });
+		const response = create(ArchiveResultSchema, {
+			result: { case: 'status', value: { probePending: true } }
+		});
+		const client = new SystemControlClient(async (sent) => {
+			expect(sent).toEqual({ case: 'archiveCommand', value: command });
+			return { case: 'archiveResult', value: response };
+		}, unusedEventMapper);
+		expect(await client.archive(command)).toEqual(response);
+		const invalid = new SystemControlClient(async () => ({ case: undefined }), unusedEventMapper);
+		await expect(invalid.archive(command)).rejects.toThrow('unexpected archive response');
+	});
 	it('preserves named-volume references and exact byte limits through settings updates', async () => {
 		const config = create(SanitizedRuntimeConfigurationSchema, {
 			storage: {

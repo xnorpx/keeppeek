@@ -2048,6 +2048,9 @@ export class ControlClient {
 	async storageVolumes(command: import('./proto/webrtc_pb').StorageVolumeCommand) {
 		return this.#system.storageVolumes(command);
 	}
+	async archive(command: import('./proto/webrtc_pb').ArchiveCommand) {
+		return this.#system.archive(command);
+	}
 
 	async probeStorage(path: string): Promise<StorageWriteProbe> {
 		return this.#system.probeStorage(path);
@@ -3195,6 +3198,8 @@ export class StoredMediaPlayback {
 	#keyFrameChunks = new Map<string, StoredKeyFrameAccumulator>();
 	#keyFrameListeners = new Set<(preview: StoredMediaKeyFramePreview) => void>();
 	#errorListeners = new Set<(message: string) => void>();
+	#archiveListeners = new Set<(archive: boolean) => void>();
+	#archive = false;
 	#startupListeners = new Set<(event: StoredMediaStartupEvent) => void>();
 	#startupEvents: StoredMediaStartupEvent[] = [];
 	#latestKeyFrame: StoredMediaKeyFramePreview | null = null;
@@ -3235,6 +3240,7 @@ export class StoredMediaPlayback {
 			throw new Error('Server returned incomplete stored media state.');
 		}
 		if (this.#generation !== 0n && state.generation < this.#generation) return;
+		this.publishArchive(state.archive);
 		if (this.#generation !== 0n && state.generation !== this.#generation) {
 			this.replaceMediaSource();
 		}
@@ -3314,6 +3320,18 @@ export class StoredMediaPlayback {
 		this.#errorListeners.add(listener);
 		if (this.error) listener(this.error);
 		return () => this.#errorListeners.delete(listener);
+	}
+	onArchive(listener: (archive: boolean) => void): () => void {
+		this.#archiveListeners.add(listener);
+		listener(this.#archive);
+		return () => {
+			this.#archiveListeners.delete(listener);
+		};
+	}
+	private publishArchive(archive: boolean): void {
+		if (archive === this.#archive) return;
+		this.#archive = archive;
+		for (const listener of this.#archiveListeners) listener(archive);
 	}
 
 	onStartup(listener: (event: StoredMediaStartupEvent) => void): () => void {
@@ -3508,6 +3526,8 @@ export class StoredMediaPlayback {
 	}
 
 	private acceptPlaybackState(state: StoredMediaState): void {
+		if (state.generation < this.#generation) return;
+		this.publishArchive(state.archive);
 		if (
 			state.generation !== this.#generation ||
 			state.mode !== this.#mode ||
@@ -3540,6 +3560,7 @@ export class StoredMediaPlayback {
 		this.#keyFrameChunks.clear();
 		this.#keyFrameListeners.clear();
 		this.#errorListeners.clear();
+		this.#archiveListeners.clear();
 		this.#startupListeners.clear();
 		this.#startupEvents = [];
 		this.#latestKeyFrame = null;

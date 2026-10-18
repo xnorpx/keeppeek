@@ -7,6 +7,15 @@ export type ServerCapabilityContract = {
 };
 
 export const serverCapabilityCatalog = {
+	'keeppeek.local-archive.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Verified local archive replicas, bounded durable jobs, explicit primary eviction and restore',
+		unlocks: 'Administrator local archive settings, destination tests, copy jobs and recovery',
+		whenMissing: 'Local archive controls remain hidden',
+		failureGuarantee:
+			'Unverified replicas cannot retire primary media; failed jobs remain visible and retryable'
+	},
 	'keeppeek.recording.pre-roll.v1': {
 		delivery: 'ships',
 		serverOwns:

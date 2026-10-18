@@ -10,6 +10,7 @@
 	import EventWorkflowNotice from '$lib/components/EventWorkflowNotice.svelte';
 	import FocusedMediaViewport from '$lib/components/FocusedMediaViewport.svelte';
 	import RecordedPlaybackControls from '$lib/components/RecordedPlaybackControls.svelte';
+	import StoredPlaybackNotice from '$lib/components/StoredPlaybackNotice.svelte';
 	import KeepMobileControls from '$lib/components/KeepMobileControls.svelte';
 	import type {
 		EventPreviewHit,
@@ -112,6 +113,13 @@
 	let loading = $state(true);
 	let error: string | null = $state(null);
 	let playerError: string | null = $state(null);
+	let playbackExplicitlyClosed = $state(false);
+	let retryPlaybackTarget = $state<{
+		cameraId: string;
+		segment: RecordingSegment;
+		offsetSeconds: number;
+		play: boolean;
+	} | null>(null);
 	let video: HTMLVideoElement | null = $state(null);
 	let recordedPlayer = $state<HTMLElement | null>(null);
 	let decodedVideoWidth = $state(0);
@@ -125,6 +133,7 @@
 	let playbackPreferences = $state.raw(defaultPlaybackPreferences());
 	let playbackMuted = $state(false);
 	let playbackNotice = $state<string | null>(null);
+	let archivePlayback = $state(false);
 	let requestedPlaybackVariant = $state<RecordedQualityPreference>('auto');
 	let selectedPlaybackVariant = $state<RecordedStreamId | null>(null);
 	let selectedPlaybackReason = $state('automatic');
@@ -142,6 +151,7 @@
 	let playbackOpenController: AbortController | null = null;
 	let playbackStartupTimer: ReturnType<typeof setTimeout> | null = null;
 	let playbackErrorUnsubscribe: (() => void) | null = null;
+	let playbackArchiveUnsubscribe: (() => void) | null = null;
 	let playbackStartupUnsubscribe: (() => void) | null = null;
 	let cameraProfilesPromise: Promise<CameraListItem[]> | null = null;
 	let playing = $state(false);
@@ -1261,6 +1271,9 @@
 	}
 
 	function detachPlaybackObservers(): void {
+		playbackArchiveUnsubscribe?.();
+		playbackArchiveUnsubscribe = null;
+		archivePlayback = false;
 		playbackErrorUnsubscribe?.();
 		playbackErrorUnsubscribe = null;
 		playbackStartupUnsubscribe?.();
@@ -1274,6 +1287,9 @@
 		timestampMs: number
 	): void {
 		detachPlaybackObservers();
+		playbackArchiveUnsubscribe = playback.onArchive((archive) => {
+			if (playback === storedPlayback) archivePlayback = archive;
+		});
 		playbackErrorUnsubscribe = playback.onError((message) => {
 			if (version !== playbackVersion || playback !== storedPlayback) return;
 			void handlePlaybackFailure(
@@ -1567,7 +1583,19 @@
 		return [...merged.values()];
 	}
 
+	function rememberPlaybackTarget(
+		segment: RecordingSegment | null,
+		offsetSeconds: number,
+		play: boolean
+	) {
+		if (segment) {
+			playbackExplicitlyClosed = false;
+			retryPlaybackTarget = { cameraId, segment, offsetSeconds, play };
+		} else retryPlaybackTarget = null;
+	}
+
 	async function selectSegment(segment: RecordingSegment | null, offsetSeconds = 0, play = false) {
+		rememberPlaybackTarget(segment, offsetSeconds, play);
 		if (!segment) {
 			cameraSwitchPending = false;
 			cameraSwitchAnimating = false;
@@ -1747,6 +1775,32 @@
 			await tick();
 			await playback.close().catch(() => undefined);
 		}
+	}
+	async function closePlaybackNotice() {
+		playbackVersion += 1;
+		targetLoadVersion += 1;
+		targetLoadController?.abort();
+		clearColdSeek();
+		playerError = null;
+		retryPlaybackTarget = null;
+		playbackStartupPhase = 'idle';
+		playbackExplicitlyClosed = true;
+		selected = null;
+		playing = false;
+		pendingPlay = false;
+		await closeStoredPlayback();
+	}
+	async function retryPlaybackNotice() {
+		const target = retryPlaybackTarget;
+		if (!target || target.cameraId !== cameraId) return;
+		const offset =
+			selected?.url === target.segment.url && playheadMs !== null
+				? Math.max(0, (playheadMs - target.segment.start_time_ms) / 1000)
+				: target.offsetSeconds;
+		playbackVersion += 1;
+		playerError = null;
+		await closeStoredPlayback();
+		await selectSegment(target.segment, offset, target.play);
 	}
 
 	function seekToTimestamp(timestampMs: number, play = true) {
@@ -2134,12 +2188,22 @@
 	<title>Keep - KeepPeek</title>
 </svelte:head>
 
+{#snippet archiveNotice()}
+	{#if !playbackExplicitlyClosed && (archivePlayback || playerError || playbackStartupPhase === 'opening')}
+		<StoredPlaybackNotice
+			archive={archivePlayback}
+			pending={playbackStartupPhase !== 'first-frame' || coldSeekTimestampMs !== null}
+			error={playerError}
+			canRetry={!!retryPlaybackTarget && retryPlaybackTarget.cameraId === cameraId}
+			onretry={() => void retryPlaybackNotice()}
+			onclose={() => void closePlaybackNotice()}
+		/>
+	{/if}
+{/snippet}
+
 {#snippet playbackMessages()}
 	{#if playbackNotice}
 		<p class="text-sm text-amber-700 dark:text-amber-300" role="status">{playbackNotice}</p>
-	{/if}
-	{#if playerError}
-		<p class="text-sm text-destructive" role="alert">{playerError}</p>
 	{/if}
 	{#if missingMomentMs !== null}
 		<div class="flex flex-wrap items-center gap-2">
@@ -2403,6 +2467,7 @@
 					class="flex min-h-0 min-w-0 flex-col gap-3 lg:h-full"
 					aria-label="Recorded video player"
 				>
+					{@render archiveNotice()}
 					<div
 						data-keep-media-frame
 						class="relative aspect-video overflow-hidden rounded-md bg-black ring-1 ring-black/10 lg:aspect-auto lg:min-h-0 lg:flex-1"
@@ -2469,6 +2534,16 @@
 							</span>
 						{:else if selected}
 							<div class="flex aspect-video items-center justify-center text-sm text-zinc-400">
+								Loading recording…
+							</div>
+						{:else if playbackExplicitlyClosed}
+							<div
+								class="flex aspect-video items-center justify-center p-4 text-center text-sm text-text-muted"
+							>
+								Playback closed. Select footage on the timeline to open it again.
+							</div>
+						{:else if playbackStartupPhase === 'opening'}
+							<div class="flex aspect-video items-center justify-center text-sm text-text-muted">
 								Loading recording…
 							</div>
 						{:else}
