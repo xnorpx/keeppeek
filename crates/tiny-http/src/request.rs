@@ -8,7 +8,7 @@ use std::str::FromStr;
 use std::sync::mpsc::Sender;
 
 use crate::util::{EqualReader, FusedReader};
-use crate::{HTTPVersion, Header, Method, Response};
+use crate::{HTTPVersion, Header, Method, Response, ResponseAbortHandle, connection::Connection};
 use chunked_transfer::Decoder;
 
 /// Represents an HTTP request made by a client.
@@ -53,6 +53,7 @@ pub struct Request {
 
     // if this writer is empty, then the request has been answered
     response_writer: Option<Box<dyn Write + Send + 'static>>,
+    response_abort: Option<ResponseAbortHandle>,
 
     remote_addr: Option<SocketAddr>,
 
@@ -233,6 +234,7 @@ where
     Ok(Request {
         data_reader: Some(reader),
         response_writer: Some(Box::new(writer) as Box<dyn Write + Send + 'static>),
+        response_abort: None,
         remote_addr,
         secure,
         method,
@@ -246,6 +248,26 @@ where
 }
 
 impl Request {
+    pub(crate) fn with_response_abort(
+        mut self,
+        connection: Connection,
+        timeout: std::time::Duration,
+    ) -> Self {
+        let handle = ResponseAbortHandle::new(connection, timeout);
+        self.response_writer = self
+            .response_writer
+            .take()
+            .map(|writer| handle.wrap(writer));
+        self.response_abort = Some(handle);
+        self
+    }
+
+    /// Returns a handle that stops this response until its writer closes.
+    /// Synthetic requests have no underlying connection and return None.
+    pub fn response_abort_handle(&self) -> Option<ResponseAbortHandle> {
+        self.response_abort.clone()
+    }
+
     /// Returns true if the request was made through HTTPS.
     #[inline]
     pub const fn secure(&self) -> bool {
