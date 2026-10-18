@@ -15,6 +15,9 @@ import {
 	runtimeProfileFromEntry,
 	maxRuntimeProfilePartCameras,
 	runtimeProfileStatusFromEntry,
+	runtimeProfileCamerasFromEntry,
+	runtimeProfilesCamerasKey,
+	type RuntimeProfileCameras,
 	type RuntimeProfileManifest,
 	type RuntimeProfileStatus,
 	type RuntimeProfileRegistry
@@ -25,6 +28,12 @@ const registryReadRetries = 2;
 
 export class RuntimeProfilesControlClient {
 	constructor(private readonly stateStore: ControlClientStateStore) {}
+
+	async getCameras(): Promise<RuntimeProfileCameras> {
+		return runtimeProfileCamerasFromEntry(
+			await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesCamerasKey)
+		);
+	}
 
 	async getActive(): Promise<{ profileId: string | null; revision: string }> {
 		return runtimeProfileFromEntry(
@@ -164,7 +173,8 @@ export class RuntimeProfilesControlClient {
 	}
 
 	async watchRegistry(
-		listener: (registry: RuntimeProfileRegistry) => void
+		listener: (registry: RuntimeProfileRegistry) => void,
+		onError: (cause: unknown) => void
 	): Promise<StateStoreWatch> {
 		let generation = 0;
 		return this.stateStore.watch(runtimeProfilesNamespace, {
@@ -173,9 +183,13 @@ export class RuntimeProfilesControlClient {
 			listener: (entries) => {
 				if (!entries.some((entry) => entry.key === runtimeProfilesRegistryKey)) return;
 				const requestGeneration = ++generation;
-				void this.getRegistry().then((registry) => {
-					if (requestGeneration === generation) listener(registry);
-				});
+				void this.getRegistry()
+					.then((registry) => {
+						if (requestGeneration === generation) listener(registry);
+					})
+					.catch((cause: unknown) => {
+						if (requestGeneration === generation) onError(cause);
+					});
 			}
 		});
 	}

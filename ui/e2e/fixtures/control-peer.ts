@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
 import type { BrowserSession } from '../../src/lib/external-authentication.svelte';
 import {
 	ExternalAuthenticationConfigurationSchema,
@@ -578,6 +579,11 @@ function encodedPeekLayoutState(
 	});
 }
 
+export function mockRuntimeProfileCameraId(source: string): string {
+	const hex = createHash('sha256').update(source).digest('hex');
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 function encodedRuntimeProfileEntry(
 	requestId: bigint,
 	key: string,
@@ -587,7 +593,8 @@ function encodedRuntimeProfileEntry(
 	const schema = {
 		registry: 'keeppeek.runtime-profiles.registry.v2',
 		active: 'keeppeek.runtime-profiles.active.v1',
-		status: 'keeppeek.runtime-profiles.status.v1'
+		status: 'keeppeek.runtime-profiles.status.v1',
+		cameras: 'keeppeek.runtime-profiles.cameras.v1'
 	}[key];
 	if (!schema) throw new Error(`unsupported runtime profile key: ${key}`);
 	return encodedOk(requestId, {
@@ -907,12 +914,14 @@ export async function mockControlPeer(
 	const runtimeProfileValues: Record<string, JsonObject> = {
 		registry: { revision: '1', active_profile_id: null, profiles: {} },
 		active: { profile_id: '' },
-		status: { revision: '1', active_profile_id: null, cameras: {} }
+		status: { revision: '1', active_profile_id: null, cameras: {} },
+		cameras: { cameras: {} }
 	};
 	const runtimeProfileRevisions: Record<string, bigint> = {
 		registry: 1n,
 		active: 1n,
-		status: 1n
+		status: 1n,
+		cameras: 1n
 	};
 	const configurationSnapshots = [...(options.configurationSnapshots ?? [])];
 	const configurationTemplateResults = [...(options.configurationTemplateResults ?? [])];
@@ -1091,6 +1100,16 @@ export async function mockControlPeer(
 				action.value.namespace === 'service/runtime-profiles/' &&
 				runtimeProfileValues[action.value.key]
 			) {
+				if (action.value.key === 'cameras') {
+					runtimeProfileValues.cameras = {
+						cameras: Object.fromEntries(
+							currentCameraSettings.flatMap((camera) => {
+								const source = isIP(camera.id) ? camera.id : camera.ip;
+								return isIP(source) ? [[mockRuntimeProfileCameraId(source), source]] : [];
+							})
+						)
+					};
+				}
 				return encodedRuntimeProfileEntry(
 					request.requestId,
 					action.value.key,
@@ -1102,6 +1121,7 @@ export async function mockControlPeer(
 				action.case === 'put' &&
 				action.value.namespace === 'service/runtime-profiles/' &&
 				runtimeProfileValues[action.value.key] &&
+				action.value.key !== 'cameras' &&
 				action.value.value
 			) {
 				requests.runtimeProfileWrites.push({

@@ -62,7 +62,10 @@ impl KeepPeekLoop {
             last_source = Some(source);
             if application.state == RuntimeApplicationState::Applied
                 && application.policy.recording_mode != crate::cameras::CameraRecordingMode::Off
-                && storage.recording_configuration_failed(&application.camera_id)
+                && self
+                    .runtime_profile_camera_ids
+                    .source_id(&application.camera_id)
+                    .is_some_and(|source| storage.recording_configuration_failed(source))
             {
                 application.state = RuntimeApplicationState::Degraded;
                 application.reason =
@@ -124,7 +127,7 @@ impl KeepPeekLoop {
             }
         });
         crate::profiles::CameraRuntimeApplication {
-            camera_id: camera.config.ip.to_string(),
+            camera_id: self.runtime_profile_camera_ids.camera_id(camera.config.ip),
             state: result
                 .as_ref()
                 .cloned()

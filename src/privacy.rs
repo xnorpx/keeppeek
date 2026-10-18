@@ -8,6 +8,7 @@ use std::{
 };
 
 const MAX_WINDOWS: usize = 64;
+const MAX_PROFILE_OVERRIDES_DURING_TRANSITION: usize = crate::profiles::MAX_PROFILE_TARGETS * 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrivacySource {
@@ -97,12 +98,15 @@ impl PrivacyRegistry {
     }
 
     /// Replaces profile privacy inputs; false values never weaken a schedule.
+    /// The bound holds both the old and new profile targets during a transition.
     pub fn replace_profile_overrides(
         &self,
         overrides: BTreeMap<String, bool>,
     ) -> anyhow::Result<()> {
-        if overrides.len() > 127 {
-            anyhow::bail!("profile privacy overrides cannot contain more than 127 cameras");
+        if overrides.len() > MAX_PROFILE_OVERRIDES_DURING_TRANSITION {
+            anyhow::bail!(
+                "profile privacy overrides cannot contain more than {MAX_PROFILE_OVERRIDES_DURING_TRANSITION} cameras"
+            );
         }
         for camera_id in overrides.keys() {
             if camera_id.trim().is_empty() || camera_id.len() > 256 {
@@ -141,6 +145,14 @@ impl PrivacyRegistry {
         }
         state.profile_overrides = overrides;
         Ok(())
+    }
+
+    pub(crate) fn profile_overrides_snapshot(&self) -> BTreeMap<String, bool> {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .profile_overrides
+            .clone()
     }
 
     /// Associates a transport identity with a configured camera identity.
@@ -608,6 +620,38 @@ mod tests {
 
         assert!(active);
         assert!(!registry.gate("front").unwrap().allows(epoch));
+    }
+
+    #[test]
+    fn profile_privacy_holds_two_bounded_generations_without_weakening_schedule() {
+        let registry = PrivacyRegistry::new(BTreeMap::from([(
+            "scheduled".to_owned(),
+            schedule(PrivacyWindow {
+                weekdays: vec![1],
+                start: "00:00".into(),
+                end: "23:59".into(),
+            }),
+        )]))
+        .unwrap();
+        let mut overrides = (0..253)
+            .map(|index| (format!("camera-{index}"), true))
+            .collect::<BTreeMap<_, _>>();
+        overrides.insert("scheduled".to_owned(), false);
+        registry
+            .replace_profile_overrides(overrides.clone())
+            .unwrap();
+        assert_eq!(registry.profile_overrides_snapshot(), overrides);
+        assert!(
+            registry
+                .decision("scheduled", "2026-09-22T05:15:00Z".parse().unwrap())
+                .unwrap()
+                .0
+        );
+
+        let mut excessive = overrides.clone();
+        excessive.insert("camera-254".to_owned(), true);
+        assert!(registry.replace_profile_overrides(excessive).is_err());
+        assert_eq!(registry.profile_overrides_snapshot(), overrides);
     }
 
     fn schedule(window: PrivacyWindow) -> PrivacySchedule {

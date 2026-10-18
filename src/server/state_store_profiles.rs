@@ -7,6 +7,15 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
+#[path = "state_store_profiles_identity.rs"]
+mod identity;
+use identity::{
+    camera_profile_configuration, camera_profile_ids, cameras_entry, configured_profile_ids,
+};
+
+#[cfg(test)]
+#[path = "state_store_profiles_lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 pub(in crate::server) const NAMESPACE: &str = "service/runtime-profiles/";
 pub(super) const ACTIVE_SCHEMA: &str = "keeppeek.runtime-profiles.active.v1";
@@ -16,6 +25,8 @@ const PROFILE_DRAFT_PART_SCHEMA: &str = "keeppeek.runtime-profiles.draft-part.v1
 pub(in crate::server) const STATUS_SCHEMA: &str = "keeppeek.runtime-profiles.status.v1";
 const ACTIVE_KEY: &str = "active";
 const REGISTRY_KEY: &str = "registry";
+const CAMERAS_KEY: &str = "cameras";
+const CAMERAS_SCHEMA: &str = "keeppeek.runtime-profiles.cameras.v1";
 pub(in crate::server) const STATUS_KEY: &str = "status";
 const PROFILE_PART_TARGETS: usize = 16;
 const PROFILE_DOCUMENT_BYTES_MAX: usize = 16 * 1_024;
@@ -115,7 +126,10 @@ pub(super) fn dispatch(
                     &request.key,
                 ));
             }
-            if (request.key == REGISTRY_KEY || request.key.starts_with("profiles/")) && !admin {
+            if (matches!(request.key.as_str(), REGISTRY_KEY | CAMERAS_KEY)
+                || request.key.starts_with("profiles/"))
+                && !admin
+            {
                 return Err(registry_error(
                     Error::NotAuthorized,
                     NAMESPACE,
@@ -131,6 +145,8 @@ pub(super) fn dispatch(
                 ACTIVE_KEY => active_entry(registry),
                 REGISTRY_KEY => registry_entry(registry)
                     .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?,
+                CAMERAS_KEY => cameras_entry(state)
+                    .map_err(|error| registry_error(error, NAMESPACE, CAMERAS_KEY))?,
                 key if key.starts_with("profiles/") => profile_part_entry(&registry, key)
                     .map_err(|error| registry_error(error, NAMESPACE, key))?,
                 STATUS_KEY => status_entry(visible_status(state, principal)).map_err(|error| {
@@ -196,12 +212,10 @@ pub(super) fn dispatch(
                 .map_err(|error| registry_error(error, NAMESPACE, ACTIVE_KEY))?;
             let _guard = super::super::state_store_settings::lock_config(&state.config_update)
                 .map_err(|error| registry_error(error, NAMESPACE, ACTIVE_KEY))?;
-            let mut root = config::load_configuration_table(config_path).map_err(|error| {
-                registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
-            })?;
             let mut current: Config = config::load_config(config_path).map_err(|error| {
                 registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
             })?;
+            let mut root = current.source.clone();
             current.runtime_profiles.validate().map_err(|error| {
                 registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
             })?;
@@ -219,21 +233,24 @@ pub(super) fn dispatch(
             }) {
                 return Err(registry_error(Error::NotFound, NAMESPACE, ACTIVE_KEY));
             }
+            let camera_ids = current.camera_profile_identities().map_err(|error| {
+                registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
+            })?;
+            let identities =
+                crate::keeppeek::CameraProfileIds::new(camera_ids.clone()).map_err(|error| {
+                    registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
+                })?;
             if let Some(profile_id) = profile_id.as_ref() {
                 let profile = current
                     .runtime_profiles
                     .profiles
                     .get(profile_id)
                     .expect("profile existence was checked");
-                let camera_ids = state
-                    .camera_entries()
-                    .into_iter()
-                    .map(|camera| camera.info.id)
-                    .collect::<BTreeSet<_>>();
+                let configured_ids = configured_profile_ids(&identities);
                 if profile
                     .cameras
                     .keys()
-                    .any(|camera_id| !camera_ids.contains(camera_id))
+                    .any(|camera_id| !configured_ids.contains(camera_id))
                 {
                     return Err(registry_error(
                         Error::Invalid(Invalid::Schema),
@@ -259,12 +276,8 @@ pub(super) fn dispatch(
             current.runtime_profiles.validate().map_err(|_error| {
                 registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, ACTIVE_KEY)
             })?;
-            let previous_privacy = state
-                .runtime_profiles
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .active_privacy_overrides();
-            let next_privacy = current.runtime_profiles.active_privacy_overrides();
+            let previous_privacy = state.privacy.profile_overrides_snapshot();
+            let next_privacy = identities.privacy_overrides(&current.runtime_profiles);
             let mut restrictive_privacy = previous_privacy.clone();
             for (camera_id, enforced) in &next_privacy {
                 restrictive_privacy
@@ -280,9 +293,11 @@ pub(super) fn dispatch(
                 })?;
             root.insert(
                 "runtime_profiles".to_owned(),
-                toml::Value::try_from(&current.runtime_profiles).map_err(|error| {
-                    registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
-                })?,
+                config::runtime_profile_configuration_value(&current.runtime_profiles).map_err(
+                    |error| {
+                        registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
+                    },
+                )?,
             );
             if let Err(error) = config::write_configuration_table(config_path, &root) {
                 state
@@ -302,10 +317,12 @@ pub(super) fn dispatch(
                 current.runtime_profiles.clone();
             mark_runtime_status_pending(state, &current.runtime_profiles);
             publish_status_event(state, now_ms());
-            let runtime_result = state
-                .camera_runtime
-                .as_ref()
-                .map(|runtime| runtime.set_runtime_profiles(current.runtime_profiles.clone()));
+            let runtime_result = state.camera_runtime.as_ref().map(|runtime| {
+                runtime.set_runtime_profiles_with_camera_ids(
+                    current.runtime_profiles.clone(),
+                    camera_ids,
+                )
+            });
             let applications = runtime_result
                 .as_ref()
                 .and_then(|result| result.as_ref().ok())
@@ -423,14 +440,20 @@ fn watch_profiles(
         .map_err(|error| registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY))?
         .runtime_profiles;
     if key_prefix == STATUS_KEY {
+        let identities = camera_profile_ids(state).ok();
         let status = state
             .runtime_profile_status
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry =
-            status_entry(project_status(state, principal, status.clone())).map_err(|error| {
-                registry_error(Error::Storage(error.to_string()), NAMESPACE, STATUS_KEY)
-            })?;
+        let entry = status_entry(project_status(
+            state,
+            principal,
+            status.clone(),
+            identities.as_ref(),
+        ))
+        .map_err(|error| {
+            registry_error(Error::Storage(error.to_string()), NAMESPACE, STATUS_KEY)
+        })?;
         // Registration must precede any writer that could invalidate this snapshot.
         #[cfg(test)]
         tests::pause_status_registration(&request.watch_id);
@@ -907,12 +930,13 @@ fn put_registry(
     };
     let _guard = super::super::state_store_settings::lock_config(&state.config_update)
         .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?;
-    let mut root = config::load_configuration_table(config_path).map_err(|error| {
-        registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
-    })?;
     let current: Config = config::load_config(config_path).map_err(|error| {
         registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
     })?;
+    let camera_ids = current.camera_profile_identities().map_err(|error| {
+        registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
+    })?;
+    let mut root = current.source;
     let previous_registry = current.runtime_profiles;
     if request.expected_revision != Some(previous_registry.revision) {
         return Err(registry_error(
@@ -955,13 +979,13 @@ fn put_registry(
             REGISTRY_KEY,
         ));
     }
-    let camera_ids = state
-        .camera_entries()
-        .into_iter()
-        .map(|camera| camera.info.id)
-        .collect::<BTreeSet<_>>();
+    let identities =
+        crate::keeppeek::CameraProfileIds::new(camera_ids.clone()).map_err(|error| {
+            registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
+        })?;
+    let configured_ids = configured_profile_ids(&identities);
     candidate
-        .validate_targets(&camera_ids, &previous_registry)
+        .validate_targets(&configured_ids, &previous_registry)
         .map_err(|_| registry_error(Error::Invalid(Invalid::Schema), NAMESPACE, REGISTRY_KEY))?;
     for (profile_id, profile) in &mut candidate.profiles {
         profile.revision = match previous_registry.profiles.get(profile_id) {
@@ -1008,8 +1032,8 @@ fn put_registry(
     let registry_entry = registry_entry(candidate.clone())
         .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?;
 
-    let previous_privacy = previous_registry.active_privacy_overrides();
-    let next_privacy = candidate.active_privacy_overrides();
+    let previous_privacy = state.privacy.profile_overrides_snapshot();
+    let next_privacy = identities.privacy_overrides(&candidate);
     let mut restrictive_privacy = previous_privacy.clone();
     for (camera_id, enforced) in &next_privacy {
         restrictive_privacy
@@ -1025,7 +1049,7 @@ fn put_registry(
         })?;
     root.insert(
         "runtime_profiles".to_owned(),
-        toml::Value::try_from(&candidate).map_err(|error| {
+        config::runtime_profile_configuration_value(&candidate).map_err(|error| {
             registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
         })?,
     );
@@ -1052,7 +1076,7 @@ fn put_registry(
     let runtime_result = state
         .camera_runtime
         .as_ref()
-        .map(|runtime| runtime.set_runtime_profiles(candidate.clone()));
+        .map(|runtime| runtime.set_runtime_profiles_with_camera_ids(candidate.clone(), camera_ids));
     let applications = runtime_result
         .as_ref()
         .and_then(|result| result.as_ref().ok())
@@ -1153,7 +1177,8 @@ fn update_runtime_status(
     runtime_error: Option<String>,
     runtime_unavailable: bool,
 ) {
-    let configs = runtime_profile_camera_configs(state);
+    let (configuration, identities) = camera_profile_configuration(state);
+    let configs = runtime_profile_camera_configs(configuration.as_ref(), identities.as_ref());
     let configured_camera_ids: BTreeSet<String> = configs.as_ref().map_or_else(
         || {
             state
@@ -1202,7 +1227,13 @@ fn update_runtime_status(
     {
         preserve_runtime_failures(&status.cameras, &mut cameras);
     }
-    project_runtime_privacy(state, profiles, &configured_camera_ids, &mut cameras);
+    project_runtime_privacy(
+        state,
+        profiles,
+        &configured_camera_ids,
+        &mut cameras,
+        identities.as_ref(),
+    );
     *status = crate::profiles::RuntimeProfileStatus {
         revision: profiles.revision,
         active_profile_id: profiles.active_profile_id.clone(),
@@ -1228,10 +1259,12 @@ fn preserve_runtime_failures(
 }
 
 fn runtime_profile_camera_configs(
-    state: &ServerState,
+    configuration: Option<&Config>,
+    identities: Option<&crate::keeppeek::CameraProfileIds>,
 ) -> Option<BTreeMap<String, crate::cameras::CameraConfig>> {
-    let path = state.camera_config_path.as_deref()?;
-    config::load_cameras(path).map_or_else(
+    let configuration = configuration?;
+    let identities = identities?;
+    configuration.camera_configurations().map_or_else(
         |_| {
             tracing::warn!(
                 "Unable to load configured cameras for runtime profile status; using catalog"
@@ -1243,7 +1276,7 @@ fn runtime_profile_camera_configs(
                 configs
                     .into_values()
                     .flatten()
-                    .map(|camera| (camera.ip.to_string(), camera))
+                    .map(|camera| (identities.camera_id(camera.ip), camera))
                     .collect(),
             )
         },
@@ -1289,14 +1322,16 @@ fn project_runtime_privacy(
     profiles: &crate::profiles::ProfileRegistry,
     configured_camera_ids: &BTreeSet<String>,
     cameras: &mut BTreeMap<String, crate::profiles::CameraRuntimeApplication>,
+    identities: Option<&crate::keeppeek::CameraProfileIds>,
 ) {
     for application in cameras.values_mut() {
         if !configured_camera_ids.contains(&application.camera_id) {
             continue;
         }
-        let privacy_active = state
-            .privacy
-            .decision(&application.camera_id, chrono::Utc::now());
+        let privacy_active = identities
+            .and_then(|identities| identities.source(&application.camera_id))
+            .ok_or_else(|| anyhow::anyhow!("camera profile source is unavailable"))
+            .and_then(|ip| state.privacy.decision(&ip.to_string(), chrono::Utc::now()));
         match privacy_active {
             Ok((active, _)) => {
                 application.policy.privacy_enforced = active;
@@ -1315,8 +1350,10 @@ fn project_runtime_privacy(
             }
             Err(error) => {
                 application.policy.privacy_enforced = true;
+                if application.state != crate::profiles::RuntimeApplicationState::Degraded {
+                    application.reason = Some(error.to_string().chars().take(256).collect());
+                }
                 application.state = crate::profiles::RuntimeApplicationState::Degraded;
-                application.reason = Some(error.to_string().chars().take(256).collect());
             }
         }
     }
@@ -1379,28 +1416,44 @@ fn visible_status(
     state: &ServerState,
     principal: &ApiPrincipal,
 ) -> crate::profiles::RuntimeProfileStatus {
+    let identities = camera_profile_ids(state).ok();
     let status = state
         .runtime_profile_status
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    project_status(state, principal, status)
+    project_status(state, principal, status, identities.as_ref())
 }
 
 fn project_status(
     state: &ServerState,
     principal: &ApiPrincipal,
     mut status: crate::profiles::RuntimeProfileStatus,
+    identities: Option<&crate::keeppeek::CameraProfileIds>,
 ) -> crate::profiles::RuntimeProfileStatus {
     if principal.role == AccessRole::Administrator {
         return status;
     }
+    let identities = match identities {
+        Some(identities) => identities,
+        None => {
+            status.cameras.clear();
+            return status;
+        }
+    };
     let visible_camera_ids = super::super::camera_access::for_principal(state, principal)
         .ok()
         .and_then(|policy| super::super::camera_access::query_cameras(state, &policy, &[]).ok())
         .unwrap_or_default()
         .into_iter()
-        .map(|camera| camera.info.id)
+        .filter_map(|camera| {
+            camera
+                .info
+                .ip
+                .parse()
+                .ok()
+                .map(|ip| identities.camera_id(ip))
+        })
         .collect::<BTreeSet<_>>();
     status
         .cameras
@@ -1626,6 +1679,38 @@ mod tests {
         fn config_path(&self) -> std::path::PathBuf {
             self.directory.join("config.toml")
         }
+
+        fn add_camera(&self, camera: &crate::cameras::CameraConfig) -> String {
+            config::upsert_camera(&self.config_path(), camera).unwrap();
+            self.state
+                .upsert_camera(super::super::super::camera_entry(camera, None));
+            config::load_camera_profile_identities(&self.config_path()).unwrap()[&camera.ip].clone()
+        }
+
+        fn add_profile_cameras(&self, identities: &[String]) {
+            let mut root = config::load_configuration_table(&self.config_path()).unwrap();
+            let mut cameras = toml::Table::new();
+            for (index, identity) in identities.iter().enumerate() {
+                let ip = format!("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ff{index:02x}")
+                    .parse()
+                    .unwrap();
+                let configuration = camera_config(ip);
+                let mut table = toml::Value::try_from(&configuration)
+                    .unwrap()
+                    .as_table()
+                    .unwrap()
+                    .clone();
+                table.insert(
+                    "profile_identity".to_owned(),
+                    toml::Value::String(identity.clone()),
+                );
+                cameras.insert(format!("target-{index}"), toml::Value::Table(table));
+                self.state
+                    .upsert_camera(super::super::super::camera_entry(&configuration, None));
+            }
+            root.insert("cameras".to_owned(), toml::Value::Table(cameras));
+            config::write_configuration_table(&self.config_path(), &root).unwrap();
+        }
     }
 
     impl Drop for Fixture {
@@ -1713,7 +1798,7 @@ mod tests {
 
     fn full_registry() -> (crate::profiles::ProfileRegistry, Vec<String>) {
         let camera_ids = (1..=127)
-            .map(|last| format!("10.20.0.{last}"))
+            .map(|last| format!("00000000-0000-4000-8000-{last:012x}"))
             .collect::<Vec<_>>();
         let mut profiles = BTreeMap::new();
         for profile_index in 0..32 {
@@ -2080,6 +2165,53 @@ mod tests {
     }
 
     #[test]
+    fn failed_profile_updates_preserve_actual_held_privacy() {
+        for update_registry in [false, true] {
+            let fixture = Fixture::new();
+            let runtime =
+                crate::keeppeek::KeepPeekLoop::new(crate::shutdown::Shutdown::new(), None);
+            let state = fixture.state.clone().with_camera_runtime(runtime.control());
+            drop(runtime);
+            let held = BTreeMap::from([("192.0.2.99".to_owned(), true)]);
+            state
+                .privacy
+                .replace_profile_overrides(held.clone())
+                .unwrap();
+            let command = if update_registry {
+                let mut registry = config::load_config(&fixture.config_path())
+                    .unwrap()
+                    .runtime_profiles;
+                registry.profiles.get_mut("away").unwrap().name = "Away changed".to_owned();
+                put_registry(&registry, 0)
+            } else {
+                put_active("away", 0)
+            };
+            super::super::dispatch(
+                &state,
+                SessionId::from_u64(20_257),
+                &ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into()),
+                command,
+            )
+            .expect("desired update must persist despite missing runtime acknowledgement");
+            assert_eq!(state.privacy.profile_overrides_snapshot(), held);
+            assert!(
+                state
+                    .privacy
+                    .decision("192.0.2.99", chrono::Utc::now())
+                    .unwrap()
+                    .0
+            );
+            assert_eq!(
+                config::load_config(&fixture.config_path())
+                    .unwrap()
+                    .runtime_profiles
+                    .revision,
+                1
+            );
+        }
+    }
+
+    #[test]
     fn missing_profile_targets_ignore_deleted_catalog_cameras_during_runtime_failure() {
         let fixture = Fixture::new();
         let camera: crate::cameras::CameraConfig =
@@ -2197,13 +2329,16 @@ mod tests {
         let camera: crate::cameras::CameraConfig =
             toml::from_str("ip='192.0.2.1'\nusername='fixture'\npassword='fixture'").unwrap();
         config::upsert_camera(&fixture.config_path(), &camera).unwrap();
+        let identity = config::load_camera_profile_identities(&fixture.config_path()).unwrap()
+            [&camera.ip]
+            .clone();
         let mut profiles = config::load_config(&fixture.config_path())
             .unwrap()
             .runtime_profiles;
         profiles.revision = 1;
         profiles.active_profile_id = Some("away".to_owned());
         let returned = crate::profiles::CameraRuntimeApplication {
-            camera_id: camera.ip.to_string(),
+            camera_id: identity,
             state: crate::profiles::RuntimeApplicationState::Applied,
             policy: crate::profiles::resolve_camera_policy(
                 &crate::profiles::BaseCameraPolicy {
@@ -2435,6 +2570,81 @@ mod tests {
         );
     }
 
+    fn assert_persisted_profile_identity_schema(path: &std::path::Path) {
+        let root = config::load_configuration_table(path).unwrap();
+        assert_eq!(
+            root["runtime_profiles"]["identity_schema"].as_integer(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn runtime_profile_rollback_guard_survives_activation_and_removing_all_cameras() {
+        let fixture = Fixture::new();
+        let camera_ip = "192.0.2.10".parse().unwrap();
+        let identity = fixture.add_camera(&camera_config(camera_ip));
+        let path = fixture.config_path();
+        let mut configuration = config::load_config(&path).unwrap();
+        configuration
+            .runtime_profiles
+            .profiles
+            .get_mut("away")
+            .unwrap()
+            .cameras
+            .insert(
+                identity.clone(),
+                crate::profiles::CameraProfileOverride {
+                    recording_mode: Some(crate::cameras::CameraRecordingMode::Main),
+                    ..Default::default()
+                },
+            );
+        let mut root = configuration.source;
+        root.insert(
+            "runtime_profiles".to_owned(),
+            toml::Value::try_from(&configuration.runtime_profiles).unwrap(),
+        );
+        config::write_configuration_table(&path, &root).unwrap();
+        let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let session = SessionId::from_u64(20_258);
+        super::super::dispatch(&fixture.state, session, &principal, put_active("away", 0)).unwrap();
+        assert_persisted_profile_identity_schema(&path);
+        config::remove_camera(&path, camera_ip).unwrap();
+        assert!(
+            config::load_camera_profile_identities(&path)
+                .unwrap()
+                .is_empty()
+        );
+        for (revision, clear_targets) in [(1, false), (2, true)] {
+            let mut registry = config::load_config(&path).unwrap().runtime_profiles;
+            let profile = registry.profiles.get_mut("away").unwrap();
+            profile.name = format!("Away revision {revision}");
+            assert!(profile.cameras.contains_key(&identity));
+            if clear_targets {
+                profile.cameras.clear();
+            }
+            let wire = serde_json::to_value(&registry).unwrap();
+            assert!(wire.get("identity_schema").is_none());
+            let mut persisted_only_wire = wire;
+            persisted_only_wire["identity_schema"] = serde_json::json!(1);
+            assert!(
+                serde_json::from_value::<crate::profiles::ProfileRegistry>(persisted_only_wire)
+                    .is_err()
+            );
+            super::super::dispatch(
+                &fixture.state,
+                session,
+                &principal,
+                put_registry(&registry, revision),
+            )
+            .unwrap();
+            assert_persisted_profile_identity_schema(&path);
+            let saved = config::load_config(&path).unwrap().runtime_profiles;
+            assert_eq!(saved.revision, revision + 1);
+            assert_eq!(saved.active_profile_id.as_deref(), Some("away"));
+            assert_eq!(saved.profiles["away"].cameras.is_empty(), clear_targets);
+        }
+    }
+
     #[test]
     fn registry_edits_preserve_removed_camera_targets_without_accepting_new_unknown_targets() {
         let fixture = Fixture::new();
@@ -2631,20 +2841,108 @@ mod tests {
     }
 
     #[test]
+    fn profile_camera_catalog_is_admin_only_and_fits_the_127_target_bound() {
+        let fixture = Fixture::new();
+        let (_, identities) = full_registry();
+        fixture.add_profile_cameras(&identities);
+        let mut principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let result = super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_254),
+            &principal,
+            get_key(CAMERAS_KEY),
+        )
+        .unwrap();
+        let control_ok::Result::StateStoreResult(proto::StateStoreResult {
+            result: Some(state_store_result::Result::Entry(entry)),
+        }) = result
+        else {
+            panic!("camera catalog entry");
+        };
+        assert_eq!(entry.schema, CAMERAS_SCHEMA);
+        let value = entry.value.unwrap();
+        assert!(value.encoded_len() <= PROFILE_DOCUMENT_BYTES_MAX);
+        let Some(Kind::StructValue(cameras)) = value.fields["cameras"].kind.as_ref() else {
+            panic!("camera catalog map");
+        };
+        assert_eq!(cameras.fields.len(), 127);
+        for (identity, source) in &cameras.fields {
+            assert!(identities.contains(identity));
+            let Some(Kind::StringValue(source)) = source.kind.as_ref() else {
+                panic!("source IP");
+            };
+            assert_eq!(source.len(), 39);
+            assert!(source.parse::<std::net::IpAddr>().is_ok());
+        }
+        principal.role = AccessRole::User;
+        let error = super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_254),
+            &principal,
+            get_key(CAMERAS_KEY),
+        )
+        .expect_err("Users cannot read profile identity metadata");
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+    }
+
+    #[test]
+    fn profile_camera_catalog_rejects_a_response_above_its_document_bound() {
+        let fixture = Fixture::new();
+        let identities = (1..=254)
+            .map(|index| format!("00000000-0000-4000-8000-{index:012x}"))
+            .collect::<Vec<_>>();
+        fixture.add_profile_cameras(&identities);
+        let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let error = super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_255),
+            &principal,
+            get_key(CAMERAS_KEY),
+        )
+        .expect_err("oversized identity catalog must report its capacity failure");
+        assert_eq!(error.code, proto::ErrorCode::InvalidRequest);
+        assert!(error.message.contains("too large"));
+    }
+
+    #[test]
+    fn profile_target_validation_never_uses_a_deleted_camera_catalog_entry() {
+        let fixture = Fixture::new();
+        let identity = fixture.add_camera(&camera_config("192.0.2.1".parse().unwrap()));
+        config::remove_camera(&fixture.config_path(), "192.0.2.1".parse().unwrap()).unwrap();
+        assert!(!fixture.state.camera_entries().is_empty());
+        assert!(configured_profile_ids(&camera_profile_ids(&fixture.state).unwrap()).is_empty());
+        let mut registry = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        registry
+            .profiles
+            .get_mut("away")
+            .unwrap()
+            .cameras
+            .insert(identity, Default::default());
+        let error = super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_256),
+            &ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into()),
+            put_registry(&registry, 0),
+        )
+        .expect_err("deleted targets must not be introduced from stale discovery state");
+        assert_eq!(error.code, proto::ErrorCode::InvalidRequest);
+        assert!(
+            config::load_config(&fixture.config_path())
+                .unwrap()
+                .runtime_profiles
+                .profiles["away"]
+                .cameras
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn maximum_registry_put_rejects_before_persisting_an_untransportable_value() {
         let fixture = Fixture::new();
         let (registry, camera_ids) = full_registry();
-        {
-            let mut cameras = fixture
-                .state
-                .cameras
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cameras.extend(camera_ids.iter().map(|camera_id| {
-                let ip = camera_id.parse().unwrap();
-                super::super::super::camera_entry(&camera_config(ip), None)
-            }));
-        }
+        fixture.add_profile_cameras(&camera_ids);
         let header = registry_entry(registry.clone()).unwrap();
         assert!(header.value.encoded_len() <= PROFILE_DOCUMENT_BYTES_MAX);
         for profile in registry.profiles.values() {
@@ -2687,17 +2985,7 @@ mod tests {
     fn administrator_commits_a_large_profile_registry_from_bounded_parts() {
         let fixture = Fixture::new();
         let (registry, camera_ids) = full_registry();
-        {
-            let mut cameras = fixture
-                .state
-                .cameras
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cameras.extend(camera_ids.iter().map(|camera_id| {
-                let ip = camera_id.parse().unwrap();
-                super::super::super::camera_entry(&camera_config(ip), None)
-            }));
-        }
+        fixture.add_profile_cameras(&camera_ids);
         let direct = profile_registry_put(&registry);
         let Some(state_store_command::Action::Put(direct)) = direct.action else {
             unreachable!();
@@ -2758,17 +3046,7 @@ mod tests {
     #[test]
     fn stale_staged_registry_commit_reports_conflict_after_its_draft_was_consumed() {
         let fixture = Fixture::new();
-        let camera_id = "192.0.2.10";
-        let camera_ip = camera_id.parse().unwrap();
-        fixture
-            .state
-            .cameras
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(super::super::super::camera_entry(
-                &camera_config(camera_ip),
-                None,
-            ));
+        let camera_id = fixture.add_camera(&camera_config("192.0.2.10".parse().unwrap()));
 
         let mut registry = config::load_config(&fixture.config_path())
             .unwrap()
@@ -2780,7 +3058,7 @@ mod tests {
                 name: "New profile".to_owned(),
                 revision: 1,
                 cameras: BTreeMap::from([(
-                    camera_id.to_owned(),
+                    camera_id,
                     crate::profiles::CameraProfileOverride {
                         availability: Some(false),
                         ..Default::default()

@@ -9177,8 +9177,16 @@ impl ServerState {
         let privacy = PrivacyRegistry::new(privacy_schedules)
             .expect("privacy configuration must be validated before server startup");
         let privacy = Arc::new(privacy);
+        let profile_camera_ids = crate::keeppeek::CameraProfileIds::new(
+            config
+                .camera_profile_identities()
+                .expect("camera profile identities must be validated before startup"),
+        )
+        .expect("camera profile identities must be unique before startup");
         privacy
-            .replace_profile_overrides(config.runtime_profiles.active_privacy_overrides())
+            .replace_profile_overrides(
+                profile_camera_ids.privacy_overrides(&config.runtime_profiles),
+            )
             .expect("profile privacy configuration must be bounded before startup");
         webrtc.set_privacy_registry(privacy.clone());
         for camera in &entries {
@@ -13443,6 +13451,13 @@ fn start_runtime_camera(
         tracing::warn!(ip = %config.ip, %error, "discovered camera endpoints could not be persisted");
         return None;
     }
+    let profile_privacy = match refresh_runtime_profile_camera_ids(state, config_path) {
+        Ok(profile_privacy) => profile_privacy,
+        Err(error) => {
+            tracing::warn!(ip = %config.ip, %error, "camera profile identity could not be applied live");
+            return None;
+        }
+    };
     let groups = runtime_camera_groups(config_path, camera.config.ip)?;
     if let Err(error) = state.update_volume_groups(camera.config.ip, Some(groups.clone())) {
         tracing::error!(ip = %camera.config.ip, %error, "camera cannot start with an unavailable volume group registry");
@@ -13457,10 +13472,38 @@ fn start_runtime_camera(
         tracing::warn!(ip = %config.ip, %error, "camera configuration could not be applied live");
         return None;
     }
+    if let Err(error) = state.privacy.replace_profile_overrides(profile_privacy) {
+        tracing::warn!(ip = %config.ip, %error, "camera profile privacy could not finish its transition");
+        return None;
+    }
     let mut entry = camera_entry(&camera.config, Some(&camera));
     entry.groups = groups;
     state.activate_camera_entry(entry);
     Some(camera.config)
+}
+
+fn refresh_runtime_profile_camera_ids(
+    state: &ServerState,
+    config_path: &Path,
+) -> anyhow::Result<BTreeMap<String, bool>> {
+    let configuration = config::load_config(config_path)?;
+    let identities = configuration.camera_profile_identities()?;
+    let profile_camera_ids = crate::keeppeek::CameraProfileIds::new(identities.clone())?;
+    let next_privacy = profile_camera_ids.privacy_overrides(&configuration.runtime_profiles);
+    let mut restrictive_privacy = state.privacy.profile_overrides_snapshot();
+    for (source, enforced) in &next_privacy {
+        restrictive_privacy
+            .entry(source.clone())
+            .and_modify(|previous| *previous |= *enforced)
+            .or_insert(*enforced);
+    }
+    state
+        .privacy
+        .replace_profile_overrides(restrictive_privacy)?;
+    if let Some(runtime) = &state.camera_runtime {
+        runtime.set_runtime_profiles_with_camera_ids(configuration.runtime_profiles, identities)?;
+    }
+    Ok(next_privacy)
 }
 
 fn runtime_camera_groups(config_path: &Path, camera_ip: IpAddr) -> Option<Vec<String>> {
@@ -13522,16 +13565,7 @@ fn delete_camera_settings(
     }
     match config::remove_camera(config_path, ip) {
         Ok(()) => {
-            if let Some(runtime) = &state.camera_runtime {
-                runtime.stop_camera(ip).map_err(|_| ControlCommandError::new(proto::ErrorCode::Unavailable, 503, "camera configuration was removed but its runtime stop could not be confirmed"))?;
-            }
-            state.update_volume_groups(ip, None).map_err(|_| {
-                ControlCommandError::new(
-                    proto::ErrorCode::Unavailable,
-                    503,
-                    "camera was removed but its volume group registry is unavailable",
-                )
-            })?;
+            reconcile_removed_camera(state, config_path, ip)?;
             camera_configuration_revision(state)
         }
         Err(error) => Err(ControlCommandError::new(
@@ -13540,6 +13574,47 @@ fn delete_camera_settings(
             format!("unable to remove camera configuration: {error}"),
         )),
     }
+}
+
+fn reconcile_removed_camera(
+    state: &ServerState,
+    config_path: &Path,
+    ip: IpAddr,
+) -> Result<(), ControlCommandError> {
+    if let Some(runtime) = &state.camera_runtime {
+        runtime.stop_camera(ip).map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "camera configuration was removed but its runtime stop could not be confirmed",
+            )
+        })?;
+    }
+    let profile_privacy = refresh_runtime_profile_camera_ids(state, config_path).map_err(|_| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "camera was removed but profile identity reconciliation could not be confirmed",
+        )
+    })?;
+    state
+        .privacy
+        .replace_profile_overrides(profile_privacy)
+        .map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "camera was removed but profile privacy reconciliation could not be confirmed",
+            )
+        })?;
+    state.update_volume_groups(ip, None).map_err(|_| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "camera was removed but its volume group registry is unavailable",
+        )
+    })?;
+    Ok(())
 }
 
 fn nonempty_setting(value: Option<String>) -> Option<String> {
@@ -13820,6 +13895,10 @@ fn optional_event_recording_stream(
 }
 
 #[cfg(test)]
+#[path = "server/profile_camera_identity_tests.rs"]
+mod profile_camera_identity_tests;
+
+#[cfg(test)]
 mod tests {
     mod isapi_events;
     mod session_authorization;
@@ -13833,6 +13912,8 @@ mod tests {
 
     #[test]
     fn persisted_active_profile_privacy_is_restored_into_the_server_media_gate() {
+        let camera_identity = uuid::Uuid::new_v4().to_string();
+        let camera_ip = "192.0.2.10";
         let config = Config {
             runtime_profiles: crate::profiles::ProfileRegistry {
                 revision: 1,
@@ -13844,7 +13925,7 @@ mod tests {
                         name: "Away".to_owned(),
                         revision: 1,
                         cameras: BTreeMap::from([(
-                            "front-door".to_owned(),
+                            camera_identity.clone(),
                             CameraProfileOverride {
                                 privacy_enforced: Some(true),
                                 ..CameraProfileOverride::default()
@@ -13861,11 +13942,17 @@ mod tests {
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let config_path = directory.join("config.toml");
-        let root: toml::Table = toml::Value::try_from(&config)
+        let mut root: toml::Table = toml::Value::try_from(&config)
             .unwrap()
             .as_table()
             .unwrap()
             .clone();
+        root.extend(
+            toml::from_str::<toml::Table>(&format!(
+                "[cameras.front]\nip = '{camera_ip}'\nprofile_identity = '{camera_identity}'\n"
+            ))
+            .unwrap(),
+        );
         crate::config::write_configuration_table(&config_path, &root).unwrap();
         let config = crate::config::load_config(&config_path).unwrap();
         let state = ServerState::new(
@@ -13879,14 +13966,14 @@ mod tests {
 
         let (active, epoch) = state
             .privacy_registry()
-            .decision("front-door", chrono::Utc::now())
+            .decision(camera_ip, chrono::Utc::now())
             .unwrap();
 
         assert!(active);
         assert!(
             !state
                 .privacy_registry()
-                .gate("front-door")
+                .gate(camera_ip)
                 .unwrap()
                 .allows(epoch)
         );

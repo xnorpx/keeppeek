@@ -94,15 +94,16 @@ async function writeFixtureConfiguration(options: {
 	origin: string;
 	port: number;
 	configurations: string[];
+	trustedLocal?: boolean;
 }): Promise<string> {
-	const { directory, origin, port, configurations } = options;
+	const { directory, origin, port, configurations, trustedLocal = false } = options;
 	const configPath = resolve(directory, 'config.toml');
 	await writeFile(
 		configPath,
 		`host = "127.0.0.1"
 port = ${port}
 [access]
-local_networks = []
+local_networks = ${trustedLocal ? '["127.0.0.1/32"]' : '[]'}
 require_secure_remote = false
 [direct_card]
 allowed_origins = [${JSON.stringify(origin)}]
@@ -138,7 +139,58 @@ async function waitForFixture(server: ChildProcess, url: string): Promise<void> 
 	throw new Error('The isolated KeepPeek fixture did not become ready.');
 }
 
-export async function startHomeAssistantServer(origin: string) {
+async function startFixtureRecorder(options: {
+	binary: string;
+	configPath: string;
+	directory: string;
+	url: string;
+	children: ChildProcess[];
+	onLog: (chunk: Buffer) => void;
+}): Promise<ChildProcess> {
+	const server = spawn(options.binary, [`--config=${options.configPath}`], {
+		cwd: options.directory,
+		env: { ...process.env, RUST_LOG: 'warn' },
+		stdio: ['ignore', 'ignore', 'pipe']
+	});
+	options.children.push(server);
+	server.stderr?.on('data', options.onLog);
+	await once(server, 'spawn');
+	await waitForFixture(server, options.url);
+	return server;
+}
+
+async function fixtureCameras(binary: string, children: ChildProcess[]): Promise<string[]> {
+	const configurations: string[] = [];
+	const media = resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4');
+	for (const [index, sourceId] of cardSourceIds.entries()) {
+		const child = spawn(
+			binary,
+			[
+				'rtsp',
+				'--main',
+				media,
+				'--sub',
+				media,
+				'--start-at-seconds',
+				'0',
+				'--config-ip',
+				sourceId,
+				'--name',
+				`card-camera-${index}`
+			],
+			{ stdio: ['ignore', 'pipe', 'ignore'] }
+		);
+		children.push(child);
+		await once(child, 'spawn');
+		configurations.push(await cameraConfig(child));
+	}
+	return configurations;
+}
+
+export async function startHomeAssistantServer(
+	origin: string,
+	options: { trustedLocal?: boolean } = {}
+) {
 	const extension = process.platform === 'win32' ? '.exe' : '';
 	const binary = (name: string) => resolve(repositoryRoot, 'target/release', `${name}${extension}`);
 	await Promise.all([access(binary('keeppeek')), access(binary('test_camera'))]);
@@ -150,48 +202,36 @@ export async function startHomeAssistantServer(origin: string) {
 		await rm(directory, { recursive: true, force: true });
 	};
 	try {
-		const configurations: string[] = [];
-		const media = resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4');
-		for (const [index, sourceId] of cardSourceIds.entries()) {
-			const child = spawn(
-				binary('test_camera'),
-				[
-					'rtsp',
-					'--main',
-					media,
-					'--sub',
-					media,
-					'--start-at-seconds',
-					'0',
-					'--config-ip',
-					sourceId,
-					'--name',
-					`card-camera-${index}`
-				],
-				{ stdio: ['ignore', 'pipe', 'ignore'] }
-			);
-			children.push(child);
-			await once(child, 'spawn');
-			configurations.push(await cameraConfig(child));
-		}
+		const configurations = await fixtureCameras(binary('test_camera'), children);
 		const port = await availablePort();
-		const configPath = await writeFixtureConfiguration({ directory, origin, port, configurations });
-		const server = spawn(binary('keeppeek'), [`--config=${configPath}`], {
-			cwd: directory,
-			env: { ...process.env, RUST_LOG: 'warn' },
-			stdio: ['ignore', 'ignore', 'pipe']
+		const configPath = await writeFixtureConfiguration({
+			directory,
+			origin,
+			port,
+			configurations,
+			...options
 		});
-		children.push(server);
 		let log = '';
-		server.stderr?.on('data', (chunk: Buffer) => {
-			log = (log + chunk.toString()).slice(-16_384);
-		});
-		await once(server, 'spawn');
 		const url = `http://127.0.0.1:${port}`;
-		await waitForFixture(server, url);
+		const launch = () =>
+			startFixtureRecorder({
+				binary: binary('keeppeek'),
+				configPath,
+				directory,
+				url,
+				children,
+				onLog: (chunk) => {
+					log = (log + chunk.toString()).slice(-16_384);
+				}
+			});
+		let server = await launch();
 		return {
 			url,
 			close,
+			restart: async () => {
+				await stop(server);
+				server = await launch();
+			},
 			logs: () =>
 				[...cardTestKeys, cardAdminKey].reduce(
 					(text, key) => text.replaceAll(key, '[redacted]'),

@@ -7,6 +7,8 @@ export const runtimeProfilesRegistrySchema = 'keeppeek.runtime-profiles.registry
 export const runtimeProfilesActiveSchema = 'keeppeek.runtime-profiles.active.v1';
 export const runtimeProfilesStatusKey = 'status';
 export const runtimeProfilesStatusSchema = 'keeppeek.runtime-profiles.status.v1';
+export const runtimeProfilesCamerasKey = 'cameras';
+export const runtimeProfilesCamerasSchema = 'keeppeek.runtime-profiles.cameras.v1';
 export const runtimeProfilePartSchema = 'keeppeek.runtime-profiles.part.v1';
 export const runtimeProfileDraftPartSchema = 'keeppeek.runtime-profiles.draft-part.v1';
 export const maxRuntimeProfiles = 32;
@@ -65,6 +67,56 @@ export type RuntimeProfileStatus = {
 	active_profile_id: string | null;
 	cameras: Record<string, CameraRuntimeApplication>;
 };
+
+export type RuntimeProfileCameras = Record<string, string>;
+
+export function runtimeProfileCamerasFromEntry(entry: StateEntry): RuntimeProfileCameras {
+	if (
+		entry.namespace !== runtimeProfilesNamespace ||
+		entry.key !== runtimeProfilesCamerasKey ||
+		entry.schema !== runtimeProfilesCamerasSchema
+	) {
+		throw new Error('Server returned unexpected runtime profile camera metadata.');
+	}
+	const value = record(entry.value, 'runtime profile cameras');
+	const bindings = record(value.cameras, 'runtime profile camera bindings');
+	const cameras: RuntimeProfileCameras = {};
+	const sources = new Set<string>();
+	for (const [id, source] of Object.entries(bindings)) {
+		if (
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id) ||
+			typeof source !== 'string' ||
+			!cameraSourceIsIp(source) ||
+			sources.has(source)
+		) {
+			throw new Error('Server returned invalid or ambiguous runtime profile camera bindings.');
+		}
+		cameras[id] = source;
+		sources.add(source);
+	}
+	return cameras;
+}
+
+export function runtimeProfileTargetForSource(
+	cameras: RuntimeProfileCameras,
+	source: string
+): string | null {
+	return Object.entries(cameras).find(([, currentSource]) => currentSource === source)?.[0] ?? null;
+}
+
+function cameraSourceIsIp(source: string): boolean {
+	if (/^(\d{1,3}\.){3}\d{1,3}$/.test(source)) {
+		return source
+			.split('.')
+			.every((octet) => String(Number(octet)) === octet && Number(octet) <= 255);
+	}
+	if (!source.includes(':') || source.length > 39) return false;
+	try {
+		return new URL(`http://[${source}]`).hostname === `[${source}]`;
+	} catch {
+		return false;
+	}
+}
 
 export type CameraRuntimeApplication = {
 	camera_id: string;

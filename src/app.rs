@@ -92,7 +92,7 @@ fn open_recording_catalog(storage_config: &StorageConfig) -> anyhow::Result<Reco
 
 /// Runs KeepPeek until shutdown and reports whether configuration requested a restart.
 pub fn run(
-    cfg: Config,
+    _cfg: Config,
     config_path: &Path,
     logging: LoggingService,
     shutdown: Shutdown,
@@ -100,6 +100,8 @@ pub fn run(
 ) -> anyhow::Result<bool> {
     crate::server::migrate_template_store(config_path)?;
     crate::event_forwarder::remove_legacy_outbox(config_path)?;
+    let cfg = config::migrate_camera_profile_configuration(config_path)?;
+    let profile_camera_ids = cfg.camera_profile_identities()?;
     #[cfg(windows)]
     let _timer_resolution = WindowsTimerResolution::request(1);
 
@@ -113,7 +115,7 @@ pub fn run(
         "loaded CCTV camera database"
     );
 
-    let camera_configs = config::load_cameras(config_path)?;
+    let camera_configs = cfg.camera_configurations()?;
     tracing::info!(
         "loaded {} camera(s) from {}",
         camera_configs.values().map(|v| v.len()).sum::<usize>(),
@@ -282,6 +284,7 @@ pub fn run(
     keeppeek.set_health_registry(health_registry);
     keeppeek.set_status_sender(router_tx.clone());
     keeppeek.set_notifications(notification_handle.clone());
+    keeppeek.set_runtime_profile_camera_ids(profile_camera_ids)?;
     keeppeek.set_runtime_profiles(cfg.runtime_profiles.clone());
     keeppeek.set_event_forwarder(event_forwarder_handle.clone());
     if let Some(battery_wake) = &battery_wake {

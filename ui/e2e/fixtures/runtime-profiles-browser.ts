@@ -1,5 +1,8 @@
 import type { RuntimeProfilesControlClient } from '../../src/lib/control-client-runtime-profiles';
-import type { RuntimeProfileRegistry } from '../../src/lib/runtime-profiles';
+import {
+	runtimeProfileTargetForSource,
+	type RuntimeProfileRegistry
+} from '../../src/lib/runtime-profiles';
 import type { StateStoreWatch } from '../../src/lib/control-client-state-store';
 
 type BrowserControlClient = {
@@ -46,11 +49,19 @@ export async function activateFromAnotherClient() {
 				profiles: {}
 			});
 		}
+		const bindings = await writer.runtimeProfiles.getCameras();
+		const source = Object.values(bindings)[0];
+		const target = source ? runtimeProfileTargetForSource(bindings, source) : null;
 		const candidate: RuntimeProfileRegistry = {
 			...registry,
 			active_profile_id: null,
 			profiles: {
-				[profileId]: { id: profileId, name: 'External E2E', revision: '0', cameras: {} }
+				[profileId]: {
+					id: profileId,
+					name: 'External E2E',
+					revision: '0',
+					cameras: target ? { [target]: { availability: true } } : {}
+				}
 			}
 		};
 		const saved = await writer.runtimeProfiles.saveRegistry(candidate);

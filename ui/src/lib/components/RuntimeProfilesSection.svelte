@@ -7,6 +7,7 @@
 		profileRecordingModes,
 		profileOverrideIsEmpty,
 		type CameraProfileOverride,
+		type RuntimeProfileCameras,
 		type RuntimeProfileRegistry,
 		type RuntimeProfileStatus
 	} from '$lib/runtime-profiles';
@@ -23,6 +24,8 @@
 	let activeProfileId = $state<string | null>(null);
 	let activeRevision = $state('0');
 	let runtimeStatus = $state.raw<RuntimeProfileStatus | null>(null);
+	let cameraBindings = $state.raw<RuntimeProfileCameras | null>(null);
+	let bindingsForCameras = $state.raw<readonly CameraSettings[] | null>(null);
 	let selectedProfileId = $state('');
 	let newProfileName = $state('');
 	let loading = $state(true);
@@ -31,12 +34,23 @@
 	let error = $state<string | null>(null);
 	let announcement = $state<string | null>(null);
 	let dirty = $state(false);
+	let deferredRegistry: RuntimeProfileRegistry | null = null;
 
 	const orderedCameras = $derived(
 		[...cameras].sort((left, right) => left.id.localeCompare(right.id))
 	);
 	const selectedProfile = $derived(draft?.profiles[selectedProfileId] ?? null);
-	const configuredCameraIds = $derived(new Set(orderedCameras.map((camera) => camera.id)));
+	const camerasBySource = $derived(new Map(orderedCameras.map((camera) => [camera.id, camera])));
+	const targetsBySource = $derived(
+		new Map(Object.entries(cameraBindings ?? {}).map(([target, source]) => [source, target]))
+	);
+	const cameraBindingsAvailable = $derived(cameraBindings !== null);
+	const activePolicyNeedsReapply = $derived(
+		runtimeStatus?.revision === activeRevision &&
+			runtimeStatus.active_profile_id === activeProfileId &&
+			Object.values(runtimeStatus.cameras).some((camera) => camera.state !== 'applied')
+	);
+	const configuredCameraIds = $derived(new Set(Object.keys(cameraBindings ?? {})));
 	const missingProfileTargets = $derived.by(() =>
 		selectedProfile
 			? Object.keys(selectedProfile.cameras)
@@ -45,26 +59,44 @@
 			: []
 	);
 
+	function acceptRegistry(next: RuntimeProfileRegistry): RuntimeProfileRegistry {
+		if (registry && BigInt(next.revision) < BigInt(registry.revision)) return registry;
+		registry = next;
+		draft = structuredClone(next);
+		return next;
+	}
+
+	function acceptActive(active: { profileId: string | null; revision: string }): void {
+		if (BigInt(active.revision) < BigInt(activeRevision)) return;
+		activeProfileId = active.profileId;
+		activeRevision = active.revision;
+	}
+
+	function acceptRuntimeStatus(next: RuntimeProfileStatus): void {
+		if (runtimeStatus && BigInt(next.revision) < BigInt(runtimeStatus.revision)) return;
+		runtimeStatus = next;
+	}
+
 	onMount(() => {
 		let registryWatch: { close: () => Promise<void> } | undefined;
 		let activeWatch: { close: () => Promise<void> } | undefined;
 		let statusWatch: { close: () => Promise<void> } | undefined;
 		let disposed = false;
+		const registryFailure = (cause: unknown) => {
+			if (disposed) return;
+			registry = null;
+			setError(cause);
+		};
 		void load();
 		void controlClient.runtimeProfiles
-			.watchStatus((next) => {
-				runtimeStatus = next;
-			})
+			.watchStatus(acceptRuntimeStatus)
 			.then((watch) => {
 				if (disposed) void watch.close();
 				else statusWatch = watch;
 			})
 			.catch((cause: unknown) => setError(cause));
 		void controlClient.runtimeProfiles
-			.watchActive((active) => {
-				activeProfileId = active.profileId;
-				activeRevision = active.revision;
-			})
+			.watchActive(acceptActive)
 			.then((watch) => {
 				if (disposed) void watch.close();
 				else activeWatch = watch;
@@ -73,14 +105,20 @@
 		if (administrator) {
 			void controlClient.runtimeProfiles
 				.watchRegistry((next) => {
-					registry = next;
-					if (!dirty) draft = structuredClone(next);
-				})
+					if (disposed || error) return;
+					// ponytail: Keep only the newest observation while the draft owns its CAS baseline.
+					if (dirty) {
+						if (!deferredRegistry || BigInt(next.revision) > BigInt(deferredRegistry.revision))
+							deferredRegistry = next;
+						return;
+					}
+					acceptRegistry(next);
+				}, registryFailure)
 				.then((watch) => {
 					if (disposed) void watch.close();
 					else registryWatch = watch;
 				})
-				.catch((cause: unknown) => setError(cause));
+				.catch(registryFailure);
 		}
 		return () => {
 			disposed = true;
@@ -90,29 +128,82 @@
 		};
 	});
 
-	async function load(): Promise<void> {
+	$effect(() => {
+		const currentCameras = cameras;
+		if (
+			!administrator ||
+			loading ||
+			bindingsForCameras === null ||
+			currentCameras === bindingsForCameras
+		)
+			return;
+		let disposed = false;
+		cameraBindings = null;
+		void controlClient.runtimeProfiles
+			.getCameras()
+			.then((bindings) => {
+				if (disposed) return;
+				cameraBindings = bindings;
+				bindingsForCameras = currentCameras;
+			})
+			.catch((cause: unknown) => {
+				if (!disposed) setError(cause);
+			});
+		return () => {
+			disposed = true;
+		};
+	});
+
+	async function load(): Promise<boolean> {
 		loading = true;
 		error = null;
+		cameraBindings = null;
+		const currentCameras = cameras;
 		try {
 			const active = await controlClient.runtimeProfiles.getActive();
-			activeProfileId = active.profileId;
-			activeRevision = active.revision;
-			runtimeStatus = await controlClient.runtimeProfiles.getStatus();
+			acceptActive(active);
+			const observedStatus = runtimeStatus;
+			const nextStatus = await controlClient.runtimeProfiles.getStatus();
+			if (
+				runtimeStatus === observedStatus ||
+				!runtimeStatus ||
+				BigInt(nextStatus.revision) > BigInt(runtimeStatus.revision)
+			)
+				acceptRuntimeStatus(nextStatus);
 			if (administrator) {
-				const next = await controlClient.runtimeProfiles.getRegistry();
-				registry = next;
-				draft = structuredClone(next);
-				selectedProfileId = next.active_profile_id ?? Object.keys(next.profiles)[0] ?? '';
+				const [next, bindings] = await Promise.all([
+					controlClient.runtimeProfiles.getRegistry(),
+					controlClient.runtimeProfiles.getCameras()
+				]);
+				if (error) return false;
+				cameraBindings = bindings;
+				bindingsForCameras = currentCameras;
+				const accepted = acceptRegistry(next);
+				selectedProfileId = accepted.active_profile_id ?? Object.keys(accepted.profiles)[0] ?? '';
 			}
+			return true;
 		} catch (cause) {
+			registry = null;
 			setError(cause);
+			return false;
 		} finally {
 			loading = false;
 		}
 	}
 
+	async function discardAndReload(): Promise<void> {
+		if (await load()) dirty = false;
+	}
+
 	function setError(cause: unknown): void {
 		error = cause instanceof Error ? cause.message : 'Runtime profile state is unavailable.';
+	}
+
+	function cameraStatusLabel(id: string): string {
+		const source = cameraBindings?.[id];
+		if (!source) return id;
+		const name = camerasBySource.get(source)?.display_name;
+		return name && name !== source ? `${name} (${source})` : source;
 	}
 
 	function updateProfileName(name: string): void {
@@ -128,11 +219,11 @@
 	}
 
 	function updateOverride(
-		cameraId: string,
+		cameraId: string | null,
 		field: keyof CameraProfileOverride,
 		value: string
 	): void {
-		if (!draft || !selectedProfile) return;
+		if (!draft || !selectedProfile || !cameraId || !cameraBindingsAvailable) return;
 		const cameras = { ...selectedProfile.cameras };
 		const override: CameraProfileOverride = { ...cameras[cameraId] };
 		if (value === '') delete override[field];
@@ -199,7 +290,7 @@
 	}
 
 	async function saveProfiles(): Promise<void> {
-		if (!draft || !registry) return;
+		if (!draft || !registry || !cameraBindingsAvailable) return;
 		saving = true;
 		error = null;
 		announcement = null;
@@ -208,31 +299,44 @@
 				...draft,
 				revision: registry.revision
 			});
-			registry = saved;
-			draft = structuredClone(saved);
+			if (!registry) return;
+			acceptRegistry(saved);
+			if (deferredRegistry) acceptRegistry(deferredRegistry);
+			deferredRegistry = null;
 			dirty = false;
 			announcement = 'Runtime profile changes saved.';
 		} catch (cause) {
 			setError(cause);
-			await load();
 		} finally {
 			saving = false;
 		}
 	}
 
-	async function activate(profileId: string | null): Promise<void> {
+	async function activate(profileId: string | null, reapply = false): Promise<void> {
+		if (
+			!administrator ||
+			!registry ||
+			!cameraBindingsAvailable ||
+			loading ||
+			saving ||
+			dirty ||
+			activating
+		)
+			return;
 		activating = true;
 		error = null;
 		announcement = null;
 		try {
-			await controlClient.runtimeProfiles.activate(profileId, activeRevision);
-			announcement =
-				profileId === null
+			const revision = await controlClient.runtimeProfiles.activate(profileId, activeRevision);
+			acceptActive({ profileId, revision });
+			announcement = reapply
+				? 'Active policy reapplied.'
+				: profileId === null
 					? 'Base policy selected.'
 					: `Activated ${registry?.profiles[profileId]?.name ?? profileId}.`;
 		} catch (cause) {
-			setError(cause);
 			await load();
+			if (!error) setError(cause);
 		} finally {
 			activating = false;
 		}
@@ -283,11 +387,21 @@
 					<button
 						type="button"
 						class="min-h-11 rounded-sm border border-hairline-strong bg-raised px-3 text-sm focus-visible:outline-2 focus-visible:outline-primary"
-						disabled={activating || activeProfileId === null || dirty}
+						disabled={activating || activeProfileId === null || dirty || !cameraBindingsAvailable}
 						onclick={() => void activate(null)}
 					>
 						Select Base
 					</button>
+					{#if activePolicyNeedsReapply}
+						<button
+							type="button"
+							class="min-h-11 rounded-sm border border-hairline-strong bg-raised px-3 text-sm focus-visible:outline-2 focus-visible:outline-primary disabled:opacity-50"
+							disabled={activating || saving || dirty || !registry || !cameraBindingsAvailable}
+							onclick={() => void activate(activeProfileId, true)}
+						>
+							Reapply active policy
+						</button>
+					{/if}
 				{/if}
 			</div>
 
@@ -299,7 +413,9 @@
 					<ul class="divide-y divide-hairline rounded-sm border border-hairline">
 						{#each Object.values(runtimeStatus.cameras).sort( (left, right) => left.camera_id.localeCompare(right.camera_id) ) as cameraStatus (cameraStatus.camera_id)}
 							<li class="flex flex-wrap items-center justify-between gap-2 p-3 text-sm">
-								<span class="min-w-0 truncate font-mono">{cameraStatus.camera_id}</span>
+								<span class="min-w-0 truncate font-mono"
+									>{cameraStatusLabel(cameraStatus.camera_id)}</span
+								>
 								<span
 									class="rounded-sm border border-hairline px-2 py-1 capitalize"
 									aria-label="{cameraStatus.state} policy application">{cameraStatus.state}</span
@@ -323,237 +439,276 @@
 				</div>
 			{/if}
 
+			{#if administrator && (!cameraBindingsAvailable || !registry)}
+				<p class="text-sm text-destructive">
+					Profile state or camera identities are unavailable. Reload profiles before making changes.
+				</p>
+				<button
+					type="button"
+					class="min-h-11 rounded-sm border border-hairline-strong bg-raised px-3 text-sm"
+					disabled={loading || activating || saving || dirty}
+					onclick={() => void load()}>Reload profiles</button
+				>
+			{/if}
 			{#if administrator && draft}
-				<div class="flex flex-col gap-3 sm:flex-row sm:items-end">
-					<label class="grid min-w-0 flex-1 gap-1 text-sm" for="runtime-profile-new-name">
-						<span>Create a profile</span>
-						<input
-							id="runtime-profile-new-name"
-							class="min-h-11 rounded-sm border border-hairline-strong bg-background px-3"
-							bind:value={newProfileName}
-							maxlength="80"
-							placeholder="Away"
-						/>
-					</label>
-					<button
-						type="button"
-						class="min-h-11 rounded-sm bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
-						disabled={Object.keys(draft.profiles).length >= maxRuntimeProfiles ||
-							newProfileName.trim().length === 0}
-						onclick={createProfile}
-					>
-						Create profile
-					</button>
-				</div>
+				<fieldset
+					disabled={!cameraBindingsAvailable || !registry || saving || activating}
+					class="space-y-5"
+					aria-label="Runtime profile definitions"
+				>
+					<div class="flex flex-col gap-3 sm:flex-row sm:items-end">
+						<label class="grid min-w-0 flex-1 gap-1 text-sm" for="runtime-profile-new-name">
+							<span>Create a profile</span>
+							<input
+								id="runtime-profile-new-name"
+								class="min-h-11 rounded-sm border border-hairline-strong bg-background px-3"
+								bind:value={newProfileName}
+								maxlength="80"
+								placeholder="Away"
+							/>
+						</label>
+						<button
+							type="button"
+							class="min-h-11 rounded-sm bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
+							disabled={Object.keys(draft.profiles).length >= maxRuntimeProfiles ||
+								newProfileName.trim().length === 0}
+							onclick={createProfile}
+						>
+							Create profile
+						</button>
+					</div>
 
-				{#if Object.keys(draft.profiles).length > 0}
-					<div class="grid gap-5 lg:grid-cols-[minmax(12rem,0.3fr)_minmax(0,1fr)]">
-						<div class="space-y-3">
-							<label class="grid gap-1 text-sm" for="runtime-profile-selected">
-								<span>Edit profile</span>
-								<select
-									id="runtime-profile-selected"
-									class="min-h-11 rounded-sm border border-hairline-strong bg-background px-3"
-									bind:value={selectedProfileId}
-								>
-									{#each Object.values(draft.profiles) as profile (profile.id)}
-										<option value={profile.id}>{profile.name}</option>
-									{/each}
-								</select>
-							</label>
-							{#if selectedProfile}
-								<label class="grid gap-1 text-sm" for="runtime-profile-name">
-									<span>Display name</span>
-									<input
-										id="runtime-profile-name"
-										class="min-h-11 rounded-sm border border-hairline-strong bg-background px-3"
-										value={selectedProfile.name}
-										maxlength="80"
-										oninput={(event) => updateProfileName(event.currentTarget.value)}
-									/>
-								</label>
-								<p class="text-xs text-text-muted">Stable profile ID: {selectedProfile.id}</p>
-								<div class="flex flex-wrap gap-2">
-									<button
-										type="button"
-										class="min-h-11 rounded-sm bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
-										disabled={activating ||
-											selectedProfile.id === activeProfileId ||
-											dirty ||
-											saving}
-										onclick={() => void activate(selectedProfile.id)}
-									>
-										Activate
-									</button>
-									<button
-										type="button"
-										class="min-h-11 rounded-sm border border-destructive px-3 text-sm text-destructive disabled:opacity-50"
-										disabled={selectedProfile.id === activeProfileId || saving}
-										onclick={deleteSelectedProfile}
-									>
-										Delete
-									</button>
-								</div>
-							{/if}
-						</div>
-
-						{#if selectedProfile}
+					{#if Object.keys(draft.profiles).length > 0}
+						<div class="grid gap-5 lg:grid-cols-[minmax(12rem,0.3fr)_minmax(0,1fr)]">
 							<div class="space-y-3">
-								<h3 class="text-sm font-semibold">Camera overrides</h3>
-								{#if missingProfileTargets.length > 0}
-									<div
-										role="region"
-										aria-label="Unavailable profile targets"
-										class="border-warning space-y-2 rounded-sm border px-3 py-3"
+								<label class="grid gap-1 text-sm" for="runtime-profile-selected">
+									<span>Edit profile</span>
+									<select
+										id="runtime-profile-selected"
+										class="min-h-11 rounded-sm border border-hairline-strong bg-background px-3"
+										bind:value={selectedProfileId}
 									>
+										{#each Object.values(draft.profiles) as profile (profile.id)}
+											<option value={profile.id}>{profile.name}</option>
+										{/each}
+									</select>
+								</label>
+								{#if selectedProfile}
+									<label class="grid gap-1 text-sm" for="runtime-profile-name">
+										<span>Display name</span>
+										<input
+											id="runtime-profile-name"
+											class="min-h-11 rounded-sm border border-hairline-strong bg-background px-3"
+											value={selectedProfile.name}
+											maxlength="80"
+											oninput={(event) => updateProfileName(event.currentTarget.value)}
+										/>
+									</label>
+									<p class="text-xs text-text-muted">Stable profile ID: {selectedProfile.id}</p>
+									<div class="flex flex-wrap gap-2">
+										<button
+											type="button"
+											class="min-h-11 rounded-sm bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
+											disabled={activating ||
+												selectedProfile.id === activeProfileId ||
+												dirty ||
+												saving}
+											onclick={() => void activate(selectedProfile.id)}
+										>
+											Activate
+										</button>
+										<button
+											type="button"
+											class="min-h-11 rounded-sm border border-destructive px-3 text-sm text-destructive disabled:opacity-50"
+											disabled={selectedProfile.id === activeProfileId || saving}
+											onclick={deleteSelectedProfile}
+										>
+											Delete
+										</button>
+									</div>
+								{/if}
+							</div>
+
+							{#if selectedProfile}
+								<div class="space-y-3">
+									<h3 class="text-sm font-semibold">Camera overrides</h3>
+									{#if missingProfileTargets.length > 0}
+										<div
+											role="region"
+											aria-label="Unavailable profile targets"
+											class="border-warning space-y-2 rounded-sm border px-3 py-3"
+										>
+											<p class="text-sm text-text-muted">
+												These targets no longer match a configured camera. Their stored overrides
+												are not applied. Remove them from this profile to clear the stale settings.
+											</p>
+											<ul class="divide-y divide-hairline rounded-sm border border-hairline">
+												{#each missingProfileTargets as cameraId (cameraId)}
+													<li class="flex min-w-0 flex-wrap items-center justify-between gap-2 p-2">
+														<span class="min-w-0 truncate font-mono text-sm">{cameraId}</span>
+														<button
+															type="button"
+															class="min-h-11 rounded-sm border border-destructive px-3 text-sm text-destructive focus-visible:outline-2 focus-visible:outline-primary"
+															aria-label="Remove unavailable target {cameraId}"
+															onclick={() => removeMissingTarget(cameraId)}
+														>
+															Remove
+														</button>
+													</li>
+												{/each}
+											</ul>
+										</div>
+									{/if}
+									{#if orderedCameras.length === 0}
 										<p class="text-sm text-text-muted">
-											These targets no longer match a configured camera. Their stored overrides are
-											not applied. Remove them from this profile to clear the stale settings.
+											Add a camera before assigning profile overrides.
 										</p>
+									{:else}
 										<ul class="divide-y divide-hairline rounded-sm border border-hairline">
-											{#each missingProfileTargets as cameraId (cameraId)}
-												<li class="flex min-w-0 flex-wrap items-center justify-between gap-2 p-2">
-													<span class="min-w-0 truncate font-mono text-sm">{cameraId}</span>
-													<button
-														type="button"
-														class="min-h-11 rounded-sm border border-destructive px-3 text-sm text-destructive focus-visible:outline-2 focus-visible:outline-primary"
-														aria-label="Remove unavailable target {cameraId}"
-														onclick={() => removeMissingTarget(cameraId)}
+											{#each orderedCameras as camera (camera.id)}
+												{@const targetId = targetsBySource.get(camera.id) ?? null}
+												{@const override = targetId
+													? (selectedProfile.cameras[targetId] ?? {})
+													: {}}
+												<li
+													class="grid gap-3 p-3 md:grid-cols-[minmax(9rem,1fr)_repeat(4,minmax(8rem,1fr))]"
+												>
+													<div class="min-w-0 self-center">
+														<p class="truncate text-sm font-medium">
+															{camera.display_name || camera.id}
+														</p>
+														<p class="truncate font-mono text-2xs text-text-muted">{camera.id}</p>
+														{#if !targetId}
+															<p class="text-xs text-destructive">
+																Camera identity is unavailable or ambiguous.
+															</p>
+														{/if}
+													</div>
+													<label
+														class="grid gap-1 text-xs"
+														for="availability-{selectedProfile.id}-{camera.id}"
 													>
-														Remove
-													</button>
+														<span>Availability</span>
+														<select
+															id="availability-{selectedProfile.id}-{camera.id}"
+															disabled={!targetId}
+															class="min-h-10 rounded-sm border border-hairline bg-background px-2"
+															value={override.availability === undefined
+																? ''
+																: String(override.availability)}
+															onchange={(event) =>
+																updateOverride(targetId, 'availability', event.currentTarget.value)}
+														>
+															<option value="">Base</option><option value="true">Available</option
+															><option value="false">Unavailable</option>
+														</select>
+													</label>
+													<label
+														class="grid gap-1 text-xs"
+														for="recording-{selectedProfile.id}-{camera.id}"
+													>
+														<span>Recording</span>
+														<select
+															id="recording-{selectedProfile.id}-{camera.id}"
+															disabled={!targetId}
+															class="min-h-10 rounded-sm border border-hairline bg-background px-2"
+															value={override.recording_mode ?? ''}
+															onchange={(event) =>
+																updateOverride(
+																	targetId,
+																	'recording_mode',
+																	event.currentTarget.value
+																)}
+														>
+															<option value="">Base</option
+															>{#each profileRecordingModes as mode}<option value={mode}
+																	>{mode}</option
+																>{/each}
+														</select>
+													</label>
+													<label
+														class="grid gap-1 text-xs"
+														for="privacy-{selectedProfile.id}-{camera.id}"
+													>
+														<span>Privacy</span>
+														<select
+															id="privacy-{selectedProfile.id}-{camera.id}"
+															disabled={!targetId}
+															class="min-h-10 rounded-sm border border-hairline bg-background px-2"
+															value={override.privacy_enforced === undefined
+																? ''
+																: String(override.privacy_enforced)}
+															onchange={(event) =>
+																updateOverride(
+																	targetId,
+																	'privacy_enforced',
+																	event.currentTarget.value
+																)}
+														>
+															<option value="">Base</option><option value="true">Enforce</option
+															><option value="false">Allow when Base allows</option>
+														</select>
+													</label>
+													<label
+														class="grid gap-1 text-xs"
+														for="notifications-{selectedProfile.id}-{camera.id}"
+													>
+														<span>Notifications</span>
+														<select
+															id="notifications-{selectedProfile.id}-{camera.id}"
+															disabled={!targetId}
+															class="min-h-10 rounded-sm border border-hairline bg-background px-2"
+															value={override.notifications_suppressed === undefined
+																? ''
+																: String(override.notifications_suppressed)}
+															onchange={(event) =>
+																updateOverride(
+																	targetId,
+																	'notifications_suppressed',
+																	event.currentTarget.value === ''
+																		? ''
+																		: String(event.currentTarget.value === 'true')
+																)}
+														>
+															<option value="">Base</option><option value="true">Suppress</option
+															><option value="false">Allow when Base allows</option>
+														</select>
+													</label>
 												</li>
 											{/each}
 										</ul>
-									</div>
-								{/if}
-								{#if orderedCameras.length === 0}
-									<p class="text-sm text-text-muted">
-										Add a camera before assigning profile overrides.
-									</p>
-								{:else}
-									<ul class="divide-y divide-hairline rounded-sm border border-hairline">
-										{#each orderedCameras as camera (camera.id)}
-											{@const override = selectedProfile.cameras[camera.id] ?? {}}
-											<li
-												class="grid gap-3 p-3 md:grid-cols-[minmax(9rem,1fr)_repeat(4,minmax(8rem,1fr))]"
-											>
-												<div class="min-w-0 self-center">
-													<p class="truncate text-sm font-medium">
-														{camera.display_name || camera.id}
-													</p>
-													<p class="truncate font-mono text-2xs text-text-muted">{camera.id}</p>
-												</div>
-												<label
-													class="grid gap-1 text-xs"
-													for="availability-{selectedProfile.id}-{camera.id}"
-												>
-													<span>Availability</span>
-													<select
-														id="availability-{selectedProfile.id}-{camera.id}"
-														class="min-h-10 rounded-sm border border-hairline bg-background px-2"
-														value={override.availability === undefined
-															? ''
-															: String(override.availability)}
-														onchange={(event) =>
-															updateOverride(camera.id, 'availability', event.currentTarget.value)}
-													>
-														<option value="">Base</option><option value="true">Available</option
-														><option value="false">Unavailable</option>
-													</select>
-												</label>
-												<label
-													class="grid gap-1 text-xs"
-													for="recording-{selectedProfile.id}-{camera.id}"
-												>
-													<span>Recording</span>
-													<select
-														id="recording-{selectedProfile.id}-{camera.id}"
-														class="min-h-10 rounded-sm border border-hairline bg-background px-2"
-														value={override.recording_mode ?? ''}
-														onchange={(event) =>
-															updateOverride(
-																camera.id,
-																'recording_mode',
-																event.currentTarget.value
-															)}
-													>
-														<option value="">Base</option
-														>{#each profileRecordingModes as mode}<option value={mode}
-																>{mode}</option
-															>{/each}
-													</select>
-												</label>
-												<label
-													class="grid gap-1 text-xs"
-													for="privacy-{selectedProfile.id}-{camera.id}"
-												>
-													<span>Privacy</span>
-													<select
-														id="privacy-{selectedProfile.id}-{camera.id}"
-														class="min-h-10 rounded-sm border border-hairline bg-background px-2"
-														value={override.privacy_enforced === undefined
-															? ''
-															: String(override.privacy_enforced)}
-														onchange={(event) =>
-															updateOverride(
-																camera.id,
-																'privacy_enforced',
-																event.currentTarget.value
-															)}
-													>
-														<option value="">Base</option><option value="true">Enforce</option
-														><option value="false">Allow when Base allows</option>
-													</select>
-												</label>
-												<label
-													class="grid gap-1 text-xs"
-													for="notifications-{selectedProfile.id}-{camera.id}"
-												>
-													<span>Notifications</span>
-													<select
-														id="notifications-{selectedProfile.id}-{camera.id}"
-														class="min-h-10 rounded-sm border border-hairline bg-background px-2"
-														value={override.notifications_suppressed === undefined
-															? ''
-															: String(override.notifications_suppressed)}
-														onchange={(event) =>
-															updateOverride(
-																camera.id,
-																'notifications_suppressed',
-																event.currentTarget.value === ''
-																	? ''
-																	: String(event.currentTarget.value === 'true')
-															)}
-													>
-														<option value="">Base</option><option value="true">Suppress</option
-														><option value="false">Allow when Base allows</option>
-													</select>
-												</label>
-											</li>
-										{/each}
-									</ul>
-								{/if}
-							</div>
-						{/if}
-					</div>
-				{/if}
+									{/if}
+								</div>
+							{/if}
+						</div>
+					{/if}
 
-				<div class="flex flex-wrap items-center gap-3 border-t border-hairline pt-4">
-					<button
-						type="button"
-						class="min-h-11 rounded-sm bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
-						disabled={!dirty || saving}
-						onclick={() => void saveProfiles()}
-					>
-						{saving ? 'Saving…' : 'Save profile changes'}
-					</button>
-					{#if dirty}<span class="text-sm text-text-muted">Unsaved changes</span>{/if}
-				</div>
+					<div class="flex flex-wrap items-center gap-3 border-t border-hairline pt-4">
+						<button
+							type="button"
+							class="min-h-11 rounded-sm bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
+							disabled={!dirty || saving}
+							onclick={() => void saveProfiles()}
+						>
+							{saving ? 'Saving…' : 'Save profile changes'}
+						</button>
+						{#if dirty}<span class="text-sm text-text-muted">Unsaved changes</span>{/if}
+					</div>
+				</fieldset>
 			{/if}
 		{/if}
 
-		{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
+		{#if error}
+			<p role="alert" class="text-sm text-destructive">{error}</p>
+			{#if administrator && dirty}
+				<button
+					type="button"
+					class="min-h-11 rounded-sm border border-hairline-strong bg-raised px-3 text-sm focus-visible:outline-2 focus-visible:outline-primary"
+					disabled={loading || saving || activating}
+					onclick={() => void discardAndReload()}>Discard changes and reload</button
+				>
+			{/if}
+		{/if}
 		{#if announcement}<p role="status" aria-live="polite" class="text-sm text-text-muted">
 				{announcement}
 			</p>{/if}

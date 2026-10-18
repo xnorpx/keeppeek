@@ -95,18 +95,22 @@ settings or could not queue the change, new recording input for that camera stop
 can continue, and other cameras still apply their profile changes. **Pending** means the recording
 writer has not yet accepted the configuration. A missing writer acknowledgement also reports
 Degraded and stops new recording input for the current request. Correct the reported settings or
-restore storage availability, then reapply the accepted profile through an authorized WebRTC client
-or restart KeepPeek. **Applied** confirms that the writer
-accepted the recording configuration; use Recording integrity and playback to verify retained footage.
+restore storage availability, then open **Settings → Runtime profiles** and select
+**Reapply active policy**. This retries the accepted Base or named profile without switching to
+another policy. Save or discard profile edits before retrying. An authorized WebRTC client can
+also reapply the current policy, and restarting KeepPeek restores the saved selection.
+**Applied** confirms that the writer accepted the recording configuration; use Recording integrity
+and playback to verify retained footage.
 
 An active recording write failure after acceptance can also change Applied to Degraded. This
 status uses the camera source identity even when its recording folder has a different name.
-Recording can continue to attempt writes. After repairing storage, restart KeepPeek or reapply
-the accepted profile through an authorized WebRTC client to clear the failure observation.
-The UI does not directly retry an already active profile. Fresh configuration acceptance does
-not prove media recovery, so check Recording integrity and playback. Idle event recording and ordinary write progress do
-not clear the failure status automatically. Use integrity checks, playback and server logs to
-assess cleanup, finalization, shutdown and storage-pressure failures.
+Recording can continue to attempt writes. After repairing storage, use **Reapply active policy**
+to clear the failure observation after fresh configuration acceptance. A failed retry keeps the
+desired selection and shows its error; reload current state before trying again if another
+Administrator changed it. Fresh configuration acceptance does not prove media recovery, so check
+Recording integrity and playback. Idle event recording and ordinary write progress do not clear
+the failure status automatically. Use integrity checks, playback and server logs to assess cleanup,
+finalization, shutdown and storage-pressure failures.
 
 The default limits are 64 MiB per buffered stream and 256 MiB globally. Administrators can change
 them in advanced storage settings. History is not saved across restart. Privacy activation,

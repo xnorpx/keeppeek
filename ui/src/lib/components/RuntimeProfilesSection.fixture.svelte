@@ -5,9 +5,13 @@
 	import type { CameraSettings } from '$lib/types';
 	import RuntimeProfilesSection from './RuntimeProfilesSection.svelte';
 
-	let { client, cameras }: { client: ControlClient; cameras: CameraSettings[] } = $props();
+	let {
+		client,
+		cameras,
+		administrator = true
+	}: { client: ControlClient; cameras: CameraSettings[]; administrator?: boolean } = $props();
 
 	setControlClient(untrack(() => client));
 </script>
 
-<RuntimeProfilesSection {cameras} administrator={true} />
+<RuntimeProfilesSection {cameras} {administrator} />

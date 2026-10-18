@@ -2188,7 +2188,7 @@ mod tests {
         let (directory, bundle_path, target_config, _) = activatable_fixture("candidate-retention");
         let source_config = directory.join("source/config.toml");
         std::fs::write(&source_config,
-            "[storage]\nlong_term_path='source-media'\n[storage.retention.default]\ncontinuous_days=1.0\n[storage.retention.default.events]\nperson=30.0\n").unwrap();
+            "[storage]\nlong_term_path='source-media'\n[storage.retention.default]\ncontinuous_days=1.0\n[storage.retention.default.events]\nperson=30.0\n[runtime_profiles]\nidentity_schema=1\nrevision=0\n[runtime_profiles.profiles]\n").unwrap();
         std::fs::write(&target_config, "[storage]\nlong_term_path='target-media'\n").unwrap();
         let (bundle, _) = backup::create_bundle(
             Cursor::new(Vec::new()),
@@ -2205,6 +2205,14 @@ mod tests {
             backup::inspect_configuration_candidate(&bundle_path, &target_config).unwrap();
         let source = config::load_config(&source_config).unwrap();
         let restored = candidate.configuration;
+        assert_eq!(
+            source.source["runtime_profiles"]["identity_schema"].as_integer(),
+            Some(1)
+        );
+        assert_eq!(
+            restored.source["runtime_profiles"]["identity_schema"].as_integer(),
+            Some(1)
+        );
         assert_eq!(restored.storage.retention, source.storage.retention);
         assert_eq!(
             restored.storage.long_term_path.as_deref(),
