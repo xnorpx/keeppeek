@@ -90,6 +90,29 @@ message Notification {
 message SubscriptionStreamState {
   string subscription_id = 1;
   string active_variant_id = 2;
+  LiveQualityDiagnostics live_quality = 3;
+}
+
+message LiveQualityDiagnostics {
+  optional uint64 session_bandwidth_bps = 1;
+  optional uint64 allocated_bitrate_bps = 2;
+  string active_variant_id = 3;
+  string pending_variant_id = 4;
+  LiveQualitySelectionReason selection_reason = 5;
+}
+
+enum LiveQualitySelectionReason {
+  LIVE_QUALITY_SELECTION_REASON_UNSPECIFIED = 0;
+  LIVE_QUALITY_SELECTION_REASON_MANUAL = 1;
+  LIVE_QUALITY_SELECTION_REASON_FIXED_DELIVERY = 2;
+  LIVE_QUALITY_SELECTION_REASON_BANDWIDTH_UNKNOWN = 3;
+  LIVE_QUALITY_SELECTION_REASON_INSUFFICIENT_BANDWIDTH = 4;
+  LIVE_QUALITY_SELECTION_REASON_STABLE = 5;
+  LIVE_QUALITY_SELECTION_REASON_UPGRADE_HOLD = 6;
+  LIVE_QUALITY_SELECTION_REASON_DOWNGRADE_HOLD = 7;
+  LIVE_QUALITY_SELECTION_REASON_WAITING_KEYFRAME = 8;
+  LIVE_QUALITY_SELECTION_REASON_SINGLE_VARIANT = 9;
+  LIVE_QUALITY_SELECTION_REASON_VARIANT_UNAVAILABLE = 10;
 }
 
 message CameraUpdated {
@@ -1889,6 +1912,7 @@ message SubscriptionResult {
 
   string selected_variant_id = 6;
   repeated MediaLineageInput selected_lineage = 7;
+  LiveQualityDiagnostics live_quality = 8;
 }
 
 message SubscriptionError {
