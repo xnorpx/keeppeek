@@ -95,8 +95,18 @@ settings or could not queue the change, new recording input for that camera stop
 can continue, and other cameras still apply their profile changes. **Pending** means the recording
 writer has not yet accepted the configuration. A missing writer acknowledgement also reports
 Degraded and stops new recording input for the current request. Correct the reported settings or
-restore storage availability, then retry the accepted profile. **Applied** confirms that the writer
+restore storage availability, then reapply the accepted profile through an authorized WebRTC client
+or restart KeepPeek. **Applied** confirms that the writer
 accepted the recording configuration; use Recording integrity and playback to verify retained footage.
+
+An active recording write failure after acceptance can also change Applied to Degraded. This
+status uses the camera source identity even when its recording folder has a different name.
+Recording can continue to attempt writes. After repairing storage, restart KeepPeek or reapply
+the accepted profile through an authorized WebRTC client to clear the failure observation.
+The UI does not directly retry an already active profile. Fresh configuration acceptance does
+not prove media recovery, so check Recording integrity and playback. Idle event recording and ordinary write progress do
+not clear the failure status automatically. Use integrity checks, playback and server logs to
+assess cleanup, finalization, shutdown and storage-pressure failures.
 
 The default limits are 64 MiB per buffered stream and 256 MiB globally. Administrators can change
 them in advanced storage settings. History is not saved across restart. Privacy activation,

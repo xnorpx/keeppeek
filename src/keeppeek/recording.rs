@@ -28,6 +28,60 @@ pub(super) fn recording_request_state(
 }
 
 impl KeepPeekLoop {
+    pub(super) fn refresh_recording_runtime_status(&mut self) {
+        let Some(storage) = &self.storage else {
+            return;
+        };
+        let now = Instant::now();
+        if now < self.next_recording_status_check {
+            return;
+        }
+        // ponytail: one scan per 100 ms bounds observation work while the loop receives events.
+        self.next_recording_status_check = now + EVENT_POLL_INTERVAL;
+        let mut status = self
+            .runtime_profile_status
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if status.revision != self.runtime_profiles.revision
+            || status.active_profile_id != self.runtime_profiles.active_profile_id
+        {
+            self.recording_status_cursor = None;
+            return;
+        }
+        let mut changed = false;
+        let start = self
+            .recording_status_cursor
+            .as_deref()
+            .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
+        let mut last_source = None;
+        for (source, application) in status
+            .cameras
+            .range_mut::<str, _>((start, std::ops::Bound::Unbounded))
+            .take(crate::profiles::MAX_PROFILE_TARGETS)
+        {
+            last_source = Some(source);
+            if application.state == RuntimeApplicationState::Applied
+                && application.policy.recording_mode != crate::cameras::CameraRecordingMode::Off
+                && storage.recording_configuration_failed(&application.camera_id)
+            {
+                application.state = RuntimeApplicationState::Degraded;
+                application.reason =
+                    Some("recording writer reported an active write failure".to_owned());
+                changed = true;
+            }
+        }
+        self.recording_status_cursor = last_source.cloned();
+        if self.recording_status_cursor.as_ref()
+            == status.cameras.last_key_value().map(|(source, _)| source)
+        {
+            self.recording_status_cursor = None;
+        }
+        drop(status);
+        if changed {
+            self.publish_runtime_profile_status();
+        }
+    }
+
     pub(super) fn configure_profile_recording(
         &self,
         camera: &Camera,

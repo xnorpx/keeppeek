@@ -351,12 +351,13 @@ fn worker_rejects_queued_media_after_a_complete_privacy_cycle() {
     let (tx, rx) = storage_command_channel(16, 1024);
     let admission = RecordingAdmission::default();
     *admission.privacy.write().unwrap() = Some(Arc::clone(&privacy));
+    let health = admission.health.clone();
     let mut worker = WriterWorker::new_with_health(
         config,
         RecordingDemand::new(DEMAND_INACTIVITY_GRACE),
         None,
-        RecordingHealthRegistry::default(),
-        Arc::clone(&admission.privacy),
+        health,
+        admission.clone(),
     );
     let handle = StorageHandle { tx, admission };
     handle
@@ -1168,6 +1169,153 @@ fn writer_capacity_rejection_clears_new_source_and_receipt_fails_closed() {
             .is_none()
     );
     worker.handle_command(Command::Shutdown);
+}
+
+fn failure_test_writer(name: &str) -> (StorageHandle, StorageCommandReceiver, WriterWorker) {
+    let health = RecordingHealthRegistry::default();
+    let admission = RecordingAdmission::new(health.clone());
+    let (tx, rx) = storage_command_channel(4, 4096);
+    let handle = StorageHandle { tx, admission };
+    let worker = WriterWorker::new_with_health(
+        storage_config(name),
+        RecordingDemand::new(DEMAND_INACTIVITY_GRACE),
+        None,
+        health,
+        handle.admission.clone(),
+    );
+    (handle, rx, worker)
+}
+
+#[test]
+fn writer_failure_latch_arms_on_ack_before_receipt_consumption() {
+    let (handle, rx, mut worker) = failure_test_writer("failure-ack");
+    let receipt = handle
+        .request_camera_event_recording(
+            "camera",
+            CameraRecordingMode::Sub,
+            EventRecordingStream::Sub,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    handle.note_test_writer_failure("camera");
+    assert!(!handle.recording_configuration_failed("camera"));
+    worker.handle_command(rx.try_recv().unwrap());
+    handle.note_test_writer_failure("camera");
+    assert!(handle.recording_configuration_failed("camera"));
+    receipt.wait_until(Instant::now()).unwrap();
+}
+
+#[test]
+fn writer_failure_latch_ignores_stale_and_off_configurations() {
+    let (handle, rx, mut worker) = failure_test_writer("failure-stale");
+    let first = handle
+        .request_camera_event_recording(
+            "camera",
+            CameraRecordingMode::Sub,
+            EventRecordingStream::Sub,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    worker.handle_command(rx.try_recv().unwrap());
+    first.wait_until(Instant::now()).unwrap();
+    handle.note_test_writer_failure("camera");
+    assert!(handle.recording_configuration_failed("camera"));
+
+    let second = handle
+        .request_camera_event_recording(
+            "camera",
+            CameraRecordingMode::Main,
+            EventRecordingStream::Main,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    assert!(!handle.recording_configuration_failed("camera"));
+    handle.note_test_writer_failure("camera");
+    assert!(!handle.recording_configuration_failed("camera"));
+    worker.handle_command(rx.try_recv().unwrap());
+    second.wait_until(Instant::now()).unwrap();
+    handle.note_test_writer_failure("camera");
+    assert!(handle.recording_configuration_failed("camera"));
+
+    let off = handle
+        .request_camera_event_recording(
+            "camera",
+            CameraRecordingMode::Off,
+            EventRecordingStream::Main,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    worker.handle_command(rx.try_recv().unwrap());
+    off.wait_until(Instant::now()).unwrap();
+    handle.note_test_writer_failure("camera");
+    assert!(!handle.recording_configuration_failed("camera"));
+    handle.configure_camera_recording("camera", CameraRecordingMode::Sub, Duration::from_secs(1));
+    handle.note_test_writer_failure("camera");
+    assert!(!handle.recording_configuration_failed("camera"));
+}
+
+#[test]
+fn event_write_failure_uses_source_instead_of_storage_label() {
+    let name = format!("event-failure-source-{}", uuid::Uuid::new_v4());
+    let (handle, rx, mut worker) = failure_test_writer(&name);
+    let receipt = handle
+        .request_camera_event_recording(
+            "camera",
+            CameraRecordingMode::EventOnly,
+            EventRecordingStream::Main,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    worker.handle_command(rx.try_recv().unwrap());
+    receipt.wait_until(Instant::now()).unwrap();
+
+    let root = worker.config.medium_term_path.clone();
+    std::fs::create_dir_all(root.parent().unwrap()).unwrap();
+    std::fs::write(&root, b"file instead of recording directory").unwrap();
+    worker.write_event_frame(
+        RecordingStreamIdentity::new("camera", "main", "different-label"),
+        key_frame(Instant::now()),
+    );
+    assert!(handle.recording_configuration_failed("camera"));
+    assert!(!handle.recording_configuration_failed("different-label"));
+    std::fs::remove_file(root).unwrap();
+}
+
+#[test]
+fn buffered_input_flush_failure_latches_current_source() {
+    let name = format!("buffered-failure-{}", uuid::Uuid::new_v4());
+    let (handle, rx, mut worker) = failure_test_writer(&name);
+    worker.config.short_term_duration = Duration::ZERO;
+    worker.config.flush_interval = Duration::from_millis(1);
+    let receipt = handle
+        .request_camera_event_recording(
+            "camera",
+            CameraRecordingMode::Sub,
+            EventRecordingStream::Sub,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    worker.handle_command(rx.try_recv().unwrap());
+    receipt.wait_until(Instant::now()).unwrap();
+
+    let root = worker.config.medium_term_path.clone();
+    std::fs::create_dir_all(root.parent().unwrap()).unwrap();
+    std::fs::write(&root, b"file instead of recording directory").unwrap();
+    let identity = RecordingStreamIdentity::new("camera", "sub", "different-label");
+    worker.pipeline_for(&identity).last_flush = Instant::now() - Duration::from_secs(1);
+    worker.ingest(
+        identity,
+        key_frame(Instant::now() - Duration::from_millis(2)),
+    );
+    assert!(handle.recording_configuration_failed("camera"));
+    assert!(!handle.recording_configuration_failed("different-label"));
+    std::fs::remove_file(root).unwrap();
 }
 
 #[test]

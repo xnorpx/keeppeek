@@ -278,7 +278,7 @@ impl RecordingConfiguration {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let current = policies.get(&self.source).is_some_and(|policy| {
-            Arc::ptr_eq(&policy.current, &self.current) && self.current.load(Ordering::Acquire)
+            Arc::ptr_eq(&policy.current, &self.current) && self.current.is_current()
         });
         if !current {
             anyhow::bail!("recording configuration was superseded");
@@ -380,9 +380,9 @@ impl StorageHandle {
         }
         let fence = self.replace_event_admission(source, settings, &mut events);
         if let Some(previous) = policies.get(source) {
-            previous.current.store(false, Ordering::Release);
+            previous.current.invalidate();
         }
-        let current = Arc::new(AtomicBool::new(true));
+        let current = Arc::new(RecordingConfigurationToken::new());
         policies.insert(
             source.to_owned(),
             RecordingPolicy {
@@ -471,7 +471,7 @@ impl StorageHandle {
             .events_enabled
             .store(!events.is_empty(), Ordering::Release);
         if let Some(previous) = policies.get(source) {
-            previous.current.store(false, Ordering::Release);
+            previous.current.invalidate();
         }
         policies.insert(
             source.to_owned(),
@@ -540,12 +540,12 @@ impl WriterWorker {
                 reply,
             } => {
                 self.reconcile_disabled_event_sources();
-                let result = if current.load(Ordering::Acquire) {
+                let result = if current.is_current() {
                     self.configure_event_runtime(source.clone(), settings, fence)
                 } else {
                     Err("recording configuration was superseded")
                 };
-                let result = if current.load(Ordering::Acquire) {
+                let result = if current.is_current() {
                     result
                 } else {
                     if enabled(settings) {
@@ -553,6 +553,9 @@ impl WriterWorker {
                     }
                     Err("recording configuration was superseded")
                 };
+                if result.is_ok() && settings.mode != CameraRecordingMode::Off {
+                    current.acknowledge();
+                }
                 // Queue-only callers and timed-out waiters can drop their receipt before this reply.
                 let _ = reply.try_send(result);
             }
@@ -676,6 +679,7 @@ impl WriterWorker {
 
     fn sync_event_source(&mut self, source: &str) -> bool {
         let (private, epoch) = self
+            .admission
             .privacy
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -798,7 +802,7 @@ impl WriterWorker {
         }
         let source = identity.source_id.clone();
         let key = identity.storage_key.clone();
-        self.pipeline_for(identity);
+        self.pipeline_for(&identity);
         self.health.note_attempt(&key);
         match self.write_frame_to_pipeline(&key, frame, true) {
             Ok(progress) if progress.wrote => {
@@ -807,6 +811,7 @@ impl WriterWorker {
             Ok(_) => {}
             Err(error) => {
                 self.health.note_failure(&key, &error.to_string());
+                self.admission.note_writer_failure(&source);
                 self.invalidate_event_source(&source, PreRecordReason::WriterFailure);
             }
         }
