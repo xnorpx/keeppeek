@@ -13,7 +13,10 @@ use crate::storage::{
     catalog::archive_playback::ArchiveRead,
 };
 
+#[cfg(test)]
+mod audio_decode_tests;
 mod audio_timing;
+pub(crate) mod recorded;
 
 #[derive(Clone)]
 struct PlaybackTrack {
@@ -27,13 +30,66 @@ pub struct ExportArtifact {
     pub aligned_start_ms: i64,
     pub delivered_end_ms: i64,
     pub bytes: u64,
+    pub audio_timing: AudioTimingEvidence,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ExportSources<'a> {
+    pub video_fragments: &'a [CatalogMediaFragment],
+    pub audio_context: &'a [CatalogMediaFragment],
+    pub requested_end_ms: i64,
+}
+
+/// Observed container presentation times, without any claim about source-clock or lip synchronization.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AudioTimingEvidence {
+    pub first_video_pts_us: Option<i64>,
+    pub first_audio_pts_us: Option<i64>,
+    pub audio_present: bool,
+    pub clipped_audio_samples: u32,
+}
+
+impl AudioTimingEvidence {
+    pub fn stored_skew_us(self) -> Option<i64> {
+        self.first_audio_pts_us?
+            .checked_sub(self.first_video_pts_us?)
+    }
+
+    fn observe(
+        &mut self,
+        sample: &mp4::Mp4Sample,
+        track: &PlaybackTrack,
+        start: i128,
+    ) -> anyhow::Result<()> {
+        let pts = (start + i128::from(sample.rendering_offset)) * 1_000_000
+            / i128::from(track.config.timescale);
+        let pts = i64::try_from(pts).context("container presentation evidence exceeds clock")?;
+        let first = if track.config.track_type == mp4::TrackType::Audio {
+            self.audio_present = true;
+            &mut self.first_audio_pts_us
+        } else {
+            &mut self.first_video_pts_us
+        };
+        *first = Some(first.map_or(pts, |previous| previous.min(pts)));
+        Ok(())
+    }
 }
 
 struct ExportRecording {
-    started_at_ms: i64,
+    recording_started_at_ms: i64,
     path: String,
     archive: Option<ArchiveRead>,
     intervals: Vec<(i64, i64)>,
+    audio_intervals: Vec<(i64, i64)>,
+    byte_ranges: Vec<(u64, u64)>,
+    contextual: bool,
+}
+
+struct ExportPlan {
+    recordings: Vec<ExportRecording>,
+    windows: Vec<(i64, i64)>,
+    aligned_start_ms: i64,
+    delivered_end_ms: i64,
 }
 
 trait ReadSeek: Read + Seek {}
@@ -76,12 +132,21 @@ struct ExportProgress {
     pending_video: bool,
     last_sample_start: HashMap<u32, u64>,
     bytes_written: u64,
+    audio_timing: AudioTimingEvidence,
+    pending_audio_end: HashMap<u32, u64>,
 }
 
-struct ExportCallbacks<'a> {
+#[derive(Clone, Copy)]
+struct ExportSelection<'a> {
+    audio_offset_ms: i32,
+    aligned_start_ms: i64,
+    windows: &'a [(i64, i64)],
+}
+
+struct ExportContext<'a> {
     cancelled: &'a dyn Fn() -> bool,
     report_progress: &'a dyn Fn(u64),
-    audio_offset_ms: i32,
+    selection: ExportSelection<'a>,
 }
 
 pub fn export_fragment_ranges(
@@ -116,7 +181,7 @@ pub fn export_fragment_ranges_with_progress(
     )
 }
 
-fn export_fragment_ranges_with_audio_offset(
+pub(crate) fn export_fragment_ranges_with_audio_offset(
     fragments: &[CatalogMediaFragment],
     requested_end_ms: i64,
     destination: &Path,
@@ -124,7 +189,28 @@ fn export_fragment_ranges_with_audio_offset(
     cancelled: impl Fn() -> bool,
     progress: impl Fn(u64),
 ) -> anyhow::Result<ExportArtifact> {
-    fragments
+    export_sources_to_file(
+        ExportSources {
+            video_fragments: fragments,
+            audio_context: &[],
+            requested_end_ms,
+        },
+        destination,
+        audio_offset_ms,
+        cancelled,
+        progress,
+    )
+}
+
+pub(crate) fn export_sources_to_file(
+    sources: ExportSources<'_>,
+    destination: &Path,
+    audio_offset_ms: i32,
+    cancelled: impl Fn() -> bool,
+    progress: impl Fn(u64),
+) -> anyhow::Result<ExportArtifact> {
+    sources
+        .video_fragments
         .first()
         .context("export range has no recorded fragments")?;
     let temporary =
@@ -134,14 +220,18 @@ fn export_fragment_ranges_with_audio_offset(
     }
     let result = (|| {
         let mut output = BufWriter::new(File::create(&temporary)?);
-        let result = export_fragment_ranges_to_writer_with_audio_offset(
-            fragments,
-            requested_end_ms,
-            &mut output,
-            audio_offset_ms,
-            &cancelled,
-            progress,
-        );
+        let result = if sources.audio_context.is_empty() {
+            export_fragment_ranges_to_writer_with_audio_offset(
+                sources.video_fragments,
+                sources.requested_end_ms,
+                &mut output,
+                audio_offset_ms,
+                &cancelled,
+                progress,
+            )
+        } else {
+            export_sources_to_writer(sources, &mut output, audio_offset_ms, &cancelled, progress)
+        };
         // Discard pending buffered bytes on failure instead of retrying writes during drop.
         let (file, _) = output.into_parts();
         drop(file);
@@ -158,27 +248,8 @@ fn export_fragment_ranges_with_audio_offset(
     result
 }
 
-/// Writes to a new empty sink; its owner handles durability, publication, and failed-file cleanup.
-pub(crate) fn export_fragment_ranges_to_writer<W: Write + Seek>(
-    fragments: &[CatalogMediaFragment],
-    requested_end_ms: i64,
-    output: &mut W,
-    cancelled: impl Fn() -> bool,
-    progress: impl Fn(u64),
-) -> anyhow::Result<ExportArtifact> {
-    export_fragment_ranges_to_writer_with_audio_offset(
-        fragments,
-        requested_end_ms,
-        output,
-        0,
-        cancelled,
-        progress,
-    )
-}
-
-fn export_fragment_ranges_to_writer_with_audio_offset<W: Write + Seek>(
-    fragments: &[CatalogMediaFragment],
-    requested_end_ms: i64,
+pub(crate) fn export_sources_to_writer<W: Write + Seek>(
+    sources: ExportSources<'_>,
     output: &mut W,
     audio_offset_ms: i32,
     cancelled: impl Fn() -> bool,
@@ -195,30 +266,53 @@ fn export_fragment_ranges_to_writer_with_audio_offset<W: Write + Seek>(
     if cancelled() {
         bail!("export was cancelled");
     }
-    let (recordings, aligned_start_ms, delivered_end_ms) =
-        export_recordings(fragments, requested_end_ms)?;
-    let bytes = write_export_recordings(
-        &recordings,
-        aligned_start_ms,
+    let plan = export_recordings(sources, audio_offset_ms)?;
+    let selection = ExportSelection {
+        aligned_start_ms: plan.aligned_start_ms,
         audio_offset_ms,
-        output,
-        &cancelled,
-        &progress,
-    )?;
+        windows: &plan.windows,
+    };
+    let (bytes, audio_timing) =
+        write_export_recordings(&plan.recordings, selection, output, &cancelled, &progress)?;
     if cancelled() {
         bail!("export was cancelled");
     }
     Ok(ExportArtifact {
-        aligned_start_ms,
-        delivered_end_ms,
+        aligned_start_ms: plan.aligned_start_ms,
+        delivered_end_ms: plan.delivered_end_ms,
         bytes,
+        audio_timing,
     })
 }
 
-fn export_recordings(
+/// Writes to a new empty sink; its owner handles durability, publication, and failed-file cleanup.
+pub(crate) fn export_fragment_ranges_to_writer_with_audio_offset<W: Write + Seek>(
     fragments: &[CatalogMediaFragment],
     requested_end_ms: i64,
-) -> anyhow::Result<(Vec<ExportRecording>, i64, i64)> {
+    output: &mut W,
+    audio_offset_ms: i32,
+    cancelled: impl Fn() -> bool,
+    progress: impl Fn(u64),
+) -> anyhow::Result<ExportArtifact> {
+    export_sources_to_writer(
+        ExportSources {
+            video_fragments: fragments,
+            audio_context: &[],
+            requested_end_ms,
+        },
+        output,
+        audio_offset_ms,
+        cancelled,
+        progress,
+    )
+}
+
+fn export_recordings(
+    sources: ExportSources<'_>,
+    audio_offset_ms: i32,
+) -> anyhow::Result<ExportPlan> {
+    let fragments = sources.video_fragments;
+    let requested_end_ms = sources.requested_end_ms;
     let aligned_start_ms = fragments
         .first()
         .context("export range has no recorded fragments")?
@@ -233,77 +327,179 @@ fn export_recordings(
         .max()
         .unwrap_or(aligned_start_ms)
         .min(requested_end_ms);
-    let mut recordings = HashMap::<String, ExportRecording>::new();
+    let contextual = audio_offset_ms != 0 && !sources.audio_context.is_empty();
+    if contextual {
+        validate_contextual_export_periods(sources)?;
+    }
+    let mut recordings = HashMap::new();
+    let mut windows = Vec::new();
     for fragment in fragments {
         let end_ms = fragment
             .start_ms
             .saturating_add(i64::try_from(fragment.duration_ms).unwrap_or(i64::MAX))
             .min(requested_end_ms);
-        let recording = recordings
-            .entry(fragment.recording_id.clone())
-            .or_insert_with(|| ExportRecording {
-                started_at_ms: fragment.recording_started_at_ms,
-                path: fragment.path.clone(),
-                archive: fragment.archive.clone(),
-                intervals: Vec::new(),
-            });
-        anyhow::ensure!(
-            recording.path == fragment.path && recording.archive == fragment.archive,
-            "export recording location changed"
-        );
+        let recording = export_recording(&mut recordings, fragment, contextual)?;
         recording.intervals.push((fragment.start_ms, end_ms));
+        windows.push((fragment.start_ms, end_ms));
+        if !contextual {
+            recording.audio_intervals.push((fragment.start_ms, end_ms));
+        }
+    }
+    if contextual {
+        for fragment in sources.audio_context {
+            let end = fragment
+                .start_ms
+                .checked_add(i64::try_from(fragment.duration_ms)?)
+                .context("export audio interval exceeds clock")?;
+            export_recording(&mut recordings, fragment, true)?
+                .audio_intervals
+                .push((fragment.start_ms, end));
+        }
     }
     let mut recordings = recordings.into_values().collect::<Vec<_>>();
-    recordings.sort_unstable_by_key(|recording| recording.started_at_ms);
+    sort_export_recordings(&mut recordings, contextual);
+    Ok(ExportPlan {
+        recordings,
+        windows,
+        aligned_start_ms,
+        delivered_end_ms,
+    })
+}
 
-    Ok((recordings, aligned_start_ms, delivered_end_ms))
+fn validate_contextual_export_periods(sources: ExportSources<'_>) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        sources.video_fragments.len() <= 512 && sources.audio_context.len() <= 512,
+        "corrected export exceeds bounded source periods"
+    );
+    let mut unique = HashMap::new();
+    for fragment in sources.video_fragments.iter().chain(sources.audio_context) {
+        let key = (fragment.recording_id.as_str(), fragment.sequence);
+        if let Some(previous) = unique.get(&key) {
+            anyhow::ensure!(
+                *previous == fragment,
+                "corrected export source period metadata conflicts"
+            );
+        } else {
+            anyhow::ensure!(
+                unique.len() < 512,
+                "corrected export exceeds bounded unique source periods"
+            );
+            unique.insert(key, fragment);
+        }
+    }
+    let mut periods = Vec::with_capacity(unique.len());
+    for fragment in unique.into_values() {
+        anyhow::ensure!(
+            fragment.duration_ms > 0,
+            "corrected export source period is empty"
+        );
+        let end = fragment
+            .start_ms
+            .checked_add(i64::try_from(fragment.duration_ms)?)
+            .context("corrected export source period exceeds clock")?;
+        periods.push((fragment.start_ms, end));
+    }
+    periods.sort_unstable();
+    // ponytail: Whole-file writes need a packet-level merge to preserve overlapping sources.
+    anyhow::ensure!(
+        periods.windows(2).all(|pair| pair[0].1 <= pair[1].0),
+        "corrected export source periods overlap"
+    );
+    Ok(())
+}
+
+fn export_recording<'a>(
+    recordings: &'a mut HashMap<String, ExportRecording>,
+    fragment: &CatalogMediaFragment,
+    contextual: bool,
+) -> anyhow::Result<&'a mut ExportRecording> {
+    let recording = recordings
+        .entry(fragment.recording_id.clone())
+        .or_insert_with(|| ExportRecording {
+            recording_started_at_ms: fragment.recording_started_at_ms,
+            path: fragment.path.clone(),
+            archive: fragment.archive.clone(),
+            intervals: Vec::new(),
+            audio_intervals: Vec::new(),
+            byte_ranges: Vec::new(),
+            contextual,
+        });
+    anyhow::ensure!(
+        recording.path == fragment.path
+            && recording.archive == fragment.archive
+            && recording.recording_started_at_ms == fragment.recording_started_at_ms,
+        "export recording location or clock changed"
+    );
+    let end = fragment
+        .byte_offset
+        .checked_add(fragment.byte_len)
+        .context("export source byte range exceeds file clock")?;
+    recording.byte_ranges.push((fragment.byte_offset, end));
+    Ok(recording)
+}
+
+fn sort_export_recordings(recordings: &mut [ExportRecording], contextual: bool) {
+    if contextual {
+        recordings.sort_unstable_by(|left, right| {
+            let first = |recording: &ExportRecording| {
+                recording
+                    .intervals
+                    .iter()
+                    .chain(&recording.audio_intervals)
+                    .map(|range| range.0)
+                    .min()
+            };
+            first(left)
+                .cmp(&first(right))
+                .then(
+                    left.recording_started_at_ms
+                        .cmp(&right.recording_started_at_ms),
+                )
+                .then(left.path.cmp(&right.path))
+        });
+    } else {
+        recordings.sort_unstable_by_key(|recording| recording.recording_started_at_ms);
+    }
 }
 
 fn write_export_recordings<W: Write + Seek>(
     recordings: &[ExportRecording],
-    aligned_start_ms: i64,
-    audio_offset_ms: i32,
+    selection: ExportSelection<'_>,
     output: &mut W,
     cancelled: &impl Fn() -> bool,
     report_progress: &impl Fn(u64),
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<(u64, AudioTimingEvidence)> {
     let first = recordings
-        .first()
-        .context("export has no source recordings")?;
-    let mut first_reader = read_export_mp4(first, cancelled)?;
+        .iter()
+        .find(|recording| !recording.intervals.is_empty())
+        .context("export has no video source recordings")?;
+    let first_reader = read_export_mp4(first, cancelled)?;
     let reference_tracks = export_tracks(&first_reader)?;
-    let selected_track_indexes = selected_export_track_indexes(
-        recordings,
-        &reference_tracks,
-        aligned_start_ms,
-        audio_offset_ms,
-        cancelled,
-    )?;
+    let selected_track_indexes =
+        selected_export_track_indexes(recordings, &reference_tracks, selection, cancelled)?;
     let tracks = selected_track_indexes
         .iter()
         .map(|index| reference_tracks[*index].clone())
         .collect::<Vec<_>>();
-    let (config, configs) = export_mp4_configuration(&tracks, audio_offset_ms)?;
+    let (config, configs) = export_mp4_configuration(&tracks, selection.audio_offset_ms)?;
     let mut writer =
         mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(output, &config, &configs)?;
     let mut progress = ExportProgress::default();
-    let callbacks = ExportCallbacks {
+    let callbacks = ExportContext {
         cancelled,
         report_progress,
-        audio_offset_ms,
+        selection,
     };
 
-    write_export_recording(
-        &mut first_reader,
-        first,
-        &tracks,
-        aligned_start_ms,
-        &mut writer,
-        &mut progress,
-        &callbacks,
-    )?;
-    for recording in recordings.iter().skip(1) {
-        let mut reader = read_export_mp4(recording, cancelled)?;
+    let mut first_reader = Some(first_reader);
+    for recording in recordings {
+        let mut reader = if std::ptr::eq(recording, first) {
+            first_reader
+                .take()
+                .expect("reference source reader has one owner")
+        } else {
+            read_export_mp4(recording, cancelled)?
+        };
         let source_tracks = export_tracks(&reader)?;
         validate_track_layout(&reference_tracks, &source_tracks)?;
         let selected_tracks = selected_track_indexes
@@ -314,7 +510,6 @@ fn write_export_recordings<W: Write + Seek>(
             &mut reader,
             recording,
             &selected_tracks,
-            aligned_start_ms,
             &mut writer,
             &mut progress,
             &callbacks,
@@ -323,7 +518,10 @@ fn write_export_recordings<W: Write + Seek>(
     writer.write_end()?;
     let output = writer.into_writer();
     output.flush()?;
-    Ok(output.seek(std::io::SeekFrom::End(0))?)
+    Ok((
+        output.seek(std::io::SeekFrom::End(0))?,
+        progress.audio_timing,
+    ))
 }
 
 fn export_mp4_configuration(
@@ -368,8 +566,7 @@ fn export_mp4_configuration(
 fn selected_export_track_indexes(
     recordings: &[ExportRecording],
     reference_tracks: &[PlaybackTrack],
-    aligned_start_ms: i64,
-    audio_offset_ms: i32,
+    selection: ExportSelection<'_>,
     cancelled: &impl Fn() -> bool,
 ) -> anyhow::Result<Vec<usize>> {
     let mut selected = vec![false; reference_tracks.len()];
@@ -379,14 +576,7 @@ fn selected_export_track_indexes(
         validate_track_layout(reference_tracks, &tracks)?;
         for (index, track) in tracks.iter().enumerate() {
             if !selected[index]
-                && track_has_selected_sample(
-                    &mut reader,
-                    recording,
-                    track,
-                    aligned_start_ms,
-                    audio_offset_ms,
-                    cancelled,
-                )?
+                && track_has_selected_sample(&mut reader, recording, track, selection, cancelled)?
             {
                 selected[index] = true;
             }
@@ -422,22 +612,29 @@ fn track_has_selected_sample<R: Read + Seek>(
     reader: &mut mp4::Mp4Reader<R>,
     recording: &ExportRecording,
     track: &PlaybackTrack,
-    aligned_start_ms: i64,
-    audio_offset_ms: i32,
+    selection: ExportSelection<'_>,
     cancelled: &impl Fn() -> bool,
 ) -> anyhow::Result<bool> {
+    if export_intervals(recording, track).is_empty() {
+        return Ok(false);
+    }
     for sample_id in 1..=reader.sample_count(track.source_id)? {
         if cancelled() {
             bail!("export was cancelled");
         }
-        let sample = reader
-            .read_sample(track.source_id, sample_id)?
-            .with_context(|| format!("track {} sample {sample_id} is missing", track.source_id))?;
+        let Some(sample) = read_export_source_sample(reader, recording, track, sample_id)? else {
+            continue;
+        };
         if selected_sample_time(&sample, recording, track)?.is_none() {
             continue;
         }
-        if export_sample_start(&sample, recording, track, aligned_start_ms, audio_offset_ms)?
-            .is_some()
+        if let Some(start) = export_sample_start(
+            &sample,
+            recording,
+            track,
+            selection.aligned_start_ms,
+            selection.audio_offset_ms,
+        )? && export_presentation_selected(&sample, start, track, selection)?
         {
             return Ok(true);
         }
@@ -470,26 +667,22 @@ fn write_export_recording<R: Read + Seek, W: Write + Seek>(
     reader: &mut mp4::Mp4Reader<R>,
     recording: &ExportRecording,
     tracks: &[PlaybackTrack],
-    aligned_start_ms: i64,
     writer: &mut mp4::FragmentedMp4Writer<W>,
     progress: &mut ExportProgress,
-    callbacks: &ExportCallbacks<'_>,
+    callbacks: &ExportContext<'_>,
 ) -> anyhow::Result<()> {
     let mut samples = Vec::new();
     for (index, track) in tracks.iter().enumerate() {
+        if export_intervals(recording, track).is_empty() {
+            continue;
+        }
         let track_id = u32::try_from(index + 1).context("export track index overflowed")?;
         for sample_id in 1..=reader.sample_count(track.source_id)? {
             if (callbacks.cancelled)() {
                 bail!("export was cancelled");
             }
             if let Some(sample) = read_export_sample(
-                reader,
-                recording,
-                track,
-                sample_id,
-                track_id,
-                aligned_start_ms,
-                callbacks.audio_offset_ms,
+                reader, recording, track, sample_id, track_id, progress, callbacks,
             )? {
                 samples.push(sample);
             }
@@ -514,20 +707,36 @@ fn read_export_sample<R: Read + Seek>(
     track: &PlaybackTrack,
     sample_id: u32,
     track_id: u32,
-    aligned_start_ms: i64,
-    audio_offset_ms: i32,
+    progress: &mut ExportProgress,
+    context: &ExportContext<'_>,
 ) -> anyhow::Result<Option<ExportSample>> {
-    let mut sample = reader
-        .read_sample(track.source_id, sample_id)?
-        .with_context(|| format!("track {} sample {sample_id} is missing", track.source_id))?;
+    let Some(mut sample) = read_export_source_sample(reader, recording, track, sample_id)? else {
+        return Ok(None);
+    };
     let Some(absolute_ms) = selected_sample_time(&sample, recording, track)? else {
         return Ok(None);
     };
-    let Some(start) =
-        export_sample_start(&sample, recording, track, aligned_start_ms, audio_offset_ms)?
+    observe_export_sample(progress, &sample, recording, track, context.selection)?;
+    let Some(start) = export_sample_start(
+        &sample,
+        recording,
+        track,
+        context.selection.aligned_start_ms,
+        context.selection.audio_offset_ms,
+    )?
     else {
+        if track.config.track_type == mp4::TrackType::Audio {
+            progress.audio_timing.clipped_audio_samples = progress
+                .audio_timing
+                .clipped_audio_samples
+                .checked_add(1)
+                .context("clipped audio sample count overflowed")?;
+        }
         return Ok(None);
     };
+    if !export_presentation_selected(&sample, start, track, context.selection)? {
+        return Ok(None);
+    }
     let source_track = reader
         .tracks()
         .get(&track.source_id)
@@ -553,15 +762,109 @@ fn selected_sample_time(
     anyhow::ensure!(timescale > 0, "export track timescale must be positive");
     let start_ms = i128::from(sample.start_time) * 1_000 / timescale;
     let end_ms = (i128::from(sample.start_time) + i128::from(sample.duration)) * 1_000 / timescale;
-    let absolute_ms = i64::try_from(i128::from(recording.started_at_ms) + start_ms)
+    let absolute_ms = i64::try_from(i128::from(recording.recording_started_at_ms) + start_ms)
         .context("export source sample start exceeds the absolute clock")?;
-    let absolute_end_ms = i64::try_from(i128::from(recording.started_at_ms) + end_ms)
+    let absolute_end_ms = i64::try_from(i128::from(recording.recording_started_at_ms) + end_ms)
         .context("export source sample end exceeds the absolute clock")?;
-    Ok(recording
-        .intervals
+    Ok(export_intervals(recording, track)
         .iter()
         .any(|(start, end)| absolute_ms < *end && absolute_end_ms > *start)
         .then_some(absolute_ms))
+}
+
+fn export_intervals<'a>(recording: &'a ExportRecording, track: &PlaybackTrack) -> &'a [(i64, i64)] {
+    if track.config.track_type == mp4::TrackType::Audio {
+        &recording.audio_intervals
+    } else {
+        &recording.intervals
+    }
+}
+
+fn read_export_source_sample<R: Read + Seek>(
+    reader: &mut mp4::Mp4Reader<R>,
+    recording: &ExportRecording,
+    track: &PlaybackTrack,
+    sample_id: u32,
+) -> anyhow::Result<Option<mp4::Mp4Sample>> {
+    if recording.contextual {
+        let location = reader
+            .sample_location(track.source_id, sample_id)?
+            .context("export sample has no byte location")?;
+        let end = location
+            .offset
+            .checked_add(u64::from(location.size))
+            .context("export sample byte extent overflow")?;
+        if !recording
+            .byte_ranges
+            .iter()
+            .any(|&(start, limit)| location.offset >= start && end <= limit)
+        {
+            anyhow::ensure!(
+                !recording
+                    .byte_ranges
+                    .iter()
+                    .any(|&(start, limit)| location.offset < limit && end > start),
+                "export sample exceeds its indexed fragment"
+            );
+            return Ok(None);
+        }
+    }
+    let sample = reader
+        .read_sample(track.source_id, sample_id)?
+        .with_context(|| format!("track {} sample {sample_id} is missing", track.source_id))?;
+    anyhow::ensure!(
+        !recording.contextual
+            || track.config.track_type != mp4::TrackType::Audio
+            || sample.rendering_offset == 0,
+        "contextual audio correction does not support AAC composition offsets"
+    );
+    Ok(Some(sample))
+}
+
+fn observe_export_sample(
+    progress: &mut ExportProgress,
+    sample: &mp4::Mp4Sample,
+    recording: &ExportRecording,
+    track: &PlaybackTrack,
+    selection: ExportSelection<'_>,
+) -> anyhow::Result<()> {
+    let scale = i128::from(track.config.timescale);
+    let start = i128::from(recording.recording_started_at_ms)
+        + i128::from(sample.start_time) * 1_000 / scale;
+    let end = i128::from(recording.recording_started_at_ms)
+        + (i128::from(sample.start_time) + i128::from(sample.duration)) * 1_000 / scale;
+    if selection
+        .windows
+        .iter()
+        .any(|&(left, right)| start < i128::from(right) && end > i128::from(left))
+    {
+        progress.audio_timing.observe(
+            sample,
+            track,
+            normalized_sample_start(sample, recording, track, selection.aligned_start_ms),
+        )?;
+    }
+    Ok(())
+}
+
+fn export_presentation_selected(
+    sample: &mp4::Mp4Sample,
+    mapped_start: u64,
+    track: &PlaybackTrack,
+    selection: ExportSelection<'_>,
+) -> anyhow::Result<bool> {
+    if track.config.track_type != mp4::TrackType::Audio || selection.audio_offset_ms == 0 {
+        return Ok(true);
+    }
+    let pts = (i128::from(mapped_start) + i128::from(sample.rendering_offset))
+        .checked_mul(1_000)
+        .context("corrected export PTS overflow")?;
+    let scale = i128::from(track.config.timescale);
+    Ok(selection.windows.iter().any(|&(start, end)| {
+        let left = (i128::from(start) - i128::from(selection.aligned_start_ms)) * scale;
+        let right = (i128::from(end) - i128::from(selection.aligned_start_ms)) * scale;
+        pts >= left && pts < right
+    }))
 }
 
 fn export_sample_start(
@@ -571,9 +874,7 @@ fn export_sample_start(
     aligned_start_ms: i64,
     audio_offset_ms: i32,
 ) -> anyhow::Result<Option<u64>> {
-    let origin_ms = i128::from(recording.started_at_ms) - i128::from(aligned_start_ms);
-    let origin_ticks = origin_ms * i128::from(track.config.timescale) / 1_000;
-    let normalized_start = origin_ticks + i128::from(sample.start_time);
+    let normalized_start = normalized_sample_start(sample, recording, track, aligned_start_ms);
     if track.config.track_type == mp4::TrackType::Audio && audio_offset_ms != 0 {
         let Some(start) = audio_timing::audio_start(
             normalized_start,
@@ -600,11 +901,21 @@ fn export_sample_start(
     }
 }
 
+fn normalized_sample_start(
+    sample: &mp4::Mp4Sample,
+    recording: &ExportRecording,
+    track: &PlaybackTrack,
+    aligned_start_ms: i64,
+) -> i128 {
+    let origin_ms = i128::from(recording.recording_started_at_ms) - i128::from(aligned_start_ms);
+    origin_ms * i128::from(track.config.timescale) / 1_000 + i128::from(sample.start_time)
+}
+
 fn append_export_sample<W: Write + Seek>(
     writer: &mut mp4::FragmentedMp4Writer<W>,
     sample: ExportSample,
     progress: &mut ExportProgress,
-    callbacks: &ExportCallbacks<'_>,
+    callbacks: &ExportContext<'_>,
 ) -> anyhow::Result<()> {
     if (callbacks.cancelled)() {
         bail!("export was cancelled");
@@ -619,9 +930,12 @@ fn append_export_sample<W: Write + Seek>(
     if sample.track_type == mp4::TrackType::Video && sample.sample.is_sync {
         if progress.pending_video {
             writer.flush_fragment()?;
+            progress.pending_audio_end.clear();
         }
         progress.pending_video = true;
     }
+    let audio_end =
+        corrected_export_audio_end(&sample, progress, callbacks.selection.audio_offset_ms)?;
     let description_index =
         writer.add_sample_description(sample.track_id, sample.sample_description)?;
     progress
@@ -629,9 +943,36 @@ fn append_export_sample<W: Write + Seek>(
         .insert(sample.track_id, sample.sample.start_time);
     let sample_bytes = u64::try_from(sample.sample.bytes.len()).unwrap_or(u64::MAX);
     writer.write_sample_with_description(sample.track_id, description_index, sample.sample)?;
+    if let Some(end) = audio_end {
+        progress.pending_audio_end.insert(sample.track_id, end);
+    }
     progress.bytes_written = progress.bytes_written.saturating_add(sample_bytes);
     (callbacks.report_progress)(progress.bytes_written);
     Ok(())
+}
+
+fn corrected_export_audio_end(
+    sample: &ExportSample,
+    progress: &ExportProgress,
+    audio_offset_ms: i32,
+) -> anyhow::Result<Option<u64>> {
+    if audio_offset_ms == 0 || sample.track_type != mp4::TrackType::Audio {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        progress
+            .pending_audio_end
+            .get(&sample.track_id)
+            .is_none_or(|&end| end == sample.sample.start_time),
+        "corrected export audio has a gap or overlap inside a fragment"
+    );
+    Ok(Some(
+        sample
+            .sample
+            .start_time
+            .checked_add(u64::from(sample.sample.duration))
+            .context("corrected export audio end overflow")?,
+    ))
 }
 
 pub fn browser_compatible_recording(source: &Path) -> anyhow::Result<PathBuf> {
@@ -783,15 +1124,9 @@ fn playback_track(track: &mp4::Mp4Track) -> anyhow::Result<Option<PlaybackTrack>
     let Some(config) = playback_track_config(track)? else {
         return Ok(None);
     };
-    let sample_descriptions = if config.track_type == mp4::TrackType::Video {
-        (1..=track.sample_description_count())
-            .map(|index| {
-                track.media_config_for_description(u32::try_from(index).unwrap_or(u32::MAX))
-            })
-            .collect::<mp4::Result<Vec<_>>>()?
-    } else {
-        vec![config.media_conf.clone()]
-    };
+    let sample_descriptions = (1..=track.sample_description_count())
+        .map(|index| track.media_config_for_description(u32::try_from(index).unwrap_or(u32::MAX)))
+        .collect::<mp4::Result<Vec<_>>>()?;
     Ok(Some(PlaybackTrack {
         source_id: track.track_id(),
         config,
@@ -918,9 +1253,15 @@ mod tests {
         let path = directory.join("expected.mp4");
         let expected = export_fragment_ranges(&fragments, end_ms, &path, || false).unwrap();
         let mut output = std::io::Cursor::new(Vec::new());
-        let actual =
-            export_fragment_ranges_to_writer(&fragments, end_ms, &mut output, || false, |_| {})
-                .unwrap();
+        let actual = export_fragment_ranges_to_writer_with_audio_offset(
+            &fragments,
+            end_ms,
+            &mut output,
+            0,
+            || false,
+            |_| {},
+        )
+        .unwrap();
         assert_eq!(actual, expected);
         assert_eq!(output.get_ref(), &std::fs::read(path).unwrap());
         output.set_position(0);
@@ -933,21 +1274,42 @@ mod tests {
         );
         let mut cancelled = std::io::Cursor::new(Vec::new());
         assert!(
-            export_fragment_ranges_to_writer(&fragments, end_ms, &mut cancelled, || true, |_| {})
-                .is_err()
+            export_fragment_ranges_to_writer_with_audio_offset(
+                &fragments,
+                end_ms,
+                &mut cancelled,
+                0,
+                || true,
+                |_| {}
+            )
+            .is_err()
         );
         assert!(cancelled.into_inner().is_empty());
         let mut nonempty = std::io::Cursor::new(vec![1, 2, 3]);
         assert!(
-            export_fragment_ranges_to_writer(&fragments, end_ms, &mut nonempty, || false, |_| {})
-                .is_err()
+            export_fragment_ranges_to_writer_with_audio_offset(
+                &fragments,
+                end_ms,
+                &mut nonempty,
+                0,
+                || false,
+                |_| {}
+            )
+            .is_err()
         );
         assert_eq!(nonempty.into_inner(), vec![1, 2, 3]);
         let mut displaced = std::io::Cursor::new(Vec::new());
         displaced.set_position(1);
         assert!(
-            export_fragment_ranges_to_writer(&fragments, end_ms, &mut displaced, || false, |_| {})
-                .is_err()
+            export_fragment_ranges_to_writer_with_audio_offset(
+                &fragments,
+                end_ms,
+                &mut displaced,
+                0,
+                || false,
+                |_| {}
+            )
+            .is_err()
         );
         assert!(displaced.into_inner().is_empty());
         let mut failing = ExportFlushFailure {
@@ -955,8 +1317,15 @@ mod tests {
             fail_at: expected.bytes,
         };
         assert!(
-            export_fragment_ranges_to_writer(&fragments, end_ms, &mut failing, || false, |_| {})
-                .is_err()
+            export_fragment_ranges_to_writer_with_audio_offset(
+                &fragments,
+                end_ms,
+                &mut failing,
+                0,
+                || false,
+                |_| {}
+            )
+            .is_err()
         );
         drop(handle);
         catalog.shutdown();
@@ -992,8 +1361,14 @@ mod tests {
                 .unwrap();
             let path = reservation.path().to_path_buf();
             let mut writer = reservation.open()?;
-            let result =
-                export_fragment_ranges_to_writer(&fragments, end_ms, &mut writer, || false, |_| {});
+            let result = export_fragment_ranges_to_writer_with_audio_offset(
+                &fragments,
+                end_ms,
+                &mut writer,
+                0,
+                || false,
+                |_| {},
+            );
             if capacity == 64 {
                 assert!(result.is_err());
                 assert!(writer.evidence().is_err());

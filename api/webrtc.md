@@ -949,7 +949,8 @@ returns the complete resulting `StoredMediaState`. `RefillStoredMedia` supplies 
 current absolute playback time. The client refills below 1.5 seconds buffered ahead, and the
 server delivers toward a three-second target without exceeding `max_buffer_duration`. Refill is a
 continuation of the current generation: it returns the complete state and appends initialization
-and fragments with that same generation. Only a seek creates a new generation.
+and fragments with that same generation. An accepted seek or a changed recorded-audio preview
+creates a new generation.
 `CloseStoredMedia` releases the cursor and returns `Ok`.
 
 When an explicit end timestamp has been fully delivered, KeepPeek returns status `ENDED` and sends
@@ -971,13 +972,88 @@ revisions must match. The frame is a random-access unit at or before the request
 is bounded to 4 MiB. H.264 uses AVCC IDR bytes with AVC decoder configuration; H.265 uses HVCC
 random-access bytes with HEVC decoder configuration.
 
+### Recorded-audio timing
+
+`keeppeek.recorded-audio.v1` advertises recorded correction and explicit playback previews when
+the recording catalog is available. Clients must require this capability before offering an
+initial-open override, including an unadjusted zero-offset recovery preview. This prevents older
+servers from silently ignoring the additive preview field. The capability does not promise that
+every recording contains compatible audio or enable live correction.
+
+`CameraSettings.recorded_audio` exposes the supported `RecordedAudioSettings` message, including
+an empty message when all values inherit. Older servers omit it. Each optional signed millisecond
+value is limited to `-5000..5000`; positive values delay audio. `main_offset_ms` and `sub_offset_ms`
+inherit `default_offset_ms` when absent. An absent camera default resolves to zero. An explicit
+zero disables correction at that level. Values with a magnitude greater than 1000 ms warrant a
+calibration warning; they remain valid.
+Resolution follows the actual recorded stream, including Sub recordings used for EventBoost
+main-stream review.
+
+Administrator `UpdateCameraConfiguration.recorded_audio` replaces the whole nested settings
+message. Omission preserves saved settings; an empty message removes all overrides. The existing
+`expected_configuration_revision` still protects the complete settings write. Saving only this
+message updates recorded-media settings without restarting camera ingress or recording writers.
+Other camera changes retain their existing activation behavior. There is no global recorded-audio
+default and these fields do not activate live-audio correction.
+
+`OpenStoredMedia.recorded_audio_preview` may select `use_configured: true` or a signed `offset_ms`
+override in the same range. Omission uses configured timing. `SetStoredMediaPlayback` may replace
+that cursor's preview selection; omission preserves it. An empty selection or
+`use_configured: false` is invalid. A changed selection increments the cursor generation, resets
+its media delivery, and preserves its requested position, playing state, and rate unless the
+command explicitly changes them. Preview changes never save camera settings or alter export
+defaults.
+
+`StoredMediaState.recorded_audio` and `ExportJob.recorded_audio` report `RecordedAudioTiming`.
+`configuration_revision` is a fingerprint of the captured source ID and recorded-audio settings;
+it is separate from the full-file revision used for settings writes. `configured_offset_ms` is the
+resolved stream setting, `applied_offset_ms` is the selected correction, and `preview` identifies a
+cursor override. Mapping version 1 rounds the correction to the nearest track tick, with half
+ticks rounded away from zero. It clips a whole encoded sample when its corrected decode or
+presentation start would be negative; it does not partially trim or re-encode that sample.
+
+Optional `first_video_pts_us`, `first_audio_pts_us`, and `stored_skew_us` describe the uncorrected
+normalized container period, using its earliest presentation time for each track and audio minus
+video as the skew. They are not RTP provenance,
+camera clock diagnostics, or a measured lip-sync error. Uninspected values stay absent.
+`audio_present` reports whether encoded audio samples were observed in that inspected fragment
+or export range; an empty declared audio track reports false. Its absence means unknown.
+`clipped_audio_samples` reports complete-sample clipping when known. Source recordings, catalog
+times, encoded payloads, video timing, and composition offsets remain unchanged.
+
+Nonzero stored playback uses a common media clock anchored to the selected fragment time for
+the cursor generation. Refills retain that origin; a seek or preview generation starts a new
+origin. MSE clients must use `SourceBuffer.mode = "segments"` for nonzero correction, accepting
+the reported state before initializing the buffer. Sequence mode can reanchor video to an audio
+track's shifted end. Zero-offset delivery retains the existing sequence-mode presentation.
+
+Corrected stored delivery is limited to two concurrent operations per server, 32 source periods, a
+40-second covered video span, 64 MiB of unique source ranges and 64 MiB of encoded output per
+batch, with a shared 30-second work deadline. These are work limits, not a process-memory or
+latency guarantee. Unsupported codecs, discontinuous encoded audio or exceeded limits fail
+explicitly. An operator may request an explicit zero-offset preview without changing settings;
+the server does not silently substitute it.
+
+Nonzero correction supports AAC samples with zero audio composition offset. A nonzero AAC
+composition offset is unsupported because the time index cannot bound its neighboring-source
+lookup; signed video composition offsets remain supported.
+
+Corrected exports also fetch neighboring source audio at the selected range edges. Audio packet
+presentation starts must fall inside the selected half-open video intervals after correction;
+packets are not partially trimmed at the end. Neighbor lookup permits at most 32 extra periods
+and 64 MiB of indexed edge ranges, with at most 512 total video/audio source periods. Exceeded
+limits fail explicitly and retain the existing export worker deadlines. Zero-offset exports
+retain their existing selection behavior.
+Nonzero corrected exports reject overlapping indexed source periods and conflicting metadata
+for the same source period; they do not merge overlapping recording files.
+
 ### MP4 and timed-data delivery
 
-KeepPeek sends bytes already present in the recording. A `StoredMediaInitialization` carries the
-exact `ftyp`/`moov` initialization range, and a `StoredMediaFragment` carries an exact complete
-`moof`/`mdat` range beginning with a video random-access sample. Stored-media delivery does not
-remux an entire recording and does not repackage every audio or video sample into a separate data
-channel message.
+With zero applied correction, KeepPeek sends bytes already present in the recording. A
+`StoredMediaInitialization` carries the exact `ftyp`/`moov` initialization range, and a
+`StoredMediaFragment` carries an exact complete `moof`/`mdat` range beginning with a video
+random-access sample. A nonzero recorded-audio correction remuxes only the selected bounded media
+window. It does not remux an entire recording or send each encoded sample as a separate message.
 
 `StoredMediaFragment.start_time` is the absolute recording time corresponding to the
 fragment's first video presentation sample. `duration_ms` spans the fragment's recorded media
@@ -1031,9 +1107,8 @@ target, decodes the reliable keyframe when supported, then switches the same cur
 when the position settles.
 
 The storage lookup for an open or seek uses the recording catalog's time index and
-keyframe-aligned fragment byte ranges. It must not scan the MP4 or remux the recording. Seek work
-is therefore bounded by an indexed lookup, one file open, and one fragment read rather than by
-recording duration.
+keyframe-aligned fragment byte ranges. It must not scan or remux the entire recording. Lookup and
+any recorded-audio remux work use the selected bounded media window rather than recording duration.
 
 ### Timeline queries
 
@@ -1106,7 +1181,14 @@ has the filesystem-safe camera name and exact UTC range:
 `ExportJob.file_name` returns this basename for downloads. Job IDs keep repeated exports of the
 same camera and range in separate directories.
 
-Exports preserve source codecs and timestamps without re-encoding. Missing recording intervals
+Exports preserve source codecs without re-encoding. Each new job captures the configured
+recorded-audio timing and reports it in `ExportJob.recorded_audio`; a cursor preview cannot change
+that snapshot. Retry keeps the original snapshot after offset changes. If camera changes resolve
+the request to a different recording stream, Retry rejects it before retiring the old attempt;
+create a new job instead. Legacy jobs
+without this metadata keep source timing and report unknown timing rather than inferring the
+current configuration. Nonzero corrections change only exported audio decode timestamps and may
+clip complete leading samples as described above. Missing recording intervals
 produce `PARTIAL` unless `allow_partial` permits exporting the available portions. Ready artifacts
 include their byte count and SHA-256 digest, expire after 24 hours, and can be downloaded only on
 `reliable-data`.

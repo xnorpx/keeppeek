@@ -104,6 +104,7 @@ pub(in crate::server) fn snapshot(
     }
     job.expires_at = None;
     let record = ExportJobRecord {
+        recording_stream_id: persisted.recording_stream_id,
         requester_id: persisted.requester_id,
         artifact_id: persisted.artifact_id,
         request,

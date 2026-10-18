@@ -356,31 +356,85 @@ with the profile definitions. Earlier KeepPeek binaries reject this section rath
 with UUID targets that they cannot apply; restoring an older binary requires restoring a
 compatible pre-migration configuration as well. Unknown identity schema versions fail validation.
 
-| Field                               | Type                   | Default                           | Meaning                                                                                                                                         |
-| ----------------------------------- | ---------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ip`                                | `IpAddr`               | Required                          | Camera IP address, not a DNS hostname.                                                                                                          |
-| `name`                              | Optional `String`      | Camera table key                  | The loader replaces this value with the table key. Use `display_name` to change the UI label without changing storage identity.                 |
-| `display_name`                      | Optional `String`      | Falls back to `name`              | Human-readable camera label.                                                                                                                    |
-| `manufacturer`                      | Optional `String`      | No override                       | Nonempty trimmed value takes precedence over discovery.                                                                                         |
-| `username`                          | `String`               | Shared default or empty           | Camera username; literal or secret reference.                                                                                                   |
-| `password`                          | `String`               | Shared default or empty           | Camera password; literal or secret reference.                                                                                                   |
-| `onvif_port`                        | Optional `u16`         | `8000` when unset                 | ONVIF service port. Typed configuration operations require `1..65535`.                                                                          |
-| `http_port`                         | Optional `u16`         | `80` when unset                   | Direct camera HTTP control port; typed operations require `1..65535`.                                                                           |
-| `main_rtsp_url`                     | Optional `String`      | Discover stream                   | Explicit main-stream RTSP URL takes precedence over ONVIF discovery. Blank values are not explicit URLs.                                        |
-| `sub_rtsp_url`                      | Optional `String`      | Discover stream                   | Explicit sub-stream RTSP URL. Use URL-escaped references in credential components.                                                              |
-| `uid`                               | Optional `String`      | None                              | Reolink P2P UID for direct BCUDP discovery.                                                                                                     |
-| `backend`                           | `CameraBackend`        | Shared default or `"auto"`        | `"auto"`, `"retina"`, or `"reo-proto"`.                                                                                                         |
-| `transport`                         | `CameraTransport`      | Shared default or `"tcp"`         | `"tcp"` or `"udp"`.                                                                                                                             |
-| `record_generic_motion_events`      | `bool`                 | Shared default or `false`         | Opt in to supported generic motion events.                                                                                                      |
-| `recording_mode`                    | `CameraRecordingMode`  | Shared default or `"event-boost"` | `"off"`, `"sub"`, `"main"`, `"both"`, `"event-boost"`, or `"event-only"`.                                                                       |
-| `event_recording_duration_secs`     | `u64`                  | Shared default or `60`            | Event-triggered recording duration; typed operations and TOML loading for event-only or pre-roll-enabled event-boost require `1..3600` seconds. |
-| `event_pre_recording_duration_secs` | `u64`                  | Shared default or `0`             | Range `0..30` seconds; `0` disables pre-roll allocation.                                                                                        |
-| `event_recording_stream`            | `EventRecordingStream` | Shared default or `"main"`        | `"main"` or `"sub"`; selects the event-only recording stream. EventBoost always boosts to main.                                                 |
-| `events`                            | `EventConfig`          | Defaults below                    | Camera-native event policy, independent of video backend; configured through the file.                                                          |
+| Field                               | Type                    | Default                           | Meaning                                                                                                                                         |
+| ----------------------------------- | ----------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ip`                                | `IpAddr`                | Required                          | Camera IP address, not a DNS hostname.                                                                                                          |
+| `name`                              | Optional `String`       | Camera table key                  | The loader replaces this value with the table key. Use `display_name` to change the UI label without changing storage identity.                 |
+| `display_name`                      | Optional `String`       | Falls back to `name`              | Human-readable camera label.                                                                                                                    |
+| `manufacturer`                      | Optional `String`       | No override                       | Nonempty trimmed value takes precedence over discovery.                                                                                         |
+| `username`                          | `String`                | Shared default or empty           | Camera username; literal or secret reference.                                                                                                   |
+| `password`                          | `String`                | Shared default or empty           | Camera password; literal or secret reference.                                                                                                   |
+| `onvif_port`                        | Optional `u16`          | `8000` when unset                 | ONVIF service port. Typed configuration operations require `1..65535`.                                                                          |
+| `http_port`                         | Optional `u16`          | `80` when unset                   | Direct camera HTTP control port; typed operations require `1..65535`.                                                                           |
+| `main_rtsp_url`                     | Optional `String`       | Discover stream                   | Explicit main-stream RTSP URL takes precedence over ONVIF discovery. Blank values are not explicit URLs.                                        |
+| `sub_rtsp_url`                      | Optional `String`       | Discover stream                   | Explicit sub-stream RTSP URL. Use URL-escaped references in credential components.                                                              |
+| `uid`                               | Optional `String`       | None                              | Reolink P2P UID for direct BCUDP discovery.                                                                                                     |
+| `backend`                           | `CameraBackend`         | Shared default or `"auto"`        | `"auto"`, `"retina"`, or `"reo-proto"`.                                                                                                         |
+| `transport`                         | `CameraTransport`       | Shared default or `"tcp"`         | `"tcp"` or `"udp"`.                                                                                                                             |
+| `record_generic_motion_events`      | `bool`                  | Shared default or `false`         | Opt in to supported generic motion events.                                                                                                      |
+| `recording_mode`                    | `CameraRecordingMode`   | Shared default or `"event-boost"` | `"off"`, `"sub"`, `"main"`, `"both"`, `"event-boost"`, or `"event-only"`.                                                                       |
+| `event_recording_duration_secs`     | `u64`                   | Shared default or `60`            | Event-triggered recording duration; typed operations and TOML loading for event-only or pre-roll-enabled event-boost require `1..3600` seconds. |
+| `event_pre_recording_duration_secs` | `u64`                   | Shared default or `0`             | Range `0..30` seconds; `0` disables pre-roll allocation.                                                                                        |
+| `event_recording_stream`            | `EventRecordingStream`  | Shared default or `"main"`        | `"main"` or `"sub"`; selects the event-only recording stream. EventBoost always boosts to main.                                                 |
+| `events`                            | `EventConfig`           | Defaults below                    | Camera-native event policy, independent of video backend; configured through the file.                                                          |
+| `recorded_audio`                    | `RecordedAudioSettings` | All offsets inherit               | Recorded-media correction only; fields and bounds below.                                                                                        |
 
 These are stored configuration types, not promises that every camera supports every backend,
 transport, or recording capability. Discovery results such as `CameraCapabilities`, `CameraPorts`,
 `MediaProfile`, `VideoConfig`, and `AudioConfig` are not additional editable camera tables.
+
+### Recorded-audio timing
+
+Type: `RecordedAudioSettings`, section `[<namespace>.<camera-key>.recorded_audio]`, for example
+`[cameras.front_door.recorded_audio]`. Source:
+[recorded-audio settings](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/recorded_audio.rs).
+These settings are independent of camera-native events and do not apply to live audio.
+
+| Field               | Type           | Default         | Meaning                                                                  |
+| ------------------- | -------------- | --------------- | ------------------------------------------------------------------------ |
+| `default_offset_ms` | Optional `i32` | Zero when unset | Camera default correction in milliseconds.                               |
+| `main_offset_ms`    | Optional `i32` | Camera default  | Main-stream override; explicit zero disables correction for this stream. |
+| `sub_offset_ms`     | Optional `i32` | Camera default  | Sub-stream override; explicit zero disables correction for this stream.  |
+
+Every provided offset must be an integer in the inclusive range `-5000..5000`. Positive values
+delay audio; negative values advance it. The editor warns when the magnitude exceeds 1000 ms.
+There is no `[camera_defaults]` audio offset. These numeric fields do not accept secret references.
+Unknown nested keys, fractional values, and out-of-range values fail validation before a save.
+
+```toml
+[cameras.front_door.recorded_audio]
+default_offset_ms = 125
+main_offset_ms = 0
+# The sub stream inherits the 125 ms camera default.
+```
+
+Saving only these settings does not restart camera ingress or recording writers. The typed camera
+update replaces the complete nested message: omission preserves it, and an empty message resets
+all overrides to inheritance. Ordinary camera edits and configuration plans preserve this table.
+Camera identity, secret references, profile state, source recordings, and catalog times remain
+unchanged.
+
+Recorded playback and newly created exports apply the resolved setting without re-encoding.
+Resolution follows the stream actually stored; EventBoost main-stream review uses the Sub
+recording and its offset. An export retry rejects a changed recording stream before retiring
+the previous attempt; create a new export for that source change.
+Negative corrections can clip complete leading audio samples; partial encoded-sample trimming is
+unsupported. Calibration previews belong to one playback cursor and do not change saved settings
+or export defaults. Export retries retain their original timing snapshot. Timing diagnostics refer
+to normalized container timestamps and do not prove camera/RTP clock accuracy or lip sync.
+Nonzero correction supports AAC with zero audio composition offset; other AAC composition
+offsets fail explicitly. Signed video composition offsets are supported. Corrected exports fetch
+neighboring audio and select complete packets by their corrected presentation start inside the
+selected video intervals. They do not partially trim a packet at the end. Export edge lookup is
+limited to 32 extra periods and 64 MiB of indexed edge ranges, with 512 total source periods.
+Nonzero corrected exports reject overlapping indexed source periods and conflicting metadata
+instead of merging overlapping recording files.
+
+To calibrate, open a recording in **Keep** and use **Recorded audio preview** to compare offsets
+while watching the same action. Reset the preview to compare against the captured saved value.
+An Administrator saves a permanent default or Main/Sub override in **Camera / Audio**. Reopen
+the recording after saving to use the updated setting. New exports capture the saved
+setting when created; a temporary preview does not affect them.
 
 ### Native camera events
 

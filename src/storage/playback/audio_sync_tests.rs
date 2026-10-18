@@ -2,6 +2,8 @@ use super::*;
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
 
+mod export_context;
+
 struct Fixture {
     root: PathBuf,
     fragments: Vec<CatalogMediaFragment>,
@@ -17,6 +19,15 @@ struct Output {
 
 impl Fixture {
     fn new(audio_rate: Option<u32>, first_audio_ms: u64, audio_cts: i32) -> Self {
+        Self::with_audio_bitrate(audio_rate, first_audio_ms, audio_cts, 64_000)
+    }
+
+    fn with_audio_bitrate(
+        audio_rate: Option<u32>,
+        first_audio_ms: u64,
+        audio_cts: i32,
+        audio_bitrate: u32,
+    ) -> Self {
         let root = std::env::temp_dir().join(format!("audio-sync-remux-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let mut fragments = Vec::new();
@@ -29,6 +40,8 @@ impl Fixture {
                 audio_rate,
                 first_audio_ms,
                 audio_cts,
+                audio_bitrate,
+                1_100,
             ));
             originals.push((
                 path.clone(),
@@ -109,13 +122,13 @@ fn video_configuration() -> (mp4::TrackConfig, bytes::Bytes) {
     (config, sample.bytes)
 }
 
-fn audio_configuration(rate: u32) -> mp4::TrackConfig {
+fn audio_configuration(rate: u32, bitrate: u32) -> mp4::TrackConfig {
     mp4::TrackConfig {
         track_type: mp4::TrackType::Audio,
         timescale: rate,
         language: "und".into(),
         media_conf: mp4::MediaConfig::AacConfig(mp4::AacConfig {
-            bitrate: 64_000,
+            bitrate,
             profile: mp4::AudioObjectType::AacLowComplexity,
             freq_index: match rate {
                 16_000 => mp4::SampleFreqIndex::Freq16000,
@@ -138,17 +151,29 @@ fn audio_sample(rate: u32, start_ms: u64, cts: i32, marker: u8) -> mp4::Mp4Sampl
     }
 }
 
+fn source_video_sample(sequence: u64, payload: &bytes::Bytes) -> mp4::Mp4Sample {
+    mp4::Mp4Sample {
+        start_time: sequence * 90_000,
+        duration: 90_000,
+        rendering_offset: 450,
+        is_sync: true,
+        bytes: payload.clone(),
+    }
+}
+
 fn write_source(
     path: &Path,
     recording: u8,
     audio_rate: Option<u32>,
     first_audio_ms: u64,
     audio_cts: i32,
+    audio_bitrate: u32,
+    late_audio_ms: u64,
 ) -> Vec<CatalogMediaFragment> {
     let (video, payload) = video_configuration();
     let mut tracks = vec![video];
     if let Some(rate) = audio_rate {
-        tracks.push(audio_configuration(rate));
+        tracks.push(audio_configuration(rate, audio_bitrate));
     }
     let config = mp4::Mp4Config {
         major_brand: "iso6".parse().unwrap(),
@@ -164,16 +189,7 @@ fn write_source(
     let origin_ms = 10_000 + i64::from(recording) * 2_000;
     for sequence in 0..2 {
         writer
-            .write_sample(
-                1,
-                mp4::Mp4Sample {
-                    start_time: sequence * 90_000,
-                    duration: 90_000,
-                    rendering_offset: 450,
-                    is_sync: true,
-                    bytes: payload.clone(),
-                },
-            )
+            .write_sample(1, source_video_sample(sequence, &payload))
             .unwrap();
         if let Some(rate) = audio_rate {
             let marker = recording * 3 + 1;
@@ -186,7 +202,7 @@ fn write_source(
                     .unwrap();
             } else {
                 writer
-                    .write_sample(2, audio_sample(rate, 1_100, 0, marker + 2))
+                    .write_sample(2, audio_sample(rate, late_audio_ms, 0, marker + 2))
                     .unwrap();
             }
         }
@@ -391,6 +407,44 @@ fn audio_sync_zero_is_byte_compatible_with_the_existing_export_entrypoint() {
     assert_eq!(corrected.bytes, existing.bytes);
     assert_eq!(corrected.video, existing.video);
     assert_eq!(corrected.audio, existing.audio);
+    fixture.assert_originals();
+}
+
+#[test]
+fn low_bitrate_aac_description_is_registered_before_interleaved_video() {
+    let fixture = Fixture::with_audio_bitrate(Some(48_000), 50, 0, 32_000);
+    for offset in [0, 200] {
+        let name = format!("low-bitrate-{offset}.mp4");
+        let output = fixture.export(&name, offset);
+        let shift = u64::try_from(offset).unwrap();
+        assert_eq!(output.video.len(), 4);
+        assert_eq!(
+            audio_timeline(&output),
+            expected_audio(
+                48_000,
+                &[
+                    (50 + shift, 150, 1),
+                    (200 + shift, 20, 2),
+                    (1_100 + shift, 20, 3),
+                    (2_050 + shift, 150, 4),
+                    (2_200 + shift, 20, 5),
+                    (3_100 + shift, 20, 6),
+                ],
+            )
+        );
+        let reader = mp4::read_mp4(File::open(fixture.root.join(name)).unwrap()).unwrap();
+        let audio = reader
+            .tracks()
+            .values()
+            .find(|track| track.track_type().unwrap() == mp4::TrackType::Audio)
+            .unwrap();
+        assert_eq!(audio.sample_description_count(), 1);
+        let mp4::MediaConfig::AacConfig(config) = audio.media_config_for_description(1).unwrap()
+        else {
+            panic!("export must preserve AAC");
+        };
+        assert_eq!(config.bitrate, 32_000);
+    }
     fixture.assert_originals();
 }
 

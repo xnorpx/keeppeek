@@ -142,6 +142,7 @@ fn maintenance_blocks_export_retry_without_losing_the_existing_job() {
         ..Default::default()
     };
     let job = proto::ExportJob {
+        recorded_audio: None,
         job_id: request.job_id.clone(),
         status: proto::ExportJobStatus::Failed as i32,
         retryable: true,
@@ -151,6 +152,7 @@ fn maintenance_blocks_export_retry_without_losing_the_existing_job() {
     state.export_jobs.lock().unwrap().insert(
         request.job_id.clone(),
         super::super::ExportJobRecord {
+            recording_stream_id: None,
             requester_id: "administrator".to_owned(),
             artifact_id: "failed-attempt".to_owned(),
             request,

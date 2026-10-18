@@ -12,6 +12,12 @@ The in-band WebRTC data-channel contract is defined by [webrtc.proto](webrtc.pro
 [webrtc.md](webrtc.md). The SDP data-channel topology required to establish a session is defined
 in [sdp-offer.md](sdp-offer.md).
 
+The [recorded-audio timing contract](webrtc.md#recorded-audio-timing) defines camera/stream
+inheritance, cursor-only calibration previews, and immutable export timing snapshots. These
+settings do not activate live-audio correction or change source recordings.
+The `keeppeek.recorded-audio.v1` capability gates initial playback overrides and explicit
+unadjusted recovery previews.
+
 ## License
 
 All API definitions and documentation in this directory are licensed under the MIT License. See
