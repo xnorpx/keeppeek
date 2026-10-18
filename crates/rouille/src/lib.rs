@@ -88,6 +88,8 @@ pub const DEFAULT_ENCODE_SET: &percent_encoding::AsciiSet = &percent_encoding::C
     .add(b'{')
     .add(b'}');
 
+pub use tiny_http::ResponseAbortHandle;
+
 pub use crate::assets::extension_to_mime;
 pub use crate::assets::match_assets;
 pub use crate::log::{log, log_custom};
@@ -648,6 +650,8 @@ where
             // Building the `Request` object.
             let tiny_http_request;
             let rouille_request = {
+                let response_abort = request.response_abort_handle();
+                let https = request.secure();
                 let url = request.url().to_owned();
                 let method = request.method().as_str().to_owned();
                 let headers = request
@@ -663,10 +667,11 @@ where
                 )));
 
                 Request {
+                    response_abort,
                     url,
                     method,
                     headers,
-                    https: false,
+                    https,
                     data,
                     remote_addr,
                 }
@@ -748,6 +753,7 @@ pub trait Upgrade {
 /// This can be either a real request (received by the HTTP server) or a mock object created with
 /// one of the `fake_*` constructors.
 pub struct Request {
+    response_abort: Option<ResponseAbortHandle>,
     method: String,
     url: String,
     headers: Vec<(String, String)>,
@@ -769,6 +775,12 @@ impl fmt::Debug for Request {
 }
 
 impl Request {
+    /// Returns a connection abort handle until this response writer closes.
+    /// Fake requests have no underlying connection and return None.
+    pub fn response_abort_handle(&self) -> Option<ResponseAbortHandle> {
+        self.response_abort.clone()
+    }
+
     /// Builds a fake HTTP request to be used during tests.
     ///
     /// The remote address of the client will be `127.0.0.1:12345`. Use `fake_http_from` to
@@ -782,6 +794,7 @@ impl Request {
         let remote_addr = Some("127.0.0.1:12345".parse().unwrap());
 
         Self {
+            response_abort: None,
             url: url.into(),
             method: method.into(),
             https: false,
@@ -806,6 +819,7 @@ impl Request {
         let data = Arc::new(Mutex::new(Some(Box::new(Cursor::new(data)) as Box<_>)));
 
         Self {
+            response_abort: None,
             url: url.into(),
             method: method.into(),
             https: false,
@@ -833,6 +847,7 @@ impl Request {
         let remote_addr = Some("127.0.0.1:12345".parse().unwrap());
 
         Self {
+            response_abort: None,
             url: url.into(),
             method: method.into(),
             https: true,
@@ -857,6 +872,7 @@ impl Request {
         let data = Arc::new(Mutex::new(Some(Box::new(Cursor::new(data)) as Box<_>)));
 
         Self {
+            response_abort: None,
             url: url.into(),
             method: method.into(),
             https: true,
@@ -891,6 +907,7 @@ impl Request {
         // TODO: url-encoded characters in the prefix are not implemented
         assert!(self.url.starts_with(prefix));
         Some(Self {
+            response_abort: self.response_abort.clone(),
             method: self.method.clone(),
             url: self.url[prefix.len()..].to_owned(),
             headers: self.headers.clone(), // TODO: expensive
@@ -1327,3 +1344,6 @@ mod tests {
         assert_eq!(request.do_not_track(), None);
     }
 }
+
+#[cfg(test)]
+mod response_abort_tests;

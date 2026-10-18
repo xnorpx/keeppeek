@@ -7,10 +7,10 @@ use std::io::{BufReader, BufWriter, ErrorKind, Read};
 use std::net::SocketAddr;
 use std::str::FromStr;
 
-use crate::Request;
 use crate::common::{HTTPVersion, Method};
 use crate::util::RefinedTcpStream;
 use crate::util::{SequentialReader, SequentialReaderBuilder, SequentialWriterBuilder};
+use crate::{Request, connection::Connection};
 
 const MAX_REQUEST_LINE_BYTES: usize = 8 * 1024;
 const MAX_HEADER_LINE_BYTES: usize = 8 * 1024;
@@ -37,6 +37,7 @@ pub struct ClientConnection {
     // set to true if we know that the previous request is the last one
     no_more_requests: bool,
     single_request: bool,
+    response_connection: Option<(Connection, std::time::Duration)>,
 
     // true if the connection goes through SSL
     secure: bool,
@@ -68,8 +69,18 @@ impl ClientConnection {
             next_header_source: first_header,
             no_more_requests: false,
             single_request: false,
+            response_connection: None,
             secure,
         }
+    }
+
+    pub(crate) fn with_response_connection(
+        mut self,
+        connection: Connection,
+        timeout: std::time::Duration,
+    ) -> Self {
+        self.response_connection = Some((connection, timeout));
+        self
     }
 
     /// true if the connection is HTTPS
@@ -213,7 +224,13 @@ impl ClientConnection {
             }
         })?;
 
-        // return the request
+        let request = match &self.response_connection {
+            Some((connection, timeout)) => request.with_response_abort(
+                connection.try_clone().map_err(ReadError::ReadIoError)?,
+                *timeout,
+            ),
+            None => request,
+        };
         Ok(request)
     }
 }

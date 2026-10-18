@@ -112,6 +112,7 @@ pub use common::{HTTPVersion, Header, HeaderField, Method, StatusCode};
 pub use connection::{ConfigListenAddr, ListenAddr, Listener};
 pub use request::{ReadWrite, Request};
 pub use response::{Response, ResponseBox};
+pub use response_abort::ResponseAbortHandle;
 pub use test::TestRequest;
 
 mod client;
@@ -119,6 +120,7 @@ mod common;
 mod connection;
 mod request;
 mod response;
+mod response_abort;
 mod ssl;
 mod test;
 mod util;
@@ -327,9 +329,10 @@ impl Server {
                         match sock
                             .set_read_timeout(Some(timeout))
                             .and_then(|()| sock.set_write_timeout(Some(timeout)))
+                            .and_then(|()| sock.try_clone())
                         {
                             Err(error) => Err(error),
-                            Ok(()) => {
+                            Ok(response_connection) => {
                                 use util::RefinedTcpStream;
                                 let (mut read_closable, write_closable) = match ssl {
                                     None => RefinedTcpStream::new(sock),
@@ -351,6 +354,7 @@ impl Server {
                                     );
                                 }
                                 Ok(ClientConnection::new(write_closable, read_closable)
+                                    .with_response_connection(response_connection, timeout)
                                     .single_request(single_request))
                             }
                         }

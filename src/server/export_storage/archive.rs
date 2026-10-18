@@ -106,6 +106,9 @@ pub(in crate::server) fn snapshot(
     let record = ExportJobRecord {
         requester_id: persisted.requester_id,
         artifact_id: persisted.artifact_id,
+        source_identity: persisted.source_identity,
+        owner_key: persisted.owner_key,
+        media_proof: persisted.media_proof,
         request,
         job,
         path: None,

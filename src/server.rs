@@ -100,9 +100,16 @@ mod event_publication;
 mod event_search;
 mod event_subscription;
 mod event_workflow;
+#[cfg(test)]
+mod export_media_proof_tests;
+#[cfg(test)]
+mod export_owner_tests;
+#[cfg(test)]
+mod export_provenance_tests;
 mod export_storage;
 #[cfg(test)]
 mod export_storage_tests;
+mod guest_review;
 mod health_snapshot;
 mod logging;
 mod mqtt_integration;
@@ -112,6 +119,7 @@ pub(crate) mod recording_coverage;
 mod recording_maintenance;
 mod runtime_configuration;
 mod session_lifecycle;
+mod sharing;
 pub(crate) mod state_store;
 #[cfg(test)]
 mod state_store_crash;
@@ -506,6 +514,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::ServerCommand(_)) => "server",
         Some(control_request::Command::HealthCommand(_)) => "health",
         Some(control_request::Command::ExportCommand(_)) => "export",
+        Some(control_request::Command::ShareCommand(_)) => "sharing",
         Some(control_request::Command::EventSearchCommand(_)) => "event_search",
         Some(control_request::Command::EventWorkflowCommand(_)) => "event_workflow",
         Some(control_request::Command::RecordingMaintenanceCommand(_)) => "recording_maintenance",
@@ -632,6 +641,7 @@ fn sensitive_administrator_operation(
             }
             _ => None,
         },
+        Some(control_request::Command::ShareCommand(command)) => sharing::audit_operation(command),
         Some(control_request::Command::PublishEvent(_)) => Some("event_publish"),
         Some(control_request::Command::EventPublicationCommand(command)) => {
             match command.action.as_ref() {
@@ -810,6 +820,9 @@ impl ControlRequestHandler for ServerControlHandler {
                         .map(Some),
                     Some(control_request::Command::ConfigurationCommand(command)) => {
                         self.handle_configuration(session_id, &principal, command)
+                    }
+                    Some(control_request::Command::ShareCommand(command)) => {
+                        sharing::dispatch(&self.state, &principal, command).map(Some)
                     }
                     Some(control_request::Command::EventWorkflowCommand(command)) => {
                         event_workflow::dispatch(&self.state, &principal, command).map(Some)
@@ -1357,6 +1370,7 @@ fn server_capabilities(
         capability_ids.push("keeppeek.mqtt-forwarder.v1".to_owned());
     }
     if state.camera_config_path.is_some() {
+        capability_ids.push(sharing::CAPABILITY_ID.to_owned());
         capability_ids.push(peek_layouts::CAPABILITY_ID.to_owned());
         capability_ids.push(CONFIGURATION_CAPABILITY_ID.to_owned());
         capability_ids.push("keeppeek.recording.pre-roll.v1".to_owned());
@@ -3448,7 +3462,11 @@ impl ServerControlHandler {
         let requester_id = principal.id();
         match command.action {
             Some(proto::export_command::Action::Create(request)) => {
-                let job = create_export_job(&self.state, &requester_id, request)?;
+                let job = export_storage::provenance::create_for_principal(
+                    &self.state,
+                    principal,
+                    request,
+                )?;
                 Ok((control_ok::Result::ExportJob(job), Vec::new()))
             }
             Some(proto::export_command::Action::List(_)) => {
@@ -3467,7 +3485,11 @@ impl ServerControlHandler {
                 Ok((control_ok::Result::ExportJob(job), Vec::new()))
             }
             Some(proto::export_command::Action::Retry(request)) => {
-                let job = retry_export_job(&self.state, &requester_id, &request.job_id)?;
+                let job = export_storage::provenance::retry_for_principal(
+                    &self.state,
+                    principal,
+                    &request.job_id,
+                )?;
                 Ok((control_ok::Result::ExportJob(job), Vec::new()))
             }
             Some(proto::export_command::Action::Download(request)) => {
@@ -3572,248 +3594,13 @@ struct StoredMediaBatchRequest<'a> {
     generation: u64,
 }
 
+#[cfg(test)]
 fn create_export_job(
     state: &ServerState,
     requester_id: &str,
     request: proto::CreateExportJob,
 ) -> Result<proto::ExportJob, ControlCommandError> {
-    if let Some(error) = &state.export_history_error {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            format!("export history is unavailable: {error}"),
-        ));
-    }
-    if state.maintenance_active.load(Ordering::Acquire) {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            409,
-            "recording maintenance is running",
-        ));
-    }
-    validate_export_job_id(&request.job_id)?;
-    export_storage::archive::ensure_new_job_id(state, &request.job_id)?;
-    let camera = state.camera(&request.source_id).ok_or_else(|| {
-        ControlCommandError::new(
-            proto::ErrorCode::NotFound,
-            404,
-            "export source was not found",
-        )
-    })?;
-    if state
-        .privacy
-        .decision(&camera.info.id, chrono::Utc::now())
-        .map_err(|_| {
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                "camera privacy policy could not be evaluated",
-            )
-        })?
-        .0
-    {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            409,
-            "camera privacy is active",
-        ));
-    }
-    if !matches!(request.stream_id.as_str(), "main" | "sub")
-        || !camera
-            .info
-            .profiles
-            .iter()
-            .any(|profile| profile.stream == request.stream_id)
-    {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::NotFound,
-            404,
-            "export stream was not found",
-        ));
-    }
-    let start_ms = required_timestamp_ms(request.start_time.as_ref(), "export start time")?;
-    let end_ms = required_timestamp_ms(request.end_time.as_ref(), "export end time")?;
-    if end_ms <= start_ms {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "export end time must follow its start time",
-        ));
-    }
-    if end_ms.saturating_sub(start_ms)
-        > i64::try_from(MAX_EXPORT_DURATION.as_millis()).unwrap_or(i64::MAX)
-    {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "export range exceeds 2 minutes",
-        ));
-    }
-    let event_seed = export_event_seed(
-        state,
-        request.event_seed.as_ref(),
-        &request.source_id,
-        start_ms,
-        end_ms,
-    )?;
-    {
-        let jobs = state
-            .export_jobs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(existing) = jobs.values().find(|record| {
-            record.requester_id == requester_id
-                && record.job.status == proto::ExportJobStatus::Running as i32
-                && export_requests_match_output(&record.request, &request)
-        }) {
-            return Ok(existing.job.clone());
-        }
-        if jobs.contains_key(&request.job_id) {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "export job ID already exists",
-            ));
-        }
-    }
-    let recording_stream_id = recording_stream_id(&camera, &request.stream_id);
-    let catalog = state.catalog.as_ref().ok_or_else(|| {
-        ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            "recording catalog is unavailable",
-        )
-    })?;
-    let fragments = catalog
-        .media_fragments_in_range(&recording_stream_id, start_ms, end_ms)
-        .map_err(|error| stored_catalog_error("query export fragments", error))?;
-    let missing_ranges = export_missing_ranges(&fragments, start_ms, end_ms);
-    let has_missing_ranges = !missing_ranges.is_empty();
-    let estimated_bytes = export_estimated_bytes(&fragments);
-    let aligned_start_ms = fragments.first().map(|fragment| fragment.start_ms);
-    let file_name = export_file_name(
-        camera
-            .info
-            .name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .unwrap_or(&camera.recording_label),
-        start_ms,
-        end_ms,
-    );
-    let cancel = Arc::new(AtomicBool::new(false));
-    let artifact_id = Uuid::new_v4().simple().to_string();
-    let status = if request.burn_in_timestamp {
-        proto::ExportJobStatus::Failed
-    } else if fragments.is_empty() || (!missing_ranges.is_empty() && !request.allow_partial) {
-        proto::ExportJobStatus::Partial
-    } else {
-        proto::ExportJobStatus::Running
-    };
-    let error = request
-        .burn_in_timestamp
-        .then(|| "Timestamp burn-in requires a configured re-encoding worker".to_owned());
-    let job = proto::ExportJob {
-        job_id: request.job_id.clone(),
-        source_id: request.source_id.clone(),
-        stream_id: request.stream_id.clone(),
-        requested_start_time: Some(millis_timestamp(start_ms)),
-        requested_end_time: Some(millis_timestamp(end_ms)),
-        aligned_start_time: aligned_start_ms.map(millis_timestamp),
-        status: status as i32,
-        progress_per_mille: if status == proto::ExportJobStatus::Running {
-            100
-        } else {
-            0
-        },
-        bytes_written: 0,
-        estimated_bytes: Some(estimated_bytes),
-        file_name: None,
-        sha256: None,
-        expires_at: None,
-        missing_ranges: missing_ranges
-            .iter()
-            .map(|(start, end)| proto::ExportMissingRange {
-                start_time: Some(millis_timestamp(*start)),
-                end_time: Some(millis_timestamp(*end)),
-            })
-            .collect(),
-        error,
-        retryable: false,
-        burn_in_timestamp: request.burn_in_timestamp,
-        event_seed,
-    };
-    let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
-    let mut jobs = state
-        .export_jobs
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if state.maintenance_active.load(Ordering::Acquire) {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            409,
-            "recording maintenance is running",
-        ));
-    }
-    if let Some(existing) = jobs.values().find(|record| {
-        record.requester_id == requester_id
-            && record.job.status == proto::ExportJobStatus::Running as i32
-            && export_requests_match_normalized(record, &request, has_missing_ranges)
-    }) {
-        return Ok(existing.job.clone());
-    }
-    if jobs.contains_key(&request.job_id) {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            409,
-            "export job ID already exists",
-        ));
-    }
-    if jobs.len() >= MAX_EXPORT_HISTORY_JOBS {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            429,
-            "export history is full; wait for active jobs or retention cleanup",
-        ));
-    }
-    jobs.insert(
-        request.job_id.clone(),
-        ExportJobRecord {
-            requester_id: requester_id.to_owned(),
-            artifact_id: artifact_id.clone(),
-            request: request.clone(),
-            job: job.clone(),
-            path: None,
-            cancel: cancel.clone(),
-            created_at_ms: now_ms,
-            started_at_ms: (status == proto::ExportJobStatus::Running).then_some(now_ms),
-            updated_at_ms: now_ms,
-            completed_at_ms: (status != proto::ExportJobStatus::Running).then_some(now_ms),
-            downloaded_at_ms: None,
-        },
-    );
-    if let Err(error) = export_storage::history::persist(state, &jobs) {
-        jobs.remove(&request.job_id);
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            format!("unable to persist export job: {error}"),
-        ));
-    }
-    drop(jobs);
-    if status == proto::ExportJobStatus::Running {
-        spawn_export_worker(
-            state.clone(),
-            request,
-            fragments,
-            cancel,
-            artifact_id,
-            end_ms,
-            file_name,
-        );
-    }
-    Ok(job)
+    export_storage::provenance::create(state, requester_id, request)
 }
 
 fn export_event_seed(
@@ -4120,54 +3907,102 @@ fn finish_export_worker(
         return;
     }
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
-    match result {
+    let proof = match result {
         Ok((artifact, checksum)) if !cancel.load(Ordering::Acquire) => {
-            let expires_ms = unix_time_ms()
-                .saturating_add(u64::try_from(EXPORT_JOB_EXPIRY.as_millis()).unwrap_or(u64::MAX));
-            record.job.status = proto::ExportJobStatus::Ready as i32;
-            record.job.progress_per_mille = 1_000;
-            record.job.bytes_written = artifact.bytes;
-            record.job.aligned_start_time = Some(millis_timestamp(artifact.aligned_start_ms));
-            record.job.file_name = Some(target.file_name.to_owned());
-            record.job.sha256 = Some(checksum);
-            record.job.expires_at = Some(millis_timestamp(
-                i64::try_from(expires_ms).unwrap_or(i64::MAX),
-            ));
-            record.job.error = None;
-            record.job.retryable = false;
-            record.path = Some(target.path.to_path_buf());
-            record.updated_at_ms = now_ms;
-            record.completed_at_ms = Some(now_ms);
+            complete_export_record(record, target, artifact, checksum, now_ms)
         }
         Ok(_) => {
-            record.job.status = proto::ExportJobStatus::Cancelled as i32;
-            record.job.error = Some("Export was cancelled".to_owned());
-            record.job.retryable = true;
-            record.updated_at_ms = now_ms;
-            record.completed_at_ms = Some(now_ms);
+            unsuccessful_export_record(record, true, "Export was cancelled".into(), now_ms);
+            None
         }
         Err(error) => {
-            let cancelled = cancel.load(Ordering::Acquire);
-            record.job.status = if cancelled {
-                proto::ExportJobStatus::Cancelled as i32
-            } else {
-                proto::ExportJobStatus::Failed as i32
-            };
-            record.job.error = Some(if cancelled {
-                "Export was cancelled".to_owned()
-            } else {
-                error.to_string()
-            });
-            record.job.retryable = true;
-            record.updated_at_ms = now_ms;
-            record.completed_at_ms = Some(now_ms);
+            unsuccessful_export_record(
+                record,
+                cancel.load(Ordering::Acquire),
+                error.to_string(),
+                now_ms,
+            );
+            None
         }
-    }
+    };
     let keep_artifact = record.job.status == proto::ExportJobStatus::Ready as i32;
-    persist_export_jobs_logged(state, &jobs, "completion");
+    persist_export_completion(state, &mut jobs, job_id, proof);
     drop(jobs);
     if !keep_artifact {
         let _ = cleanup_export_attempt_artifacts(state, job_id, target.artifact_id);
+    }
+}
+
+fn complete_export_record(
+    record: &mut ExportJobRecord,
+    target: ExportArtifactTarget<'_>,
+    artifact: crate::storage::playback::ExportArtifact,
+    checksum: String,
+    now_ms: i64,
+) -> Option<ExportMediaProof> {
+    let expires_ms = unix_time_ms()
+        .saturating_add(u64::try_from(EXPORT_JOB_EXPIRY.as_millis()).unwrap_or(u64::MAX));
+    record.job.status = proto::ExportJobStatus::Ready as i32;
+    record.job.progress_per_mille = 1_000;
+    record.job.bytes_written = artifact.bytes;
+    record.job.aligned_start_time = Some(millis_timestamp(artifact.aligned_start_ms));
+    record.job.file_name = Some(target.file_name.to_owned());
+    record.job.sha256 = Some(checksum);
+    record.job.expires_at = Some(millis_timestamp(
+        i64::try_from(expires_ms).unwrap_or(i64::MAX),
+    ));
+    record.job.error = None;
+    record.job.retryable = false;
+    record.path = Some(target.path.to_path_buf());
+    record.updated_at_ms = now_ms;
+    record.completed_at_ms = Some(now_ms);
+    record.media_proof = None;
+    let proof = ExportMediaProof {
+        version: 1,
+        artifact_id: record.artifact_id.clone(),
+        sha256: record.job.sha256.clone()?,
+        bytes: artifact.bytes,
+        bounds: artifact.media_bounds?,
+    };
+    proof.matches(record).then_some(proof)
+}
+
+fn unsuccessful_export_record(
+    record: &mut ExportJobRecord,
+    cancelled: bool,
+    error: String,
+    now: i64,
+) {
+    record.job.status = if cancelled {
+        proto::ExportJobStatus::Cancelled
+    } else {
+        proto::ExportJobStatus::Failed
+    } as i32;
+    record.job.error = Some(if cancelled {
+        "Export was cancelled".into()
+    } else {
+        error
+    });
+    record.job.retryable = true;
+    record.updated_at_ms = now;
+    record.completed_at_ms = Some(now);
+    record.media_proof = None;
+}
+
+fn persist_export_completion(
+    state: &ServerState,
+    jobs: &mut HashMap<String, ExportJobRecord>,
+    id: &str,
+    proof: Option<ExportMediaProof>,
+) {
+    let persisted_history =
+        state.storage_config.metadata.is_some() || state.export_history_path.is_some();
+    let record = jobs.get_mut(id).expect("completed export remains locked");
+    record.media_proof = proof.filter(|_| persisted_history);
+    if let Err(error) = export_storage::history::persist(state, jobs) {
+        // The caller holds the job lock until failed proof publication is withdrawn.
+        jobs.get_mut(id).unwrap().media_proof = None;
+        tracing::warn!(%error, "unable to persist export completion; guest proof withheld");
     }
 }
 
@@ -4285,76 +4120,13 @@ fn cancel_export_job(
     Ok(job)
 }
 
+#[cfg(test)]
 fn retry_export_job(
     state: &ServerState,
     requester_id: &str,
     job_id: &str,
 ) -> Result<proto::ExportJob, ControlCommandError> {
-    let _configuration = state.config_update.try_lock().map_err(|_| {
-        ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            409,
-            "storage coordination is busy",
-        )
-    })?;
-    if state.maintenance_active.load(Ordering::Acquire) {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            409,
-            "recording maintenance is running",
-        ));
-    }
-    export_storage::archive::ensure_new_job_id(state, job_id)?;
-    let (request, artifact_id) = {
-        let mut jobs = state
-            .export_jobs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let record = jobs
-            .get(job_id)
-            .filter(|record| record.requester_id == requester_id)
-            .ok_or_else(|| {
-                ControlCommandError::new(
-                    proto::ErrorCode::NotFound,
-                    404,
-                    "export job was not found",
-                )
-            })?;
-        if !matches!(
-            proto::ExportJobStatus::try_from(record.job.status),
-            Ok(proto::ExportJobStatus::Failed | proto::ExportJobStatus::Cancelled)
-        ) || !record.job.retryable
-        {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "export job is not retryable",
-            ));
-        }
-        record.cancel.store(true, Ordering::Release);
-        let request = record.request.clone();
-        let artifact_id = record.artifact_id.clone();
-        cleanup_export_attempt_artifacts(state, job_id, &artifact_id).map_err(|error| {
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                format!("export cleanup could not be admitted: {error}"),
-            )
-        })?;
-        let previous = record.clone();
-        jobs.remove(job_id);
-        if let Err(error) = export_storage::history::persist(state, &jobs) {
-            jobs.insert(job_id.to_owned(), previous);
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                format!("unable to persist export retry: {error}"),
-            ));
-        }
-        (request, artifact_id)
-    };
-    let _ = cleanup_export_attempt_artifacts(state, job_id, &artifact_id);
-    create_export_job(state, requester_id, request)
+    export_storage::provenance::retry(state, requester_id, job_id)
 }
 
 fn download_export(
@@ -8725,6 +8497,17 @@ impl ApiPrincipal {
         }
     }
 
+    const fn sharing_issuer(&self) -> crate::shares::IssuerBinding {
+        match self.identity {
+            ApiPrincipalIdentity::Local(_) => crate::shares::IssuerBinding::LocalAdministrator,
+            ApiPrincipalIdentity::Credential { id, revision } => {
+                crate::shares::IssuerBinding::Credential { id, revision }
+            }
+            ApiPrincipalIdentity::External { id, revision, .. } => {
+                crate::shares::IssuerBinding::ExternalIdentity { id, revision }
+            }
+        }
+    }
     fn id(&self) -> String {
         match self.identity {
             ApiPrincipalIdentity::Local(_) => "local-administrator".to_owned(),
@@ -8890,6 +8673,11 @@ struct StoredMediaCursor {
 struct ExportJobRecord {
     requester_id: String,
     artifact_id: String,
+    /// The configured camera incarnation when this export attempt was created.
+    /// This does not prove the hardware origin of all retained fragments.
+    source_identity: Option<Uuid>,
+    owner_key: Option<String>,
+    media_proof: Option<ExportMediaProof>,
     request: proto::CreateExportJob,
     job: proto::ExportJob,
     path: Option<PathBuf>,
@@ -8899,6 +8687,47 @@ struct ExportJobRecord {
     updated_at_ms: i64,
     completed_at_ms: Option<i64>,
     downloaded_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportMediaProof {
+    version: u32,
+    artifact_id: String,
+    sha256: String,
+    bytes: u64,
+    bounds: crate::storage::playback::ExportMediaBounds,
+}
+
+impl ExportMediaProof {
+    fn matches(&self, record: &ExportJobRecord) -> bool {
+        self.version == 1
+            && Uuid::parse_str(&self.artifact_id).is_ok_and(|id| !id.is_nil())
+            && self.artifact_id == record.artifact_id
+            && self.sha256.len() == 64
+            && self
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+            && record.job.sha256.as_deref() == Some(self.sha256.as_str())
+            && self.bytes > 0
+            && self.bytes == record.job.bytes_written
+            && self.bounds.start_ms < self.bounds.end_ms
+            && record.job.status == proto::ExportJobStatus::Ready as i32
+    }
+}
+
+impl ExportJobRecord {
+    fn verified_media_bounds(&self) -> Option<crate::storage::playback::ExportMediaBounds> {
+        let proof = self
+            .media_proof
+            .as_ref()
+            .filter(|proof| proof.matches(self))?;
+        let duration = proof.bounds.end_ms.checked_sub(proof.bounds.start_ms)?;
+        (duration <= i64::try_from(MAX_EXPORT_DURATION.as_millis()).ok()?
+            && proof.bytes <= MAX_EXPORT_DOWNLOAD_BYTES)
+            .then_some(proof.bounds)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -8911,6 +8740,12 @@ struct PersistedExportHistory {
 struct PersistedExportJobRecord {
     requester_id: String,
     artifact_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_identity: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    media_proof: Option<ExportMediaProof>,
     request: String,
     job: String,
     created_at_ms: i64,
@@ -8925,6 +8760,9 @@ impl PersistedExportJobRecord {
         Self {
             requester_id: record.requester_id.clone(),
             artifact_id: record.artifact_id.clone(),
+            source_identity: record.source_identity,
+            owner_key: record.owner_key.clone(),
+            media_proof: record.media_proof.clone(),
             request: URL_SAFE_NO_PAD.encode(record.request.encode_to_vec()),
             job: URL_SAFE_NO_PAD.encode(record.job.encode_to_vec()),
             created_at_ms: record.created_at_ms,
@@ -8936,6 +8774,11 @@ impl PersistedExportJobRecord {
     }
 
     fn messages(&self) -> anyhow::Result<(proto::CreateExportJob, proto::ExportJob)> {
+        anyhow::ensure!(
+            self.source_identity
+                .is_none_or(|identity| !identity.is_nil()),
+            "persisted export source identity is invalid"
+        );
         let request =
             proto::CreateExportJob::decode(URL_SAFE_NO_PAD.decode(&self.request)?.as_slice())?;
         let job = proto::ExportJob::decode(URL_SAFE_NO_PAD.decode(&self.job)?.as_slice())?;
@@ -8971,6 +8814,9 @@ impl PersistedExportJobRecord {
         let mut record = ExportJobRecord {
             requester_id: self.requester_id,
             artifact_id: self.artifact_id,
+            source_identity: self.source_identity,
+            owner_key: self.owner_key,
+            media_proof: self.media_proof,
             request,
             job,
             path: None,
@@ -8982,6 +8828,13 @@ impl PersistedExportJobRecord {
             downloaded_at_ms: self.downloaded_at_ms,
         };
         export_storage::history::recover(&mut record, export_root, catalog, now_ms)?;
+        if record
+            .media_proof
+            .as_ref()
+            .is_some_and(|proof| !proof.matches(&record))
+        {
+            record.media_proof = None;
+        }
         Ok(record)
     }
 }
@@ -9110,6 +8963,8 @@ pub struct ServerState {
     access_key: Arc<RwLock<AccessKey>>,
     access_manager: AccessManager,
     authentication: Arc<Mutex<authentication::Registry>>,
+    sharing: Arc<sharing::Runtime>,
+    guest_review: Arc<guest_review::Registry>,
     oidc_cache: Arc<Mutex<crate::access::oidc::Cache>>,
     oidc_issuer_budgets: crate::access::oidc::IssuerBudgets,
     privacy: Arc<PrivacyRegistry>,
@@ -9180,6 +9035,10 @@ impl ServerState {
         &self,
         root: &toml::Table,
     ) -> anyhow::Result<()> {
+        if let Some(path) = self.camera_config_path.as_deref() {
+            sharing::refresh_sources(self, path)
+                .map_err(|_| anyhow::anyhow!("sharing source refresh failed"))?;
+        }
         let privacy: crate::config::PrivacyConfig = root
             .get("privacy")
             .cloned()
@@ -9281,6 +9140,8 @@ impl ServerState {
                 config,
                 initial_session_policy(config),
             ))),
+            sharing: Arc::new(sharing::Runtime::new(config)),
+            guest_review: Arc::new(guest_review::Registry::default()),
             oidc_cache: Arc::new(Mutex::new(crate::access::oidc::Cache::default())),
             oidc_issuer_budgets: crate::access::oidc::IssuerBudgets::default(),
             privacy,
@@ -9351,6 +9212,12 @@ impl ServerState {
             notifications: None,
             event_forwarder: None,
             started_at: Instant::now(),
+        }
+    }
+
+    pub(crate) fn open_guest_store(&self) {
+        if self.sharing.open(&self.storage_config).is_err() {
+            tracing::warn!("guest review store unavailable; guest access stays disabled");
         }
     }
 
@@ -10478,6 +10345,9 @@ fn serve_with_state_on_listener_inner(
         handle_request(request, &router_tx, &state)
     })
     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let guest_watchdog = session_reaper_state
+        .guest_review
+        .start_deadline_watchdog(shutdown.clone())?;
     let addr = server.server_addr();
     tracing::info!(%addr, port = addr.port(), "KeepPeek is up and listening on http://{addr}");
     if let Some(ready) = ready {
@@ -10488,6 +10358,7 @@ fn serve_with_state_on_listener_inner(
         session_reaper_state.enforce_privacy_transitions();
         expire_api_sessions(&session_reaper_state);
         expire_event_publications(&session_reaper_state);
+        guest_review::tick(&session_reaper_state, &guest_watchdog);
         expire_state_store_watches(&session_reaper_state);
         if let Err(error) = session_reaper_state.access_manager.flush_audit(false) {
             tracing::warn!(%error, "unable to flush access audit events");
@@ -10497,6 +10368,7 @@ fn serve_with_state_on_listener_inner(
     if let Err(error) = session_reaper_state.access_manager.flush_audit(true) {
         tracing::warn!(%error, "unable to flush access audit events during shutdown");
     }
+    guest_review::stop(&session_reaper_state, guest_watchdog);
     server.poll_timeout(Duration::ZERO);
     if let Some(logging) = logging {
         logging.close_streams();
@@ -10638,6 +10510,9 @@ fn handle_request(
     state: &ServerState,
 ) -> Response {
     let request_path = request.url();
+    if let Some(response) = guest_review::handle(request, state) {
+        return response;
+    }
     if let Some(response) = authentication::handle(request, state) {
         return response;
     }
@@ -13407,6 +13282,7 @@ fn save_camera_settings(
                 format!("unable to save camera configuration: {error}"),
             )
         })?;
+    sharing::refresh_sources(state, config_path)?;
     config.name = Some(persisted_name);
     let started_config = start_runtime_camera(state, &config, !is_new_camera, true);
     let dynamically_started = started_config.is_some();
@@ -13565,6 +13441,7 @@ fn refresh_runtime_profile_camera_ids(
     config_path: &Path,
 ) -> anyhow::Result<BTreeMap<String, bool>> {
     let configuration = config::load_config(config_path)?;
+    sharing::update_sources(state, &configuration)?;
     let identities = configuration.camera_profile_identities()?;
     let profile_camera_ids = crate::keeppeek::CameraProfileIds::new(identities.clone())?;
     let next_privacy = profile_camera_ids.privacy_overrides(&configuration.runtime_profiles);
@@ -13643,6 +13520,7 @@ fn delete_camera_settings(
     }
     match config::remove_camera(config_path, ip) {
         Ok(()) => {
+            sharing::refresh_sources(state, config_path)?;
             reconcile_removed_camera(state, config_path, ip)?;
             camera_configuration_revision(state)
         }
@@ -21083,6 +20961,9 @@ mod tests {
             ExportJobRecord {
                 requester_id: "owner".to_owned(),
                 artifact_id: "active-attempt".to_owned(),
+                source_identity: None,
+                owner_key: None,
+                media_proof: None,
                 request: request.clone(),
                 job: proto::ExportJob {
                     job_id: request.job_id.clone(),
@@ -21199,6 +21080,9 @@ mod tests {
             ExportJobRecord {
                 requester_id: "owner".to_owned(),
                 artifact_id: "private-ready-artifact".to_owned(),
+                source_identity: None,
+                owner_key: None,
+                media_proof: None,
                 request: request.clone(),
                 job: proto::ExportJob {
                     job_id: request.job_id.clone(),
@@ -21267,6 +21151,9 @@ mod tests {
                 ExportJobRecord {
                     requester_id: "owner".to_owned(),
                     artifact_id: artifact_id.clone(),
+                    source_identity: None,
+                    owner_key: None,
+                    media_proof: None,
                     request: request.clone(),
                     job: proto::ExportJob {
                         job_id: job_id.to_owned(),
@@ -21500,6 +21387,9 @@ mod tests {
             ExportJobRecord {
                 requester_id: "owner".to_owned(),
                 artifact_id: artifact_id.to_owned(),
+                source_identity: None,
+                owner_key: None,
+                media_proof: None,
                 request: request.clone(),
                 job: proto::ExportJob {
                     job_id: job_id.to_owned(),
@@ -21609,6 +21499,9 @@ mod tests {
             |request: proto::CreateExportJob, job: proto::ExportJob, path| ExportJobRecord {
                 requester_id: "local-administrator".to_owned(),
                 artifact_id: format!("{}-attempt", job.job_id),
+                source_identity: None,
+                owner_key: None,
+                media_proof: None,
                 request,
                 job,
                 path,

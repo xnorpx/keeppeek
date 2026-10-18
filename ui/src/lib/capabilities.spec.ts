@@ -18,6 +18,7 @@ describe('server capability contract', () => {
 			'keeppeek.configuration.v1',
 			'keeppeek.runtime-config.v1',
 			'keeppeek.media-export.v1',
+			'keeppeek.guest-review.v1',
 			'stored-media-keyframe-preview.v1',
 			'keeppeek.identity.v1',
 			'keeppeek.camera-access.v1',

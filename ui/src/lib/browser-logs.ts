@@ -40,12 +40,12 @@ export class BrowserLogStore {
 			sequence: this.nextSequence,
 			timestamp_ms: Date.now(),
 			level,
-			target,
+			target: redactText(target),
 			message: redactText(formatValues(values)).slice(0, MAX_VALUE_CHARS),
 			fields: redactValue(details.fields ?? {}) as Record<string, unknown>,
 			source: details.source ?? 'console',
 			...(details.stack ? { stack: redactText(details.stack).slice(0, MAX_VALUE_CHARS) } : {}),
-			...(details.file ? { file: details.file } : {}),
+			...(details.file ? { file: redactText(details.file) } : {}),
 			...(details.line !== undefined ? { line: details.line } : {})
 		};
 		this.nextSequence += 1;
@@ -110,10 +110,10 @@ export function installConsoleCapture(store: BrowserLogStore, target: Console): 
 	let recording = false;
 	const originals = new Map<ConsoleMethod, (...values: unknown[]) => void>();
 	for (const method of consoleMethods) {
-		const original = target[method].bind(target) as (...values: unknown[]) => void;
+		const original = target[method] as (...values: unknown[]) => void;
 		originals.set(method, original);
 		target[method] = ((...values: unknown[]) => {
-			original(...values);
+			Reflect.apply(original, target, values);
 			if (recording) return;
 			recording = true;
 			try {
@@ -137,13 +137,28 @@ export function installConsoleCapture(store: BrowserLogStore, target: Console): 
 
 export const browserLogStore = new BrowserLogStore();
 
-let initialized = false;
+let loggingOwners = 0;
+let stopLogging: (() => void) | undefined;
 
-export function initializeBrowserLogging(): void {
-	if (initialized || typeof window === 'undefined') return;
-	initialized = true;
-	installConsoleCapture(browserLogStore, window.console);
-	window.addEventListener('error', (event) => {
+export function initializeBrowserLogging(): () => void {
+	if (typeof window === 'undefined') return () => {};
+	if (loggingOwners === 0) stopLogging = startBrowserLogging(window);
+	loggingOwners += 1;
+	let active = true;
+	return () => {
+		if (!active) return;
+		active = false;
+		loggingOwners -= 1;
+		if (loggingOwners === 0) {
+			stopLogging?.();
+			stopLogging = undefined;
+		}
+	};
+}
+
+function startBrowserLogging(target: Window & Pick<typeof globalThis, 'console'>): () => void {
+	const closeConsole = installConsoleCapture(browserLogStore, target.console);
+	const onError = (event: ErrorEvent) => {
 		browserLogStore.append('error', 'browser.window.error', [event.message], {
 			source: 'window-error',
 			stack: event.error instanceof Error ? event.error.stack : undefined,
@@ -151,14 +166,21 @@ export function initializeBrowserLogging(): void {
 			line: event.lineno || undefined,
 			fields: { column: event.colno || undefined }
 		});
-	});
-	window.addEventListener('unhandledrejection', (event) => {
+	};
+	const onRejection = (event: PromiseRejectionEvent) => {
 		const reason = event.reason;
 		browserLogStore.append('error', 'browser.promise.unhandled', [reason], {
 			source: 'unhandled-rejection',
 			stack: reason instanceof Error ? reason.stack : undefined
 		});
-	});
+	};
+	target.addEventListener('error', onError);
+	target.addEventListener('unhandledrejection', onRejection);
+	return () => {
+		target.removeEventListener('error', onError);
+		target.removeEventListener('unhandledrejection', onRejection);
+		closeConsole();
+	};
 }
 
 function browserSessionStorage(): Storage | null {
@@ -225,8 +247,9 @@ function redactValue(value: unknown, key = '', seen = new WeakSet<object>()): un
 function redactText(value: string): string {
 	return value
 		.replace(/([a-z][a-z0-9+.-]*:\/\/)[^@\s/]+@/gi, '$1[REDACTED]@')
+		.replace(/(\/share#)[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, '$1[REDACTED]')
 		.replace(
-			/\b(password|passwd|secret|token|authorization|api[_-]?key)\s*=\s*([^\s,;&]+)/gi,
+			/\b(password|passwd|secret|token|authorization|api[_-]?key|cookie)\s*[:=]\s*(?:Bearer\s+)?("[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
 			'$1=[REDACTED]'
 		);
 }

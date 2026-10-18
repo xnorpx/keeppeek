@@ -6,27 +6,67 @@
 		<title>KeepPeek</title>
 		<link rel="icon" href="%sveltekit.assets%/favicon.png" />
 		<script>
-			try {
-				const stored = localStorage.getItem('keeppeek-theme');
-				const preference = stored === 'light' || stored === 'system' ? stored : 'dark';
-				const theme =
-					preference === 'system'
-						? matchMedia('(prefers-color-scheme: dark)').matches
-							? 'dark'
-							: 'light'
-						: preference;
-				document.documentElement.classList.toggle('dark', theme === 'dark');
-				document.documentElement.dataset.theme = theme;
-				document.documentElement.dataset.themePreference = preference;
-			} catch {
-				document.documentElement.classList.add('dark');
-				document.documentElement.dataset.theme = 'dark';
-				document.documentElement.dataset.themePreference = 'dark';
+			{
+				if (window.location.pathname === '/share') {
+					const publishHandoff = () => {
+						const hasFragment = window.location.href.includes('#');
+						const fragment = window.location.hash;
+						if (hasFragment)
+							history.replaceState(
+								history.state,
+								'',
+								window.location.pathname + window.location.search
+							);
+						let handoff = !hasFragment
+							? { kind: 'none' }
+							: /^#[A-Za-z0-9_-]{43}$/.test(fragment)
+								? { kind: 'token', token: fragment.slice(1) }
+								: { kind: 'invalid' };
+						Object.defineProperty(window, '__keeppeekTakeGuestToken', {
+							configurable: true,
+							enumerable: false,
+							writable: false,
+							value: () => {
+								const value = handoff;
+								handoff = { kind: 'invalid' };
+								return value;
+							}
+						});
+					};
+					publishHandoff();
+					window.addEventListener('hashchange', () => {
+						if (window.location.pathname !== '/share' || !window.location.href.includes('#'))
+							return;
+						publishHandoff();
+						window.dispatchEvent(new Event('keeppeek-guest-handoff'));
+					});
+					document.documentElement.classList.add('dark');
+					document.documentElement.dataset.theme = 'dark';
+					document.documentElement.dataset.themePreference = 'dark';
+				} else {
+					try {
+						const stored = localStorage.getItem('keeppeek-theme');
+						const preference = stored === 'light' || stored === 'system' ? stored : 'dark';
+						const theme =
+							preference === 'system'
+								? matchMedia('(prefers-color-scheme: dark)').matches
+									? 'dark'
+									: 'light'
+								: preference;
+						document.documentElement.classList.toggle('dark', theme === 'dark');
+						document.documentElement.dataset.theme = theme;
+						document.documentElement.dataset.themePreference = preference;
+					} catch {
+						document.documentElement.classList.add('dark');
+						document.documentElement.dataset.theme = 'dark';
+						document.documentElement.dataset.themePreference = 'dark';
+					}
+				}
 			}
 		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
-		<div style="display: contents">%sveltekit.body%</div>
+		<div class="contents">%sveltekit.body%</div>
 	</body>
 </html>

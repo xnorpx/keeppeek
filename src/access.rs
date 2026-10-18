@@ -758,6 +758,15 @@ impl AccessManager {
         Ok(authenticated)
     }
 
+    pub(crate) fn credential_role(&self, id: Uuid, revision: u64, now: i64) -> Option<AccessRole> {
+        let state = self.state.lock().ok()?;
+        state
+            .catalog
+            .credentials
+            .iter()
+            .find(|credential| credential.id == id && credential.is_active(revision, now))
+            .map(|credential| credential.role)
+    }
     pub(crate) fn credential_is_active(&self, id: Uuid, revision: u64, now: i64) -> bool {
         let state = self
             .state

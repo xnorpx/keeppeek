@@ -4,6 +4,7 @@
 	import { capabilityActions } from '$lib/capability-actions';
 	import { useCapabilityState } from '$lib/capability-context';
 	import CapabilityGate from '$lib/components/CapabilityGate.svelte';
+	import GuestShareExportButton from '$lib/components/GuestShareExportButton.svelte';
 	import { useControlClient } from '$lib/control-context';
 	import type { MediaExportJob } from '$lib/control-client';
 	import {
@@ -614,6 +615,9 @@
 								{downloading ? 'Verifying download' : 'Download'}
 							</button>
 						</CapabilityGate>
+						{#if capabilities.supports(capabilityActions.createGuestLink.capability) && !paperFrame}
+							<GuestShareExportButton controller={controlClient} exportJobId={job.id} />
+						{/if}
 						<p
 							class="text-text-muted {jobPresentation
 								? 'text-sm leading-[18px]'
