@@ -153,6 +153,11 @@ pub(super) enum Request {
     },
     Snapshots(BTreeSet<Key>),
     Export(String),
+    ArchiveExport {
+        job_id: String,
+        artifact_id: String,
+        expected: super::archive_playback::ArchiveRead,
+    },
     Image {
         event: String,
         attachment: String,
@@ -166,6 +171,7 @@ pub(super) enum Reply {
     Snapshots(LeaseSet),
     Image(Option<(super::locations::Location, LeaseSet)>),
     Export(Option<(super::locations::Location, LeaseSet)>),
+    ArchiveExport(super::archive_playback::ArchiveRead, LeaseSet),
 }
 
 impl RecordingCatalogHandle {
@@ -180,6 +186,21 @@ impl RecordingCatalogHandle {
         match self.read_lease(Request::Export(id.into()))? {
             Reply::Export(export) => Ok(export),
             _ => anyhow::bail!("unexpected export reader reply"),
+        }
+    }
+
+    pub(crate) fn leased_archive_export(
+        &self,
+        job: &super::archive::Job,
+    ) -> anyhow::Result<(super::archive_playback::ArchiveRead, LeaseSet)> {
+        let expected = super::archive_playback::ArchiveRead::from_ready_export(job)?;
+        match self.read_lease(Request::ArchiveExport {
+            job_id: job.id.clone(),
+            artifact_id: job.recording_id.clone(),
+            expected,
+        })? {
+            Reply::ArchiveExport(archive, lease) => Ok((archive, lease)),
+            _ => anyhow::bail!("unexpected archive export reader reply"),
         }
     }
 
@@ -254,13 +275,34 @@ impl RecordingCatalogHandle {
         }
     }
 
+    pub(crate) fn lease_archive_source(
+        &self,
+        recording_id: &str,
+        path: &str,
+    ) -> anyhow::Result<LeaseSet> {
+        let key = (recording_id.to_owned(), path.to_owned());
+        match self.read_lease(Request::Snapshots(BTreeSet::from([key.clone()])))? {
+            Reply::Snapshots(lease) if lease.keys.contains(&key) => Ok(lease),
+            Reply::Snapshots(_) => anyhow::bail!("archive source is not readable"),
+            _ => anyhow::bail!("unexpected archive source reader reply"),
+        }
+    }
+
     pub(crate) fn lease_event_keyframe(
         &self,
         location: &super::EventKeyframeLocation,
     ) -> anyhow::Result<LeaseSet> {
-        let keys = BTreeSet::from([(location.recording_id.clone(), location.path.clone())]);
+        let path = location.archive.as_ref().map_or_else(
+            || location.path.clone(),
+            |archive| archive.path().to_string_lossy().into_owned(),
+        );
+        let key = (location.recording_id.clone(), path);
+        let keys = BTreeSet::from([key.clone()]);
         match self.read_lease(Request::Snapshots(keys))? {
-            Reply::Snapshots(lease) => Ok(lease),
+            Reply::Snapshots(lease) if location.archive.is_none() || lease.keys.contains(&key) => {
+                Ok(lease)
+            }
+            Reply::Snapshots(_) => anyhow::bail!("archive keyframe location changed"),
             _ => anyhow::bail!("unexpected recording reader reply"),
         }
     }
@@ -279,7 +321,11 @@ impl RecordingCatalogHandle {
 fn fragment_keys(fragments: &[CatalogMediaFragment]) -> anyhow::Result<BTreeSet<Key>> {
     let mut keys = BTreeSet::new();
     for fragment in fragments {
-        keys.insert((fragment.recording_id.clone(), fragment.path.clone()));
+        let path = fragment.archive.as_ref().map_or_else(
+            || fragment.path.clone(),
+            |archive| archive.path().to_string_lossy().into_owned(),
+        );
+        keys.insert((fragment.recording_id.clone(), path));
         anyhow::ensure!(
             keys.len() <= MAX_LOCATIONS,
             "recording reader location limit exceeded"
@@ -300,11 +346,7 @@ pub(super) async fn execute(
             revision,
         } => image(connection, registry, &event, &attachment, revision).await,
         Request::Fragments { stream, start, end } => {
-            let fragments =
-                super::media_fragments_in_range(connection, &stream, start, end).await?;
-            let keys = fragment_keys(&fragments)?;
-            let keys = owned_locations(connection, keys).await?;
-            Ok(Reply::Fragments(fragments, registry.acquire(keys)?))
+            fragments_reply(connection, registry, &stream, start, end).await
         }
         Request::Object {
             source,
@@ -325,9 +367,17 @@ pub(super) async fn execute(
             let Some(object) = object else {
                 return Ok(Reply::Object(None));
             };
-            let keys = BTreeSet::from([(object.recording_id.clone(), object.path.clone())]);
-            let keys = owned_locations(connection, keys).await?;
-            Ok(Reply::Object(Some((object, registry.acquire(keys)?))))
+            let path = object.archive.as_ref().map_or_else(
+                || object.path.clone(),
+                |archive| archive.path().to_string_lossy().into_owned(),
+            );
+            let keys = BTreeSet::from([(object.recording_id.clone(), path)]);
+            let owned = owned_locations(connection, keys.clone()).await?;
+            anyhow::ensure!(
+                object.archive.is_none() || owned == keys,
+                "archive recording location changed"
+            );
+            Ok(Reply::Object(Some((object, registry.acquire(owned)?))))
         }
         Request::Snapshots(keys) => {
             let keys = owned_locations(connection, keys).await?;
@@ -342,7 +392,61 @@ pub(super) async fn execute(
             let lease = volume_lease(connection, registry, &location).await?;
             Ok(Reply::Export(Some((location, lease))))
         }
+        Request::ArchiveExport {
+            job_id,
+            artifact_id,
+            expected,
+        } => archive_export_reply(connection, registry, &job_id, &artifact_id, expected).await,
     }
+}
+
+async fn fragments_reply(
+    connection: &turso::Connection,
+    registry: &Arc<Registry>,
+    stream: &str,
+    start: i64,
+    end: i64,
+) -> anyhow::Result<Reply> {
+    let fragments = super::media_fragments_in_range(connection, stream, start, end).await?;
+    let owned = owned_locations(connection, fragment_keys(&fragments)?).await?;
+    anyhow::ensure!(
+        fragments
+            .iter()
+            .filter(|item| item.archive.is_some())
+            .all(|item| {
+                let archive = item.archive.as_ref().expect("filtered archive");
+                owned.contains(&(
+                    item.recording_id.clone(),
+                    archive.path().to_string_lossy().into_owned(),
+                ))
+            }),
+        "archive recording location changed"
+    );
+    Ok(Reply::Fragments(fragments, registry.acquire(owned)?))
+}
+
+async fn archive_export_reply(
+    connection: &turso::Connection,
+    registry: &Arc<Registry>,
+    job_id: &str,
+    artifact_id: &str,
+    expected: super::archive_playback::ArchiveRead,
+) -> anyhow::Result<Reply> {
+    let job = super::archive::load(connection, job_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("archive export disappeared"))?;
+    anyhow::ensure!(
+        job.recording_id == artifact_id,
+        "archive export identity changed"
+    );
+    let current = super::archive_playback::ArchiveRead::from_ready_export(&job)?;
+    anyhow::ensure!(current == expected, "archive export version changed");
+    let key = (
+        format!("archive-export:{artifact_id}"),
+        current.path().to_string_lossy().into_owned(),
+    );
+    let lease = registry.acquire(BTreeSet::from([key]))?;
+    Ok(Reply::ArchiveExport(current, lease))
 }
 
 async fn image(
@@ -406,27 +510,62 @@ async fn owned_locations(
     );
     let mut owned = BTreeSet::new();
     for (id, path) in keys {
+        if let Some(archive) = super::archive_playback::read(connection, &id).await? {
+            anyhow::ensure!(
+                archive.path().to_string_lossy() == path,
+                "recording archive location changed"
+            );
+            let mut claims = connection.query(
+                "SELECT 1 FROM recording_files r WHERE r.id=?1 AND r.cleanup_pending=0
+                 AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id=r.id AND active=1)",
+                [id.as_str()],
+            ).await?;
+            anyhow::ensure!(
+                claims.next().await?.is_some(),
+                "archive recording is unavailable"
+            );
+            owned.insert((id, path));
+            continue;
+        }
         let mut rows = connection.query(
-            "SELECT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind = 'recording' AND a.state != 'cancelled' AND (a.object_id = r.id OR a.destination_path = replace(r.path, char(92), '/') COLLATE NOCASE))
-             FROM recording_files r WHERE r.id = ?1 AND r.path = ?2 AND r.cleanup_pending = 0
+            "SELECT r.path, EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind = 'recording' AND a.state != 'cancelled' AND (a.object_id = r.id OR a.destination_path = replace(r.path, char(92), '/') COLLATE NOCASE))
+             FROM recording_files r WHERE r.id = ?1 AND r.cleanup_pending = 0
+             AND NOT EXISTS (SELECT 1 FROM archive_replicas WHERE recording_id=r.id AND local_evicted!=0)
              AND NOT EXISTS (SELECT 1 FROM storage_recording_retirements WHERE recording_id = r.id AND complete = 0)
              AND NOT EXISTS (SELECT 1 FROM storage_recording_recovery q JOIN storage_volume_allocations a ON a.operation=q.operation
                  WHERE q.complete=0 AND (q.recording_id=r.id OR a.destination_path=replace(r.path,char(92),'/') COLLATE NOCASE))
              AND NOT EXISTS (SELECT 1 FROM storage_volume_moves m JOIN storage_volume_allocations source ON source.operation = m.source_operation
                  WHERE m.phase IN ('published','retiring','complete') AND source.destination_path = replace(r.path, char(92), '/') COLLATE NOCASE)
              AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE (recording_id = r.id OR replace(path, char(92), '/') = replace(r.path, char(92), '/') COLLATE NOCASE) AND active = 1)",
-            (id.as_str(), path.as_str()),
+            [id.as_str()],
         ).await?;
         let row = rows.next().await?.ok_or_else(|| {
             anyhow::anyhow!("recording reader location changed or is unavailable")
         })?;
+        anyhow::ensure!(
+            same_primary_path(&row.get::<String>(0)?, &path),
+            "recording reader location changed or is unavailable"
+        );
         // Legacy archive rotation precedes its catalog path update. It cannot use
         // this fence until its owner adopts the location transition protocol.
-        if row.get::<i64>(0)? != 0 {
+        if row.get::<i64>(1)? != 0 {
             owned.insert((id, path));
         }
     }
     Ok(owned)
+}
+
+fn same_primary_path(catalog: &str, requested: &str) -> bool {
+    #[cfg(windows)]
+    {
+        catalog
+            .replace('\\', "/")
+            .eq_ignore_ascii_case(&requested.replace('\\', "/"))
+    }
+    #[cfg(not(windows))]
+    {
+        catalog == requested
+    }
 }
 
 pub(super) async fn ensure_recording_idle(
@@ -760,6 +899,7 @@ mod tests {
             path: fragments[0].path.clone(),
             byte_offset: 40,
             byte_len: 30,
+            archive: None,
         };
         let lease = handle.lease_event_keyframe(&location).unwrap();
         assert!(handle.delete_recording("reader-recording").is_err());
@@ -920,6 +1060,34 @@ mod tests {
                 .conflicts("reader-recording", &alias_path)
                 .unwrap()
         );
+        drop(handle);
+        drop(catalog);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn archive_source_lease_accepts_the_owned_windows_path_spelling() {
+        let (root, catalog, handle) = fixture("archive-source-windows-path", true);
+        let original = handle
+            .media_fragments_in_range("camera/main", 1000, 3000)
+            .unwrap();
+        let source_path = alternate_separators(&original[0].path);
+        let lease = handle
+            .lease_archive_source("reader-recording", &source_path)
+            .unwrap();
+        assert!(
+            handle
+                .reader_leases()
+                .conflicts("reader-recording", &original[0].path)
+                .unwrap()
+        );
+        assert!(
+            handle
+                .lease_archive_source("reader-recording", "stale.mp4")
+                .is_err()
+        );
+        drop(lease);
         drop(handle);
         drop(catalog);
         std::fs::remove_dir_all(root).unwrap();

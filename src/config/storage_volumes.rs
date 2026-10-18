@@ -42,7 +42,7 @@ pub(super) fn validate_with_secrets<I: serde::Serialize>(
     validate(Some(&resolved))
 }
 
-fn preserve_references(
+pub(super) fn preserve_references(
     next: &mut toml::Value,
     next_resolved: &toml::Value,
     raw: &toml::Value,

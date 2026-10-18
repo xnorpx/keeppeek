@@ -79,6 +79,7 @@ fn initialization_reader(
     catalog
         .handle()
         .lease_media_fragments(&[CatalogMediaFragment {
+            archive: None,
             recording_id: initialized.object.id.clone(),
             recording_started_at_ms: 1000,
             path: initialized.path.to_string_lossy().into_owned(),

@@ -4,9 +4,14 @@ use std::{
     fs::File,
     io::{BufWriter, Read, Seek, Write},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
-use crate::storage::CatalogMediaFragment;
+use crate::storage::{
+    CatalogMediaFragment,
+    archive::{VerifiedReader, target::Work},
+    catalog::archive_playback::ArchiveRead,
+};
 
 #[derive(Clone)]
 struct PlaybackTrack {
@@ -25,7 +30,35 @@ pub struct ExportArtifact {
 struct ExportRecording {
     started_at_ms: i64,
     path: String,
+    archive: Option<ArchiveRead>,
     intervals: Vec<(i64, i64)>,
+}
+
+trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
+
+fn open_export_source<'a>(
+    recording: &ExportRecording,
+    cancelled: &'a impl Fn() -> bool,
+) -> anyhow::Result<Box<dyn ReadSeek + 'a>> {
+    let Some(archive) = &recording.archive else {
+        return Ok(Box::new(File::open(&recording.path)?));
+    };
+    let work = Work {
+        deadline: Instant::now() + Duration::from_secs(3600),
+        cancelled,
+    };
+    Ok(Box::new(VerifiedReader::new(archive.clone(), work)?))
+}
+
+fn read_export_mp4<'a>(
+    recording: &ExportRecording,
+    cancelled: &'a impl Fn() -> bool,
+) -> anyhow::Result<mp4::Mp4Reader<Box<dyn ReadSeek + 'a>>> {
+    let mut source = open_export_source(recording, cancelled)?;
+    let bytes = source.seek(std::io::SeekFrom::End(0))?;
+    source.seek(std::io::SeekFrom::Start(0))?;
+    Ok(mp4::Mp4Reader::read_header(source, bytes)?)
 }
 
 struct ExportSample {
@@ -165,8 +198,13 @@ fn export_recordings(
             .or_insert_with(|| ExportRecording {
                 started_at_ms: fragment.recording_started_at_ms,
                 path: fragment.path.clone(),
+                archive: fragment.archive.clone(),
                 intervals: Vec::new(),
             });
+        anyhow::ensure!(
+            recording.path == fragment.path && recording.archive == fragment.archive,
+            "export recording location changed"
+        );
         recording.intervals.push((fragment.start_ms, end_ms));
     }
     let mut recordings = recordings.into_values().collect::<Vec<_>>();
@@ -185,7 +223,7 @@ fn write_export_recordings<W: Write + Seek>(
     let first = recordings
         .first()
         .context("export has no source recordings")?;
-    let mut first_reader = mp4::read_mp4(File::open(&first.path)?)?;
+    let mut first_reader = read_export_mp4(first, cancelled)?;
     let reference_tracks = export_tracks(&first_reader)?;
     let selected_track_indexes =
         selected_export_track_indexes(recordings, &reference_tracks, aligned_start_ms, cancelled)?;
@@ -212,7 +250,7 @@ fn write_export_recordings<W: Write + Seek>(
         &callbacks,
     )?;
     for recording in recordings.iter().skip(1) {
-        let mut reader = mp4::read_mp4(File::open(&recording.path)?)?;
+        let mut reader = read_export_mp4(recording, cancelled)?;
         let source_tracks = export_tracks(&reader)?;
         validate_track_layout(&reference_tracks, &source_tracks)?;
         let selected_tracks = selected_track_indexes
@@ -274,7 +312,7 @@ fn selected_export_track_indexes(
 ) -> anyhow::Result<Vec<usize>> {
     let mut selected = vec![false; reference_tracks.len()];
     for recording in recordings {
-        let mut reader = mp4::read_mp4(File::open(&recording.path)?)?;
+        let mut reader = read_export_mp4(recording, cancelled)?;
         let tracks = export_tracks(&reader)?;
         validate_track_layout(reference_tracks, &tracks)?;
         for (index, track) in tracks.iter().enumerate() {
@@ -663,12 +701,9 @@ mod tests {
         AudioCodec, AudioFrame, MediaFrame, RecordingCatalog, RecordingFrame, VideoCodec,
         VideoFrame, medium_term::MediumTermWriter,
     };
-    use std::{
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
-        time::{Duration, Instant},
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
     };
 
     #[test]
@@ -975,6 +1010,7 @@ mod tests {
                 duration_ms: 1_000,
                 byte_offset: first.range.offset,
                 byte_len: first.range.size,
+                archive: None,
             },
             CatalogMediaFragment {
                 recording_id: "mixed".to_owned(),
@@ -987,6 +1023,7 @@ mod tests {
                 duration_ms: 1_000,
                 byte_offset: second.range.offset,
                 byte_len: second.range.size,
+                archive: None,
             },
         ];
         let destination = directory.join("export.mp4");
@@ -1088,6 +1125,7 @@ mod tests {
                 duration_ms: 1_000,
                 byte_offset: h264_fragment.range.offset,
                 byte_len: h264_fragment.range.size,
+                archive: None,
             },
             CatalogMediaFragment {
                 recording_id: "h265".to_owned(),
@@ -1100,6 +1138,7 @@ mod tests {
                 duration_ms: 1_000,
                 byte_offset: h265_fragment.range.offset,
                 byte_len: h265_fragment.range.size,
+                archive: None,
             },
         ];
         let destination = directory.join("cross-recording-export.mp4");

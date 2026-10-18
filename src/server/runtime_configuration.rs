@@ -37,7 +37,8 @@ pub(super) fn dispatch(
                     "runtime configuration requires storage settings",
                 ));
             };
-            if storage.named_volumes.is_some() && update.expected_configuration_revision.is_empty()
+            if (storage.named_volumes.is_some() || storage.archive.is_some())
+                && update.expected_configuration_revision.is_empty()
             {
                 return Err(ControlCommandError::new(
                     proto::ErrorCode::InvalidRequest,
@@ -46,6 +47,25 @@ pub(super) fn dispatch(
                 ));
             }
             let current_storage = current_config(state).storage;
+            let archive = storage
+                .archive
+                .map(|settings| {
+                    let path = state.camera_config_path.as_deref().ok_or_else(|| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::Unavailable,
+                            503,
+                            "archive configuration requires an application configuration file",
+                        )
+                    })?;
+                    super::storage_archive::from_wire(path, settings).map_err(|error| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::InvalidRequest,
+                            400,
+                            format!("invalid archive settings: {error}"),
+                        )
+                    })
+                })
+                .transpose()?;
             let named_volumes = storage
                 .named_volumes
                 .map(super::storage_volumes::from_wire)
@@ -87,6 +107,7 @@ pub(super) fn dispatch(
                     port,
                     expected_configuration_revision: update.expected_configuration_revision,
                     storage: RuntimeStorageSettingsUpdate {
+                        archive,
                         named_volumes,
                         pre_recording_stream_max_bytes: storage
                             .pre_recording_stream_max_bytes

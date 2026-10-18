@@ -232,7 +232,10 @@ async fn read_rows(connection: &turso::Connection, deadline: Instant) -> anyhow:
             (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = recording_files.id AND active = 1)
             , finalized = 0, protected = 1
             , started_at_ms, ended_at_ms, init_offset, init_len
-         FROM recording_files ORDER BY id LIMIT ?1",
+         FROM recording_files
+         WHERE NOT EXISTS (SELECT 1 FROM archive_replicas a
+                           WHERE a.recording_id=recording_files.id AND (a.state='ready' OR a.local_evicted!=0))
+         ORDER BY id LIMIT ?1",
         turso::params![i64::try_from(MAX_SCAN_RECORDINGS + 1)?, i64::try_from(PATH_BYTES_MAX)?, i64::try_from(IDENTITY_BYTES_MAX)?],
     ).await?;
     let mut inputs = Inputs {
@@ -431,6 +434,7 @@ pub(in crate::storage::catalog) async fn remove_missing(
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
         validate_current(connection, expected, revision).await?;
+        super::super::archive_playback::ensure_index_deletable(connection, &expected.id).await?;
         check_deadline(deadline)?;
         record_deletion(
             connection,

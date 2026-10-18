@@ -1,4 +1,5 @@
 pub mod adts;
+pub mod archive;
 #[doc(hidden)]
 pub mod benchmark;
 pub mod catalog;

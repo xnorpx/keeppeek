@@ -189,6 +189,7 @@ async fn begin(
         AND NOT EXISTS(SELECT 1 FROM recording_retention_camera_work w WHERE w.camera_id=r.source_id)
         AND NOT EXISTS(SELECT 1 FROM recording_retention_decisions d WHERE d.recording_id=r.id AND d.deadline_ms>?2)
         AND NOT EXISTS(SELECT 1 FROM storage_recording_retirements WHERE recording_id=r.id)
+        AND NOT EXISTS(SELECT 1 FROM archive_replicas q WHERE q.kind='recording' AND q.recording_id=r.id AND (q.state='ready' OR q.local_evicted!=0))
         AND NOT EXISTS(SELECT 1 FROM recording_maintenance_claims c WHERE c.active=1 AND (c.recording_id=r.id OR replace(c.path,char(92),'/')=a.destination_path COLLATE NOCASE))
         AND NOT EXISTS(SELECT 1 FROM storage_volume_moves m WHERE m.kind='recording' AND m.object_id=r.id AND (m.phase NOT IN ('complete','cancelled') OR m.receipt_acknowledged=0))
         AND NOT EXISTS(SELECT 1 FROM storage_volume_moves m WHERE m.source_operation=a.operation AND m.phase IN ('published','retiring','complete'))
@@ -279,6 +280,8 @@ async fn complete(connection: &turso::Connection, evidence: &Publication) -> any
         reason
     };
     drop(rows);
+    super::super::archive_playback::ensure_index_deletable(connection, &job.location.object.id)
+        .await?;
     super::super::record_deletion(connection, &job.location.object.id, reason).await?;
     connection
         .execute(

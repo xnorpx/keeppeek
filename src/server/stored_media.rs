@@ -44,9 +44,33 @@ fn validate_open_cursor<'a>(
 struct OpenCursorReservation<'a> {
     state: &'a ServerState,
     key: Option<(SessionId, String)>,
+    token: uuid::Uuid,
 }
 
 impl OpenCursorReservation<'_> {
+    fn claim(
+        &mut self,
+        reservations: &mut std::collections::HashMap<(SessionId, String), uuid::Uuid>,
+    ) -> Result<(SessionId, String), ControlCommandError> {
+        let key = self
+            .key
+            .as_ref()
+            .expect("cursor reservation must have a key");
+        if reservations.get(key) != Some(&self.token) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                409,
+                "stored media cursor was closed or replaced while opening",
+            ));
+        }
+        let key = self
+            .key
+            .take()
+            .expect("validated cursor reservation has a key");
+        reservations.remove(&key);
+        Ok(key)
+    }
+
     fn commit(mut self, cursor: super::StoredMediaCursor) -> Result<(), ControlCommandError> {
         let mut cursors = self
             .state
@@ -58,17 +82,7 @@ impl OpenCursorReservation<'_> {
             .stored_media_cursor_reservations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let key = self
-            .key
-            .take()
-            .expect("stored media cursor reservation must have a key");
-        if !reservations.remove(&key) {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "stored media session closed while the cursor was opening",
-            ));
-        }
+        let key = self.claim(&mut reservations)?;
         if self
             .state
             .maintenance_active
@@ -90,11 +104,14 @@ impl Drop for OpenCursorReservation<'_> {
         let Some(key) = self.key.take() else {
             return;
         };
-        self.state
+        let mut reservations = self
+            .state
             .stored_media_cursor_reservations
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&key);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if reservations.get(&key) == Some(&self.token) {
+            reservations.remove(&key);
+        }
     }
 }
 
@@ -123,15 +140,20 @@ fn reserve_open_cursor<'a>(
         ));
     }
     validate_open_cursor(
-        cursors.keys().chain(reservations.iter()),
+        cursors.keys().chain(reservations.keys()),
         session_id,
         cursor_id,
     )?;
-    let inserted = reservations.insert(key.clone());
-    assert!(inserted, "stored media cursor reservation must be unique");
+    let token = uuid::Uuid::new_v4();
+    let previous = reservations.insert(key.clone(), token);
+    assert!(
+        previous.is_none(),
+        "stored media cursor reservation must be unique"
+    );
     Ok(OpenCursorReservation {
         state,
         key: Some(key),
+        token,
     })
 }
 
@@ -168,25 +190,7 @@ pub(super) fn dispatch(
                 notifications: Vec::new(),
             })
         }
-        Some(stored_media_command::Action::Close(close)) => {
-            let removed = state
-                .stored_media_cursors
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&(session_id, close.stored_media_id));
-            if removed.is_none() {
-                return Err(ControlCommandError::new(
-                    proto::ErrorCode::NotFound,
-                    404,
-                    "stored media cursor was not found",
-                ));
-            }
-            Ok(StoredMediaDispatch {
-                result: None,
-                messages: Vec::new(),
-                notifications: Vec::new(),
-            })
-        }
+        Some(stored_media_command::Action::Close(close)) => close_cursor(state, session_id, close),
         Some(stored_media_command::Action::QueryTimeline(query)) => {
             query_timeline(state, session_id, query)
         }
@@ -201,6 +205,36 @@ pub(super) fn dispatch(
             "stored media command has no action",
         )),
     }
+}
+
+fn close_cursor(
+    state: &ServerState,
+    session_id: SessionId,
+    close: proto::CloseStoredMedia,
+) -> Result<StoredMediaDispatch, ControlCommandError> {
+    let key = (session_id, close.stored_media_id);
+    let removed = state
+        .stored_media_cursors
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&key);
+    let pending = state
+        .stored_media_cursor_reservations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&key);
+    if removed.is_none() && pending.is_none() {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::NotFound,
+            404,
+            "stored media cursor was not found",
+        ));
+    }
+    Ok(StoredMediaDispatch {
+        result: None,
+        messages: Vec::new(),
+        notifications: Vec::new(),
+    })
 }
 
 fn open_cursor(
@@ -246,7 +280,7 @@ pub(super) fn close_session(state: &ServerState, session_id: SessionId) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     cursors.retain(|(owner_session_id, _), _| *owner_session_id != session_id);
-    reservations.retain(|(owner_session_id, _)| *owner_session_id != session_id);
+    reservations.retain(|(owner_session_id, _), _| *owner_session_id != session_id);
 }
 
 #[cfg(test)]
@@ -314,5 +348,66 @@ mod tests {
                 .is_empty()
         );
         drop(reservation);
+    }
+
+    #[test]
+    fn close_then_reopen_rejects_the_old_reservation_token() {
+        let state = ServerState::empty();
+        let owner = SessionId::from_u64(1);
+        let mut first = reserve_open_cursor(&state, owner, "playback").unwrap();
+        dispatch(
+            &state,
+            owner,
+            proto::StoredMediaCommand {
+                action: Some(stored_media_command::Action::Close(
+                    proto::CloseStoredMedia {
+                        stored_media_id: "playback".into(),
+                    },
+                )),
+            },
+        )
+        .unwrap();
+        let mut second = reserve_open_cursor(&state, owner, "playback").unwrap();
+        let mut reservations = state.stored_media_cursor_reservations.lock().unwrap();
+        assert_eq!(
+            first.claim(&mut reservations).unwrap_err().code,
+            proto::ErrorCode::Rejected
+        );
+        let key = second.claim(&mut reservations).unwrap();
+        assert_eq!(key, (owner, "playback".into()));
+        assert!(reservations.is_empty());
+    }
+
+    #[test]
+    fn cancelled_open_drop_cannot_remove_a_new_reservation() {
+        let state = ServerState::empty();
+        let owner = SessionId::from_u64(1);
+        let first = reserve_open_cursor(&state, owner, "playback").unwrap();
+        dispatch(
+            &state,
+            owner,
+            proto::StoredMediaCommand {
+                action: Some(stored_media_command::Action::Close(
+                    proto::CloseStoredMedia {
+                        stored_media_id: "playback".into(),
+                    },
+                )),
+            },
+        )
+        .unwrap();
+        let second = reserve_open_cursor(&state, owner, "playback").unwrap();
+        drop(first);
+        assert_eq!(
+            state.stored_media_cursor_reservations.lock().unwrap().len(),
+            1
+        );
+        drop(second);
+        assert!(
+            state
+                .stored_media_cursor_reservations
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
     }
 }

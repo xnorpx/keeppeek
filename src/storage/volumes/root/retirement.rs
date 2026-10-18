@@ -80,7 +80,39 @@ impl Root {
         digest: [u8; 32],
         operation: &str,
     ) -> anyhow::Result<()> {
-        Retirement::prepare(self, key, expected_identity, bytes, digest, operation)?.finish()
+        self.retire_owned_until(
+            key,
+            expected_identity,
+            bytes,
+            digest,
+            operation,
+            Instant::now() + Duration::from_secs(300),
+        )
+    }
+
+    /// Retires an exact owned leaf before the caller's deadline, capped at five minutes.
+    ///
+    /// # Errors
+    /// Rejects expired work or any failed ownership, digest, or receipt check.
+    pub fn retire_owned_until(
+        &self,
+        key: &str,
+        expected_identity: &str,
+        bytes: u64,
+        digest: [u8; 32],
+        operation: &str,
+        deadline: Instant,
+    ) -> anyhow::Result<()> {
+        Retirement::prepare(
+            self,
+            key,
+            expected_identity,
+            bytes,
+            digest,
+            operation,
+            deadline,
+        )?
+        .finish()
     }
 
     /// Removes retirement receipts only after the catalog has durably completed this job.
@@ -161,7 +193,9 @@ impl<'a> Retirement<'a> {
         bytes: u64,
         digest: [u8; 32],
         operation: &str,
+        deadline: Instant,
     ) -> anyhow::Result<Self> {
+        anyhow::ensure!(Instant::now() < deadline, "retirement timed out");
         validate_key(key)?;
         anyhow::ensure!(
             operation.len() == 36 && uuid::Uuid::parse_str(operation)?.to_string() == operation,
@@ -197,7 +231,7 @@ impl<'a> Retirement<'a> {
             staging,
             directory,
             receipt,
-            deadline: Instant::now() + Duration::from_secs(300),
+            deadline: deadline.min(Instant::now() + Duration::from_secs(300)),
         };
         retirement.revalidate()?;
         retirement.prepare_intent()?;

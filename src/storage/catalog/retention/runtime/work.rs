@@ -108,6 +108,7 @@ async fn pending_file(connection: &turso::Connection, generation: i64) -> Result
             "SELECT id FROM recording_files INDEXED BY recording_retention_pending_generation
             WHERE retention_pending=1 AND retention_generation<=?1 AND cleanup_pending=0
                 AND NOT EXISTS(SELECT 1 FROM storage_recording_retirements WHERE recording_id=recording_files.id AND complete=0)
+                AND NOT EXISTS(SELECT 1 FROM archive_replicas WHERE kind='recording' AND recording_id=recording_files.id AND local_evicted=2)
             ORDER BY retention_generation,id LIMIT 1",
             [generation],
         )
@@ -132,6 +133,16 @@ async fn claims_pending(connection: &turso::Connection) -> Result<bool> {
     let mut rows = connection
         .query(
             "SELECT 1 FROM storage_recording_retirements WHERE complete=0 LIMIT 1",
+            (),
+        )
+        .await?;
+    if rows.next().await?.is_some() {
+        return Ok(true);
+    }
+    let mut rows = connection
+        .query(
+            "SELECT 1 FROM archive_replicas INDEXED BY archive_replicas_pending_eviction
+         WHERE kind='recording' AND local_evicted=2 LIMIT 1",
             (),
         )
         .await?;
@@ -289,6 +300,14 @@ async fn policy_for(connection: &turso::Connection, id: &str) -> Result<Option<P
 }
 
 async fn evaluate(connection: &turso::Connection, id: &str, generation: i64) -> Result<Progress> {
+    if archive_eviction_for_recording(connection, id).await? {
+        connection.execute("UPDATE recording_files SET retention_pending=1,retention_generation=?1,retention_error=NULL WHERE id=?2",
+            turso::params![generation,id]).await?;
+        return Ok(Progress {
+            pending: true,
+            ..Progress::default()
+        });
+    }
     let Some(policy) = policy_for(connection, id).await? else {
         finish_file(connection, id, generation, None).await?;
         return Ok(Progress {
@@ -316,6 +335,14 @@ async fn evaluate(connection: &turso::Connection, id: &str, generation: i64) -> 
             })
         }
     }
+}
+
+async fn archive_eviction_for_recording(connection: &turso::Connection, id: &str) -> Result<bool> {
+    let mut rows = connection.query(
+        "SELECT 1 FROM archive_replicas WHERE kind='recording' AND recording_id=?1 AND local_evicted=2",
+        [id],
+    ).await?;
+    Ok(rows.next().await?.is_some())
 }
 
 async fn commit_file(connection: &turso::Connection, id: &str, policy: &Policy) -> Result<()> {
