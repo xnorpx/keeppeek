@@ -3417,7 +3417,7 @@ mod tests {
 
     #[test]
     fn ordinary_configuration_load_keeps_the_rollback_guard() {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "keeppeek-profile-identity-load-{}",
             uuid::Uuid::new_v4()
         ));
