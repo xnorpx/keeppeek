@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f7232704.js";
+            window.path_to_searchindex_js = "searchindex-293a7481.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -308,6 +308,38 @@ the live view when the server or network is available.</p>
 <p>Both modes suspend media subscriptions when the document becomes hidden. Wake lock does not
 override suspension. Returning to the visible wall resumes admission within the same budget.
 None of these actions stops camera ingest, recording, detection, or retention on the server.</p>
+<h2 id="live-video-quality"><a class="header" href="#live-video-quality">Live video quality</a></h2>
+<p>The focused Viewer’s <strong>Auto</strong> quality uses native RTP bandwidth feedback to choose between
+compatible Main and Sub streams. It begins with Sub when available. A shared WebRTC connection
+has one network estimate for all of its tracks: KeepPeek reserves audio and explicitly selected
+video demand, then divides the remaining estimate among Auto video subscriptions. Adding another
+camera can therefore reduce the budget available to each Auto camera.</p>
+<p>Auto waits for sustained headroom before upgrading and sustained pressure before downgrading.
+The existing picture remains active until the replacement stream supplies a compatible keyframe.
+Changing quality does not start a second peer connection or change camera recording settings.
+<strong>High</strong> and <strong>Low</strong> keep the requested quality when it is compatible and available; Auto does not
+override a manual choice. The panel reports an unavailable alternative rather than treating it as
+a completed handover. A manual choice can still exceed the available network capacity.</p>
+<p>The bandwidth estimate describes the shared connection, not a camera’s received bitrate or
+capture-to-display latency. An unavailable estimate is unknown. Reliable data delivery uses a
+fixed variant and does not use native RTP Auto adaptation. Browser decoder limits and the wall’s
+stream admission budget remain separate from network quality selection.</p>
+<p>Open the live video’s information panel to compare <strong>Session network estimate</strong>, <strong>Camera
+budget</strong> and <strong>Receive bitrate</strong>. The first describes the connection, the second describes an
+adaptive Auto camera’s allocation, and the third describes media arriving in this browser.
+Manual and fixed selections do not receive an adaptive budget. A zero allocation is different
+from an unknown estimate or unavailable diagnostics on an older server.</p>
+<p><strong>Requested quality</strong>, <strong>Active stream</strong>, <strong>Pending stream</strong> and <strong>Auto status</strong> distinguish
+the user’s choice from the server’s runtime selection. A pending change waits for a keyframe;
+the active source remains unchanged until that gate admits the replacement. An active source
+does not prove that this browser has decoded or displayed a new frame. The panel also identifies
+holds, missing network evidence, a single variant and unavailable alternatives. Reconnecting or
+removing a subscription clears its previous diagnostic values.</p>
+<p>Auto keeps the current picture if an alternative lacks the codec configuration needed to verify
+compatibility. That alternative is reported as unavailable. It does not replace a working stream
+with an unverified H.264 profile.</p>
+<p>Recorded playback does not use this live controller. A recording with a matching time range is
+not necessarily an aligned alternative view of the same captured frames.</p>
 <h2 id="frame-freshness-and-health"><a class="header" href="#frame-freshness-and-health">Frame freshness and health</a></h2>
 <p>A camera’s server-reported health and a browser tile’s live admission are separate facts. A
 healthy camera can have a paused tile when the browser has exhausted its budget.</p>
