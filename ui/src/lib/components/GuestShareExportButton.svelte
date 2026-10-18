@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { capabilityActions } from '$lib/capability-actions';
 	import type { ControlClient } from '$lib/control-client';
 	import type { SharingControlClient } from '$lib/control-client-sharing';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -38,7 +39,7 @@
 		class="min-h-11 w-full"
 		onclick={() => {
 			openFor = exportJobId;
-		}}><LinkIcon class="size-4" />Create guest link</Button
+		}}><LinkIcon class="size-4" />{capabilityActions.createGuestLink.action}</Button
 	>
 	{#if openFor === exportJobId}
 		<GuestShareDialog

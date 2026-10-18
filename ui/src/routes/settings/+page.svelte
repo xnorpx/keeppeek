@@ -15,7 +15,7 @@
 	import * as Card from '$lib/components/ui/card/index.js';
 	import AccessSection from '$lib/components/AccessSection.svelte';
 	import GuestSharingSection from '$lib/components/GuestSharingSection.svelte';
-	import { sharingCapability } from '$lib/control-client-sharing';
+	import { capabilityActions } from '$lib/capability-actions';
 	import BackupRestoreSection from '$lib/components/BackupRestoreSection.svelte';
 	import MobileAccessSection from '$lib/components/MobileAccessSection.svelte';
 	import MobileSettingsActionBar from '$lib/components/MobileSettingsActionBar.svelte';
@@ -566,7 +566,7 @@
 						onrotateaccesskey={() => controlClient.rotateAccessKey()}
 					/>
 				</div>
-				{#if administrator && capabilities.supports(sharingCapability)}
+				{#if administrator && capabilities.supports(capabilityActions.manageGuestLinks.capability)}
 					<GuestSharingSection controller={controlClient} />
 				{/if}
 			</div>

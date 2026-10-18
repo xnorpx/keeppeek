@@ -216,3 +216,36 @@ That run stopped at the existing Paper storyboard validator because its canonica
 OpenAPI path list had not been synchronized with the approved guest HTTP contracts.
 This is a failed canonical run; it does not establish the UI/full gate. The complete
 output is preserved in `target/agent-artifacts/132-integrated-check-first.log`.
+
+The second integrated run again passed all 3602 Rust tests in 469.412 seconds,
+strict Clippy, dependency, Rust/Python formatting and every UI static check. The Bun
+suite passed 437 cases and failed one existing exact action-ownership guard: the
+implemented guest-link action was absent from the target capability action catalog.
+Guest review remains a target capability while full issue acceptance is open; changing
+that delivery status or excluding the assertion would not fix the missing inventory.
+This run remains a failed canonical gate. Complete output:
+`target/agent-artifacts/132-integrated-check-second.log`.
+
+The next HTTPS increment can reuse `issue123_browser_fixture` and the existing
+external-authentication TLS launcher/proxy. Add an opt-in real recording/catalog and
+private history seed, preserving camera/sharing configuration when authentication
+changes. Let the signed-in remote OIDC Administrator create the export through real
+WebRTC so its typed owner is genuine; do not pre-create a local-Administrator export.
+A separate guest browser context then exercises decoding, seeking, optional download
+checksum, revocation, isolation and actual headers. No production test endpoint is
+needed. This first lifecycle still does not replace exact-range, four-entrypoint,
+slow-client cancellation and 30-run resource/performance qualification.
+
+The missing action inventory is now fixed: creation and management explicitly own
+`keeppeek.guest-review.v1`, and the UI reuses those catalog values. The original exact
+target-capability assertion and Administrator gates remain intact; guest delivery is
+still marked as a target while full issue acceptance is open. Independent review found
+no blocker in that five-file change.
+
+Full UI preflight now passes: 438 Bun tests, 317 Chromium component/visual tests and
+89 compatibility tests. All UI static checks report success, including Svelte with
+zero errors and warnings. Full Playwright E2E passes 299 cases with two existing
+skipped cases in 3.0 minutes. These include existing real authentication TLS cases
+and five guest-isolation cases with mocked guest HTTP; they do not establish actual
+HTTPS guest playback. Logs: `132-ui-preflight-quality.log` and
+`132-ui-preflight-e2e.log` under `target/agent-artifacts/`.
