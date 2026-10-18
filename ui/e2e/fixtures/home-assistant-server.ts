@@ -1,11 +1,12 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { promisify } from 'node:util';
 
 export const cardTestKeys = [
 	'550e8400-e29b-41d4-a716-446655440001',
@@ -15,6 +16,7 @@ export const cardTestKeys = [
 export const cardAdminKey = '550e8400-e29b-41d4-a716-446655440004';
 export const cardSourceIds = ['192.0.2.101', '192.0.2.102'] as const;
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
+type FixtureOptions = { trustedLocal?: boolean; archiveFixture?: boolean };
 
 async function availablePort(): Promise<number> {
 	const reservation = createServer();
@@ -95,6 +97,7 @@ async function writeFixtureConfiguration(options: {
 	port: number;
 	configurations: string[];
 	trustedLocal?: boolean;
+	archiveFixture?: boolean;
 }): Promise<string> {
 	const { directory, origin, port, configurations, trustedLocal = false } = options;
 	const configPath = resolve(directory, 'config.toml');
@@ -111,10 +114,11 @@ allowed_origins = [${JSON.stringify(origin)}]
 short_term_secs = 5
 medium_term_secs = 60
 long_term_max_gb = 0
+${options.archiveFixture ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
 [access_credentials]
 version = 1
 ${[...cardTestKeys, cardAdminKey].map((key) => credentialRecord(key, key === cardAdminKey)).join('\n')}
-${configurations.join('\n')}`,
+${configurations.map((configuration, index) => (options.archiveFixture && index === 1 ? `${configuration}\nrecording_mode = "sub"\n` : configuration)).join('\n')}`,
 		{ mode: 0o600 }
 	);
 	return configPath;
@@ -159,7 +163,11 @@ async function startFixtureRecorder(options: {
 	return server;
 }
 
-async function fixtureCameras(binary: string, children: ChildProcess[]): Promise<string[]> {
+async function fixtureCameras(
+	binary: string,
+	children: ChildProcess[],
+	archiveFixture: boolean
+): Promise<string[]> {
 	const configurations: string[] = [];
 	const media = resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4');
 	for (const [index, sourceId] of cardSourceIds.entries()) {
@@ -176,21 +184,125 @@ async function fixtureCameras(binary: string, children: ChildProcess[]): Promise
 				'--config-ip',
 				sourceId,
 				'--name',
-				`card-camera-${index}`
+				archiveFixture ? sourceId : `card-camera-${index}`
 			],
 			{ stdio: ['ignore', 'pipe', 'ignore'] }
 		);
 		children.push(child);
 		await once(child, 'spawn');
-		configurations.push(await cameraConfig(child));
+		const configuration = await cameraConfig(child);
+		configurations.push(
+			archiveFixture ? `${configuration}\ndisplay_name = "card-camera-${index}"\n` : configuration
+		);
 	}
 	return configurations;
 }
 
-export async function startHomeAssistantServer(
-	origin: string,
-	options: { trustedLocal?: boolean } = {}
+async function prepareArchiveFixture(
+	binary: string,
+	directory: string,
+	configPath: string,
+	children: ChildProcess[],
+	enabled: boolean
 ) {
+	const archiveRoot = resolve(directory, 'fourth-tier-archive');
+	let seededAtMs = Date.now() - 120_000;
+	let seededObjectId = '';
+	let seededObjectBytes = 0;
+	if (enabled) {
+		await privateArchiveDirectory(archiveRoot, directory);
+		const seed = spawn(
+			binary,
+			[
+				'seed-recording',
+				'--source',
+				resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4'),
+				'--config',
+				configPath,
+				'--stream-id',
+				`${cardSourceIds[0]}/sub`,
+				'--duration-seconds',
+				'40',
+				'--age-seconds',
+				'120'
+			],
+			{ cwd: directory, stdio: 'ignore', windowsHide: true, timeout: 30_000, killSignal: 'SIGKILL' }
+		);
+		children.push(seed);
+		const [code] = await once(seed, 'exit');
+		if (code !== 0) throw new Error('The isolated archive recording seed failed.');
+		seededAtMs = Date.now() - 120_000;
+		const media = (await readdir(directory, { recursive: true })).filter((path) =>
+			path.endsWith('.mp4')
+		);
+		if (media.length !== 1)
+			throw new Error('The archive fixture requires exactly one seeded object before launch.');
+		seededObjectId = basename(media[0]!, '.mp4');
+		seededObjectBytes = (await stat(resolve(directory, media[0]!))).size;
+		if (!/^[0-9a-f-]{36}$/.test(seededObjectId))
+			throw new Error('The seeded recording is missing its UUID.');
+	}
+	return { archiveRoot, seededAtMs, seededObjectId, seededObjectBytes };
+}
+
+async function privateArchiveDirectory(root: string, directory: string) {
+	if (resolve(root) !== resolve(directory, 'fourth-tier-archive'))
+		throw new Error('Archive directory must be the generated fixture child.');
+	await mkdir(root, { mode: 0o700 });
+	if (process.platform !== 'win32') return;
+	const { stdout } = await promisify(execFile)(
+		'powershell.exe',
+		[
+			'-NoProfile',
+			'-NonInteractive',
+			'-Command',
+			`$ErrorActionPreference = 'Stop'
+$archiveBefore = Get-Acl -LiteralPath $env:KEEPPEEK_ARCHIVE_FIXTURE_ROOT
+$archiveOwner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$archiveAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+$archiveAcl.SetOwner($archiveOwner)
+$archiveAcl.SetAccessRuleProtection($true, $false)
+$archiveAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($archiveOwner, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+Set-Acl -LiteralPath $env:KEEPPEEK_ARCHIVE_FIXTURE_ROOT -AclObject $archiveAcl
+@{before = $archiveBefore.Sddl; after = (Get-Acl -LiteralPath $env:KEEPPEEK_ARCHIVE_FIXTURE_ROOT).Sddl} | ConvertTo-Json`
+		],
+		{
+			env: { ...process.env, KEEPPEEK_ARCHIVE_FIXTURE_ROOT: root },
+			windowsHide: true,
+			timeout: 10_000,
+			maxBuffer: 16_384
+		}
+	);
+	await writeFile(resolve(directory, 'archive-directory-acl.json'), stdout);
+}
+
+async function preserveFixture(server: ChildProcess, directory: string, destination: string) {
+	await stop(server);
+	if (process.platform === 'win32') {
+		const { stdout } = await promisify(execFile)(
+			'powershell.exe',
+			[
+				'-NoProfile',
+				'-NonInteractive',
+				'-Command',
+				`Get-ChildItem -LiteralPath $env:KEEPPEEK_ARCHIVE_FIXTURE_ROOT -Directory -Recurse | ForEach-Object { $fixtureAcl = Get-Acl -LiteralPath $_.FullName; @{path = $_.FullName; owner = $fixtureAcl.Owner; sddl = $fixtureAcl.Sddl; protected = $fixtureAcl.AreAccessRulesProtected} } | ConvertTo-Json`
+			],
+			{
+				env: { ...process.env, KEEPPEEK_ARCHIVE_FIXTURE_ROOT: directory },
+				windowsHide: true,
+				timeout: 10_000,
+				maxBuffer: 65_536
+			}
+		);
+		await writeFile(resolve(directory, 'fixture-directory-acls.json'), stdout);
+	}
+	await cp(directory, destination, {
+		recursive: true,
+		filter: (source) => !/(?:secrets\.toml|\.(?:mp4|tmp|jpg|png))$/i.test(source)
+	});
+}
+
+export async function startHomeAssistantServer(origin: string, options: FixtureOptions = {}) {
 	const extension = process.platform === 'win32' ? '.exe' : '';
 	const binary = (name: string) => resolve(repositoryRoot, 'target/release', `${name}${extension}`);
 	await Promise.all([access(binary('keeppeek')), access(binary('test_camera'))]);
@@ -202,7 +314,11 @@ export async function startHomeAssistantServer(
 		await rm(directory, { recursive: true, force: true });
 	};
 	try {
-		const configurations = await fixtureCameras(binary('test_camera'), children);
+		const configurations = await fixtureCameras(
+			binary('test_camera'),
+			children,
+			options.archiveFixture ?? false
+		);
 		const port = await availablePort();
 		const configPath = await writeFixtureConfiguration({
 			directory,
@@ -211,6 +327,13 @@ export async function startHomeAssistantServer(
 			configurations,
 			...options
 		});
+		const archive = await prepareArchiveFixture(
+			binary('test_camera'),
+			directory,
+			configPath,
+			children,
+			options.archiveFixture ?? false
+		);
 		let log = '';
 		const url = `http://127.0.0.1:${port}`;
 		const launch = () =>
@@ -227,7 +350,11 @@ export async function startHomeAssistantServer(
 		let server = await launch();
 		return {
 			url,
+			backendProcessId: () => server.pid,
+			...archive,
 			close,
+			preserveArchiveEvidence: (destination: string) =>
+				preserveFixture(server, directory, destination),
 			restart: async () => {
 				await stop(server);
 				server = await launch();

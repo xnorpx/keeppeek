@@ -2366,7 +2366,12 @@ describe('ControlClient', () => {
 			vi.fn(async () => state(1n, StoredMediaStatus.ACTIVE)),
 			vi.fn(async () => {})
 		);
-		playback.configure(state(1n, StoredMediaStatus.ACTIVE));
+		const archiveChanges: boolean[] = [];
+		const stopArchive = playback.onArchive((archive) => archiveChanges.push(archive));
+		playback.configure({ ...state(1n, StoredMediaStatus.ACTIVE), archive: true });
+		playback.configure({ ...state(0n, StoredMediaStatus.ACTIVE), archive: false });
+		expect(archiveChanges).toEqual([false, true]);
+		stopArchive();
 		playback.receiveInitialization(
 			create(StoredMediaInitializationSchema, {
 				storedMediaId: 'review-test',

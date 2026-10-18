@@ -29,6 +29,7 @@
 	import RuntimeProfilesSection from '$lib/components/RuntimeProfilesSection.svelte';
 	import StorageSettingsEditor from '$lib/components/StorageSettingsEditor.svelte';
 	import NamedVolumesSection from '$lib/components/storage-volumes/NamedVolumesSection.svelte';
+	import ArchiveSection from '$lib/components/storage-volumes/ArchiveSection.svelte';
 	import SettingsApplyingState from '$lib/components/SettingsApplyingState.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -524,6 +525,17 @@
 							pendingRestart ||= result.restart_required;
 						}}
 					/>
+					{#if capabilities.supports('keeppeek.local-archive.v1')}
+						<ArchiveSection
+							{config}
+							controller={controlClient}
+							disabled={savingRuntimeSettings || runtimeEditor !== null}
+							onsaved={(result) => {
+								config = result.config;
+								pendingRestart ||= result.restart_required;
+							}}
+						/>
+					{/if}
 				{/if}
 			</div>
 

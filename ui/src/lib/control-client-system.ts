@@ -61,6 +61,12 @@ export class SystemControlClient {
 		}
 		return result.value;
 	}
+	async archive(command: import('./proto/webrtc_pb').ArchiveCommand) {
+		const result = await this.sendRequest({ case: 'archiveCommand', value: command });
+		if (result.case !== 'archiveResult')
+			throw new Error('Server returned an unexpected archive response.');
+		return result.value;
+	}
 
 	async getHealth(signal?: AbortSignal): Promise<ServerHealthResponse> {
 		signal?.throwIfAborted();
@@ -128,6 +134,7 @@ export class SystemControlClient {
 		update: SettingsConfigUpdate
 	): Promise<SettingsConfigUpdateResponse> {
 		const storage = create(RuntimeStorageConfigurationSchema, {
+			archive: update.storage.archive,
 			namedVolumes: update.storage.named_volumes,
 			mediumTermPath: update.storage.medium_term_path,
 			longTermPath: update.storage.long_term_path,
@@ -242,6 +249,7 @@ export function runtimeConfiguration(config: SanitizedRuntimeConfiguration): San
 		configuration_revision: config.configurationRevision,
 		storage: {
 			named_volumes: config.storage.namedVolumes,
+			archive: config.storage.archive,
 			medium_term_path: config.storage.mediumTermPath,
 			long_term_path: config.storage.longTermPath,
 			recording_catalog_path: config.storage.recordingCatalogPath,
