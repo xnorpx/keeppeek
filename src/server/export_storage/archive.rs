@@ -116,7 +116,7 @@ pub(in crate::server) fn snapshot(
         completed_at_ms: persisted.completed_at_ms,
         downloaded_at_ms: persisted.downloaded_at_ms,
     };
-    Ok(Some((record, archive)))
+    Ok(Some((record, *archive)))
 }
 
 pub(in crate::server) fn payload(

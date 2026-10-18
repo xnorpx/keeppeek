@@ -87,9 +87,15 @@ fn evict(catalog: &RecordingCatalogHandle, job: &Job, work: &Work<'_>) -> anyhow
         };
         work.check()?;
         anyhow::ensure!(
-            intent.source_identity == job.source_identity
-                && intent.source_bytes == job.bytes
-                && intent.archive.digest == job.digest,
+            intent.source_identity == job.source_identity,
+            "archive eviction source changed"
+        );
+        anyhow::ensure!(
+            intent.source_bytes == job.bytes,
+            "archive eviction source changed"
+        );
+        anyhow::ensure!(
+            intent.archive.digest == job.digest,
             "archive eviction source changed"
         );
         root.retire_owned_until(

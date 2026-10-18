@@ -476,7 +476,7 @@ fn enqueue_admission(
     let Reply::Job(Some(job)) = catalog.archive(Request::Enqueue(admission))? else {
         anyhow::bail!("invalid archive admission reply");
     };
-    Ok(job)
+    Ok(*job)
 }
 
 fn run(context: Context, receiver: Receiver<Command>) {
@@ -491,17 +491,14 @@ fn run(context: Context, receiver: Receiver<Command>) {
             scan.begin(true);
         }
         let worked = if context.settings.enabled && configured {
-            match scan.turn(&context) {
-                Ok(worked) => worked,
-                Err(_) => {
-                    context.health(
-                        false,
-                        Some("Archive target is unavailable; check its configuration"),
-                    );
-                    scan.defer();
-                    false
-                }
-            }
+            scan.turn(&context).unwrap_or_else(|_| {
+                context.health(
+                    false,
+                    Some("Archive target is unavailable; check its configuration"),
+                );
+                scan.defer();
+                false
+            })
         } else {
             context.health(
                 false,

@@ -13,14 +13,14 @@ mod dispatch;
 use dispatch::dispatch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Binding {
+pub struct Binding {
     pub id: String,
     pub root: PathBuf,
     pub identity: Identity,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Job {
+pub struct Job {
     pub id: String,
     pub recording_id: String,
     pub kind: String,
@@ -58,7 +58,7 @@ pub(crate) struct Job {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Admission {
+pub struct Admission {
     pub job_id: String,
     pub recording_id: String,
     pub kind: String,
@@ -71,7 +71,7 @@ pub(crate) struct Admission {
 }
 
 #[derive(Debug)]
-pub(crate) enum Request {
+pub enum Request {
     Bind(Binding),
     Enqueue(Admission),
     Get(String),
@@ -159,12 +159,12 @@ pub(crate) enum Request {
 }
 
 #[derive(Debug)]
-pub(crate) enum Reply {
+pub enum Reply {
     Done,
-    Job(Option<Job>),
+    Job(Option<Box<Job>>),
     Jobs(Vec<Job>),
     Candidates(Vec<(String, Option<String>)>),
-    Eviction(super::archive_playback::Eviction),
+    Eviction(Box<super::archive_playback::Eviction>),
 }
 
 impl RecordingCatalogHandle {
@@ -187,7 +187,7 @@ impl RecordingCatalogHandle {
         let Reply::Job(Some(job)) = self.archive(Request::Get(id.into()))? else {
             anyhow::bail!("archive job is unavailable");
         };
-        Ok(job)
+        Ok(*job)
     }
 }
 
@@ -288,7 +288,7 @@ async fn enqueue(connection: &turso::Connection, value: &Admission) -> anyhow::R
                 && existing.export_metadata == value.export_metadata,
             "archive job ID belongs to another intent"
         );
-        return Ok(Reply::Job(Some(existing)));
+        return Ok(Reply::Job(Some(Box::new(existing))));
     }
     if value.kind == "probe" {
         connection.execute("DELETE FROM archive_replicas WHERE kind='probe' AND recording_id=?1
@@ -303,7 +303,7 @@ async fn enqueue(connection: &turso::Connection, value: &Admission) -> anyhow::R
         if let Some(row) = rows.next().await? {
             let id = row.get::<String>(0)?;
             drop(rows);
-            return Ok(Reply::Job(load(connection, &id).await?));
+            return Ok(Reply::Job(load(connection, &id).await?.map(Box::new)));
         }
     }
     connection.execute("DELETE FROM archive_replicas WHERE kind=?1 AND recording_id=?2 AND state='cancelled' AND cleanup_acknowledged=1",
@@ -317,7 +317,9 @@ async fn enqueue(connection: &turso::Connection, value: &Admission) -> anyhow::R
         turso::params![value.job_id.clone(),value.recording_id.clone(),value.kind.clone(),value.target.clone(),source.path,
             source.identity,to_i64(source.bytes,"archive bytes")?,source.digest.to_vec(),source.root,source.filesystem,
             source.root_identity,source.key,source.operation,value.export_job_id.clone(),value.export_metadata.clone()]).await?;
-    Ok(Reply::Job(load(connection, &value.job_id).await?))
+    Ok(Reply::Job(
+        load(connection, &value.job_id).await?.map(Box::new),
+    ))
 }
 
 fn validate_export_descriptor(value: &Admission) -> anyhow::Result<()> {
@@ -453,7 +455,7 @@ async fn start(
         ensure_source_active(connection, &job.recording_id).await?;
     }
     connection.execute("UPDATE archive_replicas SET state='copying',attempts=attempts+1,error=NULL WHERE job_id=?1",[id]).await?;
-    Ok(Reply::Job(load(connection, id).await?))
+    Ok(Reply::Job(load(connection, id).await?.map(Box::new)))
 }
 
 async fn stage(
@@ -518,7 +520,7 @@ async fn ready(
     }
     connection.execute("UPDATE archive_replicas SET state='ready',version=?2,chunk_hashes=?3,error=NULL,target_reserved_bytes=0,target_materialized_bytes=0 WHERE job_id=?1",turso::params![id,version.token.clone(),chunk_hashes.to_vec()]).await?;
     super::locations::bump_revision(connection).await?;
-    Ok(Reply::Job(load(connection, id).await?))
+    Ok(Reply::Job(load(connection, id).await?.map(Box::new)))
 }
 
 async fn update_state(
@@ -557,7 +559,7 @@ async fn retry(connection: &turso::Connection, id: &str) -> anyhow::Result<Reply
                 stage_identity=NULL,stage_bytes=0,version=NULL,cleanup_identity=NULL,cleanup_bytes=NULL,cleanup_digest=NULL,
                 cleanup_key=NULL,cleanup_complete=0,cleanup_acknowledged=0 WHERE job_id=?1",[id]).await?;
         }
-        return Ok(Reply::Job(load(connection, id).await?));
+        return Ok(Reply::Job(load(connection, id).await?.map(Box::new)));
     }
     if job.state == "ready" && !job.action.is_empty() {
         connection
@@ -566,7 +568,7 @@ async fn retry(connection: &turso::Connection, id: &str) -> anyhow::Result<Reply
                 [id],
             )
             .await?;
-        return Ok(Reply::Job(load(connection, id).await?));
+        return Ok(Reply::Job(load(connection, id).await?.map(Box::new)));
     }
     anyhow::ensure!(
         job.state == "failed" && !job.cancelled,
@@ -598,7 +600,7 @@ async fn cancel(connection: &turso::Connection, id: &str) -> anyhow::Result<Repl
             anyhow::ensure!(job.local_evicted == 1, "restore has already completed");
             connection.execute("UPDATE archive_replicas SET cancelled=1,cleanup_complete=0,cleanup_acknowledged=0,error=NULL WHERE job_id=?1",[id]).await?;
         }
-        return Ok(Reply::Job(load(connection, id).await?));
+        return Ok(Reply::Job(load(connection, id).await?.map(Box::new)));
     }
     anyhow::ensure!(
         matches!(job.state.as_str(), "queued" | "copying" | "failed"),
@@ -811,7 +813,7 @@ async fn action(connection: &turso::Connection, id: &str, action: &str) -> anyho
             (id, action),
         )
         .await?;
-    Ok(Reply::Job(load(connection, id).await?))
+    Ok(Reply::Job(load(connection, id).await?.map(Box::new)))
 }
 
 async fn start_action(
@@ -830,7 +832,7 @@ async fn start_action(
             [id],
         )
         .await?;
-    Ok(Reply::Job(load(connection, id).await?))
+    Ok(Reply::Job(load(connection, id).await?.map(Box::new)))
 }
 
 fn restore_object(key: &str) -> anyhow::Result<crate::storage::archive::target::ObjectId> {
@@ -870,7 +872,7 @@ async fn begin_restore(
             )
             .await?;
     }
-    Ok(Reply::Job(load(connection, id).await?))
+    Ok(Reply::Job(load(connection, id).await?.map(Box::new)))
 }
 
 async fn restore_stage(

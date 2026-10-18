@@ -57,18 +57,20 @@ pub(super) fn to_wire(value: Settings) -> proto::ArchiveSettings {
 
 pub(super) fn sanitized(config: &Config) -> Option<Settings> {
     let resolved = config.storage.archive.as_ref()?;
-    match config
-        .source
-        .get("storage")
-        .and_then(|value| value.get("archive"))
-    {
-        Some(raw) => Some(
-            raw.clone()
-                .try_into()
-                .expect("validated raw archive settings retain their schema"),
-        ),
-        None => Some(resolved.clone()),
-    }
+    Some(
+        config
+            .source
+            .get("storage")
+            .and_then(|value| value.get("archive"))
+            .map_or_else(
+                || resolved.clone(),
+                |raw| {
+                    raw.clone()
+                        .try_into()
+                        .expect("validated raw archive settings retain their schema")
+                },
+            ),
+    )
 }
 
 pub(super) fn dispatch(
@@ -248,7 +250,7 @@ pub(super) fn copy(
                 "archive job ID belongs to another copy"
             )));
         }
-        return Ok(wire_job(target_names(state)?.as_ref(), job));
+        return Ok(wire_job(target_names(state)?.as_ref(), *job));
     }
     let job = if kind == "export" {
         let metadata =

@@ -10,7 +10,7 @@ pub(super) async fn dispatch(
     match request {
         Request::Bind(binding) => bind(connection, &binding).await,
         Request::Enqueue(admission) => enqueue(connection, &admission).await,
-        Request::Get(id) => Ok(Reply::Job(load(connection, &id).await?)),
+        Request::Get(id) => Ok(Reply::Job(load(connection, &id).await?.map(Box::new))),
         Request::FindExport(id) => find_export(connection, &id).await,
         Request::List { after, limit } => page(connection, &after, limit).await,
         Request::Pending { after, limit } => pending(connection, &after, limit).await,
@@ -86,7 +86,7 @@ async fn find_export(connection: &turso::Connection, id: &str) -> anyhow::Result
         .transpose()?;
     drop(rows);
     Ok(Reply::Job(if let Some(job_id) = job_id {
-        load(connection, &job_id).await?
+        load(connection, &job_id).await?.map(Box::new)
     } else {
         None
     }))
@@ -159,7 +159,7 @@ async fn begin_eviction(
     recording_id: &str,
     operation: &str,
 ) -> anyhow::Result<Reply> {
-    Ok(Reply::Eviction(
+    Ok(Reply::Eviction(Box::new(
         super::super::archive_playback::begin_eviction(
             connection,
             registry,
@@ -167,7 +167,7 @@ async fn begin_eviction(
             operation,
         )
         .await?,
-    ))
+    )))
 }
 
 async fn finish_eviction(

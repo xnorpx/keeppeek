@@ -107,7 +107,7 @@ impl Settings {
             effective
                 .recording_catalog_path
                 .parent()
-                .unwrap_or(Path::new(".")),
+                .unwrap_or_else(|| Path::new(".")),
         )?;
         for root in [
             &storage.medium_term_path,
@@ -120,7 +120,11 @@ impl Settings {
             self.require_separate_root(Path::new(root))?;
         }
         if let Some(catalog) = &storage.recording_catalog_path {
-            self.require_separate_root(Path::new(catalog).parent().unwrap_or(Path::new(".")))?;
+            self.require_separate_root(
+                Path::new(catalog)
+                    .parent()
+                    .unwrap_or_else(|| Path::new(".")),
+            )?;
         }
         Ok(())
     }
