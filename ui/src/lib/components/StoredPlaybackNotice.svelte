@@ -19,6 +19,7 @@
 
 {#if error || pending}
 	<section
+		data-stored-playback-notice
 		class="space-y-3 rounded-sm border border-hairline bg-surface p-4"
 		aria-label={archive ? 'Archive playback' : 'Playback'}
 	>
@@ -54,6 +55,7 @@
 	</section>
 {:else if archive}
 	<div
+		data-stored-playback-notice
 		role="status"
 		aria-label="Archive playback"
 		class="flex flex-col gap-1 rounded-sm border border-hairline bg-raised px-4 py-3 sm:flex-row sm:items-center sm:gap-3"

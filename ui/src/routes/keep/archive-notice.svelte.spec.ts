@@ -146,6 +146,16 @@ it('keeps the reported decoded mobile frame visible when playback fails', async 
 		await page.viewport(390, 844);
 		const video = document.querySelector('video');
 		if (!video) throw new Error('Keep video is unavailable');
+		const frame = video.closest<HTMLElement>('[data-keep-media-frame]');
+		const zoomIn = frame?.querySelector<HTMLButtonElement>('button[aria-label="Digital zoom in"]');
+		if (!frame || !zoomIn) throw new Error('Keep media controls are unavailable');
+		await vi.waitFor(() => expect(frame.inert).toBe(true));
+		await vi.waitFor(() => expect(zoomIn.disabled).toBe(false));
+		zoomIn.focus();
+		expect(document.activeElement).not.toBe(zoomIn);
+		expect(video.checkVisibility()).toBe(true);
+		expect(video.getBoundingClientRect().width).toBeGreaterThan(0);
+		expect(video.getBoundingClientRect().height).toBeGreaterThan(0);
 		Object.defineProperty(video, 'videoWidth', { configurable: true, value: 640 });
 		Object.defineProperty(video, 'videoHeight', { configurable: true, value: 360 });
 		video.dispatchEvent(new Event('resize'));
@@ -156,11 +166,14 @@ it('keeps the reported decoded mobile frame visible when playback fails', async 
 			.toMatchTextContent('No first media fragment arrived.');
 		await expect
 			.element(page.getByRole('region', { name: 'Recorded video player' }))
-			.toHaveAttribute('data-recording-empty-error', 'false');
+			.toHaveAttribute('data-recording-empty-notice', 'false');
 		await expect
 			.element(page.getByRole('application', { name: 'Digital zoom viewport' }))
 			.toBeVisible();
 		expect(video.checkVisibility()).toBe(true);
+		expect(frame.inert).toBe(false);
+		zoomIn.focus();
+		expect(document.activeElement).toBe(zoomIn);
 	} finally {
 		dispose();
 	}
