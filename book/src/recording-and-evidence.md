@@ -131,6 +131,50 @@ deadlines. Storage pressure can shorten available coverage. The
 [recording policy audit](https://github.com/xnorpx/keeppeek/blob/main/docs/recording-policy-audit.md)
 tracks verified behavior, missing retention rules and their implementation owners under #168.
 
+## Use the local archive tier
+
+KeepPeek separates short-lived RAM buffering, active recording files, finalized primary media,
+and the fourth **ARCHIVE** tier. A fourth-tier archive is a verified replica. The named-volume
+`archive` placement role still relocates primary recordings; it does not create a second replica.
+
+As an Administrator, open **Settings → Storage → Local archive**. Create a private destination
+directory owned by the recorder account on an already mounted local disk, then edit and save its
+target ID, root, limits, and optional source selection. The archive root must not overlap primary
+or metadata roots. Save requires a configuration revision; a conflict preserves your draft.
+**Reload archive settings** explicitly discards the draft after confirmation and loads current
+settings. Restart KeepPeek to apply the saved configuration, then test the destination and refresh
+archive jobs to observe the result. A pending probe is not a successful destination test.
+
+You can queue a manual copy of finalized recordings or completed exports from the catalog object
+selector. Automatic mode selects eligible sources after the configured minimum age; an empty
+source list selects all. Copies use bounded background work and independently verify the retained
+replica before reporting success. Jobs show identity, state, bytes, attempts, failures, and any
+restore or eviction action. Refresh before retrying an uncertain result. A lost copy reply is
+reconciled using the same durable job identity.
+
+Primary eviction defaults to **off**. A successful copy alone does not remove the primary file.
+Enable automatic eviction only deliberately, or confirm **Evict primary** for an individual job.
+The server checks the verified archive, current reader leases, and retention holds before retiring
+the primary. Timeline and seek metadata remain indexed. Open archived recordings through the
+normal Keep timeline; the player displays **ARCHIVE — Playing from archive. Startup and seeking may take longer.** It reads
+the required archive ranges directly, without a full restore or an artificial delay. Existing
+waiting, failure, seek, and cancellation controls still apply.
+
+**Restore primary** queues a verified transfer back to the original primary destination.
+Cancellation stops cancellable copy or restore work and cleans up partial staging.
+**Retry / finish cleanup** retains the cancelled copy's job identity. Copying resumes only after
+cleanup is acknowledged and current source evidence is validated. Refresh to distinguish pending
+cleanup from resumed copying. Once a primary eviction intent is durable, it must finish
+reconciliation; cancellation is unavailable for that
+state. Preserve the job evidence and restore the destination before retrying recovery.
+
+An offline archive reports unavailable health without blocking new recording ingestion. Archived
+media whose primary was evicted can remain temporarily inaccessible until the mounted destination
+returns. Do not recreate or substitute a missing mount: the catalog binds the target ID to its
+root identity. Retain the catalog, archive tree, and configuration together for
+[filesystem recovery](./recording-archive-recovery.md). Broader offsite providers remain planned;
+the supported target in this phase is the local filesystem only.
+
 ## Prove recording integrity
 
 Open **Recording integrity** to inspect the fleet before footage is needed. The workspace reports:

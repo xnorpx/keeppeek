@@ -636,6 +636,67 @@ Source: [named-volume model](https://github.com/xnorpx/keeppeek/blob/main/src/st
 Windows path validation follows the
 [Windows filename rules](https://learn.microsoft.com/windows/win32/fileio/naming-a-file).
 
+### Fourth-tier local archive
+
+Optional `[storage.archive]` configures one verified local replica destination. Omitting it disables
+this tier. It is separate from named-volume `archive` placement, which relocates the authoritative
+recording. A verified fourth-tier copy retires its primary only through an enabled eviction policy
+or an Administrator's confirmed per-job action. Local recording, live viewing and the first three tiers do not wait for archive
+availability.
+
+```toml
+[storage.archive]
+target_id = "local-archive"
+root = "{secret:ARCHIVE_ROOT}"
+enabled = false
+automatic = false
+source_ids = []
+minimum_age_secs = 0
+evict_after_archive = false
+maximum_object_bytes = 4294967296
+maximum_pending_count = 256
+maximum_pending_bytes = 68719476736
+operation_timeout_secs = 120
+maximum_attempts = 3
+```
+
+| Field                    | Type          | Default          | Validation and meaning                                                                                                                                             |
+| ------------------------ | ------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `target_id`              | `String`      | Required         | Stable ID with 1–64 lowercase ASCII letters, digits, hyphens or underscores; `legacy-` is reserved.                                                                |
+| `root`                   | `PathBuf`     | Required         | Absolute local destination; at most 4,096 UTF-8 bytes and 64 path components. It must already exist when used. Named-volume path safety rules apply.               |
+| `enabled`                | `bool`        | `false`          | Enable archive work; configuration alone does not bind or create the destination.                                                                                  |
+| `automatic`              | `bool`        | `false`          | Admit eligible finalized recordings automatically when the archive worker is enabled.                                                                              |
+| `source_ids`             | `Vec<String>` | Empty            | Automatic-selection filter; empty selects all sources. At most 127 distinct, nonblank IDs, each at most 256 UTF-8 bytes without control or surrounding whitespace. |
+| `minimum_age_secs`       | `u64`         | `0`              | Minimum finalized recording age for automatic selection, at most 315,360,000 seconds (ten 365-day years).                                                          |
+| `evict_after_archive`    | `bool`        | `false`          | Explicitly permit policy-driven primary-copy eviction after verification; holds, leases and durable archive indexes still apply.                                   |
+| `maximum_object_bytes`   | `u64`         | `4,294,967,296`  | Per-object admission limit, from 1 byte through 64 GiB; cannot exceed the pending-byte limit.                                                                      |
+| `maximum_pending_count`  | `u32`         | `256`            | Retained pending jobs, from 1 through 4,096.                                                                                                                       |
+| `maximum_pending_bytes`  | `u64`         | `68,719,476,736` | Pending-byte admission ceiling, positive and at most `i64::MAX`.                                                                                                   |
+| `operation_timeout_secs` | `u64`         | `120`            | Finite archive operation deadline, from 1 through 3,600 seconds.                                                                                                   |
+| `maximum_attempts`       | `u32`         | `3`              | Maximum attempts for one durable job, from 1 through 10.                                                                                                           |
+
+Roots cannot overlap named-volume roots or legacy media, thumbnail and metadata directories.
+Lexical checks do not establish filesystem identity; the bounded owned-object write/read/delete
+probe and persisted catalog binding detect offline or replaced destinations without recreating
+their roots. Keep the stable target ID with its binding; changing a configured path must not adopt
+an old manifest under a different root identity.
+
+Destination availability requires a successful verified operation. Opening or binding the root
+alone does not establish availability; test the destination after startup and refresh its result.
+
+String settings support existing secret references. Validation uses resolved values; ordinary
+settings rewrites and configuration export/import preserve raw references and unrelated sections.
+Older runtime settings updates that omit archive settings preserve the accepted archive section.
+Unknown archive fields are rejected; cloud provider selectors and credentials are not supported by
+this local implementation. Job journals, manifests, root bindings and integrity metadata are
+operational catalog state, not extra settings files.
+
+Archive playback reuses the timeline and normal playback controls. Initial access and seeking may
+take longer than the first three tiers because target access and integrity checks can add work.
+Available local archive files can play directly without a full-file restore; unavailable or corrupt
+objects remain explicit errors. Restoring or removing a primary copy preserves the original media
+identity and archive timeline indexes.
+
 ## Battery wake
 
 Type: `BatteryWakeConfig`, section `[battery_wake]`. This is the Reolink wake middleman service,
