@@ -8,6 +8,30 @@ playback readers, export metadata and Paper designs are preserved. The two separ
 validated archive browser regression fixes are also carried locally. No hosted CI,
 push, pull request or merge work is requested for this local start.
 
+## Final validated local checkpoint
+
+Frozen source and tests at `fb250675d3d60947304b13c619a0091c204dde5f` passed the full
+Windows `check.bat` gate with Rust 1.99.0, incremental compilation disabled and slow
+tests enabled. The run passed all 3602 Rust tests in 480.404 seconds (four slow tests,
+27 existing skipped fixtures), strict workspace/all-target Clippy, unused-dependency,
+Rust/Python formatting and every UI static check. Svelte reported zero errors and
+warnings. UI suites passed 438 Bun tests, 317 Chromium component/visual tests and
+89 compatibility tests. Playwright passed 299 E2E cases in 2.8 minutes, with two
+existing skipped cases. The supported authentication-fixture override reused the
+verified current executable from the preceding complete UI preflight.
+
+Script: `target/agent-artifacts/132-check-windows.ps1`. Complete output:
+`target/agent-artifacts/132-check-windows.log`. The subsequent evidence-only commit
+changes this task note; runtime source, API, UI, vendor code and tests remain identical
+to the validated checkpoint. The current book also builds successfully; its log is
+`target/agent-artifacts/132-book-build.log`.
+
+This completes a validated local start of the immutable-export workflow. It does not
+complete #132: exact ranges, the remaining creator entry points, actual guest HTTPS
+playback and full adversarial/resource qualification remain open. Existing real TLS
+authentication tests and mocked guest isolation tests do not prove guest HTTPS delivery.
+No #132 push or pull request has been made, and hosted CI is left to the user.
+
 ## Product contract
 
 An Administrator may share one completed immutable export, or one explicitly bounded
@@ -35,8 +59,10 @@ for the full issue. No original acceptance item is closed by implementing a gran
 Issue ceilings: 256 active grants, 32 per creator, at most 24 hours and no later than
 artifact expiry; inherited 2-minute/512 MiB evidence limits; 128 UTF-8 bytes for display
 name and 512 for note; 8 guest sessions globally and 2 per grant. Expired/revoked audit
-metadata lives at most 30 days. Total audit cardinality is also finite: reject new work
-when unexpired retained metadata fills the store instead of growing indefinitely.
+metadata has a 30-day retention ceiling. Current code hides older records from lists
+and performs bounded batch cleanup; physical removal within this ceiling remains part
+of full qualification. Total audit cardinality is finite: reject new work when retained
+metadata fills the store instead of growing indefinitely.
 
 Fixed-capacity request budgets must use the actual classified transport address, not
 arbitrary forwarded headers. Token lookup, sessions, ranges, downloads, egress buffers,
@@ -127,11 +153,11 @@ range/export creation; denial of every unrelated surface; token secrecy; determi
 expiry/revoke/limits/retention/restart; strict origin/browser headers; bounded creator
 audit/list/revoke; and complete adversarial/browser/resource verification.
 
-## Current local evidence
+## Evidence history
 
 - Live roadmap #147, issue #132, origin/main and open PRs were refreshed before selection.
   The initial base-source review found no guest grant store, route, viewer or management
-  UI; these are now being implemented in the isolated #132 checkout.
+  UI. The bounded immutable-export increment is now implemented in the isolated checkout.
 - The first durable-domain checkpoint passed 39 tests in 5.55 seconds. The first export
   provenance checkpoint passed four tests in 2.25 seconds. Logs:
   `target/agent-artifacts/shares-domain-green.log` and
@@ -144,12 +170,13 @@ audit/list/revoke; and complete adversarial/browser/resource verification.
   `guest-ui-unit.log` and `guest-ui-components.log` in the same directory.
 - The existing KeepPeek Paper file now contains boards 51-56 with desktop, 390px and
   320px exports. See [the UI design and evidence boundary](132-guest-review-ui-design.md).
-- Current UI source adds the isolated `/share` viewer, early fragment removal, disposable
-  normal-shell logging, bound guest API requests, the ready-export creator dialog and
-  Settings Access policy/grant management. The current Svelte check passes with zero
-  errors and warnings. The initial current check's 15 errors are preserved separately;
+- The first integrated UI checkpoint added the isolated `/share` viewer, early fragment
+  removal, disposable normal-shell logging, bound guest API requests, the ready-export
+  creator dialog and
+  Settings Access policy/grant management. Its Svelte check passed with zero
+  errors and warnings. The initial check's 15 errors are preserved separately;
   fixes added the missing typed capability, numeric props and installed Vitest APIs.
-- Current focused checks pass: 29 Bun server/helper/capability/Paper tests in 243 ms,
+- That UI checkpoint passed: 29 Bun server/helper/capability/Paper tests in 243 ms,
   22 Vitest compatibility tests in 1.02 seconds, and five canonical-selection guards
   in 11 ms. Every source unit test retains exactly one canonical owner. Guest API and
   logging global mocks use the existing compatibility project; other pure server
@@ -160,8 +187,8 @@ audit/list/revoke; and complete adversarial/browser/resource verification.
   assertions. The queued case first failed because replacing Kit's already-updated
   URL did not create a new document; the fallback now explicitly reloads. This is
   HTTP development-fixture evidence, not actual HTTPS/backend qualification.
-- Current UI logs use `target/agent-artifacts/guest-ui-current-*.log`, distinct from
-  the earlier viewer-only logs. The current E2E TypeScript check also passes after
+- The focused UI logs use `target/agent-artifacts/guest-ui-current-*.log`, distinct from
+  the earlier viewer-only logs. Its E2E TypeScript check also passed after
   explicitly checking that the fixture storage-audit binding is installed. Initial
   component locator and E2E typing failures remain in their separate logs.
 - Vendor transport qualification subsequently passed: four TCP cancellation tests,
@@ -170,14 +197,14 @@ audit/list/revoke; and complete adversarial/browser/resource verification.
   Logs include `132-response-abort-shared-socket-green.log`, `132-native-tls-green.log`,
   `132-vendor-all-green.log` and `132-vendor-clippy.log` under the artifact directory.
   The old `132-response-abort-green.log` remains a historical three-pass/one-fail
-  artifact despite its filename. These vendor tests do not qualify the newer combined
-  KeepPeek guest HTTP/configuration path, whose focused build/tests are still pending.
-- The separate #130 canonical gate has exited successfully. #132 focused UI validation
-  uses a coordinated slot after transport qualification. The #132 canonical Windows
-  gate has not passed.
+  artifact despite its filename. These vendor tests are separate from the subsequent
+  combined KeepPeek guest HTTP/configuration and canonical checkpoints below.
+- The separate #130 canonical gate passed before the final #132 run. It provides no
+  validation of guest sharing.
 
-The combined backend checkpoint now passes 147 tests in 13.756 seconds. It covers
-current grant storage, clock/accounting, guest HTTP/media, configuration, management,
+Before archive integration, the combined backend checkpoint passed 147 tests in
+13.756 seconds. It covered
+grant storage, clock/accounting, guest HTTP/media, configuration, management,
 approved API contracts, export ownership/provenance and measured export envelopes.
 The real export tests exercise pinned metadata and durable history. Proof publication
 requires a real history writer; a missing or failed writer leaves ordinary downloads
@@ -194,9 +221,10 @@ boundary cases and the on-disk proof restore all pass in the combined checkpoint
 This checkpoint predates integration of the merged archive work at `7f9e326`.
 
 All four creator entry points and exact bounded recording derivatives remain required.
-Actual HTTPS isolation/headers, backend-to-browser creation and delivery, active revoke
-latency, restart/retention behavior, resource/performance measurements and the final
-canonical gate remain open. Historical focused checkpoints do not close these items.
+Actual guest HTTPS isolation/headers, backend-to-browser creation and delivery, active
+revoke latency, restart/retention behavior and resource/performance qualification remain
+open beyond this local checkpoint. The final canonical gate and historical focused
+results do not close these full-issue acceptance items.
 
 The pre-archive-integration workspace/all-target Clippy check passes with warnings
 rejected in 55.18 seconds. The normal production build now includes the grant store;
@@ -242,7 +270,8 @@ target-capability assertion and Administrator gates remain intact; guest deliver
 still marked as a target while full issue acceptance is open. Independent review found
 no blocker in that five-file change.
 
-Full UI preflight now passes: 438 Bun tests, 317 Chromium component/visual tests and
+Before the final canonical run, full UI preflight passed: 438 Bun tests, 317 Chromium
+component/visual tests and
 89 compatibility tests. All UI static checks report success, including Svelte with
 zero errors and warnings. Full Playwright E2E passes 299 cases with two existing
 skipped cases in 3.0 minutes. These include existing real authentication TLS cases
