@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { StateEntry } from './proto/webrtc_pb';
 import { RuntimeProfilesControlClient } from './control-client-runtime-profiles';
 import {
@@ -11,6 +11,59 @@ import {
 import type { ControlClientStateStore } from './control-client-state-store';
 
 describe('RuntimeProfilesControlClient', () => {
+	it('reports an asynchronous registry watch read failure to its owner', async () => {
+		let notify: (entries: readonly StateEntry[]) => void = () => {};
+		const stateStore = {
+			watch: async (_namespace: string, options: { listener: typeof notify }) => {
+				notify = options.listener;
+				return { close: vi.fn() };
+			}
+		} as unknown as ControlClientStateStore;
+		const client = new RuntimeProfilesControlClient(stateStore);
+		vi.spyOn(client, 'getRegistry').mockRejectedValue(new Error('Registry read failed.'));
+		const onError = vi.fn();
+		await client.watchRegistry(vi.fn(), onError);
+		notify([entry('registry', runtimeProfilesRegistrySchema, {}, 3n)]);
+		await vi.waitFor(() =>
+			expect(onError).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ message: 'Registry read failed.' })
+			)
+		);
+	});
+	it('reads stable camera targets without imposing the per-profile 127-target limit', async () => {
+		const cameras = Object.fromEntries(
+			Array.from({ length: 200 }, (_, index) => [
+				`00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+				`192.0.2.${index + 1}`
+			])
+		);
+		const stateStore = {
+			get: async (namespace: string, key: string) => {
+				expect(namespace).toBe(runtimeProfilesNamespace);
+				expect(key).toBe('cameras');
+				return entry(key, 'keeppeek.runtime-profiles.cameras.v1', { cameras }, 3n);
+			}
+		} as unknown as ControlClientStateStore;
+		expect(await new RuntimeProfilesControlClient(stateStore).getCameras()).toEqual(cameras);
+	});
+
+	it.each([
+		{ cameras: { '192.0.2.1': '192.0.2.1' } },
+		{ cameras: { '00000000-0000-4000-8000-000000000001': 'camera.example' } },
+		{ cameras: { '00000000-0000-4000-8000-000000000001': '192.0.2.999' } },
+		{
+			cameras: {
+				'00000000-0000-4000-8000-000000000001': '192.0.2.1',
+				'00000000-0000-4000-8000-000000000002': '192.0.2.1'
+			}
+		}
+	])('rejects ambiguous or invalid camera bindings %j', async (value) => {
+		const stateStore = {
+			get: async () => entry('cameras', 'keeppeek.runtime-profiles.cameras.v1', value, 1n)
+		} as unknown as ControlClientStateStore;
+		await expect(new RuntimeProfilesControlClient(stateStore).getCameras()).rejects.toThrow();
+	});
+
 	it('assembles one verified registry generation with at most four part reads at once', async () => {
 		const definitions = [await profile('away', 35), await profile('night', 35)];
 		const manifest = {

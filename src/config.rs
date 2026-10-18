@@ -22,6 +22,9 @@ use url::Url;
 
 const DEFAULT_CONFIG_NAME: &str = "config.toml";
 const DEFAULT_SECRETS_NAME: &str = "secrets.toml";
+const CAMERA_PROFILE_IDENTITY: &str = "profile_identity";
+const RUNTIME_PROFILE_IDENTITY_SCHEMA: &str = "identity_schema";
+const RUNTIME_PROFILE_IDENTITY_SCHEMA_VERSION: i64 = 1;
 const ACCESS_KEY_SECRET: &str = "KEEPPEEK_ACCESS_KEY";
 pub(crate) const STORAGE_MIGRATION_SECTION: &str = "storage_migration";
 const DEFAULT_SECRETS_TEMPLATE: &str = r#"# Keep this file private. KeepPeek creates it with owner-only permissions.
@@ -129,6 +132,9 @@ pub struct Config {
 
     #[serde(skip)]
     pub(crate) source: toml::Table,
+
+    #[serde(skip)]
+    pub(crate) secrets_snapshot: Secrets,
 }
 
 /// Server-enforced recurring privacy policies keyed by camera identity.
@@ -305,6 +311,18 @@ impl Config {
             .filter(|value| contains_secret_reference(value))
             .unwrap_or(resolved)
             .to_owned()
+    }
+
+    /// Resolves profile identities from the same secrets snapshot as this configuration.
+    pub(crate) fn camera_profile_identities(&self) -> anyhow::Result<BTreeMap<IpAddr, String>> {
+        camera_profile_identities_from_table(&self.source, &self.secrets_snapshot)
+    }
+
+    /// Resolves camera definitions from the same secrets snapshot as profile identities.
+    pub(crate) fn camera_configurations(
+        &self,
+    ) -> anyhow::Result<HashMap<String, Vec<CameraConfig>>> {
+        cameras_from_table(&self.source, &self.secrets_snapshot)
     }
 }
 
@@ -997,6 +1015,7 @@ impl Default for Config {
             event_forwarder: EventForwarderConfig::default(),
             isapi_callbacks: None,
             source: toml::Table::new(),
+            secrets_snapshot: Secrets::default(),
         }
     }
 }
@@ -1418,6 +1437,10 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
     metadata::validate(&cfg.storage)?;
     storage_volumes::validate(cfg.storage.named_volumes.as_ref())?;
 
+    let preserve_profile_identity_schema = merged
+        .get("runtime_profiles")
+        .and_then(|profiles| profiles.get(RUNTIME_PROFILE_IDENTITY_SCHEMA))
+        .is_some();
     let cfg_value: toml::Value = toml::Value::try_from(&cfg)?;
     let cfg_table = cfg_value.as_table().cloned().unwrap_or_default();
 
@@ -1428,6 +1451,9 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
                 merged.insert(key, value);
             }
         }
+    }
+    if preserve_profile_identity_schema {
+        stamp_runtime_profile_identity_schema(&mut merged)?;
     }
     if generated_access_key || !access_key_is_reference || access_key_arg.is_some() {
         merged.insert(
@@ -1805,7 +1831,15 @@ pub(crate) fn validated_configuration_table(
     root: &toml::Table,
 ) -> anyhow::Result<Config> {
     let secrets = load_secrets(path)?;
-    let config = config_from_table(root, &secrets)?;
+    validated_configuration_table_with_secrets(path, root, &secrets)
+}
+
+fn validated_configuration_table_with_secrets(
+    path: &Path,
+    root: &toml::Table,
+    secrets: &Secrets,
+) -> anyhow::Result<Config> {
+    let config = config_from_table(root, secrets)?;
     config.access.validate()?;
     crate::access::validate_configuration(root)?;
     config.direct_card.validate()?;
@@ -1817,7 +1851,8 @@ pub(crate) fn validated_configuration_table(
     crate::notifications::validate_configuration(path, root)?;
     crate::server::validate_peek_layout_configuration(root)?;
     crate::server::validate_template_configuration(root)?;
-    cameras_from_table(root, &secrets)?;
+    cameras_from_table(root, secrets)?;
+    camera_profile_identities_from_table(root, secrets)?;
     Ok(config)
 }
 
@@ -1848,6 +1883,9 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
         }
     }
     let mut runtime = root.clone();
+    if let Some(value) = runtime.get_mut("runtime_profiles") {
+        *value = runtime_profile_value_without_identity_schema(value)?;
+    }
     for section in [
         "access_credentials",
         "external_identities",
@@ -1874,6 +1912,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
         callbacks.validate()?;
     }
     config.source = root.clone();
+    config.secrets_snapshot = secrets.clone();
     Ok(config)
 }
 
@@ -1931,6 +1970,302 @@ pub fn load_cameras(path: &Path) -> anyhow::Result<HashMap<String, Vec<CameraCon
     let root = load_configuration_table(path)?;
     let secrets = load_secrets(path)?;
     cameras_from_table(&root, &secrets)
+}
+
+/// Returns only unambiguous configured IPs and their persistent profile identities.
+#[cfg(test)]
+pub(crate) fn load_camera_profile_identities(
+    path: &Path,
+) -> anyhow::Result<BTreeMap<IpAddr, String>> {
+    let root = load_configuration_table(path)?;
+    let secrets = load_secrets(path)?;
+    camera_profile_identities_from_table(&root, &secrets)
+}
+
+/// Returns only unambiguous configured camera identities from a loaded configuration.
+pub(crate) fn camera_profile_identities_from_table(
+    root: &toml::Table,
+    secrets: &Secrets,
+) -> anyhow::Result<BTreeMap<IpAddr, String>> {
+    let index = collect_camera_profile_identities(root, secrets)?;
+    reject_ambiguous_active_profile_targets(root, &index)?;
+    Ok(index.identities)
+}
+
+pub(crate) fn runtime_profile_configuration_value(
+    registry: &crate::profiles::ProfileRegistry,
+) -> anyhow::Result<toml::Value> {
+    let mut value = toml::Value::try_from(registry)?;
+    value
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("runtime profiles must be a configuration table"))?
+        .insert(
+            RUNTIME_PROFILE_IDENTITY_SCHEMA.to_owned(),
+            toml::Value::Integer(RUNTIME_PROFILE_IDENTITY_SCHEMA_VERSION),
+        );
+    Ok(value)
+}
+
+pub(crate) fn runtime_profile_registry_from_configuration(
+    value: &toml::Value,
+) -> anyhow::Result<crate::profiles::ProfileRegistry> {
+    runtime_profile_value_without_identity_schema(value)?
+        .try_into()
+        .map_err(Into::into)
+}
+
+fn runtime_profile_value_without_identity_schema(
+    value: &toml::Value,
+) -> anyhow::Result<toml::Value> {
+    let mut value = value.clone();
+    let profiles = value
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("runtime profiles must be a configuration table"))?;
+    if let Some(version) = profiles.remove(RUNTIME_PROFILE_IDENTITY_SCHEMA) {
+        anyhow::ensure!(
+            version.as_integer() == Some(RUNTIME_PROFILE_IDENTITY_SCHEMA_VERSION),
+            "unsupported runtime profile identity schema"
+        );
+    }
+    Ok(value)
+}
+
+fn stamp_runtime_profile_identity_schema(root: &mut toml::Table) -> anyhow::Result<bool> {
+    let Some(value) = root.get_mut("runtime_profiles") else {
+        return Ok(false);
+    };
+    let profiles = value
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("runtime profiles must be a configuration table"))?;
+    match profiles.get(RUNTIME_PROFILE_IDENTITY_SCHEMA) {
+        Some(version) => {
+            anyhow::ensure!(
+                version.as_integer() == Some(RUNTIME_PROFILE_IDENTITY_SCHEMA_VERSION),
+                "unsupported runtime profile identity schema"
+            );
+            Ok(false)
+        }
+        None => {
+            profiles.insert(
+                RUNTIME_PROFILE_IDENTITY_SCHEMA.to_owned(),
+                toml::Value::Integer(RUNTIME_PROFILE_IDENTITY_SCHEMA_VERSION),
+            );
+            Ok(true)
+        }
+    }
+}
+
+/// Returns one validated configuration snapshot after the atomic identity migration.
+pub(crate) fn migrate_camera_profile_configuration(path: &Path) -> anyhow::Result<Config> {
+    let mut root = load_configuration_table(path)?;
+    let secrets = load_secrets(path)?;
+    let (identities, identities_changed) = assign_camera_profile_identities(&mut root, &secrets)?;
+    camera_profile_identities_from_table(&root, &secrets)?;
+    let profiles_changed = migrate_legacy_profile_targets(&mut root, &identities)?;
+    let schema_changed = stamp_runtime_profile_identity_schema(&mut root)?;
+    let config = validated_configuration_table_with_secrets(path, &root, &secrets)?;
+    if identities_changed || profiles_changed || schema_changed {
+        write_private_file_atomically(path, toml::to_string_pretty(&root)?.as_bytes())?;
+    }
+    Ok(config)
+}
+
+/// Assigns camera identities and migrates legacy IP profile targets in one write.
+#[cfg(test)]
+pub(crate) fn ensure_camera_profile_identities(
+    path: &Path,
+) -> anyhow::Result<BTreeMap<IpAddr, String>> {
+    let config = migrate_camera_profile_configuration(path)?;
+    config.camera_profile_identities()
+}
+
+fn migrate_legacy_profile_targets(
+    root: &mut toml::Table,
+    identities: &BTreeMap<IpAddr, String>,
+) -> anyhow::Result<bool> {
+    let Some(value) = root.get("runtime_profiles") else {
+        return Ok(false);
+    };
+    let mut registry = runtime_profile_registry_from_configuration(value)?;
+    registry.validate()?;
+    let mut changed = false;
+    for profile in registry.profiles.values_mut() {
+        let mut rewritten = BTreeMap::new();
+        let mut profile_changed = false;
+        for (camera_id, overrides) in &profile.cameras {
+            let next_id = camera_id.parse::<IpAddr>().map_or_else(
+                |_| camera_id.clone(),
+                |ip| {
+                    profile_changed = true;
+                    identities
+                        .get(&ip)
+                        .cloned()
+                        .unwrap_or_else(|| format!("missing-ip:{ip}"))
+                },
+            );
+            anyhow::ensure!(
+                rewritten.insert(next_id, overrides.clone()).is_none(),
+                "camera profile target migration would merge distinct overrides"
+            );
+        }
+        if profile_changed {
+            increment_profile_revision(&mut profile.revision)?;
+            profile.cameras = rewritten;
+            changed = true;
+        }
+    }
+    if changed {
+        increment_profile_revision(&mut registry.revision)?;
+        registry.validate()?;
+        root.insert(
+            "runtime_profiles".to_owned(),
+            runtime_profile_configuration_value(&registry)?,
+        );
+    }
+    Ok(changed)
+}
+
+fn increment_profile_revision(revision: &mut u64) -> anyhow::Result<()> {
+    *revision = revision
+        .checked_add(1)
+        .filter(|next| *next <= i64::MAX as u64)
+        .ok_or_else(|| anyhow::anyhow!("camera profile revision is exhausted"))?;
+    Ok(())
+}
+
+/// Mutates a loaded table so callers can combine identity and profile migration in one write.
+pub(crate) fn assign_camera_profile_identities(
+    root: &mut toml::Table,
+    secrets: &Secrets,
+) -> anyhow::Result<(BTreeMap<IpAddr, String>, bool)> {
+    let index = collect_camera_profile_identities(root, secrets)?;
+    if index.missing.is_empty() {
+        return Ok((index.identities, false));
+    }
+    let mut known_ids = index.known_ids.into_keys().collect::<HashSet<_>>();
+    for (namespace, name) in index.missing {
+        let identity = (0..3)
+            .map(|_| uuid::Uuid::new_v4().to_string())
+            .find(|identity| known_ids.insert(identity.clone()))
+            .ok_or_else(|| {
+                anyhow::anyhow!("unable to allocate a unique camera profile identity")
+            })?;
+        root.get_mut(&namespace)
+            .and_then(toml::Value::as_table_mut)
+            .and_then(|cameras| cameras.get_mut(&name))
+            .and_then(toml::Value::as_table_mut)
+            .expect("validated camera table")
+            .insert(
+                CAMERA_PROFILE_IDENTITY.to_owned(),
+                toml::Value::String(identity),
+            );
+    }
+    Ok((
+        collect_camera_profile_identities(root, secrets)?.identities,
+        true,
+    ))
+}
+
+struct CameraProfileIdentityIndex {
+    identities: BTreeMap<IpAddr, String>,
+    missing: Vec<(String, String)>,
+    known_ids: HashMap<String, IpAddr>,
+    ambiguous_ips: HashSet<IpAddr>,
+}
+
+fn collect_camera_profile_identities(
+    root: &toml::Table,
+    secrets: &Secrets,
+) -> anyhow::Result<CameraProfileIdentityIndex> {
+    let mut identities = BTreeMap::new();
+    let mut ambiguous_ips = HashSet::new();
+    let mut seen_ips = HashSet::new();
+    let mut missing = Vec::new();
+    let mut known_ids = HashMap::new();
+    for (namespace, value) in root {
+        if !is_camera_namespace(namespace, value) {
+            continue;
+        }
+        for (name, value) in value.as_table().expect("camera namespace table") {
+            let camera = value
+                .as_table()
+                .ok_or_else(|| anyhow::anyhow!("camera {namespace}.{name} is not a table"))?;
+            let raw_ip = camera
+                .get("ip")
+                .and_then(toml::Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("camera {namespace}.{name} has no IP"))?;
+            let ip = resolve_secret_references_loaded(raw_ip, secrets)?.parse::<IpAddr>()?;
+            if !seen_ips.insert(ip) {
+                ambiguous_ips.insert(ip);
+                identities.remove(&ip);
+            }
+            let Some(identity) = camera_profile_identity(camera)? else {
+                missing.push((namespace.clone(), name.clone()));
+                continue;
+            };
+            anyhow::ensure!(
+                known_ids.insert(identity.clone(), ip).is_none(),
+                "duplicate camera profile identity"
+            );
+            if !ambiguous_ips.contains(&ip) {
+                identities.insert(ip, identity);
+            }
+        }
+    }
+    Ok(CameraProfileIdentityIndex {
+        identities,
+        missing,
+        known_ids,
+        ambiguous_ips,
+    })
+}
+
+fn reject_ambiguous_active_profile_targets(
+    root: &toml::Table,
+    index: &CameraProfileIdentityIndex,
+) -> anyhow::Result<()> {
+    let Some(value) = root.get("runtime_profiles") else {
+        return Ok(());
+    };
+    let registry = runtime_profile_registry_from_configuration(value)?;
+    let Some(profile) = registry
+        .active_profile_id
+        .as_ref()
+        .and_then(|id| registry.profiles.get(id))
+    else {
+        return Ok(());
+    };
+    for camera_id in profile.cameras.keys() {
+        let ip = camera_id
+            .parse::<IpAddr>()
+            .ok()
+            .or_else(|| index.known_ids.get(camera_id).copied());
+        anyhow::ensure!(
+            !ip.is_some_and(|ip| index.ambiguous_ips.contains(&ip)),
+            "active camera profile target has an ambiguous configured IP"
+        );
+    }
+    Ok(())
+}
+
+fn camera_profile_identity(camera: &toml::Table) -> anyhow::Result<Option<String>> {
+    let Some(value) = camera.get(CAMERA_PROFILE_IDENTITY) else {
+        return Ok(None);
+    };
+    let value = value
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("camera profile identity must be a UUID string"))?;
+    let identity = uuid::Uuid::parse_str(value)
+        .map_err(|_| anyhow::anyhow!("camera profile identity must be a UUID"))?;
+    anyhow::ensure!(
+        identity.get_version_num() == 4,
+        "camera profile identity must be UUID v4"
+    );
+    anyhow::ensure!(
+        value == identity.to_string(),
+        "camera profile identity must be canonical"
+    );
+    Ok(Some(identity.to_string()))
 }
 
 fn cameras_from_table(
@@ -2357,6 +2692,8 @@ pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<Strin
         .and_then(toml::Value::as_table_mut)
         .ok_or_else(|| anyhow::anyhow!("camera {} is not a configuration table", config.ip))?;
     let original = camera.clone();
+    let profile_identity =
+        camera_profile_identity(&original)?.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     const MANAGED_CAMERA_KEYS: &[&str] = &[
         "ip",
@@ -2410,6 +2747,12 @@ pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<Strin
             camera.insert(key, value);
         }
     }
+
+    camera.insert(
+        CAMERA_PROFILE_IDENTITY.to_owned(),
+        toml::Value::String(profile_identity),
+    );
+    camera_profile_identities_from_table(&root, &secrets)?;
 
     write_private_file_atomically(path, toml::to_string_pretty(&root)?.as_bytes())?;
     Ok(name)
@@ -2699,6 +3042,437 @@ mod tests {
     use super::*;
     use crate::profiles::{CameraProfileOverride, RuntimeProfile};
     use crate::storage::{CatalogRecording, RecordingCatalog};
+
+    #[test]
+    fn camera_profile_identity_survives_ip_edit_but_not_delete_and_readd() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-camera-profile-identity-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            b"[cameras.front]\nip = '192.0.2.10'\npassword = '{secret:PW}'\ncustom_option = 'preserved'\n",
+        )
+        .unwrap();
+        write_private_file(&secrets_path(&path), b"PW = 'test-password'\n").unwrap();
+        let first = ensure_camera_profile_identities(&path).unwrap();
+        let original = first[&"192.0.2.10".parse().unwrap()].clone();
+        assert_eq!(
+            uuid::Uuid::parse_str(&original).unwrap().get_version_num(),
+            4
+        );
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(ensure_camera_profile_identities(&path).unwrap(), first);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(String::from_utf8(bytes).unwrap().contains("{secret:PW}"));
+
+        let mut root = load_configuration_table(&path).unwrap();
+        root.get_mut("cameras")
+            .unwrap()
+            .get_mut("front")
+            .unwrap()
+            .as_table_mut()
+            .unwrap()
+            .insert(
+                "ip".to_owned(),
+                toml::Value::String("192.0.2.11".to_owned()),
+            );
+        write_private_file_atomically(&path, toml::to_string_pretty(&root).unwrap().as_bytes())
+            .unwrap();
+        let edited = load_camera_profile_identities(&path).unwrap();
+        assert_eq!(edited[&"192.0.2.11".parse().unwrap()], original);
+        assert!(!edited.contains_key(&"192.0.2.10".parse().unwrap()));
+
+        remove_camera(&path, "192.0.2.11".parse().unwrap()).unwrap();
+        let replacement: CameraConfig = toml::from_str("ip = '192.0.2.11'").unwrap();
+        upsert_camera(&path, &replacement).unwrap();
+        let after_readd = load_camera_profile_identities(&path).unwrap();
+        assert_ne!(after_readd[&"192.0.2.11".parse().unwrap()], original);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn secret_backed_camera_ip_uses_one_identity_and_camera_snapshot() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-camera-secret-ip-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        let mut root: toml::Table =
+            toml::from_str("[cameras.front]\nip = '{secret:CAMERA_IP}'\n").unwrap();
+        root.insert(
+            "runtime_profiles".to_owned(),
+            toml::Value::try_from(crate::profiles::ProfileRegistry {
+                revision: 1,
+                active_profile_id: Some("away".to_owned()),
+                profiles: BTreeMap::from([(
+                    "away".to_owned(),
+                    RuntimeProfile {
+                        id: "away".to_owned(),
+                        name: "Away".to_owned(),
+                        revision: 1,
+                        cameras: BTreeMap::from([(
+                            "192.0.2.10".to_owned(),
+                            CameraProfileOverride {
+                                notifications_suppressed: Some(true),
+                                ..CameraProfileOverride::default()
+                            },
+                        )]),
+                    },
+                )]),
+            })
+            .unwrap(),
+        );
+        write_private_file(&path, toml::to_string_pretty(&root).unwrap().as_bytes()).unwrap();
+        write_private_file(&secrets_path(&path), b"CAMERA_IP = '192.0.2.10'\n").unwrap();
+
+        let migrated = migrate_camera_profile_configuration(&path).unwrap();
+        let original_ip: IpAddr = "192.0.2.10".parse().unwrap();
+        let identity = migrated.camera_profile_identities().unwrap()[&original_ip].clone();
+        assert!(
+            migrated.runtime_profiles.profiles["away"]
+                .cameras
+                .contains_key(&identity)
+        );
+        assert_eq!(
+            migrated.camera_configurations().unwrap()["cameras"][0].ip,
+            original_ip
+        );
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("{secret:CAMERA_IP}"));
+        assert!(!persisted.contains("192.0.2.10"));
+
+        write_private_file_atomically(&secrets_path(&path), b"CAMERA_IP = '192.0.2.11'\n").unwrap();
+        assert_eq!(
+            migrated.camera_profile_identities().unwrap()[&original_ip],
+            identity
+        );
+        assert_eq!(
+            migrated.camera_configurations().unwrap()["cameras"][0].ip,
+            original_ip
+        );
+        let reloaded = load_config(&path).unwrap();
+        let changed_ip: IpAddr = "192.0.2.11".parse().unwrap();
+        assert_eq!(
+            reloaded.camera_profile_identities().unwrap()[&changed_ip],
+            identity
+        );
+        assert_eq!(
+            reloaded.camera_configurations().unwrap()["cameras"][0].ip,
+            changed_ip
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn camera_profile_identity_rejects_invalid_or_duplicate_uuid_without_rewrite() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-camera-profile-invalid-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        let invalid = b"[cameras.front]\nip = '192.0.2.10'\nprofile_identity = 'not-a-uuid'\n";
+        write_private_file(&path, invalid).unwrap();
+        assert!(ensure_camera_profile_identities(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), invalid);
+
+        let duplicate = b"[cameras.front]\nip = '192.0.2.10'\nprofile_identity = '00000000-0000-4000-8000-000000000001'\n[cameras.back]\nip = '192.0.2.11'\nprofile_identity = '00000000-0000-4000-8000-000000000001'\n";
+        write_private_file(&path, duplicate).unwrap();
+        assert!(ensure_camera_profile_identities(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), duplicate);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn duplicate_camera_ips_are_omitted_from_profile_identity_index() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-camera-profile-ambiguous-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        let mut root: toml::Table = toml::from_str(
+            "[cameras.front]\nip = '192.0.2.10'\n[cameras.back]\nip = '192.0.2.10'\n",
+        )
+        .unwrap();
+        root.insert(
+            "runtime_profiles".to_owned(),
+            toml::Value::try_from(crate::profiles::ProfileRegistry {
+                revision: 1,
+                active_profile_id: None,
+                profiles: BTreeMap::from([(
+                    "away".to_owned(),
+                    RuntimeProfile {
+                        id: "away".to_owned(),
+                        name: "Away".to_owned(),
+                        revision: 1,
+                        cameras: BTreeMap::from([(
+                            "192.0.2.10".to_owned(),
+                            CameraProfileOverride {
+                                notifications_suppressed: Some(true),
+                                ..CameraProfileOverride::default()
+                            },
+                        )]),
+                    },
+                )]),
+            })
+            .unwrap(),
+        );
+        write_private_file(&path, toml::to_string_pretty(&root).unwrap().as_bytes()).unwrap();
+        assert!(ensure_camera_profile_identities(&path).unwrap().is_empty());
+        let root = load_configuration_table(&path).unwrap();
+        assert_ne!(
+            root["cameras"]["front"][CAMERA_PROFILE_IDENTITY],
+            root["cameras"]["back"][CAMERA_PROFILE_IDENTITY]
+        );
+        assert!(
+            load_config(&path).unwrap().runtime_profiles.profiles["away"]
+                .cameras
+                .contains_key("missing-ip:192.0.2.10")
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn active_legacy_target_at_ambiguous_ip_fails_before_migration_write() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-camera-profile-ambiguous-active-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        let mut root: toml::Table = toml::from_str(
+            "[cameras.front]\nip = '192.0.2.10'\n[cameras.back]\nip = '192.0.2.10'\n",
+        )
+        .unwrap();
+        root.insert(
+            "runtime_profiles".to_owned(),
+            toml::Value::try_from(crate::profiles::ProfileRegistry {
+                revision: 1,
+                active_profile_id: Some("private".to_owned()),
+                profiles: BTreeMap::from([(
+                    "private".to_owned(),
+                    RuntimeProfile {
+                        id: "private".to_owned(),
+                        name: "Private".to_owned(),
+                        revision: 1,
+                        cameras: BTreeMap::from([(
+                            "192.0.2.10".to_owned(),
+                            CameraProfileOverride {
+                                privacy_enforced: Some(true),
+                                ..CameraProfileOverride::default()
+                            },
+                        )]),
+                    },
+                )]),
+            })
+            .unwrap(),
+        );
+        write_private_file(&path, toml::to_string_pretty(&root).unwrap().as_bytes()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(ensure_camera_profile_identities(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn active_stable_target_at_ambiguous_ip_is_rejected_on_read() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-camera-profile-ambiguous-stable-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        let identity = uuid::Uuid::new_v4().to_string();
+        let mut root: toml::Table = toml::from_str(&format!(
+            "[cameras.front]\nip = '192.0.2.10'\nprofile_identity = '{identity}'\n[cameras.back]\nip = '192.0.2.10'\n"
+        ))
+        .unwrap();
+        root.insert(
+            "runtime_profiles".to_owned(),
+            toml::Value::try_from(crate::profiles::ProfileRegistry {
+                revision: 1,
+                active_profile_id: Some("private".to_owned()),
+                profiles: BTreeMap::from([(
+                    "private".to_owned(),
+                    RuntimeProfile {
+                        id: "private".to_owned(),
+                        name: "Private".to_owned(),
+                        revision: 1,
+                        cameras: BTreeMap::from([(
+                            identity,
+                            CameraProfileOverride {
+                                privacy_enforced: Some(true),
+                                ..CameraProfileOverride::default()
+                            },
+                        )]),
+                    },
+                )]),
+            })
+            .unwrap(),
+        );
+        write_private_file(&path, toml::to_string_pretty(&root).unwrap().as_bytes()).unwrap();
+        assert!(load_camera_profile_identities(&path).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn legacy_profile_targets_migrate_once_and_never_bind_to_readded_ips() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-camera-profile-migration-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        let mut root: toml::Table = toml::from_str("[cameras.front]\nip = '192.0.2.10'\n").unwrap();
+        root.insert(
+            "runtime_profiles".to_owned(),
+            toml::Value::try_from(crate::profiles::ProfileRegistry {
+                revision: 7,
+                active_profile_id: Some("away".to_owned()),
+                profiles: BTreeMap::from([(
+                    "away".to_owned(),
+                    RuntimeProfile {
+                        id: "away".to_owned(),
+                        name: "Away".to_owned(),
+                        revision: 3,
+                        cameras: BTreeMap::from([
+                            (
+                                "192.0.2.10".to_owned(),
+                                CameraProfileOverride {
+                                    notifications_suppressed: Some(true),
+                                    ..CameraProfileOverride::default()
+                                },
+                            ),
+                            (
+                                "192.0.2.11".to_owned(),
+                                CameraProfileOverride {
+                                    notifications_suppressed: Some(true),
+                                    ..CameraProfileOverride::default()
+                                },
+                            ),
+                        ]),
+                    },
+                )]),
+            })
+            .unwrap(),
+        );
+        write_private_file(&path, toml::to_string_pretty(&root).unwrap().as_bytes()).unwrap();
+        let first = ensure_camera_profile_identities(&path).unwrap();
+        let original_id = first[&"192.0.2.10".parse().unwrap()].clone();
+        let migrated = load_config(&path).unwrap().runtime_profiles;
+        assert_eq!(migrated.revision, 8);
+        assert_eq!(migrated.profiles["away"].revision, 4);
+        assert!(migrated.profiles["away"].cameras.contains_key(&original_id));
+        let stored = load_configuration_table(&path).unwrap();
+        assert_eq!(
+            stored["runtime_profiles"][RUNTIME_PROFILE_IDENTITY_SCHEMA].as_integer(),
+            Some(RUNTIME_PROFILE_IDENTITY_SCHEMA_VERSION)
+        );
+        assert!(
+            stored["runtime_profiles"]
+                .clone()
+                .try_into::<crate::profiles::ProfileRegistry>()
+                .is_err()
+        );
+        assert_eq!(
+            runtime_profile_registry_from_configuration(&stored["runtime_profiles"]).unwrap(),
+            migrated
+        );
+        assert!(
+            migrated.profiles["away"]
+                .cameras
+                .contains_key("missing-ip:192.0.2.11")
+        );
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(ensure_camera_profile_identities(&path).unwrap(), first);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+        remove_camera(&path, "192.0.2.10".parse().unwrap()).unwrap();
+        for ip in ["192.0.2.10", "192.0.2.11"] {
+            let replacement: CameraConfig = toml::from_str(&format!("ip = '{ip}'")).unwrap();
+            upsert_camera(&path, &replacement).unwrap();
+        }
+        let after_readd = ensure_camera_profile_identities(&path).unwrap();
+        assert_ne!(after_readd[&"192.0.2.10".parse().unwrap()], original_id);
+        assert_eq!(load_config(&path).unwrap().runtime_profiles, migrated);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn unknown_runtime_profile_identity_schema_keeps_original_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-profile-identity-schema-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        let original = b"[runtime_profiles]\nidentity_schema = 2\nrevision = 1\n[runtime_profiles.profiles]\n[cameras.front]\nip = '192.0.2.10'\n";
+        write_private_file(&path, original).unwrap();
+        let error = migrate_camera_profile_configuration(&path).err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported runtime profile identity schema")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn ordinary_configuration_load_keeps_the_rollback_guard() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-profile-identity-load-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        let original =
+            b"[runtime_profiles]\nidentity_schema = 1\nrevision = 1\n[runtime_profiles.profiles]\n";
+        write_private_file(&path, original).unwrap();
+        let (config, _) = load_from_path(path.clone()).unwrap();
+        assert_eq!(config.runtime_profiles.revision, 1);
+        let stored = load_configuration_table(&path).unwrap();
+        assert_eq!(
+            stored["runtime_profiles"][RUNTIME_PROFILE_IDENTITY_SCHEMA].as_integer(),
+            Some(RUNTIME_PROFILE_IDENTITY_SCHEMA_VERSION)
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn legacy_profile_migration_revision_overflow_keeps_original_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-camera-profile-overflow-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        let mut root: toml::Table = toml::from_str("[cameras.front]\nip = '192.0.2.10'\n").unwrap();
+        root.insert(
+            "runtime_profiles".to_owned(),
+            toml::Value::try_from(crate::profiles::ProfileRegistry {
+                revision: i64::MAX as u64,
+                active_profile_id: None,
+                profiles: BTreeMap::from([(
+                    "away".to_owned(),
+                    RuntimeProfile {
+                        id: "away".to_owned(),
+                        name: "Away".to_owned(),
+                        revision: 1,
+                        cameras: BTreeMap::from([(
+                            "192.0.2.10".to_owned(),
+                            CameraProfileOverride {
+                                notifications_suppressed: Some(true),
+                                ..CameraProfileOverride::default()
+                            },
+                        )]),
+                    },
+                )]),
+            })
+            .unwrap(),
+        );
+        write_private_file(&path, toml::to_string_pretty(&root).unwrap().as_bytes()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let error = ensure_camera_profile_identities(&path).unwrap_err();
+        assert!(error.to_string().contains("revision is exhausted"));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn runtime_profile_registry_round_trips_through_the_configuration_writer() {

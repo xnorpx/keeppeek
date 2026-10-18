@@ -5,12 +5,12 @@ Runtime profiles are partially implemented. Administrators can create, rename, e
 activate bounded definitions through the existing WebRTC state-store command and the settings UI.
 Selection is revisioned and durable; privacy overrides feed the existing media privacy gate; and
 recording, camera availability, and notification suppression reach their current runtime owners.
-The shell and settings surfaces watch active-profile and per-camera application state. A real-server
-browser test now proves that one authorized WebRTC client can activate a profile and a second
-connected client receives the active-state watch update. The full 127-camera document layout,
-stable camera identity migration, asynchronous supersession, complete privacy leak matrix,
-camera-filtered observations, UI-driven activation, reconnect coverage, and capacity/performance
-evidence remain incomplete. Reads return bounded profile parts, and writes can
+The shell and settings surfaces watch active-profile and per-camera application state. Profile
+targets and observations use persistent camera UUIDs; the Administrator-only camera catalog maps
+them to current source IPs for the editor. The full 127-camera multipart document layout,
+asynchronous convergence, complete privacy leak matrix, camera-filtered observations and
+capacity/performance evidence remain required for feature acceptance. Reads return bounded
+profile parts, and writes can
 stage bounded Administrator-owned parts before one atomic configuration commit. Staging is an
 in-memory cache with a two-minute expiry; an interrupted staging operation leaves the accepted
 registry unchanged. A degraded runtime result does not roll back the durable desired profile. The
@@ -21,10 +21,11 @@ An identical revision can be retried; changed definitions at that revision are r
 for supersession between camera operations and before publishing completion, so an older operation
 cannot replace a newer pending status. Recording-policy admission and worker creation hold the
 status fence; publishing a newer pending revision waits for those synchronous admissions.
-Notification acknowledgement holds the fence for up to its existing five-second timeout. An already
-running worker stop or admitted notification command is not cancelled, including a notification
-command still queued after its acknowledgement times out. This fence does not establish the complete
-asynchronous convergence or privacy acceptance matrix.
+Notification acknowledgement holds the fence for up to its existing five-second timeout. A queued
+notification update is cancelled when its acknowledgement times out or a newer update is admitted.
+The notification worker checks that request before applying suppression. An already executing
+notification update, claimed external delivery or camera worker stop is not preempted. These
+bounds do not establish the complete asynchronous convergence or privacy acceptance matrix.
 
 The application publishes loop-owned startup and profile-application results through the existing
 status watch. Startup and activation batches each produce one completion update, so 127 camera
@@ -34,12 +35,13 @@ the same fence through watch registration to prevent a missed update. Existing s
 and camera visibility projections apply to these notifications.
 
 Saved targets absent from the configured cameras remain degraded with `configured camera is missing`
-after startup, profile completion and live removal. Re-adding the configured camera replaces this
-placeholder with its application result; activating Base clears inactive-profile placeholders.
+after startup, profile completion and live removal. Restoring the same saved identity replaces this
+placeholder with its application result; a newly added camera has a different identity. Activating
+Base clears inactive-profile placeholders.
 The server uses persisted camera settings rather than its retained discovery catalog when projecting
 completion or runtime failure. If settings cannot be read, it logs a warning and uses the catalog;
 that fallback cannot establish which cameras were deleted. Older reconciliation cannot replace a
-newer pending revision. These observations do not define stable-ID migration or resolve IP reuse.
+newer pending revision. The identity migration and IP reuse rules are described below.
 
 Events-only camera edits refresh the same accepted camera definition that availability transitions
 reuse. Returning to Base therefore retains edited event settings and generic-motion retention.
@@ -70,8 +72,11 @@ Busy event delivery does not reset that interval. The reason is fixed and contai
 storage path, label or raw error. A newer Pending revision and other Degraded reasons are preserved.
 An explicit successful reapply replaces the failure latch; it acknowledges configuration without
 proving later media recovery. Ordinary write progress does not automatically promote the camera.
-The current UI disables reselecting the active Base/profile. After storage repair, restart or an
-authorized WebRTC reapply can replace the observation; direct UI retry remains a #202 gap.
+After storage repair, an Administrator can select **Reapply active policy** for the current Pending
+or Degraded selection. Retry uses the same CAS activation, keeps the current selection, and requires
+current identity bindings and a saved or discarded draft. A failed retry retains its error; a stale
+edit retains the draft and its original revision until explicit discard/reload. An authorized
+WebRTC client can also reapply the current policy, and restart restores the durable selection.
 
 These observations cover direct input writes, buffered flushes triggered by input, named-storage
 routing errors during input, and event-frame writes. Legacy buffers can include earlier media, so
@@ -95,48 +100,71 @@ arbitrary user metadata are not valid profile fields.
 
 ## Baseline readiness
 
-| Boundary                                       | Existing owner                                                                | Required integration                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ---------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Durable generic state and acknowledged watches | `src/server/state_store.rs`, `state_store_durable.rs`, `state_store_watch.rs` | Reuse watch response barriers, acknowledgements, revocation, and reconnect behavior.                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Settings-backed state                          | `src/server/state_store_settings.rs`                                          | The existing adapter implements only `service/state-store-test/` and its two-field test schema. It is a worked example, not a pluggable profile registry. Profile commits must atomically update multiple projected entries and publish them under the same configuration lock.                                                                                                                                                                                                                        |
-| Stable camera identity                         | `src/server/configuration.rs`, `src/config.rs`, `src/keeppeek.rs`             | Current configured IDs and runtime ownership use camera IP addresses. Camera deletion and identity changes remain allowed when profiles refer to a camera. A previously committed missing target can be retained during later profile edits, while newly introduced unknown targets are rejected. Settings lists and allows removal of missing targets. Stable-ID migration, ambiguous IP reuse, and runtime-status reporting for missing targets remain open; #95 owns same-IP child/channel support. |
-| Recording mode                                 | `src/storage/engine/event.rs::StorageHandle::request_camera_event_recording`  | Implemented through the current event-recording owner on startup and profile activation, preserving Base stream and pre/post settings. Admission, queue and writer-configuration failure produce per-camera Degraded status without aborting the batch. Writer replies share one 200 ms deadline. Persistence failure rolls back the desired registry. Later storage I/O degradation and automatic reapplication after Base configuration changes remain open.                                         |
-| Camera availability                            | `src/server.rs::start_runtime_camera`, `src/keeppeek.rs`                      | Profile availability starts/stops loop-owned workers while retaining Base camera definitions and exposes a per-camera result. Existing stop waits for workers without a deadline; caller timeout does not cancel queued work. Configuration-plan activation restarts cameras and is not a profile adapter.                                                                                                                                                                                             |
-| Privacy                                        | `src/privacy.rs::PrivacyRegistry`                                             | Profile inputs share the registry decision with schedules; a profile `false` does not weaken an active schedule. The complete tagged-byte leak matrix, restart-after-failed-transition behavior, and per-operation failure coverage remain required.                                                                                                                                                                                                                                                   |
-| Notifications                                  | `src/notifications/orchestrator.rs`, `src/notifications/delivery.rs`          | Candidate admission records `runtime_profile` suppression history and activation cancels pending outbox deliveries without editing notification rules. A delivery already claimed before the activation transition is not preempted; the end-to-end queue race still needs qualification.                                                                                                                                                                                                              |
+| Boundary                                                                                | Current behavior                                                                                                                                                     | Remaining acceptance                                                                                                                |
+| --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Durable state and watches                                                               | Config-backed CAS, bounded definition parts/staged writes, loop-owned coalesced status publication and registration fencing.                                         | Combined quota, multipart observed layout, retained memory and final transport performance.                                         |
+| Camera identity                                                                         | Per-camera UUIDs, atomic legacy migration, explicit missing targets and source mapping at runtime boundaries.                                                        | Full cross-platform upgrade/restore qualification; ambiguous active source routing fails closed.                                    |
+| Recording                                                                               | Admission, queue acceptance, writer acknowledgement and covered later input write failures report per-camera status. Same-policy recovery retains desired selection. | Cleanup/finalization, periodic FlushAll, shutdown, producer queues, storage-pressure failures and complete media recovery evidence. |
+| Camera availability                                                                     | Loop-owned worker start/stop preserves Base definitions and accepted event edits.                                                                                    | Worker stop has no deadline; caller timeout does not preempt in-progress work.                                                      |
+| Privacy                                                                                 | Source-translated profile inputs share the existing schedule/media gate; restrictive transitions retain prior denies on failure.                                     | Complete tagged-byte leak matrix across all media operations and failure paths.                                                     |
+| Notifications                                                                           | Candidate suppression and pending-outbox cancellation preserve rule definitions. Queued updates are cancelled after timeout or supersession.                         | Already executing updates and claimed external deliveries are not preempted; complete delivery-race qualification remains.          |
+| Browser                                                                                 | Settings manages profiles through the same WebRTC CAS operations; explicit retry and discard/reload protect current selection and drafts.                            | Final-build browser/restart and complete accessibility/performance evidence.                                                        |
+| The issue's source plan predates the merged state store. At this baseline the generic   |
+| limits are 64 KiB per encoded value, 64 entries/64 KiB per snapshot, 1,024 entries per  |
+| namespace, 64 MiB total generic values, and 64 watches per session. The control-message |
+| ceiling remains 64 KiB including its envelope. Profiles retain the smaller 16 KiB       |
+| document and 48 KiB snapshot budgets proposed in #202 so envelopes have headroom.       |
+| Settings-backed values must participate in an explicit combined quota accounting model; |
+| the test adapter must not be assumed to consume the generic database quota.             |
 
-The issue's source plan predates the merged state store. At this baseline the generic
-limits are 64 KiB per encoded value, 64 entries/64 KiB per snapshot, 1,024 entries per
-namespace, 64 MiB total generic values, and 64 watches per session. The control-message
-ceiling remains 64 KiB including its envelope. Profiles retain the smaller 16 KiB
-document and 48 KiB snapshot budgets proposed in #202 so envelopes have headroom.
-Settings-backed values must participate in an explicit combined quota accounting model;
-the test adapter must not be assumed to consume the generic database quota.
+## Camera identity
 
-## Camera-reference decision
+Each camera table stores a server-managed canonical UUID v4 in `profile_identity`. Camera edits
+preserve it, including an IP change in the same saved entry. Deleting and re-adding a camera
+creates a new UUID, so the replacement inherits Base and the old profile target remains missing.
+Profiles do not lock camera deletion or ordinary editing. Existing camera controls, storage source
+IDs and access checks retain their current identities; the profile resolver maps UUIDs to those
+owners at their boundaries. No protected protobuf contract changes.
 
-#202 requires resolution of camera-ID migration before persisted profile mutations are enabled.
-Completing all of #95 is not inherently necessary. A compatible current-ID design can bind each
-accepted target to both its advertised ID and its existing canonical configuration/storage key.
-Store that binding once as internal integrity metadata, not as another editable identity registry.
+Startup assigns missing UUIDs and migrates legacy profile IP targets in one atomic configuration
+write before media starts. A matching unambiguous current camera supplies its UUID. An absent
+target becomes `missing-ip:<address>` and never binds to a future camera. Each changed definition
+and the registry revision advance once. Invalid or duplicate UUIDs, exhausted revisions, target
+collisions and ambiguous active routing fail without a partial write. Duplicate-IP entries not
+used by the active profile remain outside the profile catalog.
 
-That design must reject deletion, rename, IP reassignment, or ambiguous replacement while an
-accepted profile references the camera. It must validate bindings before startup and restore
-start media workers, and fail closed on manual configuration mismatches. Normal Base edits that
-preserve identity remain valid. #95 must explicitly migrate these references when its stable
-logical-ID migration lands. Binding metadata needs a separate measured persistence budget.
+Camera `ip` values can use a supported reference such as `{secret:CAMERA_IP}`. Migration,
+the profile identity map and the actual camera definitions resolve against the same loaded
+disk `secrets.toml` snapshot. The original reference remains in raw `config.toml`; migration
+does not replace it with the resolved address. A changed secrets file does not alter an already
+loaded configuration snapshot. The next configuration load uses the new address with the same
+saved camera UUID.
 
-The owner rejected this camera-editing restriction on 2026-09-27. Profiles must not prevent
-deletion or identity changes for referenced cameras. The server preserves an already committed
-target that is no longer configured when another profile edit is saved, but does not migrate that
-target to a replacement camera. Newly introduced targets must still identify a configured camera.
-Camera IDs remain IP addresses, so stable-ID migration and ambiguous IP reuse remain unresolved.
+Migrated `[runtime_profiles]` tables carry the persistence-only `identity_schema = 1` marker.
+Earlier binaries reject this field before startup, rather than treating UUID targets as missing
+IP overrides and running Base. Activation, registry edits and ordinary configuration rewrites
+preserve the marker even after the last camera is removed. Unknown versions fail validation.
+Rollback requires stopping the recorder and restoring a verified compatible configuration backup.
+The marker is not part of the WebRTC profile documents.
+
+The Administrator-only `cameras` Get uses `keeppeek.runtime-profiles.cameras.v1` with
+`{ "cameras": { "<uuid>": "<current-ip>" } }`. It has a 16 KiB encoded-value ceiling and reports a
+resource error rather than truncating a larger catalog. The editor refreshes bindings when its
+camera list changes and preserves unsaved drafts. An omitted camera's override controls stay
+disabled; Base and profiles for other cameras remain available. Registry/status camera keys are UUIDs; only
+previously committed missing targets can survive later edits. No automatic replacement retargeting
+or name, MAC, serial or UID inference occurs.
+
+Before live camera changes, the server installs the restrictive union of previous and next privacy
+inputs, bounded to 254 sources. It releases old inputs only after the camera start/restart or removal
+has acknowledged the transition. Failure retains the restrictive state. Startup restores translated
+profile privacy before media workers start; the schedule boundary still wins over profile `false`.
 
 ## Proposed document layout
 
 All persisted revision and generation fields are decimal strings in `0..=i64::MAX` to
 preserve exact values through protobuf `Struct`, JavaScript, and the existing TOML adapter.
-Names are limited to 80 UTF-8 bytes, profile IDs to 1–128 ASCII bytes (`A-Z`, `a-z`, `0-9`,
+Names are limited to 80 UTF-8 bytes, profile IDs to 1â€“128 ASCII bytes (`A-Z`, `a-z`, `0-9`,
 `._-`), and camera IDs to 256 bytes. Profile IDs `.` and `..` are invalid. Use the valid
 namespace `service/runtime-profiles/`; an unqualified namespace is rejected by the existing
 state store. Reject control characters, unknown fields, unknown write schemas, duplicate cameras,
@@ -235,13 +263,19 @@ profile client tests and the real-server two-client activation test. The full
 runtime/browser gate and activation performance benchmark remain required for the feature;
 the current server slice does not claim those results.
 
+The new `secret_backed_camera_ip_uses_one_identity_and_camera_snapshot` regression covers
+secret-backed IP migration, raw-reference preservation and consistent camera/identity resolution
+before and after a companion secrets-file change. Execution is pending; the previously completed
+test runs do not qualify this final compatibility change. Final canonical validation and PR
+publication remain pending in [the lifecycle task](../tasks/runtime-profile-lifecycle.md).
+
 Remaining work:
 
-- Resolve stable camera identity and ambiguous IP reuse, finish runtime-safe policy-input classification and the combined settings quota, and measure 16 KiB multipart registry/status projections. Missing active targets now remain degraded through startup, completion and removal; stable-identity and unreadable-configuration recovery still need qualification. Profile parts are currently bounded projections of the durable configuration, not independent durable StateStore entries.
-- Extend staged-write qualification with supersession, old-revision completion rejection, and unchanged accepted state after failed persistence. A Rust restart test now writes an active profile to `config.toml`, reloads it into a fresh `ServerState`, and checks the privacy gate; restart restoration for recording, availability, notifications, and failure cases remains open. The current draft cache is process-local and the final CAS commit remains configuration-file atomic.
+- Complete cross-platform identity upgrade/restore qualification, runtime-safe policy-input classification, combined settings quota and 16 KiB multipart registry/status projections. Missing active targets remain degraded through startup, completion and removal. The real 127-target degraded status fits the 64 KiB transport ceiling; this does not establish the smaller proposed multipart layout. Profile parts remain bounded projections of durable configuration, not independent durable StateStore entries.
+- Extend staged-write qualification with complete supersession/failure/restart coverage. Real-owner lifecycle tests exercise persisted CAS activation, storage I/O failure, same-profile retry, Base restoration, IP edit and delete/re-add across fresh owners. They inject encoded media at storage ingress and check writer progress; they do not establish wire decoding or every media-operation privacy barrier. The draft cache is process-local and the final CAS commit remains configuration-file atomic.
 - Verify the notification delivery race including already-claimed sends, privacy byte barriers across every media operation, Base changes, storage-worker failure, and Base-change reapplication.
-- Add desktop/mobile Playwright coverage for visible-UI CRUD and activation, reconnect/restart, accessibility, and ordered desired/applied state; verify camera-filtered watch updates. The current real-server test covers direct client activation and active-state watch convergence only.
-- Run canonical Windows validation and the release-build 30-activation benchmark.
+- Finish final-build desktop/mobile browser qualification for visible-UI activation, recovery, multi-client conflicts, reconnect/restart, accessibility and ordered desired/applied state; verify camera-filtered watch updates.
+- Run canonical Windows validation and the full release-build 30-activation benchmark.
 
 Server acknowledgement plus watch publication must be at most 250 ms p95. Connected
 browser desired state must appear within 500 ms p95 with no main-thread task over 50 ms.

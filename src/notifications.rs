@@ -2,7 +2,7 @@ use std::{
     path::Path,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
     time::Duration,
@@ -102,6 +102,7 @@ enum Command {
     },
     SetProfileSuppressedSources {
         source_ids: std::collections::BTreeSet<String>,
+        active: Arc<AtomicBool>,
         reply: SyncSender<anyhow::Result<usize>>,
     },
     Test {
@@ -153,6 +154,7 @@ enum Command {
 pub struct Handle {
     tx: SyncSender<Command>,
     metrics: Arc<NotificationMetrics>,
+    profile_suppression: Arc<Mutex<Option<Arc<AtomicBool>>>>,
 }
 
 impl Handle {
@@ -269,27 +271,46 @@ impl Handle {
         }
     }
 
+    /// Applies profile suppression, canceling the request if it waits too long in the queue.
+    /// A request already executing in the notification worker may finish after the timeout.
     pub fn set_profile_suppressed_sources(
         &self,
         source_ids: std::collections::BTreeSet<String>,
     ) -> anyhow::Result<usize> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        self.tx
-            .try_send(Command::SetProfileSuppressedSources {
-                source_ids,
-                reply: reply_tx,
-            })
-            .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => {
-                    anyhow::anyhow!("notification profile update queue is full")
-                }
-                mpsc::TrySendError::Disconnected(_) => {
-                    anyhow::anyhow!("notification runtime is no longer running")
-                }
-            })?;
-        reply_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|error| {
-            anyhow::anyhow!("runtime profile notification update timed out: {error}")
-        })?
+        let active = Arc::new(AtomicBool::new(true));
+        {
+            let mut latest = self
+                .profile_suppression
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.tx
+                .try_send(Command::SetProfileSuppressedSources {
+                    source_ids,
+                    active: active.clone(),
+                    reply: reply_tx,
+                })
+                .map_err(|error| match error {
+                    mpsc::TrySendError::Full(_) => {
+                        anyhow::anyhow!("notification profile update queue is full")
+                    }
+                    mpsc::TrySendError::Disconnected(_) => {
+                        anyhow::anyhow!("notification runtime is no longer running")
+                    }
+                })?;
+            if let Some(previous) = latest.replace(active.clone()) {
+                previous.store(false, Ordering::Release);
+            }
+        }
+        match reply_rx.recv_timeout(COMMAND_TIMEOUT) {
+            Ok(result) => result,
+            Err(error) => {
+                active.store(false, Ordering::Release);
+                Err(anyhow::anyhow!(
+                    "runtime profile notification update timed out: {error}"
+                ))
+            }
+        }
     }
 
     pub(crate) fn metric_snapshot(&self) -> crate::metrics::NotificationMetricsSnapshot {
@@ -473,13 +494,15 @@ impl Runtime {
         let store = store::Store::open_with_config_update(path, config_update)?;
         let deliveries = delivery::Workers::start(store.clone(), events)?;
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let profile_suppression = Arc::new(Mutex::new(None));
         let handle = Handle {
             tx,
             metrics: store.metrics.clone(),
+            profile_suppression: profile_suppression.clone(),
         };
         let thread = std::thread::Builder::new()
             .name("notifications".to_owned())
-            .spawn(move || run(store, rx))?;
+            .spawn(move || run(store, rx, profile_suppression))?;
         Ok(Self {
             handle,
             thread: Some(thread),
@@ -514,7 +537,11 @@ impl Drop for Runtime {
     }
 }
 
-fn run(store: store::Store, rx: Receiver<Command>) {
+fn run(
+    store: store::Store,
+    rx: Receiver<Command>,
+    profile_suppression: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+) {
     while let Ok(command) = rx.recv() {
         match command {
             Command::SaveDraft {
@@ -569,8 +596,17 @@ fn run(store: store::Store, rx: Receiver<Command>) {
                     );
                 }
             }
-            Command::SetProfileSuppressedSources { source_ids, reply } => {
-                let _ = reply.send(store.set_profile_suppressed_sources(source_ids));
+            Command::SetProfileSuppressedSources {
+                source_ids,
+                active,
+                reply,
+            } => {
+                let _ = reply.send(apply_profile_suppression(
+                    &store,
+                    source_ids,
+                    &active,
+                    &profile_suppression,
+                ));
             }
             Command::Test {
                 rule_id,
@@ -631,6 +667,25 @@ fn run(store: store::Store, rx: Receiver<Command>) {
             Command::Shutdown => break,
         }
     }
+}
+
+fn apply_profile_suppression(
+    store: &store::Store,
+    source_ids: std::collections::BTreeSet<String>,
+    active: &Arc<AtomicBool>,
+    profile_suppression: &Mutex<Option<Arc<AtomicBool>>>,
+) -> anyhow::Result<usize> {
+    // ponytail: the single worker may finish an update already executing when cancellation arrives.
+    let latest = profile_suppression
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let accepted = latest
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, active))
+        && active.load(Ordering::Acquire);
+    drop(latest);
+    anyhow::ensure!(accepted, "notification profile update was superseded");
+    store.set_profile_suppressed_sources(source_ids)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -791,18 +846,128 @@ fn cooldown_keys(rule: &RulePolicy, transition: &Transition) -> Vec<(CooldownKey
 }
 
 #[cfg(test)]
+mod profile_suppression_tests {
+    use std::{collections::BTreeSet, sync::mpsc};
+
+    use super::{Handle, run, store::Store};
+
+    #[test]
+    fn timed_out_profile_suppression_is_not_applied_when_worker_resumes() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-notification-profile-timeout-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        let store = Store::open(&path).unwrap();
+        let (tx, rx) = mpsc::sync_channel(1);
+        let profile_suppression = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let handle = Handle {
+            tx,
+            metrics: store.metrics.clone(),
+            profile_suppression: profile_suppression.clone(),
+        };
+        let caller = std::thread::spawn(move || {
+            handle.set_profile_suppressed_sources(BTreeSet::from(["front-door".to_owned()]))
+        });
+        assert!(caller.join().unwrap().is_err());
+
+        let worker = std::thread::spawn({
+            let store = store.clone();
+            move || run(store, rx, profile_suppression)
+        });
+        worker.join().unwrap();
+        assert!(store.profile_suppressed_sources.read().unwrap().is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn newer_profile_suppression_skips_older_queued_request() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-notification-profile-supersession-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        let store = Store::open(&path).unwrap();
+        let (tx, rx) = mpsc::sync_channel(2);
+        let profile_suppression = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let handle = Handle {
+            tx: tx.clone(),
+            metrics: store.metrics.clone(),
+            profile_suppression: profile_suppression.clone(),
+        };
+        let older = std::thread::spawn({
+            let handle = handle.clone();
+            move || handle.set_profile_suppressed_sources(BTreeSet::from(["old".to_owned()]))
+        });
+        let old_command = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        let newer = std::thread::spawn(move || {
+            handle.set_profile_suppressed_sources(BTreeSet::from(["new".to_owned()]))
+        });
+        let new_command = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        tx.send(old_command).unwrap();
+        tx.send(new_command).unwrap();
+        drop(tx);
+        let worker = std::thread::spawn({
+            let store = store.clone();
+            move || run(store, rx, profile_suppression)
+        });
+        assert!(older.join().unwrap().is_err());
+        assert!(newer.join().unwrap().is_ok());
+        worker.join().unwrap();
+        assert_eq!(
+            *store.profile_suppressed_sources.read().unwrap(),
+            BTreeSet::from(["new".to_owned()])
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod performance {
-    use std::{hint::black_box, time::Instant};
+    use std::{collections::BTreeSet, hint::black_box, time::Instant};
 
     use hdrhistogram::Histogram;
 
     use super::{
-        Handle, Lifecycle, Stage,
+        Handle, Lifecycle, Runtime, Stage,
         model::{Candidate, Severity, Trigger},
     };
 
     const ITERATIONS: usize = 20_000;
     const PUBLISH_P95_BUDGET_NS: u64 = 100_000;
+
+    #[test]
+    #[ignore = "run with cargo test --release --lib notification_profile_suppression_latency -- --ignored --nocapture"]
+    fn notification_profile_suppression_latency() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-notification-profile-benchmark-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        let runtime = Runtime::open(&path).unwrap();
+        let handle = runtime.handle();
+        let mut samples_ns = Vec::with_capacity(100);
+        for index in 0..100 {
+            let source_ids = if index % 2 == 0 {
+                BTreeSet::from(["front-door".to_owned()])
+            } else {
+                BTreeSet::new()
+            };
+            let started = Instant::now();
+            assert_eq!(
+                handle.set_profile_suppressed_sources(source_ids).unwrap(),
+                0
+            );
+            samples_ns.push(elapsed_ns(started));
+        }
+        samples_ns.sort_unstable();
+        println!(
+            "notification_profile_suppression_latency iterations=100 p50_ns={} p95_ns={} max_ns={}",
+            samples_ns[49], samples_ns[94], samples_ns[99]
+        );
+        runtime.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     #[ignore = "run with cargo test --release --lib notification_publish_latency -- --ignored --nocapture"]
@@ -811,6 +976,7 @@ mod performance {
         let handle = Handle {
             tx,
             metrics: std::sync::Arc::new(super::NotificationMetrics::default()),
+            profile_suppression: std::sync::Arc::new(std::sync::Mutex::new(None)),
         };
         let drain = std::thread::spawn(move || while rx.recv().is_ok() {});
         let candidate = Candidate {

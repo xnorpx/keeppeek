@@ -12,7 +12,9 @@ import {
 	runtimeProfileFromEntry,
 	runtimeProfileManifestFromEntry,
 	runtimeProfilePartFromEntry,
-	runtimeProfileStatusFromEntry
+	runtimeProfileStatusFromEntry,
+	runtimeProfileCamerasFromEntry,
+	runtimeProfileTargetForSource
 } from './runtime-profiles';
 
 function registryEntry(value: Record<string, unknown>, revision = 9n): StateEntry {
@@ -42,6 +44,22 @@ function statusEntry(value: Record<string, unknown>): StateEntry {
 }
 
 describe('runtime profile state', () => {
+	it('resolves IPv4 and IPv6 sources only through explicit stable bindings', () => {
+		const first = '00000000-0000-4000-8000-000000000001';
+		const second = '00000000-0000-4000-8000-000000000002';
+		const entry = {
+			...registryEntry({ cameras: { [first]: '192.0.2.10', [second]: '2001:db8::10' } }),
+			key: 'cameras',
+			schema: 'keeppeek.runtime-profiles.cameras.v1'
+		};
+		const cameras = runtimeProfileCamerasFromEntry(entry);
+		expect(runtimeProfileTargetForSource(cameras, '192.0.2.10')).toBe(first);
+		expect(runtimeProfileTargetForSource(cameras, '2001:db8::10')).toBe(second);
+		expect(runtimeProfileTargetForSource(cameras, '192.0.2.11')).toBeNull();
+		expect(() =>
+			runtimeProfileCamerasFromEntry({ ...entry, schema: 'keeppeek.runtime-profiles.cameras.v2' })
+		).toThrow(/metadata/);
+	});
 	it('parses registry summaries with large revisions and bounded parts', () => {
 		const registry = runtimeProfileManifestFromEntry(
 			registryEntry({

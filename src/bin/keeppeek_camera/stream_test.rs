@@ -87,8 +87,7 @@ pub struct Cli {
 }
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
-    let config_text = std::fs::read_to_string(&cli.config)?;
-    let app_config: config::Config = toml::from_str(&config_text)?;
+    let app_config = config::load_config(&cli.config)?;
     let configured = config::load_cameras(&cli.config)?;
     let mut selected = select_camera_config(&configured, &cli.camera)?;
     if let Some(backend) = cli.backend {
@@ -224,6 +223,29 @@ mod tests {
 
         assert_eq!(cli.config, config::config_path());
         assert_eq!(cli.output, default_output_path());
+    }
+
+    #[test]
+    fn stream_test_loads_profile_identity_configuration() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-stream-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("config.toml");
+        std::fs::write(
+            &path,
+            "[runtime_profiles]\nidentity_schema=1\nrevision=0\nprofiles={}\n",
+        )
+        .unwrap();
+        let mut cli = TestCli::try_parse_from(["keeppeek-camera", "--camera", "missing"])
+            .unwrap()
+            .command;
+        cli.config = path;
+        let error = run(cli).unwrap_err();
+        std::fs::remove_dir_all(directory).unwrap();
+        assert_eq!(
+            error.to_string(),
+            "camera 'missing' was not found in the configuration"
+        );
     }
 
     fn camera(name: &str, ip: [u8; 4]) -> CameraConfig {

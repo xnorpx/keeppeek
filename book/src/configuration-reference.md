@@ -89,8 +89,9 @@ not preempted. An active profile's saved target that is no longer configured rem
 through startup, completion and live removal; re-adding the camera replaces that observation.
 Activating Base clears missing-target observations from the previously active profile.
 Events-only camera edits also remain in effect after a profile disables the camera and Base
-enables it again. Complete
-restart, conflict, camera identity, privacy leak, browser reconnect, and capacity qualification
+enables it again. Profile targets use the server-managed `profile_identity` described below.
+An Administrator can retry a pending or degraded selection with **Reapply active policy** in
+Settings. Complete privacy leak, asynchronous convergence, capacity and performance qualification
 remain open under #202.
 
 Sources: [configuration](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs),
@@ -326,6 +327,34 @@ empty, including when the field is omitted. The other shared defaults apply only
 per-camera field is absent. Ports and RTSP URLs are not fields of `CameraCredentialDefaults`.
 
 Type: `CameraConfig`, section `[<namespace>.<camera-key>]`, usually `[cameras.front_door]`.
+
+Each camera table also contains the server-managed `profile_identity` string. It is a unique,
+canonical, 36-character UUID v4 assigned at startup or when the camera is created. It has no
+operator-supplied default and does not accept secret references. The configuration owner preserves
+it across ordinary camera edits; changing the IP in the same saved entry keeps profile references.
+Deleting the camera and adding another at the same IP assigns a new identity. Saved profile targets
+for the deleted identity remain unavailable until an Administrator explicitly removes or retargets
+them. Other camera controls and media source IDs continue to use their existing IP identities.
+
+Camera `ip` supports references such as `{secret:CAMERA_IP}`; the resolved value must be an IP
+address. Identity migration, the profile identity map and camera definitions use the same loaded
+disk `secrets.toml` snapshot. The raw reference stays in `config.toml` after migration instead of
+being replaced by the resolved address. Editing the secrets file does not change an already loaded
+configuration snapshot; the next configuration load uses the updated address and preserves the
+camera's saved `profile_identity`.
+
+On upgrade, KeepPeek assigns identities and converts existing IP-based profile references in one
+atomic configuration write before media starts. A current, unambiguous target becomes its saved
+identity. An absent target becomes an unavailable `missing-ip:<address>` reference that cannot bind
+to a later device at that address. Changed profile and registry revisions advance once, so stale
+clients must reload. Invalid or duplicate UUIDs and ambiguous active targets fail validation without
+writing the configuration. Keep the identity metadata when exporting or restoring the full
+configuration; do not edit it manually.
+
+A migrated `[runtime_profiles]` section carries server-managed `identity_schema = 1`. Keep it
+with the profile definitions. Earlier KeepPeek binaries reject this section rather than starting
+with UUID targets that they cannot apply; restoring an older binary requires restoring a
+compatible pre-migration configuration as well. Unknown identity schema versions fail validation.
 
 | Field                               | Type                   | Default                           | Meaning                                                                                                                                         |
 | ----------------------------------- | ---------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |

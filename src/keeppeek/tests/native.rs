@@ -1,6 +1,5 @@
 use super::*;
 use crate::storage::{RecordingCatalog, metadata::EventSource};
-use std::collections::BTreeMap;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},

@@ -389,6 +389,13 @@ fn runtime_profile_recording_health_poll_scale() {
             .insert(camera.config.ip, CameraWorkers::new());
         recorder.camera_definitions.insert(camera.config.ip, camera);
     }
+    let camera_ids = recorder
+        .camera_definitions
+        .keys()
+        .enumerate()
+        .map(|(index, ip)| (*ip, format!("00000000-0000-4000-8000-{index:012x}")))
+        .collect();
+    recorder.set_runtime_profile_camera_ids(camera_ids).unwrap();
     apply_recording_health_revision(&mut recorder, 1);
     let mut healthy_samples = Vec::with_capacity(30);
     for _ in 0..30 {

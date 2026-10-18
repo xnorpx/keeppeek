@@ -218,11 +218,7 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    #[test]
-    fn creates_deterministic_native_configuration_bundle() {
-        let directory = test_directory();
-        let config_path = directory.join("config.toml");
-        let config = r#"access_key = "{secret:KEEPPEEK_ACCESS_KEY}"
+    const NATIVE_CONFIGURATION_WITH_PROFILE_IDENTITY_SCHEMA: &str = r#"access_key = "{secret:KEEPPEEK_ACCESS_KEY}"
 
 [storage]
 long_term_max_gb = 10
@@ -233,12 +229,24 @@ password = "{secret:CAMERA_PASSWORD}"
 
 [cameras.front]
 ip = "192.0.2.10"
+profile_identity = "00000000-0000-4000-8000-000000000123"
+
+[runtime_profiles]
+identity_schema = 1
+revision = 0
+[runtime_profiles.profiles]
 
 [event_forwarder.mqtt]
 host = "mqtt.local"
 username = "events"
 password = "{secret:MQTT_PASSWORD}"
 "#;
+
+    #[test]
+    fn creates_deterministic_native_configuration_bundle() {
+        let directory = test_directory();
+        let config_path = directory.join("config.toml");
+        let config = NATIVE_CONFIGURATION_WITH_PROFILE_IDENTITY_SCHEMA;
         let secrets = r#"KEEPPEEK_ACCESS_KEY = "550e8400-e29b-41d4-a716-446655440000"
 CAMERA_USERNAME = "operator"
 CAMERA_PASSWORD = "camera-password"
@@ -277,6 +285,15 @@ MQTT_PASSWORD = "mqtt-password"
             .read_to_string(&mut archived_secrets)
             .unwrap();
         assert_eq!(archived_config, config);
+        let persisted: toml::Table = toml::from_str(&archived_config).unwrap();
+        assert_eq!(
+            persisted["runtime_profiles"]["identity_schema"].as_integer(),
+            Some(1)
+        );
+        assert_eq!(
+            persisted["cameras"]["front"]["profile_identity"].as_str(),
+            Some("00000000-0000-4000-8000-000000000123")
+        );
         assert_eq!(archived_secrets, secrets);
         assert!(archive.by_name("recordings.db").is_err());
         super::super::inspect_bundle(Cursor::new(second.into_inner())).unwrap();

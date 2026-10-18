@@ -20,7 +20,7 @@ use crate::{
 use recording::{PendingCameraRecording, recording_request_state};
 use serde::Serialize;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     net::IpAddr,
     sync::mpsc::{self, Receiver, Sender, SyncSender},
     thread::JoinHandle,
@@ -28,7 +28,9 @@ use std::{
 };
 use url::Url;
 
+mod profile_identity;
 mod recording;
+pub(crate) use profile_identity::CameraProfileIds;
 
 const CHANNEL_BUFFER: usize = 256;
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -175,6 +177,7 @@ enum KeepPeekCommand {
     },
     SetRuntimeProfiles {
         profiles: crate::profiles::ProfileRegistry,
+        camera_ids: Option<CameraProfileIds>,
         reply: SyncSender<anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>>>,
     },
 }
@@ -238,10 +241,27 @@ impl KeepPeekControl {
         &self,
         profiles: crate::profiles::ProfileRegistry,
     ) -> anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>> {
+        self.request_runtime_profiles(profiles, None)
+    }
+
+    pub(crate) fn set_runtime_profiles_with_camera_ids(
+        &self,
+        profiles: crate::profiles::ProfileRegistry,
+        camera_ids: BTreeMap<IpAddr, String>,
+    ) -> anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>> {
+        self.request_runtime_profiles(profiles, Some(CameraProfileIds::new(camera_ids)?))
+    }
+
+    fn request_runtime_profiles(
+        &self,
+        profiles: crate::profiles::ProfileRegistry,
+        camera_ids: Option<CameraProfileIds>,
+    ) -> anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.tx
             .send(KeepPeekCommand::SetRuntimeProfiles {
                 profiles,
+                camera_ids,
                 reply: reply_tx,
             })
             .map_err(|_| anyhow::anyhow!("KeepPeek loop is no longer running"))?;
@@ -386,6 +406,7 @@ pub struct KeepPeekLoop {
     privacy: Option<std::sync::Arc<PrivacyRegistry>>,
     camera_names: HashMap<String, String>,
     runtime_profiles: crate::profiles::ProfileRegistry,
+    runtime_profile_camera_ids: CameraProfileIds,
     runtime_profile_notification_error: Option<String>,
     runtime_profile_status_publisher: Option<Box<dyn Fn() + Send + Sync>>,
     runtime_profile_status:
@@ -422,6 +443,7 @@ impl KeepPeekLoop {
             privacy: None,
             camera_names: HashMap::new(),
             runtime_profiles: crate::profiles::ProfileRegistry::default(),
+            runtime_profile_camera_ids: CameraProfileIds::default(),
             runtime_profile_notification_error: None,
             runtime_profile_status_publisher: None,
             runtime_profile_status: std::sync::Arc::new(std::sync::RwLock::new(
@@ -449,7 +471,10 @@ impl KeepPeekLoop {
 
     pub fn set_runtime_profiles(&mut self, profiles: crate::profiles::ProfileRegistry) {
         self.runtime_profiles = profiles;
-        let suppressed_sources = active_notification_suppressions(&self.runtime_profiles);
+        let suppressed_sources = active_notification_suppressions(
+            &self.runtime_profiles,
+            &self.runtime_profile_camera_ids,
+        );
         self.runtime_profile_notification_error = if let Some(notifications) = &self.notifications {
             notifications
                 .set_profile_suppressed_sources(suppressed_sources)
@@ -467,6 +492,14 @@ impl KeepPeekLoop {
         status.revision = self.runtime_profiles.revision;
         status.active_profile_id = self.runtime_profiles.active_profile_id.clone();
         status.cameras.clear();
+    }
+
+    pub(crate) fn set_runtime_profile_camera_ids(
+        &mut self,
+        camera_ids: BTreeMap<IpAddr, String>,
+    ) -> anyhow::Result<()> {
+        self.runtime_profile_camera_ids = CameraProfileIds::new(camera_ids)?;
+        Ok(())
     }
 
     pub(crate) fn set_runtime_profile_status_publisher(
@@ -561,7 +594,7 @@ impl KeepPeekLoop {
         let configured_ids = self
             .camera_definitions
             .keys()
-            .map(ToString::to_string)
+            .map(|ip| self.runtime_profile_camera_ids.camera_id(*ip))
             .collect();
         let missing = self
             .runtime_profiles
@@ -687,7 +720,11 @@ impl KeepPeekLoop {
         &self,
         camera: &crate::cameras::CameraConfig,
     ) -> crate::cameras::CameraRecordingMode {
-        effective_recording_mode(&self.runtime_profiles, camera)
+        effective_recording_mode(
+            &self.runtime_profiles,
+            camera,
+            &self.runtime_profile_camera_ids.camera_id(camera.ip),
+        )
     }
 
     fn effective_camera_policy(
@@ -705,7 +742,11 @@ impl KeepPeekLoop {
             .active_profile_id
             .as_ref()
             .and_then(|profile_id| self.runtime_profiles.profiles.get(profile_id))
-            .and_then(|profile| profile.cameras.get(&camera.ip.to_string()));
+            .and_then(|profile| {
+                profile
+                    .cameras
+                    .get(&self.runtime_profile_camera_ids.camera_id(camera.ip))
+            });
         let mut policy = crate::profiles::resolve_camera_policy(&base, profile);
         if self.privacy_active(&camera.ip.to_string()) {
             policy.privacy_enforced = true;
@@ -722,6 +763,7 @@ impl KeepPeekLoop {
     fn begin_runtime_profiles(
         &mut self,
         profiles: crate::profiles::ProfileRegistry,
+        camera_ids: Option<CameraProfileIds>,
     ) -> anyhow::Result<Vec<Camera>> {
         profiles.validate()?;
         anyhow::ensure!(
@@ -738,8 +780,14 @@ impl KeepPeekLoop {
             status.revision <= profiles.revision,
             "runtime profile transition was superseded"
         );
+        if let Some(camera_ids) = camera_ids {
+            self.runtime_profile_camera_ids = camera_ids;
+        }
         self.runtime_profiles = profiles;
-        let suppressed_sources = active_notification_suppressions(&self.runtime_profiles);
+        let suppressed_sources = active_notification_suppressions(
+            &self.runtime_profiles,
+            &self.runtime_profile_camera_ids,
+        );
         let has_suppressed_sources = !suppressed_sources.is_empty();
         let notification_update = self
             .notifications
@@ -761,7 +809,7 @@ impl KeepPeekLoop {
         status.revision = self.runtime_profiles.revision;
         status.active_profile_id = self.runtime_profiles.active_profile_id.clone();
         for camera in &cameras {
-            let camera_id = camera.config.ip.to_string();
+            let camera_id = self.runtime_profile_camera_ids.camera_id(camera.config.ip);
             status.cameras.insert(
                 camera_id.clone(),
                 crate::profiles::CameraRuntimeApplication {
@@ -775,13 +823,22 @@ impl KeepPeekLoop {
         Ok(cameras)
     }
 
+    #[cfg(test)]
     fn apply_runtime_profiles(
         &mut self,
         profiles: crate::profiles::ProfileRegistry,
     ) -> anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>> {
+        self.apply_runtime_profiles_with_camera_ids(profiles, None)
+    }
+
+    fn apply_runtime_profiles_with_camera_ids(
+        &mut self,
+        profiles: crate::profiles::ProfileRegistry,
+        camera_ids: Option<CameraProfileIds>,
+    ) -> anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>> {
         // Coalesce camera results so a large batch cannot exhaust watch acknowledgements.
         let publisher = self.runtime_profile_status_publisher.take();
-        let result = self.apply_runtime_profiles_inner(profiles);
+        let result = self.apply_runtime_profiles_inner(profiles, camera_ids);
         self.runtime_profile_status_publisher = publisher;
         if result.is_ok() {
             self.publish_runtime_profile_status();
@@ -792,8 +849,9 @@ impl KeepPeekLoop {
     fn apply_runtime_profiles_inner(
         &mut self,
         profiles: crate::profiles::ProfileRegistry,
+        camera_ids: Option<CameraProfileIds>,
     ) -> anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>> {
-        let cameras = self.begin_runtime_profiles(profiles)?;
+        let cameras = self.begin_runtime_profiles(profiles, camera_ids)?;
         let mut applications = Vec::with_capacity(cameras.len());
         let mut pending = Vec::with_capacity(cameras.len());
         for camera in cameras {
@@ -827,7 +885,7 @@ impl KeepPeekLoop {
         let configured_ids = self
             .camera_definitions
             .keys()
-            .map(ToString::to_string)
+            .map(|ip| self.runtime_profile_camera_ids.camera_id(*ip))
             .collect();
         applications.extend(
             self.runtime_profiles
@@ -1690,8 +1748,12 @@ impl KeepPeekLoop {
                     let result = self.restart_camera(&camera);
                     let _ = reply.send(result);
                 }
-                KeepPeekCommand::SetRuntimeProfiles { profiles, reply } => {
-                    let result = self.apply_runtime_profiles(profiles);
+                KeepPeekCommand::SetRuntimeProfiles {
+                    profiles,
+                    camera_ids,
+                    reply,
+                } => {
+                    let result = self.apply_runtime_profiles_with_camera_ids(profiles, camera_ids);
                     let _ = reply.send(result);
                 }
             }
@@ -1708,6 +1770,7 @@ fn event_deep_link(camera_id: &str, event_id: &str) -> String {
 
 fn active_notification_suppressions(
     profiles: &crate::profiles::ProfileRegistry,
+    identities: &CameraProfileIds,
 ) -> std::collections::BTreeSet<String> {
     profiles
         .active_profile_id
@@ -1718,7 +1781,11 @@ fn active_notification_suppressions(
                 .cameras
                 .iter()
                 .filter_map(|(camera_id, camera)| {
-                    (camera.notifications_suppressed == Some(true)).then_some(camera_id.clone())
+                    if camera.notifications_suppressed == Some(true) {
+                        identities.source(camera_id).map(|ip| ip.to_string())
+                    } else {
+                        None
+                    }
                 })
                 .collect()
         })
@@ -1728,13 +1795,13 @@ fn active_notification_suppressions(
 fn effective_recording_mode(
     profiles: &crate::profiles::ProfileRegistry,
     camera: &crate::cameras::CameraConfig,
+    camera_id: &str,
 ) -> crate::cameras::CameraRecordingMode {
-    let camera_id = camera.ip.to_string();
     let overlay = profiles
         .active_profile_id
         .as_ref()
         .and_then(|profile_id| profiles.profiles.get(profile_id))
-        .and_then(|profile| profile.cameras.get(&camera_id));
+        .and_then(|profile| profile.cameras.get(camera_id));
     crate::profiles::resolve_camera_policy(
         &crate::profiles::BaseCameraPolicy {
             available: true,
@@ -1759,6 +1826,7 @@ fn unix_time_ms() -> i64 {
 mod tests {
     mod isapi;
     mod native;
+    mod profile_identity;
     mod recording_ack;
     mod recording_admission;
     mod recording_health;
@@ -1884,13 +1952,13 @@ mod tests {
             )]),
         };
         assert_eq!(
-            effective_recording_mode(&profiles, &camera),
+            effective_recording_mode(&profiles, &camera, &camera.ip.to_string()),
             crate::cameras::CameraRecordingMode::Main
         );
 
         camera.recording_mode = crate::cameras::CameraRecordingMode::Off;
         assert_eq!(
-            effective_recording_mode(&profiles, &camera),
+            effective_recording_mode(&profiles, &camera, &camera.ip.to_string()),
             crate::cameras::CameraRecordingMode::Off
         );
 
@@ -1904,7 +1972,7 @@ mod tests {
             .unwrap()
             .privacy_enforced = Some(true);
         assert_eq!(
-            effective_recording_mode(&profiles, &camera),
+            effective_recording_mode(&profiles, &camera, &camera.ip.to_string()),
             crate::cameras::CameraRecordingMode::Off
         );
     }
