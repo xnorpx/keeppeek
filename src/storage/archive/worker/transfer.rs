@@ -227,7 +227,7 @@ fn current_probe(catalog: &RecordingCatalogHandle, job: &Job) -> anyhow::Result<
         );
         return Ok(None);
     }
-    Ok(Some(current))
+    Ok(Some(*current))
 }
 
 impl Read for DigestReader<'_> {

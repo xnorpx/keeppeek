@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom};
 
 /// Seekable archive reader that verifies each touched chunk before exposing bytes.
-pub(crate) struct VerifiedReader<'a> {
+pub struct VerifiedReader<'a> {
     archive: ArchiveRead,
     work: Work<'a>,
     position: u64,
@@ -81,7 +81,7 @@ impl Seek for VerifiedReader<'_> {
     }
 }
 
-pub(crate) fn open_read(archive: &ArchiveRead, work: &Work<'_>) -> anyhow::Result<OwnedFile> {
+pub fn open_read(archive: &ArchiveRead, work: &Work<'_>) -> anyhow::Result<OwnedFile> {
     let target = FilesystemArchiveTarget::open(
         &archive.root,
         &Identity {
@@ -97,7 +97,7 @@ pub(crate) fn open_read(archive: &ArchiveRead, work: &Work<'_>) -> anyhow::Resul
     target.open_local(&version, work)
 }
 
-pub(crate) fn read_range(
+pub fn read_range(
     archive: &ArchiveRead,
     offset: u64,
     length: u64,
@@ -226,7 +226,7 @@ mod tests {
         drop(mutation);
         reader.seek(SeekFrom::Start(CHUNK_BYTES))?;
         assert!(reader.read_exact(&mut prefix).is_err());
-        let mut unaffected = VerifiedReader::new(archive.clone(), work())?;
+        let mut unaffected = VerifiedReader::new(archive, work())?;
         unaffected.read_exact(&mut prefix)?;
         assert_eq!(prefix, [7; 4]);
         assert!(unaffected.seek(SeekFrom::End(1)).is_err());
