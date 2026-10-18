@@ -6,7 +6,8 @@ Branch: `feat/124-audio-sync`, starting from refreshed main `7f9e326`.
 Roadmap #147 ranks this as the next new product feature after archive and guest
 sharing. Earlier issues retain their incomplete qualification; this work does not
 close or waive #95, #130, #132 or #202. Guest sharing remains separate in draft
-PR #312. This task starts locally without pushing or opening another PR.
+PR #312. Work began locally; publishing this recorded-only increment keeps the
+remaining #124 criteria open.
 
 ## Contract
 
