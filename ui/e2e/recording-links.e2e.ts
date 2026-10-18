@@ -153,9 +153,11 @@ test('an unavailable requested stream is explained without changing the linked p
 }) => {
 	const requests = await mockKeepModes(page, 1);
 	await page.goto(`/keep?camera=front-door&stream=sub&at=${momentMs}`);
-	await expect(page.getByRole('status')).toContainText(
-		'Sub has no indexed recording near this moment. Playing Main instead.'
-	);
+	await expect(
+		page.getByRole('status').filter({
+			hasText: 'Sub has no indexed recording near this moment. Playing Main instead.'
+		})
+	).toBeVisible();
 	await expect(page.getByLabel('Quality')).toHaveValue('sub');
 	await expect(page).toHaveURL(/stream=sub/);
 	await expect
