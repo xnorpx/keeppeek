@@ -8,7 +8,7 @@ const token = 'A'.repeat(43);
 
 type Handoff = { kind: 'none' | 'invalid' | 'token'; token?: string };
 
-function boot(href: string) {
+function boot(href: string, html = template) {
 	let address = new URL(href);
 	const localStorage = { getItem: vi.fn(() => 'light'), setItem: vi.fn() };
 	const sessionStorage = { getItem: vi.fn(), setItem: vi.fn() };
@@ -36,7 +36,7 @@ function boot(href: string) {
 			return true;
 		}
 	};
-	const script = template.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+	const script = html.match(/<script>([\s\S]*?)<\/script>/i)?.[1];
 	if (!script) throw new Error('Trusted bootstrap is missing');
 	runInNewContext(script, {
 		window,
@@ -63,6 +63,12 @@ function boot(href: string) {
 }
 
 describe('Early guest handoff', () => {
+	it('extracts the bootstrap when the closing script tag is uppercase', () => {
+		const html = template.replace('</script>', '</SCRIPT>');
+		const state = boot(`https://recorder.example/share#${token}`, html);
+		expect(state.window.__keeppeekTakeGuestToken?.()).toEqual({ kind: 'token', token });
+	});
+
 	it('removes the raw fragment before framework startup and exposes it once without storage', () => {
 		const state = boot(`https://recorder.example/share#${token}`);
 		expect(state.url().hash).toBe('');
