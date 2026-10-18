@@ -7056,6 +7056,9 @@ mod tests {
             })),
         };
         assert!(!is_background_control_request(&close_request));
+        let close_envelope = ControlEnvelope {
+            message: Some(control_envelope::Message::Request(close_request)),
+        };
 
         let (started_tx, started_rx) = bounded(1);
         let (release_tx, release_rx) = bounded(0);
@@ -7071,14 +7074,14 @@ mod tests {
         assert!(dispatch_rx.try_recv().is_err());
         let foreground = api_control_reply(
             true,
-            &close_request.encode_to_vec(),
+            &close_envelope.encode_to_vec(),
             Some(handler.as_ref()),
             &control,
             &mut ApiMediaRuntime::default(),
         );
+        release_tx.send(()).unwrap();
         assert!(matches!(foreground.envelope.message,
             Some(control_envelope::Message::Response(response)) if response.request_id == 46));
-        release_tx.send(()).unwrap();
 
         let dispatch = dispatch_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(dispatch.dispatch.response.request_id, 42);
