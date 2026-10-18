@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-8620360e.js";
+            window.path_to_searchindex_js = "searchindex-f7232704.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -1164,6 +1164,43 @@ pre-recording do not implement independent continuous, motion, alert and detecti
 deadlines. Storage pressure can shorten available coverage. The
 <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/recording-policy-audit.md">recording policy audit</a>
 tracks verified behavior, missing retention rules and their implementation owners under #168.</p>
+<h2 id="use-the-local-archive-tier"><a class="header" href="#use-the-local-archive-tier">Use the local archive tier</a></h2>
+<p>KeepPeek separates short-lived RAM buffering, active recording files, finalized primary media,
+and the fourth <strong>ARCHIVE</strong> tier. A fourth-tier archive is a verified replica. The named-volume
+<code>archive</code> placement role still relocates primary recordings; it does not create a second replica.</p>
+<p>As an Administrator, open <strong>Settings → Storage → Local archive</strong>. Create a private destination
+directory owned by the recorder account on an already mounted local disk, then edit and save its
+target ID, root, limits, and optional source selection. The archive root must not overlap primary
+or metadata roots. Save requires a configuration revision; a conflict preserves your draft.
+<strong>Reload archive settings</strong> explicitly discards the draft after confirmation and loads current
+settings. Restart KeepPeek to apply the saved configuration, then test the destination and refresh
+archive jobs to observe the result. A pending probe is not a successful destination test.</p>
+<p>You can queue a manual copy of finalized recordings or completed exports from the catalog object
+selector. Automatic mode selects eligible sources after the configured minimum age; an empty
+source list selects all. Copies use bounded background work and independently verify the retained
+replica before reporting success. Jobs show identity, state, bytes, attempts, failures, and any
+restore or eviction action. Refresh before retrying an uncertain result. A lost copy reply is
+reconciled using the same durable job identity.</p>
+<p>Primary eviction defaults to <strong>off</strong>. A successful copy alone does not remove the primary file.
+Enable automatic eviction only deliberately, or confirm <strong>Evict primary</strong> for an individual job.
+The server checks the verified archive, current reader leases, and retention holds before retiring
+the primary. Timeline and seek metadata remain indexed. Open archived recordings through the
+normal Keep timeline; the player displays <strong>ARCHIVE — Playing from archive. Startup and seeking may take longer.</strong> It reads
+the required archive ranges directly, without a full restore or an artificial delay. Existing
+waiting, failure, seek, and cancellation controls still apply.</p>
+<p><strong>Restore primary</strong> queues a verified transfer back to the original primary destination.
+Cancellation stops cancellable copy or restore work and cleans up partial staging.
+<strong>Retry / finish cleanup</strong> retains the cancelled copy’s job identity. Copying resumes only after
+cleanup is acknowledged and current source evidence is validated. Refresh to distinguish pending
+cleanup from resumed copying. Once a primary eviction intent is durable, it must finish
+reconciliation; cancellation is unavailable for that
+state. Preserve the job evidence and restore the destination before retrying recovery.</p>
+<p>An offline archive reports unavailable health without blocking new recording ingestion. Archived
+media whose primary was evicted can remain temporarily inaccessible until the mounted destination
+returns. Do not recreate or substitute a missing mount: the catalog binds the target ID to its
+root identity. Retain the catalog, archive tree, and configuration together for
+<a href="#recording-archive-recovery">filesystem recovery</a>. Broader offsite providers remain planned;
+the supported target in this phase is the local filesystem only.</p>
 <h2 id="prove-recording-integrity"><a class="header" href="#prove-recording-integrity">Prove recording integrity</a></h2>
 <p>Open <strong>Recording integrity</strong> to inspect the fleet before footage is needed. The workspace reports:</p>
 <ul>
@@ -2373,6 +2410,65 @@ it does not reserve capacity, authorize writes, or alter existing object locatio
 <p>Source: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/storage/volumes.rs">named-volume model</a>.
 Windows path validation follows the
 <a href="https://learn.microsoft.com/windows/win32/fileio/naming-a-file">Windows filename rules</a>.</p>
+<h3 id="fourth-tier-local-archive"><a class="header" href="#fourth-tier-local-archive">Fourth-tier local archive</a></h3>
+<p>Optional <code>[storage.archive]</code> configures one verified local replica destination. Omitting it disables
+this tier. It is separate from named-volume <code>archive</code> placement, which relocates the authoritative
+recording. A verified fourth-tier copy retires its primary only through an enabled eviction policy
+or an Administrator’s confirmed per-job action. Local recording, live viewing and the first three tiers do not wait for archive
+availability.</p>
+<pre><code class="language-toml">[storage.archive]
+target_id = "local-archive"
+root = "{secret:ARCHIVE_ROOT}"
+enabled = false
+automatic = false
+source_ids = []
+minimum_age_secs = 0
+evict_after_archive = false
+maximum_object_bytes = 4294967296
+maximum_pending_count = 256
+maximum_pending_bytes = 68719476736
+operation_timeout_secs = 120
+maximum_attempts = 3
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>target_id</code></td><td><code>String</code></td><td>Required</td><td>Stable ID with 1–64 lowercase ASCII letters, digits, hyphens or underscores; <code>legacy-</code> is reserved.</td></tr>
+<tr><td><code>root</code></td><td><code>PathBuf</code></td><td>Required</td><td>Absolute local destination; at most 4,096 UTF-8 bytes and 64 path components. It must already exist when used. Named-volume path safety rules apply.</td></tr>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable archive work; configuration alone does not bind or create the destination.</td></tr>
+<tr><td><code>automatic</code></td><td><code>bool</code></td><td><code>false</code></td><td>Admit eligible finalized recordings automatically when the archive worker is enabled.</td></tr>
+<tr><td><code>source_ids</code></td><td><code>Vec&lt;String&gt;</code></td><td>Empty</td><td>Automatic-selection filter; empty selects all sources. At most 127 distinct, nonblank IDs, each at most 256 UTF-8 bytes without control or surrounding whitespace.</td></tr>
+<tr><td><code>minimum_age_secs</code></td><td><code>u64</code></td><td><code>0</code></td><td>Minimum finalized recording age for automatic selection, at most 315,360,000 seconds (ten 365-day years).</td></tr>
+<tr><td><code>evict_after_archive</code></td><td><code>bool</code></td><td><code>false</code></td><td>Explicitly permit policy-driven primary-copy eviction after verification; holds, leases and durable archive indexes still apply.</td></tr>
+<tr><td><code>maximum_object_bytes</code></td><td><code>u64</code></td><td><code>4,294,967,296</code></td><td>Per-object admission limit, from 1 byte through 64 GiB; cannot exceed the pending-byte limit.</td></tr>
+<tr><td><code>maximum_pending_count</code></td><td><code>u32</code></td><td><code>256</code></td><td>Retained pending jobs, from 1 through 4,096.</td></tr>
+<tr><td><code>maximum_pending_bytes</code></td><td><code>u64</code></td><td><code>68,719,476,736</code></td><td>Pending-byte admission ceiling, positive and at most <code>i64::MAX</code>.</td></tr>
+<tr><td><code>operation_timeout_secs</code></td><td><code>u64</code></td><td><code>120</code></td><td>Finite archive operation deadline, from 1 through 3,600 seconds.</td></tr>
+<tr><td><code>maximum_attempts</code></td><td><code>u32</code></td><td><code>3</code></td><td>Maximum attempts for one durable job, from 1 through 10.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Roots cannot overlap named-volume roots or legacy media, thumbnail and metadata directories.
+Lexical checks do not establish filesystem identity; the bounded owned-object write/read/delete
+probe and persisted catalog binding detect offline or replaced destinations without recreating
+their roots. Keep the stable target ID with its binding; changing a configured path must not adopt
+an old manifest under a different root identity.</p>
+<p>Destination availability requires a successful verified operation. Opening or binding the root
+alone does not establish availability; test the destination after startup and refresh its result.</p>
+<p>String settings support existing secret references. Validation uses resolved values; ordinary
+settings rewrites and configuration export/import preserve raw references and unrelated sections.
+Older runtime settings updates that omit archive settings preserve the accepted archive section.
+Unknown archive fields are rejected; cloud provider selectors and credentials are not supported by
+this local implementation. Job journals, manifests, root bindings and integrity metadata are
+operational catalog state, not extra settings files.</p>
+<p>Archive playback reuses the timeline and normal playback controls. Initial access and seeking may
+take longer than the first three tiers because target access and integrity checks can add work.
+Available local archive files can play directly without a full-file restore; unavailable or corrupt
+objects remain explicit errors. Restoring or removing a primary copy preserves the original media
+identity and archive timeline indexes.</p>
 <h2 id="battery-wake"><a class="header" href="#battery-wake">Battery wake</a></h2>
 <p>Type: <code>BatteryWakeConfig</code>, section <code>[battery_wake]</code>. This is the Reolink wake middleman service,
 not a general Wake-on-LAN or scheduled privacy configuration.</p>
@@ -3636,6 +3732,7 @@ Record the operating-system account that owns and runs the recorder.</p>
 <tr><td>The runtime state-store database file and any accompanying sidecars</td><td>Desired-state documents, leases, namespace and entry revisions. A separate consistent set; excluded from the configuration ZIP. Copy the family consistently.</td></tr>
 <tr><td>Settings-backed state entries</td><td>Stored in the <code>state_store</code> section of <code>config.toml</code>; already covered by the configuration ZIP. Generic runtime entries are not.</td></tr>
 <tr><td>Every active and archive volume root</td><td>The MP4 bytes referenced by the catalog. Preserve relative structure, file names, and interrupted work.</td></tr>
+<tr><td>The optional fourth-tier local archive root</td><td>Verified replica bytes and private staging entries. Manifests and the target binding remain in the recording catalog; preserve both together.</td></tr>
 <tr><td>Every thumbnail volume root</td><td>Event-image bytes and their catalog ownership.</td></tr>
 <tr><td>Every export volume root and the metadata-bound export history file</td><td>Export artifacts and durable history. Artifacts still have independent expiry rules.</td></tr>
 <tr><td>Service definitions, environment-only secrets, certificates, and external service configuration</td><td>Deployment dependencies outside the two TOML files. Preserve them through your existing protected operations system.</td></tr>

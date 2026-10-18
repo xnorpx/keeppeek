@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-8620360e.js";
+            window.path_to_searchindex_js = "searchindex-f7232704.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -294,6 +294,43 @@ pre-recording do not implement independent continuous, motion, alert and detecti
 deadlines. Storage pressure can shorten available coverage. The
 <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/recording-policy-audit.md">recording policy audit</a>
 tracks verified behavior, missing retention rules and their implementation owners under #168.</p>
+<h2 id="use-the-local-archive-tier"><a class="header" href="#use-the-local-archive-tier">Use the local archive tier</a></h2>
+<p>KeepPeek separates short-lived RAM buffering, active recording files, finalized primary media,
+and the fourth <strong>ARCHIVE</strong> tier. A fourth-tier archive is a verified replica. The named-volume
+<code>archive</code> placement role still relocates primary recordings; it does not create a second replica.</p>
+<p>As an Administrator, open <strong>Settings → Storage → Local archive</strong>. Create a private destination
+directory owned by the recorder account on an already mounted local disk, then edit and save its
+target ID, root, limits, and optional source selection. The archive root must not overlap primary
+or metadata roots. Save requires a configuration revision; a conflict preserves your draft.
+<strong>Reload archive settings</strong> explicitly discards the draft after confirmation and loads current
+settings. Restart KeepPeek to apply the saved configuration, then test the destination and refresh
+archive jobs to observe the result. A pending probe is not a successful destination test.</p>
+<p>You can queue a manual copy of finalized recordings or completed exports from the catalog object
+selector. Automatic mode selects eligible sources after the configured minimum age; an empty
+source list selects all. Copies use bounded background work and independently verify the retained
+replica before reporting success. Jobs show identity, state, bytes, attempts, failures, and any
+restore or eviction action. Refresh before retrying an uncertain result. A lost copy reply is
+reconciled using the same durable job identity.</p>
+<p>Primary eviction defaults to <strong>off</strong>. A successful copy alone does not remove the primary file.
+Enable automatic eviction only deliberately, or confirm <strong>Evict primary</strong> for an individual job.
+The server checks the verified archive, current reader leases, and retention holds before retiring
+the primary. Timeline and seek metadata remain indexed. Open archived recordings through the
+normal Keep timeline; the player displays <strong>ARCHIVE — Playing from archive. Startup and seeking may take longer.</strong> It reads
+the required archive ranges directly, without a full restore or an artificial delay. Existing
+waiting, failure, seek, and cancellation controls still apply.</p>
+<p><strong>Restore primary</strong> queues a verified transfer back to the original primary destination.
+Cancellation stops cancellable copy or restore work and cleans up partial staging.
+<strong>Retry / finish cleanup</strong> retains the cancelled copy’s job identity. Copying resumes only after
+cleanup is acknowledged and current source evidence is validated. Refresh to distinguish pending
+cleanup from resumed copying. Once a primary eviction intent is durable, it must finish
+reconciliation; cancellation is unavailable for that
+state. Preserve the job evidence and restore the destination before retrying recovery.</p>
+<p>An offline archive reports unavailable health without blocking new recording ingestion. Archived
+media whose primary was evicted can remain temporarily inaccessible until the mounted destination
+returns. Do not recreate or substitute a missing mount: the catalog binds the target ID to its
+root identity. Retain the catalog, archive tree, and configuration together for
+<a href="./recording-archive-recovery.html">filesystem recovery</a>. Broader offsite providers remain planned;
+the supported target in this phase is the local filesystem only.</p>
 <h2 id="prove-recording-integrity"><a class="header" href="#prove-recording-integrity">Prove recording integrity</a></h2>
 <p>Open <strong>Recording integrity</strong> to inspect the fleet before footage is needed. The workspace reports:</p>
 <ul>

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-8620360e.js";
+            window.path_to_searchindex_js = "searchindex-f7232704.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -195,6 +195,7 @@ Record the operating-system account that owns and runs the recorder.</p>
 <tr><td>The runtime state-store database file and any accompanying sidecars</td><td>Desired-state documents, leases, namespace and entry revisions. A separate consistent set; excluded from the configuration ZIP. Copy the family consistently.</td></tr>
 <tr><td>Settings-backed state entries</td><td>Stored in the <code>state_store</code> section of <code>config.toml</code>; already covered by the configuration ZIP. Generic runtime entries are not.</td></tr>
 <tr><td>Every active and archive volume root</td><td>The MP4 bytes referenced by the catalog. Preserve relative structure, file names, and interrupted work.</td></tr>
+<tr><td>The optional fourth-tier local archive root</td><td>Verified replica bytes and private staging entries. Manifests and the target binding remain in the recording catalog; preserve both together.</td></tr>
 <tr><td>Every thumbnail volume root</td><td>Event-image bytes and their catalog ownership.</td></tr>
 <tr><td>Every export volume root and the metadata-bound export history file</td><td>Export artifacts and durable history. Artifacts still have independent expiry rules.</td></tr>
 <tr><td>Service definitions, environment-only secrets, certificates, and external service configuration</td><td>Deployment dependencies outside the two TOML files. Preserve them through your existing protected operations system.</td></tr>

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-8620360e.js";
+            window.path_to_searchindex_js = "searchindex-f7232704.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-53d99c1d.js"></script>
@@ -813,6 +813,65 @@ it does not reserve capacity, authorize writes, or alter existing object locatio
 <p>Source: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/storage/volumes.rs">named-volume model</a>.
 Windows path validation follows the
 <a href="https://learn.microsoft.com/windows/win32/fileio/naming-a-file">Windows filename rules</a>.</p>
+<h3 id="fourth-tier-local-archive"><a class="header" href="#fourth-tier-local-archive">Fourth-tier local archive</a></h3>
+<p>Optional <code>[storage.archive]</code> configures one verified local replica destination. Omitting it disables
+this tier. It is separate from named-volume <code>archive</code> placement, which relocates the authoritative
+recording. A verified fourth-tier copy retires its primary only through an enabled eviction policy
+or an Administrator’s confirmed per-job action. Local recording, live viewing and the first three tiers do not wait for archive
+availability.</p>
+<pre><code class="language-toml">[storage.archive]
+target_id = "local-archive"
+root = "{secret:ARCHIVE_ROOT}"
+enabled = false
+automatic = false
+source_ids = []
+minimum_age_secs = 0
+evict_after_archive = false
+maximum_object_bytes = 4294967296
+maximum_pending_count = 256
+maximum_pending_bytes = 68719476736
+operation_timeout_secs = 120
+maximum_attempts = 3
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>target_id</code></td><td><code>String</code></td><td>Required</td><td>Stable ID with 1–64 lowercase ASCII letters, digits, hyphens or underscores; <code>legacy-</code> is reserved.</td></tr>
+<tr><td><code>root</code></td><td><code>PathBuf</code></td><td>Required</td><td>Absolute local destination; at most 4,096 UTF-8 bytes and 64 path components. It must already exist when used. Named-volume path safety rules apply.</td></tr>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable archive work; configuration alone does not bind or create the destination.</td></tr>
+<tr><td><code>automatic</code></td><td><code>bool</code></td><td><code>false</code></td><td>Admit eligible finalized recordings automatically when the archive worker is enabled.</td></tr>
+<tr><td><code>source_ids</code></td><td><code>Vec&lt;String&gt;</code></td><td>Empty</td><td>Automatic-selection filter; empty selects all sources. At most 127 distinct, nonblank IDs, each at most 256 UTF-8 bytes without control or surrounding whitespace.</td></tr>
+<tr><td><code>minimum_age_secs</code></td><td><code>u64</code></td><td><code>0</code></td><td>Minimum finalized recording age for automatic selection, at most 315,360,000 seconds (ten 365-day years).</td></tr>
+<tr><td><code>evict_after_archive</code></td><td><code>bool</code></td><td><code>false</code></td><td>Explicitly permit policy-driven primary-copy eviction after verification; holds, leases and durable archive indexes still apply.</td></tr>
+<tr><td><code>maximum_object_bytes</code></td><td><code>u64</code></td><td><code>4,294,967,296</code></td><td>Per-object admission limit, from 1 byte through 64 GiB; cannot exceed the pending-byte limit.</td></tr>
+<tr><td><code>maximum_pending_count</code></td><td><code>u32</code></td><td><code>256</code></td><td>Retained pending jobs, from 1 through 4,096.</td></tr>
+<tr><td><code>maximum_pending_bytes</code></td><td><code>u64</code></td><td><code>68,719,476,736</code></td><td>Pending-byte admission ceiling, positive and at most <code>i64::MAX</code>.</td></tr>
+<tr><td><code>operation_timeout_secs</code></td><td><code>u64</code></td><td><code>120</code></td><td>Finite archive operation deadline, from 1 through 3,600 seconds.</td></tr>
+<tr><td><code>maximum_attempts</code></td><td><code>u32</code></td><td><code>3</code></td><td>Maximum attempts for one durable job, from 1 through 10.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Roots cannot overlap named-volume roots or legacy media, thumbnail and metadata directories.
+Lexical checks do not establish filesystem identity; the bounded owned-object write/read/delete
+probe and persisted catalog binding detect offline or replaced destinations without recreating
+their roots. Keep the stable target ID with its binding; changing a configured path must not adopt
+an old manifest under a different root identity.</p>
+<p>Destination availability requires a successful verified operation. Opening or binding the root
+alone does not establish availability; test the destination after startup and refresh its result.</p>
+<p>String settings support existing secret references. Validation uses resolved values; ordinary
+settings rewrites and configuration export/import preserve raw references and unrelated sections.
+Older runtime settings updates that omit archive settings preserve the accepted archive section.
+Unknown archive fields are rejected; cloud provider selectors and credentials are not supported by
+this local implementation. Job journals, manifests, root bindings and integrity metadata are
+operational catalog state, not extra settings files.</p>
+<p>Archive playback reuses the timeline and normal playback controls. Initial access and seeking may
+take longer than the first three tiers because target access and integrity checks can add work.
+Available local archive files can play directly without a full-file restore; unavailable or corrupt
+objects remain explicit errors. Restoring or removing a primary copy preserves the original media
+identity and archive timeline indexes.</p>
 <h2 id="battery-wake"><a class="header" href="#battery-wake">Battery wake</a></h2>
 <p>Type: <code>BatteryWakeConfig</code>, section <code>[battery_wake]</code>. This is the Reolink wake middleman service,
 not a general Wake-on-LAN or scheduled privacy configuration.</p>
