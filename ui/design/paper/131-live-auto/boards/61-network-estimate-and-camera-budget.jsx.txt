@@ -1,0 +1,506 @@
+(
+    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSynthesis: 'none', gap: '24px', height: '1100px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', overflowWrap: 'anywhere', padding: '32px', WebkitFontSmoothing: 'antialiased', width: '2300px' }}>
+      <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
+        <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.12em', lineHeight: '16px' }}>
+          61 / LIVE QUALITY / NETWORK AUTO
+        </div>
+        <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '28px', fontWeight: 600, lineHeight: '34px' }}>
+          One network estimate. A budget for each camera.
+        </div>
+        <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+          Existing live diagnostics distinguish shared network capacity, assigned camera budget and actual received bitrate. Manual quality remains a deliberate choice.
+        </div>
+      </div>
+      <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '32px', width: '100%' }}>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', width: '1280px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '16px' }}>
+            Desktop / Auto stable
+          </div>
+          <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', height: '800px', overflow: 'clip', position: 'relative', width: '1280px' }}>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '16px', height: '56px', justifyContent: 'space-between', padding: '16px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '24px' }}>
+                Front Door
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '18px' }}>
+                LIVE
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-video)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '600px', justifyContent: 'center' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+                Live picture / Main
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '12px', paddingInline: '16px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                Quality
+              </div>
+              <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '44px', paddingBlock: '8px', paddingInline: '14px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                  Auto
+                </div>
+              </div>
+            </div>
+            <div style={{ backgroundColor: '#09090B', borderColor: '#3A3F45', borderRadius: '6px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px', position: 'absolute', right: '8px', top: '72px', width: '288px' }}>
+              <div style={{ alignItems: 'center', borderBottomColor: '#282C31', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', paddingBottom: '8px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 600, lineHeight: '20px' }}>
+                  WebRTC
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '18px' }}>
+                  Front Door
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Requested quality
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                  Auto
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Active stream
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                  Main
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Pending stream
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                  No change
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Codec
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                  H.264
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Resolution
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                  1920 x 1080
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Received bitrate
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                  3.2 Mb/s
+                </div>
+              </div>
+              <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px', paddingTop: '10px', width: '100%' }}>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Session network estimate
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    8.0 Mb/s
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Camera budget
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    4.0 Mb/s
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Auto status
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-activity)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    Budget supports Main
+                  </div>
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+                  Network estimate covers this connection. Camera budget is one share of it; receive bitrate is measured at the browser.
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', lineHeight: '17px' }}>
+                  Network and stream values do not measure camera-to-screen delay.
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px', width: '100%' }}>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Decoded FPS
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    25.0 fps
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Jitter
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    4.2 ms
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Jitter buffer
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    35 ms
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Round trip
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    18 ms
+                  </div>
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between', minHeight: '44px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+                  Esc returns to camera info
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+                  Close
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', width: '390px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '16px' }}>
+            390px / Switch pending
+          </div>
+          <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', height: '844px', overflow: 'clip', position: 'relative', width: '390px' }}>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '16px', height: '56px', justifyContent: 'space-between', padding: '16px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '24px' }}>
+                Front Door
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '18px' }}>
+                LIVE
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-video)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '220px', justifyContent: 'center' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+                Live picture / Main
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '12px', paddingInline: '16px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                Quality
+              </div>
+              <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '44px', paddingBlock: '8px', paddingInline: '14px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                  Auto
+                </div>
+              </div>
+            </div>
+            <div style={{ backgroundColor: '#09090B', borderColor: '#3A3F45', borderRadius: '6px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px', position: 'absolute', right: '8px', top: '72px', width: '288px' }}>
+              <div style={{ alignItems: 'center', borderBottomColor: '#282C31', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', paddingBottom: '8px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 600, lineHeight: '20px' }}>
+                  WebRTC
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '18px' }}>
+                  Front Door
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Requested quality
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                  Auto
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Active stream
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                  Main
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Pending stream
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                  Sub
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Codec
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                  H.264
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Resolution
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                  1920 x 1080
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Received bitrate
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                  3.1 Mb/s
+                </div>
+              </div>
+              <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px', paddingTop: '10px', width: '100%' }}>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Session network estimate
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                    1.8 Mb/s
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Camera budget
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                    900 kb/s
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Auto status
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-activity)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                    Lower network budget
+                  </div>
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+                  Waiting for a Sub keyframe. Main stays visible until the new stream is ready.
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', lineHeight: '17px' }}>
+                  Network and stream values do not measure camera-to-screen delay.
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px', width: '100%' }}>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Decoded FPS
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    25.0 fps
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Jitter
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    4.2 ms
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Jitter buffer
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    35 ms
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Round trip
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    18 ms
+                  </div>
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between', minHeight: '44px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+                  Esc returns to camera info
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+                  Close
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', width: '320px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '16px' }}>
+            320px / No estimate yet
+          </div>
+          <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', height: '844px', overflow: 'clip', position: 'relative', width: '320px' }}>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '16px', height: '56px', justifyContent: 'space-between', padding: '16px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '24px' }}>
+                Front Door
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '18px' }}>
+                LIVE
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-video)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '220px', justifyContent: 'center' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+                Live picture / Sub
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '12px', paddingInline: '16px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                Quality
+              </div>
+              <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '44px', paddingBlock: '8px', paddingInline: '14px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                  Auto
+                </div>
+              </div>
+            </div>
+            <div style={{ backgroundColor: '#09090B', borderColor: '#3A3F45', borderRadius: '6px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px', position: 'absolute', right: '8px', top: '72px', width: '288px' }}>
+              <div style={{ alignItems: 'center', borderBottomColor: '#282C31', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', paddingBottom: '8px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 600, lineHeight: '20px' }}>
+                  WebRTC
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '18px' }}>
+                  Front Door
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Requested quality
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                  Auto
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Active stream
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                  Sub
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Pending stream
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                  No change
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Codec
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                  H.264
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Resolution
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                  640 x 360
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                  Received bitrate
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                  640 kb/s
+                </div>
+              </div>
+              <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px', paddingTop: '10px', width: '100%' }}>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Session network estimate
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                    Unknown
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Camera budget
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                    Unknown
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Auto status
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-activity)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', textAlign: 'right' }}>
+                    Awaiting network estimate
+                  </div>
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+                  No estimate has arrived. Auto starts conservatively; Unknown does not mean zero capacity.
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', lineHeight: '17px' }}>
+                  Network and stream values do not measure camera-to-screen delay.
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px', width: '100%' }}>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Decoded FPS
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    25.0 fps
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Jitter
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    4.2 ms
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Jitter buffer
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    35 ms
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '16px', justifyContent: 'space-between', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: '#A6ABB1', flexBasis: '0%', flexGrow: '1', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px', minWidth: '0px' }}>
+                    Round trip
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', justifyContent: 'end', lineHeight: '18px', maxWidth: '56%', overflowWrap: 'anywhere', textAlign: 'right' }}>
+                    18 ms
+                  </div>
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between', minHeight: '44px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+                  Esc returns to camera info
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+                  Close
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+        Design proposal: camera budgets and Auto decision reasons require the optional telemetry contract. The existing connection estimate can be shown independently.
+      </div>
+    </div>
+  )

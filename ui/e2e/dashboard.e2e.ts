@@ -490,6 +490,7 @@ for (const delayFrames of [false, true]) {
 		await expect(focusedVideo).not.toHaveAttribute('data-pending-stream');
 		await expect(focus.locator('[data-peek-focus-stage] [data-peek-cached-frame]')).toBeVisible();
 		await presentMockVideoFrame(focusedVideo.locator('video'));
+		await focus.getByRole('button', { name: 'High', exact: true }).click();
 		await expect(focusedVideo).toHaveAttribute('data-pending-stream', 'main');
 		if (delayFrames) {
 			await page.evaluate(() => {
