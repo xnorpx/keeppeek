@@ -34,7 +34,7 @@ Keep sharing disabled during metadata recovery: an older backup is not current r
 
 1. In **Keep → Export**, create an export as the Administrator who will share it. Wait for
    **Ready**, then choose **Create guest link**. Older exports without durable creator and camera
-   identity evidence require a new export.
+   identity or measured media proof require a new export.
 2. Inspect the camera, file bounds, gaps, size and file expiry. The grant covers the complete
    previewed MP4, which can start before the originally requested range to include a keyframe.
    This workflow does not trim an exact interval. Evidence is limited to two minutes and 512 MiB;
@@ -45,6 +45,9 @@ Keep sharing disabled during metadata recovery: an older backup is not current r
 4. Copy the link while the dialog remains open and send it through your chosen private channel.
    KeepPeek holds the secret in the dialog's memory. After closing, the list can revoke access
    but cannot recover the link. Anyone holding the full link can use its permitted access.
+
+This first workflow requires a retained local export with a file expiry. Archive-only exports
+are outside this workflow.
 
 If creation is unconfirmed, retain its displayed reference. Find and revoke that grant in
 **Settings → Access → Guest links** before creating another. A retry cannot recover a lost secret.

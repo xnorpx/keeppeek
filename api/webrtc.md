@@ -1552,7 +1552,7 @@ current source/export authorization. Guest sessions do not use this channel.
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `get_policy`       | Current `[sharing]` deployment policy, revision and availability; no grant secret                                                                                                 |
 | `configure_policy` | Compare the expected revision and atomically persist enabled/origin settings; invalidate active guest contexts                                                                    |
-| `preview_export`   | One current creator-owned Ready export, immutable artifact generation and SHA256, measured file envelope, bytes, coverage and expiry                                                |
+| `preview_export`   | One current creator-owned Ready export, immutable artifact generation and SHA256, measured file envelope, bytes, coverage and expiry                                              |
 | `create`           | Revalidate that exact preview generation/digest, then create one bounded grant and disclose its bearer URL once                                                                   |
 | `list`             | UUID-ordered live pages; default 50, maximum 100; encoded pages stay below 48 KiB and may contain fewer grants; `all_creators` remains Administrator-only; no token or token hash |
 | `revoke`           | Exact grant revision; durable invalidation precedes active transport cancellation                                                                                                 |

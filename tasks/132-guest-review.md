@@ -2,10 +2,11 @@
 
 Issue: https://github.com/xnorpx/keeppeek/issues/132
 
-Local branch: `feat/132-guest-review`, based on `dc76cecadb162502fcb3d598454eaf571253f64c`.
-The archive feature was delivered separately in PR #311. This worktree still uses the
-base above and has no archive-specific implementation dependency. No hosted CI or merge
-work is requested for this local start.
+Local branch: `feat/132-guest-review`. Selection began at `dc76cec`; the local checkpoint
+is now rebased onto merged archive main `7f9e326`. Both archive and sharing contracts,
+playback readers, export metadata and Paper designs are preserved. The two separately
+validated archive browser regression fixes are also carried locally. No hosted CI,
+push, pull request or merge work is requested for this local start.
 
 ## Product contract
 
@@ -203,3 +204,15 @@ initial test-only module gating was removed. Unused session output was removed, 
 assertions now use authenticated session lookup, and management reuses creator-scoped
 store listing. No diagnostic suppression or test weakening was added. Logs:
 `132-clippy-prearchive-green.log`, with initial failures retained separately.
+
+The first integrated canonical Windows run reached UI static validation after passing
+all 3602 Rust tests in 503.966 seconds (four slow tests, 27 existing skipped fixtures),
+strict workspace/all-target Clippy, dependency, formatting and Python checks. Both new
+archive integration regressions pass: archive-backed envelope/byte parity after primary
+removal, and archived ownership/proof preservation with typed job-ID fencing. Paper
+artifacts now preserve both features with 46 selected boards and 85 PNG references.
+
+That run stopped at the existing Paper storyboard validator because its canonical
+OpenAPI path list had not been synchronized with the approved guest HTTP contracts.
+This is a failed canonical run; it does not establish the UI/full gate. The complete
+output is preserved in `target/agent-artifacts/132-integrated-check-first.log`.

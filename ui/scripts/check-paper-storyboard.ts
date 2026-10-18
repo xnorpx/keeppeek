@@ -3,6 +3,11 @@ import { readFile, readdir } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import { isServerCapabilityId } from '../src/lib/capabilities';
 import { renderPaperCoverageReport } from './paper-coverage';
+import {
+	guestReviewHttpPaths,
+	verifyGuestReviewOpenApi,
+	verifyGuestReviewRouter
+} from './paper-guest-contract';
 
 type StoryboardBoard = {
 	index: number;
@@ -618,11 +623,14 @@ if (positioningContract.internalHttpPaths.join('|') !== expectedInternalHttpPath
 	throw new Error('Board 45 first-party HTTP boundary changed');
 }
 const openApi = await readFile(resolve('..', 'api/openapi.yaml'), 'utf8');
+verifyGuestReviewOpenApi(openApi);
+verifyGuestReviewRouter(await readFile(resolve('..', 'src/server/guest_review/http.rs'), 'utf8'));
 const openApiPaths = [...openApi.matchAll(/^  (\/[a-z-]+(?:\/[a-z-]+)*):$/gm)].map(
 	(match) => match[1]
 );
 if (
-	openApiPaths.join('|') !== [...expectedAuthenticationHttpPaths, ...expectedHttpPaths].join('|')
+	openApiPaths.join('|') !==
+	[...guestReviewHttpPaths, ...expectedAuthenticationHttpPaths, ...expectedHttpPaths].join('|')
 ) {
 	throw new Error('OpenAPI exposes a noncanonical Board 01 HTTP path');
 }
