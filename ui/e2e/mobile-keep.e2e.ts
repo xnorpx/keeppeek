@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import {
 	mockKeepModes,
@@ -9,6 +9,72 @@ import {
 } from './fixtures/keep-modes';
 import { mockControlPeer } from './fixtures/control-peer';
 import { mixedCameras, mixedHealth } from './fixtures/peek';
+
+async function expectMobileHistoryGeometry(
+	page: Page,
+	testInfo: TestInfo,
+	width: number,
+	state: 'initial' | 'failed' | 'preparing'
+) {
+	const timeline = page.getByRole('region', { name: 'Recording timeline', exact: true });
+	const navigation = page.locator('[data-shell-mobile-nav]');
+	const eventCard = timeline.getByRole('button', { name: / event at / }).first();
+	await expect(timeline).toHaveAttribute('data-timeline-orientation', 'horizontal');
+	await expect(timeline).toHaveAttribute('aria-busy', 'false');
+	await expect(eventCard).toBeVisible();
+	await expect(navigation).toBeVisible();
+	await page.evaluate(() => document.fonts.ready.then(() => undefined));
+	const [timelineBounds, eventBounds, navigationBounds] = await Promise.all([
+		timeline.boundingBox(),
+		eventCard.boundingBox(),
+		navigation.boundingBox()
+	]);
+	if (!timelineBounds || !eventBounds || !navigationBounds)
+		throw new Error('Keep history geometry is unavailable');
+	const scroll = await page.evaluate(() => ({
+		page: window.scrollY,
+		main: document.querySelector('[data-shell-main]')?.scrollTop,
+		content: document.querySelector('[data-keep-view-content]')?.scrollTop
+	}));
+	const playbackState = await page.locator('[data-keep-player]').evaluate((player) => ({
+		startupPhase: player.getAttribute('data-recording-startup-phase'),
+		alertCount: player.querySelectorAll('[role="alert"]').length,
+		heading: player.querySelector('h3')?.textContent?.trim()
+	}));
+	await testInfo.attach(`${state}-keep-geometry`, {
+		body: JSON.stringify(
+			{ timelineBounds, eventBounds, navigationBounds, scroll, playbackState },
+			null,
+			2
+		),
+		contentType: 'application/json'
+	});
+	const screenshotPath = testInfo.outputPath(`${state}-keep-${width}.png`);
+	await page.screenshot({ path: screenshotPath, fullPage: false });
+	await testInfo.attach(`${state}-keep-viewport`, {
+		path: screenshotPath,
+		contentType: 'image/png'
+	});
+	if (state === 'preparing')
+		expect(playbackState).toEqual({
+			startupPhase: 'opening',
+			alertCount: 0,
+			heading: 'Preparing playback…'
+		});
+	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+		true
+	);
+	expect(scroll, 'the page and content have not scrolled').toEqual({
+		page: 0,
+		main: 0,
+		content: 0
+	});
+	expect(
+		eventBounds.y + eventBounds.height,
+		'a complete recording event must appear above the fixed bottom navigation'
+	).toBeLessThanOrEqual(navigationBounds.y);
+	await expect(eventCard).toBeInViewport({ ratio: 1 });
+}
 
 test.describe('touch input', () => {
 	test.use({ hasTouch: true, isMobile: true });
@@ -26,73 +92,46 @@ test.describe('touch input', () => {
 	});
 
 	for (const width of [320, 390]) {
-		test(`mobile Keep keeps playback failures and recording history above navigation without scrolling at ${width}px`, async ({
+		test(`mobile Keep keeps initial and failed playback history above navigation without scrolling at ${width}px`, async ({
 			page
 		}, testInfo) => {
 			await page.setViewportSize({ width, height: 844 });
-			await mockKeepModes(page);
-			await page.goto(`/keep?camera=front-door&date=${keepModeDate}`);
-			await expect(page.locator('[data-keyboard-ready]')).toHaveAttribute(
-				'data-keyboard-ready',
-				'true'
-			);
-			const timeline = page.getByRole('region', { name: 'Recording timeline', exact: true });
-			const navigation = page.locator('[data-shell-mobile-nav]');
-			const eventCard = timeline.getByRole('button', { name: / event at / }).first();
-			await expect(timeline).toHaveAttribute('data-timeline-orientation', 'horizontal');
-			await expect(timeline).toHaveAttribute('aria-busy', 'false');
-			await expect(eventCard).toBeVisible();
-			await expect(navigation).toBeVisible();
-			const player = page.getByRole('region', { name: 'Recorded video player' });
-			await expect(player.getByRole('alert')).toContainText(
-				'No recording initialization arrived within 3 seconds.'
-			);
-			await expect(
-				player.getByRole('button', { name: 'Retry playback', exact: true })
-			).toBeInViewport({
-				ratio: 1
+			let releaseRetry!: () => void;
+			const retryGate = new Promise<void>((resolve) => {
+				releaseRetry = resolve;
 			});
-			await expect(
-				player.getByRole('button', { name: 'Close playback', exact: true })
-			).toBeInViewport({
-				ratio: 1
-			});
-			await page.evaluate(() => document.fonts.ready.then(() => undefined));
-			const [timelineBounds, eventBounds, navigationBounds] = await Promise.all([
-				timeline.boundingBox(),
-				eventCard.boundingBox(),
-				navigation.boundingBox()
-			]);
-			if (!timelineBounds || !eventBounds || !navigationBounds)
-				throw new Error('Initial Keep history geometry is unavailable');
-			const scroll = await page.evaluate(() => ({
-				page: window.scrollY,
-				main: document.querySelector('[data-shell-main]')?.scrollTop,
-				content: document.querySelector('[data-keep-view-content]')?.scrollTop
-			}));
-			await testInfo.attach('initial-keep-geometry', {
-				body: JSON.stringify({ timelineBounds, eventBounds, navigationBounds, scroll }, null, 2),
-				contentType: 'application/json'
-			});
-			const screenshotPath = testInfo.outputPath(`initial-keep-${width}.png`);
-			await page.screenshot({ path: screenshotPath, fullPage: false });
-			await testInfo.attach('initial-keep-viewport', {
-				path: screenshotPath,
-				contentType: 'image/png'
-			});
-			expect(
-				await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
-			).toBe(true);
-			expect(scroll, 'the initial page and content have not scrolled').toEqual({
-				page: 0,
-				main: 0,
-				content: 0
-			});
-			expect(
-				eventBounds.y + eventBounds.height,
-				'a complete recording event must appear above the fixed bottom navigation'
-			).toBeLessThanOrEqual(navigationBounds.y);
-			await expect(eventCard).toBeInViewport({ ratio: 1 });
+			await mockKeepModes(page, 10, { storedOpenGates: [Promise.resolve(), retryGate] });
+			try {
+				await page.goto(`/keep?camera=front-door&date=${keepModeDate}`);
+				await expect(page.locator('[data-keyboard-ready]')).toHaveAttribute(
+					'data-keyboard-ready',
+					'true'
+				);
+				const player = page.getByRole('region', { name: 'Recorded video player' });
+				await expectMobileHistoryGeometry(page, testInfo, width, 'initial');
+				await expect(player.getByRole('alert')).toContainText(
+					'No recording initialization arrived within 3 seconds.'
+				);
+				await expect(
+					player.getByRole('button', { name: 'Retry playback', exact: true })
+				).toBeInViewport({
+					ratio: 1
+				});
+				await expect(
+					player.getByRole('button', { name: 'Close playback', exact: true })
+				).toBeInViewport({
+					ratio: 1
+				});
+				await expectMobileHistoryGeometry(page, testInfo, width, 'failed');
+				await player.getByRole('button', { name: 'Retry playback', exact: true }).click();
+				await expect(
+					player.getByRole('heading', { name: 'Preparing playback…', exact: true })
+				).toBeVisible();
+				await expect(player.getByRole('alert')).toHaveCount(0);
+				await expectMobileHistoryGeometry(page, testInfo, width, 'preparing');
+			} finally {
+				releaseRetry();
+			}
 		});
 	}
 

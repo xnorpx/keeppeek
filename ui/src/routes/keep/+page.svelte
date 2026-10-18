@@ -227,6 +227,16 @@
 	let routeContext: KeepRoute | null = null;
 	let missingMomentMs = $state<number | null>(null);
 	let appliedSearch = '';
+	let playbackNoticeVisible = $derived(
+		!playbackExplicitlyClosed &&
+			(archivePlayback || !!playerError || playbackStartupPhase === 'opening')
+	);
+	let emptyPlaybackNotice = $derived(
+		playbackNoticeVisible &&
+			!(decodedVideoWidth > 0 && decodedVideoHeight > 0) &&
+			!stillPreviewUrl &&
+			!cameraSwitchFrameUrl
+	);
 
 	let viewportSegments = $derived(
 		timelineRepository.ranges.flatMap((range): RecordingSegment[] => {
@@ -395,7 +405,7 @@
 
 	onMount(() => {
 		keepNavigationStartedAtMs = performance.now();
-		const portraitMedia = window.matchMedia('(max-width: 767px) and (orientation: portrait)');
+		const portraitMedia = window.matchMedia('(max-width: 47.999rem) and (orientation: portrait)');
 		const updateOrientation = () => (mobilePortrait = portraitMedia.matches);
 		updateOrientation();
 		portraitMedia.addEventListener('change', updateOrientation);
@@ -2226,7 +2236,7 @@
 </svelte:head>
 
 {#snippet archiveNotice()}
-	{#if !playbackExplicitlyClosed && (archivePlayback || playerError || playbackStartupPhase === 'opening')}
+	{#if playbackNoticeVisible}
 		<StoredPlaybackNotice
 			archive={archivePlayback}
 			pending={playbackStartupPhase !== 'first-frame' || coldSeekTimestampMs !== null}
@@ -2490,10 +2500,7 @@
 					data-recording-fallback-variant={selectedFallbackStream ?? undefined}
 					data-recording-selection-reason={selectedPlaybackReason}
 					data-recording-startup-phase={playbackStartupPhase}
-					data-recording-empty-error={!!playerError &&
-						!(decodedVideoWidth > 0 && decodedVideoHeight > 0) &&
-						!stillPreviewUrl &&
-						!cameraSwitchFrameUrl}
+					data-recording-empty-notice={emptyPlaybackNotice}
 					data-recording-content-type={playbackContentType ?? undefined}
 					data-recording-rejected-variants={rejectedStreams
 						.map((candidate) => `${candidate.stream}:${candidate.encoding}`)
@@ -2514,6 +2521,7 @@
 					{@render archiveNotice()}
 					<div
 						data-keep-media-frame
+						inert={mobilePortrait && emptyPlaybackNotice}
 						class="relative aspect-video overflow-hidden rounded-md bg-black ring-1 ring-black/10 lg:aspect-auto lg:min-h-0 lg:flex-1"
 					>
 						{#if selected && playbackUrl}
@@ -2724,8 +2732,20 @@
 			width: 100%;
 			flex-shrink: 0;
 		}
-		[data-recording-empty-error='true'] > [data-keep-media-frame] {
-			display: none;
+		[data-recording-empty-notice='true'] {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr);
+		}
+		[data-recording-empty-notice='true'] > [data-keep-media-frame],
+		[data-recording-empty-notice='true'] > :global([data-stored-playback-notice]) {
+			grid-row: 1;
+			grid-column: 1;
+		}
+		[data-recording-empty-notice='true'] > [data-keep-media-frame] {
+			z-index: 0;
+		}
+		[data-recording-empty-notice='true'] > :global([data-stored-playback-notice]) {
+			z-index: 1;
 		}
 	}
 
