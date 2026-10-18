@@ -93,3 +93,36 @@ The compact production layout follows Board 46, with default E2E coverage for in
 visibility, decoded footage, sheets, controls, and navigation. The existing Loki baselines are
 unchanged. Board 46 remains a `proposal` while complete device, accessibility, and visual
 qualification is outstanding; the original mobile frame remains available for history.
+
+## Boards 47–50: local archive
+
+Archive settings remain inside Storage & retention. Keep the folder, stable target ID and
+enablement visible; disclose automatic selection and bounded transfer controls progressively.
+Automatic copying and primary eviction start disabled. Saving settings requires a restart before
+testing the destination. Preserve raw private references and revision conflicts in the draft.
+
+Show verified archive state independently from primary availability. Copying never implies
+eviction. A primary eviction confirmation identifies the object and bytes, explains archive
+playback consequences, and initially focuses Cancel. The server rechecks holds, readers and
+current ownership. Restore retains the archive and preserves the original recording identity.
+
+Keep archive review in the existing timeline with the normal controls. Explain slower expected
+startup and seeking; keep preparing, unavailable, retry and close actions visible. Do not add an
+artificial delay or require a whole-file restore for available local playback. Mobile settings
+and jobs stack into one column with 44 px touch actions and wrapped identities.
+
+Boards 47–50 and their eleven frames were authored and visually reviewed in the shared Paper
+source before export. They remain `proposal` until the running implementation, accessibility,
+responsive states and decoded-media behavior are qualified. Preserve existing functionality
+when adapting the drawings; these frames do not remove supported playback options or access checks.
+
+The implementation uses responsive job cards in place of the desktop table, retaining exact
+object/target/byte evidence and keeping each action with its job. Advanced source selection and
+transfer limits use a native disclosure; primary eviction and restore use a native in-page dialog
+with Cancel initially focused, Escape cancellation and focus return.
+
+Playback preparation and errors remain generic until accepted server state identifies archive
+media. Only a known archive session uses archive-specific preparing or unavailable copy. This
+preserves truthful classification when the initial open fails before archive metadata arrives.
+Retry reopens the selected moment; Close cancels playback while retaining timeline navigation.
+Runtime screenshots and decoded-media tests must qualify these adaptations before visual approval.

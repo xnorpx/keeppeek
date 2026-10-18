@@ -4,10 +4,22 @@ Captured during the 2026-09-12 Alpha audit from
 [KeepPeek — NVR Design System & Spec](https://app.paper.design/file/01M0B0VBH78TMTX40GCYYQ37SG/1-0).
 The manifest records the exact UTC export time; the audit continued into September 13 UTC.
 
-This bundle contains **36 NVR boards, 56 lossless PNGs at 1×, and the complete 82-token snapshot**.
+This bundle contains **40 NVR boards, 67 lossless PNGs at 1×, and the complete 82-token snapshot**.
 Boards 01–34 and 45 were refreshed from the live source. Board 46 was added in Paper to address
 mobile Keep's crowded command area. The six contract-only boards have JSX without image references.
-The shared file contains 82 artboards across several products; those are not 82 NVR requirements.
+Archive boards 47–50 were added and visually reviewed in Paper on October 17, 2026 (October 18 UTC).
+Each new board records its own export time; earlier exports retain their original provenance.
+The shared file now contains 86 artboards across several products; those are not 86 NVR requirements.
+
+## Archive design
+
+Boards 47–50 define local archive setup, verified-copy jobs, outage recovery, primary eviction,
+restore, and normal Keep playback on desktop and mobile. Their original JSX and eleven lossless
+reference frames are checked in with exact dimensions and SHA-256 hashes. All use the existing
+tokens; no application theme regeneration is required.
+
+The archive references remain `proposal` while runtime and visual qualification proceeds.
+Design exports do not approve implementation pixels or replace the existing Linux baselines.
 
 ## New mobile Keep target
 

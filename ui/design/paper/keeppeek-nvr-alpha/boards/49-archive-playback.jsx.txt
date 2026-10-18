@@ -1,0 +1,345 @@
+(
+    <div id="BHT-0" style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSize: '12px', fontSynthesis: 'none', gap: '32px', lineHeight: '16px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', overflowWrap: 'anywhere', padding: '80px', WebkitFontSmoothing: 'antialiased' }}>
+      <div id="BHU-0" style={{ alignItems: 'end', boxSizing: 'border-box', display: 'flex', gap: '48px', justifyContent: 'space-between', width: '1440px' }}>
+        <div id="BHV-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '12px', width: '720px' }}>
+          <div id="BHW-0" style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.16em', lineHeight: '16px' }}>
+            49 / KEEP · ARCHIVE REVIEW
+          </div>
+          <div id="BHX-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '40px', fontWeight: 600, letterSpacing: '-0.03em', lineHeight: '44px' }}>
+            The same timeline.
+          </div>
+        </div>
+        <div id="BHY-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', lineHeight: '24px', width: '600px' }}>
+          Browse local indexes immediately. Archived playback uses the same controls; startup and seeking may take longer while the disk is read and verified.
+        </div>
+      </div>
+      <div id="BI0-0" style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '48px', width: '1440px' }}>
+        <div id="BI1-0" style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', overflow: 'clip', width: '1002px' }}>
+          <div id="BI4-0" style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', justifyContent: 'space-between', paddingBlock: '20px', paddingInline: '24px' }}>
+            <div id="BI5-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '20px', fontWeight: 600, lineHeight: '26px' }}>
+              Keep
+            </div>
+            <div id="BI6-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '22px' }}>
+              Front Door · 12 September 2026
+            </div>
+            <div id="BI7-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+              06:37:23
+            </div>
+          </div>
+          <div id="BI9-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '12px', paddingBlock: '12px', paddingInline: '24px' }}>
+            <div id="BIA-0" style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.08em', lineHeight: '18px', width: '72px' }}>
+              ARCHIVE
+            </div>
+            <div id="BIB-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              Playing from archive. Startup and seeking may take longer.
+            </div>
+          </div>
+          <div id="BID-0" style={{ backgroundColor: 'var(--color-raised)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', fontFamily: 'var(--font-mono)', height: '380px', justifyContent: 'space-between', padding: '12px', width: '1000px' }}>
+            <div id="BIE-0" style={{ boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
+              <div id="BIF-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '16px' }}>
+                Front Door
+              </div>
+              <div id="BIG-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '16px' }}>
+                HQ
+              </div>
+            </div>
+            <div id="BIH-0" style={{ alignContent: 'center', boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'flex', flexWrap: 'wrap', fontFamily: 'var(--font-sans)', fontSize: '14px', justifyContent: 'center', lineHeight: '18px', textAlign: 'center' }}>
+              Recorded footage
+            </div>
+            <div id="BII-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-mono)', fontSize: '13px', lineHeight: '16px' }}>
+              06:37:23 UTC
+            </div>
+          </div>
+          <div id="BIK-0" style={{ alignItems: 'center', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', justifyContent: 'space-between', paddingBlock: '16px', paddingInline: '24px' }}>
+            <div id="BIL-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '20px' }}>
+              <div id="BIM-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '32px', justifyContent: 'center', width: '32px' }}>
+                <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" id="BIN-0" style={{ display: 'inline-block', flexShrink: '0' }}>
+                  <path d="M5 3l10 6-10 6z" fill="var(--color-text)" />
+                </svg>
+              </div>
+              <div id="BIP-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                Back 10 s
+              </div>
+              <div id="BIQ-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                Forward 10 s
+              </div>
+            </div>
+            <div id="BIR-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+              06:37:23 · 1×
+            </div>
+            <div id="BIS-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              Playback options
+            </div>
+          </div>
+          <div id="BIU-0" style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '12px', paddingBlock: '20px', paddingInline: '24px' }}>
+            <div id="BIV-0" style={{ boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
+              <div id="BIW-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+                06:30
+              </div>
+              <div id="BIX-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+                06:35
+              </div>
+              <div id="BIY-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+                06:40
+              </div>
+            </div>
+            <div id="BIZ-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '32px' }}>
+              <div id="BJ0-0" style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '8px', width: '200px' }} />
+              <div id="BJ1-0" style={{ backgroundColor: 'var(--color-primary-soft)', boxSizing: 'border-box', flexShrink: '0', height: '32px', width: '3px' }} />
+              <div id="BJ2-0" style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '8px', width: '520px' }} />
+            </div>
+            <div id="BJ3-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              Indexed recording · same camera, time and seek controls
+            </div>
+          </div>
+        </div>
+        <div id="BI2-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '24px', width: '390px' }}>
+          <div id="BJ5-0" style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', overflow: 'clip', width: '390px' }}>
+            <div id="BJ7-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '154px', height: '62px', paddingBottom: '19px', paddingInline: '24px', paddingTop: '21px', width: '390px' }}>
+              <div id="BJ8-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', justifyContent: 'center' }}>
+                <div id="BJ9-0" style={{ boxSizing: 'border-box', color: '#FFFFFF', display: 'flex', flexWrap: 'wrap', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '17px', fontWeight: 600, justifyContent: 'center', lineHeight: '22px', textAlign: 'center', width: 'max-content' }}>
+                  9:41
+                </div>
+              </div>
+              <div id="BJA-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', justifyContent: 'center' }}>
+                <svg width="82" height="22" viewBox="0 0 82 22" xmlns="http://www.w3.org/2000/svg" id="BJB-0" style={{ flexShrink: '0' }}>
+                  <path d="M3.7 13H2.5a1 1 0 0 0-1 1v2.5a1 1 0 0 0 1 1h1.2a1 1 0 0 0 1-1V14a1 1 0 0 0-1-1m5.2-2.5H7.7a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h1.2a1 1 0 0 0 1-1v-5a1 1 0 0 0-1-1M14.1 8h-1.2a1 1 0 0 0-1 1v7.5a1 1 0 0 0 1 1h1.2a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1m5.2-2.5h-1.2a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h1.2a1 1 0 0 0 1-1v-10a1 1 0 0 0-1-1" fill="#FFFFFF" />
+                  <path fillRule="evenodd" d="M36.57 7.8c2.49 0 4.88.92 6.68 2.58.14.13.36.12.49 0l1.3-1.27a.34.34 0 0 0 0-.5 12.55 12.55 0 0 0-16.93 0 .34.34 0 0 0 0 .5l1.3 1.26c.13.13.34.14.48 0a10 10 0 0 1 6.68-2.57m0 4.22a5.4 5.4 0 0 1 3.67 1.44c.14.13.35.13.48 0l1.3-1.33a.37.37 0 0 0-.01-.52 7.9 7.9 0 0 0-10.88 0 .37.37 0 0 0 0 .52l1.29 1.32c.13.14.34.14.48 0 1-.92 2.31-1.43 3.67-1.43m2.52 2.8q0 .15-.1.28l-2.18 2.45a.3.3 0 0 1-.24.11.3.3 0 0 1-.24-.1l-2.18-2.46a.43.43 0 0 1 .01-.56 3.44 3.44 0 0 1 4.82 0 .4.4 0 0 1 .11.28" clipRule="evenodd" fill="#FFFFFF" />
+                  <path fillRule="evenodd" d="M70.5 5c2.05 0 3.08 0 3.88.34a4.3 4.3 0 0 1 2.28 2.28c.34.8.34 1.83.34 3.88s0 3.08-.34 3.88a4.3 4.3 0 0 1-2.28 2.28c-.8.34-1.83.34-3.88.34h-12c-2.05 0-3.08 0-3.88-.34a4.3 4.3 0 0 1-2.28-2.28c-.34-.8-.34-1.83-.34-3.88s0-3.08.34-3.88a4.3 4.3 0 0 1 2.28-2.28C55.42 5 56.45 5 58.5 5zM58.28 6c-1.85 0-2.77 0-3.48.36a3.3 3.3 0 0 0-1.44 1.44C53 8.5 53 9.43 53 11.28v.44c0 1.85 0 2.77.36 3.48a3.3 3.3 0 0 0 1.44 1.44c.7.36 1.63.36 3.48.36h12.44c1.85 0 2.77 0 3.48-.36a3.3 3.3 0 0 0 1.44-1.44c.36-.7.36-1.63.36-3.48v-.44c0-1.85 0-2.77-.36-3.48a3.3 3.3 0 0 0-1.44-1.44C73.5 6 72.57 6 70.72 6z" clipRule="evenodd" fill="#FFFFFF" style={{ opacity: '0.35' }} />
+                  <path d="M54 11c0-1.4 0-2.1.27-2.63a2.5 2.5 0 0 1 1.1-1.1C55.9 7 56.6 7 58 7h13c1.4 0 2.1 0 2.64.27q.72.37 1.09 1.1C75 8.9 75 9.6 75 11v1c0 1.4 0 2.1-.27 2.64a2.5 2.5 0 0 1-1.1 1.09C73.1 16 72.4 16 71 16H58c-1.4 0-2.1 0-2.63-.27a2.5 2.5 0 0 1-1.1-1.1C54 14.1 54 13.4 54 12z" fill="#FFFFFF" />
+                  <path d="M78 9.5v4.08a2.2 2.2 0 0 0 1.33-2.04A2.2 2.2 0 0 0 78 9.5" fill="#FFFFFF" style={{ opacity: '0.35' }} />
+                </svg>
+              </div>
+            </div>
+            <div id="BJH-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '50px', justifyContent: 'space-between', paddingInline: '12px', width: '390px' }}>
+              <div id="BJI-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '24px', fontWeight: 600, lineHeight: '30px' }}>
+                Keep
+              </div>
+              <div id="BJJ-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '8px', height: '44px', justifyContent: 'center', minWidth: '110px' }}>
+                <div id="BJK-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                  Playback
+                </div>
+                <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BJL-0" style={{ flexShrink: '0' }}>
+                  <circle cx="5" cy="12" r="1.5" fill="var(--color-text)" />
+                  <circle cx="12" cy="12" r="1.5" fill="var(--color-text)" />
+                  <circle cx="19" cy="12" r="1.5" fill="var(--color-text)" />
+                </svg>
+              </div>
+            </div>
+            <div id="BJP-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', paddingInline: '8px', width: '390px' }}>
+              <div id="BJQ-0" style={{ alignContent: 'center', boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, height: '44px', justifyContent: 'center', lineHeight: '16px', textAlign: 'center', width: '78px' }}>
+                Coverage
+              </div>
+              <div id="BJR-0" style={{ alignItems: 'center', borderBottomColor: 'var(--color-primary)', borderBottomStyle: 'solid', borderBottomWidth: '2px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', justifyContent: 'center', width: '78px' }}>
+                <div id="BJS-0" style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+                  Timeline
+                </div>
+              </div>
+              <div id="BJT-0" style={{ alignContent: 'center', boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, height: '44px', justifyContent: 'center', lineHeight: '16px', textAlign: 'center', width: '68px' }}>
+                Stories
+              </div>
+              <div id="BJU-0" style={{ alignContent: 'center', boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, height: '44px', justifyContent: 'center', lineHeight: '16px', textAlign: 'center', width: '84px' }}>
+                Swimlanes
+              </div>
+              <div id="BJV-0" style={{ alignContent: 'center', boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, height: '44px', justifyContent: 'center', lineHeight: '16px', textAlign: 'center', width: '66px' }}>
+                Export
+              </div>
+            </div>
+            <div id="BJW-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '8px', height: '48px', paddingBlock: '2px', paddingInline: '12px', width: '390px' }}>
+              <div id="BJX-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', justifyContent: 'space-between', paddingInline: '10px', width: '190px' }}>
+                <div id="BJY-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '14px', lineHeight: '18px' }}>
+                  Front Door
+                </div>
+                <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BJZ-0" style={{ flexShrink: '0' }}>
+                  <path d="m6 9 6 6 6-6" fill="none" stroke="var(--color-text-muted)" strokeWidth="1.5" />
+                </svg>
+              </div>
+              <div id="BK1-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', justifyContent: 'space-between', paddingInline: '10px', width: '168px' }}>
+                <div id="BK2-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '14px', lineHeight: '18px' }}>
+                  12 Sep · UTC
+                </div>
+                <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BK3-0" style={{ flexShrink: '0' }}>
+                  <path d="m6 9 6 6 6-6" fill="none" stroke="var(--color-text-muted)" strokeWidth="1.5" />
+                </svg>
+              </div>
+            </div>
+            <div id="BK6-0" style={{ backgroundColor: 'var(--color-raised)', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px', paddingBlock: '12px', paddingInline: '16px' }}>
+              <div id="BK7-0" style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.08em', lineHeight: '16px' }}>
+                ARCHIVE PLAYBACK
+              </div>
+              <div id="BK8-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                Startup and seeking may take longer.
+              </div>
+            </div>
+            <div id="BKA-0" style={{ backgroundColor: 'var(--color-raised)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', fontFamily: 'var(--font-mono)', height: '219px', justifyContent: 'space-between', padding: '12px', width: '390px' }}>
+              <div id="BKB-0" style={{ boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
+                <div id="BKC-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '16px' }}>
+                  Front Door
+                </div>
+                <div id="BKD-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '16px' }}>
+                  HQ
+                </div>
+              </div>
+              <div id="BKE-0" style={{ alignContent: 'center', boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'flex', flexWrap: 'wrap', fontFamily: 'var(--font-sans)', fontSize: '14px', justifyContent: 'center', lineHeight: '18px', textAlign: 'center' }}>
+                Recorded footage
+              </div>
+              <div id="BKF-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-mono)', fontSize: '13px', lineHeight: '16px' }}>
+                06:37:23 UTC
+              </div>
+            </div>
+            <div id="BKG-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', fontFamily: 'var(--font-sans)', height: '48px', justifyContent: 'space-between', paddingBlock: '2px', paddingInline: '12px', width: '390px' }}>
+              <div id="BKH-0" style={{ alignContent: 'center', boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: 'var(--font-sans)', fontSize: '14px', height: '44px', justifyContent: 'center', lineHeight: '18px', textAlign: 'center', width: '54px' }}>
+                −10s
+              </div>
+              <div id="BKI-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', justifyContent: 'center', width: '54px' }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BKJ-0" style={{ flexShrink: '0' }}>
+                  <path d="M8 5v14l11-7z" fill="var(--color-on-primary)" />
+                </svg>
+              </div>
+              <div id="BKL-0" style={{ alignContent: 'center', boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: 'var(--font-sans)', fontSize: '14px', height: '44px', justifyContent: 'center', lineHeight: '18px', textAlign: 'center', width: '54px' }}>
+                +10s
+              </div>
+              <div id="BKM-0" style={{ alignContent: 'center', boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: 'var(--font-mono)', fontSize: '14px', height: '44px', justifyContent: 'center', lineHeight: '18px', textAlign: 'center', width: '60px' }}>
+                1×
+              </div>
+              <div id="BKN-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', justifyContent: 'center', width: '54px' }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BKO-0" style={{ flexShrink: '0' }}>
+                  <path d="M11 5 6 9H3v6h3l5 4zM16 9l5 6m0-6-5 6" fill="none" stroke="var(--color-text)" strokeWidth="1.5" />
+                </svg>
+              </div>
+              <div id="BKQ-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', justifyContent: 'center', width: '54px' }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BKR-0" style={{ flexShrink: '0' }}>
+                  <path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" fill="none" stroke="var(--color-text)" strokeWidth="1.5" />
+                </svg>
+              </div>
+            </div>
+            <div id="BKT-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', fontFamily: 'var(--font-mono)', height: '44px', justifyContent: 'space-between', paddingInline: '12px', width: '390px' }}>
+              <div id="BKU-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '16px' }}>
+                01:23 / 05:00
+              </div>
+              <div id="BKV-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', position: 'relative', width: '220px' }}>
+                <div id="BKW-0" style={{ backgroundColor: 'var(--color-hairline-strong)', boxSizing: 'border-box', flexShrink: '0', height: '3px', width: '220px' }} />
+                <div id="BKX-0" style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', height: '3px', left: '0px', position: 'absolute', top: '21px', width: '61px' }} />
+                <div id="BKY-0" style={{ backgroundColor: 'var(--color-text)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', height: '12px', left: '55px', position: 'absolute', top: '16px', width: '12px' }} />
+              </div>
+            </div>
+            <div id="BKZ-0" style={{ backgroundColor: 'var(--color-surface)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', fontFamily: 'var(--font-mono)', height: '56px', paddingInline: '12px', position: 'relative', width: '390px' }}>
+              <div id="BL0-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '24px', justifyContent: 'space-between' }}>
+                <div id="BL1-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                  06:00
+                </div>
+                <div id="BL2-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                  06:15
+                </div>
+                <div id="BL3-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                  06:30
+                </div>
+                <div id="BL4-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                  06:45
+                </div>
+                <div id="BL5-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                  07:00
+                </div>
+              </div>
+              <div id="BL6-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '4px', height: '32px' }}>
+                <div id="BL7-0" style={{ backgroundColor: 'var(--color-text-faint)', boxSizing: 'border-box', flexShrink: '0', height: '16px', width: '112px' }} />
+                <div id="BL8-0" style={{ backgroundColor: 'var(--color-ground)', borderColor: 'var(--color-hairline-strong)', borderStyle: 'dashed', borderWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '16px', width: '30px' }} />
+                <div id="BL9-0" style={{ backgroundColor: 'var(--color-text-faint)', boxSizing: 'border-box', flexShrink: '0', height: '16px', width: '114px' }} />
+                <div id="BLA-0" style={{ backgroundColor: 'var(--color-ground)', borderColor: 'var(--color-hairline-strong)', borderStyle: 'dashed', borderWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '16px', width: '30px' }} />
+                <div id="BLB-0" style={{ backgroundColor: 'var(--color-text-faint)', boxSizing: 'border-box', flexShrink: '0', height: '16px', width: '64px' }} />
+              </div>
+              <div id="BLC-0" style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', height: '56px', left: '239px', position: 'absolute', top: '0px', width: '2px' }} />
+            </div>
+            <div id="BLD-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '78px', paddingBottom: '24px', paddingTop: '10px', width: '390px' }}>
+              <div id="BLE-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexBasis: '65px', flexDirection: 'column', flexShrink: '0', gap: '4px', height: '44px', width: '78px' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BLF-0" style={{ flexShrink: '0' }}>
+                  <path d="m23 7-7 5 7 5V7z" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.7" />
+                  <rect x="1" y="5" width="15" height="14" rx="2" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.7" />
+                </svg>
+                <div id="BLI-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '10px', lineHeight: '11px', width: 'max-content' }}>
+                  Dashboard
+                </div>
+              </div>
+              <div id="BLJ-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexBasis: '65px', flexDirection: 'column', flexShrink: '0', gap: '4px', height: '44px', width: '78px' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BLK-0" style={{ flexShrink: '0' }}>
+                  <path d="m23 7-7 5 7 5V7z" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.7" />
+                  <rect x="1" y="5" width="15" height="14" rx="2" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.7" />
+                </svg>
+                <div id="BLN-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '10px', lineHeight: '11px', width: 'max-content' }}>
+                  Viewer
+                </div>
+              </div>
+              <div id="BLO-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexBasis: '65px', flexDirection: 'column', flexShrink: '0', gap: '4px', height: '44px', width: '78px' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BLP-0" style={{ flexShrink: '0' }}>
+                  <circle cx="12" cy="12" r="9" fill="none" stroke="var(--color-primary-soft)" strokeWidth="1.8" />
+                  <polyline points="12 7 12 12 15 14" fill="none" stroke="var(--color-primary-soft)" strokeWidth="1.8" />
+                </svg>
+                <div id="BLS-0" style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '10px', fontWeight: 600, lineHeight: '12px' }}>
+                  Keep
+                </div>
+              </div>
+              <div id="BLT-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexBasis: '65px', flexDirection: 'column', flexShrink: '0', gap: '4px', height: '44px', width: '78px' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BLU-0" style={{ flexShrink: '0' }}>
+                  <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.7" />
+                </svg>
+                <div id="BLW-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                  Events
+                </div>
+              </div>
+              <div id="BLX-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexBasis: '65px', flexDirection: 'column', flexShrink: '0', gap: '4px', height: '44px', width: '78px' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BLY-0" style={{ flexShrink: '0' }}>
+                  <polyline points="2 12 7 12 10 4 14 20 17 12 22 12" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.7" />
+                </svg>
+                <div id="BM0-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                  Health
+                </div>
+              </div>
+              <div id="BM1-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexBasis: '65px', flexDirection: 'column', flexShrink: '0', gap: '4px', height: '44px', width: '78px' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BM2-0" style={{ flexShrink: '0' }}>
+                  <circle cx="5" cy="12" r="1.4" fill="var(--color-text-faint)" />
+                  <circle cx="12" cy="12" r="1.4" fill="var(--color-text-faint)" />
+                  <circle cx="19" cy="12" r="1.4" fill="var(--color-text-faint)" />
+                </svg>
+                <div id="BM6-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                  More
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="BM8-0" style={{ boxSizing: 'border-box', display: 'flex', gap: '32px', width: '1440px' }}>
+        <div id="BM9-0" style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '12px', padding: '24px', width: '600px' }}>
+          <div id="BMC-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div id="BMD-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '22px' }}>
+              Preparing archive playback…
+            </div>
+            <div id="BME-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '21px' }}>
+              Reading and verifying the requested footage. Keep your selected camera and position while it loads.
+            </div>
+          </div>
+          <div id="BPN-0" style={{ alignContent: 'center', boxSizing: 'border-box', color: 'var(--color-text)', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', height: '36px', lineHeight: '20px' }}>
+            Close playback
+          </div>
+        </div>
+        <div id="BMA-0" style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '12px', padding: '24px', width: '600px' }}>
+          <div id="BMG-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div id="BMH-0" style={{ boxSizing: 'border-box', color: 'var(--color-activity)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '22px' }}>
+              Archive playback unavailable
+            </div>
+            <div id="BMI-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '21px' }}>
+              Check the archive disk and retry playback. Timeline entries remain available while the destination is offline.
+            </div>
+            <div id="BMJ-0" style={{ boxSizing: 'border-box', display: 'flex', gap: '16px', paddingTop: '8px' }}>
+              <div id="BMK-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                Retry playback
+              </div>
+              <div id="BML-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                Close playback
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )

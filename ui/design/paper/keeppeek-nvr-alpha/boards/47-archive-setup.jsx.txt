@@ -1,0 +1,276 @@
+(
+    <div id="BAX-0" style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSize: '12px', fontSynthesis: 'none', gap: '32px', lineHeight: '16px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', overflowWrap: 'anywhere', padding: '80px', WebkitFontSmoothing: 'antialiased' }}>
+      <div id="BAY-0" style={{ alignItems: 'end', boxSizing: 'border-box', display: 'flex', gap: '48px', justifyContent: 'space-between', width: '1440px' }}>
+        <div id="BAZ-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '12px', width: '720px' }}>
+          <div id="BB0-0" style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.16em', lineHeight: '16px' }}>
+            47 / STORAGE · FOURTH TIER
+          </div>
+          <div id="BB1-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '40px', fontWeight: 600, letterSpacing: '-0.03em', lineHeight: '44px' }}>
+            Keep it longer.
+          </div>
+        </div>
+        <div id="BB2-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', lineHeight: '24px', width: '600px' }}>
+          Archive is a verified copy on another local disk. Setup stays in Storage & retention; normal recordings keep their existing location.
+        </div>
+      </div>
+      <div id="BB4-0" style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', overflow: 'clip', width: '1440px' }}>
+        <div id="BB5-0" style={{ alignItems: 'center', alignSelf: 'stretch', backgroundColor: 'var(--color-ground)', borderRightColor: 'var(--color-hairline)', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '10px', height: '840px', paddingBlock: '16px', width: '64px' }}>
+          <div id="BB6-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '30px', justifyContent: 'center', width: '30px' }}>
+            <div id="BB7-0" style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-md)', fontWeight: 700, lineHeight: '12px' }}>
+              KP
+            </div>
+          </div>
+          <div id="BB8-0" style={{ boxSizing: 'border-box', flexShrink: '0', height: '18px' }} />
+          <div id="BB9-0" style={{ alignItems: 'center', borderLeftColor: '#00000000', borderLeftStyle: 'solid', borderLeftWidth: '2px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', justifyContent: 'center', width: '64px' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BBA-0" style={{ flexShrink: '0' }}>
+              <path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <rect x="2" y="6" width="14" height="12" rx="2" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <div id="BBD-0" style={{ alignItems: 'center', borderLeftColor: '#00000000', borderLeftStyle: 'solid', borderLeftWidth: '2px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', justifyContent: 'center', width: '64px' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BBE-0" style={{ flexShrink: '0' }}>
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M3 3v5h5" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M12 7v5l4 2" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <div id="BBI-0" style={{ alignItems: 'center', borderLeftColor: '#00000000', borderLeftStyle: 'solid', borderLeftWidth: '2px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', justifyContent: 'center', width: '64px' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BBJ-0" style={{ flexShrink: '0' }}>
+              <path d="M10.268 21a2 2 0 0 0 3.464 0" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <div id="BBM-0" style={{ alignItems: 'center', borderLeftColor: '#00000000', borderLeftStyle: 'solid', borderLeftWidth: '2px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', justifyContent: 'center', width: '64px' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BBN-0" style={{ flexShrink: '0' }}>
+              <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <circle cx="12" cy="13" r="3" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <div id="BBQ-0" style={{ alignItems: 'center', borderLeftColor: '#00000000', borderLeftStyle: 'solid', borderLeftWidth: '2px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', justifyContent: 'center', width: '64px' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BBR-0" style={{ flexShrink: '0' }}>
+              <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <div id="BBT-0" style={{ alignItems: 'center', backgroundColor: '#B7410E24', borderLeftColor: 'var(--color-primary)', borderLeftStyle: 'solid', borderLeftWidth: '2px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', justifyContent: 'center', width: '64px' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="BBU-0" style={{ flexShrink: '0' }}>
+              <line x1="21" y1="4" x2="14" y2="4" stroke="var(--color-primary-soft)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <line x1="10" y1="4" x2="3" y2="4" stroke="var(--color-primary-soft)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <line x1="21" y1="12" x2="12" y2="12" stroke="var(--color-primary-soft)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <line x1="8" y1="12" x2="3" y2="12" stroke="var(--color-primary-soft)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <line x1="21" y1="20" x2="16" y2="20" stroke="var(--color-primary-soft)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <line x1="12" y1="20" x2="3" y2="20" stroke="var(--color-primary-soft)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <line x1="14" y1="2" x2="14" y2="6" stroke="var(--color-primary-soft)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <line x1="8" y1="10" x2="8" y2="14" stroke="var(--color-primary-soft)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <line x1="16" y1="18" x2="16" y2="22" stroke="var(--color-primary-soft)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+        </div>
+        <div id="BC4-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', width: '1374px' }}>
+          <div id="BC5-0" style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '52px', justifyContent: 'space-between', paddingInline: '20px', width: '1374px' }}>
+            <div id="BC6-0" style={{ alignItems: 'baseline', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+              <div id="BC7-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+                Settings
+              </div>
+              <div id="BC8-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.08em', lineHeight: '14px' }}>
+                SERVER-WIDE · ADMINISTRATOR ONLY
+              </div>
+            </div>
+            <div id="BC9-0" style={{ boxSizing: 'border-box', display: 'none' }}>
+              <div id="BCA-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '7px' }}>
+                <div id="BCB-0" style={{ backgroundColor: 'var(--color-activity)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
+                <div id="BCC-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                  2 unsaved changes
+                </div>
+              </div>
+              <div id="BCD-0" style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '30px', paddingInline: '12px' }}>
+                <div id="BCE-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                  Discard
+                </div>
+              </div>
+              <div id="BCF-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', height: '30px', paddingInline: '16px' }}>
+                <div id="BCG-0" style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 600, lineHeight: '16px' }}>
+                  Apply
+                </div>
+              </div>
+            </div>
+          </div>
+          <div id="BCH-0" style={{ boxSizing: 'border-box', display: 'flex', width: '1374px' }}>
+            <div id="BCI-0" style={{ backgroundColor: 'var(--color-ground)', borderRightColor: 'var(--color-hairline)', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', height: '788px', paddingBlock: '20px', width: '240px' }}>
+              <div id="BCJ-0" style={{ boxSizing: 'border-box', paddingBottom: '12px', paddingInline: '20px' }}>
+                <div id="BCK-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.14em', lineHeight: '14px' }}>
+                  ON THIS PAGE
+                </div>
+              </div>
+              <div id="BCL-0" style={{ alignItems: 'center', backgroundColor: '#B7410E1F', borderLeftColor: 'var(--color-primary)', borderLeftStyle: 'solid', borderLeftWidth: '2px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '36px', paddingInline: '20px' }}>
+                <div id="BCM-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
+                  Storage & retention
+                </div>
+              </div>
+              <div id="BCN-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '36px', paddingInline: '22px' }}>
+                <div id="BCO-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                  Camera defaults
+                </div>
+              </div>
+              <div id="BCP-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '36px', justifyContent: 'space-between', paddingInline: '22px' }}>
+                <div id="BCQ-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                  Event sources
+                </div>
+                <div id="BCR-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                  3
+                </div>
+              </div>
+              <div id="BCS-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '36px', justifyContent: 'space-between', paddingInline: '22px' }}>
+                <div id="BCT-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                  Groups
+                </div>
+                <div id="BCU-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                  5
+                </div>
+              </div>
+              <div id="BCV-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '36px', paddingInline: '22px' }}>
+                <div id="BCW-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                  Integrations
+                </div>
+              </div>
+              <div id="BCX-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '36px', paddingInline: '22px' }}>
+                <div id="BCY-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                  Notifications
+                </div>
+              </div>
+              <div id="BCZ-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '36px', justifyContent: 'space-between', paddingInline: '22px' }}>
+                <div id="BD0-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                  Access
+                </div>
+                <div id="BD1-0" style={{ backgroundColor: 'var(--color-activity)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
+              </div>
+              <div id="BD2-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '36px', paddingInline: '22px' }}>
+                <div id="BD3-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                  Appearance & time
+                </div>
+              </div>
+              <div id="BD4-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '36px', paddingInline: '22px' }}>
+                <div id="BD5-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                  System & updates
+                </div>
+              </div>
+              <div id="BD6-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '36px', paddingInline: '22px' }}>
+                <div id="BD7-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                  Logs & diagnostics
+                </div>
+              </div>
+              <div id="BD8-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px', paddingInline: '22px', paddingTop: '24px' }}>
+                <div id="BD9-0" style={{ backgroundColor: 'var(--color-hairline)', boxSizing: 'border-box', flexShrink: '0', height: '1px', width: '196px' }} />
+                <div id="BDA-0" style={{ boxSizing: 'border-box', paddingTop: '12px' }}>
+                  <div id="BDB-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
+                    Ten sections, all listed. Nothing about a single camera lives here — that is on the camera's own page.
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="BDC-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '24px', padding: '32px', width: '1134px' }}>
+              <div id="BDE-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div id="BDF-0" style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.12em', lineHeight: '16px' }}>
+                  STORAGE & RETENTION / ARCHIVE
+                </div>
+                <div id="BDG-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '28px', fontWeight: 600, lineHeight: '34px' }}>
+                  Add a local archive
+                </div>
+                <div id="BDH-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '22px' }}>
+                  Keep verified copies of finalized recordings and completed exports. Review them in Keep; archive playback and seeking may take longer.
+                </div>
+              </div>
+              <div id="BDJ-0" style={{ borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '24px', padding: '24px' }}>
+                <div id="BDL-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div id="BDM-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '22px' }}>
+                    Archive folder
+                  </div>
+                  <div id="BDN-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', padding: '12px' }}>
+                    <div id="BDO-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                      E:\KeepPeek Archive
+                    </div>
+                  </div>
+                  <div id="BDP-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                    Use an existing folder on another disk. A disconnected or replaced disk pauses archive work.
+                  </div>
+                </div>
+                <div id="BDR-0" style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '24px' }}>
+                  <div id="BDS-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', width: '360px' }}>
+                    <div id="BDT-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                      Target ID
+                    </div>
+                    <div id="BDU-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', padding: '12px' }}>
+                      <div id="BDV-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                        archive-disk
+                      </div>
+                    </div>
+                  </div>
+                  <div id="BDW-0" style={{ boxSizing: 'border-box', paddingTop: '28px' }}>
+                    <div id="BDX-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '21px' }}>
+                      This name stays attached to verified copies. Use a new ID when replacing the archive destination.
+                    </div>
+                  </div>
+                </div>
+                <div id="BDZ-0" style={{ alignItems: 'center', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '12px', paddingTop: '20px' }}>
+                  <div id="BE0-0" style={{ backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '18px', width: '18px' }}>
+                    <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" id="BE1-0" style={{ display: 'inline-block', flexShrink: '0' }}>
+                      <path d="M4 9l3 3 7-7" fill="none" stroke="var(--color-on-primary)" strokeWidth="2" />
+                    </svg>
+                  </div>
+                  <div id="BE3-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 500, lineHeight: '22px' }}>
+                    Enable local archive
+                  </div>
+                </div>
+                <div id="BE5-0" style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+                  <div id="BE6-0" style={{ borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-xs)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '18px', width: '18px' }} />
+                  <div id="BE7-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div id="BE8-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                      Automatically archive eligible media
+                    </div>
+                    <div id="BE9-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                      Off by default. Choose cameras and a minimum age in advanced settings.
+                    </div>
+                  </div>
+                </div>
+                <div id="BEB-0" style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+                  <div id="BEC-0" style={{ borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-xs)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '18px', width: '18px' }} />
+                  <div id="BED-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div id="BEE-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                      Allow automatic eviction after verified archive copy
+                    </div>
+                    <div id="BEF-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                      Leave off to keep primary files. Eviction retains the timeline and respects holds and active readers.
+                    </div>
+                  </div>
+                </div>
+                <div id="BEH-0" style={{ alignItems: 'center', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', justifyContent: 'space-between', paddingTop: '20px' }}>
+                  <div id="BEI-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                    Advanced selection & transfer limits
+                  </div>
+                  <div id="BEJ-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: '18px' }}>
+                    4 GiB / object · 3 attempts +
+                  </div>
+                </div>
+              </div>
+              <div id="BEL-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '24px', justifyContent: 'space-between' }}>
+                <div id="BEM-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px', width: '570px' }}>
+                  Save, restart, then test the destination before archiving. Your current storage stays active until restart.
+                </div>
+                <div id="BEN-0" style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+                  <div id="BEO-0" style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '40px', padding: '12px' }}>
+                    <div id="BEP-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '18px' }}>
+                      Cancel edit
+                    </div>
+                  </div>
+                  <div id="BEQ-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', height: '40px', paddingBlock: '12px', paddingInline: '16px' }}>
+                    <div id="BER-0" style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 600, lineHeight: '18px' }}>
+                      Save archive settings
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
