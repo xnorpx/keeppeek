@@ -166,6 +166,13 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
 }
 
 pub(super) async fn begin(connection: &turso::Connection, intent: &Intent) -> anyhow::Result<Job> {
+    let mut archives = connection.query("SELECT 1 FROM archive_replicas WHERE kind=?1 AND recording_id=?2 AND state NOT IN('deleted','cancelled')",
+        (intent.object.kind.as_str(),intent.object.id.as_str())).await?;
+    anyhow::ensure!(
+        archives.next().await?.is_none(),
+        "archive intent pins the source location"
+    );
+    drop(archives);
     super::recordings::ensure_active(connection, &intent.object).await?;
     super::images::retirement::ensure_not_retiring(connection, &intent.object).await?;
     super::export_cleanup::ensure_active(connection, &intent.object).await?;

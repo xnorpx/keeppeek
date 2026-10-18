@@ -102,6 +102,8 @@ pub struct CameraInfo {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SanitizedStorage {
     #[serde(default)]
+    pub archive: Option<crate::storage::archive::settings::Settings>,
+    #[serde(default)]
     pub named_volumes: Option<crate::storage::volumes::VolumeConfiguration<String>>,
     pub medium_term_path: String,
     pub long_term_path: String,

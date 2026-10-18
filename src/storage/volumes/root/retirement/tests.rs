@@ -45,6 +45,7 @@ impl Fixture {
             8,
             self.digest,
             &self.operation,
+            Instant::now() + Duration::from_secs(300),
         )
     }
 
@@ -53,6 +54,50 @@ impl Fixture {
         std::fs::remove_dir_all(self.path)?;
         Ok(())
     }
+}
+
+#[test]
+fn caller_deadline_rejects_before_retirement_mutation() -> anyhow::Result<()> {
+    let fixture = Fixture::new()?;
+    assert!(
+        fixture
+            .root
+            .retire_owned_until(
+                &fixture.key,
+                &fixture.file_identity,
+                8,
+                fixture.digest,
+                &fixture.operation,
+                Instant::now() - Duration::from_secs(1),
+            )
+            .is_err()
+    );
+    assert_eq!(std::fs::read(fixture.path.join(&fixture.key))?, b"retained");
+    assert!(!fixture.path.join(QUARANTINE).exists());
+    fixture.close()
+}
+
+#[test]
+fn caller_deadline_allows_exact_retirement() -> anyhow::Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.root.retire_owned_until(
+        &fixture.key,
+        &fixture.file_identity,
+        8,
+        fixture.digest,
+        &fixture.operation,
+        Instant::now() + Duration::from_secs(10),
+    )?;
+    assert!(!fixture.path.join(&fixture.key).exists());
+    assert!(
+        fixture
+            .path
+            .join(QUARANTINE)
+            .join(&fixture.operation)
+            .join(STAGED)
+            .is_file()
+    );
+    fixture.close()
 }
 
 fn stage(retirement: &Retirement<'_>) -> anyhow::Result<()> {

@@ -38,18 +38,113 @@ fn recording(id: &str, root: &std::path::Path) -> CatalogRecording {
     }
 }
 
-fn drain(catalog: &RecordingCatalog) {
+fn drain(catalog: &RecordingCatalog) -> u32 {
+    let mut quarantined = 0;
     for _ in 0..128 {
-        if !catalog
-            .handle()
-            .reconcile_retention_runtime(4)
-            .unwrap()
-            .pending
-        {
-            return;
+        let progress = catalog.handle().reconcile_retention_runtime(4).unwrap();
+        quarantined += progress.quarantined;
+        if !progress.pending {
+            return quarantined;
         }
     }
     panic!("bounded fixture failed to finish runtime reconciliation");
+}
+
+fn assert_current_retention_file(
+    handle: &crate::storage::catalog::RecordingCatalogHandle,
+    id: &str,
+) {
+    let owner = handle.retention.upgrade().unwrap();
+    let connection = owner.connection.lock().unwrap();
+    let mut rows = pollster::block_on(connection.query(
+        "SELECT r.retention_pending,r.retention_generation,r.retention_error,
+                s.generation,s.request_pending FROM recording_files r
+         CROSS JOIN recording_retention_runtime s WHERE r.id=?1 AND s.singleton=1",
+        [id],
+    ))
+    .unwrap();
+    let row = pollster::block_on(rows.next()).unwrap().unwrap();
+    assert_eq!(row.get::<i64>(0).unwrap(), 0);
+    assert_eq!(row.get::<i64>(1).unwrap(), row.get::<i64>(3).unwrap());
+    assert_eq!(row.get::<Option<String>>(2).unwrap(), None);
+    assert_eq!(row.get::<i64>(4).unwrap(), 0);
+}
+
+fn seed_interrupted_archive(handle: &crate::storage::catalog::RecordingCatalogHandle) {
+    let owner = handle.retention.upgrade().unwrap();
+    let connection = owner.connection.lock().unwrap();
+    pollster::block_on(connection.execute_batch(
+        "INSERT INTO archive_bindings VALUES('cold','/archive','fs','root');
+        INSERT INTO archive_replicas(job_id,recording_id,kind,target_id,object_id,source_path,
+            source_identity,bytes,digest,source_root,source_filesystem,source_root_identity,
+            source_relative_key,source_operation,state,local_evicted,action)
+        VALUES('pause','a','recording','cold','6c0a2dda-bd3f-4e33-8224-77c69170820c',
+            '/source/a.mp4','identity',4,zeroblob(32),'/source','fs','root','a.mp4','source',
+            'ready',2,'evict')",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn policy_change_waits_for_interrupted_archive_eviction_without_quarantine() {
+    let root = Directory::new();
+    let path = root.path().join("catalog.db");
+    let catalog = RecordingCatalog::open(&path).unwrap();
+    let handle = catalog.handle();
+    handle
+        .upsert_recording(recording("a", root.path()))
+        .unwrap();
+    let original: Settings = toml::from_str("[default]\ncontinuous_days=10.0").unwrap();
+    handle.request_retention_settings(Some(&original)).unwrap();
+    drain(&catalog);
+    let before = handle.retention_decision("a").unwrap().unwrap();
+    seed_interrupted_archive(&handle);
+    handle
+        .upsert_recording(recording("b", root.path()))
+        .unwrap();
+    let shorter: Settings = toml::from_str("[default]\ncontinuous_days=1.0").unwrap();
+    handle.request_retention_settings(Some(&shorter)).unwrap();
+    let owner = handle.retention.upgrade().unwrap();
+    let connection = owner.connection.lock().unwrap();
+    pollster::block_on(connection.execute(
+        "UPDATE recording_files SET retention_pending=1 WHERE id='a'",
+        (),
+    ))
+    .unwrap();
+    drop(connection);
+    drop(owner);
+    let mut evaluated = false;
+    for _ in 0..3 {
+        let progress = handle.reconcile_retention_runtime(2).unwrap();
+        assert!(progress.pending && progress.activation_pending);
+        assert_eq!(progress.quarantined, 0);
+        evaluated |= progress.evaluated > 0;
+    }
+    assert!(evaluated);
+    assert!(handle.retention_decision("b").unwrap().is_some());
+    assert_eq!(
+        handle.retention_decision("a").unwrap(),
+        Some(before.clone())
+    );
+    catalog.shutdown();
+    let catalog = RecordingCatalog::open(&path).unwrap();
+    let handle = catalog.handle();
+    assert!(handle.reconcile_retention_runtime(2).unwrap().pending);
+    let owner = handle.retention.upgrade().unwrap();
+    let connection = owner.connection.lock().unwrap();
+    pollster::block_on(connection.execute(
+        "UPDATE archive_replicas SET local_evicted=1,action='' WHERE job_id='pause'",
+        (),
+    ))
+    .unwrap();
+    drop(connection);
+    drop(owner);
+    assert_eq!(drain(&catalog), 0);
+    assert_current_retention_file(&handle, "a");
+    let after = handle.retention_decision("a").unwrap().unwrap();
+    assert!(after.policy_revision > before.policy_revision);
+    assert_eq!(after.deadline_ms, before.deadline_ms);
+    catalog.shutdown();
 }
 
 #[test]

@@ -171,6 +171,15 @@ pub fn run(
         .map(|manager| crate::storage::volumes::runtime::worker::Worker::start((**manager).clone()))
         .transpose()?;
     storage_config.volume_mover = volume_worker.as_ref().map(|worker| worker.handle());
+    let archive_worker = storage_config
+        .archive
+        .as_ref()
+        .filter(|settings| settings.enabled)
+        .map(|settings| {
+            crate::storage::archive::Worker::start(settings.clone(), catalog_handle.clone())
+        })
+        .transpose()?;
+    storage_config.archive_runtime = archive_worker.as_ref().map(|worker| worker.handle());
     {
         let mut groups = storage_config
             .volume_groups
@@ -436,7 +445,9 @@ pub fn run(
     tracing::info!("flushing and finalizing all recordings...");
     storage_engine.shutdown();
     let mover_shutdown = volume_worker.map_or(Ok(()), |worker| worker.shutdown());
+    let archive_shutdown = archive_worker.map_or(Ok(()), |worker| worker.shutdown());
     recording_catalog.shutdown();
+    archive_shutdown?;
     mover_shutdown?;
     tracing::info!("all recordings saved");
 

@@ -5,6 +5,7 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::Path,
+    time::{Duration, Instant},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +58,19 @@ impl EventKeyframeLookup {
             .byte_offset
             .checked_add(location.byte_len)
             .ok_or_else(|| anyhow::anyhow!("keyframe byte range overflows"))?;
+        if let Some(archive) = &location.archive {
+            let work = crate::storage::archive::target::Work {
+                deadline: Instant::now() + Duration::from_secs(30),
+                cancelled: &|| false,
+            };
+            let bytes = crate::storage::archive::read_range(
+                archive,
+                location.byte_offset,
+                location.byte_len,
+                &work,
+            )?;
+            return Ok(EncodedEventKeyframe { location, bytes });
+        }
         let mut file = File::open(Path::new(&location.path))?;
         if end > file.metadata()?.len() {
             anyhow::bail!("keyframe byte range exceeds the recording file");
@@ -112,6 +126,7 @@ mod tests {
             path: path.to_string_lossy().into_owned(),
             byte_offset: 0,
             byte_len: 8,
+            archive: None,
         };
         let lookup = EventKeyframeLookup::new(handle.clone());
         assert_eq!(

@@ -45,6 +45,8 @@ const QUEUED_MEDIA_BYTES_CAPACITY: usize = 64 * 1_048_576;
 
 #[derive(Clone)]
 pub struct StorageConfig {
+    pub archive: Option<super::archive::settings::Settings>,
+    pub archive_runtime: Option<super::archive::Handle>,
     pub retention: Option<super::retention::settings::Settings>,
     pub metadata: Option<crate::config::MetadataBinding>,
     pub metadata_history_path: Option<PathBuf>,
@@ -118,6 +120,8 @@ impl StorageConfig {
             .or_else(|| toml.event_thumbnail_path.as_deref().map(PathBuf::from))
             .unwrap_or_else(|| long_term_path.join(".event-thumbnails"));
         Self {
+            archive: toml.archive.clone(),
+            archive_runtime: None,
             metadata: toml.metadata.clone(),
             retention: toml.retention.clone(),
             metadata_history_path,
@@ -1587,6 +1591,11 @@ impl WriterWorker {
                 if let Some(mover) = &self.config.volume_mover {
                     mover.scan().map_err(std::io::Error::other)?;
                 }
+                if let Some(archive) = &self.config.archive_runtime
+                    && let Err(error) = archive.scan()
+                {
+                    tracing::warn!(%error,"archive wakeup deferred; finalized recording remains available locally");
+                }
                 return Ok(path.to_path_buf());
             }
         }
@@ -1775,6 +1784,8 @@ mod tests {
             .join("test-output")
             .join(name);
         StorageConfig {
+            archive: None,
+            archive_runtime: None,
             retention: None,
             metadata: None,
             metadata_history_path: None,

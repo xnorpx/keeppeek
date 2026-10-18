@@ -29,6 +29,8 @@ use std::{
     time::Duration,
 };
 
+pub(crate) mod archive;
+pub mod archive_playback;
 pub(crate) mod authority;
 mod event_write;
 pub mod locations;
@@ -157,6 +159,7 @@ pub struct CatalogMediaFragment {
     pub duration_ms: u64,
     pub byte_offset: u64,
     pub byte_len: u64,
+    pub archive: Option<archive_playback::ArchiveRead>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +189,7 @@ pub struct EventKeyframeLocation {
     pub path: String,
     pub byte_offset: u64,
     pub byte_len: u64,
+    pub archive: Option<archive_playback::ArchiveRead>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +203,7 @@ pub struct CatalogMediaObjectLocation {
     pub fragment_len: u64,
     pub keyframe_offset: u64,
     pub keyframe_len: u64,
+    pub archive: Option<archive_playback::ArchiveRead>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -377,6 +382,11 @@ struct LegacyRecording {
 mod startup_refresh_tests;
 
 enum Command {
+    Archive {
+        request: archive::Request,
+        deadline: std::time::Instant,
+        reply: SyncSender<anyhow::Result<archive::Reply>>,
+    },
     MetadataInfo {
         reply: SyncSender<anyhow::Result<authority::MetadataInfo>>,
     },
@@ -1587,6 +1597,24 @@ fn run_catalog(
     let intent_epoch = maintenance::jobs::Epoch::new();
     while let Ok(command) = rx.recv() {
         match command {
+            Command::Archive {
+                request,
+                deadline,
+                reply,
+            } => {
+                let result =
+                    pollster::block_on(archive::execute(&connection, &readers, request, deadline));
+                let fatal = result
+                    .as_ref()
+                    .is_err_and(|error| error.is::<locations::FatalTransaction>());
+                let _ = reply.send(result);
+                if fatal {
+                    tracing::error!(
+                        "archive catalog transaction state is unknown; stopping writer"
+                    );
+                    break;
+                }
+            }
             Command::MetadataInfo { reply } => {
                 let result = lease.verify(&connection).and_then(|authority| {
                     Ok(authority::MetadataInfo {
@@ -2085,6 +2113,7 @@ async fn legacy_recordings_without_keyframes(
                                         r.finalized_at_ms IS NULL OR r.ended_at_ms IS NULL
              FROM recording_files AS r
              WHERE NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
+               AND NOT EXISTS (SELECT 1 FROM archive_replicas a WHERE a.kind='recording' AND a.recording_id=r.id AND (a.state='ready' OR a.local_evicted!=0))
                AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations
                    WHERE kind = 'recording' AND object_id = r.id AND state != 'cancelled')
              ORDER BY r.started_at_ms, r.id",
@@ -2408,6 +2437,7 @@ async fn delete_recording(
         );
         // Missing media does not release an existing retention obligation.
         retention::ensure_cleanup_allowed(connection, recording_id).await?;
+        archive_playback::ensure_index_deletable(connection, recording_id).await?;
         record_deletion(
             connection,
             recording_id,
@@ -2532,6 +2562,8 @@ async fn find_cleanup_candidate(
                        AND (a.object_id=recording_files.id OR a.destination_path=replace(recording_files.path,char(92),'/') COLLATE NOCASE))
                    AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims
                                    WHERE recording_id = recording_files.id AND active = 1)
+                   AND NOT EXISTS (SELECT 1 FROM archive_replicas a
+                                   WHERE a.kind='recording' AND a.recording_id=recording_files.id AND (a.state='ready' OR a.local_evicted!=0))
                  {} ORDER BY cleanup_pending DESC, started_at_ms, id
                  LIMIT 1",if filter.recording_id.is_some(){"AND id=?3"} else {"AND ?3 IS NULL"}),
                 turso::params![retention::now_ms()?,prefix.as_deref(),filter.recording_id.as_deref()],
@@ -2562,6 +2594,8 @@ async fn pending_cleanup_candidate(
             "SELECT id, path, file_bytes,cleanup_retention_expiry
              FROM recording_files
              WHERE finalized = 1 AND protected = 0 AND cleanup_pending = 1
+               AND NOT EXISTS (SELECT 1 FROM archive_replicas a
+                               WHERE a.kind='recording' AND a.recording_id=recording_files.id AND (a.state='ready' OR a.local_evicted!=0))
                AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
                    AND (a.object_id=recording_files.id OR a.destination_path=replace(recording_files.path,char(92),'/') COLLATE NOCASE))
              ORDER BY started_at_ms, id
@@ -2599,6 +2633,7 @@ async fn complete_cleanup(
         let pending = rows.next().await?.map(|row|row.get::<i64>(0)).transpose()?;
         drop(rows);
         if let Some(expiry)=pending {
+            archive_playback::ensure_index_deletable(connection, recording_id).await?;
             let reason=if expiry!=0 {CatalogDeletionReason::RetentionExpiry} else {reason};
             record_deletion(connection, recording_id, reason).await?;
             connection
@@ -2994,6 +3029,7 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     apply_event_search_backfill(connection).await?;
     backfill_recording_coverage(connection).await?;
     initialize_operational_schema(connection).await?;
+    archive::initialize(connection).await?;
     Ok(())
 }
 
@@ -3532,7 +3568,20 @@ pub(super) async fn media_fragments_in_range(
             duration_ms: to_u64(row.get(7)?, "fragment duration")?,
             byte_offset: to_u64(row.get(8)?, "fragment byte offset")?,
             byte_len: to_u64(row.get(9)?, "fragment byte length")?,
+            archive: None,
         });
+    }
+    drop(rows);
+    let mut archives: BTreeMap<String, Option<archive_playback::ArchiveRead>> = BTreeMap::new();
+    for fragment in &mut fragments {
+        let archive = if let Some(cached) = archives.get(&fragment.recording_id) {
+            cached.clone()
+        } else {
+            let archive = archive_playback::read(connection, &fragment.recording_id).await?;
+            archives.insert(fragment.recording_id.clone(), archive.clone());
+            archive
+        };
+        fragment.archive = archive;
     }
     Ok(fragments)
 }
@@ -5101,10 +5150,11 @@ async fn resolve_event_keyframe(
             turso::params![event_id, stream_id],
         )
         .await?;
-    rows.next()
+    let mut location = rows
+        .next()
         .await?
         .map(|row| {
-            Ok(EventKeyframeLocation {
+            Ok::<EventKeyframeLocation, anyhow::Error>(EventKeyframeLocation {
                 event_id: row.get(0)?,
                 stream_id: row.get(1)?,
                 event_time_ms: row.get(2)?,
@@ -5114,9 +5164,15 @@ async fn resolve_event_keyframe(
                 path: row.get(6)?,
                 byte_offset: to_u64(row.get(7)?, "keyframe byte offset")?,
                 byte_len: to_u64(row.get(8)?, "keyframe byte length")?,
+                archive: None,
             })
         })
-        .transpose()
+        .transpose()?;
+    drop(rows);
+    if let Some(location) = &mut location {
+        location.archive = archive_playback::read(connection, &location.recording_id).await?;
+    }
+    Ok(location)
 }
 
 async fn replace_event_search_terms(
@@ -6103,7 +6159,22 @@ async fn resolve_event_preview_batch(
             path: row.get(7)?,
             byte_offset: to_u64(row.get(8)?, "preview keyframe byte offset")?,
             byte_len: to_u64(row.get(9)?, "preview keyframe byte length")?,
+            archive: None,
         });
+    }
+    drop(rows);
+    let mut archives: BTreeMap<String, Option<archive_playback::ArchiveRead>> = BTreeMap::new();
+    for resolution in &mut resolutions {
+        for keyframe in &mut resolution.keyframes {
+            let archive = if let Some(cached) = archives.get(&keyframe.recording_id) {
+                cached.clone()
+            } else {
+                let archive = archive_playback::read(connection, &keyframe.recording_id).await?;
+                archives.insert(keyframe.recording_id.clone(), archive.clone());
+                archive
+            };
+            keyframe.archive = archive;
+        }
     }
     Ok(resolutions)
 }
@@ -6176,10 +6247,11 @@ async fn resolve_media_object(
             ],
         )
         .await?;
-    rows.next()
+    let mut object = rows
+        .next()
         .await?
         .map(|row| {
-            Ok(CatalogMediaObjectLocation {
+            Ok::<CatalogMediaObjectLocation, anyhow::Error>(CatalogMediaObjectLocation {
                 recording_id: row.get(0)?,
                 fragment_sequence: to_u64(row.get(1)?, "media object fragment sequence")?,
                 path: row.get(2)?,
@@ -6189,9 +6261,15 @@ async fn resolve_media_object(
                 fragment_len: to_u64(row.get(6)?, "fragment byte length")?,
                 keyframe_offset: to_u64(row.get(7)?, "keyframe byte offset")?,
                 keyframe_len: to_u64(row.get(8)?, "keyframe byte length")?,
+                archive: None,
             })
         })
-        .transpose()
+        .transpose()?;
+    drop(rows);
+    if let Some(object) = &mut object {
+        object.archive = archive_playback::read(connection, &object.recording_id).await?;
+    }
+    Ok(object)
 }
 
 async fn catalog_stats(connection: &turso::Connection) -> anyhow::Result<CatalogStats> {

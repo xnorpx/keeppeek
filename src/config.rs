@@ -535,6 +535,8 @@ const fn default_battery_wake_stale_after_secs() -> u64 {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<crate::storage::archive::settings::Settings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention: Option<crate::storage::retention::settings::Settings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<MetadataBinding>,
@@ -965,6 +967,7 @@ const fn default_cleanup_hysteresis_gb() -> u64 {
 impl Default for StorageToml {
     fn default() -> Self {
         Self {
+            archive: None,
             retention: None,
             metadata: None,
             named_volumes: None,
@@ -1434,8 +1437,7 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
             .unwrap_or_else(|| Path::new(".")),
     )?;
     crate::storage::volumes::bootstrap::initialize(&mut cfg.storage, &storage_base)?;
-    metadata::validate(&cfg.storage)?;
-    storage_volumes::validate(cfg.storage.named_volumes.as_ref())?;
+    validate_storage_configuration(&cfg.storage)?;
 
     let preserve_profile_identity_schema = merged
         .get("runtime_profiles")
@@ -1654,7 +1656,7 @@ pub(crate) fn update_settings_with_volume_draft(
         "event_thumbnail_max_mb".to_owned(),
         toml::Value::Integer(i64::try_from(settings.storage.event_thumbnail_max_mb)?),
     );
-    persist_storage_lifetimes(storage, &settings.storage)?;
+    persist_storage_policies(storage, &settings.storage, &secrets)?;
     storage.insert(
         "write_buffer_bytes".to_owned(),
         toml::Value::Integer(i64::try_from(settings.storage.write_buffer_bytes)?),
@@ -1719,9 +1721,10 @@ pub(crate) fn update_settings_with_volume_draft(
     Ok(updated)
 }
 
-fn persist_storage_lifetimes(
+fn persist_storage_policies(
     storage: &mut toml::Table,
     settings: &StorageToml,
+    secrets: &Secrets,
 ) -> anyhow::Result<()> {
     match &settings.retention {
         Some(retention) => {
@@ -1739,6 +1742,34 @@ fn persist_storage_lifetimes(
     ] {
         storage.insert(field.into(), toml::Value::Integer(i64::try_from(value)?));
     }
+    persist_archive_settings(storage, settings.archive.as_ref(), secrets)
+}
+
+fn persist_archive_settings(
+    storage: &mut toml::Table,
+    settings: Option<&crate::storage::archive::settings::Settings>,
+    secrets: &Secrets,
+) -> anyhow::Result<()> {
+    // Older runtime settings commands omit this section and must preserve it.
+    let Some(settings) = settings else {
+        return Ok(());
+    };
+    let mut next = toml::Value::try_from(settings)?;
+    let mut next_resolved = next.clone();
+    resolve_toml_secret_references(&mut next_resolved, secrets)?;
+    let resolved: crate::storage::archive::settings::Settings = next_resolved.clone().try_into()?;
+    resolved.validate()?;
+    if let Some(existing) = storage.get("archive") {
+        let mut existing_resolved = existing.clone();
+        resolve_toml_secret_references(&mut existing_resolved, secrets)?;
+        storage_volumes::preserve_references(
+            &mut next,
+            &next_resolved,
+            existing,
+            &existing_resolved,
+        );
+    }
+    storage.insert("archive".into(), next);
     Ok(())
 }
 
@@ -1903,8 +1934,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     if let Some(retention) = &config.storage.retention {
         retention.validate()?;
     }
-    metadata::validate(&config.storage)?;
-    storage_volumes::validate(config.storage.named_volumes.as_ref())?;
+    validate_storage_configuration(&config.storage)?;
     if let Some(external_auth) = &config.external_auth {
         external_auth.validate()?;
     }
@@ -1916,12 +1946,35 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     Ok(config)
 }
 
+fn validate_storage_configuration(storage: &StorageToml) -> anyhow::Result<()> {
+    metadata::validate(storage)?;
+    storage_volumes::validate(storage.named_volumes.as_ref())?;
+    if let Some(archive) = &storage.archive {
+        archive.validate_storage(storage)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_volume_configuration(
     path: &Path,
     configuration: &crate::storage::volumes::VolumeConfiguration<String>,
 ) -> anyhow::Result<()> {
     let secrets = load_secrets(path)?;
     storage_volumes::validate_with_secrets(configuration, &secrets)
+}
+
+pub(crate) fn validate_archive_configuration(
+    path: &Path,
+    settings: &crate::storage::archive::settings::Settings,
+) -> anyhow::Result<()> {
+    let mut candidate = load_configuration_table(path)?;
+    let storage = candidate
+        .entry("storage")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("storage is not a configuration table"))?;
+    storage.insert("archive".into(), toml::Value::try_from(settings)?);
+    validate_configuration_table(path, &candidate)
 }
 
 fn merge_preserving_secret_references(existing: &mut toml::Value, next: toml::Value) {
@@ -4461,6 +4514,125 @@ mod tests {
         assert!(!saved.contains("127.0.0.1"));
         assert!(!saved.contains("/private/recordings"));
 
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn archive_settings_reject_relative_root_before_persistence() {
+        let directory =
+            std::env::temp_dir().join(format!("archive-config-invalid-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("config.toml");
+        let original = b"[storage.archive]\ntarget_id='archive'\nroot='relative/archive'\n";
+        write_private_file(&path, original).unwrap();
+        assert!(load_config(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn archive_configuration_fixture() -> (PathBuf, PathBuf) {
+        let directory =
+            std::env::temp_dir().join(format!("archive-config-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("config.toml");
+        let secrets = toml::Table::from_iter([
+            (
+                "ARCHIVE_ROOT".into(),
+                directory
+                    .join("archive-target")
+                    .to_string_lossy()
+                    .as_ref()
+                    .into(),
+            ),
+            ("ARCHIVE_ID".into(), "local-archive".into()),
+            ("ARCHIVE_SOURCE".into(), "192.0.2.10".into()),
+        ]);
+        write_private_file(
+            &secrets_path(&path),
+            toml::to_string(&secrets).unwrap().as_bytes(),
+        )
+        .unwrap();
+        write_private_file(&path, b"[storage.archive]\ntarget_id='{secret:ARCHIVE_ID}'\nroot='{secret:ARCHIVE_ROOT}'\nsource_ids=['{secret:ARCHIVE_SOURCE}']\n").unwrap();
+        (directory, path)
+    }
+
+    #[test]
+    fn archive_settings_round_trip_preserves_references_and_omitted_wire_updates() {
+        let (directory, path) = archive_configuration_fixture();
+        let mut config = load_config(&path).unwrap();
+        let archive = config.storage.archive.as_mut().unwrap();
+        archive.source_ids.push("192.0.2.20".into());
+        archive.minimum_age_secs = 42;
+        let expected = archive.clone();
+        update_settings(&path, &config).unwrap();
+        assert_eq!(
+            load_config(&path).unwrap().storage.archive,
+            Some(expected.clone())
+        );
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("{secret:ARCHIVE_ROOT}"));
+        assert!(raw.contains("{secret:ARCHIVE_ID}"));
+        assert!(raw.contains("{secret:ARCHIVE_SOURCE}"));
+        assert!(!raw.contains("192.0.2.10"));
+        assert!(!directory.join("archive-target").exists());
+        config.storage.archive = None;
+        config.port += 1;
+        update_settings(&path, &config).unwrap();
+        assert_eq!(load_config(&path).unwrap().storage.archive, Some(expected));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn archive_settings_reject_invalid_write_and_import_without_mutation() {
+        let (directory, path) = archive_configuration_fixture();
+        let mut config = load_config(&path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        config
+            .storage
+            .archive
+            .as_mut()
+            .unwrap()
+            .maximum_object_bytes = 64 * 1024 * 1024 * 1024 + 1;
+        assert!(update_settings(&path, &config).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let mut candidate = load_configuration_table(&path).unwrap();
+        candidate["storage"]["archive"]
+            .as_table_mut()
+            .unwrap()
+            .insert("operation_timeout_secs".into(), 0.into());
+        assert!(write_configuration_table(&path, &candidate).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn archive_settings_validated_import_preserves_raw_private_references() {
+        let (directory, path) = archive_configuration_fixture();
+        let candidate = load_configuration_table(&path).unwrap();
+        let imported = directory.join("imported.toml");
+        write_configuration_table(&imported, &candidate).unwrap();
+        assert_eq!(
+            load_config(&imported).unwrap().storage.archive,
+            load_config(&path).unwrap().storage.archive
+        );
+        let raw = std::fs::read_to_string(imported).unwrap();
+        assert!(raw.contains("{secret:ARCHIVE_ROOT}"));
+        assert!(raw.contains("{secret:ARCHIVE_ID}"));
+        assert!(raw.contains("{secret:ARCHIVE_SOURCE}"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn archive_settings_reject_roots_overlapping_existing_storage() {
+        let (directory, path) = archive_configuration_fixture();
+        let mut config = load_config(&path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        config.storage.long_term_path = Some(directory.to_string_lossy().into_owned());
+        assert!(update_settings(&path, &config).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        config.storage.long_term_path = None;
+        config.storage.recording_catalog_path =
+            Some(directory.join("catalog.db").to_string_lossy().into_owned());
+        assert!(update_settings(&path, &config).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

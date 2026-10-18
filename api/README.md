@@ -245,6 +245,13 @@ retained by the bounded in-memory log hub, plus sequence, truncation, eviction, 
 limits. The response uses `Cache-Control: no-store`, requires the same authorization as the live
 stream, and is intended for the scrubbed diagnostics-package workflow rather than polling.
 
+## Local archive
+
+Local fourth-tier archive configuration and background copy, probe, retry, cancel,
+restore, and primary eviction use the Administrator-only WebRTC
+[`ArchiveCommand` contract](webrtc.md#local-fourth-tier-archive). Archived recording
+playback uses the existing stored-media commands and reports `StoredMediaState.archive`.
+
 ## Metrics
 
 `GET /metrics` returns Prometheus text exposition metrics. Prometheus sends the same

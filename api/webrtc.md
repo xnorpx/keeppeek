@@ -1477,3 +1477,67 @@ to the requested duration; a crash can lose that pending horizon. Event-only use
 an exclusive post-event endpoint. Replay starts with a decodable keyframe and
 includes only complete audio packets inside video coverage. Repeated events
 extend the current deadline. The hard history ceiling is 30 seconds.
+
+## Local fourth-tier archive
+
+`keeppeek.local-archive.v1` advertises the local filesystem archive implementation.
+This capability is separate from the planned offsite provider contract. The first
+implementation supports one mounted local destination. It does not expose cloud
+providers or credentials.
+
+`RuntimeStorageConfiguration.archive` (field 19) carries optional `ArchiveSettings`.
+Administrator reads preserve supported `{secret:KEY}` references. Writes use the
+existing configuration revision, whole-candidate validation, atomic persistence,
+and restart activation. An omitted archive field preserves existing configuration;
+disable explicitly with `enabled = false`. Bounds and defaults are documented in
+the [configuration reference](../book/src/configuration-reference.md#fourth-tier-local-archive).
+The configured root must already exist, remain separate from primary and metadata
+roots, and match the durable target binding. Reusing a bound target ID with another
+root is rejected. Configuration does not store root inode or volume ownership state.
+
+`Request.archive_command` (field 30) returns `Ok.archive_result` (field 44).
+Every action requires Administrator authorization before accessing archive state:
+
+| Action    | Result and behavior                                                                                                              |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `probe`   | Queues one background destination probe and returns `ArchiveStatus`.                                                             |
+| `list`    | Returns one page of `ArchiveJobList`, including current destination status.                                                      |
+| `get`     | Returns the durable job identified by `job_id`.                                                                                  |
+| `copy`    | Queues finalized recording or completed export media using a caller-generated canonical UUID job ID and catalog object identity. |
+| `cancel`  | Requests cancellation of queued transfer work or a cancellable restore action.                                                   |
+| `retry`   | Retries an eligible failed or cancelled job within configured attempt bounds.                                                    |
+| `restore` | Queues restoration of the retained archive object to its original primary destination.                                           |
+| `evict`   | Queues explicit retirement of the primary file after archive verification and current hold and reader checks.                    |
+
+Commands never accept media paths. Copy acknowledges a durable intent; it does not
+wait for transfer completion. A lost acknowledgment must be reconciled with `get`
+using the same job ID. Reusing an ID for another object is rejected. List uses an
+exclusive `after_job_id` cursor, defaults to 16 jobs, and accepts at most 64. The
+response is bounded to 48 KiB. Internal probe jobs are not exposed as media jobs.
+
+`ArchiveStatus.runtime_available` distinguishes a running worker from a saved draft.
+`online` is the latest destination result, while `probe_pending` explicitly reports
+an accepted probe that has not completed. A queued probe is not a successful test.
+Clients refresh status to observe completion. Errors use fixed safe codes and do
+not include filesystem roots, source paths, secret values, or raw worker errors.
+
+`ArchiveJob` reports object identity, kind, configured target alias, state, byte
+length, copy attempts, action and action attempts, safe error code, and primary-copy
+state. A verified archive replica and the primary copy have independent lifecycles.
+Eviction requires a separate operator confirmation or the explicit saved eviction
+policy. `EVICTING` is a durable retirement intent that must reconcile; cancellation
+is rejected after that intent. Failed transfers preserve visible job evidence and
+do not authorize primary eviction. Queue, byte, deadline, and attempt limits bound
+background work independently of recording ingestion.
+
+Retrying a cancelled copy retains the original job and object IDs. If cancellation
+cleanup is still pending, retry wakes cleanup and the job remains cancelled. A new
+copy starts only after cleanup acknowledgment and fresh source-evidence validation.
+Clients refresh the same job to distinguish cleanup progress from resumed copying.
+
+Archived recording access uses the existing authorized `OpenStoredMedia`, seek,
+refill, and close commands. `StoredMediaState.archive` (field 11) is true when the
+accepted cursor or batch includes archived media. Clients display that archive
+access and seeking may be slower. Timeline metadata remains indexed after primary
+eviction, and direct local archive playback does not require a full restore first.
+Existing waiting, error, seek-generation, and cancellation behavior still applies.

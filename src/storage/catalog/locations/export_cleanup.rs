@@ -153,6 +153,18 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
 }
 
 pub(super) async fn retire(connection: &turso::Connection, id: &str) -> anyhow::Result<Reply> {
+    let mut archives = connection
+        .query(
+            "SELECT 1 FROM archive_replicas WHERE kind='export' AND recording_id=?1
+         AND state IN('queued','copying') AND cancelled=0",
+            [id],
+        )
+        .await?;
+    anyhow::ensure!(
+        archives.next().await?.is_none(),
+        "archive export copy still owns its source"
+    );
+    drop(archives);
     let mut existing = connection
         .query(
             "SELECT 1 FROM storage_export_cleanup WHERE object_id=?1",

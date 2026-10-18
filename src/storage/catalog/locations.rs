@@ -26,6 +26,50 @@ const MAX_BINDINGS: i64 = 37;
 const MAX_PENDING_ALLOCATIONS: i64 = 4_096;
 const OBSERVATION_LIFETIME: Duration = Duration::from_secs(5);
 
+pub(super) fn maintenance_identity(identity: &str) -> anyhow::Result<String> {
+    ownership::recording_identity(identity)
+}
+
+pub(super) async fn reserve_archive_restore(
+    connection: &turso::Connection,
+    operation: &str,
+    capacity: &Capacity,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        capacity.observed_at.elapsed() <= OBSERVATION_LIFETIME
+            && capacity.ledger_revision == revision(connection).await?,
+        "restore capacity observation expired"
+    );
+    let mut rows=connection.query("SELECT object_id,volume_id,generation,relative_key,bytes,state FROM storage_volume_allocations WHERE operation=?1 AND kind='recording'",[operation]).await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("restore allocation is missing"))?;
+    if row.get::<String>(5)? == "reserved" {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        row.get::<String>(5)? == "cancelled",
+        "restore allocation is not retired"
+    );
+    let allocation = Allocation {
+        operation: operation.into(),
+        object: Object {
+            kind: Kind::Recording,
+            id: row.get(0)?,
+        },
+        volume: row.get(1)?,
+        generation: to_u64(row.get(2)?, "restore generation")?,
+        relative_key: row.get(3)?,
+        bytes: to_u64(row.get(4)?, "restore bytes")?,
+        capacity: capacity.clone(),
+    };
+    drop(rows);
+    admission(connection, &allocation, true).await?;
+    connection.execute("UPDATE storage_volume_allocations SET state='reserved',file_identity=NULL,materialized_bytes=0 WHERE operation=?1 AND state='cancelled'",[operation]).await?;
+    bump_revision(connection).await
+}
+
 #[derive(Debug)]
 pub(super) struct FatalTransaction;
 
@@ -614,7 +658,7 @@ async fn rollback(connection: &turso::Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn revision(connection: &turso::Connection) -> anyhow::Result<u64> {
+pub(super) async fn revision(connection: &turso::Connection) -> anyhow::Result<u64> {
     let mut rows = connection
         .query(
             "SELECT revision FROM storage_volume_ledger WHERE singleton = 1",
@@ -792,7 +836,10 @@ async fn admission(
         "capacity observation belongs to another root"
     );
     // ponytail: At most 37 bindings share capacity; counters avoid scanning media history.
-    let mut totals = connection.query("SELECT (SELECT allocated_bytes FROM storage_volume_bindings WHERE id = ?1), (SELECT COALESCE(SUM(reserved_bytes), 0) FROM storage_volume_bindings WHERE filesystem = ?2), (SELECT pending_count FROM storage_volume_ledger WHERE singleton = 1)", turso::params![allocation.volume.clone(), filesystem]).await?;
+    let mut totals = connection.query("SELECT (SELECT allocated_bytes FROM storage_volume_bindings WHERE id = ?1),
+        (SELECT COALESCE(SUM(reserved_bytes), 0) FROM storage_volume_bindings WHERE filesystem = ?2)
+        +(SELECT COALESCE(SUM(a.target_reserved_bytes-a.target_materialized_bytes),0) FROM archive_replicas a JOIN archive_bindings b ON b.id=a.target_id WHERE b.filesystem=?2 AND a.target_reserved_bytes>a.target_materialized_bytes),
+        (SELECT pending_count FROM storage_volume_ledger WHERE singleton = 1)", turso::params![allocation.volume.clone(), filesystem]).await?;
     let total = totals.next().await?.expect("aggregate row");
     let owned = to_u64(total.get::<i64>(0)?, "volume owned bytes")?;
     let reserved = to_u64(total.get::<i64>(1)?, "filesystem reserved bytes")?;

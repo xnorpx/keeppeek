@@ -1,6 +1,7 @@
 //! Connects export jobs to durable volume ownership.
 
 use super::*;
+pub(super) mod archive;
 pub(super) mod download;
 pub(super) mod history;
 use crate::storage::{

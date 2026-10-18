@@ -719,12 +719,18 @@ struct ApiSessionControl {
 }
 
 struct ApiControlRuntime {
-    dispatch_tx: Sender<ControlDispatch>,
-    dispatch_rx: Receiver<ControlDispatch>,
+    dispatch_tx: Sender<BackgroundControlDispatch>,
+    dispatch_rx: Receiver<BackgroundControlDispatch>,
     outbound: VecDeque<QueuedControlOutput>,
     outbound_bytes: usize,
     outbound_messages: usize,
     after_send: Vec<PostSendAction>,
+}
+
+struct BackgroundControlDispatch {
+    dispatch: ControlDispatch,
+    data_group: Option<String>,
+    operation_in_flight: Arc<AtomicBool>,
 }
 
 enum QueuedControlOutput {
@@ -3639,7 +3645,7 @@ fn drive_api_session(
             break;
         }
         drain_api_session_commands(deps.data_rx, media);
-        if drain_pending_control_dispatches(control_runtime)? {
+        if drain_pending_control_dispatches(control_runtime, media)? {
             next_timeout = drain_api_outputs(
                 rtc,
                 socket,
@@ -3694,7 +3700,7 @@ fn drive_api_session(
             &mut events,
             Some(next_timeout.saturating_duration_since(Instant::now())),
         )?;
-        if drain_pending_control_dispatches(control_runtime)? {
+        if drain_pending_control_dispatches(control_runtime, media)? {
             next_timeout = drain_api_outputs(
                 rtc,
                 socket,
@@ -4454,10 +4460,21 @@ fn drain_api_outputs(
 
 fn drain_pending_control_dispatches(
     control_runtime: &mut ApiControlRuntime,
+    media: &mut ApiMediaRuntime,
 ) -> anyhow::Result<bool> {
     let mut dispatched = false;
-    while let Ok(dispatch) = control_runtime.dispatch_rx.try_recv() {
-        enqueue_control_dispatch(envelope_dispatch(dispatch), control_runtime)?;
+    while let Ok(background) = control_runtime.dispatch_rx.try_recv() {
+        if matches!(
+            background.dispatch.response.result.as_ref(),
+            Some(control_response::Result::Ok(_))
+        ) && let Some(group) = background.data_group
+        {
+            media.cancel_group(&group);
+        }
+        enqueue_control_dispatch(envelope_dispatch(background.dispatch), control_runtime)?;
+        background
+            .operation_in_flight
+            .store(false, Ordering::Release);
         dispatched = true;
     }
     Ok(dispatched)
@@ -4531,6 +4548,19 @@ const fn is_background_control_request(request: &crate::api::proto::Request) -> 
             command.action.as_ref(),
             Some(crate::api::proto::event_publication_command::Action::Commit(_))
         ),
+        Some(crate::api::proto::request::Command::StoredMediaCommand(command)) => matches!(
+            command.action.as_ref(),
+            Some(
+                crate::api::proto::stored_media_command::Action::Open(_)
+                    | crate::api::proto::stored_media_command::Action::Seek(_)
+                    | crate::api::proto::stored_media_command::Action::Refill(_)
+                    | crate::api::proto::stored_media_command::Action::SetPlayback(_)
+            )
+        ),
+        Some(crate::api::proto::request::Command::ExportCommand(command)) => matches!(
+            command.action.as_ref(),
+            Some(crate::api::proto::export_command::Action::Download(_))
+        ),
         _ => false,
     }
 }
@@ -4539,18 +4569,25 @@ fn spawn_background_control_operation(
     request: crate::api::proto::Request,
     handler: Arc<dyn ControlRequestHandler>,
     control: &ApiSessionControl,
-    dispatch_tx: Sender<ControlDispatch>,
+    dispatch_tx: Sender<BackgroundControlDispatch>,
 ) -> std::io::Result<()> {
     let session_id = control.session_id;
     let poller = control.poller.clone();
     let operation_in_flight = control.background_operation_in_flight.clone();
+    let data_group = control_data_group(request.command.as_ref());
     std::thread::Builder::new()
         .name(format!("webrtc-control-operation-{session_id}"))
         .spawn(move || {
             let dispatch = handler.handle_for_session(session_id, request);
-            operation_in_flight.store(false, Ordering::Release);
-            if dispatch_tx.try_send(dispatch).is_ok() {
+            let result = dispatch_tx.try_send(BackgroundControlDispatch {
+                dispatch,
+                data_group,
+                operation_in_flight: operation_in_flight.clone(),
+            });
+            if result.is_ok() {
                 let _ = poller.notify();
+            } else {
+                operation_in_flight.store(false, Ordering::Release);
             }
         })
         .map(|_| ())
@@ -6932,39 +6969,12 @@ mod tests {
             .expect_err("a missing session must not accept notifications");
     }
 
-    #[test]
-    fn background_camera_operations_dispatch_without_blocking_the_api_session() {
-        use crate::api::proto::{
-            CameraConfigurationCommand, CommitEventPublication, DiscoverCameras,
-            EventPublicationCommand, ProbeCameraStreams, Request, camera_configuration_command,
-            event_publication_command, request,
-        };
-
-        struct DiscoveryHandler {
-            started: Sender<()>,
-            release: Receiver<()>,
-        }
-
-        impl ControlRequestHandler for DiscoveryHandler {
-            fn handle(&self, request: Request) -> ControlDispatch {
-                self.started.send(()).unwrap();
-                self.release.recv().unwrap();
-                failed_control_dispatch(
-                    request.request_id,
-                    ErrorCode::UnsupportedRequest,
-                    "test discovery response",
-                )
-            }
-        }
-
-        let inner = Arc::new(Inner::default());
-        let poller = Arc::new(Poller::new().unwrap());
-        let discovery_in_flight = Arc::new(AtomicBool::new(true));
-        let control = ApiSessionControl {
+    fn test_background_control() -> ApiSessionControl {
+        ApiSessionControl {
             session_id: SessionId(1),
-            inner,
+            inner: Arc::new(Inner::default()),
             recording_demand: None,
-            poller,
+            poller: Arc::new(Poller::new().unwrap()),
             shutdown: Arc::new(AtomicBool::new(false)),
             completion: SessionCompletion::default(),
             control_handler: Arc::new(RwLock::new(None)),
@@ -6972,76 +6982,214 @@ mod tests {
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
-            background_operation_in_flight: discovery_in_flight.clone(),
+            background_operation_in_flight: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    #[test]
+    fn camera_probe_and_event_commit_remain_background() {
+        use crate::api::proto::{
+            CameraConfigurationCommand, CommitEventPublication, DiscoverCameras,
+            EventPublicationCommand, ProbeCameraStreams, Request, camera_configuration_command,
+            event_publication_command, request,
         };
-        let request = Request {
-            request_id: 42,
-            command: Some(request::Command::CameraConfigurationCommand(
-                CameraConfigurationCommand {
-                    action: Some(camera_configuration_command::Action::Discover(
-                        DiscoverCameras {
-                            subnets: vec![137],
-                            networks: Vec::new(),
-                            discovery_id: String::new(),
-                        },
-                    )),
-                },
-            )),
-        };
-        assert!(is_background_control_request(&request));
-        let probe_request = Request {
-            request_id: 43,
-            command: Some(request::Command::CameraConfigurationCommand(
-                CameraConfigurationCommand {
-                    action: Some(camera_configuration_command::Action::ProbeStreams(
-                        ProbeCameraStreams {
-                            ip: "192.0.2.50".to_owned(),
-                            username: "operator".to_owned(),
-                            password: "secret".to_owned(),
-                            onvif_port: Some(8000),
-                            ..Default::default()
-                        },
-                    )),
-                },
-            )),
-        };
-        assert!(is_background_control_request(&probe_request));
-        let commit_request = Request {
-            request_id: 44,
+        for action in [
+            camera_configuration_command::Action::Discover(DiscoverCameras::default()),
+            camera_configuration_command::Action::ProbeStreams(ProbeCameraStreams::default()),
+        ] {
+            assert!(is_background_control_request(&Request {
+                request_id: 1,
+                command: Some(request::Command::CameraConfigurationCommand(
+                    CameraConfigurationCommand {
+                        action: Some(action)
+                    },
+                )),
+            }));
+        }
+        assert!(is_background_control_request(&Request {
+            request_id: 2,
             command: Some(request::Command::EventPublicationCommand(
                 EventPublicationCommand {
                     action: Some(event_publication_command::Action::Commit(
-                        CommitEventPublication {
-                            publication_id: "publication-1".to_owned(),
-                            wait_timeout: None,
-                        },
+                        CommitEventPublication::default(),
                     )),
-                },
+                }
             )),
+        }));
+    }
+
+    struct BlockingMediaHandler {
+        started: Sender<()>,
+        release: Receiver<()>,
+    }
+
+    impl ControlRequestHandler for BlockingMediaHandler {
+        fn handle(&self, request: crate::api::proto::Request) -> ControlDispatch {
+            if request.request_id == 42 {
+                self.started.send(()).unwrap();
+                self.release.recv().unwrap();
+            }
+            failed_control_dispatch(
+                request.request_id,
+                ErrorCode::UnsupportedRequest,
+                "test media response",
+            )
+        }
+    }
+
+    #[test]
+    fn background_media_read_keeps_foreground_control_responsive() {
+        use crate::api::proto::{Request, StoredMediaCommand, request, stored_media_command};
+
+        let control = test_background_control();
+        let blocked_media = Request {
+            request_id: 42,
+            command: Some(request::Command::StoredMediaCommand(StoredMediaCommand {
+                action: Some(stored_media_command::Action::Open(Default::default())),
+            })),
         };
-        assert!(is_background_control_request(&commit_request));
+        assert!(is_background_control_request(&blocked_media));
+        let close_request = Request {
+            request_id: 46,
+            command: Some(request::Command::StoredMediaCommand(StoredMediaCommand {
+                action: Some(stored_media_command::Action::Close(Default::default())),
+            })),
+        };
+        assert!(!is_background_control_request(&close_request));
 
         let (started_tx, started_rx) = bounded(1);
         let (release_tx, release_rx) = bounded(0);
         let (dispatch_tx, dispatch_rx) = bounded(1);
-        spawn_background_control_operation(
-            request,
-            Arc::new(DiscoveryHandler {
-                started: started_tx,
-                release: release_rx,
-            }),
-            &control,
-            dispatch_tx,
-        )
-        .unwrap();
+        let handler = Arc::new(BlockingMediaHandler {
+            started: started_tx,
+            release: release_rx,
+        });
+        spawn_background_control_operation(blocked_media, handler.clone(), &control, dispatch_tx)
+            .unwrap();
 
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(dispatch_rx.try_recv().is_err());
+        let foreground = api_control_reply(
+            true,
+            &close_request.encode_to_vec(),
+            Some(handler.as_ref()),
+            &control,
+            &mut ApiMediaRuntime::default(),
+        );
+        assert!(matches!(foreground.envelope.message,
+            Some(control_envelope::Message::Response(response)) if response.request_id == 46));
         release_tx.send(()).unwrap();
 
         let dispatch = dispatch_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert_eq!(dispatch.response.request_id, 42);
-        assert!(!discovery_in_flight.load(Ordering::Acquire));
+        assert_eq!(dispatch.dispatch.response.request_id, 42);
+        assert!(
+            control
+                .background_operation_in_flight
+                .load(Ordering::Acquire)
+        );
+        dispatch.operation_in_flight.store(false, Ordering::Release);
+        assert!(
+            !control
+                .background_operation_in_flight
+                .load(Ordering::Acquire)
+        );
+    }
+
+    #[test]
+    fn archived_media_reads_are_background_and_close_stays_foreground() {
+        use crate::api::proto::{
+            ExportCommand, Request, StoredMediaCommand, export_command, request,
+            stored_media_command,
+        };
+        for action in [
+            stored_media_command::Action::Open(Default::default()),
+            stored_media_command::Action::Seek(Default::default()),
+            stored_media_command::Action::Refill(Default::default()),
+            stored_media_command::Action::SetPlayback(Default::default()),
+        ] {
+            assert!(is_background_control_request(&Request {
+                request_id: 1,
+                command: Some(request::Command::StoredMediaCommand(StoredMediaCommand {
+                    action: Some(action),
+                })),
+            }));
+        }
+        assert!(!is_background_control_request(&Request {
+            request_id: 2,
+            command: Some(request::Command::StoredMediaCommand(StoredMediaCommand {
+                action: Some(stored_media_command::Action::Close(Default::default())),
+            })),
+        }));
+        assert!(is_background_control_request(&Request {
+            request_id: 3,
+            command: Some(request::Command::ExportCommand(ExportCommand {
+                action: Some(export_command::Action::Download(Default::default())),
+            })),
+        }));
+    }
+
+    #[test]
+    fn completed_background_media_replaces_only_its_data_group() {
+        let (dispatch_tx, dispatch_rx) = bounded(1);
+        let mut runtime = ApiControlRuntime {
+            dispatch_tx,
+            dispatch_rx,
+            outbound: VecDeque::new(),
+            outbound_bytes: 0,
+            outbound_messages: 0,
+            after_send: Vec::new(),
+        };
+        let mut media = ApiMediaRuntime::default();
+        let operation_in_flight = Arc::new(AtomicBool::new(true));
+        for group in ["stored:playback", "other"] {
+            media
+                .enqueue(vec![OutboundDataMessage {
+                    target: DataChannelTarget::Reliable,
+                    group: group.into(),
+                    message: crate::api::proto::Message::default(),
+                }])
+                .unwrap();
+        }
+        let success = ControlDispatch {
+            response: ControlResponse {
+                request_id: 1,
+                result: Some(control_response::Result::Ok(
+                    crate::api::proto::Ok::default(),
+                )),
+            },
+            after_send: None,
+            data_messages: Vec::new(),
+            notifications: Vec::new(),
+        };
+        assert!(
+            runtime
+                .dispatch_tx
+                .try_send(BackgroundControlDispatch {
+                    dispatch: success,
+                    data_group: Some("stored:playback".into()),
+                    operation_in_flight: operation_in_flight.clone(),
+                })
+                .is_ok()
+        );
+        assert!(drain_pending_control_dispatches(&mut runtime, &mut media).unwrap());
+        assert!(!operation_in_flight.load(Ordering::Acquire));
+        assert_eq!(media.outbound.len(), 1);
+        assert!(matches!(media.outbound.front(),
+            Some(QueuedApiData::Message(message)) if message.group == "other"));
+
+        let failure = failed_control_dispatch(2, ErrorCode::Rejected, "seek failed");
+        assert!(
+            runtime
+                .dispatch_tx
+                .try_send(BackgroundControlDispatch {
+                    dispatch: failure,
+                    data_group: Some("other".into()),
+                    operation_in_flight,
+                })
+                .is_ok()
+        );
+        assert!(drain_pending_control_dispatches(&mut runtime, &mut media).unwrap());
+        assert_eq!(media.outbound.len(), 1);
     }
 
     #[test]

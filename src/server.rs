@@ -125,6 +125,7 @@ mod state_store_integration;
 pub(crate) mod state_store_schema;
 pub(crate) mod state_store_settings;
 pub(crate) mod state_store_watch;
+mod storage_archive;
 mod storage_volumes;
 mod stored_media;
 mod talkback;
@@ -257,6 +258,8 @@ struct RuntimeSettingsUpdate {
 
 #[derive(Deserialize)]
 struct RuntimeStorageSettingsUpdate {
+    #[serde(default)]
+    archive: Option<crate::storage::archive::settings::Settings>,
     #[serde(default)]
     named_volumes: Option<crate::storage::volumes::VolumeConfiguration<String>>,
     medium_term_path: String,
@@ -507,6 +510,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::EventWorkflowCommand(_)) => "event_workflow",
         Some(control_request::Command::RecordingMaintenanceCommand(_)) => "recording_maintenance",
         Some(control_request::Command::StorageVolumeCommand(_)) => "storage_volumes",
+        Some(control_request::Command::ArchiveCommand(_)) => "archive",
         Some(control_request::Command::NotificationRuleCommand(_)) => "notification_rule",
         Some(control_request::Command::ConfigurationCommand(_)) => "configuration",
         None => "missing_command",
@@ -565,6 +569,15 @@ fn sensitive_administrator_operation(
                 Some("storage_volume_cancel")
             }
             Some(proto::storage_volume_command::Action::Probe(_)) => Some("storage_volume_probe"),
+            _ => None,
+        },
+        Some(control_request::Command::ArchiveCommand(command)) => match command.action {
+            Some(proto::archive_command::Action::Probe(_)) => Some("archive_probe"),
+            Some(proto::archive_command::Action::Copy(_)) => Some("archive_copy"),
+            Some(proto::archive_command::Action::Cancel(_)) => Some("archive_cancel"),
+            Some(proto::archive_command::Action::Retry(_)) => Some("archive_retry"),
+            Some(proto::archive_command::Action::Restore(_)) => Some("archive_restore"),
+            Some(proto::archive_command::Action::Evict(_)) => Some("archive_primary_eviction"),
             _ => None,
         },
         Some(control_request::Command::StateStoreCommand(command)) => match &command.action {
@@ -808,6 +821,9 @@ impl ControlRequestHandler for ServerControlHandler {
                     Some(control_request::Command::StorageVolumeCommand(command)) => {
                         storage_volumes::management::dispatch(&self.state, &principal, command)
                             .map(Some)
+                    }
+                    Some(control_request::Command::ArchiveCommand(command)) => {
+                        storage_archive::dispatch(&self.state, &principal, command).map(Some)
                     }
                     Some(control_request::Command::StoredMediaCommand(command)) => {
                         match stored_media::dispatch(&self.state, session_id, command) {
@@ -1329,6 +1345,9 @@ fn server_capabilities(
         capability_ids.push("keeppeek.rules.v1".to_owned());
     }
     if event_search_catalog(state).is_ok() {
+        if state.camera_config_path.is_some() {
+            capability_ids.push("keeppeek.local-archive.v1".to_owned());
+        }
         capability_ids.push("keeppeek.event-workflow.v1".to_owned());
         if cfg!(any(unix, windows)) {
             capability_ids.push("keeppeek.recording-maintenance.v1".to_owned());
@@ -3514,6 +3533,7 @@ struct StoredTimelineAttachment {
 }
 
 struct StoredMediaBatch {
+    archive: bool,
     content_type: String,
     fragment_time_ms: i64,
     delivered_through_ms: i64,
@@ -3572,6 +3592,7 @@ fn create_export_job(
         ));
     }
     validate_export_job_id(&request.job_id)?;
+    export_storage::archive::ensure_new_job_id(state, &request.job_id)?;
     let camera = state.camera(&request.source_id).ok_or_else(|| {
         ControlCommandError::new(
             proto::ErrorCode::NotFound,
@@ -4283,6 +4304,7 @@ fn retry_export_job(
             "recording maintenance is running",
         ));
     }
+    export_storage::archive::ensure_new_job_id(state, job_id)?;
     let (request, artifact_id) = {
         let mut jobs = state
             .export_jobs
@@ -4713,6 +4735,7 @@ fn open_stored_media(
     let demand = state.recording_demand.acquire(recording_stream_id.clone());
     let status = stored_media_status(end_time_ms, batch.delivered_through_ms);
     let cursor = StoredMediaCursor {
+        archive: batch.archive,
         source_id: open.source_id,
         stream_id: stored_stream_id,
         recording_stream_id,
@@ -4824,6 +4847,7 @@ fn seek_stored_media(
         })?;
     cursor.requested_time_ms = requested_time_ms;
     cursor.generation = generation;
+    cursor.archive = batch.archive;
     cursor.content_type = batch.content_type;
     cursor.fragment_time_ms = batch.fragment_time_ms;
     cursor.delivered_through_ms = batch.delivered_through_ms;
@@ -5081,6 +5105,7 @@ fn set_stored_media_playback(
         cursor.playback_rate = playback_rate;
     }
     let messages = if let Some(batch) = batch {
+        cursor.archive = batch.archive;
         cursor.content_type = batch.content_type;
         cursor.fragment_time_ms = batch.fragment_time_ms;
         cursor.delivered_through_ms = batch.delivered_through_ms;
@@ -5196,17 +5221,20 @@ fn encode_stored_media_keyframe(
     }
     let initialization = read_stored_range(
         Path::new(&location.path),
+        location.archive.as_ref(),
         location.initialization_offset,
         location.initialization_len,
     )?;
     let fragment_bytes = read_stored_range(
         Path::new(&location.path),
+        location.archive.as_ref(),
         location.fragment_offset,
         location.fragment_len,
     )?;
     let format = indexed_video_format(&initialization, Some(&fragment_bytes))?;
     let payload = read_stored_range(
         Path::new(&location.path),
+        location.archive.as_ref(),
         location.keyframe_offset,
         location.keyframe_len,
     )?;
@@ -5262,6 +5290,7 @@ fn encode_stored_media_keyframe(
         })
         .collect();
     Ok(StoredMediaBatch {
+        archive: location.archive.is_some(),
         content_type: format.keyframe_content_type,
         fragment_time_ms: fragment.start_ms,
         delivered_through_ms: fragment.start_ms,
@@ -5308,6 +5337,7 @@ fn encode_stored_media_fragments(
     media_target: DataChannelTarget,
     fragments: Vec<CatalogMediaFragment>,
 ) -> Result<StoredMediaBatch, ControlCommandError> {
+    let archive = fragments.iter().any(|fragment| fragment.archive.is_some());
     let delivered_through_ms = fragments.iter().fold(fragment_time_ms, |end, fragment| {
         end.max(
             fragment
@@ -5323,11 +5353,13 @@ fn encode_stored_media_fragments(
     for fragment in fragments {
         let initialization = read_stored_range(
             Path::new(&fragment.path),
+            fragment.archive.as_ref(),
             fragment.init_offset,
             fragment.init_len,
         )?;
         let payload = read_stored_range(
             Path::new(&fragment.path),
+            fragment.archive.as_ref(),
             fragment.byte_offset,
             fragment.byte_len,
         )?;
@@ -5363,6 +5395,7 @@ fn encode_stored_media_fragments(
         )?;
     }
     Ok(StoredMediaBatch {
+        archive,
         content_type: content_type.unwrap_or_else(|| "video/mp4".to_owned()),
         fragment_time_ms,
         delivered_through_ms,
@@ -5395,6 +5428,7 @@ fn proto_stored_media_state(
     cursor: &StoredMediaCursor,
 ) -> proto::StoredMediaState {
     proto::StoredMediaState {
+        archive: cursor.archive,
         stored_media_id: stored_media_id.to_owned(),
         status: cursor.status as i32,
         generation: cursor.generation,
@@ -5415,9 +5449,22 @@ fn proto_stored_media_state(
 
 fn read_stored_range(
     path: &Path,
+    archive: Option<&crate::storage::catalog::archive_playback::ArchiveRead>,
     offset: u64,
     length: u64,
 ) -> Result<Vec<u8>, ControlCommandError> {
+    if let Some(archive) = archive {
+        let work = crate::storage::archive::target::Work {
+            deadline: Instant::now() + Duration::from_secs(30),
+            cancelled: &|| false,
+        };
+        return crate::storage::archive::read_range(archive, offset, length, &work)
+            .map_err(|error| {
+                tracing::warn!(%error, "archive playback range is unavailable");
+                ControlCommandError::new(proto::ErrorCode::Unavailable, 503,
+                    "Archive media is unavailable or failed integrity verification. Check the archive target and retry.")
+            });
+    }
     if length == 0 || length > MAX_STORED_OBJECT_BYTES {
         return Err(ControlCommandError::new(
             proto::ErrorCode::Internal,
@@ -6311,6 +6358,7 @@ struct ResolvedEventSearchMediaObject {
     representation: proto::StoredMediaObjectRepresentation,
     content_type: String,
     path: PathBuf,
+    archive: Option<crate::storage::catalog::archive_playback::ArchiveRead>,
     offset: u64,
     length: u64,
     codec: String,
@@ -6319,6 +6367,9 @@ struct ResolvedEventSearchMediaObject {
     decoder_config: Vec<u8>,
     nal_length_size: u32,
 }
+
+trait MediaRead: Read + Seek {}
+impl<T: Read + Seek> MediaRead for T {}
 
 fn stream_event_search_media(
     state: &ServerState,
@@ -6413,11 +6464,13 @@ fn stream_event_search_media(
             })?;
         let initialization = read_stored_range(
             Path::new(&location.path),
+            location.archive.as_ref(),
             location.initialization_offset,
             location.initialization_len,
         )?;
         let fragment = read_stored_range(
             Path::new(&location.path),
+            location.archive.as_ref(),
             location.fragment_offset,
             location.fragment_len,
         )?;
@@ -6472,6 +6525,7 @@ fn stream_event_search_media(
             representation,
             content_type,
             path: PathBuf::from(location.path),
+            archive: location.archive,
             offset,
             length,
             codec: video_format.decoder.codec,
@@ -6579,6 +6633,7 @@ fn resolve_event_search_attachment(
         representation: proto::StoredMediaObjectRepresentation::EventAttachment,
         content_type: descriptor.content_type,
         path,
+        archive: None,
         offset: 0,
         length,
         codec: String::new(),
@@ -6682,41 +6737,8 @@ fn stream_event_search_object(
             "event search media length does not fit this platform",
         )
     })?)?;
-    let mut file = File::open(&object.path).map_err(|error| {
-        ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            format!("event search media file is unavailable: {error}"),
-        )
-    })?;
-    let file_len = file
-        .metadata()
-        .map_err(|error| {
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                format!("event search media file cannot be inspected: {error}"),
-            )
-        })?
-        .len();
-    if object
-        .offset
-        .checked_add(object.length)
-        .is_none_or(|end| end > file_len)
-    {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            "event search media range is no longer available",
-        ));
-    }
-    file.seek(SeekFrom::Start(object.offset)).map_err(|error| {
-        ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            format!("event search media range cannot be opened: {error}"),
-        )
-    })?;
+    let cancelled_read = || cancelled.load(Ordering::Acquire);
+    let mut file = open_event_search_object_reader(object, &cancelled_read)?;
     let mut remaining = object.length;
     let mut chunk_index = 0u32;
     let mut buffer = vec![0; DATA_MESSAGE_CHUNK_BYTES];
@@ -6757,6 +6779,58 @@ fn stream_event_search_object(
         chunk_index = chunk_index.saturating_add(1);
     }
     Ok(())
+}
+
+fn open_event_search_object_reader<'a>(
+    object: &ResolvedEventSearchMediaObject,
+    cancelled: &'a dyn Fn() -> bool,
+) -> Result<Box<dyn MediaRead + 'a>, ControlCommandError> {
+    let mut file: Box<dyn MediaRead + 'a> = if let Some(archive) = &object.archive {
+        Box::new(
+            crate::storage::archive::VerifiedReader::new(
+                archive.clone(),
+                crate::storage::archive::target::Work {
+                    deadline: Instant::now() + Duration::from_secs(30),
+                    cancelled,
+                },
+            )
+            .map_err(|error| stored_catalog_error("open archive event media", error))?,
+        )
+    } else {
+        Box::new(File::open(&object.path).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                format!("event search media file is unavailable: {error}"),
+            )
+        })?)
+    };
+    let file_len = file.seek(SeekFrom::End(0)).map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            format!("event search media file cannot be inspected: {error}"),
+        )
+    })?;
+    if object
+        .offset
+        .checked_add(object.length)
+        .is_none_or(|end| end > file_len)
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "event search media range is no longer available",
+        ));
+    }
+    file.seek(SeekFrom::Start(object.offset)).map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            format!("event search media range cannot be opened: {error}"),
+        )
+    })?;
+    Ok(file)
 }
 
 fn event_search_catalog(
@@ -7884,6 +7958,7 @@ fn proto_runtime_configuration_result(
             port: u32::from(config.port),
             configuration_revision: config.configuration_revision,
             storage: Some(proto::RuntimeStorageConfiguration {
+                archive: config.storage.archive.map(storage_archive::to_wire),
                 named_volumes: config.storage.named_volumes.map(storage_volumes::to_wire),
                 medium_term_path: config.storage.medium_term_path,
                 long_term_path: config.storage.long_term_path,
@@ -8791,6 +8866,7 @@ fn proto_access_audit_event(event: AccessAuditEvent) -> proto::AccessAuditEvent 
 }
 
 struct StoredMediaCursor {
+    archive: bool,
     source_id: String,
     stream_id: String,
     recording_stream_id: String,
@@ -9051,7 +9127,7 @@ pub struct ServerState {
     api_session_owners: Arc<Mutex<HashMap<SessionId, ApiSessionRecord>>>,
     http_stream_cancellations: Arc<Mutex<Vec<HttpStreamCancellation>>>,
     stored_media_cursors: Arc<Mutex<HashMap<(SessionId, String), StoredMediaCursor>>>,
-    stored_media_cursor_reservations: Arc<Mutex<HashSet<(SessionId, String)>>>,
+    stored_media_cursor_reservations: Arc<Mutex<HashMap<(SessionId, String), uuid::Uuid>>>,
     ptz_owners: Arc<Mutex<HashMap<String, camera_control::Owner>>>,
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
     maintenance_active: Arc<AtomicBool>,
@@ -9231,7 +9307,7 @@ impl ServerState {
             api_session_owners: Arc::new(Mutex::new(HashMap::new())),
             http_stream_cancellations: Arc::new(Mutex::new(Vec::new())),
             stored_media_cursors: Arc::new(Mutex::new(HashMap::new())),
-            stored_media_cursor_reservations: Arc::new(Mutex::new(HashSet::new())),
+            stored_media_cursor_reservations: Arc::new(Mutex::new(HashMap::new())),
             ptz_owners: Arc::new(Mutex::new(HashMap::new())),
             export_jobs: Arc::new(Mutex::new(export_jobs)),
             maintenance_active: Arc::new(AtomicBool::new(false)),
@@ -10206,6 +10282,7 @@ fn sanitized_config(
         port: config.port,
         configuration_revision: configuration_revision(config),
         storage: SanitizedStorage {
+            archive: storage_archive::sanitized(config),
             named_volumes: storage_volumes::sanitized(config),
             medium_term_path,
             long_term_path,
@@ -12902,6 +12979,7 @@ fn save_runtime_settings(
         host,
         port: update.port,
         storage: StorageToml {
+            archive: update.storage.archive,
             retention: preserved_retention_settings(config_path)?,
             medium_term_path: Some(medium_term_path),
             metadata: state.storage_config.metadata.clone(),
@@ -14267,6 +14345,7 @@ mod tests {
             writer.write_sample(1, sample).unwrap();
             let fragment = writer.write_end().unwrap().unwrap();
             CatalogMediaFragment {
+                archive: None,
                 recording_id: recording_id.to_owned(),
                 recording_started_at_ms: start_ms,
                 path: path.to_string_lossy().into_owned(),
@@ -17424,7 +17503,7 @@ mod tests {
             .stored_media_cursor_reservations
             .lock()
             .unwrap()
-            .insert(pending_cursor.clone());
+            .insert(pending_cursor.clone(), uuid::Uuid::new_v4());
         let mut camera = state.camera("127.0.0.1").unwrap();
         camera.groups = vec!["indoor".to_owned()];
         state.upsert_camera(camera);
@@ -17436,7 +17515,7 @@ mod tests {
                 .stored_media_cursor_reservations
                 .lock()
                 .unwrap()
-                .contains(&pending_cursor)
+                .contains_key(&pending_cursor)
         );
     }
 
@@ -22311,6 +22390,7 @@ mod tests {
         .with_camera_config_path(config_path.clone());
         let handler = test_control_handler(state);
         let storage_update = |safety: Option<u64>| proto::RuntimeStorageConfiguration {
+            archive: None,
             named_volumes: None,
             medium_term_path: recordings.to_string_lossy().into_owned(),
             long_term_path: recordings.to_string_lossy().into_owned(),
@@ -24663,6 +24743,7 @@ mod tests {
                 port: 3200,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    archive: None,
                     named_volumes: None,
                     medium_term_path: medium_term_path.to_string_lossy().into_owned(),
                     long_term_path: long_term_path.to_string_lossy().into_owned(),
@@ -24759,6 +24840,7 @@ mod tests {
                 port: 0,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    archive: None,
                     named_volumes: None,
                     medium_term_path: "/media/invalid".to_owned(),
                     long_term_path: "/archive/invalid".to_owned(),
@@ -24821,6 +24903,7 @@ mod tests {
                 port: 3200,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    archive: None,
                     named_volumes: None,
                     medium_term_path: writable.clone(),
                     long_term_path: writable.clone(),
@@ -24869,6 +24952,7 @@ mod tests {
                 port: 3200,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    archive: None,
                     named_volumes: None,
                     medium_term_path: inaccessible_path.to_owned(),
                     long_term_path: inaccessible_path.to_owned(),
@@ -24916,6 +25000,7 @@ mod tests {
                 port: 3200,
                 expected_configuration_revision: stale_revision,
                 storage: RuntimeStorageSettingsUpdate {
+                    archive: None,
                     named_volumes: None,
                     medium_term_path: writable.clone(),
                     long_term_path: writable,
@@ -25000,6 +25085,7 @@ mod tests {
                 port: 3000,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    archive: None,
                     named_volumes: None,
                     medium_term_path: next.to_string_lossy().into_owned(),
                     long_term_path: next.to_string_lossy().into_owned(),
@@ -25123,6 +25209,7 @@ mod tests {
                 port: 3000,
                 expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
+                    archive: None,
                     named_volumes: None,
                     medium_term_path: next_recordings.to_string_lossy().into_owned(),
                     long_term_path: next_recordings.to_string_lossy().into_owned(),

@@ -526,6 +526,231 @@ fn completed_named_export() -> (PathBuf, RecordingCatalog, Manager, ServerState)
     (root, catalog, manager, state)
 }
 
+fn archive_completed_export(
+    root: &Path,
+    catalog: &RecordingCatalog,
+    state: &ServerState,
+) -> (crate::storage::archive::Worker, String) {
+    use crate::storage::{
+        archive::{Worker, settings::Settings},
+        volumes::root::Root,
+    };
+    let archive_root = Root::open(root).unwrap();
+    drop(archive_root.create_private_child("archive").unwrap());
+    let settings = Settings {
+        target_id: "export-archive".into(),
+        root: root.join("archive"),
+        enabled: true,
+        automatic: false,
+        source_ids: vec![],
+        minimum_age_secs: 0,
+        evict_after_archive: false,
+        maximum_object_bytes: 4 * 1024 * 1024 * 1024,
+        maximum_pending_count: 256,
+        maximum_pending_bytes: 64 * 1024 * 1024 * 1024,
+        operation_timeout_secs: 30,
+        maximum_attempts: 3,
+    };
+    let worker = Worker::start(settings, catalog.handle()).unwrap();
+    worker.handle().request_probe().unwrap();
+    let bind_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let health = worker.handle().health();
+        if !health.probe_pending {
+            assert!(health.available, "archive destination probe failed");
+            break;
+        }
+        assert!(
+            Instant::now() < bind_deadline,
+            "archive destination probe did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let request = proto::CopyArchiveObject {
+        job_id: id.clone(),
+        object_id: export_record(state).artifact_id,
+        kind: proto::StorageObjectKind::Export as i32,
+    };
+    let job = super::storage_archive::copy(state, &worker.handle(), request).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let current = worker.handle().get(&job.job_id).unwrap();
+        if current.state == "ready" {
+            break;
+        }
+        assert!(
+            current.state != "failed" && Instant::now() < deadline,
+            "archive export did not become ready: {:?}",
+            current.error
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    (worker, id)
+}
+
+fn assert_archived_export_replay(
+    state: &ServerState,
+    handle: &crate::storage::archive::Handle,
+    archive_job_id: &str,
+    artifact_id: &str,
+) {
+    let replay = super::storage_archive::copy(
+        state,
+        handle,
+        proto::CopyArchiveObject {
+            job_id: archive_job_id.into(),
+            object_id: artifact_id.into(),
+            kind: proto::StorageObjectKind::Export as i32,
+        },
+    )
+    .unwrap();
+    assert_eq!(replay.job_id, archive_job_id);
+    assert_eq!(replay.state, "ready");
+    for (kind, object_id) in [
+        (proto::StorageObjectKind::Recording, artifact_id),
+        (proto::StorageObjectKind::Export, "different-export"),
+    ] {
+        assert!(
+            super::storage_archive::copy(
+                state,
+                handle,
+                proto::CopyArchiveObject {
+                    job_id: archive_job_id.into(),
+                    object_id: object_id.into(),
+                    kind: kind as i32,
+                }
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn archived_export_download_survives_expiry_history_prune_and_source_retirement() {
+    let (root, catalog, manager, state) = completed_named_export();
+    let record = export_record(&state);
+    let original = std::fs::read(record.path.as_ref().unwrap()).unwrap();
+    let (worker, archive_job_id) = archive_completed_export(&root, &catalog, &state);
+    let request = proto::DownloadExport {
+        job_id: "named-export".into(),
+        channel: proto::DataChannelKind::ReliableData as i32,
+    };
+    {
+        let mut jobs = state.export_jobs.lock().unwrap();
+        jobs.get_mut("named-export").unwrap().job.expires_at = Some(millis_timestamp(0));
+    }
+    export_storage::history::expire(&state);
+    assert_eq!(
+        export_record(&state).job.status,
+        proto::ExportJobStatus::Expired as i32
+    );
+    state
+        .export_jobs
+        .lock()
+        .unwrap()
+        .get_mut("named-export")
+        .unwrap()
+        .updated_at_ms = 0;
+    export_storage::history::expire(&state);
+    assert!(state.export_jobs.lock().unwrap().is_empty());
+    assert_archived_export_replay(
+        &state,
+        &worker.handle(),
+        &archive_job_id,
+        &record.artifact_id,
+    );
+    assert!(
+        manager
+            .finish_export_retirement(&record.artifact_id)
+            .unwrap()
+    );
+    assert!(!record.path.as_ref().unwrap().exists());
+    let (result, messages) = download_export(&state, "owner", request.clone()).unwrap();
+    assert_eq!(result.job.unwrap().job_id, "named-export");
+    assert_eq!(downloaded_bytes(messages), original);
+    assert_eq!(
+        download_export(&state, "other", request.clone())
+            .unwrap_err()
+            .code,
+        proto::ErrorCode::NotFound
+    );
+    state
+        .privacy
+        .replace_profile_overrides(std::collections::BTreeMap::from([(
+            "127.0.0.1".into(),
+            true,
+        )]))
+        .unwrap();
+    assert_eq!(
+        download_export(&state, "owner", request).unwrap_err().code,
+        proto::ErrorCode::Rejected
+    );
+    assert_eq!(
+        create_export_job(&state, "owner", record.request)
+            .unwrap_err()
+            .code,
+        proto::ErrorCode::Rejected
+    );
+    worker.shutdown().unwrap();
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}
+
+#[test]
+fn queued_archive_export_fences_expiry_until_cancelled() {
+    use crate::storage::{
+        archive::target::ObjectId,
+        catalog::archive::{Admission, Binding, Request as ArchiveRequest},
+        volumes::root::Root,
+    };
+    let (root, catalog, manager, state) = completed_named_export();
+    let archive_root = Root::open(&root).unwrap();
+    drop(archive_root.create_private_child("archive").unwrap());
+    let archive_root = Root::open(&root.join("archive")).unwrap();
+    let metadata =
+        export_storage::archive::metadata_for_copy(&state, &export_record(&state).artifact_id)
+            .unwrap();
+    let artifact_id = export_record(&state).artifact_id;
+    let handle = catalog.handle();
+    handle
+        .archive(ArchiveRequest::Bind(Binding {
+            id: "export-archive".into(),
+            root: root.join("archive"),
+            identity: archive_root.identity().clone(),
+        }))
+        .unwrap();
+    let id = ObjectId::random().to_string();
+    handle
+        .archive(ArchiveRequest::Enqueue(Admission {
+            job_id: id.clone(),
+            recording_id: artifact_id.clone(),
+            kind: "export".into(),
+            target: "export-archive".into(),
+            object_limit: 4 * 1024 * 1024 * 1024,
+            count_limit: 256,
+            bytes_limit: 64 * 1024 * 1024 * 1024,
+            export_job_id: Some(metadata.original_job_id),
+            export_metadata: Some(metadata.json),
+        }))
+        .unwrap();
+    assert!(
+        handle
+            .volume_location(Request::RetireExport(artifact_id.clone()))
+            .is_err()
+    );
+    handle.archive(ArchiveRequest::Cancel(id)).unwrap();
+    assert!(
+        handle
+            .volume_location(Request::RetireExport(artifact_id))
+            .is_ok()
+    );
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+}
+
 fn export_record(state: &ServerState) -> ExportJobRecord {
     state
         .export_jobs

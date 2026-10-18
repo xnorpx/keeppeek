@@ -50,6 +50,7 @@ message Request {
     // Arms the authenticated session microphone for one target set.
     TalkbackCommand talkback_command = 28;
     StorageVolumeCommand storage_volume_command = 29;
+    ArchiveCommand archive_command = 30;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -1335,6 +1336,7 @@ message RuntimeStorageConfiguration {
   optional uint64 pre_recording_stream_max_bytes = 16;
   optional uint64 pre_recording_global_max_bytes = 17;
   StorageVolumeConfiguration named_volumes = 18;
+  ArchiveSettings archive = 19;
 }
 
 message StorageVolumeConfiguration {
@@ -2051,6 +2053,7 @@ message StoredMediaState {
   bool playing = 8;
   double playback_rate = 9;
   StoredMediaDelivery delivery = 10;
+  bool archive = 11;
 }
 
 enum StoredMediaStatus {
@@ -2923,6 +2926,7 @@ message Ok {
     CameraAudioPlaybackResult camera_audio_playback_result = 41;
     ExternalAuthenticationResult external_authentication_result = 42;
     StorageVolumeResult storage_volume_result = 43;
+    ArchiveResult archive_result = 44;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -4176,4 +4180,85 @@ message PreRecordingDiagnostics {
   uint64 available_ms = 5;
   uint64 retained_bytes = 6;
   PreRecordingReason reason = 7;
+}
+
+// Optional operator configuration for the single local fourth-tier archive target.
+// String fields retain supported secret references in Administrator responses.
+message ArchiveSettings {
+  string target_id = 1;
+  string root = 2;
+  bool enabled = 3;
+  bool automatic = 4;
+  repeated string source_ids = 5;
+  uint64 minimum_age_secs = 6;
+  bool evict_after_archive = 7;
+  uint64 maximum_object_bytes = 8;
+  uint32 maximum_pending_count = 9;
+  uint64 maximum_pending_bytes = 10;
+  uint64 operation_timeout_secs = 11;
+  uint32 maximum_attempts = 12;
+}
+
+// Administrator-only archive operations. Configuration uses RuntimeConfigurationCommand.
+// Copy intent IDs are reused after a lost acknowledgement, never regenerated on retry.
+message ArchiveCommand {
+  oneof action {
+    ProbeArchive probe = 1;
+    ListArchiveJobs list = 2;
+    GetArchiveJob get = 3;
+    CopyArchiveObject copy = 4;
+    CancelArchiveJob cancel = 5;
+    RetryArchiveJob retry = 6;
+    RestoreArchiveObject restore = 7;
+    EvictArchiveSource evict = 8;
+  }
+}
+message ProbeArchive {}
+message ListArchiveJobs { string after_job_id = 1; uint32 limit = 2; }
+message GetArchiveJob { string job_id = 1; }
+message CopyArchiveObject {
+  string job_id = 1;
+  StorageObjectKind kind = 2;
+  string object_id = 3;
+}
+message CancelArchiveJob { string job_id = 1; }
+message RetryArchiveJob { string job_id = 1; }
+message RestoreArchiveObject { string job_id = 1; }
+message EvictArchiveSource { string job_id = 1; }
+message ArchiveStatus {
+  bool runtime_available = 1;
+  bool online = 2;
+  string error_code = 3;
+  bool probe_pending = 4;
+}
+enum ArchivePrimaryCopyState {
+  ARCHIVE_PRIMARY_COPY_STATE_UNSPECIFIED = 0;
+  ARCHIVE_PRIMARY_COPY_STATE_PRESENT = 1;
+  ARCHIVE_PRIMARY_COPY_STATE_EVICTED = 2;
+  ARCHIVE_PRIMARY_COPY_STATE_EVICTING = 3;
+}
+message ArchiveJob {
+  string job_id = 1;
+  string object_id = 2;
+  StorageObjectKind kind = 3;
+  string target_id = 4;
+  string state = 5;
+  uint64 bytes = 6;
+  uint32 attempts = 7;
+  string error_code = 8;
+  ArchivePrimaryCopyState primary_copy = 9;
+  string action = 10;
+  uint32 action_attempts = 11;
+}
+message ArchiveJobList {
+  repeated ArchiveJob jobs = 1;
+  string next_after_job_id = 2;
+  ArchiveStatus status = 3;
+}
+message ArchiveResult {
+  oneof result {
+    ArchiveStatus status = 1;
+    ArchiveJob job = 2;
+    ArchiveJobList jobs = 3;
+  }
 }

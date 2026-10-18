@@ -13,15 +13,7 @@ pub(in crate::server) fn download(
             "export downloads require reliable-data",
         ));
     }
-    let record = snapshot(state, requester, &request.job_id)?;
-    privacy(state, &record.job.source_id)?;
-    let payload = payload(state, &record)?;
-    if record.job.sha256.as_deref() != Some(&encode_lower_hex(Sha256::digest(&payload))) {
-        checksum_failure(state, &record);
-        return Err(unavailable(
-            "export checksum verification failed; retry the export",
-        ));
-    }
+    let (record, payload, from_history) = resolve(state, requester, &request.job_id)?;
     privacy(state, &record.job.source_id)?;
     let chunk_count =
         u32::try_from(payload.len().div_ceil(DATA_MESSAGE_CHUNK_BYTES)).map_err(unavailable)?;
@@ -45,7 +37,9 @@ pub(in crate::server) fn download(
             },
         })
         .collect();
-    downloaded(state, &record)?;
+    if from_history {
+        downloaded(state, &record)?;
+    }
     Ok((
         proto::ExportDownloadResult {
             job: Some(record.job),
@@ -54,6 +48,41 @@ pub(in crate::server) fn download(
         },
         messages,
     ))
+}
+
+fn resolve(
+    state: &ServerState,
+    requester: &str,
+    job_id: &str,
+) -> Result<(ExportJobRecord, Vec<u8>, bool), ControlCommandError> {
+    let local_error = match snapshot(state, requester, job_id) {
+        Ok(record) => {
+            privacy(state, &record.job.source_id)?;
+            match payload(state, &record) {
+                Ok(bytes)
+                    if record.job.sha256.as_deref()
+                        == Some(&encode_lower_hex(Sha256::digest(&bytes))) =>
+                {
+                    return Ok((record, bytes, true));
+                }
+                Ok(_) => {
+                    checksum_failure(state, &record);
+                    unavailable("export checksum verification failed; retry the export")
+                }
+                Err(error) => error,
+            }
+        }
+        Err(error) => error,
+    };
+    let Some((record, archive)) = super::archive::snapshot(state, requester, job_id)? else {
+        return Err(local_error);
+    };
+    privacy(state, &record.job.source_id)?;
+    let bytes = super::archive::payload(state, &archive)?;
+    if record.job.sha256.as_deref() != Some(&encode_lower_hex(Sha256::digest(&bytes))) {
+        return Err(unavailable("archived export checksum verification failed"));
+    }
+    Ok((record, bytes, false))
 }
 
 fn snapshot(
