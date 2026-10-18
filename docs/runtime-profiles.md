@@ -61,6 +61,24 @@ Already admitted output may remain until the writer processes the change. Applie
 writer configuration acceptance, not successful later disk writes or the privacy no-more-bytes
 barrier. Existing revision fences protect newer Pending status during acknowledgement waits.
 
+After acceptance, active recording input write failures are latched against the current
+acknowledged configuration. The loop observes them at most every 100 ms when it can run, changes
+only matching Applied recording-enabled cameras to Degraded, and publishes one status update for
+the batch. Each poll examines at most 127 ordered status entries and resumes from its cursor on
+the next poll, so larger fleets and retained missing targets do not create an unbounded scan.
+Busy event delivery does not reset that interval. The reason is fixed and contains no
+storage path, label or raw error. A newer Pending revision and other Degraded reasons are preserved.
+An explicit successful reapply replaces the failure latch; it acknowledges configuration without
+proving later media recovery. Ordinary write progress does not automatically promote the camera.
+The current UI disables reselecting the active Base/profile. After storage repair, restart or an
+authorized WebRTC reapply can replace the observation; direct UI retry remains a #202 gap.
+
+These observations cover direct input writes, buffered flushes triggered by input, named-storage
+routing errors during input, and event-frame writes. Legacy buffers can include earlier media, so
+the observation describes a write after acceptance rather than per-frame generation ownership.
+Replacement cleanup/finalization, periodic FlushAll, shutdown, producer queues and global storage
+pauses retain their existing diagnostics and are not covered by this profile-status path.
+
 ## Scope
 
 An Administrator selects Base or exactly one named profile. Each profile contains sparse

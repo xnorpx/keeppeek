@@ -1190,7 +1190,6 @@ fn update_runtime_status(
             .entry(application.camera_id.clone())
             .or_insert(application);
     }
-    project_runtime_privacy(state, profiles, &configured_camera_ids, &mut cameras);
     let mut status = state
         .runtime_profile_status
         .write()
@@ -1198,11 +1197,34 @@ fn update_runtime_status(
     if status.revision > profiles.revision {
         return;
     }
+    if status.revision == profiles.revision
+        && status.active_profile_id == profiles.active_profile_id
+    {
+        preserve_runtime_failures(&status.cameras, &mut cameras);
+    }
+    project_runtime_privacy(state, profiles, &configured_camera_ids, &mut cameras);
     *status = crate::profiles::RuntimeProfileStatus {
         revision: profiles.revision,
         active_profile_id: profiles.active_profile_id.clone(),
         cameras,
     };
+}
+
+fn preserve_runtime_failures(
+    observed: &BTreeMap<String, crate::profiles::CameraRuntimeApplication>,
+    returned: &mut BTreeMap<String, crate::profiles::CameraRuntimeApplication>,
+) {
+    for application in returned.values_mut() {
+        if application.state == crate::profiles::RuntimeApplicationState::Applied
+            && let Some(current) = observed.get(&application.camera_id)
+            && current.state == crate::profiles::RuntimeApplicationState::Degraded
+            && current.policy == application.policy
+        {
+            // The loop can observe a failure after sending the activation reply.
+            application.state = current.state.clone();
+            application.reason = current.reason.clone();
+        }
+    }
 }
 
 fn runtime_profile_camera_configs(
@@ -2164,6 +2186,134 @@ mod tests {
             *fixture.state.runtime_profile_status.read().unwrap(),
             expected
         );
+    }
+
+    fn delayed_runtime_completion_fixture() -> (
+        Fixture,
+        crate::profiles::ProfileRegistry,
+        crate::profiles::CameraRuntimeApplication,
+    ) {
+        let fixture = Fixture::new();
+        let camera: crate::cameras::CameraConfig =
+            toml::from_str("ip='192.0.2.1'\nusername='fixture'\npassword='fixture'").unwrap();
+        config::upsert_camera(&fixture.config_path(), &camera).unwrap();
+        let mut profiles = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        profiles.revision = 1;
+        profiles.active_profile_id = Some("away".to_owned());
+        let returned = crate::profiles::CameraRuntimeApplication {
+            camera_id: camera.ip.to_string(),
+            state: crate::profiles::RuntimeApplicationState::Applied,
+            policy: crate::profiles::resolve_camera_policy(
+                &crate::profiles::BaseCameraPolicy {
+                    available: true,
+                    recording_mode: crate::cameras::CameraRecordingMode::Sub,
+                    privacy_enforced: true,
+                    notifications_enabled: true,
+                },
+                None,
+            ),
+            reason: None,
+        };
+        let mut live = returned.clone();
+        live.state = crate::profiles::RuntimeApplicationState::Degraded;
+        live.reason = Some("recording writer reported an active write failure".to_owned());
+        *fixture.state.runtime_profile_status.write().unwrap() =
+            crate::profiles::RuntimeProfileStatus {
+                revision: profiles.revision,
+                active_profile_id: profiles.active_profile_id.clone(),
+                cameras: BTreeMap::from([(live.camera_id.clone(), live)]),
+            };
+        (fixture, profiles, returned)
+    }
+
+    #[test]
+    fn delayed_profile_completion_preserves_live_failure_before_privacy_projection() {
+        let (fixture, profiles, returned) = delayed_runtime_completion_fixture();
+        update_runtime_status(
+            &fixture.state,
+            &profiles,
+            Some(vec![returned.clone()]),
+            None,
+            false,
+        );
+        let status = fixture.state.runtime_profile_status.read().unwrap();
+        let application = &status.cameras[&returned.camera_id];
+        assert_eq!(
+            application.state,
+            crate::profiles::RuntimeApplicationState::Degraded
+        );
+        assert_eq!(
+            application.reason.as_deref(),
+            Some("recording writer reported an active write failure")
+        );
+        assert!(
+            !application.policy.privacy_enforced,
+            "preserved live failure must still receive current privacy projection"
+        );
+    }
+
+    #[test]
+    fn delayed_profile_completion_does_not_inherit_unrelated_or_pending_observations() {
+        let (fixture, profiles, returned) = delayed_runtime_completion_fixture();
+        let accepted = fixture.state.runtime_profile_status.read().unwrap().clone();
+        for scenario in 0..4 {
+            {
+                let mut status = fixture.state.runtime_profile_status.write().unwrap();
+                *status = accepted.clone();
+                match scenario {
+                    0 => {
+                        status.cameras.get_mut(&returned.camera_id).unwrap().state =
+                            crate::profiles::RuntimeApplicationState::Pending;
+                    }
+                    1 => {
+                        status
+                            .cameras
+                            .get_mut(&returned.camera_id)
+                            .unwrap()
+                            .policy
+                            .recording_mode = crate::cameras::CameraRecordingMode::Main;
+                    }
+                    2 => status.active_profile_id = None,
+                    3 => status.revision = 0,
+                    _ => unreachable!("four observation boundaries are tested"),
+                }
+            }
+            update_runtime_status(
+                &fixture.state,
+                &profiles,
+                Some(vec![returned.clone()]),
+                None,
+                false,
+            );
+            let status = fixture.state.runtime_profile_status.read().unwrap();
+            assert_eq!(
+                status.cameras[&returned.camera_id].state,
+                crate::profiles::RuntimeApplicationState::Applied
+            );
+            assert!(status.cameras[&returned.camera_id].reason.is_none());
+        }
+    }
+
+    #[test]
+    fn delayed_profile_completion_keeps_the_returned_independent_failure() {
+        let (fixture, profiles, mut returned) = delayed_runtime_completion_fixture();
+        returned.state = crate::profiles::RuntimeApplicationState::Degraded;
+        returned.reason = Some("notification runtime is unavailable".to_owned());
+        update_runtime_status(
+            &fixture.state,
+            &profiles,
+            Some(vec![returned.clone()]),
+            None,
+            false,
+        );
+        let status = fixture.state.runtime_profile_status.read().unwrap();
+        assert_eq!(
+            status.cameras[&returned.camera_id].state,
+            crate::profiles::RuntimeApplicationState::Degraded
+        );
+        assert_eq!(status.cameras[&returned.camera_id].reason, returned.reason);
     }
 
     #[test]

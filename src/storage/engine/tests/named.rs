@@ -174,12 +174,15 @@ fn active_privacy() -> crate::privacy::PrivacySchedule {
 fn named_worker_privacy_boundary_finalizes_and_excludes_private_frame() -> anyhow::Result<()> {
     let (root, catalog, config) = named_fixture()?;
     let privacy = Arc::new(PrivacyRegistry::default());
+    let health = RecordingHealthRegistry::default();
+    let admission = RecordingAdmission::new(health.clone());
+    *admission.privacy.write().unwrap() = Some(privacy.clone());
     let mut worker = WriterWorker::new_with_health(
         config,
         RecordingDemand::new(Duration::ZERO),
         Some(catalog.handle()),
-        RecordingHealthRegistry::default(),
-        Arc::new(RwLock::new(Some(privacy.clone()))),
+        health,
+        admission,
     );
     let identity = RecordingStreamIdentity::legacy("camera");
     let now = Instant::now();

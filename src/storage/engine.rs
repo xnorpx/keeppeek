@@ -206,7 +206,7 @@ enum Command {
         source: String,
         settings: EventSettings,
         fence: EventFence,
-        current: Arc<AtomicBool>,
+        current: Arc<RecordingConfigurationToken>,
         reply: mpsc::SyncSender<Result<(), &'static str>>,
     },
     EventInput {
@@ -372,14 +372,49 @@ struct RecordingAdmission {
 
 struct RecordingPolicy {
     policy: CameraRecordingPolicy,
-    current: Arc<AtomicBool>,
+    current: Arc<RecordingConfigurationToken>,
+}
+
+struct RecordingConfigurationToken {
+    current: AtomicBool,
+    acknowledged: AtomicBool,
+    // ponytail: Keep failure sticky until reconfiguration; add progress tracking for recovery.
+    failed: AtomicBool,
+}
+
+impl RecordingConfigurationToken {
+    const fn new() -> Self {
+        Self {
+            current: AtomicBool::new(true),
+            acknowledged: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
+        }
+    }
+
+    fn is_current(&self) -> bool {
+        self.current.load(Ordering::Acquire)
+    }
+
+    fn invalidate(&self) {
+        self.current.store(false, Ordering::Release);
+    }
+
+    fn acknowledge(&self) {
+        self.acknowledged.store(true, Ordering::Release);
+    }
+
+    fn failed(&self) -> bool {
+        self.is_current()
+            && self.acknowledged.load(Ordering::Acquire)
+            && self.failed.load(Ordering::Acquire)
+    }
 }
 
 impl RecordingPolicy {
     fn new(mode: CameraRecordingMode, event_duration: Duration) -> Self {
         Self {
             policy: CameraRecordingPolicy::new(mode, event_duration),
-            current: Arc::new(AtomicBool::new(true)),
+            current: Arc::new(RecordingConfigurationToken::new()),
         }
     }
 }
@@ -399,7 +434,7 @@ impl RecordingAdmission {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.clear_event_admission(camera_id);
         if let Some(previous) = policies.get(camera_id) {
-            previous.current.store(false, Ordering::Release);
+            previous.current.invalidate();
         }
         policies.insert(
             camera_id.to_owned(),
@@ -599,6 +634,29 @@ impl RecordingAdmission {
             .get(camera_id)
             .map_or("sub", |entry| entry.policy.preferred_audio_stream())
     }
+
+    fn note_writer_failure(&self, source: &str) {
+        let policies = self
+            .policies
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(current) = policies.get(source).map(|policy| &policy.current)
+            && current.is_current()
+            && current.acknowledged.load(Ordering::Acquire)
+        {
+            current.failed.store(true, Ordering::Release);
+        }
+    }
+
+    fn recording_configuration_failed(&self, source: &str) -> bool {
+        let policies = self
+            .policies
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        policies
+            .get(source)
+            .is_some_and(|policy| policy.current.failed())
+    }
 }
 
 #[derive(Clone)]
@@ -609,7 +667,7 @@ pub struct StorageHandle {
 
 pub(crate) struct RecordingConfiguration {
     source: String,
-    current: Arc<AtomicBool>,
+    current: Arc<RecordingConfigurationToken>,
     handle: StorageHandle,
     reply: mpsc::Receiver<Result<(), &'static str>>,
 }
@@ -687,6 +745,15 @@ impl StorageHandle {
     pub fn preferred_audio_stream(&self, camera_id: &str) -> &'static str {
         self.admission.preferred_audio_stream(camera_id)
     }
+
+    pub(crate) fn recording_configuration_failed(&self, source: &str) -> bool {
+        self.admission.recording_configuration_failed(source)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn note_test_writer_failure(&self, source: &str) {
+        self.admission.note_writer_failure(source);
+    }
 }
 
 pub struct StorageEngine {
@@ -741,7 +808,7 @@ impl StorageEngine {
         };
         let worker_demand = demand.clone();
         let worker_health = health.clone();
-        let worker_privacy = admission.privacy.clone();
+        let worker_admission = admission.clone();
         let (tx, rx) = storage_command_channel(COMMAND_CAPACITY, QUEUED_MEDIA_BYTES_CAPACITY);
         let thread = std::thread::Builder::new()
             .name("storage-writer".into())
@@ -751,7 +818,7 @@ impl StorageEngine {
                     worker_demand,
                     catalog,
                     worker_health,
-                    worker_privacy,
+                    worker_admission,
                 );
                 worker.run(rx);
             })
@@ -836,7 +903,7 @@ struct WriterWorker {
     catalog: Option<RecordingCatalogHandle>,
     pipelines: HashMap<String, CameraPipeline>,
     long_term: LongTermStore,
-    privacy: Arc<RwLock<Option<Arc<PrivacyRegistry>>>>,
+    admission: RecordingAdmission,
     event_recordings: Option<EventRecordings>,
     event_sources: HashMap<String, EventSourceState>,
     event_tick: Option<Instant>,
@@ -849,13 +916,9 @@ impl WriterWorker {
         demand: RecordingDemand,
         catalog: Option<RecordingCatalogHandle>,
     ) -> Self {
-        Self::new_with_health(
-            config,
-            demand,
-            catalog,
-            RecordingHealthRegistry::default(),
-            Arc::new(RwLock::new(None)),
-        )
+        let health = RecordingHealthRegistry::default();
+        let admission = RecordingAdmission::new(health.clone());
+        Self::new_with_health(config, demand, catalog, health, admission)
     }
 
     fn new_with_health(
@@ -863,7 +926,7 @@ impl WriterWorker {
         demand: RecordingDemand,
         catalog: Option<RecordingCatalogHandle>,
         health: RecordingHealthRegistry,
-        privacy: Arc<RwLock<Option<Arc<PrivacyRegistry>>>>,
+        admission: RecordingAdmission,
     ) -> Self {
         let long_term = LongTermStore::new(config.long_term_path.clone());
         let safety = health.storage();
@@ -875,7 +938,7 @@ impl WriterWorker {
             catalog,
             pipelines: HashMap::new(),
             long_term,
-            privacy,
+            admission,
             event_recordings: None,
             event_sources: HashMap::new(),
             event_tick: None,
@@ -940,6 +1003,7 @@ impl WriterWorker {
                 discontinuity,
             } => {
                 let private = self
+                    .admission
                     .privacy
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1188,12 +1252,13 @@ impl WriterWorker {
                 Err(error) => {
                     self.health
                         .note_failure(&identity.storage_key, &error.to_string());
+                    self.admission.note_writer_failure(&identity.source_id);
                     return;
                 }
             }
         }
         let storage_key = identity.storage_key.clone();
-        self.pipeline_for(identity);
+        self.pipeline_for(&identity);
 
         if self.config.is_direct_write() {
             self.health.note_attempt(&storage_key);
@@ -1204,6 +1269,7 @@ impl WriterWorker {
                 Ok(_) => {}
                 Err(error) => {
                     self.health.note_failure(&storage_key, &error.to_string());
+                    self.admission.note_writer_failure(&identity.source_id);
                     tracing::error!(camera = storage_key, %error, "direct write failed");
                 }
             }
@@ -1224,6 +1290,7 @@ impl WriterWorker {
                 Ok(_) => {}
                 Err(error) => {
                     self.health.note_failure(&storage_key, &error.to_string());
+                    self.admission.note_writer_failure(&identity.source_id);
                     tracing::error!(camera = storage_key, %error, "flush to medium-term failed");
                 }
             }
@@ -1567,7 +1634,7 @@ impl WriterWorker {
         Ok(destination)
     }
 
-    fn pipeline_for(&mut self, identity: RecordingStreamIdentity) -> &mut CameraPipeline {
+    fn pipeline_for(&mut self, identity: &RecordingStreamIdentity) -> &mut CameraPipeline {
         let buffer_window = self
             .config
             .short_term_duration
@@ -1575,7 +1642,7 @@ impl WriterWorker {
         self.pipelines
             .entry(identity.storage_key.clone())
             .or_insert_with(|| CameraPipeline {
-                identity,
+                identity: identity.clone(),
                 short_term: ShortTermBuffer::new(buffer_window),
                 medium_term: None,
                 last_flush: Instant::now(),
@@ -1793,7 +1860,7 @@ mod tests {
             WriterWorker::new(config, RecordingDemand::new(DEMAND_INACTIVITY_GRACE), None);
         let identity = RecordingStreamIdentity::legacy("camera");
         worker
-            .pipeline_for(identity.clone())
+            .pipeline_for(&identity)
             .short_term
             .push(key_frame(Instant::now()));
 
@@ -2637,13 +2704,9 @@ mod tests {
         config.short_term_duration = Duration::ZERO;
         config.flush_interval = Duration::ZERO;
         let health = RecordingHealthRegistry::default();
-        let mut worker = WriterWorker::new_with_health(
-            config,
-            demand,
-            None,
-            health.clone(),
-            Arc::new(RwLock::new(None)),
-        );
+        let admission = RecordingAdmission::new(health.clone());
+        let mut worker =
+            WriterWorker::new_with_health(config, demand, None, health.clone(), admission);
         let started_at = Instant::now();
 
         worker.ingest(

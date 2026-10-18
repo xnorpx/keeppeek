@@ -390,6 +390,8 @@ pub struct KeepPeekLoop {
     runtime_profile_status_publisher: Option<Box<dyn Fn() + Send + Sync>>,
     runtime_profile_status:
         std::sync::Arc<std::sync::RwLock<crate::profiles::RuntimeProfileStatus>>,
+    next_recording_status_check: std::time::Instant,
+    recording_status_cursor: Option<String>,
 }
 
 impl KeepPeekLoop {
@@ -425,6 +427,8 @@ impl KeepPeekLoop {
             runtime_profile_status: std::sync::Arc::new(std::sync::RwLock::new(
                 crate::profiles::RuntimeProfileStatus::default(),
             )),
+            next_recording_status_check: std::time::Instant::now(),
+            recording_status_cursor: None,
         }
     }
 
@@ -1353,6 +1357,7 @@ impl KeepPeekLoop {
 
         while !self.shutdown.is_cancelled() {
             self.handle_commands();
+            self.refresh_recording_runtime_status();
             self.close_retired_native_events();
             match self.rx.recv_timeout(EVENT_POLL_INTERVAL) {
                 Ok(event) => self.handle_event(event),
@@ -1756,6 +1761,7 @@ mod tests {
     mod native;
     mod recording_ack;
     mod recording_admission;
+    mod recording_health;
 
     use super::*;
     use crate::cameras::{CameraCapabilities, CameraConfig, CameraPorts, DeviceInfo, MediaProfile};
