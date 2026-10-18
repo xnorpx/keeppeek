@@ -139,6 +139,33 @@ function beginDrag() {
 	return (type: 'pointerup' | 'pointercancel' = 'pointerup') => send(type);
 }
 
+it('keeps the reported decoded mobile frame visible when playback fails', async () => {
+	const { first, mount, dispose } = keepFixture();
+	try {
+		await mount();
+		await page.viewport(390, 844);
+		const video = document.querySelector('video');
+		if (!video) throw new Error('Keep video is unavailable');
+		Object.defineProperty(video, 'videoWidth', { configurable: true, value: 640 });
+		Object.defineProperty(video, 'videoHeight', { configurable: true, value: 360 });
+		video.dispatchEvent(new Event('resize'));
+		video.dispatchEvent(new Event('loadeddata'));
+		first.emitError('No first media fragment arrived.');
+		await expect
+			.element(page.getByRole('alert'))
+			.toMatchTextContent('No first media fragment arrived.');
+		await expect
+			.element(page.getByRole('region', { name: 'Recorded video player' }))
+			.toHaveAttribute('data-recording-empty-error', 'false');
+		await expect
+			.element(page.getByRole('application', { name: 'Digital zoom viewport' }))
+			.toBeVisible();
+		expect(video.checkVisibility()).toBe(true);
+	} finally {
+		dispose();
+	}
+});
+
 it('tracks the retained cursor across cold seeks and ignores a replaced cursor callback', async () => {
 	const { first, open, mount, dispose } = keepFixture();
 	try {

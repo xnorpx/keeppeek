@@ -2242,6 +2242,9 @@
 	{#if playbackNotice}
 		<p class="text-sm text-amber-700 dark:text-amber-300" role="status">{playbackNotice}</p>
 	{/if}
+	{#if playerError && mode !== 'timeline'}
+		<p class="text-sm text-destructive" role="alert">{playerError}</p>
+	{/if}
 	{#if missingMomentMs !== null}
 		<div class="flex flex-wrap items-center gap-2">
 			<time class="font-mono text-xs" datetime={new Date(missingMomentMs).toISOString()}
@@ -2487,6 +2490,10 @@
 					data-recording-fallback-variant={selectedFallbackStream ?? undefined}
 					data-recording-selection-reason={selectedPlaybackReason}
 					data-recording-startup-phase={playbackStartupPhase}
+					data-recording-empty-error={!!playerError &&
+						!(decodedVideoWidth > 0 && decodedVideoHeight > 0) &&
+						!stillPreviewUrl &&
+						!cameraSwitchFrameUrl}
 					data-recording-content-type={playbackContentType ?? undefined}
 					data-recording-rejected-variants={rejectedStreams
 						.map((candidate) => `${candidate.stream}:${candidate.encoding}`)
@@ -2716,6 +2723,9 @@
 		[data-keep-timeline-layout] > :global(*) {
 			width: 100%;
 			flex-shrink: 0;
+		}
+		[data-recording-empty-error='true'] > [data-keep-media-frame] {
+			display: none;
 		}
 	}
 

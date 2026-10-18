@@ -172,10 +172,14 @@ test('absent retained footage stays explicit in every linked Keep mode', async (
 	);
 	await expect(page).toHaveURL(new RegExp(`at=${expiredMomentMs}`));
 	expect(requests.storedOpens).toHaveLength(0);
-	await page.getByRole('button', { name: 'Timeline', exact: true }).click();
-	await expect(page.getByRole('alert')).toContainText(
-		'No retained recording is available near this moment'
-	);
+	for (const mode of ['Stories', 'Swimlanes', 'Timeline']) {
+		await page.getByRole('button', { name: mode, exact: true }).click();
+		await expect(page.getByRole('alert')).toContainText(
+			'No retained recording is available near this moment'
+		);
+		await expect(page).toHaveURL(new RegExp(`at=${expiredMomentMs}`));
+		expect(requests.storedOpens).toHaveLength(0);
+	}
 });
 
 test('a decoder failure cannot move an exact link into a later fallback recording', async ({
