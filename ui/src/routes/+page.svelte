@@ -11,7 +11,6 @@
 	import type { LivePeerPlan } from '$lib/stream-peer.svelte';
 	import type { GridTileVisibility } from '$lib/grid-visibility';
 	import { emitTimelinePerformanceEvent } from '$lib/timeline-observability';
-	import { videoResolutionMatches } from '$lib/video-resolution';
 	import {
 		GridStreamScheduler,
 		type GridStreamGrant,
@@ -32,6 +31,11 @@
 	import { isKeyboardTypingTarget } from '$lib/keyboard-shortcuts';
 	import { selectPeekLayout, type PeekLayout } from '$lib/peek-layout';
 	import { browserSupportsLiveEncoding, selectRecordedStream } from '$lib/recorded-playback-policy';
+	import {
+		canUseFocusedNetworkAuto,
+		matchesFocusedLiveFrame,
+		type FocusedLiveFrame
+	} from '$lib/focused-live-policy';
 	import {
 		defaultPlaybackPreferences,
 		focusedLivePreference,
@@ -205,6 +209,17 @@
 	let focusedVariant = $derived(
 		focusFallbackVariant ?? focusedVariantSelection?.selectedStream ?? 'main'
 	);
+	let focusedNetworkAuto = $derived(
+		canUseFocusedNetworkAuto(focusedCamera, {
+			preference: focusQuality,
+			previewPresented: focusPreviewPresented,
+			fallbackStream: focusFallbackVariant,
+			isEncodingSupported: browserSupportsLiveEncoding
+		})
+	);
+	let focusedPresentedVariant = $derived(
+		focusedNetworkAuto ? (focusedTrack?.activeStream ?? focusedVariant) : focusedVariant
+	);
 	let effectiveFocusQuality = $derived<LiveQuality>(
 		focusQuality === 'main' || focusQuality === 'sub' ? 'auto' : focusQuality
 	);
@@ -318,6 +333,7 @@
 		void focusedCameraId;
 		void focusQuality;
 		void focusFallbackVariant;
+		void focusedNetworkAuto;
 		void wallPreferences.streamingMode;
 		gridScheduler.setCapacity({ subscriptionSlots: wallCapacity, decoderSlots: wallCapacity });
 		scheduleLivePlanReconcile();
@@ -334,14 +350,19 @@
 		) {
 			return;
 		}
-		const fallback = selection.fallbackStreams.find((candidate) => candidate !== focusedVariant);
+		const failedStream = focusedNetworkAuto
+			? (track.activeStream ?? focusedVariant)
+			: focusedVariant;
+		const fallback = [selection.selectedStream, ...selection.fallbackStreams].find(
+			(candidate) => candidate !== null && candidate !== failedStream
+		);
 		focusFallbackAttempted = true;
 		if (fallback) {
 			focusFallbackVariant = fallback;
-			focusRuntimeNotice = `${focusStreamLabel(focusedVariant)} live playback was unavailable. Showing ${focusStreamLabel(fallback)} instead.`;
+			focusRuntimeNotice = `${focusStreamLabel(failedStream)} live playback was unavailable. Showing ${focusStreamLabel(fallback)} instead.`;
 			return;
 		}
-		focusRuntimeNotice = `${focusStreamLabel(focusedVariant)} live playback is unavailable and no compatible fallback was reported.`;
+		focusRuntimeNotice = `${focusStreamLabel(failedStream)} live playback is unavailable and no compatible fallback was reported.`;
 	});
 
 	$effect(() => {
@@ -606,29 +627,26 @@
 		if (focusReturnPending) finishFocusReturn();
 	}
 
-	function handleFocusFramePresented(frame: {
-		width: number;
-		height: number;
-		stream: 'main' | 'sub';
-		status: 'queued' | 'connecting' | 'live' | 'unavailable';
-	}): void {
+	function handleFocusFramePresented(frame: FocusedLiveFrame): void {
 		const camera = focusedCamera;
 		const track = focusedTrack;
 		if (!camera || !track) return;
-		const expectedStream = focusPreviewPresented ? focusedVariant : previewStream(camera);
-		if (
-			track.requestedVariantId !== expectedStream ||
-			frame.status !== 'live' ||
-			track.pendingStream !== null ||
-			track.activeStream !== expectedStream ||
-			frame.stream !== expectedStream
-		) {
-			return;
-		}
+		const expectedStream = focusedNetworkAuto
+			? track.activeStream
+			: focusPreviewPresented
+				? focusedVariant
+				: previewStream(camera);
 		const expectedResolution = camera.profiles.find(
 			(profile) => profile.stream === expectedStream
 		)?.resolution;
-		if (!videoResolutionMatches(expectedResolution, frame.width, frame.height)) return;
+		if (
+			!matchesFocusedLiveFrame(track, frame, {
+				automatic: focusedNetworkAuto,
+				stream: expectedStream,
+				resolution: expectedResolution
+			})
+		)
+			return;
 		const video = document.querySelector<HTMLVideoElement>('[data-peek-focus-stage] video');
 		if (!video || !videoFrameIsVisible(video)) return;
 		if (!focusPreviewPresented) {
@@ -846,7 +864,8 @@
 					? effectiveFocusQuality
 					: (grants.get(camera.id)?.quality ?? 'low'),
 			active: screenActive && grants.has(camera.id),
-			variantId: focused ? focusVariant : previewStream(camera)
+			variantId:
+				focused && focusedNetworkAuto ? undefined : focused ? focusVariant : previewStream(camera)
 		};
 	}
 
@@ -1273,7 +1292,7 @@
 					<section
 						data-background-stream-rate={backgroundStreamRate}
 						data-focused-live-preference={focusQuality}
-						data-focused-live-selected-variant={focusedVariant}
+						data-focused-live-selected-variant={focusedPresentedVariant}
 						data-focused-live-fallback-variant={focusFallbackVariant ?? undefined}
 						data-peek-focus-return={focusReturnPending ? 'waiting' : undefined}
 						class="focus-surface relative z-10 col-start-1 row-start-1 h-full min-h-0 overflow-hidden bg-background"
@@ -1301,7 +1320,9 @@
 										cameraId={focusedCamera.id}
 										digitalZoom
 										{focusedControls}
-										stream={focusPreviewPresented ? focusedVariant : previewStream(focusedCamera)}
+										stream={focusPreviewPresented
+											? focusedPresentedVariant
+											: previewStream(focusedCamera)}
 										quality={effectiveFocusQuality}
 										fallbackFrameUrl={peekViewState.cameraFrame(focusedCamera.id)}
 										diagnosticsLabel={cameraLabel(focusedCamera)}
