@@ -2,6 +2,10 @@
 
 use super::*;
 pub(super) mod archive;
+mod audio_context;
+#[cfg(test)]
+mod audio_timing_tests;
+pub(super) mod creation;
 pub(super) mod download;
 pub(super) mod history;
 use crate::storage::{
@@ -92,6 +96,13 @@ struct Attempt {
     artifact: String,
     cancel: Arc<AtomicBool>,
     file_name: String,
+    audio_offset_ms: i32,
+    recording_stream_id: Option<String>,
+}
+
+struct RecordedPolicy {
+    offset_ms: i32,
+    stream_id: Option<String>,
 }
 
 pub(super) fn spawn(
@@ -103,6 +114,13 @@ pub(super) fn spawn(
     end_ms: i64,
     file_name: String,
 ) {
+    let timing = match captured_policy(&state, &request, &cancel, &artifact_id) {
+        Ok(timing) => timing,
+        Err(error) => {
+            fail_export_job(&state, &request.job_id, &cancel, error.to_string());
+            return;
+        }
+    };
     let output = match prepare(&state, &request, &artifact_id, &file_name) {
         Ok(output) => output,
         Err(error) => {
@@ -117,6 +135,8 @@ pub(super) fn spawn(
         artifact: artifact_id,
         cancel,
         file_name,
+        audio_offset_ms: timing.offset_ms,
+        recording_stream_id: timing.stream_id,
     };
     let monitor = attempt.clone();
     if let Err(error) = std::thread::Builder::new()
@@ -131,6 +151,36 @@ pub(super) fn spawn(
         );
         let _ = cleanup_export_attempt_artifacts(&attempt.state, &attempt.job, &attempt.artifact);
     }
+}
+
+fn captured_policy(
+    state: &ServerState,
+    request: &proto::CreateExportJob,
+    cancel: &Arc<AtomicBool>,
+    artifact: &str,
+) -> anyhow::Result<RecordedPolicy> {
+    let jobs = state
+        .export_jobs
+        .lock()
+        .map_err(|_| anyhow::anyhow!("export history is unavailable"))?;
+    let record = jobs
+        .get(&request.job_id)
+        .ok_or_else(|| anyhow::anyhow!("export attempt is missing"))?;
+    anyhow::ensure!(
+        record.artifact_id == artifact
+            && Arc::ptr_eq(&record.cancel, cancel)
+            && !cancel.load(Ordering::Acquire)
+            && record.request == *request
+            && record.job.job_id == request.job_id
+            && record.job.status == proto::ExportJobStatus::Running as i32,
+        "export attempt is no longer current"
+    );
+    let offset_ms = recorded_audio::validate_snapshot(record.job.recorded_audio.as_ref())
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    Ok(RecordedPolicy {
+        offset_ms,
+        stream_id: record.recording_stream_id.clone(),
+    })
 }
 
 fn run_monitor(
@@ -181,12 +231,11 @@ fn run_worker(
     events: mpsc::SyncSender<ExportWorkerEvent>,
 ) {
     let result = write(
-        &attempt.state,
+        &attempt,
         &fragments,
         end_ms,
         output.reservation,
         &output.path,
-        &attempt.cancel,
         &events,
     );
     let cleanup = result.is_err() || attempt.cancel.load(Ordering::Acquire);
@@ -198,19 +247,26 @@ fn run_worker(
 }
 
 fn write(
-    state: &ServerState,
+    attempt: &Attempt,
     fragments: &[CatalogMediaFragment],
     end_ms: i64,
     reservation: Option<Reservation>,
     path: &Path,
-    cancel: &AtomicBool,
     events: &mpsc::SyncSender<ExportWorkerEvent>,
 ) -> anyhow::Result<(ExportArtifact, String)> {
+    let state = &attempt.state;
+    let cancel = &attempt.cancel;
     let catalog = state
         .catalog
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("recording catalog unavailable"))?;
     let _readers = catalog.lease_media_fragments(fragments)?;
+    let audio = audio_context::load(attempt, fragments, end_ms, catalog)?;
+    let sources = crate::storage::playback::ExportSources {
+        video_fragments: fragments,
+        audio_context: &audio.fragments,
+        requested_end_ms: end_ms,
+    };
     let estimated = export_estimated_bytes(fragments).max(1);
     let cancelled = || {
         let _ = events.try_send(ExportWorkerEvent::Heartbeat);
@@ -225,25 +281,45 @@ fn write(
     };
     anyhow::ensure!(!cancelled(), "export cancelled");
     if let Some(reservation) = reservation {
-        let mut file = reservation.open()?;
-        let artifact = crate::storage::playback::export_fragment_ranges_to_writer(
-            fragments, end_ms, &mut file, cancelled, progress,
-        )?;
-        let evidence = file.evidence_with_progress(|_| {
-            anyhow::ensure!(!cancelled(), "export cancelled");
-            Ok(())
-        })?;
-        anyhow::ensure!(!cancelled(), "export cancelled");
-        let checksum = encode_lower_hex(evidence.digest);
-        file.publish(evidence)?;
-        Ok((artifact, checksum))
+        publish_owned(
+            sources,
+            reservation,
+            attempt.audio_offset_ms,
+            cancelled,
+            progress,
+        )
     } else {
-        let artifact = crate::storage::playback::export_fragment_ranges_with_progress(
-            fragments, end_ms, path, cancelled, progress,
+        let artifact = crate::storage::playback::export_sources_to_file(
+            sources,
+            path,
+            attempt.audio_offset_ms,
+            cancelled,
+            progress,
         )?;
         let checksum = sha256_file_with_progress(path, cancel, artifact.bytes, |_| {
             let _ = events.try_send(ExportWorkerEvent::Heartbeat);
         })?;
         Ok((artifact, checksum))
     }
+}
+
+fn publish_owned(
+    sources: crate::storage::playback::ExportSources<'_>,
+    reservation: Reservation,
+    offset_ms: i32,
+    cancelled: impl Fn() -> bool,
+    progress: impl Fn(u64),
+) -> anyhow::Result<(ExportArtifact, String)> {
+    let mut file = reservation.open()?;
+    let artifact = crate::storage::playback::export_sources_to_writer(
+        sources, &mut file, offset_ms, &cancelled, progress,
+    )?;
+    let evidence = file.evidence_with_progress(|_| {
+        anyhow::ensure!(!cancelled(), "export cancelled");
+        Ok(())
+    })?;
+    anyhow::ensure!(!cancelled(), "export cancelled");
+    let checksum = encode_lower_hex(evidence.digest);
+    file.publish(evidence)?;
+    Ok((artifact, checksum))
 }

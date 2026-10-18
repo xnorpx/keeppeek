@@ -9,7 +9,10 @@ use std::{
     time::Duration,
 };
 
+mod calibration;
+
 pub struct RecordingSeedOptions {
+    pub calibration: bool,
     pub source: PathBuf,
     pub recordings: PathBuf,
     pub catalog: PathBuf,
@@ -86,6 +89,9 @@ fn source_video(path: &Path) -> anyhow::Result<SourceVideo> {
 }
 
 pub fn seed_recording(options: &RecordingSeedOptions) -> anyhow::Result<()> {
+    if options.calibration {
+        return calibration::seed(options);
+    }
     let SourceVideo {
         width,
         height,

@@ -117,6 +117,7 @@ fn control_commands() -> Vec<(&'static str, control_request::Command, AccessRole
             C::StoredMediaCommand(proto::StoredMediaCommand {
                 action: Some(proto::stored_media_command::Action::Open(
                     proto::OpenStoredMedia {
+                        recorded_audio_preview: None,
                         source_id: "front".into(),
                         ..Default::default()
                     },
@@ -169,6 +170,7 @@ fn restricted_commands() -> Vec<(&'static str, control_request::Command, AccessR
             C::StoredMediaCommand(proto::StoredMediaCommand {
                 action: Some(proto::stored_media_command::Action::Open(
                     proto::OpenStoredMedia {
+                        recorded_audio_preview: None,
                         source_id: "back".into(),
                         ..Default::default()
                     },

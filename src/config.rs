@@ -1,5 +1,7 @@
 pub use crate::access::AccessKey;
 pub(crate) mod metadata;
+#[cfg(test)]
+mod recorded_audio_tests;
 mod storage_volumes;
 use crate::{
     access,
@@ -23,6 +25,25 @@ use url::Url;
 const DEFAULT_CONFIG_NAME: &str = "config.toml";
 const DEFAULT_SECRETS_NAME: &str = "secrets.toml";
 const CAMERA_PROFILE_IDENTITY: &str = "profile_identity";
+const MANAGED_CAMERA_KEYS: &[&str] = &[
+    "ip",
+    "name",
+    "display_name",
+    "manufacturer",
+    "onvif_port",
+    "http_port",
+    "main_rtsp_url",
+    "sub_rtsp_url",
+    "uid",
+    "backend",
+    "transport",
+    "record_generic_motion_events",
+    "recording_mode",
+    "event_recording_duration_secs",
+    "event_pre_recording_duration_secs",
+    "event_recording_stream",
+    "recorded_audio",
+];
 const RUNTIME_PROFILE_IDENTITY_SCHEMA: &str = "identity_schema";
 const RUNTIME_PROFILE_IDENTITY_SCHEMA_VERSION: i64 = 1;
 const ACCESS_KEY_SECRET: &str = "KEEPPEEK_ACCESS_KEY";
@@ -2343,6 +2364,7 @@ fn cameras_from_table(
             resolve_toml_secret_references(&mut resolved, secrets)?;
             let mut config: CameraConfig = resolved.try_into()?;
             config.events.validate(config.ip)?;
+            config.recorded_audio.validate()?;
             config.name = Some(cam_name.clone());
             if config.username.is_empty() {
                 config.username.clone_from(&defaults.username);
@@ -2716,6 +2738,7 @@ pub fn set_camera_manufacturer(
 }
 
 pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<String> {
+    config.recorded_audio.validate()?;
     validate_event_recording_policy(
         config.recording_mode,
         config.event_pre_recording_duration_secs,
@@ -2748,24 +2771,6 @@ pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<Strin
     let profile_identity =
         camera_profile_identity(&original)?.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    const MANAGED_CAMERA_KEYS: &[&str] = &[
-        "ip",
-        "name",
-        "display_name",
-        "manufacturer",
-        "onvif_port",
-        "http_port",
-        "main_rtsp_url",
-        "sub_rtsp_url",
-        "uid",
-        "backend",
-        "transport",
-        "record_generic_motion_events",
-        "recording_mode",
-        "event_recording_duration_secs",
-        "event_pre_recording_duration_secs",
-        "event_recording_stream",
-    ];
     for key in MANAGED_CAMERA_KEYS {
         camera.remove(*key);
     }
@@ -2785,21 +2790,7 @@ pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<Strin
         &defaults.password,
         &secrets,
     )?;
-    let serialized: toml::Table = toml::Value::try_from(config)?
-        .as_table()
-        .cloned()
-        .unwrap_or_default();
-    for (key, value) in serialized {
-        if !matches!(key.as_str(), "name" | "username" | "password") {
-            if !original.contains_key(&key)
-                && camera_policy_matches_default(&key, config, &defaults)
-            {
-                continue;
-            }
-            let value = preserve_secret_reference(original.get(&key), value, &secrets)?;
-            camera.insert(key, value);
-        }
-    }
+    merge_camera_fields(camera, &original, config, &defaults, &secrets)?;
 
     camera.insert(
         CAMERA_PROFILE_IDENTITY.to_owned(),
@@ -2809,6 +2800,36 @@ pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<Strin
 
     write_private_file_atomically(path, toml::to_string_pretty(&root)?.as_bytes())?;
     Ok(name)
+}
+
+fn merge_camera_fields(
+    camera: &mut toml::Table,
+    original: &toml::Table,
+    config: &CameraConfig,
+    defaults: &CameraCredentialDefaults,
+    secrets: &Secrets,
+) -> anyhow::Result<()> {
+    let serialized: toml::Table = toml::Value::try_from(config)?
+        .as_table()
+        .cloned()
+        .unwrap_or_default();
+    for (key, value) in serialized {
+        if !matches!(key.as_str(), "name" | "username" | "password") {
+            if !original.contains_key(&key) && camera_policy_matches_default(&key, config, defaults)
+            {
+                continue;
+            }
+            // This numeric table is a replacement. Omitted stream keys restore inheritance.
+            let value = if key == "recorded_audio" {
+                value
+            } else {
+                preserve_secret_reference(original.get(&key), value, secrets)?
+            };
+            camera.insert(key, value);
+        }
+    }
+
+    Ok(())
 }
 
 fn camera_policy_matches_default(
@@ -5250,6 +5271,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
 
         assert_eq!(upsert_camera(&path, &config).unwrap(), "existing");

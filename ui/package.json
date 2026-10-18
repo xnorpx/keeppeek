@@ -25,7 +25,7 @@
 		"lint:fix": "oxlint . --fix",
 		"format": "prettier --write .",
 		"format:check": "prettier --check .",
-		"format:markdown:check": "prettier --check \"../**/*.md\"",
+		"format:markdown:check": "prettier --check \"../**/*.md\" \"!../target/**\"",
 		"registry:check": "bun scripts/check-public-registries.ts",
 		"wiki:build": "bun scripts/build-wiki.ts --output ../target/wiki",
 		"wiki:check": "bun scripts/build-wiki.ts --check",

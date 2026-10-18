@@ -439,6 +439,7 @@ fn gather_camera_info(
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
 
         match ReolinkClient::connect(&config) {
@@ -736,6 +737,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                     event_recording_duration_secs: 60,
                     event_pre_recording_duration_secs: 0,
                     event_recording_stream: Default::default(),
+                    recorded_audio: Default::default(),
                 },
                 |result| CameraConfig {
                     events: Default::default(),
@@ -757,6 +759,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                     event_recording_duration_secs: 60,
                     event_pre_recording_duration_secs: 0,
                     event_recording_stream: Default::default(),
+                    recorded_audio: Default::default(),
                 },
             )
         })
@@ -937,6 +940,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         }
     }
 

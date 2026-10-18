@@ -61,6 +61,7 @@ import { BackupHttpClient } from './backup-http-client';
 import { emitTimelinePerformanceEvent } from './timeline-observability';
 import { decodeStateStoreRequestError } from './state-store-error';
 import { decodeConfigurationRequestError } from './configuration-error';
+import { recordedAudioSettings, protoRecordedAudioSettings } from './recorded-audio';
 import {
 	AccessRole as ProtoAccessRole,
 	CameraBackend as ProtoCameraBackend,
@@ -117,6 +118,7 @@ import {
 	PtzStopSchema,
 	QueryEventsSchema,
 	QueryStoredMediaTimelineSchema,
+	RecordedAudioPreviewSchema,
 	RefillStoredMediaSchema,
 	RemoveCameraConfigurationSchema,
 	RequestSchema,
@@ -154,6 +156,8 @@ import {
 	type StoredMediaInitialization,
 	type StoredMediaKeyFrame,
 	type StoredMediaState,
+	type RecordedAudioTiming,
+	type RecordedAudioPreview,
 	type EventAttachmentDescriptor as ProtoEventAttachmentDescriptor
 } from './proto/webrtc_pb';
 import { canonicalEventAttachment, eventIconKey } from './event-presentation';
@@ -253,6 +257,20 @@ export type MediaExportJob = {
 	retryable: boolean;
 	burnInTimestamp: boolean;
 	eventSeed: MediaExportEventSeed | null;
+	recordedAudio?: RecordedAudioTiming;
+};
+
+type StoredMediaOpenOptions = {
+	sourceId: string;
+	streamId: 'main' | 'sub';
+	timestampMs: number;
+	endTimeMs: number;
+	playing: boolean;
+	playbackRate: number;
+	mode?: 'scrub' | 'playback';
+	recordedAudioPreview?: number | null;
+	signal?: AbortSignal;
+	openTimeoutMs?: number;
 };
 
 export type MediaExportEventSeed = {
@@ -1154,17 +1172,7 @@ export class ControlClient {
 		}
 	}
 
-	async openStoredMedia(options: {
-		sourceId: string;
-		streamId: 'main' | 'sub';
-		timestampMs: number;
-		endTimeMs: number;
-		playing: boolean;
-		playbackRate: number;
-		mode?: 'scrub' | 'playback';
-		signal?: AbortSignal;
-		openTimeoutMs?: number;
-	}): Promise<StoredMediaPlayback> {
+	async openStoredMedia(options: StoredMediaOpenOptions): Promise<StoredMediaPlayback> {
 		options.signal?.throwIfAborted();
 		const storedMediaId = `review-${this.#nextStoredId++}`;
 		const playback = new StoredMediaPlayback(
@@ -1173,8 +1181,14 @@ export class ControlClient {
 			options.streamId,
 			(timestampMs) => this.seekStoredMedia(storedMediaId, timestampMs),
 			(timestampMs) => this.refillStoredMedia(storedMediaId, timestampMs),
-			(playing, playbackRate, mode) =>
-				this.updateStoredMediaPlayback(storedMediaId, playing, playbackRate, mode),
+			(playing, playbackRate, mode, recordedAudioPreview) =>
+				this.updateStoredMediaPlayback(
+					storedMediaId,
+					playing,
+					playbackRate,
+					mode,
+					recordedAudioPreview
+				),
 			() => this.closeStoredMedia(storedMediaId)
 		);
 		this.#playbacks.set(storedMediaId, playback);
@@ -1190,6 +1204,10 @@ export class ControlClient {
 						timestamp: timestampFromDate(new Date(options.timestampMs)),
 						endTime: timestampFromDate(new Date(options.endTimeMs)),
 						mode,
+						recordedAudioPreview:
+							options.recordedAudioPreview === undefined
+								? undefined
+								: recordedAudioPreview(options.recordedAudioPreview),
 						playing: mode === StoredMediaMode.SCRUB ? false : options.playing,
 						playbackRate: options.playbackRate,
 						mediaChannel: DataChannelKind.RELIABLE_DATA,
@@ -1992,6 +2010,7 @@ export class ControlClient {
 					? undefined
 					: protoCameraRecordingMode(update.recording_mode),
 			eventRecordingDurationSecs: update.event_recording_duration_secs,
+			recordedAudio: protoRecordedAudioSettings(update.recorded_audio),
 			eventPreRecordingDurationSecs: update.event_pre_recording_duration_secs,
 			eventRecordingStream:
 				update.event_recording_stream === undefined
@@ -2220,7 +2239,8 @@ export class ControlClient {
 		storedMediaId: string,
 		playing: boolean | undefined,
 		playbackRate: number | undefined,
-		mode: StoredMediaMode | undefined
+		mode: StoredMediaMode | undefined,
+		recordedAudioPreview?: RecordedAudioPreview
 	): Promise<StoredMediaState> {
 		const command = create(StoredMediaCommandSchema, {
 			action: {
@@ -2229,7 +2249,8 @@ export class ControlClient {
 					storedMediaId,
 					playing,
 					playbackRate,
-					mode
+					mode,
+					recordedAudioPreview
 				})
 			}
 		});
@@ -3162,6 +3183,7 @@ export class StoredMediaPlayback {
 	anchorTimeMs = 0;
 	initialOffsetSeconds = 0;
 	error: string | null = null;
+	recordedAudio: RecordedAudioTiming | undefined;
 
 	#mediaSource: MediaSource;
 	#objectUrls = new Set<string>();
@@ -3177,8 +3199,16 @@ export class StoredMediaPlayback {
 	#updatePlayback: (
 		playing: boolean | undefined,
 		playbackRate: number | undefined,
-		mode: StoredMediaMode | undefined
+		mode: StoredMediaMode | undefined,
+		recordedAudioPreview?: RecordedAudioPreview
 	) => Promise<StoredMediaState>;
+	#recordedAudioListeners = new Set<(timing: RecordedAudioTiming | undefined) => void>();
+	#audioPreviewVersion = 0;
+	#audioPreviewInFlight = false;
+	#cursorOperationTail: Promise<void> = Promise.resolve();
+	#cursorOperationCount = 0;
+	#playingIntent: { playing: boolean } | null = null;
+	#rateIntent: { playbackRate: number } | null = null;
 	#close: () => Promise<void>;
 	#maxBufferMs = 0;
 	#deliveredThroughMs = 0;
@@ -3214,7 +3244,8 @@ export class StoredMediaPlayback {
 		updatePlayback: (
 			playing: boolean | undefined,
 			playbackRate: number | undefined,
-			mode: StoredMediaMode | undefined
+			mode: StoredMediaMode | undefined,
+			recordedAudioPreview?: RecordedAudioPreview
 		) => Promise<StoredMediaState>,
 		close: () => Promise<void>
 	) {
@@ -3236,10 +3267,12 @@ export class StoredMediaPlayback {
 	}
 
 	configure(state: StoredMediaState): void {
+		if (this.#closed) return;
 		if (!state.delivery || !state.requestedTime || !state.fragmentTime) {
 			throw new Error('Server returned incomplete stored media state.');
 		}
 		if (this.#generation !== 0n && state.generation < this.#generation) return;
+		this.recordedAudio = state.recordedAudio;
 		this.publishArchive(state.archive);
 		if (this.#generation !== 0n && state.generation !== this.#generation) {
 			this.replaceMediaSource();
@@ -3254,8 +3287,8 @@ export class StoredMediaPlayback {
 			: 0;
 		this.#endTimeMs = state.endTime ? timestampDate(state.endTime).getTime() : null;
 		this.#ended = state.status === StoredMediaStatus.ENDED;
-		this.#playing = state.playing;
-		this.#playbackRate = state.playbackRate;
+		this.#playing = this.#playingIntent?.playing ?? state.playing;
+		this.#playbackRate = this.#rateIntent?.playbackRate ?? state.playbackRate;
 		this.#deliveredThroughMs = this.anchorTimeMs;
 		this.initialOffsetSeconds = Math.max(
 			0,
@@ -3287,9 +3320,15 @@ export class StoredMediaPlayback {
 		}
 		this.flushAppendQueue();
 		this.finishIfEnded();
+		this.publishRecordedAudio();
 	}
 
 	seek(timestampMs: number): Promise<void> {
+		this.#audioPreviewVersion += 1;
+		return this.queueSeek(timestampMs);
+	}
+
+	private queueSeek(timestampMs: number): Promise<void> {
 		if (this.#closed) return Promise.reject(new Error('Stored media playback is closed.'));
 		if (!Number.isFinite(timestampMs)) {
 			return Promise.reject(new Error('Stored media seek timestamp is invalid.'));
@@ -3304,6 +3343,39 @@ export class StoredMediaPlayback {
 			});
 			this.scheduleSeek();
 		});
+	}
+
+	async setRecordedAudioPreview(offsetMs: number | null, timestampMs: number): Promise<void> {
+		const preview = recordedAudioPreview(offsetMs);
+		if (this.#closed) throw new Error('Stored media playback is closed.');
+		if (this.#audioPreviewInFlight) throw new Error('An audio preview is already applying.');
+		const version = ++this.#audioPreviewVersion;
+		this.#audioPreviewInFlight = true;
+		try {
+			await this.queueSeek(timestampMs);
+			if (this.#closed) throw new Error('Stored media playback is closed.');
+			if (version !== this.#audioPreviewVersion) throw timelineAbortError();
+			const state = await this.cursorOperation(() => {
+				if (version !== this.#audioPreviewVersion) throw timelineAbortError();
+				return this.#updatePlayback(undefined, undefined, undefined, preview);
+			});
+			if (this.#closed || version !== this.#audioPreviewVersion) throw timelineAbortError();
+			this.acceptPlaybackState(state);
+		} finally {
+			this.#audioPreviewInFlight = false;
+		}
+	}
+
+	onRecordedAudio(listener: (timing: RecordedAudioTiming | undefined) => void): () => void {
+		this.#recordedAudioListeners.add(listener);
+		listener(this.recordedAudio);
+		return () => {
+			this.#recordedAudioListeners.delete(listener);
+		};
+	}
+
+	private publishRecordedAudio(): void {
+		for (const listener of this.#recordedAudioListeners) listener(this.recordedAudio);
 	}
 
 	canSeekLocally(timestampMs: number): boolean {
@@ -3343,14 +3415,18 @@ export class StoredMediaPlayback {
 	async enterScrub(): Promise<void> {
 		if (this.#closed) throw new Error('Stored media playback is closed.');
 		if (this.#mode === StoredMediaMode.SCRUB && !this.#playing) return;
-		const state = await this.#updatePlayback(false, undefined, StoredMediaMode.SCRUB);
-		this.acceptPlaybackState(state);
+		await this.cursorOperation(async () => {
+			const state = await this.#updatePlayback(false, undefined, StoredMediaMode.SCRUB);
+			this.acceptPlaybackState(state);
+		});
 	}
 
 	async commitPlayback(playing: boolean, playbackRate: number): Promise<void> {
 		if (this.#closed) throw new Error('Stored media playback is closed.');
-		const state = await this.#updatePlayback(playing, playbackRate, StoredMediaMode.PLAYBACK);
-		this.acceptPlaybackState(state);
+		await this.cursorOperation(async () => {
+			const state = await this.#updatePlayback(playing, playbackRate, StoredMediaMode.PLAYBACK);
+			this.acceptPlaybackState(state);
+		});
 		if (playing) this.observe(this.initialOffsetSeconds);
 	}
 
@@ -3466,6 +3542,10 @@ export class StoredMediaPlayback {
 			this.#ended ||
 			!this.#playing ||
 			this.#refillInFlight ||
+			this.#seekInFlight ||
+			this.#audioPreviewInFlight ||
+			this.#playingIntent !== null ||
+			this.#rateIntent !== null ||
 			this.#maxBufferMs <= 0 ||
 			this.#deliveredThroughMs <= this.anchorTimeMs
 		) {
@@ -3481,11 +3561,15 @@ export class StoredMediaPlayback {
 			generation: String(this.#generation),
 			playbackTimeMs
 		});
-		void this.#refill(playbackTimeMs)
-			.then((state) => this.acceptPlaybackState(state))
-			.catch((error) =>
-				this.fail(error instanceof Error ? error.message : 'Unable to refill stored media.')
-			)
+		void this.cursorOperation(async () => {
+			const state = await this.#refill(playbackTimeMs);
+			this.acceptPlaybackState(state);
+		})
+			.catch((error) => {
+				if (!this.#closed) {
+					this.fail(error instanceof Error ? error.message : 'Unable to refill stored media.');
+				}
+			})
 			.finally(() => {
 				this.#refillInFlight = false;
 			});
@@ -3494,14 +3578,23 @@ export class StoredMediaPlayback {
 	setPlaying(playing: boolean): void {
 		if (this.#closed || playing === this.#playing) return;
 		const previous = this.#playing;
+		const intent = { playing };
+		this.#playingIntent = intent;
 		this.#playing = playing;
-		void this.#updatePlayback(playing, undefined, undefined)
-			.then((state) => {
-				this.acceptPlaybackState(state);
+		void this.cursorOperation(async () => {
+			const state = await this.#updatePlayback(playing, undefined, undefined);
+			if (this.#playingIntent === intent) this.#playingIntent = null;
+			this.acceptPlaybackState(state);
+		})
+			.then(() => {
 				if (playing) this.observe(this.initialOffsetSeconds);
 			})
 			.catch((error) => {
-				if (this.#playing === playing) this.#playing = previous;
+				if (this.#closed) return;
+				if (this.#playingIntent === intent) {
+					this.#playingIntent = null;
+					this.#playing = previous;
+				}
 				this.fail(error instanceof Error ? error.message : 'Unable to update stored playback.');
 			});
 	}
@@ -3516,17 +3609,25 @@ export class StoredMediaPlayback {
 			return;
 		}
 		const previous = this.#playbackRate;
+		const intent = { playbackRate };
+		this.#rateIntent = intent;
 		this.#playbackRate = playbackRate;
-		void this.#updatePlayback(undefined, playbackRate, undefined)
-			.then((state) => this.acceptPlaybackState(state))
-			.catch((error) => {
-				if (this.#playbackRate === playbackRate) this.#playbackRate = previous;
-				this.fail(error instanceof Error ? error.message : 'Unable to update stored playback.');
-			});
+		void this.cursorOperation(async () => {
+			const state = await this.#updatePlayback(undefined, playbackRate, undefined);
+			if (this.#rateIntent === intent) this.#rateIntent = null;
+			this.acceptPlaybackState(state);
+		}).catch((error) => {
+			if (this.#closed) return;
+			if (this.#rateIntent === intent) {
+				this.#rateIntent = null;
+				this.#playbackRate = previous;
+			}
+			this.fail(error instanceof Error ? error.message : 'Unable to update stored playback.');
+		});
 	}
 
 	private acceptPlaybackState(state: StoredMediaState): void {
-		if (state.generation < this.#generation) return;
+		if (this.#closed || state.generation < this.#generation) return;
 		this.publishArchive(state.archive);
 		if (
 			state.generation !== this.#generation ||
@@ -3536,15 +3637,38 @@ export class StoredMediaPlayback {
 			this.configure(state);
 			return;
 		}
-		this.#playing = state.playing;
-		this.#playbackRate = state.playbackRate;
+		this.#playing = this.#playingIntent?.playing ?? state.playing;
+		this.#playbackRate = this.#rateIntent?.playbackRate ?? state.playbackRate;
 		this.#ended = state.status === StoredMediaStatus.ENDED;
+		this.recordedAudio = state.recordedAudio;
 		this.finishIfEnded();
+		this.publishRecordedAudio();
 	}
 
 	async close(): Promise<void> {
 		if (this.#closed) return;
+		this.dispose();
 		await this.#close();
+	}
+
+	private cursorOperation<T>(operation: () => Promise<T>): Promise<T> {
+		if (this.#closed) return Promise.reject(new Error('Stored media playback is closed.'));
+		if (this.#cursorOperationCount >= 8) {
+			return Promise.reject(new Error('Stored media cursor operation queue is full.'));
+		}
+		this.#cursorOperationCount += 1;
+		const result = this.#cursorOperationTail.then(() => {
+			if (this.#closed) throw new Error('Stored media playback is closed.');
+			return operation();
+		});
+		const completed = result.finally(() => {
+			this.#cursorOperationCount -= 1;
+		});
+		this.#cursorOperationTail = completed.then(
+			() => undefined,
+			() => undefined
+		);
+		return completed;
 	}
 
 	fail(message: string): void {
@@ -3561,6 +3685,7 @@ export class StoredMediaPlayback {
 		this.#keyFrameListeners.clear();
 		this.#errorListeners.clear();
 		this.#archiveListeners.clear();
+		this.#recordedAudioListeners.clear();
 		this.#startupListeners.clear();
 		this.#startupEvents = [];
 		this.#latestKeyFrame = null;
@@ -3629,7 +3754,7 @@ export class StoredMediaPlayback {
 			return;
 		}
 		if (generation > this.#generation) {
-			if (this.#seekInFlight) this.#completed.push(completed);
+			if (this.#seekInFlight || this.#audioPreviewInFlight) this.#completed.push(completed);
 			return;
 		}
 		if (generation !== this.#generation || generation === this.#blockedGeneration) return;
@@ -3677,12 +3802,12 @@ export class StoredMediaPlayback {
 			generation: String(this.#generation),
 			targetMs: seek.timestampMs
 		});
-		void this.#seek(seek.timestampMs)
-			.then((state) => {
-				if (this.#closed) return;
-				this.configure(state);
-				seek.resolve();
-			})
+		void this.cursorOperation(async () => {
+			const state = await this.#seek(seek.timestampMs);
+			if (this.#closed) return;
+			this.configure(state);
+			seek.resolve();
+		})
 			.catch((cause) => {
 				seek.reject(cause instanceof Error ? cause : new Error('Stored media seek failed.'));
 			})
@@ -3746,7 +3871,7 @@ export class StoredMediaPlayback {
 			const sourceBuffer = this.#mediaSource.addSourceBuffer(this.#contentType);
 			this.#sourceBuffer = sourceBuffer;
 			this.#sourceBufferContentType = this.#contentType;
-			sourceBuffer.mode = 'sequence';
+			sourceBuffer.mode = this.recordedAudio?.appliedOffsetMs ? 'segments' : 'sequence';
 			sourceBuffer.addEventListener('updateend', () => {
 				if (this.#sourceBuffer !== sourceBuffer) return;
 				this.flushAppendQueue();
@@ -3813,6 +3938,18 @@ export class StoredMediaPlayback {
 			this.fail(error instanceof Error ? error.message : 'Unable to finish stored playback.');
 		}
 	}
+}
+
+function recordedAudioPreview(offsetMs: number | null): RecordedAudioPreview {
+	if (offsetMs !== null && (!Number.isInteger(offsetMs) || Math.abs(offsetMs) > 5_000)) {
+		throw new Error('Audio offset must be a whole number from -5000 to +5000 ms.');
+	}
+	return create(RecordedAudioPreviewSchema, {
+		selection:
+			offsetMs === null
+				? { case: 'useConfigured', value: true }
+				: { case: 'offsetMs', value: offsetMs }
+	});
 }
 
 function timelineDates(ranges: StoredTimelineRange[]): string[] {
@@ -4152,6 +4289,7 @@ function mediaExportJob(job: ProtoExportJob): MediaExportJob {
 		error: job.error ?? null,
 		retryable: job.retryable,
 		burnInTimestamp: job.burnInTimestamp,
+		recordedAudio: job.recordedAudio,
 		eventSeed: job.eventSeed
 			? {
 					eventId: job.eventSeed.eventId,
@@ -4308,6 +4446,7 @@ function cameraSettings(camera: import('./proto/webrtc_pb').CameraSettings): Cam
 								? 'event-only'
 								: 'event-boost',
 		event_recording_duration_secs: camera.eventRecordingDurationSecs || 60,
+		recorded_audio: recordedAudioSettings(camera.recordedAudio),
 		event_pre_recording_duration_secs: camera.eventPreRecordingDurationSecs,
 		event_recording_stream:
 			camera.eventRecordingStream === ProtoEventRecordingStream.SUB ? 'sub' : 'main',

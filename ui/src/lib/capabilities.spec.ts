@@ -10,6 +10,7 @@ import {
 describe('server capability contract', () => {
 	it('contains the exact capability identifiers without duplicates', () => {
 		expect(serverCapabilityIds).toEqual([
+			'keeppeek.recorded-audio.v1',
 			'keeppeek.local-archive.v1',
 			'keeppeek.recording.pre-roll.v1',
 			'keeppeek.recording-maintenance.v1',
@@ -39,14 +40,26 @@ describe('server capability contract', () => {
 			false
 		);
 		expect(supportsServerCapability([], 'keeppeek.media-export.v1')).toBe(false);
+		expect(
+			supportsServerCapability(['keeppeek.recorded-audio.v1'], 'keeppeek.recorded-audio.v1')
+		).toBe(true);
+		expect(
+			supportsServerCapability(['keeppeek.recorded-audio.v2'], 'keeppeek.recorded-audio.v1')
+		).toBe(false);
+		expect(supportsServerCapability([], 'keeppeek.recorded-audio.v1')).toBe(false);
 	});
 
 	it('fails closed for unknown capability identifiers', () => {
 		expect(isServerCapabilityId('keeppeek.identity.v1')).toBe(true);
 		expect(isServerCapabilityId('keeppeek.identity.v2')).toBe(false);
+		expect(isServerCapabilityId('keeppeek.recorded-audio.v1')).toBe(true);
+		expect(isServerCapabilityId('keeppeek.recorded-audio.v2')).toBe(false);
 	});
 
 	it('uses the single designed unavailable-command phrase', () => {
+		expect(unsupportedCapabilityLabel('keeppeek.recorded-audio.v1')).toBe(
+			'Server update required · keeppeek.recorded-audio.v1'
+		);
 		expect(unsupportedCapabilityLabel('keeppeek.rules.v1')).toBe(
 			'Server update required · keeppeek.rules.v1'
 		);
@@ -64,6 +77,10 @@ describe('server capability contract', () => {
 		expect(serverCapabilityCatalog['keeppeek.runtime-config.v1']).toMatchObject({
 			delivery: 'ships',
 			unlocks: 'Camera create and update, storage paths, logging, and restart'
+		});
+		expect(serverCapabilityCatalog['keeppeek.recorded-audio.v1']).toMatchObject({
+			delivery: 'ships',
+			unlocks: 'Recorded audio timing and explicit unadjusted preview recovery'
 		});
 	});
 });

@@ -7,13 +7,13 @@
 		"pageId": "1-0",
 		"tokenHash": "b35ec365",
 		"tokenCount": 82,
-		"artboardCount": 86
+		"artboardCount": 96
 	},
 	"scope": {
 		"product": "KeepPeek NVR",
 		"boardNumbers": [
 			1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
-			27, 28, 29, 30, 31, 32, 33, 34, 45, 46, 47, 48, 49, 50
+			27, 28, 29, 30, 31, 32, 33, 34, 45, 46, 47, 48, 49, 50, 57, 58, 59, 60
 		],
 		"excludedProducts": ["Native iOS and Android viewers", "KeepPeek Vision", "KeepPeek Service"]
 	},
@@ -1316,6 +1316,198 @@
 					"sha256": "6bb081152fd9d64a1282838defbb9b143a4704ea53b34d8cc00a7fb943c93851",
 					"width": 390,
 					"height": 643,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
+		},
+		{
+			"number": 57,
+			"nodeId": "CFA-0",
+			"name": "57 - Recorded audio: Camera settings and inheritance",
+			"width": 2300,
+			"height": 1394,
+			"exportedAt": "2026-10-18T10:25:43.782Z",
+			"jsx": {
+				"source": "boards/57-recorded-audio-settings.jsx.txt",
+				"bytes": 51061,
+				"sha256": "62853c92f6b7db029a8343305466eac796ebe8d64ede25fc5c453f49179a7a6d"
+			},
+			"references": [
+				{
+					"scenarioId": "audio.recorded.desktop.settings",
+					"nodeId": "CFN-0",
+					"source": "references/57-recorded-audio-settings-1440.png",
+					"bytes": 108869,
+					"sha256": "30ba82433ff79a89d231790fac401128b122f9d84680c005867b0595d531d826",
+					"width": 1440,
+					"height": 919,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "audio.recorded.mobile390.settings",
+					"nodeId": "CIE-0",
+					"source": "references/57-recorded-audio-settings-390.png",
+					"bytes": 85904,
+					"sha256": "79cbfdbc3da31d1c59e538600ea65b6261db8193eca3b66639f4e057f1f25d59",
+					"width": 390,
+					"height": 1058,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "audio.recorded.mobile320.settings",
+					"nodeId": "CLC-0",
+					"source": "references/57-recorded-audio-settings-320.png",
+					"bytes": 85199,
+					"sha256": "e0e04fde115d45e0727077e3ed9e86d7ad31f3b4d46d2d36c07d517fb6552e0a",
+					"width": 320,
+					"height": 1146,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
+		},
+		{
+			"number": 58,
+			"nodeId": "CO6-0",
+			"name": "58 - Recorded audio: Keep calibration preview",
+			"width": 2300,
+			"height": 1094,
+			"exportedAt": "2026-10-18T10:25:43.883Z",
+			"jsx": {
+				"source": "boards/58-recorded-audio-preview.jsx.txt",
+				"bytes": 82681,
+				"sha256": "e49e81391eb438e2ab49921beeef11462e668df573f632a6ff2a6df6789f171c"
+			},
+			"references": [
+				{
+					"scenarioId": "audio.recorded.desktop.preview",
+					"nodeId": "COJ-0",
+					"source": "references/58-recorded-audio-preview-1280.png",
+					"bytes": 155902,
+					"sha256": "6cb67141c0d4a4af44bf9365645e0b8840eea0d806fa01eb614d67033cf65b7a",
+					"width": 1280,
+					"height": 722,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "audio.recorded.mobile390.preview",
+					"nodeId": "CVI-0",
+					"source": "references/58-recorded-audio-preview-390.png",
+					"bytes": 62453,
+					"sha256": "e508b746d8921ce0726c6e1daa3eb62b2e663a364a6e09c1a5b154ba1f0a28f3",
+					"width": 390,
+					"height": 846,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "audio.recorded.mobile320.preview",
+					"nodeId": "CY0-0",
+					"source": "references/58-recorded-audio-preview-320.png",
+					"bytes": 61637,
+					"sha256": "a9c698c5178d5683ae42b2922ced05252e06c857c3670a5d15b4c0c7fcf76d52",
+					"width": 320,
+					"height": 846,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
+		},
+		{
+			"number": 59,
+			"nodeId": "CZI-0",
+			"name": "59 - Recorded audio: Timing evidence and export snapshot",
+			"width": 2300,
+			"height": 1811,
+			"exportedAt": "2026-10-18T10:25:43.940Z",
+			"jsx": {
+				"source": "boards/59-recorded-audio-timing-export.jsx.txt",
+				"bytes": 59693,
+				"sha256": "c45b7883a742c62def8a9a1c62ebae5011ff7185dd53f6590610adcc06342e9a"
+			},
+			"references": [
+				{
+					"scenarioId": "audio.recorded.desktop.timing-export",
+					"nodeId": "CZV-0",
+					"source": "references/59-recorded-audio-timing-export-1280.png",
+					"bytes": 143471,
+					"sha256": "8318e2984481f3572b09d1ffa02a5a088eb7afd1a16ce1ed56b100c5469abfa4",
+					"width": 1280,
+					"height": 900,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "audio.recorded.mobile390.timing-export",
+					"nodeId": "D2K-0",
+					"source": "references/59-recorded-audio-timing-export-390.png",
+					"bytes": 127594,
+					"sha256": "d9aebac5fb0f28784877fe3d22b2e41ea2770c128fe51cce6423375d3bf3c3b8",
+					"width": 390,
+					"height": 1389,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "audio.recorded.mobile320.timing-export",
+					"nodeId": "D5G-0",
+					"source": "references/59-recorded-audio-timing-export-320.png",
+					"bytes": 125236,
+					"sha256": "f832d32baee6d31647ab7d226f199023717cc52b1665ae4c53ddd9b1d0a0841b",
+					"width": 320,
+					"height": 1563,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
+		},
+		{
+			"number": 60,
+			"nodeId": "D7B-0",
+			"name": "60 - Recorded audio: Draft preservation and unavailable states",
+			"width": 2300,
+			"height": 1257,
+			"exportedAt": "2026-10-18T10:34:37.960Z",
+			"jsx": {
+				"source": "boards/60-recorded-audio-recovery.jsx.txt",
+				"bytes": 38583,
+				"sha256": "2fe56d7c486153065ee39f1c8353370f1661903ebc8fd13fa0b80adebf4bf046"
+			},
+			"references": [
+				{
+					"scenarioId": "audio.recorded.desktop.recovery",
+					"nodeId": "D7O-0",
+					"source": "references/60-recorded-audio-recovery-1280.png",
+					"bytes": 150685,
+					"sha256": "13d6ffbe432b2c747a33ee3dcf57aa892bc8d4d3dcd659ce11ca6b236dbff3e6",
+					"width": 1280,
+					"height": 900,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "audio.recorded.mobile390.recovery",
+					"nodeId": "DA0-0",
+					"source": "references/60-recorded-audio-recovery-390.png",
+					"bytes": 65223,
+					"sha256": "09dae8e50f1ec8a2a410c4d4075f214eac0172c74ab398d822530b43b2bd53fd",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "audio.recorded.mobile320.recovery",
+					"nodeId": "DBL-0",
+					"source": "references/60-recorded-audio-recovery-320.png",
+					"bytes": 90909,
+					"sha256": "1917ace2f8161f7974d6eb2708e3485ed346fe4d267c91f755ca5a74b724b38a",
+					"width": 320,
+					"height": 1009,
 					"scale": 1,
 					"status": "proposal"
 				}

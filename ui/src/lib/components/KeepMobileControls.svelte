@@ -41,6 +41,7 @@
 		onrate: (rate: number) => void;
 		onquality: (event: Event) => void;
 		onrefresh: () => void;
+		oncalibrate?: () => void;
 	};
 	let {
 		compact,
@@ -69,7 +70,8 @@
 		onvolume,
 		onrate,
 		onquality,
-		onrefresh
+		onrefresh,
+		oncalibrate
 	}: Props = $props();
 	let camera = $derived(cameras.find((candidate) => candidate.id === cameraId));
 </script>
@@ -214,6 +216,14 @@
 						>Copy link to this moment</span
 					>
 				</div>
+				{#if oncalibrate}
+					<Button
+						variant="outline"
+						class="min-h-11 w-full justify-start"
+						disabled={mediaDisabled}
+						onclick={oncalibrate}>Recorded audio preview</Button
+					>
+				{/if}
 				<Button
 					variant="outline"
 					class="min-h-11 w-full justify-start gap-2"

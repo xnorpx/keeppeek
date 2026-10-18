@@ -1,6 +1,8 @@
 import { page } from 'vitest/browser';
 import { expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
+import { create } from '@bufbuild/protobuf';
+import { RecordedAudioTimingSchema, type RecordedAudioTiming } from '$lib/proto/webrtc_pb';
 import '../../app.css';
 import Keep from './+page.svelte';
 
@@ -29,6 +31,7 @@ function cursor(id: string) {
 	let archive = (_value: boolean) => {};
 	let failure = (_message: string) => {};
 	let startup = (_event: { phase: 'metadata'; contentType: string }) => {};
+	let timing = (_value: RecordedAudioTiming | undefined) => {};
 	const url = URL.createObjectURL(new MediaSource());
 	const playback = {
 		id,
@@ -37,6 +40,7 @@ function cursor(id: string) {
 		url,
 		anchorTimeMs: start,
 		initialOffsetSeconds: 0,
+		recordedAudio: undefined as RecordedAudioTiming | undefined,
 		canSeekLocally: () => false,
 		seek: vi.fn(async () => archive(true)),
 		enterScrub: vi.fn(async () => {}),
@@ -45,6 +49,12 @@ function cursor(id: string) {
 		setPlaying: vi.fn(),
 		observe: vi.fn(),
 		onKeyFrame: () => () => {},
+		onRecordedAudio: (listener: typeof timing) => {
+			timing = listener;
+			listener(playback.recordedAudio);
+			return () => {};
+		},
+		setRecordedAudioPreview: vi.fn(async (_offsetMs: number | null, _timestampMs: number) => {}),
 		onError: (listener: typeof failure) => {
 			failure = listener;
 			return () => {};
@@ -65,15 +75,26 @@ function cursor(id: string) {
 		emitArchive: (value: boolean) => archive(value),
 		emitError: (message: string) => failure(message),
 		emitMetadata: () => startup({ phase: 'metadata', contentType: 'video/mp4' }),
+		emitTiming: (value: RecordedAudioTiming) => {
+			playback.recordedAudio = value;
+			timing(value);
+		},
 		dispose: () => URL.revokeObjectURL(url)
 	};
 }
 
-function controller(first: ReturnType<typeof cursor>, next: ReturnType<typeof cursor>) {
+function controller(
+	first: ReturnType<typeof cursor>,
+	next: ReturnType<typeof cursor>,
+	audioSupported: boolean
+) {
 	const open = vi.fn().mockResolvedValueOnce(first.playback).mockResolvedValue(next.playback);
 	context.control.mockReturnValue({
 		onCapabilities: (listener: (values: string[]) => void) => {
-			listener(['keeppeek.stored-media']);
+			listener([
+				'keeppeek.stored-media',
+				...(audioSupported ? ['keeppeek.recorded-audio.v1'] : [])
+			]);
 			return () => {};
 		},
 		onAccessState: (listener: (value: { session: null }) => void) => {
@@ -92,11 +113,11 @@ function controller(first: ReturnType<typeof cursor>, next: ReturnType<typeof cu
 	return open;
 }
 
-function keepFixture() {
+function keepFixture(audioSupported = false) {
 	const original = window.location.href;
 	const first = cursor('first');
 	const next = cursor('replacement');
-	const open = controller(first, next);
+	const open = controller(first, next, audioSupported);
 	return {
 		first,
 		next,
@@ -138,6 +159,100 @@ function beginDrag() {
 	send('pointermove');
 	return (type: 'pointerup' | 'pointercancel' = 'pointerup') => send(type);
 }
+
+it.each([true, false])(
+	'offers explicit initial unadjusted recovery only with server support (%s)',
+	async (supported) => {
+		const { open, mount, dispose, next } = keepFixture(supported);
+		open
+			.mockReset()
+			.mockRejectedValueOnce(
+				new Error(
+					'Recorded audio correction requires compatible continuous AAC media within the supported limits.'
+				)
+			)
+			.mockResolvedValue(next.playback);
+		try {
+			await mount();
+			await expect
+				.element(page.getByRole('alert'))
+				.toMatchTextContent(
+					'Recorded audio correction requires compatible continuous AAC media within the supported limits.'
+				);
+			const recovery = page.getByRole('button', {
+				name: 'Try unadjusted audio preview',
+				exact: true
+			});
+			if (!supported) {
+				await expect.element(recovery).not.toBeInTheDocument();
+				expect(open).toHaveBeenCalledOnce();
+				return;
+			}
+			await recovery.click();
+			await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(2));
+			expect(open.mock.calls[1]?.[0]).toMatchObject({
+				sourceId: 'front',
+				streamId: 'sub',
+				timestampMs: start,
+				recordedAudioPreview: 0
+			});
+		} finally {
+			dispose();
+		}
+	}
+);
+
+it('applies a viewer-authorized audio preview at the displayed moment and resets configured timing', async () => {
+	const { first, open, mount, dispose } = keepFixture();
+	const saved = create(RecordedAudioTimingSchema, {
+		configuredOffsetMs: 250,
+		appliedOffsetMs: 250,
+		mappingVersion: 1
+	});
+	first.playback.setRecordedAudioPreview.mockImplementation(async (offsetMs) => {
+		first.emitTiming({ ...saved, appliedOffsetMs: offsetMs ?? 250, preview: offsetMs !== null });
+	});
+	try {
+		await mount();
+		first.emitTiming(saved);
+		await page.getByRole('button', { name: 'Recorded audio preview', exact: true }).click();
+		await page.getByRole('spinbutton', { name: 'Preview offset (ms)' }).fill('0');
+		await page.getByRole('button', { name: 'Apply preview', exact: true }).click();
+		await vi.waitFor(() =>
+			expect(first.playback.setRecordedAudioPreview).toHaveBeenCalledWith(0, start)
+		);
+		await page.getByRole('button', { name: 'Reset preview', exact: true }).click();
+		await vi.waitFor(() =>
+			expect(first.playback.setRecordedAudioPreview).toHaveBeenLastCalledWith(null, start)
+		);
+		expect(open).toHaveBeenCalledOnce();
+		await page.getByRole('button', { name: 'Close', exact: true }).click();
+		await expect.element(page.getByRole('dialog')).not.toBeInTheDocument();
+	} finally {
+		dispose();
+	}
+});
+
+it('ignores a replaced cursor timing callback when opening the new audio preview', async () => {
+	const { first, next, open, mount, dispose } = keepFixture();
+	try {
+		await mount();
+		first.emitError('Recording source is unavailable.');
+		await page.getByRole('button', { name: 'Close playback', exact: true }).click();
+		await page.getByRole('button', { name: 'Refresh recordings', exact: true }).click();
+		await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(2));
+		next.emitTiming(create(RecordedAudioTimingSchema, { appliedOffsetMs: 100, mappingVersion: 1 }));
+		first.emitTiming(
+			create(RecordedAudioTimingSchema, { appliedOffsetMs: 777, mappingVersion: 1 })
+		);
+		await page.getByRole('button', { name: 'Recorded audio preview', exact: true }).click();
+		await expect
+			.element(page.getByRole('spinbutton', { name: 'Preview offset (ms)' }))
+			.toHaveValue(100);
+	} finally {
+		dispose();
+	}
+});
 
 it('keeps the reported decoded mobile frame visible when playback fails', async () => {
 	const { first, mount, dispose } = keepFixture();

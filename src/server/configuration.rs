@@ -3324,7 +3324,7 @@ fn proto_effective_camera(
 ) -> anyhow::Result<proto::CameraEffectiveConfiguration> {
     let camera_id = camera.config.ip.to_string();
     let live = state.camera(&camera_id).map(|entry| entry.configuration);
-    let model = state.camera(&camera_id).and_then(|entry| entry.info.model);
+    let live_entry = state.camera(&camera_id);
     let username_override = configured_string(&camera.configured, "username");
     let password_override = configured_string(&camera.configured, "password");
     let username_default = raw_defaults.and_then(|table| configured_string(table, "username"));
@@ -3343,48 +3343,12 @@ fn proto_effective_camera(
         configured_value::<CameraRecordingMode>(&camera.configured, "recording_mode");
     let event_duration_override =
         configured_value::<u64>(&camera.configured, "event_recording_duration_secs");
-    let camera_proto = proto::CameraSettings {
-        id: camera_id.clone(),
-        ip: camera_id.clone(),
-        display_name: camera.config.display_name.clone(),
-        manufacturer_override: camera.config.manufacturer_override().map(str::to_owned),
-        username_configured: !camera.config.username.is_empty(),
-        password_configured: !camera.config.password.is_empty(),
-        onvif_port: camera.config.onvif_port.map(u32::from),
-        http_port: camera.config.http_port.map(u32::from),
-        main_rtsp_url: camera.config.main_rtsp_url.as_deref().map(|resolved| {
-            config::camera_reference_or_value(
-                config_path,
-                camera.config.ip,
-                "main_rtsp_url",
-                resolved,
-            )
-            .unwrap_or_else(|_| resolved.to_owned())
-        }),
-        sub_rtsp_url: camera.config.sub_rtsp_url.as_deref().map(|resolved| {
-            config::camera_reference_or_value(
-                config_path,
-                camera.config.ip,
-                "sub_rtsp_url",
-                resolved,
-            )
-            .unwrap_or_else(|_| resolved.to_owned())
-        }),
-        uid_configured: camera.config.uid.is_some(),
-        backend: proto_camera_backend(camera.config.backend),
-        transport: proto_camera_transport(camera.config.transport),
-        health: None,
-        model,
-        record_generic_motion_events: camera.config.record_generic_motion_events,
-        recording_mode: proto_camera_recording_mode(camera.config.recording_mode),
-        event_pre_recording_duration_secs: u32::try_from(
-            camera.config.event_pre_recording_duration_secs,
-        )
-        .unwrap_or(u32::MAX),
-        event_recording_stream: proto_event_recording_stream(camera.config.event_recording_stream),
-        event_recording_duration_secs: u32::try_from(camera.config.event_recording_duration_secs)
-            .unwrap_or(u32::MAX),
-    };
+    let camera_proto = super::proto_camera_settings(super::camera_settings_entry(
+        &camera.config,
+        live_entry.as_ref(),
+        None,
+        Some(config_path),
+    ));
     Ok(proto::CameraEffectiveConfiguration {
         camera: Some(camera_proto),
         group_ids: camera.group_ids,
@@ -3718,6 +3682,78 @@ const fn event_recording_stream_name(value: crate::cameras::EventRecordingStream
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effective_snapshot_advertises_audio_settings_even_when_all_offsets_inherit() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-audio-effective-{}", Uuid::new_v4()));
+        let path = directory.join("config.toml");
+        config::write_private_file(
+            &path,
+            b"[camera_defaults]\nusername='user'\npassword='password'\n[cameras.front]\nip='192.0.2.10'\n[cameras.back]\nip='192.0.2.11'\n[cameras.back.recorded_audio]\ndefault_offset_ms=200\nsub_offset_ms=0\n",
+        ).unwrap();
+        let state = ServerState::empty().with_camera_config_path(path);
+        let snapshot = configuration_snapshot(&state).unwrap();
+        let cameras = snapshot
+            .cameras
+            .into_iter()
+            .map(|entry| entry.camera.unwrap())
+            .collect::<Vec<_>>();
+        let front = cameras
+            .iter()
+            .find(|camera| camera.id == "192.0.2.10")
+            .unwrap();
+        assert_eq!(
+            front.recorded_audio,
+            Some(proto::RecordedAudioSettings::default())
+        );
+        let back = cameras
+            .iter()
+            .find(|camera| camera.id == "192.0.2.11")
+            .unwrap();
+        assert_eq!(
+            back.recorded_audio.as_ref().unwrap().default_offset_ms,
+            Some(200)
+        );
+        assert_eq!(back.recorded_audio.as_ref().unwrap().sub_offset_ms, Some(0));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn unrelated_camera_patch_and_template_preserve_recorded_audio_settings() {
+        let mut camera: toml::Table = toml::from_str(
+            "ip='192.0.2.10'\nusername='user'\npassword='password'\n[recorded_audio]\ndefault_offset_ms=-250\nmain_offset_ms=0\n",
+        ).unwrap();
+        let original = camera["recorded_audio"].clone();
+        let mut issues = Vec::new();
+        apply_camera_patch(
+            Path::new("config.toml"),
+            &mut camera,
+            &proto::CameraConfigurationPatch {
+                display_name: Some(proto::OptionalStringUpdate {
+                    value: Some(proto::optional_string_update::Value::Set(
+                        "New name".to_owned(),
+                    )),
+                }),
+                ..Default::default()
+            },
+            &mut issues,
+        );
+        assert!(issues.is_empty());
+        assert_eq!(camera["recorded_audio"], original);
+        let values: StoredTemplateValues = toml::from_str("backend='retina'").unwrap();
+        apply_template_values(&mut camera, &values);
+        assert_eq!(camera["recorded_audio"], original);
+        let restored: CameraConfig = toml::Value::Table(camera).try_into().unwrap();
+        assert_eq!(
+            restored.recorded_audio.effective_offset_ms("main").unwrap(),
+            0
+        );
+        assert_eq!(
+            restored.recorded_audio.effective_offset_ms("sub").unwrap(),
+            -250
+        );
+    }
 
     fn pre_recording_patch(seconds: u32, stream: i32) -> proto::CameraDefaultPatch {
         proto::CameraDefaultPatch {

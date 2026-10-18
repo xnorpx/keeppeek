@@ -11,6 +11,8 @@
 	import FocusedMediaViewport from '$lib/components/FocusedMediaViewport.svelte';
 	import RecordedPlaybackControls from '$lib/components/RecordedPlaybackControls.svelte';
 	import StoredPlaybackNotice from '$lib/components/StoredPlaybackNotice.svelte';
+	import RecordedAudioPreview from '$lib/components/RecordedAudioPreview.svelte';
+	import type { RecordedAudioTiming } from '$lib/proto/webrtc_pb';
 	import KeepMobileControls from '$lib/components/KeepMobileControls.svelte';
 	import type {
 		EventPreviewHit,
@@ -125,7 +127,7 @@
 	let decodedVideoWidth = $state(0);
 	let decodedVideoHeight = $state(0);
 	let playbackVolume = $state(1);
-	let storedPlayback: StoredMediaPlayback | null = null;
+	let storedPlayback = $state.raw<StoredMediaPlayback | null>(null);
 	let playbackUrl: string | null = $state(null);
 	let playbackAnchorMs = 0;
 	let playbackVersion = 0;
@@ -134,6 +136,11 @@
 	let playbackMuted = $state(false);
 	let playbackNotice = $state<string | null>(null);
 	let archivePlayback = $state(false);
+	let recordedAudio = $state.raw<RecordedAudioTiming | undefined>();
+	let audioPreviewOpen = $state(false);
+	let audioPreviewBusy = $state(false);
+	let audioPreviewSupported = $state(false);
+	let playbackAudioUnsubscribe: (() => void) | null = null;
 	let requestedPlaybackVariant = $state<RecordedQualityPreference>('auto');
 	let selectedPlaybackVariant = $state<RecordedStreamId | null>(null);
 	let selectedPlaybackReason = $state('automatic');
@@ -410,6 +417,7 @@
 		updateOrientation();
 		portraitMedia.addEventListener('change', updateOrientation);
 		const unsubscribeCapabilities = controlClient.onCapabilities((capabilityIds) => {
+			audioPreviewSupported = capabilityIds.includes('keeppeek.recorded-audio.v1');
 			eventSearchAvailable = capabilityIds.includes('keeppeek.event-search');
 			eventWorkflowAvailable = capabilityIds.includes(EVENT_WORKFLOW_CAPABILITY);
 			if (capabilityIds.length === 0) {
@@ -1313,6 +1321,8 @@
 	}
 
 	function detachPlaybackObservers(): void {
+		playbackAudioUnsubscribe?.();
+		playbackAudioUnsubscribe = null;
 		playbackArchiveUnsubscribe?.();
 		playbackArchiveUnsubscribe = null;
 		archivePlayback = false;
@@ -1331,6 +1341,9 @@
 	): void {
 		clearPlaybackStartupTimer();
 		detachPlaybackObservers();
+		playbackAudioUnsubscribe = playback.onRecordedAudio((timing) => {
+			if (version === playbackVersion && playback === storedPlayback) recordedAudio = timing;
+		});
 		playbackArchiveUnsubscribe = playback.onArchive((archive) => {
 			if (playback === storedPlayback) archivePlayback = archive;
 		});
@@ -1419,6 +1432,8 @@
 	}
 
 	function safePlaybackFailure(message: string, failedStream: RecordedStreamId): string {
+		const audioFailure = recordedAudioFailure(message);
+		if (audioFailure) return audioFailure;
 		if (message.startsWith('Browser does not support ')) return message;
 		if (message.startsWith('No ')) return message;
 		if (message.includes('timed out')) {
@@ -1430,7 +1445,20 @@
 	function terminalPlaybackFailure(message: string, failedStream: RecordedStreamId): string {
 		const detail = safePlaybackFailure(message, failedStream);
 		const fallbackDetail = fallbackAttempted ? ' The compatible fallback also failed.' : '';
+		if (recordedAudioFailure(message)) {
+			return `${detail}${fallbackDetail} Retry the recording or review saved timing in Camera / Audio.`;
+		}
 		return `${detail}${fallbackDetail} Retry the recording or configure an H.264 recording profile.`;
+	}
+
+	function recordedAudioFailure(message: string): string | null {
+		if (
+			message ===
+			'Recorded audio correction requires compatible continuous AAC media within the supported limits.'
+		) {
+			return message;
+		}
+		return null;
 	}
 
 	function deferSecondaryLoads(): void {
@@ -1687,29 +1715,46 @@
 			coldSeekStartedAt = performance.now();
 		}
 		if (reusablePlayback && previousPlayback) {
-			try {
-				await previousPlayback.seek(requestedTimestampMs);
-			} catch (cause) {
-				clearColdSeek();
-				if (version === playbackVersion) {
-					playerError = storedPlaybackError(cause);
-				}
-				return;
-			}
-			if (version !== playbackVersion) return;
-			selected = segment;
-			pendingPlay = play;
-			playing = play;
-			playheadMs = requestedTimestampMs;
-			playbackUrl = previousPlayback.url;
-			playbackAnchorMs = previousPlayback.anchorTimeMs;
-			pendingSeekSeconds = previousPlayback.initialOffsetSeconds;
-			previousPlayback.setPlaybackRate(playbackRate);
-			previousPlayback.setPlaying(play);
-			await tick();
-			applyPendingSeek();
+			await reuseStoredSegment(previousPlayback, segment, requestedTimestampMs, play, version);
+		} else await openStoredSegment(segment, requestedTimestampMs, play, version, previousPlayback);
+	}
+
+	async function reuseStoredSegment(
+		playback: StoredMediaPlayback,
+		segment: RecordingSegment,
+		timestampMs: number,
+		play: boolean,
+		version: number
+	): Promise<void> {
+		try {
+			await playback.seek(timestampMs);
+		} catch (cause) {
+			clearColdSeek();
+			if (version === playbackVersion) playerError = storedPlaybackError(cause);
 			return;
 		}
+		if (version !== playbackVersion) return;
+		selected = segment;
+		pendingPlay = play;
+		playing = play;
+		playheadMs = timestampMs;
+		playbackUrl = playback.url;
+		playbackAnchorMs = playback.anchorTimeMs;
+		pendingSeekSeconds = playback.initialOffsetSeconds;
+		playback.setPlaybackRate(playbackRate);
+		playback.setPlaying(play);
+		await tick();
+		applyPendingSeek();
+	}
+
+	async function openStoredSegment(
+		segment: RecordingSegment,
+		requestedTimestampMs: number,
+		play: boolean,
+		version: number,
+		previousPlayback: StoredMediaPlayback | null,
+		recordedAudioPreview?: 0
+	): Promise<void> {
 		let playback: StoredMediaPlayback;
 		playbackOpenController?.abort();
 		const openController = new AbortController();
@@ -1724,7 +1769,8 @@
 				endTimeMs: dayStartMs + 86_400_000,
 				playing: play,
 				playbackRate,
-				signal: openController.signal
+				signal: openController.signal,
+				recordedAudioPreview
 			});
 		} catch (cause) {
 			clearColdSeek();
@@ -1768,7 +1814,7 @@
 	): Promise<void> {
 		const playback = storedPlayback;
 		if (!playback) return;
-		const canSeekLocally = playback.canSeekLocally(requestedTimestampMs);
+		const canSeekLocally = !audioPreviewBusy && playback.canSeekLocally(requestedTimestampMs);
 		const version = canSeekLocally ? playbackVersion : ++playbackVersion;
 		selected = segment;
 		pendingPlay = play;
@@ -1813,12 +1859,49 @@
 		keyFrameUnsubscribe?.();
 		keyFrameUnsubscribe = null;
 		storedPlayback = null;
+		recordedAudio = undefined;
+		audioPreviewOpen = false;
 		scrubUsesFragmentFallback = false;
 		playbackUrl = null;
 		if (playback) {
 			await tick();
 			await playback.close().catch(() => undefined);
 		}
+	}
+
+	async function applyRecordedAudioPreview(offsetMs: number | null): Promise<void> {
+		const playback = storedPlayback;
+		const segment = selected;
+		if (!playback || !segment || audioPreviewBusy || scrubbing) {
+			throw new Error('Select a recording before applying an audio preview.');
+		}
+		const timestampMs = playheadMs ?? playbackAnchorMs;
+		const version = ++playbackVersion;
+		audioPreviewBusy = true;
+		pendingPlay = playbackIntent();
+		playbackSourceCommitVersion = version;
+		observePlaybackStartup(playback, version, segment, timestampMs, false);
+		try {
+			await playback.setRecordedAudioPreview(offsetMs, timestampMs);
+		} finally {
+			audioPreviewBusy = false;
+			if (version === playbackVersion && playback === storedPlayback) {
+				playbackUrl = playback.url;
+				playbackAnchorMs = playback.anchorTimeMs;
+				pendingSeekSeconds = playback.initialOffsetSeconds;
+				await tick();
+				if (version === playbackVersion && playback === storedPlayback) {
+					applyPendingSeek();
+					observePlaybackStartup(playback, version, segment, timestampMs);
+				}
+			}
+			if (playbackSourceCommitVersion === version) playbackSourceCommitVersion = null;
+		}
+	}
+
+	function openRecordedAudioPreview(): void {
+		closeMobilePanel();
+		audioPreviewOpen = true;
 	}
 	async function closePlaybackNotice() {
 		playbackVersion += 1;
@@ -1837,7 +1920,7 @@
 		pendingPlay = false;
 		await closeStoredPlayback();
 	}
-	async function retryPlaybackNotice() {
+	async function retryPlaybackNotice(recordedAudioPreview?: 0) {
 		const target = retryPlaybackTarget;
 		if (!target || target.cameraId !== cameraId) return;
 		const offset =
@@ -1847,7 +1930,19 @@
 		playbackVersion += 1;
 		playerError = null;
 		await closeStoredPlayback();
-		await selectSegment(target.segment, offset, target.play);
+		if (recordedAudioPreview === undefined)
+			await selectSegment(target.segment, offset, target.play);
+		else {
+			rememberPlaybackTarget(target.segment, offset, target.play);
+			await openStoredSegment(
+				target.segment,
+				target.segment.start_time_ms + offset * 1000,
+				target.play,
+				playbackVersion,
+				null,
+				recordedAudioPreview
+			);
+		}
 	}
 
 	function seekToTimestamp(timestampMs: number, play = true) {
@@ -2243,6 +2338,12 @@
 			error={playerError}
 			canRetry={!!retryPlaybackTarget && retryPlaybackTarget.cameraId === cameraId}
 			onretry={() => void retryPlaybackNotice()}
+			onunadjusted={audioPreviewSupported &&
+			!storedPlayback &&
+			!!retryPlaybackTarget &&
+			retryPlaybackTarget.cameraId === cameraId
+				? () => void retryPlaybackNotice(0)
+				: undefined}
 			onclose={() => void closePlaybackNotice()}
 		/>
 	{/if}
@@ -2275,6 +2376,16 @@
 		</div>
 	{/if}
 {/snippet}
+
+{#if audioPreviewOpen}
+	<RecordedAudioPreview
+		timing={recordedAudio}
+		name={`${selectedCamera?.name ?? cameraId} / ${selected?.stream ?? ''}`}
+		disabled={scrubbing}
+		onapply={applyRecordedAudioPreview}
+		onclose={() => (audioPreviewOpen = false)}
+	/>
+{/if}
 
 <div data-keep-view class="keep-view mx-auto h-full min-h-0 w-full max-w-[120rem] overflow-hidden">
 	<header data-keep-command-bar class="keep-command-bar">
@@ -2349,6 +2460,7 @@
 			onrate={setPlaybackSpeed}
 			onquality={handleRecordedQualityChange}
 			onrefresh={() => void loadRecordings(selectedDate || undefined, undefined, playbackIntent())}
+			oncalibrate={recordedAudio ? openRecordedAudioPreview : undefined}
 		/>
 		{#if !mobilePortrait}<div class="keep-command-secondary">
 				<KeepCameraSwitcher
@@ -2648,6 +2760,15 @@
 						onvolumechange={(volume) => (playbackVolume = volume)}
 						onratechange={setPlaybackSpeed}
 					/>
+					{#if recordedAudio && !mobilePortrait}
+						<Button
+							variant="ghost"
+							class="min-h-11 justify-start text-xs"
+							disabled={scrubbing || audioPreviewBusy}
+							onclick={openRecordedAudioPreview}
+							>Recorded audio preview{recordedAudio.preview ? ' · Active' : ''}</Button
+						>
+					{/if}
 				</section>
 
 				{#if mobilePortrait}

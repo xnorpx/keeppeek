@@ -1,4 +1,5 @@
 import { create } from '@bufbuild/protobuf';
+import { recordedAudioSettings } from './recorded-audio';
 import {
 	ApplyConfigurationPlanSchema,
 	ApplyConfigurationTemplateImportSchema,
@@ -918,6 +919,7 @@ function cameraSettings(camera: ProtoCameraSettings): CameraSettings {
 		record_generic_motion_events: camera.recordGenericMotionEvents,
 		recording_mode: cameraRecordingMode(camera.recordingMode),
 		event_recording_duration_secs: camera.eventRecordingDurationSecs || 60,
+		recorded_audio: recordedAudioSettings(camera.recordedAudio),
 		event_pre_recording_duration_secs: camera.eventPreRecordingDurationSecs,
 		event_recording_stream: eventStream(camera.eventRecordingStream),
 		health: (camera.health ?? null) as CameraSettings['health'],
