@@ -5,8 +5,9 @@ Issue: https://github.com/xnorpx/keeppeek/issues/132
 Local branch: `feat/132-guest-review`. Selection began at `dc76cec`; the local checkpoint
 is now rebased onto merged archive main `7f9e326`. Both archive and sharing contracts,
 playback readers, export metadata and Paper designs are preserved. The two separately
-validated archive browser regression fixes are also carried locally. No hosted CI,
-push, pull request or merge work is requested for this local start.
+validated archive browser regression fixes are also carried locally. The owner requested
+a PR after local validation. Its scope is the completed-export increment; full #132
+acceptance remains open, so publication uses a draft PR.
 
 ## Final validated local checkpoint
 
@@ -30,7 +31,7 @@ This completes a validated local start of the immutable-export workflow. It does
 complete #132: exact ranges, the remaining creator entry points, actual guest HTTPS
 playback and full adversarial/resource qualification remain open. Existing real TLS
 authentication tests and mocked guest isolation tests do not prove guest HTTPS delivery.
-No #132 push or pull request has been made, and hosted CI is left to the user.
+This evidence was recorded before PR publication. Hosted CI is left to the user.
 
 ## Product contract
 
