@@ -87,6 +87,7 @@ import {
 	PtzResultSchema,
 	RecordingCapacityEstimateSchema,
 	RecordingDemandHealthSnapshotSchema,
+	RecordedAudioTimingSchema,
 	ProcessHealthSnapshotSchema,
 	ResponseSchema,
 	RuntimeConfigurationResultSchema,
@@ -118,6 +119,8 @@ import {
 	type NotificationRuleResult,
 	type QueryStoredMediaTimeline,
 	type QueryEvents,
+	type Request,
+	type Ok,
 	VideoDataFormatSchema,
 	VideoDataFrameSchema,
 	WebRtcHealthSnapshotSchema
@@ -194,6 +197,7 @@ class FakeDataChannel {
 	storedTimelineQueries: QueryStoredMediaTimeline[] = [];
 	cancelledTimelineQueryIds: string[] = [];
 	eventSearchQueries: QueryEvents[] = [];
+	exportRecordedAudio?: import('./proto/webrtc_pb').RecordedAudioTiming;
 
 	send(data: ArrayBuffer | ArrayBufferView): void {
 		if (this.label !== 'control-channel') return;
@@ -727,6 +731,7 @@ class FakeDataChannel {
 										? timestampFromDate(new Date('2026-08-21T06:30:00Z'))
 										: undefined,
 								retryable: status === ExportJobStatus.FAILED,
+								recordedAudio: this.exportRecordedAudio,
 								eventSeed: action.case === 'create' ? action.value.eventSeed : undefined
 							});
 						if (action.case === 'list') {
@@ -1410,6 +1415,117 @@ class FakePeerConnection {
 	}
 }
 
+function recordedTimingState(generation: bigint, anchorMs: number, appliedOffsetMs?: number) {
+	return create(StoredMediaStateSchema, {
+		storedMediaId: 'recorded-timing',
+		generation,
+		requestedTime: timestampFromDate(new Date(anchorMs + 500)),
+		fragmentTime: timestampFromDate(new Date(anchorMs)),
+		endTime: timestampFromDate(new Date(anchorMs + 60_000)),
+		status: StoredMediaStatus.ACTIVE,
+		mode: StoredMediaMode.PLAYBACK,
+		playing: false,
+		playbackRate: 2,
+		recordedAudio:
+			appliedOffsetMs === undefined
+				? undefined
+				: { configuredOffsetMs: appliedOffsetMs, appliedOffsetMs, mappingVersion: 1 },
+		delivery: { contentType: 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"' }
+	});
+}
+
+function recordedTimingPlayback(appliedOffsetMs?: number) {
+	class TimingSourceBuffer extends EventTarget {
+		updating = false;
+		mode: AppendMode = 'segments';
+		readonly appended: Array<{ mode: AppendMode; bytes: number[] }> = [];
+		appendBuffer(bytes: ArrayBuffer): void {
+			this.appended.push({ mode: this.mode, bytes: [...new Uint8Array(bytes)] });
+			this.dispatchEvent(new Event('updateend'));
+		}
+	}
+	class TimingMediaSource extends EventTarget {
+		static readonly instances: TimingMediaSource[] = [];
+		static isTypeSupported(): boolean {
+			return true;
+		}
+		readyState: ReadyState = 'open';
+		duration = Number.NaN;
+		readonly sourceBuffer = new TimingSourceBuffer();
+		constructor() {
+			super();
+			TimingMediaSource.instances.push(this);
+		}
+		addSourceBuffer(): SourceBuffer {
+			return this.sourceBuffer as unknown as SourceBuffer;
+		}
+	}
+	vi.stubGlobal('MediaSource', TimingMediaSource);
+	vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:recorded-timing');
+	vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+	const anchorMs = Date.UTC(2026, 7, 20, 12);
+	const seek = vi.fn(async (timestampMs: number) =>
+		recordedTimingState(2n, timestampMs - 500, appliedOffsetMs)
+	);
+	const update = vi.fn(async () => recordedTimingState(1n, anchorMs, appliedOffsetMs));
+	const refill = vi.fn(async () => recordedTimingState(1n, anchorMs, appliedOffsetMs));
+	const close = vi.fn(async () => {});
+	const playback = new StoredMediaPlayback(
+		'recorded-timing',
+		'front-door',
+		'main',
+		seek,
+		refill,
+		update,
+		close
+	);
+	playback.configure(recordedTimingState(1n, anchorMs, appliedOffsetMs));
+	return { playback, anchorMs, seek, update, refill, close, sources: TimingMediaSource.instances };
+}
+
+function startRefill(playback: StoredMediaPlayback, anchorMs: number) {
+	playback.configure({
+		...recordedTimingState(1n, anchorMs, 200),
+		playing: true,
+		delivery: create(StoredMediaDeliverySchema, {
+			contentType: 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
+			maxBufferDuration: durationFromMs(5_000)
+		})
+	});
+	appendTimingPeriod(playback, 1n, anchorMs, 1n);
+	playback.observe(1);
+}
+
+function appendTimingPeriod(
+	playback: StoredMediaPlayback,
+	generation: bigint,
+	startMs: number,
+	id: bigint
+) {
+	playback.receiveInitialization(
+		create(StoredMediaInitializationSchema, {
+			storedMediaId: playback.id,
+			generation,
+			initializationId: id,
+			contentType: 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
+			chunkCount: 1,
+			payload: new Uint8Array([Number(id), 0])
+		})
+	);
+	playback.receiveFragment(
+		create(StoredMediaFragmentSchema, {
+			storedMediaId: playback.id,
+			generation,
+			initializationId: id,
+			sequence: id,
+			startTime: timestampFromDate(new Date(startMs)),
+			duration: durationFromMs(2_000),
+			chunkCount: 1,
+			payload: new Uint8Array([Number(id), 1])
+		})
+	);
+}
+
 afterEach(() => {
 	vi.useRealTimers();
 	vi.unstubAllGlobals();
@@ -1419,6 +1535,354 @@ afterEach(() => {
 });
 
 describe('ControlClient', () => {
+	it('serializes pause after an active refill without invalidating its cursor snapshot', async () => {
+		const { playback, anchorMs, refill, update } = recordedTimingPlayback(200);
+		const release = Promise.withResolvers<void>();
+		let revision = 0;
+		let serverPlaying = true;
+		refill.mockImplementationOnce(async () => {
+			const capturedRevision = revision;
+			await release.promise;
+			if (capturedRevision !== revision) {
+				throw new Error('stored media cursor changed during playback update');
+			}
+			return { ...recordedTimingState(1n, anchorMs, 200), playing: serverPlaying };
+		});
+		update.mockImplementation(async (playing?: boolean) => {
+			revision += 1;
+			serverPlaying = playing ?? serverPlaying;
+			return { ...recordedTimingState(1n, anchorMs, 200), playing: serverPlaying };
+		});
+		const failures = vi.fn();
+		playback.onError(failures);
+		playback.configure({
+			...recordedTimingState(1n, anchorMs, 200),
+			playing: true,
+			delivery: create(StoredMediaDeliverySchema, {
+				contentType: 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
+				maxBufferDuration: durationFromMs(5_000)
+			})
+		});
+		appendTimingPeriod(playback, 1n, anchorMs, 1n);
+		playback.observe(1);
+		await vi.waitFor(() => expect(refill).toHaveBeenCalledOnce());
+		playback.setPlaying(false);
+		await Promise.resolve();
+		release.resolve();
+		await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(failures).not.toHaveBeenCalled();
+		expect(playback.error).toBeNull();
+		expect(serverPlaying).toBe(false);
+		playback.observe(1.5);
+		expect(refill).toHaveBeenCalledOnce();
+		playback.dispose();
+	});
+	it('keeps a real current refill failure visible while allowing the next pause', async () => {
+		const { playback, anchorMs, refill, update } = recordedTimingPlayback(200);
+		refill.mockRejectedValueOnce(new Error('fixture source is unavailable'));
+		const failures = vi.fn();
+		playback.onError(failures);
+		startRefill(playback, anchorMs);
+		await vi.waitFor(() => expect(failures).toHaveBeenCalledWith('fixture source is unavailable'));
+		playback.setPlaying(false);
+		await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
+		expect(playback.error).toBe('fixture source is unavailable');
+		playback.dispose();
+	});
+	it('closes immediately during a refill and never starts queued cursor work afterward', async () => {
+		const { playback, anchorMs, refill, update, close, seek, sources } =
+			recordedTimingPlayback(200);
+		const release = Promise.withResolvers<void>();
+		refill.mockImplementationOnce(async () => {
+			await release.promise;
+			return { ...recordedTimingState(1n, anchorMs, 200), playing: true };
+		});
+		startRefill(playback, anchorMs);
+		await vi.waitFor(() => expect(refill).toHaveBeenCalledOnce());
+		playback.setPlaying(false);
+		const pendingSeek = playback.seek(anchorMs + 10_000);
+		const rejected = expect(pendingSeek).rejects.toThrow('closed');
+		await playback.close();
+		expect(close).toHaveBeenCalledOnce();
+		expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:recorded-timing');
+		await rejected;
+		release.resolve();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(update).not.toHaveBeenCalled();
+		expect(seek).not.toHaveBeenCalled();
+		expect(sources).toHaveLength(1);
+		expect(playback.error).toBeNull();
+	});
+	it('keeps a later pause authoritative when an earlier play response completes', async () => {
+		const { playback, anchorMs, update, refill } = recordedTimingPlayback(200);
+		const playResponse = Promise.withResolvers<void>();
+		const pauseResponse = Promise.withResolvers<void>();
+		playback.configure({
+			...recordedTimingState(1n, anchorMs, 200),
+			delivery: create(StoredMediaDeliverySchema, {
+				contentType: 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
+				maxBufferDuration: durationFromMs(5_000)
+			})
+		});
+		appendTimingPeriod(playback, 1n, anchorMs, 1n);
+		update.mockImplementationOnce(async () => {
+			await playResponse.promise;
+			return { ...recordedTimingState(1n, anchorMs, 200), playing: true };
+		});
+		update.mockImplementationOnce(async () => {
+			await pauseResponse.promise;
+			return recordedTimingState(1n, anchorMs, 200);
+		});
+		playback.setPlaying(true);
+		await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
+		playback.setPlaying(false);
+		playResponse.resolve();
+		await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(2));
+		playback.observe(1.5);
+		expect(refill).not.toHaveBeenCalled();
+		pauseResponse.resolve();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		playback.observe(1.5);
+		expect(refill).not.toHaveBeenCalled();
+		expect(playback.error).toBeNull();
+		playback.dispose();
+	});
+	it('bounds queued cursor commands while retaining the capacity error', async () => {
+		const { playback, anchorMs, update } = recordedTimingPlayback(200);
+		const release = Promise.withResolvers<void>();
+		update.mockImplementation(async () => {
+			await release.promise;
+			return recordedTimingState(1n, anchorMs, 200);
+		});
+		for (let index = 0; index < 10; index += 1) playback.setPlaybackRate(index + 3);
+		await vi.waitFor(() =>
+			expect(playback.error).toBe('Stored media cursor operation queue is full.')
+		);
+		expect(update).toHaveBeenCalledOnce();
+		release.resolve();
+		await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(8));
+		expect(playback.error).toBe('Stored media cursor operation queue is full.');
+		playback.dispose();
+	});
+	it('preserves server-captured export timing and keeps absent legacy timing unknown', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'export-timing',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+		await client.getServerCapabilities();
+		const channel = FakePeerConnection.latest?.channels[0];
+		if (!channel) throw new Error('Control channel is unavailable');
+		channel.exportRecordedAudio = create(RecordedAudioTimingSchema, {
+			configuredOffsetMs: 250,
+			appliedOffsetMs: 250,
+			configurationRevision: 'captured-timing',
+			mappingVersion: 1,
+			audioPresent: true,
+			clippedAudioSamples: 2
+		});
+		const job = await client.createExport({
+			sourceId: 'front-door',
+			streamId: 'main',
+			startMs: 0,
+			endMs: 1_000
+		});
+		expect(job.recordedAudio).toEqual(channel.exportRecordedAudio);
+		channel.exportRecordedAudio = undefined;
+		expect((await client.getExport('legacy-export')).recordedAudio).toBeUndefined();
+		expect(job.recordedAudio?.appliedOffsetMs).toBe(250);
+		await client.close();
+	});
+
+	it('bounds preview application to one operation and cancels it after a newer seek', async () => {
+		const { playback, anchorMs, seek, update } = recordedTimingPlayback(250);
+		let completeSeek!: (state: ReturnType<typeof recordedTimingState>) => void;
+		seek.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					completeSeek = resolve;
+				})
+		);
+		seek.mockResolvedValueOnce(recordedTimingState(3n, anchorMs + 20_000, 250));
+		const preview = playback.setRecordedAudioPreview(-250, anchorMs + 12_500);
+		const cancelled = expect(preview).rejects.toMatchObject({ name: 'AbortError' });
+		await expect(playback.setRecordedAudioPreview(0, anchorMs)).rejects.toThrow('already applying');
+		await vi.waitFor(() => expect(seek).toHaveBeenCalledOnce());
+		const selectedMoment = playback.seek(anchorMs + 20_500);
+		completeSeek(recordedTimingState(2n, anchorMs + 12_000, 250));
+		await cancelled;
+		await selectedMoment;
+		expect(update).not.toHaveBeenCalled();
+		expect(playback.anchorTimeMs).toBe(anchorMs + 20_000);
+		playback.dispose();
+	});
+
+	it.each([-5001, 5001, 0.5, Number.NaN])(
+		'rejects invalid preview %s before moving the cursor',
+		async (offsetMs) => {
+			const { playback, anchorMs, seek, update } = recordedTimingPlayback(250);
+			await expect(playback.setRecordedAudioPreview(offsetMs, anchorMs)).rejects.toThrow(
+				'whole number'
+			);
+			expect(seek).not.toHaveBeenCalled();
+			expect(update).not.toHaveBeenCalled();
+			playback.dispose();
+		}
+	);
+	it.each([{}, { default_offset_ms: -250, main_offset_ms: 0 }])(
+		'encodes a recorded-audio-only save with its captured revision: %j',
+		async (settings: { default_offset_ms?: number; main_offset_ms?: number }) => {
+			const client = new ControlClient();
+			const sender = client as unknown as {
+				request(command: Request['command']): Promise<Ok['result']>;
+			};
+			const send = vi.spyOn(sender, 'request').mockResolvedValue({
+				case: 'cameraConfigurationResult',
+				value: create(CameraConfigurationResultSchema, {
+					camera: { id: 'camera', ip: '192.0.2.10', recordedAudio: {} },
+					configurationRevision: 'next',
+					restartRequired: false
+				})
+			});
+			const result = await client.updateCamera('192.0.2.10', {
+				recorded_audio: settings,
+				expected_configuration_revision: 'captured'
+			});
+			expect(result.restart_required).toBe(false);
+			expect(result.camera.recorded_audio).toEqual({});
+			expect(send).toHaveBeenCalledOnce();
+			const command = send.mock.calls[0]![0];
+			if (command.case !== 'cameraConfigurationCommand' || command.value.action.case !== 'update') {
+				throw new Error('Expected a camera update.');
+			}
+			const update = command.value.action.value;
+			expect(update.expectedConfigurationRevision).toBe('captured');
+			expect(update.recordedAudio).toBeDefined();
+			expect(update.recordedAudio?.mainOffsetMs).toBe(settings.main_offset_ms);
+			expect(update.username).toBeUndefined();
+			expect(update.password).toBeUndefined();
+			expect(update.backend).toBeUndefined();
+			expect(update.recordingMode).toBeUndefined();
+		}
+	);
+	it.each([-250, 0, 250, null])(
+		'applies preview %s at the selected moment without changing rate or play intent',
+		async (offsetMs) => {
+			const { playback, anchorMs, seek, update, sources } = recordedTimingPlayback(250);
+			update.mockImplementationOnce(async () => {
+				expect(seek).toHaveBeenCalledWith(anchorMs + 12_500);
+				appendTimingPeriod(playback, 3n, anchorMs + 12_000, 1n);
+				return {
+					...recordedTimingState(3n, anchorMs + 12_000, offsetMs ?? 250),
+					recordedAudio: {
+						...recordedTimingState(3n, anchorMs, offsetMs ?? 250).recordedAudio!,
+						preview: offsetMs !== null
+					}
+				};
+			});
+			const timings = vi.fn();
+			const detach = playback.onRecordedAudio(timings);
+			await playback.setRecordedAudioPreview(offsetMs, anchorMs + 12_500);
+			expect(update).toHaveBeenCalledWith(
+				undefined,
+				undefined,
+				undefined,
+				expect.objectContaining({
+					selection:
+						offsetMs === null
+							? { case: 'useConfigured', value: true }
+							: { case: 'offsetMs', value: offsetMs }
+				})
+			);
+			expect(playback.recordedAudio?.appliedOffsetMs).toBe(offsetMs ?? 250);
+			expect(timings).toHaveBeenLastCalledWith(playback.recordedAudio);
+			expect(playback.anchorTimeMs).toBe(anchorMs + 12_000);
+			expect(playback.initialOffsetSeconds).toBe(0.5);
+			expect(sources[2]!.sourceBuffer.appended.map((append) => append.mode)).toEqual([
+				offsetMs === 0 ? 'sequence' : 'segments',
+				offsetMs === 0 ? 'sequence' : 'segments'
+			]);
+			detach();
+			playback.dispose();
+		}
+	);
+
+	it('does not apply a preview after the cursor is disposed during its anchor seek', async () => {
+		const { playback, anchorMs, seek, update } = recordedTimingPlayback(250);
+		let completeSeek!: (value: ReturnType<typeof recordedTimingState>) => void;
+		seek.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					completeSeek = resolve;
+				})
+		);
+		const preview = playback.setRecordedAudioPreview(-250, anchorMs + 12_500);
+		const rejected = expect(preview).rejects.toThrow('closed');
+		await vi.waitFor(() => expect(seek).toHaveBeenCalledOnce());
+		playback.dispose();
+		completeSeek(recordedTimingState(2n, anchorMs + 12_000, 250));
+		await rejected;
+		expect(update).not.toHaveBeenCalled();
+	});
+	it.each([-250, 250])(
+		'preserves timestamp mode across two corrected periods and seek (%ims)',
+		async (offsetMs) => {
+			const { playback, anchorMs, seek, sources } = recordedTimingPlayback(offsetMs);
+			appendTimingPeriod(playback, 1n, anchorMs, 1n);
+			appendTimingPeriod(playback, 1n, anchorMs + 2_000, 2n);
+			expect(sources).toHaveLength(1);
+			expect(sources[0]!.sourceBuffer.appended).toEqual([
+				{ mode: 'segments', bytes: [1, 0] },
+				{ mode: 'segments', bytes: [1, 1] },
+				{ mode: 'segments', bytes: [2, 0] },
+				{ mode: 'segments', bytes: [2, 1] }
+			]);
+			expect(playback.anchorTimeMs).toBe(anchorMs);
+			expect(playback.initialOffsetSeconds).toBe(0.5);
+			await playback.seek(anchorMs + 10_500);
+			expect(seek).toHaveBeenCalledWith(anchorMs + 10_500);
+			expect(sources).toHaveLength(2);
+			expect(playback.anchorTimeMs).toBe(anchorMs + 10_000);
+			expect(playback.initialOffsetSeconds).toBe(0.5);
+			appendTimingPeriod(playback, 2n, anchorMs + 10_000, 3n);
+			appendTimingPeriod(playback, 2n, anchorMs + 12_000, 4n);
+			appendTimingPeriod(playback, 1n, anchorMs + 4_000, 5n);
+			expect(sources[1]!.sourceBuffer.appended.map((append) => append.mode)).toEqual([
+				'segments',
+				'segments',
+				'segments',
+				'segments'
+			]);
+			expect(playback.recordedAudio?.appliedOffsetMs).toBe(offsetMs);
+			expect(playback.error).toBeNull();
+			playback.dispose();
+		}
+	);
+
+	it.each([undefined, 0])(
+		'keeps legacy sequence mode for an uncorrected offset (%s)',
+		(offsetMs) => {
+			const { playback, anchorMs, sources } = recordedTimingPlayback(offsetMs);
+			appendTimingPeriod(playback, 1n, anchorMs, 1n);
+			expect(sources[0]!.sourceBuffer.appended.map((append) => append.mode)).toEqual([
+				'sequence',
+				'sequence'
+			]);
+			playback.configure(recordedTimingState(2n, anchorMs + 5_000, 250));
+			appendTimingPeriod(playback, 2n, anchorMs + 5_000, 2n);
+			expect(sources[1]!.sourceBuffer.mode).toBe('segments');
+			playback.configure(recordedTimingState(3n, anchorMs + 8_000, 0));
+			appendTimingPeriod(playback, 3n, anchorMs + 8_000, 3n);
+			expect(sources[2]!.sourceBuffer.mode).toBe('sequence');
+			playback.configure(recordedTimingState(2n, anchorMs, 250));
+			expect(playback.recordedAudio?.appliedOffsetMs).toBe(0);
+			expect(playback.anchorTimeMs).toBe(anchorMs + 8_000);
+			playback.dispose();
+		}
+	);
 	it('keeps stale recording pagination local to the dashboard', async () => {
 		api.fetchRecordingCoverage.mockRejectedValue(
 			new api.ApiRequestError(409, 'Recording coverage changed')

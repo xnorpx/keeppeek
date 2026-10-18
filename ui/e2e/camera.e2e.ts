@@ -642,6 +642,64 @@ test('renders Board 24 mobile settings as the editable per-camera owner', async 
 	expect(controls.cameraUpdates).toEqual([]);
 });
 
+for (const width of [320, 390, 1440]) {
+	test(`saves only recorded audio timing and reloads at ${width}px`, async ({ page }) => {
+		await page.setViewportSize({ width, height: 900 });
+		const { camera, health } = mobilePtzCamera();
+		const settings = {
+			...configuredCamera(camera),
+			recorded_audio: { default_offset_ms: 250, main_offset_ms: 0 }
+		};
+		const saved = { ...settings, recorded_audio: { default_offset_ms: 400, main_offset_ms: 0 } };
+		const controls = await mockControlPeer(page, {
+			cameras: [camera],
+			cameraSettings: [settings],
+			cameraConfigurationRevision: 'camera-revision-1',
+			cameraUpdateResult: {
+				camera: saved,
+				restart_required: false,
+				configuration_revision: 'camera-revision-2'
+			},
+			health: { cameras: [{ ...health, configured_profiles: camera.profiles }] },
+			motionDetection: { supported: true, controllable: true, enabled: true, error: null }
+		});
+		await page.goto(`/camera?camera=${camera.id}`);
+		if (width < 768) await page.getByRole('button', { name: 'Settings', exact: true }).click();
+		const audio = page.locator('[data-recorded-audio-settings]');
+		await expect(audio.getByLabel('Camera default offset (ms)', { exact: true })).toHaveValue(
+			'250'
+		);
+		await expect(audio.getByLabel('Sub stream mode', { exact: true })).toHaveValue('inherit');
+		await expect(audio.getByLabel('Main stream offset (ms)', { exact: true })).toHaveValue('0');
+		await audio.getByLabel('Camera default offset (ms)', { exact: true }).fill('400');
+		await audio.getByRole('button', { name: 'Save recorded timing', exact: true }).click();
+		await expect(audio.getByRole('status')).toContainText('Recorded timing saved');
+		await expect.poll(() => controls.cameraUpdates).toHaveLength(1);
+		const update = controls.cameraUpdates[0]!.update;
+		expect(Object.keys(update).sort()).toEqual([
+			'expected_configuration_revision',
+			'recorded_audio'
+		]);
+		expect(update).toEqual({
+			expected_configuration_revision: 'camera-revision-1',
+			recorded_audio: { default_offset_ms: 400, main_offset_ms: 0 }
+		});
+		await page.reload();
+		if (width < 768) await page.getByRole('button', { name: 'Settings', exact: true }).click();
+		await expect(audio.getByLabel('Camera default offset (ms)', { exact: true })).toHaveValue(
+			'400'
+		);
+		await expect(audio.getByLabel('Main stream offset (ms)', { exact: true })).toHaveValue('0');
+		await expect(
+			audio.getByRole('button', { name: 'Save recorded timing', exact: true })
+		).toBeDisabled();
+		expect(
+			await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+		).toBe(true);
+		await audio.screenshot({ path: test.info().outputPath('recorded-audio-camera.png') });
+	});
+}
+
 for (const width of [320, 1440]) {
 	test(`saves and reloads event-only pre-recording at ${width}px`, async ({ page }) => {
 		await page.setViewportSize({ width, height: 900 });

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 import type { BrowserSession } from '../../src/lib/external-authentication.svelte';
+import { protoRecordedAudioSettings, recordedAudioSettings } from '../../src/lib/recorded-audio';
 import {
 	ExternalAuthenticationConfigurationSchema,
 	ExternalAuthenticationResultSchema,
@@ -3664,6 +3665,9 @@ function cameraUpdate(
 ): CameraSettingsUpdate {
 	const result: CameraSettingsUpdate = {};
 	result.expected_configuration_revision = update.expectedConfigurationRevision;
+	if (update.recordedAudio !== undefined) {
+		result.recorded_audio = recordedAudioSettings(update.recordedAudio);
+	}
 	applyStringPatch(result, 'display_name', update.displayName);
 	applyStringPatch(result, 'manufacturer', update.manufacturer);
 	if (update.username !== undefined) result.username = update.username;
@@ -3770,7 +3774,8 @@ function protoCameraSettings(camera: CameraSettings) {
 				? ProtoEventRecordingStream.SUB
 				: ProtoEventRecordingStream.MAIN,
 		health: camera.health ?? undefined,
-		model: camera.model ?? undefined
+		model: camera.model ?? undefined,
+		recordedAudio: protoRecordedAudioSettings(camera.recorded_audio)
 	});
 }
 

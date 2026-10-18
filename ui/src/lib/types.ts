@@ -358,6 +358,12 @@ export type CameraRecordingMode = 'off' | 'sub' | 'main' | 'both' | 'event-boost
 
 export type EventRecordingStream = 'main' | 'sub';
 
+export type RecordedAudioSettings = {
+	default_offset_ms?: number;
+	main_offset_ms?: number;
+	sub_offset_ms?: number;
+};
+
 export interface CameraSettings {
 	id: string;
 	ip: string;
@@ -378,6 +384,7 @@ export interface CameraSettings {
 	event_recording_duration_secs: number;
 	event_pre_recording_duration_secs?: number;
 	event_recording_stream?: EventRecordingStream;
+	recorded_audio?: RecordedAudioSettings;
 	health: CameraHealth['state'] | null;
 	model: string | null;
 }
@@ -493,6 +500,7 @@ export interface CameraSettingsUpdate {
 	event_recording_duration_secs?: number;
 	event_pre_recording_duration_secs?: number;
 	event_recording_stream?: EventRecordingStream;
+	recorded_audio?: RecordedAudioSettings;
 }
 
 export interface CameraSettingsUpdateResponse {

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { basename, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
+import { seedCalibrationRecording } from './calibration-recording';
 
 export const cardTestKeys = [
 	'550e8400-e29b-41d4-a716-446655440001',
@@ -16,7 +17,11 @@ export const cardTestKeys = [
 export const cardAdminKey = '550e8400-e29b-41d4-a716-446655440004';
 export const cardSourceIds = ['192.0.2.101', '192.0.2.102'] as const;
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
-type FixtureOptions = { trustedLocal?: boolean; archiveFixture?: boolean };
+type FixtureOptions = {
+	trustedLocal?: boolean;
+	archiveFixture?: boolean;
+	calibrationFixture?: { mediaPath: string };
+};
 
 async function availablePort(): Promise<number> {
 	const reservation = createServer();
@@ -98,6 +103,7 @@ async function writeFixtureConfiguration(options: {
 	configurations: string[];
 	trustedLocal?: boolean;
 	archiveFixture?: boolean;
+	calibrationFixture?: { mediaPath: string };
 }): Promise<string> {
 	const { directory, origin, port, configurations, trustedLocal = false } = options;
 	const configPath = resolve(directory, 'config.toml');
@@ -114,14 +120,23 @@ allowed_origins = [${JSON.stringify(origin)}]
 short_term_secs = 5
 medium_term_secs = 60
 long_term_max_gb = 0
-${options.archiveFixture ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
+${options.archiveFixture || options.calibrationFixture ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
 [access_credentials]
 version = 1
 ${[...cardTestKeys, cardAdminKey].map((key) => credentialRecord(key, key === cardAdminKey)).join('\n')}
-${configurations.map((configuration, index) => (options.archiveFixture && index === 1 ? `${configuration}\nrecording_mode = "sub"\n` : configuration)).join('\n')}`,
+${configurations.map((configuration, index) => fixtureCameraConfiguration(configuration, index, options)).join('\n')}`,
 		{ mode: 0o600 }
 	);
 	return configPath;
+}
+
+function fixtureCameraConfiguration(configuration: string, index: number, options: FixtureOptions) {
+	if (options.calibrationFixture) {
+		return `${configuration}\nrecorded_audio = { default_offset_ms = 200 }\n`;
+	}
+	return options.archiveFixture && index === 1
+		? `${configuration}\nrecording_mode = "sub"\n`
+		: configuration;
 }
 
 async function waitForFixture(server: ChildProcess, url: string): Promise<void> {
@@ -314,25 +329,14 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 		await rm(directory, { recursive: true, force: true });
 	};
 	try {
-		const configurations = await fixtureCameras(
-			binary('test_camera'),
-			children,
-			options.archiveFixture ?? false
-		);
 		const port = await availablePort();
-		const configPath = await writeFixtureConfiguration({
+		const { configPath, archive, calibration } = await prepareFixture(
+			binary('test_camera'),
 			directory,
 			origin,
 			port,
-			configurations,
-			...options
-		});
-		const archive = await prepareArchiveFixture(
-			binary('test_camera'),
-			directory,
-			configPath,
 			children,
-			options.archiveFixture ?? false
+			options
 		);
 		let log = '';
 		const url = `http://127.0.0.1:${port}`;
@@ -352,6 +356,7 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 			url,
 			backendProcessId: () => server.pid,
 			...archive,
+			calibration,
 			close,
 			preserveArchiveEvidence: (destination: string) =>
 				preserveFixture(server, directory, destination),
@@ -369,4 +374,46 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 		await close();
 		throw error;
 	}
+}
+
+async function prepareFixture(
+	binary: string,
+	directory: string,
+	origin: string,
+	port: number,
+	children: ChildProcess[],
+	options: FixtureOptions
+) {
+	if (options.archiveFixture && options.calibrationFixture) {
+		throw new Error('Archive and calibration recording seeds must use separate fixtures.');
+	}
+	const configurations = await fixtureCameras(
+		binary,
+		children,
+		Boolean(options.archiveFixture || options.calibrationFixture)
+	);
+	const configPath = await writeFixtureConfiguration({
+		directory,
+		origin,
+		port,
+		configurations,
+		...options
+	});
+	const archive = await prepareArchiveFixture(
+		binary,
+		directory,
+		configPath,
+		children,
+		options.archiveFixture ?? false
+	);
+	const calibration = options.calibrationFixture
+		? await seedCalibrationRecording(
+				binary,
+				directory,
+				configPath,
+				cardSourceIds[0],
+				options.calibrationFixture.mediaPath
+			)
+		: undefined;
+	return { configPath, archive, calibration };
 }
