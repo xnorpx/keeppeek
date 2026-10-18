@@ -16,6 +16,14 @@ describe('Bun test selection', () => {
 		expect(isBunCompatibleTest('src/lib/home-assistant/config.spec.ts')).toBe(true);
 	});
 
+	it('routes guest fetch and browser logging global mocks through Vitest', () => {
+		for (const testFile of ['src/lib/guest-api.spec.ts', 'src/lib/browser-logs.spec.ts']) {
+			expect(isVitestCompatTest(testFile)).toBe(true);
+			expect(isBunCompatibleTest(testFile)).toBe(false);
+			expect(isVitestCompatTest(testFile.replaceAll('/', '\\'))).toBe(true);
+		}
+	});
+
 	it('normalizes Windows paths before applying exclusions', () => {
 		expect(normalizeTestPath('src\\lib\\camera.spec.ts')).toBe('src/lib/camera.spec.ts');
 		for (const testFile of [

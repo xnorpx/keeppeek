@@ -262,3 +262,14 @@ Camera and server health numbers belong here, not on `ServerCapabilities`: proce
 RSS, host memory and load, recording-disk bytes, per-camera online/degraded gauges, ingress
 fps and bitrate, reconnects, drops, and WebRTC session counts. `ServerCapabilities.cameras`
 carries identity and `ptz.supported`; it is not a metrics feed.
+
+## Guest evidence review
+
+Administrator sharing policy, immutable export preview, one-time grant creation and
+revision-bound list/revocation use the additive `ShareCommand` contract in
+[webrtc.md](webrtc.md#guest-evidence-review). The isolated `/share` page and
+`/guest/session`, `/guest/media` and `/guest/download` routes use a separate
+opaque guest cookie. They accept no ordinary credential or trusted-local fallback.
+Guest authorization never becomes a normal KeepPeek principal. The exact HTTPS
+origin, token handoff, status distinction, byte ranges and isolation headers are
+defined in [openapi.yaml](openapi.yaml).

@@ -2,14 +2,14 @@
 
 Captured during the 2026-09-12 Alpha audit from
 [KeepPeek — NVR Design System & Spec](https://app.paper.design/file/01M0B0VBH78TMTX40GCYYQ37SG/1-0).
-The manifest records the exact UTC export time; the audit continued into September 13 UTC.
+The base audit continued into September 13 UTC. Archive Boards 47-50 and Guest-review
+Boards 51-56 were added on October 18, 2026 UTC. The manifest records the latest additive export; earlier files are unchanged.
 
-This bundle contains **40 NVR boards, 67 lossless PNGs at 1×, and the complete 82-token snapshot**.
+This bundle contains **46 NVR boards, 85 lossless PNGs at 1×, and the complete 82-token snapshot**.
 Boards 01–34 and 45 were refreshed from the live source. Board 46 was added in Paper to address
 mobile Keep's crowded command area. The six contract-only boards have JSX without image references.
-Archive boards 47–50 were added and visually reviewed in Paper on October 17, 2026 (October 18 UTC).
-Each new board records its own export time; earlier exports retain their original provenance.
-The shared file now contains 86 artboards across several products; those are not 86 NVR requirements.
+The shared file contains 92 artboards across products and work streams; this checkout includes
+only its declared NVR reference set.
 
 ## Archive design
 
@@ -32,6 +32,14 @@ decoded-media regression tests in `ui/e2e/mobile-keep.e2e.ts`. The frames are no
 baselines or evidence of complete device qualification. The video surface is an intentional
 footage placeholder. See [DESIGN-DECISIONS.md](DESIGN-DECISIONS.md)
 for preserved functionality, responsive behavior, accessibility, and performance acceptance criteria.
+
+## Guest review proposals
+
+Boards 51-56 add target preview, one-time copy, list/revoke, guest ready, post-handoff
+expired and generic first-access unavailable states at desktop, 390px and 320px. These use
+the existing tokens and fonts. See the [handoff](../../../../tasks/132-guest-review-ui-design.md)
+for the exact `/share` isolation, all four required creator entry points and pending checks.
+These proposals do not establish runtime conformance or issue completion.
 
 ## Provenance and status
 

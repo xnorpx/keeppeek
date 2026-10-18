@@ -13,6 +13,10 @@ use crate::storage::{
     catalog::archive_playback::ArchiveRead,
 };
 
+mod envelope;
+use envelope::ExportEnvelope;
+pub use envelope::ExportMediaBounds;
+
 #[derive(Clone)]
 struct PlaybackTrack {
     source_id: u32,
@@ -25,6 +29,7 @@ pub struct ExportArtifact {
     pub aligned_start_ms: i64,
     pub delivered_end_ms: i64,
     pub bytes: u64,
+    pub media_bounds: Option<ExportMediaBounds>,
 }
 
 struct ExportRecording {
@@ -65,15 +70,16 @@ struct ExportSample {
     absolute_ms: i64,
     track_id: u32,
     track_type: mp4::TrackType,
+    timescale: u32,
     sample_description: mp4::MediaConfig,
     sample: mp4::Mp4Sample,
 }
 
-#[derive(Default)]
 struct ExportProgress {
     pending_video: bool,
     last_sample_start: HashMap<u32, u64>,
     bytes_written: u64,
+    envelope: ExportEnvelope,
 }
 
 struct ExportCallbacks<'a> {
@@ -157,7 +163,7 @@ pub(crate) fn export_fragment_ranges_to_writer<W: Write + Seek>(
     }
     let (recordings, aligned_start_ms, delivered_end_ms) =
         export_recordings(fragments, requested_end_ms)?;
-    let bytes =
+    let (bytes, media_bounds) =
         write_export_recordings(&recordings, aligned_start_ms, output, &cancelled, &progress)?;
     if cancelled() {
         bail!("export was cancelled");
@@ -166,6 +172,7 @@ pub(crate) fn export_fragment_ranges_to_writer<W: Write + Seek>(
         aligned_start_ms,
         delivered_end_ms,
         bytes,
+        media_bounds,
     })
 }
 
@@ -219,7 +226,7 @@ fn write_export_recordings<W: Write + Seek>(
     output: &mut W,
     cancelled: &impl Fn() -> bool,
     report_progress: &impl Fn(u64),
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<(u64, Option<ExportMediaBounds>)> {
     let first = recordings
         .first()
         .context("export has no source recordings")?;
@@ -234,7 +241,12 @@ fn write_export_recordings<W: Write + Seek>(
     let (config, configs) = export_mp4_configuration(&tracks)?;
     let mut writer =
         mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(output, &config, &configs)?;
-    let mut progress = ExportProgress::default();
+    let mut progress = ExportProgress {
+        pending_video: false,
+        last_sample_start: HashMap::new(),
+        bytes_written: 0,
+        envelope: ExportEnvelope::new(aligned_start_ms),
+    };
     let callbacks = ExportCallbacks {
         cancelled,
         report_progress,
@@ -268,9 +280,13 @@ fn write_export_recordings<W: Write + Seek>(
         )?;
     }
     writer.write_end()?;
+    progress.envelope.flush();
     let output = writer.into_writer();
     output.flush()?;
-    Ok(output.seek(std::io::SeekFrom::End(0))?)
+    Ok((
+        output.seek(std::io::SeekFrom::End(0))?,
+        progress.envelope.bounds(),
+    ))
 }
 
 fn export_mp4_configuration(
@@ -362,6 +378,7 @@ fn track_has_selected_sample<R: Read + Seek>(
     aligned_start_ms: i64,
     cancelled: &impl Fn() -> bool,
 ) -> anyhow::Result<bool> {
+    anyhow::ensure!(track.config.timescale > 0, "export track timescale is zero");
     for sample_id in 1..=reader.sample_count(track.source_id)? {
         if cancelled() {
             bail!("export was cancelled");
@@ -389,7 +406,7 @@ fn track_has_selected_sample<R: Read + Seek>(
         if !overlaps {
             continue;
         }
-        let origin_ticks = i128::from(recording.started_at_ms - aligned_start_ms)
+        let origin_ticks = (i128::from(recording.started_at_ms) - i128::from(aligned_start_ms))
             * i128::from(track.config.timescale)
             / 1_000;
         if origin_ticks + i128::from(sample.start_time) >= 0 {
@@ -431,65 +448,15 @@ fn write_export_recording<R: Read + Seek, W: Write + Seek>(
 ) -> anyhow::Result<()> {
     let mut samples = Vec::new();
     for (index, track) in tracks.iter().enumerate() {
-        let sample_count = reader.sample_count(track.source_id)?;
-        for sample_id in 1..=sample_count {
-            if (callbacks.cancelled)() {
-                bail!("export was cancelled");
-            }
-            let mut sample = reader
-                .read_sample(track.source_id, sample_id)?
-                .with_context(|| {
-                    format!("track {} sample {sample_id} is missing", track.source_id)
-                })?;
-            let sample_description_index = reader
-                .tracks()
-                .get(&track.source_id)
-                .context("export source track disappeared")?
-                .sample_description_index(sample_id)?;
-            let sample_description = reader
-                .tracks()
-                .get(&track.source_id)
-                .context("export source track disappeared")?
-                .media_config_for_description(sample_description_index)?;
-            let start_offset_ms =
-                sample.start_time.saturating_mul(1_000) / u64::from(track.config.timescale);
-            let end_offset_ms = sample
-                .start_time
-                .saturating_add(u64::from(sample.duration))
-                .saturating_mul(1_000)
-                / u64::from(track.config.timescale);
-            let absolute_ms = recording
-                .started_at_ms
-                .saturating_add(i64::try_from(start_offset_ms).unwrap_or(i64::MAX));
-            let absolute_end_ms = recording
-                .started_at_ms
-                .saturating_add(i64::try_from(end_offset_ms).unwrap_or(i64::MAX));
-            if !recording
-                .intervals
-                .iter()
-                .any(|(start, end)| absolute_ms < *end && absolute_end_ms > *start)
-            {
-                continue;
-            }
-            let origin_ticks = i128::from(recording.started_at_ms - aligned_start_ms)
-                * i128::from(track.config.timescale)
-                / 1_000;
-            let normalized_start = origin_ticks + i128::from(sample.start_time);
-            let Ok(normalized_start) = u64::try_from(normalized_start) else {
-                if track.config.track_type != mp4::TrackType::Video {
-                    continue;
-                }
-                bail!("export video sample timestamp precedes aligned start");
-            };
-            sample.start_time = normalized_start;
-            samples.push(ExportSample {
-                absolute_ms,
-                track_id: u32::try_from(index + 1).unwrap_or(u32::MAX),
-                track_type: track.config.track_type,
-                sample_description,
-                sample,
-            });
-        }
+        collect_export_track(
+            reader,
+            recording,
+            track,
+            index,
+            aligned_start_ms,
+            callbacks,
+            &mut samples,
+        )?;
     }
     samples.sort_unstable_by(|left, right| {
         left.absolute_ms.cmp(&right.absolute_ms).then_with(|| {
@@ -499,32 +466,126 @@ fn write_export_recording<R: Read + Seek, W: Write + Seek>(
         })
     });
     for sample in samples {
+        write_export_sample(sample, writer, progress, callbacks)?;
+    }
+    Ok(())
+}
+
+fn collect_export_track<R: Read + Seek>(
+    reader: &mut mp4::Mp4Reader<R>,
+    recording: &ExportRecording,
+    track: &PlaybackTrack,
+    index: usize,
+    aligned_start_ms: i64,
+    callbacks: &ExportCallbacks<'_>,
+    samples: &mut Vec<ExportSample>,
+) -> anyhow::Result<()> {
+    for sample_id in 1..=reader.sample_count(track.source_id)? {
         if (callbacks.cancelled)() {
             bail!("export was cancelled");
         }
-        if progress
-            .last_sample_start
-            .get(&sample.track_id)
-            .is_some_and(|previous| sample.sample.start_time <= *previous)
-        {
+        let sample = reader
+            .read_sample(track.source_id, sample_id)?
+            .with_context(|| format!("track {} sample {sample_id} is missing", track.source_id))?;
+        let source = reader
+            .tracks()
+            .get(&track.source_id)
+            .context("export source track disappeared")?;
+        let description = source.sample_description_index(sample_id)?;
+        let sample_description = source.media_config_for_description(description)?;
+        let Some((absolute_ms, sample)) =
+            selected_export_sample(recording, track, aligned_start_ms, sample)?
+        else {
             continue;
-        }
-        if sample.track_type == mp4::TrackType::Video && sample.sample.is_sync {
-            if progress.pending_video {
-                writer.flush_fragment()?;
-            }
-            progress.pending_video = true;
-        }
-        let description_index =
-            writer.add_sample_description(sample.track_id, sample.sample_description)?;
-        progress
-            .last_sample_start
-            .insert(sample.track_id, sample.sample.start_time);
-        let sample_bytes = u64::try_from(sample.sample.bytes.len()).unwrap_or(u64::MAX);
-        writer.write_sample_with_description(sample.track_id, description_index, sample.sample)?;
-        progress.bytes_written = progress.bytes_written.saturating_add(sample_bytes);
-        (callbacks.report_progress)(progress.bytes_written);
+        };
+        samples.push(ExportSample {
+            absolute_ms,
+            track_id: u32::try_from(index + 1).unwrap_or(u32::MAX),
+            track_type: track.config.track_type,
+            timescale: track.config.timescale,
+            sample_description,
+            sample,
+        });
     }
+    Ok(())
+}
+
+fn selected_export_sample(
+    recording: &ExportRecording,
+    track: &PlaybackTrack,
+    aligned_start_ms: i64,
+    mut sample: mp4::Mp4Sample,
+) -> anyhow::Result<Option<(i64, mp4::Mp4Sample)>> {
+    anyhow::ensure!(track.config.timescale > 0, "export track timescale is zero");
+    let start_offset_ms =
+        sample.start_time.saturating_mul(1_000) / u64::from(track.config.timescale);
+    let end_offset_ms = sample
+        .start_time
+        .saturating_add(u64::from(sample.duration))
+        .saturating_mul(1_000)
+        / u64::from(track.config.timescale);
+    let absolute_ms = recording
+        .started_at_ms
+        .saturating_add(i64::try_from(start_offset_ms).unwrap_or(i64::MAX));
+    let absolute_end_ms = recording
+        .started_at_ms
+        .saturating_add(i64::try_from(end_offset_ms).unwrap_or(i64::MAX));
+    if !recording
+        .intervals
+        .iter()
+        .any(|(start, end)| absolute_ms < *end && absolute_end_ms > *start)
+    {
+        return Ok(None);
+    }
+    let origin_ticks = (i128::from(recording.started_at_ms) - i128::from(aligned_start_ms))
+        * i128::from(track.config.timescale)
+        / 1_000;
+    let normalized_start = origin_ticks + i128::from(sample.start_time);
+    let Ok(normalized_start) = u64::try_from(normalized_start) else {
+        if track.config.track_type != mp4::TrackType::Video {
+            return Ok(None);
+        }
+        bail!("export video sample timestamp precedes aligned start");
+    };
+    sample.start_time = normalized_start;
+    Ok(Some((absolute_ms, sample)))
+}
+
+fn write_export_sample<W: Write + Seek>(
+    sample: ExportSample,
+    writer: &mut mp4::FragmentedMp4Writer<W>,
+    progress: &mut ExportProgress,
+    callbacks: &ExportCallbacks<'_>,
+) -> anyhow::Result<()> {
+    if (callbacks.cancelled)() {
+        bail!("export was cancelled");
+    }
+    if progress
+        .last_sample_start
+        .get(&sample.track_id)
+        .is_some_and(|previous| sample.sample.start_time <= *previous)
+    {
+        return Ok(());
+    }
+    if sample.track_type == mp4::TrackType::Video && sample.sample.is_sync {
+        if progress.pending_video {
+            writer.flush_fragment()?;
+            progress.envelope.flush();
+        }
+        progress.pending_video = true;
+    }
+    let description = writer.add_sample_description(sample.track_id, sample.sample_description)?;
+    let timing = sample.sample.clone();
+    let sample_bytes = u64::try_from(sample.sample.bytes.len()).unwrap_or(u64::MAX);
+    writer.write_sample_with_description(sample.track_id, description, sample.sample)?;
+    progress
+        .last_sample_start
+        .insert(sample.track_id, timing.start_time);
+    progress
+        .envelope
+        .sample(sample.track_id, sample.timescale, &timing);
+    progress.bytes_written = progress.bytes_written.saturating_add(sample_bytes);
+    (callbacks.report_progress)(progress.bytes_written);
     Ok(())
 }
 
@@ -600,6 +661,29 @@ fn remux_recording(source: &Path, destination: &Path) -> anyhow::Result<()> {
         &config,
         &track_configs,
     )?;
+    let samples = collect_compatibility_samples(&mut reader, &tracks)?;
+    let mut pending_video = false;
+    for sample in samples {
+        if sample.track_type == mp4::TrackType::Video && sample.sample.is_sync {
+            if pending_video {
+                writer.flush_fragment()?;
+            }
+            pending_video = true;
+        }
+        let description_index =
+            writer.add_sample_description(sample.track_id, sample.sample_description)?;
+        writer.write_sample_with_description(sample.track_id, description_index, sample.sample)?;
+    }
+    writer.write_end()?;
+    let mut output = writer.into_writer();
+    output.flush()?;
+    Ok(())
+}
+
+fn collect_compatibility_samples<R: Read + Seek>(
+    reader: &mut mp4::Mp4Reader<R>,
+    tracks: &[PlaybackTrack],
+) -> anyhow::Result<Vec<ExportSample>> {
     let mut samples = Vec::new();
     for (output_index, track) in tracks.iter().enumerate() {
         let sample_count = reader.sample_count(track.source_id)?;
@@ -620,6 +704,7 @@ fn remux_recording(source: &Path, destination: &Path) -> anyhow::Result<()> {
                 .unwrap_or(i64::MAX),
                 track_id: u32::try_from(output_index + 1).unwrap_or(u32::MAX),
                 track_type: track.config.track_type,
+                timescale: track.config.timescale,
                 sample_description,
                 sample,
             });
@@ -632,22 +717,7 @@ fn remux_recording(source: &Path, destination: &Path) -> anyhow::Result<()> {
             left_rank.cmp(&right_rank)
         })
     });
-    let mut pending_video = false;
-    for sample in samples {
-        if sample.track_type == mp4::TrackType::Video && sample.sample.is_sync {
-            if pending_video {
-                writer.flush_fragment()?;
-            }
-            pending_video = true;
-        }
-        let description_index =
-            writer.add_sample_description(sample.track_id, sample.sample_description)?;
-        writer.write_sample_with_description(sample.track_id, description_index, sample.sample)?;
-    }
-    writer.write_end()?;
-    let mut output = writer.into_writer();
-    output.flush()?;
-    Ok(())
+    Ok(samples)
 }
 
 fn playback_track_config(track: &mp4::Mp4Track) -> anyhow::Result<Option<mp4::TrackConfig>> {
@@ -1510,3 +1580,7 @@ mod tests {
         writer.write_end().unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "playback/export_envelope_tests.rs"]
+mod export_envelope_tests;

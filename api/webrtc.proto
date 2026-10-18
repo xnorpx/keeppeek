@@ -51,6 +51,7 @@ message Request {
     TalkbackCommand talkback_command = 28;
     StorageVolumeCommand storage_volume_command = 29;
     ArchiveCommand archive_command = 30;
+    ShareCommand share_command = 31;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -2927,6 +2928,7 @@ message Ok {
     ExternalAuthenticationResult external_authentication_result = 42;
     StorageVolumeResult storage_volume_result = 43;
     ArchiveResult archive_result = 44;
+    ShareResult share_result = 45;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -4260,5 +4262,144 @@ message ArchiveResult {
     ArchiveStatus status = 1;
     ArchiveJob job = 2;
     ArchiveJobList jobs = 3;
+  }
+}
+
+message ShareCommand {
+  oneof action {
+    GetSharePolicy get_policy = 1;
+    ConfigureSharePolicy configure_policy = 2;
+    PreviewShareExport preview_export = 3;
+    CreateShareGrant create = 4;
+    ListShareGrants list = 5;
+    RevokeShareGrant revoke = 6;
+    RevokeShareEvidence revoke_evidence = 7;
+  }
+}
+
+message SharePolicySettings {
+  bool enabled = 1;
+  optional string public_origin = 2;
+}
+
+message SharePolicy {
+  SharePolicySettings settings = 1;
+  string revision = 2;
+  bool available = 3;
+  optional string unavailable_reason = 4;
+}
+
+message GetSharePolicy {}
+
+message ConfigureSharePolicy {
+  SharePolicySettings settings = 1;
+  string expected_revision = 2;
+}
+
+message PreviewShareExport {
+  string export_job_id = 1;
+}
+
+message ShareEvidence {
+  string export_job_id = 1;
+  string artifact_id = 2;
+  string sha256 = 3;
+  string source_id = 4;
+  string source_identity = 5;
+  string camera_name = 6;
+  int64 start_ms = 7;
+  int64 end_ms = 8;
+  uint64 bytes = 9;
+  int64 available_until_ms = 10;
+  bool has_gaps = 11;
+}
+
+message CreateShareGrant {
+  string request_id = 1;
+  string export_job_id = 2;
+  string artifact_id = 3;
+  string expected_sha256 = 4;
+  int64 expires_at_ms = 5;
+  string display_name = 6;
+  string note = 7;
+  bool allow_stream = 8;
+  bool allow_download = 9;
+  optional uint32 max_views = 10;
+  optional uint32 max_downloads = 11;
+}
+
+message ListShareGrants {
+  uint32 page_size = 1;
+  optional string after_grant_id = 2;
+  bool all_creators = 3;
+}
+
+message RevokeShareGrant {
+  string grant_id = 1;
+  uint64 expected_revision = 2;
+  string reason = 3;
+}
+
+message RevokeShareEvidence {
+  oneof evidence {
+    string artifact_id = 1;
+    string source_identity = 2;
+  }
+  string reason = 3;
+}
+
+enum ShareGrantStatus {
+  SHARE_GRANT_STATUS_UNSPECIFIED = 0;
+  SHARE_GRANT_STATUS_ACTIVE = 1;
+  SHARE_GRANT_STATUS_EXPIRED = 2;
+  SHARE_GRANT_STATUS_REVOKED = 3;
+  SHARE_GRANT_STATUS_UNAVAILABLE = 4;
+  SHARE_GRANT_STATUS_LIMIT_REACHED = 5;
+}
+
+message ShareGrant {
+  string grant_id = 1;
+  uint64 revision = 2;
+  string creator_id = 3;
+  string display_name = 4;
+  string note = 5;
+  int64 created_at_ms = 6;
+  int64 expires_at_ms = 7;
+  optional int64 revoked_at_ms = 8;
+  optional string revoke_reason = 9;
+  ShareGrantStatus status = 10;
+  bool allow_stream = 11;
+  bool allow_download = 12;
+  optional uint32 max_views = 13;
+  optional uint32 max_downloads = 14;
+  uint32 views = 15;
+  uint32 downloads = 16;
+  optional int64 last_access_at_ms = 17;
+  ShareEvidence evidence = 18;
+}
+
+message IssuedShareGrant {
+  ShareGrant grant = 1;
+  // This bearer URL appears only in the successful creation response.
+  string url = 2;
+}
+
+message ShareGrantList {
+  repeated ShareGrant grants = 1;
+  optional string next_after_grant_id = 2;
+}
+
+message RevokedShareEvidence {
+  uint32 revoked_count = 1;
+}
+
+message ShareResult {
+  oneof result {
+    SharePolicy policy = 1;
+    ShareEvidence evidence = 2;
+    IssuedShareGrant created = 3;
+    ShareGrant grant = 4;
+    ShareGrantList grants = 5;
+    RevokedShareEvidence revoked_evidence = 6;
   }
 }

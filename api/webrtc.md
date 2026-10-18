@@ -1541,3 +1541,56 @@ accepted cursor or batch includes archived media. Clients display that archive
 access and seeking may be slower. Timeline metadata remains indexed after primary
 eviction, and direct local archive playback does not require a full restore first.
 Existing waiting, error, seek-generation, and cancellation behavior still applies.
+
+## Guest evidence review
+
+`keeppeek.guest-review.v1` advertises `ShareCommand` (request tag 31) and
+`ShareResult` (success tag 45). All sharing management requires Administrator and
+current source/export authorization. Guest sessions do not use this channel.
+
+| Action             | Result and bounds                                                                                                                                                                 |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_policy`       | Current `[sharing]` deployment policy, revision and availability; no grant secret                                                                                                 |
+| `configure_policy` | Compare the expected revision and atomically persist enabled/origin settings; invalidate active guest contexts                                                                    |
+| `preview_export`   | One current creator-owned Ready export, immutable artifact generation and SHA256, measured file envelope, bytes, coverage and expiry                                                |
+| `create`           | Revalidate that exact preview generation/digest, then create one bounded grant and disclose its bearer URL once                                                                   |
+| `list`             | UUID-ordered live pages; default 50, maximum 100; encoded pages stay below 48 KiB and may contain fewer grants; `all_creators` remains Administrator-only; no token or token hash |
+| `revoke`           | Exact grant revision; durable invalidation precedes active transport cancellation                                                                                                 |
+| `revoke_evidence`  | Revoke the current active grants for one immutable artifact or persistent camera identity, at most 256 in one atomic batch                                                        |
+
+`CreateShareGrant.request_id` is a UUID used as the durable grant identity and
+creation retry fence. Repeating it returns a conflict and never returns the old
+secret or silently creates another link. An indeterminate result requires listing
+and revoking the grant before starting a new creation intent.
+
+The first export path grants the complete immutable MP4. Its preview reports the
+measured media envelope, rounded outward to milliseconds across all emitted
+tracks. It can begin before the original requested start because of codec
+preroll, or end after the requested end because whole samples are retained. It must not be described as exact recording-range sharing. A
+mutable export job ID is insufficient: `artifact_id` and `expected_sha256` must
+still match the Ready generation. Guest admission also requires a persisted
+media-envelope proof bound to that artifact, digest and byte length. Legacy
+exports without captured source/owner identity or measured bounds cannot be
+shared; ordinary authenticated download remains available.
+
+A grant lasts at most 24 hours and never later than export expiry. Evidence remains
+subject to deletion, privacy and retention; sharing creates no retention hold.
+The initial bounds are 256 active grants/server, 32/creator, two-minute media,
+512 MiB, 128 UTF-8 bytes for display name and 512 for the optional note. Creation
+must enable streaming, download, or both. Optional successful-view/download
+maxima are positive integers. Stream accounting commits on first validated
+positive media read; seeks in that established session reuse the view. Downloads
+count separately per transfer. A partial transfer is not refunded after first
+byte, including across a crash.
+
+`IssuedShareGrant.url` is a bearer secret. It appears only in the successful
+creation result, uses the configured HTTPS origin and `/share#<token>`, and must
+remain only in the creator component's memory until copy/close. Never log the
+response, include it in diagnostics, persist it in browser storage, or try to
+recover it through list/retry. The full URL is redacted by Rust Debug formatting.
+
+The guest handoff, status and bounded media contracts are defined separately in
+[openapi.yaml](openapi.yaml). The guest cookie never authenticates normal HTTP,
+WebRTC, logs, search, controls, health or settings. The public session UUID binds
+each tab to its cookie; it is not a bearer credential. Opening another link in a
+second tab cannot silently switch the first tab to different evidence.

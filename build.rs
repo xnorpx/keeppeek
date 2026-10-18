@@ -107,6 +107,7 @@ fn generate_protobuf() -> io::Result<()> {
     prost_config.protoc_executable(protoc);
     prost_config.skip_debug([
         ".keeppeek.webrtc.v1.VerifyAdministratorBearer",
+        ".keeppeek.webrtc.v1.IssuedShareGrant",
         ".keeppeek.webrtc.v1.AdministratorBrowserStart",
         ".keeppeek.webrtc.v1.AppendConfigurationRestoreVerification",
     ]);

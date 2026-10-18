@@ -82,6 +82,15 @@ export const serverCapabilityCatalog = {
 		whenMissing: 'Ranges remain selectable and estimated; export commands require a server update',
 		failureGuarantee: 'Failed jobs remain retryable and expose no corrupt partial download'
 	},
+	'keeppeek.guest-review.v1': {
+		delivery: 'target',
+		serverOwns:
+			'Immutable evidence previews, expiring grants, one-time disclosure, bounded guest sessions and revisioned revocation',
+		unlocks: 'Administrator guest links for completed exports and guest sharing policy',
+		whenMissing: 'Guest link creation and management remain hidden',
+		failureGuarantee:
+			'Unconfirmed creation never re-discloses a secret; stale mutations require a fresh grant list'
+	},
 	'stored-media-keyframe-preview.v1': {
 		delivery: 'ships',
 		serverOwns:

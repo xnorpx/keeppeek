@@ -50,28 +50,29 @@ Root fields must appear before a table header or they belong to that table.
 
 ## Section index
 
-| TOML section                                       | Owning type                                         | Ownership                                        |
-| -------------------------------------------------- | --------------------------------------------------- | ------------------------------------------------ |
-| Root fields                                        | `Config`                                            | Operator settings                                |
-| `[access]`                                         | `AccessConfig`                                      | Administrator security policy                    |
-| `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                   |
-| `[storage]`                                        | `StorageToml`                                       | Recording paths, retention, and safety           |
-| `[battery_wake]`                                   | `BatteryWakeConfig`                                 | Reolink battery-camera wake service              |
-| `[logging]`                                        | `LoggingConfig`                                     | Service log destination                          |
-| `[operational_events]`                             | `OperationalEventsConfig`                           | Health-event timing                              |
-| `[operational_events.cameras."<camera-id-or-ip>"]` | `OperationalEventOverride`                          | Per-camera timing overrides                      |
-| `[privacy.default]`                                | `PrivacySchedule`                                   | Inherited server-enforced recurring privacy      |
-| `[privacy.cameras."<camera-id-or-ip>"]`            | `PrivacySchedule`                                   | Per-camera server-enforced recurring privacy     |
-| `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision        |
-| `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                           |
-| `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                                  |
-| `[<namespace>.<camera-key>.events]`                | `EventConfig`                                       | Native camera event selection and filters        |
-| `[access_credentials]`                             | `PersistedAccessCatalog`                            | Server-managed credential records                |
-| `[peek_layouts]`                                   | `StoredRegistry`                                    | Server-managed layouts and per-user selection    |
-| `[configuration_templates]`                        | `StoredTemplateDocument`                            | Server-managed camera templates                  |
-| `[notifications]`                                  | `NotificationConfiguration`                         | Server-managed rule drafts and active rules      |
-| `[runtime_profiles]`                               | `ProfileRegistry`                                   | Server-managed profile definitions and selection |
-| `[storage_migration]`                              | `StorageMigration`                                  | Server-managed pending storage move              |
+| TOML section                                       | Owning type                                         | Ownership                                             |
+| -------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------- |
+| Root fields                                        | `Config`                                            | Operator settings                                     |
+| `[sharing]`                                        | `sharing::SharingConfig`                            | Guest review deployment policy; server-owned revision |
+| `[access]`                                         | `AccessConfig`                                      | Administrator security policy                         |
+| `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                        |
+| `[storage]`                                        | `StorageToml`                                       | Recording paths, retention, and safety                |
+| `[battery_wake]`                                   | `BatteryWakeConfig`                                 | Reolink battery-camera wake service                   |
+| `[logging]`                                        | `LoggingConfig`                                     | Service log destination                               |
+| `[operational_events]`                             | `OperationalEventsConfig`                           | Health-event timing                                   |
+| `[operational_events.cameras."<camera-id-or-ip>"]` | `OperationalEventOverride`                          | Per-camera timing overrides                           |
+| `[privacy.default]`                                | `PrivacySchedule`                                   | Inherited server-enforced recurring privacy           |
+| `[privacy.cameras."<camera-id-or-ip>"]`            | `PrivacySchedule`                                   | Per-camera server-enforced recurring privacy          |
+| `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision             |
+| `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                                |
+| `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                                       |
+| `[<namespace>.<camera-key>.events]`                | `EventConfig`                                       | Native camera event selection and filters             |
+| `[access_credentials]`                             | `PersistedAccessCatalog`                            | Server-managed credential records                     |
+| `[peek_layouts]`                                   | `StoredRegistry`                                    | Server-managed layouts and per-user selection         |
+| `[configuration_templates]`                        | `StoredTemplateDocument`                            | Server-managed camera templates                       |
+| `[notifications]`                                  | `NotificationConfiguration`                         | Server-managed rule drafts and active rules           |
+| `[runtime_profiles]`                               | `ProfileRegistry`                                   | Server-managed profile definitions and selection      |
+| `[storage_migration]`                              | `StorageMigration`                                  | Server-managed pending storage move                   |
 
 `homekit` is a reserved root section, not an implemented HomeKit configuration schema. Do not use
 it as a camera namespace. Every other non-reserved root table is interpreted as a camera namespace;
@@ -215,6 +216,44 @@ Type: `DirectCardConfig`, section `[direct_card]`.
 | Field             | Type          | Default | Validation and meaning                                                                                                                      |
 | ----------------- | ------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `allowed_origins` | `Vec<String>` | `[]`    | Unique canonical exact HTTP(S) origins, such as `"https://ha.example"`. No credentials, path, query, fragment, wildcard, or trailing slash. |
+
+## Guest review deployment policy
+
+Type: `sharing::SharingConfig`, section `[sharing]`. Guest sharing is disabled by default.
+These settings use the existing `config.toml`; they do not configure a tunnel, relay, DNS,
+TLS certificate or network exposure. An operator must provide the reachable HTTPS origin.
+
+| Field           | Type              | Default | Validation and meaning                                                                                                                                                                |
+| --------------- | ----------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`       | `bool`            | `false` | Enables guest handoff only when the remaining origin, evidence, private metadata and transport checks succeed.                                                                        |
+| `public_origin` | optional `String` | Absent  | Canonical HTTPS origin, 1 to 512 UTF-8 bytes. No credentials, path, query, fragment or trailing slash; for example `"https://review.example"`. An enabled policy requires this value. |
+| `revision`      | `u64`             | `1`     | Server-owned optimistic-write revision. Must be positive and fit a TOML signed integer. Successful Administrator policy writes increment it; stale revisions are rejected.            |
+
+Unknown fields in `[sharing]` are rejected by the real configuration loader. A
+`public_origin` may use the existing `{secret:KEY}` resolver. Saving an unchanged effective
+origin preserves its original secret reference in `config.toml`; it does not rewrite the
+resolved value or modify `secrets.toml`. The effective origin is visible to Administrators
+because it is the public address used in guest links.
+
+A policy save invalidates guest sessions and stops active guest delivery. Delivered view
+and download counters remain durable. If an atomic settings write returns an error after
+its commit point, guest access stops until an Administrator saves the policy successfully.
+Reloading a camera configuration cannot silently enable that suspended policy. Manual file
+edits take effect on restart; live policy changes use the Administrator control command.
+
+Grants, hashed token verifiers and audit counters are operational data under the private,
+identity-pinned metadata owner, in `guest-review/grants.db`; they are not a second settings
+file. The store requires private local filesystem ownership and rejects unsafe or unavailable
+roots. Guest sessions and active transfers do not survive restart. The dedicated guest cookie
+never becomes a normal KeepPeek principal, role or control-channel credential.
+
+The fixed grant limits are 256 active grants, 32 per creator, at most 24 hours and no later
+than the immutable export's expiry. Evidence is limited to two minutes and 512 MiB. Display
+names are limited to 128 UTF-8 bytes and notes to 512. There are at most eight media sessions
+globally and two per grant. Retention may remove evidence before a grant expires; sharing
+creates no evidence hold. Expired or revoked metadata disappears from management lists after
+30 days, with bounded physical cleanup scheduled at most once per minute. New grants are
+rejected when the retained audit store reaches its fixed capacity.
 
 ## External authentication configuration
 

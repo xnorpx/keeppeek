@@ -198,6 +198,18 @@ pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/keeppeek.webrtc.v1.rs"));
 }
 
+impl fmt::Debug for proto::IssuedShareGrant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IssuedShareGrant")
+            .field(
+                "grant_id",
+                &self.grant.as_ref().map(|grant| grant.grant_id.as_str()),
+            )
+            .field("url", &"[redacted]")
+            .finish()
+    }
+}
 impl fmt::Debug for proto::VerifyAdministratorBearer {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -391,3 +403,7 @@ mod tests {
         assert_eq!(decoded, request);
     }
 }
+
+#[cfg(test)]
+#[path = "api/share_contract_tests.rs"]
+mod share_contract_tests;

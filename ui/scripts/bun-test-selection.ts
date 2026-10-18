@@ -1,5 +1,7 @@
 const vitestOnlyTests = new Set([
 	'src/lib/api.spec.ts',
+	'src/lib/browser-logs.spec.ts',
+	'src/lib/guest-api.spec.ts',
 	'src/lib/capability-state.spec.ts',
 	'src/lib/control-client.spec.ts',
 	'src/lib/control-client-runtime-profiles.spec.ts',
