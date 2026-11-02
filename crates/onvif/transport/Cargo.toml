@@ -9,4 +9,4 @@ workspace = true
 
 [dependencies]
 thiserror = "2.0"
-yaserde = "0.12"
+yaserde = "0.13"
