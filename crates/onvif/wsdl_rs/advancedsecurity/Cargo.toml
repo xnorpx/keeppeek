@@ -16,5 +16,5 @@ validate = { path = "../../validate" }
 xml-rs = "1.0.0"
 xsd-macro-utils = { path = "../../xsd-macro-utils" }
 xsd-types = { path = "../../xsd-types" }
-yaserde = "0.12"
-yaserde_derive = "0.12"
+yaserde = "0.13"
+yaserde_derive = "0.13"

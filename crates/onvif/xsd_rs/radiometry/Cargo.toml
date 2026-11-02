@@ -14,5 +14,5 @@ workspace = true
 onvif = { package = "onvif-xsd", path = "../../xsd_rs/onvif_xsd" }
 validate = { path = "../../validate" }
 xsd-types = { path = "../../xsd-types" }
-yaserde = "0.12"
-yaserde_derive = "0.12"
+yaserde = "0.13"
+yaserde_derive = "0.13"

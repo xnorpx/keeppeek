@@ -15,5 +15,5 @@ transport = { path = "../../transport" }
 types = { path = "../../xsd_rs/types" }
 validate = { path = "../../validate" }
 xsd-types = { path = "../../xsd-types" }
-yaserde = "0.12"
-yaserde_derive = "0.12"
+yaserde = "0.13"
+yaserde_derive = "0.13"
