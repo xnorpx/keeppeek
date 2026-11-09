@@ -16,6 +16,6 @@ t_1 = { path = "../../wsdl_rs/t_1" }
 transport = { path = "../../transport" }
 validate = { path = "../../validate" }
 xsd-types = { path = "../../xsd-types" }
-yaserde = "0.12"
-yaserde_derive = "0.12"
+yaserde = "0.13"
+yaserde_derive = "0.13"
 ws_addr = { path = "../../wsdl_rs/ws_addr" }
