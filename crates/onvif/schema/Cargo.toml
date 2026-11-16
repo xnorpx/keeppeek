@@ -61,8 +61,8 @@ xml_xsd = { path = "../wsdl_rs/xml_xsd" }
 
 [dev-dependencies]
 assert_approx_eq = "1"
-yaserde = "0.12"
-yaserde_derive = "0.12"
+yaserde = "0.13"
+yaserde_derive = "0.13"
 
 [features]
 default = []
