@@ -469,7 +469,7 @@ pub(super) fn validate_configuration(path: &Path, root: &toml::Table) -> anyhow:
     let mut ids = BTreeMap::new();
     for record in configured.rules {
         validate_persisted_rule(path, &record)?;
-        if ids.insert(record.id.clone(), ()).is_some() {
+        if ids.insert(record.id, ()).is_some() {
             anyhow::bail!("notification configuration contains duplicate rule IDs");
         }
     }

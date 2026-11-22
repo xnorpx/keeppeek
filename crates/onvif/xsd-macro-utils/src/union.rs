@@ -68,7 +68,7 @@ pub fn serde(ast: &syn::DeriveInput) -> syn::Result<TokenStream> {
             fn serialize<W: ::std::io::Write>(
                 &self,
                 writer: &mut ::yaserde::ser::Serializer<W>,
-            ) -> ::std::result::Result<(), ::std::string::String> {
+            ) -> ::yaserde::Result<()> {
                 ::xsd_types::utils::yaserde::serialize(self, #struct_name_literal, writer, |s| {
                     match s {
                         #ser_variants
@@ -81,13 +81,11 @@ pub fn serde(ast: &syn::DeriveInput) -> syn::Result<TokenStream> {
                 &self,
                 attributes: ::std::vec::Vec<::yaserde::__xml::attribute::OwnedAttribute>,
                 namespace: ::yaserde::__xml::namespace::Namespace,
-            ) -> ::std::result::Result<
+            ) -> ::yaserde::Result<
                 (
                     Vec<::yaserde::__xml::attribute::OwnedAttribute>,
                     ::yaserde::__xml::namespace::Namespace,
-                ),
-                ::std::string::String,
-            > {
+                )> {
                 Ok((attributes, namespace))
             }
         }
@@ -95,7 +93,7 @@ pub fn serde(ast: &syn::DeriveInput) -> syn::Result<TokenStream> {
         impl ::yaserde::YaDeserialize for #struct_name {
             fn deserialize<R: ::std::io::Read>(
                 reader: &mut ::yaserde::de::Deserializer<R>,
-            ) -> ::std::result::Result<Self, ::std::string::String> {
+            ) -> ::yaserde::Result<Self> {
                 ::xsd_types::utils::yaserde::deserialize(reader, |s| {
                     #de_variants
                     Ok(#struct_name::__Unknown__(s.to_string()))

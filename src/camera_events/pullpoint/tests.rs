@@ -87,9 +87,9 @@ fn subscription(fake: &FakeOnvif) -> (Client, Subscription, Instant) {
     (client, subscription, started)
 }
 
-fn delayed_unavailable() -> Reply {
+fn delayed_unavailable(delay: Duration) -> Reply {
     Reply::raw(Vec::new()).then(
-        Duration::from_millis(1200),
+        delay,
         b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
     )
 }
@@ -102,7 +102,8 @@ fn synchronization_stall_preserves_initial_lease_for_renewal_and_cleanup() {
         .unwrap();
     let (producer, _received) = producer(&fake);
     let (mut client, subscription, started) = subscription(&fake);
-    fake.next_response(delayed_unavailable()).unwrap();
+    fake.next_response(delayed_unavailable(Duration::from_millis(1200)))
+        .unwrap();
     for _ in 0..3 {
         fake.next_pull_response(Reply::http(503, "text/plain", "unavailable"))
             .unwrap();
@@ -132,21 +133,24 @@ fn synchronization_stall_preserves_initial_lease_for_renewal_and_cleanup() {
 #[test]
 fn pull_stall_is_capped_by_renewal_budget_and_unsubscribes() {
     let fake = FakeOnvif::builder()
-        .lease(Duration::from_secs(1))
+        .lease(Duration::from_millis(1500))
         .start()
         .unwrap();
     let (mut producer, _received) = producer(&fake);
-    fake.next_pull_response(delayed_unavailable()).unwrap();
+    fake.next_pull_response(delayed_unavailable(Duration::from_secs(2)))
+        .unwrap();
     for _ in 0..2 {
         fake.next_pull_response(Reply::http(503, "text/plain", "unavailable"))
             .unwrap();
     }
     let shutdown = producer.shutdown.clone();
     let handle = thread::spawn(move || producer.subscribe());
-    let (finished, result) = finish(handle, &shutdown, Duration::from_millis(1100));
+    let (finished, result) = finish(handle, &shutdown, Duration::from_secs(10));
 
-    assert!(finished, "pull request outlived its lease budget");
+    assert!(finished, "subscription worker did not finish: {result:?}");
     assert!(result.is_err());
+    // The fake camera rejects expired leases. Waiting for the stalled reply would prevent renewal.
+    assert_eq!(fake.pull_count(), 3);
     assert!(fake.renew_count() > 0, "renewal did not occur: {result:?}");
     assert_eq!(fake.unsubscribe_count(), 1);
     assert_eq!(fake.active_subscriptions(), 0);

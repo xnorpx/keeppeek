@@ -23,15 +23,14 @@ function isolatedBackendRoute(origin: string, backend: string) {
 		if (
 			url.origin === origin &&
 			(url.pathname === '/create' ||
+				url.pathname === '/delete' ||
 				url.pathname.startsWith('/api/') ||
 				url.pathname.startsWith('/auth/') ||
 				url.pathname.startsWith('/config/') ||
 				url.pathname === '/metrics' ||
 				url.pathname === '/logs')
 		) {
-			await route.fulfill({
-				response: await route.fetch({ url: `${backend}${url.pathname}${url.search}` })
-			});
+			await route.continue({ url: `${backend}${url.pathname}${url.search}` });
 		} else await route.continue();
 	};
 }
@@ -348,8 +347,7 @@ test('local archive survives restart and plays evicted media before restoring it
 		trustedLocal: true,
 		archiveFixture: true
 	});
-	const routeBackend = isolatedBackendRoute(new URL(baseURL).origin, fixture.url);
-	await context.route('**/*', routeBackend);
+	await context.route('**/*', isolatedBackendRoute(new URL(baseURL).origin, fixture.url));
 	await installArchiveVideoProbe(page);
 	const live = await context.newPage();
 	const evidence: ArchiveEvidence = { timings: [], transfers: [], continuity: [] };
@@ -367,7 +365,6 @@ test('local archive survives restart and plays evicted media before restoring it
 	} finally {
 		try {
 			await attachArchiveEvidence(info, page, fixture, evidence, context.browser()?.version());
-			await context.unroute('**/*', routeBackend);
 		} finally {
 			await live.close();
 			await fixture.close();

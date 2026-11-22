@@ -86,7 +86,7 @@ impl ResponseAbortHandle {
         let mut state = self.state.lock().map_err(|_| poisoned())?;
         state.aborted = true;
         state.connection.as_ref().map_or(Ok(false), |connection| {
-            ignore_disconnected_shutdown(connection.shutdown(Shutdown::Both))?;
+            shutdown_connection(connection)?;
             Ok(true)
         })
     }
@@ -135,7 +135,7 @@ impl ResponseAbortHandle {
         };
         if restore.is_err() {
             if let Some(connection) = &state.connection {
-                let _ = connection.shutdown(Shutdown::Both);
+                let _ = shutdown_connection(connection);
             }
         }
         state.connection = None;
@@ -152,6 +152,13 @@ impl ResponseAbortHandle {
 
 fn poisoned() -> io::Error {
     io::Error::other("response cancellation state is poisoned")
+}
+
+fn shutdown_connection(connection: &Connection) -> io::Result<()> {
+    // Darwin can stop a combined shutdown at the already-closed read half.
+    let write = ignore_disconnected_shutdown(connection.shutdown(Shutdown::Write));
+    let read = ignore_disconnected_shutdown(connection.shutdown(Shutdown::Read));
+    write.and(read)
 }
 
 fn ignore_disconnected_shutdown(result: io::Result<()>) -> io::Result<()> {

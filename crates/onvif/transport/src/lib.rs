@@ -35,9 +35,13 @@ pub fn request<T: Transport, R: YaSerialize, S: YaDeserialize>(
     transport: &T,
     request: &R,
 ) -> Result<S, Error> {
-    let ser = |obj: &R| yaserde::ser::to_string(obj).map_err(Error::Serialization);
+    let ser = |obj: &R| {
+        yaserde::ser::to_string(obj).map_err(|error| Error::Serialization(error.to_string()))
+    };
 
-    let de = |s: &str| yaserde::de::from_str(s).map_err(Error::Deserialization);
+    let de = |s: &str| {
+        yaserde::de::from_str(s).map_err(|error| Error::Deserialization(error.to_string()))
+    };
 
     de(&transport.request(&crop_xml_declaration(&ser(request)?))?)
 }

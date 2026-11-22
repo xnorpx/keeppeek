@@ -146,12 +146,10 @@ impl<W: Write> WriteBox<&mut W> for Tx3gBox {
         writer.write_u8(self.bg_color_rgba.green)?;
         writer.write_u8(self.bg_color_rgba.blue)?;
         writer.write_u8(self.bg_color_rgba.alpha)?;
-        for n in 0..4 {
-            writer.write_i16::<BigEndian>(self.box_record[n])?;
+        for coordinate in self.box_record {
+            writer.write_i16::<BigEndian>(coordinate)?;
         }
-        for n in 0..12 {
-            writer.write_u8(self.style_record[n])?;
-        }
+        writer.write_all(&self.style_record)?;
 
         Ok(size)
     }

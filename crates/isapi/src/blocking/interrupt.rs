@@ -107,6 +107,7 @@ impl<Inner: Transport> Transport for Guarded<Inner> {
     }
 
     fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+        let timeout = timeout.for_read();
         let deadline = timeout
             .not_zero()
             .map(|duration| Instant::now() + *duration);
@@ -120,7 +121,7 @@ impl<Inner: Transport> Transport for Guarded<Inner> {
             }
             let slice = NextTimeout {
                 after: remaining.min(POLL_INTERVAL).into(),
-                reason: timeout.reason,
+                ..timeout
             };
             match self.inner.await_input(slice) {
                 Err(ureq::Error::Timeout(_)) => {}
