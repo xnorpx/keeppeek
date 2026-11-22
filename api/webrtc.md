@@ -1016,6 +1016,44 @@ revisions must match. The frame is a random-access unit at or before the request
 is bounded to 4 MiB. H.264 uses AVCC IDR bytes with AVC decoder configuration; H.265 uses HVCC
 random-access bytes with HEVC decoder configuration.
 
+### Live audio timing
+
+`keeppeek.live-audio-timing.v1` advertises bounded live correction for camera listeners.
+`CameraSettings.live_audio` contains optional signed `default_offset_ms`, `main_offset_ms`
+and `sub_offset_ms` values. Main and Sub each inherit the camera default. An absent default
+resolves to 0 ms. Explicit zero disables correction at that level. Supported values are
+whole milliseconds from −200 through +200. Positive values hold audio. Negative values
+hold video and add the absolute offset to its presentation latency. Clients must show
+that added latency before the operator applies or saves a negative offset. A saved negative
+offset also delays a muted or video-only listener on the selected camera profile.
+
+Administrator `UpdateCameraConfiguration.live_audio` replaces the complete nested settings
+object under `expected_configuration_revision`. An empty object restores inheritance.
+Omitting the field preserves saved live settings. A timing-only update takes effect on
+current listeners without restarting camera ingestion or recording. Recorded timing,
+stored playback, export and two-way audio have independent settings and lifecycles.
+
+An authorized listener may set `SubscribeMedia.live_audio_preview_offset_ms` for a camera
+audio or video subscription. Both subscriptions for a calibration preview must request the
+same source profile and identical signed offset. Zero previews uncorrected timing.
+Omitting the field restores configured timing. Check `SubscriptionResult.live_audio.preview`
+and `applied_offset_ms` on both admitted tracks before showing the preview as active.
+`SubscriptionStreamState.live_audio` follows the actual active video profile during adaptive
+handover. Audio stream-state notifications carry their own selected profile and timing,
+including when adaptive video and available audio use different profiles. Preview selections last only for their subscriptions and do not change other listeners.
+
+`LiveAudioTiming` separates saved, applied and preview timing from jitter-buffer statistics.
+It reports currently held audio bytes, video bytes and encoded video frames plus cumulative
+capacity and expiry drops for that camera profile across listeners. The same source counters
+appear in `WebRtcSourceHealthSnapshot.live_audio` with the saved policy. A listener may hold
+encoded audio for up to 250 ms and the profile shares 256 KiB of audio storage across sessions.
+Each held audio packet is charged for its encoded bytes and queue entry. The reported byte
+count is encoded payload occupancy. Video has the same 250 ms age ceiling with at most 2 MiB and 128 encoded frames per profile.
+Capacity rejects new frames. Expiry discards late frames. A codec change, backward source time,
+reconnect, policy change or removed subscription invalidates its pending correction.
+These limits describe the server-side hold. Transport and browser playout can add latency. Reliable AAC frames carry the original
+encoded access-unit duration when the source supplies it.
+
 ### Recorded-audio timing
 
 `keeppeek.recorded-audio.v1` advertises recorded correction and explicit playback previews when
