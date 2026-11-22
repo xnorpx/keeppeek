@@ -168,6 +168,10 @@ pub enum KeepPeekEvent {
 }
 
 enum KeepPeekCommand {
+    SuspendForPrivacy {
+        ip: IpAddr,
+        reply: SyncSender<anyhow::Result<()>>,
+    },
     Stop {
         ip: IpAddr,
         reply: SyncSender<anyhow::Result<()>>,
@@ -200,6 +204,17 @@ impl KeepPeekControl {
         &self,
     ) -> std::sync::Arc<std::sync::RwLock<crate::profiles::RuntimeProfileStatus>> {
         self.runtime_profile_status.clone()
+    }
+
+    pub(crate) fn submit_privacy_stop(
+        &self,
+        ip: IpAddr,
+    ) -> anyhow::Result<Receiver<anyhow::Result<()>>> {
+        let (reply, received) = mpsc::sync_channel(1);
+        self.tx
+            .send(KeepPeekCommand::SuspendForPrivacy { ip, reply })
+            .map_err(|_| anyhow::anyhow!("KeepPeek loop is no longer running"))?;
+        Ok(received)
     }
 
     /// Stops a camera's media and event sources before acknowledging removal.
@@ -412,6 +427,9 @@ pub struct KeepPeekLoop {
     retiring_workers: HashMap<IpAddr, CameraWorkers>,
     camera_definitions: HashMap<IpAddr, Camera>,
     deferred_camera_starts: HashMap<IpAddr, (bool, bool)>,
+    privacy_suspended: HashSet<IpAddr>,
+    deferred_privacy_confirmation: Option<IpAddr>,
+    recovered_profile_publisher: Option<Box<dyn Fn(u64) + Send + Sync>>,
     isapi_callbacks: Option<crate::isapi::callbacks::Runtime>,
     storage: Option<StorageHandle>,
     events: Option<EventStore>,
@@ -452,6 +470,9 @@ impl KeepPeekLoop {
             retiring_workers: HashMap::new(),
             camera_definitions: HashMap::new(),
             deferred_camera_starts: HashMap::new(),
+            privacy_suspended: HashSet::new(),
+            deferred_privacy_confirmation: None,
+            recovered_profile_publisher: None,
             isapi_callbacks: None,
             storage,
             events: None,
@@ -549,6 +570,13 @@ impl KeepPeekLoop {
         publish: impl Fn() + Send + Sync + 'static,
     ) {
         self.runtime_profile_status_publisher = Some(Box::new(publish));
+    }
+
+    pub(crate) fn set_recovered_profile_publisher(
+        &mut self,
+        publish: impl Fn(u64) + Send + Sync + 'static,
+    ) {
+        self.recovered_profile_publisher = Some(Box::new(publish));
     }
 
     fn publish_runtime_profile_status(&self) {
@@ -740,7 +768,9 @@ impl KeepPeekLoop {
                 )
             },
         )?;
-        if !self.effective_camera_policy(&camera.config).available {
+        if !self.effective_camera_policy(&camera.config).available
+            || self.remain_privacy_suspended(camera.config.ip)?
+        {
             self.deferred_camera_starts.remove(&camera.config.ip);
             return Ok(());
         }
@@ -790,6 +820,42 @@ impl KeepPeekLoop {
         )
     }
 
+    fn camera_override(&self, ip: IpAddr) -> Option<&crate::profiles::CameraProfileOverride> {
+        self.runtime_profiles
+            .active_profile_id
+            .as_ref()
+            .and_then(|profile_id| self.runtime_profiles.profiles.get(profile_id))
+            .and_then(|profile| {
+                profile
+                    .cameras
+                    .get(&self.runtime_profile_camera_ids.camera_id(ip))
+            })
+    }
+
+    fn held_privacy_exceeds_profile(&self, ip: IpAddr) -> bool {
+        self.camera_override(ip).and_then(|p| p.privacy_enforced) != Some(true)
+            && self
+                .privacy
+                .as_ref()
+                .is_some_and(|p| p.profile_overrides_snapshot().get(&ip.to_string()) == Some(&true))
+    }
+
+    fn remain_privacy_suspended(&self, ip: IpAddr) -> anyhow::Result<bool> {
+        if !self.privacy_suspended.contains(&ip) {
+            return Ok(false);
+        }
+        let Some(schedule) = self
+            .privacy
+            .as_ref()
+            .and_then(|p| p.schedule(&ip.to_string()))
+        else {
+            return Ok(false);
+        };
+        Ok(!schedule.keep_camera_connected
+            && (self.camera_override(ip).and_then(|p| p.privacy_enforced) == Some(true)
+                || schedule.is_active(chrono::Utc::now())?))
+    }
+
     fn effective_camera_policy(
         &self,
         camera: &crate::cameras::CameraConfig,
@@ -800,16 +866,7 @@ impl KeepPeekLoop {
             privacy_enforced: false,
             notifications_enabled: true,
         };
-        let profile = self
-            .runtime_profiles
-            .active_profile_id
-            .as_ref()
-            .and_then(|profile_id| self.runtime_profiles.profiles.get(profile_id))
-            .and_then(|profile| {
-                profile
-                    .cameras
-                    .get(&self.runtime_profile_camera_ids.camera_id(camera.ip))
-            });
+        let profile = self.camera_override(camera.ip);
         let mut policy = crate::profiles::resolve_camera_policy(&base, profile);
         if self.privacy_active(&camera.ip.to_string()) {
             policy.privacy_enforced = true;
@@ -969,6 +1026,11 @@ impl KeepPeekLoop {
 
     fn apply_available_camera(&mut self, camera: &Camera) -> anyhow::Result<()> {
         let Some(workers) = self.camera_workers.get(&camera.config.ip) else {
+            if self.ensure_worker_slot(camera).is_err() {
+                self.deferred_camera_starts
+                    .entry(camera.config.ip)
+                    .or_insert((true, true));
+            }
             return self.start_camera_runtime(camera, true, true);
         };
         if workers.event_shutdown.is_cancelled() {
@@ -1642,11 +1704,15 @@ impl KeepPeekLoop {
         if !self.effective_camera_policy(&camera.config).available {
             return;
         }
+        self.deferred_privacy_confirmation = self
+            .held_privacy_exceeds_profile(camera.config.ip)
+            .then_some(camera.config.ip);
         let result = if self.camera_workers.contains_key(&camera.config.ip) {
             self.restart_camera(&camera)
         } else {
             self.add_camera(&camera, main, sub)
         };
+        self.deferred_privacy_confirmation = None;
         if let Err(error) = result {
             tracing::warn!(ip = %camera.config.ip, %error, "deferred camera change could not be applied");
         }
@@ -1977,7 +2043,15 @@ impl KeepPeekLoop {
                 Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
             };
             match command {
+                KeepPeekCommand::SuspendForPrivacy { ip, reply } => {
+                    if self.camera_definitions.contains_key(&ip) {
+                        self.privacy_suspended.insert(ip);
+                    }
+                    self.deferred_camera_starts.remove(&ip);
+                    let _ = reply.send(self.stop_camera(ip));
+                }
                 KeepPeekCommand::Stop { ip, reply } => {
+                    self.privacy_suspended.remove(&ip);
                     self.camera_definitions.remove(&ip);
                     self.deferred_camera_starts.remove(&ip);
                     let outcome = self.stop_camera(ip);
@@ -1987,7 +2061,22 @@ impl KeepPeekLoop {
                     let _ = reply.send(outcome);
                 }
                 KeepPeekCommand::StartCamera { camera, reply } => {
-                    let result = self.add_camera(&camera, true, true);
+                    let ip = camera.config.ip;
+                    // Base can prestart the saved camera behind its held privacy gate.
+                    let already_resumed = self.privacy_suspended.contains(&ip)
+                        && self
+                            .camera_workers
+                            .get(&ip)
+                            .and_then(|w| w.configuration.as_ref())
+                            .is_some_and(|current| current == &camera.config);
+                    let result = if already_resumed {
+                        Ok(())
+                    } else {
+                        self.add_camera(&camera, true, true)
+                    };
+                    if result.is_ok() && self.camera_workers.contains_key(&ip) {
+                        self.privacy_suspended.remove(&ip);
+                    }
                     let _ = reply.send(result);
                 }
                 KeepPeekCommand::RestartCamera { camera, reply } => {

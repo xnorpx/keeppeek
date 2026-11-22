@@ -130,6 +130,10 @@ impl Lifecycle {
         let private_before_start = privacy.decision(&source, chrono::Utc::now()).unwrap().0;
         storage.set_privacy_registry(privacy.clone());
         runtime.set_privacy_registry(privacy);
+        let recovery = state.clone();
+        runtime.set_recovered_profile_publisher(move |revision| {
+            recovery.confirm_recovered_profile(revision)
+        });
         let publisher = state.clone();
         runtime.set_runtime_profile_status_publisher(move || {
             publisher.publish_runtime_profile_status();
@@ -924,4 +928,73 @@ fn legacy_status_rejects_oversize_get_and_watch_with_typed_error() {
         assert_eq!(detail.code(), proto::StateStoreErrorCode::ValueTooLarge);
         assert_eq!(detail.key, STATUS_KEY);
     }
+}
+
+#[test]
+fn recovered_camera_confirmation_releases_only_the_original_configuration() {
+    let lifecycle = Lifecycle::new(false);
+    lifecycle.activate("away", 0);
+    lifecycle.activate("", 1);
+    let wait = |condition: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while !condition() {
+            assert!(
+                Instant::now() < deadline,
+                "recovery confirmation did not settle"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let state = &lifecycle.state;
+    wait(&|| {
+        let status = state.runtime_profile_status.read().unwrap();
+        status.revision == 2
+            && status
+                .cameras
+                .get(&lifecycle.identity)
+                .is_some_and(|a| a.state == RuntimeApplicationState::Applied)
+    });
+    let hold = || {
+        state
+            .privacy
+            .replace_profile_overrides(BTreeMap::from([(lifecycle.source.clone(), true)]))
+            .unwrap();
+        let mut status = state.runtime_profile_status.write().unwrap();
+        let camera = status.cameras.get_mut(&lifecycle.identity).unwrap();
+        camera.state = RuntimeApplicationState::Degraded;
+        camera.reason = Some(crate::profiles::PENDING_PRIVACY_CONFIRMATION.into());
+    };
+    let private = || {
+        state
+            .privacy
+            .decision(&lifecycle.source, chrono::Utc::now())
+            .unwrap()
+            .0
+    };
+    hold();
+    state.confirm_recovered_profile(2);
+    wait(&|| !private() && lifecycle.application().state == RuntimeApplicationState::Applied);
+    let path = lifecycle.directory.join("config.toml");
+    let mut camera = config::load_cameras(&path)
+        .unwrap()
+        .into_values()
+        .flatten()
+        .next()
+        .unwrap();
+    camera.username = "edited-after-submission".into();
+    config::upsert_camera(&path, &camera).unwrap();
+    hold();
+    state.confirm_recovered_profile(2);
+    wait(&|| {
+        lifecycle
+            .application()
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("configuration changed"))
+    });
+    assert!(private());
+    assert_eq!(
+        lifecycle.application().state,
+        RuntimeApplicationState::Degraded
+    );
 }

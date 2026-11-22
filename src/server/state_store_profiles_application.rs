@@ -2,7 +2,9 @@ use super::*;
 use crate::profiles::{CameraRuntimeApplication, ProfileRegistry, RuntimeApplicationState};
 use std::{net::IpAddr, sync::mpsc::RecvTimeoutError};
 
+#[derive(Clone)]
 struct Desired {
+    expected_config: Option<[u8; 32]>,
     registry: ProfileRegistry,
     camera_ids: BTreeMap<IpAddr, String>,
 }
@@ -10,6 +12,7 @@ struct Desired {
 #[derive(Default)]
 pub(in crate::server) struct ProfileApplicationQueue {
     next: Option<Desired>,
+    recoverable: Option<Desired>,
     running: bool,
     stalled_revision: Option<u64>,
 }
@@ -29,13 +32,43 @@ pub(super) fn schedule(
         .profile_application
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    queue.recoverable = None;
     queue.next = Some(Desired {
         registry: registry.clone(),
         camera_ids,
+        expected_config: None,
     });
+    start_queued_worker(state, queue);
+}
+
+impl ServerState {
+    // Called after the recovered recorder and its recording configuration have both acknowledged.
+    pub(crate) fn confirm_recovered_profile(&self, revision: u64) {
+        let mut queue = self
+            .profile_application
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if queue.next.is_some() {
+            return;
+        }
+        let Some(desired) = queue
+            .recoverable
+            .take_if(|request| request.registry.revision == revision)
+        else {
+            return;
+        };
+        queue.next = Some(desired);
+        start_queued_worker(self, queue);
+    }
+}
+
+fn start_queued_worker(
+    state: &ServerState,
+    mut queue: std::sync::MutexGuard<'_, ProfileApplicationQueue>,
+) {
     if queue.running {
         if queue.stalled_revision.is_some() {
-            queue.stalled_revision = Some(registry.revision);
+            queue.stalled_revision = queue.next.as_ref().map(|desired| desired.registry.revision);
             drop(queue);
             publish_status_event(state, now_ms());
         }
@@ -48,14 +81,36 @@ pub(super) fn schedule(
         .spawn(move || run(&worker))
     {
         queue.running = false;
-        queue.next = None;
+        let failed = queue
+            .next
+            .take()
+            .expect("profile worker requires a queued request");
         drop(queue);
-        report_failure(state, registry, &error.to_string());
+        report_failure(state, &failed.registry, &error.to_string());
     }
 }
 
 fn report_failure(state: &ServerState, registry: &ProfileRegistry, reason: &str) {
     update_runtime_status(state, registry, None, Some(reason.to_owned()), false);
+    publish_status_event(state, now_ms());
+}
+
+fn report_superseded_recovery(state: &ServerState, registry: &ProfileRegistry) {
+    let mut current = state
+        .runtime_profile_status
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if current.revision != registry.revision {
+        return;
+    }
+    for camera in current.cameras.values_mut() {
+        if camera.state == RuntimeApplicationState::Degraded
+            && camera.reason.as_deref() == Some(crate::profiles::PENDING_PRIVACY_CONFIRMATION)
+        {
+            camera.reason = Some("Camera configuration changed before recovery confirmation. Reapply the current profile to retry.".into());
+        }
+    }
+    drop(current);
     publish_status_event(state, now_ms());
 }
 
@@ -77,15 +132,33 @@ fn run(state: &ServerState) {
                 return;
             };
             drop(queue);
-            let (identities, submitted_config) =
-                match current_identities(state, &desired.registry, &desired.camera_ids, None) {
-                    Ok(Some(ids)) => ids,
-                    Ok(None) => continue,
-                    Err(error) => {
-                        report_failure(state, &desired.registry, &error.to_string());
-                        continue;
-                    }
-                };
+            let (identities, submitted_config) = match current_identities(
+                state,
+                &desired.registry,
+                &desired.camera_ids,
+                desired.expected_config,
+            ) {
+                Ok(Some(ids)) => ids,
+                Ok(None) if desired.expected_config.is_some() => {
+                    report_superseded_recovery(state, &desired.registry);
+                    continue;
+                }
+                Ok(None) => continue,
+                Err(error) => {
+                    report_failure(state, &desired.registry, &error.to_string());
+                    continue;
+                }
+            };
+            // A deferred worker may finish before this command's reply reaches the application thread.
+            // Install its exact registry, identities, and configuration fence before submission.
+            state
+                .profile_application
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .recoverable = Some(Desired {
+                expected_config: Some(submitted_config),
+                ..desired.clone()
+            });
             let runtime = state
                 .camera_runtime
                 .as_ref()
