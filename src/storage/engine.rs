@@ -3,6 +3,7 @@ use crate::privacy::PrivacyRegistry;
 #[doc(hidden)]
 pub mod admission_benchmark;
 mod event;
+mod relocation;
 mod retention;
 use super::event_recording::{EventOutput, EventRecordings, EventSettings, QueuedEventFrame};
 use crate::{
@@ -907,6 +908,7 @@ struct WriterWorker {
     catalog: Option<RecordingCatalogHandle>,
     pipelines: HashMap<String, CameraPipeline>,
     long_term: LongTermStore,
+    relocation_scan: relocation::Scan,
     admission: RecordingAdmission,
     event_recordings: Option<EventRecordings>,
     event_sources: HashMap<String, EventSourceState>,
@@ -934,6 +936,8 @@ impl WriterWorker {
     ) -> Self {
         let long_term = LongTermStore::new(config.long_term_path.clone());
         let safety = health.storage();
+        let relocation_scan =
+            relocation::Scan::new(config.medium_term_path != config.long_term_path);
         Self {
             config,
             demand,
@@ -942,6 +946,7 @@ impl WriterWorker {
             catalog,
             pipelines: HashMap::new(),
             long_term,
+            relocation_scan,
             admission,
             event_recordings: None,
             event_sources: HashMap::new(),
@@ -975,6 +980,10 @@ impl WriterWorker {
             } else {
                 None
             };
+            let timeout = timeout
+                .into_iter()
+                .chain(self.retry_relocations(Instant::now()))
+                .min();
             let cmd = if let Some(timeout) = timeout {
                 match rx.recv_timeout(timeout) {
                     Ok(cmd) => Some(cmd),
@@ -1070,10 +1079,7 @@ impl WriterWorker {
         let recording_id = writer.recording_id().to_owned();
         match writer.finalize() {
             Ok(path) => {
-                if let Err(error) = self.move_to_long_term(storage_key, &path, &recording_id) {
-                    self.health.note_failure(storage_key, &error.to_string());
-                    tracing::error!(camera = storage_key, %error, "unable to finalize recording before queue gap");
-                }
+                self.finish_relocation(storage_key, &path, &recording_id);
             }
             Err(error) => {
                 self.health.note_failure(storage_key, &error.to_string());
@@ -1353,10 +1359,7 @@ impl WriterWorker {
                 let old = pipeline.medium_term.take().unwrap();
                 let recording_id = old.recording_id().to_owned();
                 let path = old.finalize()?;
-                if let Err(error) = self.move_to_long_term(camera_id, &path, &recording_id) {
-                    tracing::error!(camera = camera_id, %recording_id, %error,
-                        "could not complete finalized recording relocation; continuing capture");
-                }
+                self.finish_relocation(camera_id, &path, &recording_id);
             }
         }
 
@@ -1451,9 +1454,7 @@ impl WriterWorker {
                 let recording_id = writer.recording_id().to_owned();
                 match writer.finalize() {
                     Ok(path) => {
-                        if let Err(e) = self.move_to_long_term(&id, &path, &recording_id) {
-                            tracing::error!(camera = %id, error = %e, "move to long-term failed");
-                        }
+                        self.finish_relocation(&id, &path, &recording_id);
                     }
                     Err(e) => {
                         tracing::error!(camera = %id, error = %e, "finalize failed");
@@ -1503,23 +1504,27 @@ impl WriterWorker {
         } else {
             let rel = path
                 .strip_prefix(&self.config.medium_term_path)
-                .unwrap_or(path);
+                .map_err(std::io::Error::other)?;
             let destination = self.config.long_term_path.join(rel);
-            if let Some(parent) = destination.parent() {
-                std::fs::create_dir_all(parent)?;
+            // A long playback lease can outlive many retries. Avoid restaging or comparing
+            // the recording on the capture worker until a catalog handoff is possible.
+            if let Some(catalog) = &self.catalog
+                && catalog
+                    .reader_leases()
+                    .conflicts(recording_id, &path.to_string_lossy())
+                    .map_err(std::io::Error::other)?
+            {
+                return Err(std::io::Error::other(
+                    "active recording reader defers relocation",
+                ));
             }
-
-            std::fs::rename(path, &destination).or_else(|_| {
-                std::fs::copy(path, &destination)?;
-                std::fs::remove_file(path)?;
-                Ok::<(), std::io::Error>(())
-            })?;
+            relocation::stage_source(path, &destination)?;
 
             tracing::info!(
                 camera = camera_id,
                 from = %path.display(),
                 to = %destination.display(),
-                "segment moved to long-term storage",
+                "finalized recording staged in long-term storage",
             );
             destination
         };
@@ -1530,6 +1535,9 @@ impl WriterWorker {
             catalog
                 .update_recording_path(recording_id, &destination, true)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
+        }
+        if self.config.medium_term_path != self.config.long_term_path {
+            std::fs::remove_file(path)?;
         }
         if self.catalog.is_some() && self.config.has_safety_limits() {
             self.enforce_storage_limit(StorageCleanupTrigger::SegmentFinalized);

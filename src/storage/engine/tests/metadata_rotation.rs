@@ -106,7 +106,7 @@ fn buffered_receive_times_bound_segments_even_when_their_relocation_fails() {
     let mut worker = worker_in(&dir);
     let unavailable = dir.join("occupied");
     std::fs::write(&unavailable, b"not a directory").unwrap();
-    worker.config.long_term_path = unavailable;
+    worker.config.long_term_path = unavailable.clone();
     worker.config.medium_term_duration = Duration::from_secs(60);
     worker.config.short_term_duration = Duration::from_secs(240);
     let identity = RecordingStreamIdentity::legacy("camera");
@@ -118,6 +118,49 @@ fn buffered_receive_times_bound_segments_even_when_their_relocation_fails() {
     worker.shutdown_flush();
     worker.finalize_all();
     assert_eq!(recovered_counts(&dir), [(2, 2); 3]);
+    worker
+        .health
+        .note_progress("camera", Duration::from_secs(150));
+    assert!(
+        worker.health.snapshot().streams[0]
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("long-term storage")
+    );
+    assert_eq!(
+        worker.health.snapshot().streams[0].recorded_duration_ms,
+        150_000
+    );
+
+    // Even a new worker can rediscover the finalized source files without an in-memory queue.
+    let mut recovered = WriterWorker::new(
+        worker.config.clone(),
+        RecordingDemand::new(Duration::ZERO),
+        None,
+    );
+    std::fs::remove_file(&unavailable).unwrap();
+    let mut now = Instant::now();
+    for _ in 0..64 {
+        let Some(delay) = recovered.retry_relocations(now) else {
+            break;
+        };
+        now += delay;
+    }
+    assert_eq!(recovered_counts(&unavailable), [(2, 2); 3]);
+    assert!(
+        LongTermStore::new(dir.clone())
+            .finalized_segments("camera")
+            .unwrap()
+            .is_empty()
+    );
+    for _ in 0..64 {
+        let Some(delay) = worker.retry_relocations(now) else {
+            break;
+        };
+        now += delay;
+    }
+    assert!(worker.health.snapshot().streams[0].last_error.is_none());
     std::fs::remove_dir_all(dir).unwrap();
 }
 

@@ -111,3 +111,90 @@ fn assert_finalized_metadata(config: &StorageConfig) {
         );
     });
 }
+
+#[test]
+fn restarted_catalog_recovers_failed_relocation_without_replacing_other_bytes() {
+    let mut config = storage_config(&format!("relocation-retry-{}", uuid::Uuid::new_v4()));
+    let root = config.long_term_path.clone();
+    config.medium_term_path = root.join("medium");
+    config.long_term_path = root.join("archive");
+    std::fs::create_dir_all(&config.medium_term_path).unwrap();
+    std::fs::write(&config.long_term_path, b"offline").unwrap();
+    let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+    let mut worker = WriterWorker::new(
+        config.clone(),
+        RecordingDemand::new(Duration::ZERO),
+        Some(catalog.handle()),
+    );
+    let started = Instant::now() - Duration::from_secs(4);
+    for second in 0..3 {
+        worker.ingest(
+            RecordingStreamIdentity::legacy("front/main"),
+            key_frame(started + Duration::from_secs(second)),
+        );
+    }
+    worker.shutdown_flush();
+    worker.finalize_all();
+    let files = LongTermStore::new(config.medium_term_path.clone())
+        .finalized_segments("front/main")
+        .unwrap();
+    assert_eq!(files.len(), 1);
+    let source = &files[0];
+    let original = std::fs::read(source).unwrap();
+    let destination = config
+        .long_term_path
+        .join(source.strip_prefix(&config.medium_term_path).unwrap());
+    std::fs::remove_file(&config.long_term_path).unwrap();
+    std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+    let different = vec![0x5a; original.len()];
+    std::fs::write(&destination, &different).unwrap();
+    drop(worker);
+    let mut worker = WriterWorker::new(
+        config.clone(),
+        RecordingDemand::new(Duration::ZERO),
+        Some(catalog.handle()),
+    );
+    let mut now = Instant::now();
+    for _ in 0..12 {
+        let delay = worker.retry_relocations(now).unwrap();
+        now += delay;
+    }
+    assert_eq!(std::fs::read(&destination).unwrap(), different);
+    assert_eq!(std::fs::read(source).unwrap(), original);
+    assert!(worker.health.snapshot().streams[0].last_error.is_some());
+    std::fs::remove_file(&destination).unwrap();
+
+    let (fragments, reader) = catalog
+        .handle()
+        .leased_media_fragments_in_range("front/main", 0, i64::MAX)
+        .unwrap();
+    assert!(!fragments.is_empty());
+    assert!(
+        fragments
+            .iter()
+            .all(|f| std::path::Path::new(&f.path) == source)
+    );
+    // A previous process may have staged the correct bytes just before losing its
+    // catalog update. Playback still owns the old path until the reader closes.
+    std::fs::write(&destination, &original).unwrap();
+    for _ in 0..12 {
+        let delay = worker.retry_relocations(now).unwrap();
+        now += delay;
+    }
+    assert_eq!(std::fs::read(source).unwrap(), original);
+    assert_eq!(std::fs::read(&destination).unwrap(), original);
+    drop(reader);
+    for _ in 0..64 {
+        let Some(delay) = worker.retry_relocations(now) else {
+            break;
+        };
+        now += delay;
+    }
+    assert_eq!(std::fs::read(&destination).unwrap(), original);
+    assert!(!source.exists());
+    assert!(worker.health.snapshot().streams[0].last_error.is_none());
+    assert_finalized_metadata(&config);
+    drop(worker);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+}

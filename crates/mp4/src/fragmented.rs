@@ -90,7 +90,11 @@ pub struct FragmentedMetadataUsage {
 }
 
 impl FragmentedMetadataUsage {
+    // The moof header (8) and full mfhd (16) total 24 bytes. Reserve 32.
     const MOOF_HEADER_BYTES_MAX: u64 = 32;
+    // Excluding per-sample entries, the writer emits traf (8), tfhd (at most 32
+    // with a description index and all three defaults), version-1 tfdt (20)
+    // and trun (20, including data_offset). Reserve twice those 80 bytes.
     const TRACK_TABLE_HEADER_BYTES_MAX: u64 = 160;
     /// Duration, size, flags and composition offset can each consume one u32.
     pub const SAMPLE_TABLE_ENTRY_BYTES_MAX: u64 = 4 * std::mem::size_of::<u32>() as u64;
@@ -1275,6 +1279,87 @@ mod tests {
         let mut reader = Mp4Reader::read_header(buffer, size).unwrap();
         assert_eq!(reader.read_sample(1, 1).unwrap().unwrap().duration, 1_000);
         assert_eq!(reader.read_sample(1, 2).unwrap().unwrap().duration, 1_500);
+    }
+
+    #[test]
+    fn metadata_budget_bounds_serialized_track_tables_and_clock_events() {
+        let mut writer = FragmentedMp4Writer::write_start(
+            Cursor::new(Vec::new()),
+            &mp4_config(),
+            &[video_track(), audio_track()],
+        )
+        .unwrap();
+        let mut other_video = video_track().media_conf;
+        let MediaConfig::AvcConfig(avc) = &mut other_video else {
+            unreachable!()
+        };
+        avc.width = 640;
+        assert_eq!(writer.add_sample_description(1, other_video).unwrap(), 2);
+        let mut serialized_metadata = writer.initialization().size;
+        let mut serialized_boxes = 3;
+        for description in 1..=2 {
+            // At 513 samples each track needs two measured events. Signed composition offsets
+            // and the second video description exercise the largest trun and tfhd variants.
+            for ordinal in 0..513 {
+                for track in 1..=2 {
+                    let mut unit = sample(ordinal * 1_000, ordinal == 0, b"unit");
+                    unit.rendering_offset = -1;
+                    let packet = SourceRtpPacket {
+                        session_id: [1; 16],
+                        epoch_id: [track as u8; 16],
+                        clock_rate: 90_000.try_into().unwrap(),
+                        timestamp: ordinal as i64 * 1_000,
+                    };
+                    writer
+                        .write_sample_with_source_timing(
+                            track,
+                            if track == 1 { description } else { 1 },
+                            unit,
+                            Some(packet),
+                        )
+                        .unwrap();
+                }
+            }
+            let estimate = writer.metadata_usage();
+            let fragment = writer.flush_fragment().unwrap().unwrap();
+            let start = fragment.range.offset as usize;
+            let end = start + fragment.range.size as usize;
+            let bytes = &writer.writer.get_ref()[start..end];
+            let (metadata, boxes) = measured_fragment_boxes(bytes, estimate.pending_moof_bytes);
+            serialized_metadata += metadata;
+            serialized_boxes += boxes;
+            assert_eq!(estimate.fragments, description);
+            assert_eq!(estimate.boxes, serialized_boxes);
+            assert!(estimate.bytes >= serialized_metadata);
+            assert_eq!(writer.metadata_usage().bytes, serialized_metadata);
+        }
+    }
+
+    fn measured_fragment_boxes(bytes: &[u8], moof_bound: u64) -> (u64, u64) {
+        let mut metadata = 0;
+        let mut boxes = 0;
+        let mut at = 0;
+        let mut events = 0;
+        while at < bytes.len() {
+            let size = u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+            assert!(size >= HEADER_SIZE as usize && size <= bytes.len() - at);
+            match &bytes[at + 4..at + 8] {
+                b"moof" => {
+                    assert!(size as u64 <= moof_bound);
+                    metadata += size as u64;
+                }
+                b"emsg" => {
+                    events += 1;
+                    metadata += size as u64;
+                }
+                b"mdat" => assert_eq!(size, HEADER_SIZE as usize + 2 * 513 * 4),
+                other => panic!("unexpected fragment box {other:?}"),
+            }
+            at += size;
+            boxes += 1;
+        }
+        assert_eq!(events, 4);
+        (metadata, boxes)
     }
 
     #[test]

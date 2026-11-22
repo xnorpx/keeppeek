@@ -10,8 +10,14 @@ pub(crate) const USER_TYPE: [u8; 16] = [
 const VERSION: u32 = 1;
 const RUN_BYTES: u64 = 4 + 4 + 16 + 4 + 8 + 4 + 8 + 8 + 16;
 pub(crate) const SCHEME: &str = "urn:keeppeek:original-rtp";
+// 512 single-sample runs at 72 bytes each fit in a 37 KiB event, including both headers.
+// Chunking bounds the parser allocation even when every packet starts a fresh source epoch.
 const EVENT_SAMPLES_MAX: usize = 512;
 const UUID_HEADER_BYTES: u64 = HEADER_SIZE + 16 + 4;
+// Per chunk: version-1 emsg header + fixed fields (32), scheme + NUL, decimal
+// u32 track ID + NUL (at most 11), and the 28-byte UUID header duplicated when
+// splitting a track across events. Their sum is below 100 bytes; 192 reserves
+// headroom without depending on a particular track ID or first-chunk discount.
 const EVENT_WRAPPER_BYTES_MAX: u64 = 192;
 pub(crate) const NEXT_SAMPLE_BYTES_MAX: u64 =
     UUID_HEADER_BYTES + RUN_BYTES + EVENT_WRAPPER_BYTES_MAX;

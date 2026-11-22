@@ -449,6 +449,11 @@ enum Command {
         keyframe: CatalogKeyframe,
         reply: SyncSender<anyhow::Result<()>>,
     },
+    FinalizedRelocation {
+        source: String,
+        destination: String,
+        reply: SyncSender<anyhow::Result<Option<(String, String)>>>,
+    },
     UpdateRecordingPath {
         recording_id: String,
         path: String,
@@ -928,6 +933,31 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
         response
             .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    /// Finds the finalized legacy object before or after publishing its new path.
+    pub(crate) fn finalized_relocation(
+        &self,
+        source: &Path,
+        destination: &Path,
+    ) -> anyhow::Result<Option<(String, String)>> {
+        let path = |value: &Path| {
+            value
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow::anyhow!("recording path is not valid UTF-8"))
+        };
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .try_send(Command::FinalizedRelocation {
+                source: path(source)?,
+                destination: path(destination)?,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv_timeout(BUSY_TIMEOUT)
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
@@ -1771,6 +1801,34 @@ fn run_catalog(
                     fragment,
                     keyframe,
                 )));
+            }
+            Command::FinalizedRelocation {
+                source,
+                destination,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(async {
+                    // Both lookups use the UNIQUE recording_files.path index. Two rows mean
+                    // that the destination belongs to another object and must be left alone.
+                    let mut rows = connection
+                        .query(
+                            "SELECT id, stream_id, finalized, cleanup_pending
+                        FROM recording_files WHERE path IN (?1, ?2)",
+                            [source, destination],
+                        )
+                        .await?;
+                    let Some(row) = rows.next().await? else {
+                        return Ok(None);
+                    };
+                    anyhow::ensure!(
+                        rows.next().await?.is_none(),
+                        "relocation paths belong to different recordings"
+                    );
+                    if row.get::<i64>(2)? == 0 || row.get::<i64>(3)? != 0 {
+                        return Ok(None);
+                    }
+                    Ok(Some((row.get(0)?, row.get(1)?)))
+                }));
             }
             Command::UpdateRecordingPath {
                 recording_id,
