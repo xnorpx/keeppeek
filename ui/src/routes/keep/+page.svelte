@@ -424,14 +424,18 @@
 				if (capabilitiesSeen) reconnectPending = true;
 				return;
 			}
-			if (reconnectPending) {
+			capabilitiesSeen = true;
+		});
+		const unsubscribeAccess = controlClient.onAccessState((access) => {
+			if (access.status === 'checking' && access.session) {
+				reconnectPending = true;
+				return;
+			}
+			if (access.status === 'authenticated' && reconnectPending) {
 				reconnectPending = false;
 				timelineRepository.revalidate();
 				if (latestTimelineViewport) void loadTimelineViewport(latestTimelineViewport);
 			}
-			capabilitiesSeen = true;
-		});
-		const unsubscribeAccess = controlClient.onAccessState((access) => {
 			if (!access.session) {
 				workflow.setActor('');
 				workflowIdentity = null;

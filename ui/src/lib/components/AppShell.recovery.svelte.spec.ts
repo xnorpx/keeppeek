@@ -59,6 +59,16 @@ describe('workspace recovery', () => {
 		await tick();
 		expect(node.isConnected).toBe(true);
 		expect(node.closest('[inert]')).not.toBeNull();
+		const pageShortcut = vi.fn();
+		window.addEventListener('keydown', pageShortcut);
+		try {
+			const escape = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+			window.dispatchEvent(escape);
+			expect(escape.defaultPrevented).toBe(true);
+			expect(pageShortcut).not.toHaveBeenCalled();
+		} finally {
+			window.removeEventListener('keydown', pageShortcut);
+		}
 		connection.emit({
 			status: 'authenticated',
 			session: { ...session, id: 'replacement' },

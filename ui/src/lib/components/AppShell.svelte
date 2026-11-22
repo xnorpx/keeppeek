@@ -263,6 +263,11 @@
 	}
 
 	function handleGlobalKeyboard(event: KeyboardEvent): void {
+		if (recovering) {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			return;
+		}
 		if (accessState.status !== 'authenticated') return;
 		const action = resolveGlobalKeyboardAction(event, {
 			overlay: keyboardOverlay,
