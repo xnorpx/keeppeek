@@ -144,6 +144,40 @@ describe('recording range sharing', () => {
 		]);
 	});
 
+	it('uses a retained alternate artifact even after its camera recording mode has changed', async () => {
+		const recorder = client();
+		recorder.listExports.mockResolvedValue([
+			{ ...ready, streamId: 'main', id: 'older-main', expiresAtMs: ready.expiresAtMs + 1 },
+			{ ...ready, streamId: 'sub', id: 'older-sub' }
+		]);
+		recorder.getRecordingCoverage.mockResolvedValue({
+			cameras: [
+				{
+					camera_id: 'front',
+					streams: ['main', 'sub'].map((stream_id) => ({
+						stream_id,
+						recording_stream_id: 'front/sub'
+					}))
+				}
+			]
+		});
+		const evidence = create(ShareEvidenceSchema);
+		const preview = vi
+			.fn()
+			.mockRejectedValueOnce(new Error(recoveryMessages.incompatibleCodec))
+			.mockResolvedValue(evidence);
+		const range = { client: recorder, target: { ...target, streamId: undefined } };
+		await expect(new RangeSharePreview(preview).load(range, 'reload', signal())).resolves.toEqual({
+			evidence,
+			guard
+		});
+		expect(preview.mock.calls).toEqual([
+			['older-main', guard],
+			['older-sub', guard]
+		]);
+		expect(recorder.getRecordingCoverage).not.toHaveBeenCalled();
+		expect(recorder.createExport).not.toHaveBeenCalled();
+	});
 	it('skips duplicate preparation when logical streams refer to the same recording', async () => {
 		const recorder = client();
 		recorder.listExports.mockResolvedValue([{ ...ready, streamId: 'main' }]);

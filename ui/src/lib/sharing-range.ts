@@ -213,8 +213,6 @@ export async function prepareRangeShare(
 	const { startMs, endMs } = await selectedInterval(preparation, signal);
 	signal.throwIfAborted();
 	const guard = { sourceId, startMs: BigInt(startMs), endMs: BigInt(endMs) };
-	if (excludedStream)
-		await requireDistinctRecording(client, sourceId, startMs, endMs, excludedStream, signal);
 	const jobs = freshExport ? [] : await client.listExports();
 	signal.throwIfAborted();
 	const existing = jobs
@@ -238,6 +236,8 @@ export async function prepareRangeShare(
 		)[0];
 	if (existing)
 		return { exportJobId: existing.id, streamId: existing.streamId, guard, reused: true };
+	if (excludedStream)
+		await requireDistinctRecording(client, sourceId, startMs, endMs, excludedStream, signal);
 	const streamId = await retainedStream(
 		{ client, target: { ...target, startMs, endMs } },
 		endMs,

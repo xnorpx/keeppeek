@@ -1070,6 +1070,13 @@ mod tests {
         );
 
         verify_historical_bookmark_repair(connection, &mut query).await;
+        verify_legacy_bookmark_move_and_id_reuse(connection, query).await;
+    }
+
+    async fn verify_legacy_bookmark_move_and_id_reuse(
+        connection: &turso::Connection,
+        mut query: BookmarkQuery,
+    ) {
         // Legacy event writes after rollback leave migration 4 recorded and bypass index maintenance.
         connection
             .execute(

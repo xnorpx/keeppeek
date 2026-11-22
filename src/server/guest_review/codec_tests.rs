@@ -1,3 +1,4 @@
+use super::super::verified::unavailable;
 use super::*;
 use mp4::WriteBox;
 
@@ -59,6 +60,39 @@ fn artifact(tracks: Vec<Vec<u8>>) -> Vec<u8> {
 
 fn validate(bytes: Vec<u8>) -> io::Result<()> {
     inspect(&mut Cursor::new(&bytes), bytes.len() as u64, || Ok(()))
+}
+
+#[test]
+fn codec_rejection_is_distinct_from_a_verified_reader_failure() {
+    struct Unavailable(Cursor<Vec<u8>>);
+    impl Read for Unavailable {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(unavailable())
+        }
+    }
+    impl Seek for Unavailable {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.0.seek(position)
+        }
+    }
+    let avc = artifact(vec![track(b"vide", vec![video_entry()], Vec::new())]);
+    let bytes = avc.len() as u64;
+    assert!(compatible(&mut Cursor::new(&avc), bytes, || Ok(())).unwrap());
+    let error = compatible(&mut Unavailable(Cursor::new(avc)), bytes, || Ok(())).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    let unsupported_media = artifact(vec![track(
+        b"vide",
+        vec![boxed(b"hvc1", vec![0; 78])],
+        Vec::new(),
+    )]);
+    assert!(
+        !compatible(
+            &mut Cursor::new(&unsupported_media),
+            unsupported_media.len() as u64,
+            || Ok(())
+        )
+        .unwrap()
+    );
 }
 
 #[test]

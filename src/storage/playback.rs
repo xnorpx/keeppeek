@@ -145,6 +145,20 @@ struct ExportProgress {
     source_bounds: ObservedBounds,
 }
 
+impl ExportProgress {
+    fn new(aligned_start_ms: i64) -> Self {
+        Self {
+            pending_video: false,
+            last_sample_start: HashMap::new(),
+            bytes_written: 0,
+            audio_timing: AudioTimingEvidence::default(),
+            pending_audio_end: HashMap::new(),
+            envelope: ExportEnvelope::new(aligned_start_ms),
+            source_bounds: ObservedBounds::default(),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ExportSelection<'a> {
     maximum_bytes: Option<u64>,
@@ -507,15 +521,7 @@ fn write_export_recordings<W: Write + Seek>(
     let (config, configs) = export_mp4_configuration(&tracks, selection.audio_offset_ms)?;
     let mut writer =
         mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(output, &config, &configs)?;
-    let mut progress = ExportProgress {
-        pending_video: false,
-        last_sample_start: HashMap::new(),
-        bytes_written: 0,
-        audio_timing: AudioTimingEvidence::default(),
-        pending_audio_end: HashMap::new(),
-        envelope: ExportEnvelope::new(selection.aligned_start_ms),
-        source_bounds: ObservedBounds::default(),
-    };
+    let mut progress = ExportProgress::new(selection.aligned_start_ms);
     let callbacks = ExportContext {
         cancelled,
         report_progress,

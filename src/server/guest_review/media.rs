@@ -118,11 +118,7 @@ pub(in crate::server) fn verify_range_artifact(
     let started = Instant::now();
     let check = || verify_time_left(started);
     let mut verified = Verified::new(PinnedReader(file), binding.bytes, binding.sha256, check)?;
-    match codecs::inspect(&mut verified, binding.bytes, check) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(false),
-        Err(error) => Err(error),
-    }
+    codecs::compatible(&mut verified, binding.bytes, check)
 }
 
 fn verify_time_left(started: Instant) -> io::Result<()> {
