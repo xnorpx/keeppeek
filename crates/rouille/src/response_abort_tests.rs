@@ -56,7 +56,7 @@ fn abort_response_releases_a_body_while_the_client_does_not_read() {
     client
         .write_all(b"GET /large HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .unwrap();
-    server.poll_timeout(Duration::from_millis(10));
+    server.poll_once_timeout(Duration::from_secs(2));
     let handle = handle_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     assert!(!server.join_timeout(Duration::from_millis(100)));
 
@@ -175,14 +175,14 @@ fn completed_response_handle_cannot_abort_a_later_keep_alive_response() {
     client
         .write_all(b"GET /first HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .unwrap();
-    server.poll_timeout(Duration::from_millis(100));
+    server.poll_once_timeout(Duration::from_secs(2));
     let obsolete = handle_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     assert_eq!(response_body(&mut client), b"first");
     assert!(server.join_timeout(Duration::from_secs(1)));
     client
         .write_all(b"GET /second HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .unwrap();
-    server.poll_timeout(Duration::from_millis(100));
+    server.poll_once_timeout(Duration::from_secs(2));
     started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     assert!(obsolete.is_finished().unwrap());
     let aborted = obsolete.abort().unwrap();
@@ -250,7 +250,9 @@ fn completed_response_handle_cannot_abort_a_pipelined_response() {
             .as_bytes(),
         )
         .unwrap();
-    server.poll_timeout(Duration::from_millis(100));
+    for _ in 0..2 {
+        server.poll_once_timeout(Duration::from_secs(2));
+    }
     let obsolete = handle_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     first_tx.send(()).unwrap();
@@ -299,7 +301,9 @@ fn queued_response_abort_stops_delivery_before_prior_handler_releases() {
             .as_bytes(),
         )
         .unwrap();
-    server.poll_timeout(Duration::from_millis(100));
+    for _ in 0..2 {
+        server.poll_once_timeout(Duration::from_secs(2));
+    }
     let handle = handle_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     let started = Instant::now();
     assert!(!handle.is_finished().unwrap());
