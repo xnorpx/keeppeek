@@ -6,7 +6,7 @@ const HEIGHT: usize = 32;
 /// Reads the four luma markers in each presented fixture picture.
 pub fn decoded_picture_ids(path: &Path) -> Vec<u8> {
     let output = Command::new("ffmpeg")
-        .args(["-v", "error", "-threads", "1", "-i"])
+        .args(["-v", "error", "-xerror", "-threads", "1", "-i"])
         .arg(path)
         .args([
             "-fps_mode",
