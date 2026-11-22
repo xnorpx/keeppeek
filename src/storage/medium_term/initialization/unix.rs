@@ -63,7 +63,11 @@ fn read_intent(stage: &Dir, name: &OsStr) -> io::Result<[u8; 24]> {
 }
 
 fn create_intent(parent: &Dir, stage: &Dir, name: &OsStr, owned: &Metadata) -> io::Result<()> {
-    if entry(stage, name)?.is_some() || entry(stage, &intent_name(name))?.is_some() {
+    let pin = pin_name(name);
+    if entry(stage, name)?.is_some()
+        || entry(stage, &intent_name(name))?.is_some()
+        || entry(stage, &pin)?.is_some()
+    {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "a prior staged recording entry needs recovery",
@@ -76,7 +80,6 @@ fn create_intent(parent: &Dir, stage: &Dir, name: &OsStr, owned: &Metadata) -> i
 
     // Keep the inode allocated across process death so an unrelated file cannot reuse
     // its device/inode pair before pre-move replay. The caller still has its original handle.
-    let pin = pin_name(name);
     parent.hard_link(name, stage, &pin)?;
     if !matches_record(&stage.symlink_metadata(&pin)?, &record) {
         stage.remove_file(&pin)?;
@@ -239,6 +242,16 @@ mod tests {
         assert!(restore_pending(&parent, name).is_err());
         assert_eq!(stage.read(name)?, b"unrelated");
         assert!(!parent.exists(name));
+        stage.remove_file(name)?;
+        parent.write(name, b"new partial")?;
+        let pin = pin_name(name);
+        stage.write(&pin, b"older pin")?;
+        let error =
+            create_intent(&parent, &stage, name, &parent.symlink_metadata(name)?).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(error.to_string().contains("needs recovery"));
+        assert_eq!(stage.read(&pin)?, b"older pin");
+        assert_eq!(parent.read(name)?, b"new partial");
         drop(stage);
         drop(parent);
         std::fs::remove_dir_all(root)

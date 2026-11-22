@@ -24,7 +24,7 @@ pub(super) async fn grow(connection: &turso::Connection, growth: &Growth) -> any
         });
     }
     let capacity = &growth.capacity;
-    super::ensure_fresh_observation(connection, capacity).await?;
+    super::ensure_fresh_observation(connection, capacity, "storage allocation growth").await?;
     let allocation = Allocation {
         operation: growth.operation.clone(),
         object: Object {
