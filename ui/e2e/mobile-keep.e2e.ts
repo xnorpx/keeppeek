@@ -59,7 +59,7 @@ async function expectMobileHistoryGeometry(
 		expect(playbackState).toEqual({
 			startupPhase: 'opening',
 			alertCount: 0,
-			heading: 'Preparing playbackâ€¦'
+			heading: 'Preparing playback…'
 		});
 	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
 		true
@@ -125,7 +125,7 @@ test.describe('touch input', () => {
 				await expectMobileHistoryGeometry(page, testInfo, width, 'failed');
 				await player.getByRole('button', { name: 'Retry playback', exact: true }).click();
 				await expect(
-					player.getByRole('heading', { name: 'Preparing playbackâ€¦', exact: true })
+					player.getByRole('heading', { name: 'Preparing playback…', exact: true })
 				).toBeVisible();
 				await expect(player.getByRole('alert')).toHaveCount(0);
 				await expectMobileHistoryGeometry(page, testInfo, width, 'preparing');
