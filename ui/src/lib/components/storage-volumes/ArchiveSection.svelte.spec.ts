@@ -485,7 +485,9 @@ it('retries verification of a legacy archive and requires a fresh preview for a 
 	const retainedRow = page.getByRole('article', { name: 'Archive job retained' });
 	await expect
 		.element(retainedRow.getByRole('alert'))
-		.toHaveTextContent(/preview archive deletion again/);
+		.toHaveTextContent(
+			'Archive retained. Check that the primary copy is present and verified, resolve the blocking condition, then preview archive deletion again.'
+		);
 	await expect
 		.element(retainedRow.getByRole('button', { name: 'Retry archive job retained' }))
 		.not.toBeInTheDocument();
@@ -493,11 +495,19 @@ it('retries verification of a legacy archive and requires a fresh preview for a 
 		.element(retainedRow.getByRole('button', { name: 'Preview archive deletion retained-clip' }))
 		.toBeVisible();
 	await expect
-		.element(page.getByRole('article', { name: 'Archive job pending' }))
-		.toHaveTextContent('Deletion acknowledgement pending');
+		.element(
+			page
+				.getByRole('article', { name: 'Archive job pending' })
+				.getByText('Recording · Deletion acknowledgement pending', { exact: true })
+		)
+		.toBeVisible();
 	await expect
-		.element(page.getByRole('article', { name: 'Archive job acknowledged' }))
-		.toHaveTextContent('Deletion acknowledged');
+		.element(
+			page
+				.getByRole('article', { name: 'Archive job acknowledged' })
+				.getByText('Recording · Deletion acknowledged', { exact: true })
+		)
+		.toBeVisible();
 	await page.getByRole('button', { name: 'Retry archive job legacy' }).click();
 	expect(control.archive.mock.calls.at(-1)?.[0].action).toMatchObject({
 		case: 'retry',
