@@ -418,6 +418,7 @@ export type MockControlPeerOptions = {
 	health?: HealthFixture;
 	healthSequence?: readonly HealthFixture[];
 	healthError?: string;
+	mediaAdmissionError?: (subscription: SubscribeMedia) => string | null;
 	motionDetection?: MotionDetection;
 	ptzPresets?: readonly { id: number; name: string }[];
 	runtimeUpdateResult?: SettingsConfigUpdateResponse;
@@ -1143,14 +1144,16 @@ export async function mockControlPeer(
 			}
 		}
 		if (request.command.case === 'subscribeMedia') {
-			return encodedOk(request.requestId, {
-				case: 'subscriptionResult',
-				value: fixtureSubscriptionResult(
-					request.command.value,
-					options.cameras ?? [],
-					requests.mediaSubscriptions
-				)
-			});
+			const subscription = request.command.value;
+			const result = fixtureSubscriptionResult(
+				subscription,
+				options.cameras ?? [],
+				requests.mediaSubscriptions
+			);
+			const error = options.mediaAdmissionError?.(subscription);
+			return error
+				? encodedError(request.requestId, error)
+				: encodedOk(request.requestId, { case: 'subscriptionResult', value: result });
 		}
 		if (request.command.case === 'unsubscribe') {
 			requests.mediaUnsubscriptions.push([...request.command.value.subscriptionIds]);

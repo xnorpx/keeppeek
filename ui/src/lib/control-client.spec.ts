@@ -180,6 +180,7 @@ function catalogCamera() {
 
 class FakeDataChannel {
 	static localAccess = false;
+	static omitAccessSession = false;
 	static absoluteExpiry = 1_777_086_400_000n;
 	readyState: RTCDataChannelState = 'connecting';
 	binaryType: BinaryType = 'blob';
@@ -1295,17 +1296,19 @@ class FakeDataChannel {
 							value: create(ServerCapabilitiesSchema, {
 								revision: 2n,
 								capabilityIds: ['keeppeek.runtime-config.v1'],
-								accessSession: create(AccessSessionSchema, {
-									sessionId: 'session-42',
-									principalId: '550e8400-e29b-41d4-a716-446655440001',
-									displayName: 'Remote viewer',
-									role: ProtoAccessRole.USER,
-									local: FakeDataChannel.localAccess,
-									clientClassification: 'direct_remote',
-									createdAtMs: 1_777_000_000_000n,
-									lastActivityAtMs: 1_777_000_000_000n,
-									absoluteExpiresAtMs: FakeDataChannel.absoluteExpiry
-								}),
+								accessSession: FakeDataChannel.omitAccessSession
+									? undefined
+									: create(AccessSessionSchema, {
+											sessionId: 'session-42',
+											principalId: '550e8400-e29b-41d4-a716-446655440001',
+											displayName: 'Remote viewer',
+											role: ProtoAccessRole.USER,
+											local: FakeDataChannel.localAccess,
+											clientClassification: 'direct_remote',
+											createdAtMs: 1_777_000_000_000n,
+											lastActivityAtMs: 1_777_000_000_000n,
+											absoluteExpiresAtMs: FakeDataChannel.absoluteExpiry
+										}),
 								cameras: [
 									create(CameraInfoSchema, {
 										sourceId: 'front-door',
@@ -1530,6 +1533,7 @@ function appendTimingPeriod(
 
 afterEach(() => {
 	FakeDataChannel.localAccess = false;
+	FakeDataChannel.omitAccessSession = false;
 	FakeDataChannel.absoluteExpiry = 1_777_086_400_000n;
 	vi.useRealTimers();
 	vi.unstubAllGlobals();
@@ -1956,9 +1960,29 @@ describe('ControlClient', () => {
 				'first'
 			);
 			expect(api.createSession).toHaveBeenCalledTimes(2);
+			if (allowed) expect(api.deleteSession).not.toHaveBeenCalled();
+			else expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith('first', 'retained-bearer');
 			await client.close();
 		}
 	);
+
+	it('deletes an unconfirmed replacement using the original bearer before requiring sign-in', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		const response = { session_id: 'old', answer: { type: 'answer', sdp: 'v=0' } };
+		api.createSession
+			.mockResolvedValueOnce(response)
+			.mockResolvedValueOnce({ ...response, session_id: 'unconfirmed' });
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+		const states: string[] = [];
+		client.onAccessState((state) => states.push(state.status));
+		await client.signIn('original-bearer');
+		FakeDataChannel.omitAccessSession = true;
+		FakePeerConnection.latest!.channels[0].close();
+		await vi.waitFor(() => expect(states.at(-1)).toBe('sign-in-required'));
+		expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith('unconfirmed', 'original-bearer');
+		await client.close();
+	});
 
 	it('lets the recorder decide continuity when the browser clock is ahead', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);

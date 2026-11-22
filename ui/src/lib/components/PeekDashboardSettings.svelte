@@ -64,7 +64,7 @@
 	});
 
 	$effect(() => {
-		void livePeer.configure(plans).catch((cause) => {
+		void livePeer.configure(plans, 'reconcile').catch((cause) => {
 			console.error('Unable to configure dashboard editor previews', cause);
 		});
 	});

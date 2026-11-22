@@ -2553,7 +2553,9 @@ export class ControlClient {
 					this.#accessState.session &&
 					!capabilities.accessSession
 				) {
-					this.release();
+					const credential = this.#accessKey;
+					const refused = this.release();
+					if (refused) void deleteSession(refused, credential).catch(() => undefined);
 					this.publishConnectionError(
 						new ApiRequestError(401, 'The server did not confirm renewed access.')
 					);
@@ -3018,9 +3020,17 @@ export class ControlClient {
 	}
 
 	private publishConnectionError(error: unknown): void {
+		if (
+			error instanceof ApiRequestError &&
+			[401, 403].includes(error.status) &&
+			this.#previousSession
+		) {
+			const refused = this.#previousSession;
+			this.#previousSession = undefined;
+			void deleteSession(refused, this.#accessKey).catch(() => undefined);
+		}
 		if (error instanceof ApiRequestError && error.status === 401) {
 			const hadCredential = this.#accessKey !== null;
-			this.#previousSession = undefined;
 			const cookieSession = Boolean(this.#accessKey && typeof this.#accessKey !== 'string');
 			this.#accessKey = null;
 			this.publishAccessState({

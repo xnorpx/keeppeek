@@ -129,7 +129,7 @@
 
 	$effect(() => {
 		if (loading) return;
-		void livePeer.configure(livePlans).catch((cause) => {
+		void livePeer.configure(livePlans, 'reconcile').catch((cause) => {
 			console.error('Unable to configure Camera live preview', cause);
 		});
 	});

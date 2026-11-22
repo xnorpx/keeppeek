@@ -57,6 +57,29 @@ function mockWall(page: Page, options: MockControlPeerOptions = {}) {
 	});
 }
 
+test('retries refused wall media for an authorized User without administrator health access', async ({
+	page
+}) => {
+	let allow = false;
+	const controls = await mockWall(page, {
+		cameras: cameras.slice(0, 1),
+		accessRole: 'user',
+		accessLocal: false,
+		healthError: 'Administrator access required',
+		mediaAdmissionError: () => (allow ? null : 'Stream capacity reached')
+	});
+	await page.goto('/');
+	await expect.poll(() => controls.mediaSubscriptions.length).toBeGreaterThan(0);
+	const refused = controls.mediaSubscriptions.length;
+	const tile = page.locator('[data-peek-camera]').first();
+	await expect(tile).toHaveAttribute('data-peek-admission', 'unavailable');
+	allow = true;
+	await expect
+		.poll(() => controls.mediaSubscriptions.length, { timeout: 15000 })
+		.toBeGreaterThan(refused);
+	await expect(tile).toHaveAttribute('data-peek-admission', 'admitted');
+});
+
 test('saves appearance on the selected server dashboard and discards previews independently', async ({
 	page
 }) => {

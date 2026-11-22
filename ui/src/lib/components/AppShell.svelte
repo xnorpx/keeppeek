@@ -178,6 +178,11 @@
 			}
 			const authenticated = state.status === 'authenticated';
 			if (
+				authenticated &&
+				(!wasAuthenticated || previousPrincipalId !== state.session?.principalId)
+			)
+				livePeer.resumeRecovery();
+			if (
 				wasAuthenticated !== authenticated ||
 				previousPrincipalId !== (state.session?.principalId ?? null)
 			) {

@@ -132,6 +132,7 @@ export class LivePeer {
 	#desiredPlans: LivePeerPlan[] = [];
 	#recoveryTimer?: ReturnType<typeof setTimeout>;
 	#recoveryAttempts = 0;
+	#recoveryStopped = false;
 	#healthySince?: { peer: RTCPeerConnection; at: number };
 	#operation: Promise<void> = Promise.resolve();
 	#closeScheduled = false;
@@ -167,7 +168,7 @@ export class LivePeer {
 		};
 	}
 
-	configure(plans: LivePeerPlan[]): Promise<void> {
+	configure(plans: LivePeerPlan[], intent: 'open' | 'reconcile' = 'open'): Promise<void> {
 		const nextPlans = plans
 			.map((plan) => ({ ...plan, active: plan.active ?? true }))
 			.toSorted((left, right) => left.cameraId.localeCompare(right.cameraId));
@@ -178,18 +179,25 @@ export class LivePeer {
 			}
 			cameraIds[plan.cameraId] = true;
 		}
-		const recovering = this.#recoveryAttempts > 0;
-		if (this.#recoveryTimer !== undefined) clearTimeout(this.#recoveryTimer);
-		this.#recoveryTimer = undefined;
+		const wasActive = this.#desiredPlans.some((plan) => plan.active);
 		this.#desiredPlans = nextPlans;
 		return this.enqueue(async () => {
 			if (this.#desiredPlans !== nextPlans) return;
+			const recovering = this.#recoveryAttempts > 0 || this.#recoveryStopped;
+			if (recovering && !this.#sessionToken) {
+				if (intent === 'reconcile') {
+					if (!wasActive && nextPlans.some((plan) => plan.active)) this.scheduleRecovery();
+					return;
+				}
+				this.resetRecoveryBudget();
+			}
 			try {
 				await this.configureNow(nextPlans);
 				if (!nextPlans.some((plan) => plan.active)) this.cancelRecovery();
 				else this.markTransportHealthy();
 			} catch (error) {
-				if (recovering && !this.isAccessDenied(error)) this.scheduleRecovery();
+				if (this.isAccessDenied(error)) this.#recoveryStopped = true;
+				else if (recovering || intent === 'reconcile') this.scheduleRecovery();
 				throw error;
 			}
 		});
@@ -340,14 +348,25 @@ export class LivePeer {
 		return error instanceof ApiRequestError && [401, 403].includes(error.status);
 	}
 
-	private cancelRecovery(): void {
+	resumeRecovery(): void {
+		if (!this.#recoveryStopped) return;
+		this.resetRecoveryBudget();
+		this.scheduleRecovery();
+	}
+
+	private resetRecoveryBudget(): void {
 		if (this.#recoveryTimer !== undefined) clearTimeout(this.#recoveryTimer);
 		this.#recoveryTimer = undefined;
+		this.#recoveryAttempts = 0;
+		this.#recoveryStopped = false;
+	}
+
+	private cancelRecovery(): void {
+		this.resetRecoveryBudget();
 		if (this.#previousSession) {
 			void this.#sessionTransport.delete(this.#previousSession).catch(() => undefined);
 			this.#previousSession = undefined;
 		}
-		this.#recoveryAttempts = 0;
 		this.#healthySince = undefined;
 	}
 
@@ -374,6 +393,7 @@ export class LivePeer {
 
 	private scheduleRecovery(): void {
 		if (
+			this.#recoveryStopped ||
 			this.#recoveryTimer !== undefined ||
 			!this.#desiredPlans.some((plan) => plan.active) ||
 			this.#peer
@@ -381,6 +401,7 @@ export class LivePeer {
 			return;
 		const delays = [0, 750, 2000];
 		if (this.#recoveryAttempts >= delays.length) {
+			this.#recoveryStopped = true;
 			this.error = 'Unable to reconnect live media. Reopen the viewer to try again.';
 			return;
 		}
@@ -392,7 +413,10 @@ export class LivePeer {
 				await this.configureNow(this.#desiredPlans);
 				this.markTransportHealthy();
 			}).catch((error) => {
-				if (this.isAccessDenied(error)) return;
+				if (this.isAccessDenied(error)) {
+					this.#recoveryStopped = true;
+					return;
+				}
 				this.scheduleRecovery();
 			});
 		}, delay);
