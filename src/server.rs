@@ -14392,8 +14392,7 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(router.wait_and_drain(Some(Duration::ZERO)).unwrap(), 1);
-        let router_worker =
-            std::thread::spawn(move || router.wait_and_drain(Some(Duration::from_secs(30))));
+        let router_worker = spawn_router_query_worker(router);
 
         let mut health = server_health(&router_tx, &state);
         assert_eq!(router_worker.join().unwrap(), 1);
@@ -23455,7 +23454,7 @@ mod tests {
             RecordingDemand::new(Duration::ZERO),
             WebRtc::new(),
         );
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
         let handler = ServerControlHandler::new(state, router_tx);
         let capabilities = handler
             .initial_capabilities(SessionId::from_u64(0))
