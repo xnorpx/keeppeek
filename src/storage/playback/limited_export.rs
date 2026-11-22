@@ -3,6 +3,28 @@
 use super::{ExportArtifact, ExportSources};
 use std::io::{self, Seek, SeekFrom, Write};
 
+pub(super) fn read_payload<R: io::Read + Seek>(
+    reader: &mut mp4::Mp4Reader<R>,
+    track_id: u32,
+    sample_id: u32,
+    remaining: Option<u64>,
+) -> anyhow::Result<bytes::Bytes> {
+    use anyhow::Context;
+    if let Some(remaining) = remaining {
+        let location = reader
+            .sample_location(track_id, sample_id)?
+            .context("export sample has no byte location")?;
+        anyhow::ensure!(
+            u64::from(location.size) <= remaining,
+            "export exceeds the guest preparation byte limit"
+        );
+    }
+    Ok(reader
+        .read_sample(track_id, sample_id)?
+        .context("selected export sample is missing")?
+        .bytes)
+}
+
 struct BoundedWriter<'a, W> {
     inner: &'a mut W,
     position: u64,
@@ -50,7 +72,14 @@ pub(crate) fn write<W: Write + Seek>(
             position,
             maximum,
         };
-        super::export_sources_to_writer(sources, &mut bounded, offset_ms, cancelled, progress)
+        super::export_sources_to_writer(
+            sources,
+            &mut bounded,
+            offset_ms,
+            Some(maximum),
+            cancelled,
+            progress,
+        )
     } else if sources.audio_context.is_empty() {
         super::export_fragment_ranges_to_writer_with_audio_offset(
             sources.video_fragments,
@@ -61,7 +90,7 @@ pub(crate) fn write<W: Write + Seek>(
             progress,
         )
     } else {
-        super::export_sources_to_writer(sources, output, offset_ms, cancelled, progress)
+        super::export_sources_to_writer(sources, output, offset_ms, None, cancelled, progress)
     }
 }
 

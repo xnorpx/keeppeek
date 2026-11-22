@@ -89,6 +89,50 @@ fn export(fragments: &[CatalogMediaFragment], end_ms: i64) -> (ExportArtifact, C
 }
 
 #[test]
+fn zero_offset_audio_preserves_the_original_fractional_source_bounds() {
+    let mut aac = audio();
+    aac.timescale = 44_100;
+    let mp4::MediaConfig::AacConfig(config) = &mut aac.media_conf else {
+        unreachable!()
+    };
+    config.freq_index = mp4::SampleFreqIndex::Freq44100;
+    let input = source(
+        &[video(), aac],
+        vec![(1, sample(18_810, 900, 0)), (2, sample(9_216, 1_024, 0))],
+    );
+    let mut retained = fragment(&input, "source-clock", 1_000_000);
+    retained.start_ms = 1_000_209;
+    let (artifact, _) = export(&[retained], 1_000_300);
+    assert_eq!(
+        artifact.media_bounds,
+        Some(ExportMediaBounds {
+            start_ms: 1_000_208,
+            end_ms: 1_000_233
+        })
+    );
+    std::fs::remove_file(input).unwrap();
+}
+
+#[test]
+fn encoded_samples_are_read_only_within_the_remaining_preparation_budget() {
+    let input = source(&[video()], vec![(1, sample(0, 90_000, 0))]);
+    let f = File::open(&input).unwrap();
+    let size = f.metadata().unwrap().len();
+    let mut reader = mp4::Mp4Reader::read_header(f, size).unwrap();
+    let header = reader.tracks()[&1].sample_header(1).unwrap().unwrap();
+    assert!(header.bytes.is_empty());
+    assert!(limited_export::read_payload(&mut reader, 1, 1, Some(4)).is_err());
+    assert_eq!(
+        limited_export::read_payload(&mut reader, 1, 1, Some(5))
+            .unwrap()
+            .len(),
+        5
+    );
+    drop(reader);
+    std::fs::remove_file(input).unwrap();
+}
+
+#[test]
 fn bounded_export_removes_an_incomplete_file_and_publishes_at_the_exact_budget() {
     let input = source(&[video()], vec![(1, sample(0, 90_000, 0))]);
     let fragments = [fragment(&input, "guest-budget", 1000)];

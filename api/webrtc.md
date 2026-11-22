@@ -1702,9 +1702,12 @@ shared; ordinary authenticated download remains available.
 `keeppeek.guest-range.v1` advertises recording-range enforcement on `preview_export` and `create`.
 Range clients require this capability and send the same `ShareRecordingRange` with both commands.
 Fresh range jobs set `CreateExportJob.guest_range_preparation` to true only after negotiating
-this capability. The recorder limits output writes to 512 MiB, discards any incomplete file
+this capability. The recorder checks encoded sample sizes before reading payloads and limits output writes to 512 MiB. It discards any incomplete file
 and excludes unrestricted running jobs from deduplication with bounded jobs. Omitting or
 clearing the field retains ordinary export behavior.
+Range proof retains the outward-rounded source extents of unshifted samples as well as the
+output presentation envelope. A completed export with an older output-only proof remains
+available to completed-export clients and requires fresh preparation for an exact range.
 The guard names the selected source and exact half-open Unix millisecond interval, up to two minutes.
 The recorder verifies that the export request named this source and interval, that the current camera
 has the captured identity, and that the measured media envelope fits wholly inside the selection.

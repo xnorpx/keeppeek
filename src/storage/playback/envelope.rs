@@ -22,6 +22,22 @@ pub(super) struct ExportEnvelope {
     invalid: bool,
 }
 
+impl ExportMediaBounds {
+    pub(super) fn source_sample(
+        origin_ms: i64,
+        timescale: u32,
+        sample: &mp4::Mp4Sample,
+    ) -> Option<Self> {
+        Timing {
+            start: sample.start_time,
+            duration: sample.duration,
+            offset: sample.rendering_offset,
+            timescale,
+        }
+        .bounds(origin_ms)
+    }
+}
+
 impl ExportEnvelope {
     pub(super) const fn new(origin_ms: i64) -> Self {
         Self {
@@ -76,7 +92,11 @@ impl ExportEnvelope {
     }
 
     fn include(&mut self, timing: Timing) {
-        let Some(bounds) = timing.bounds(self.origin_ms) else {
+        self.include_bounds(timing.bounds(self.origin_ms));
+    }
+
+    pub(super) fn include_bounds(&mut self, bounds: Option<ExportMediaBounds>) {
+        let Some(bounds) = bounds else {
             self.invalid = true;
             return;
         };

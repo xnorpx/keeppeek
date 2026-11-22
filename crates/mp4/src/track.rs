@@ -915,6 +915,15 @@ impl Mp4Track {
         reader.seek(SeekFrom::Start(sample_offset))?;
         reader.read_exact(&mut buffer)?;
 
+        let Some(mut header) = self.sample_header(sample_id)? else {
+            return Ok(None);
+        };
+        header.bytes = Bytes::from(buffer);
+        Ok(Some(header))
+    }
+
+    /// Returns timing and sync metadata without reading or allocating the encoded payload.
+    pub fn sample_header(&self, sample_id: u32) -> Result<Option<Mp4Sample>> {
         let (start_time, duration) = match self.sample_time(sample_id) {
             Ok(time) => time,
             Err(Error::EntryInStblNotFound(_, _, _)) => return Ok(None),
@@ -928,7 +937,7 @@ impl Mp4Track {
             duration,
             rendering_offset,
             is_sync,
-            bytes: Bytes::from(buffer),
+            bytes: Bytes::new(),
         }))
     }
 }

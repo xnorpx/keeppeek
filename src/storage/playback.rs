@@ -126,6 +126,7 @@ fn read_export_mp4<'a>(
 
 struct ExportSample {
     absolute_ms: i64,
+    source_bounds: Option<ExportMediaBounds>,
     track_id: u32,
     track_type: mp4::TrackType,
     timescale: u32,
@@ -144,6 +145,7 @@ struct ExportProgress {
 
 #[derive(Clone, Copy)]
 struct ExportSelection<'a> {
+    maximum_bytes: Option<u64>,
     audio_offset_ms: i32,
     aligned_start_ms: i64,
     windows: &'a [(i64, i64)],
@@ -272,6 +274,7 @@ pub(crate) fn export_sources_to_writer<W: Write + Seek>(
     sources: ExportSources<'_>,
     output: &mut W,
     audio_offset_ms: i32,
+    maximum_bytes: Option<u64>,
     cancelled: impl Fn() -> bool,
     progress: impl Fn(u64),
 ) -> anyhow::Result<ExportArtifact> {
@@ -288,6 +291,7 @@ pub(crate) fn export_sources_to_writer<W: Write + Seek>(
     }
     let plan = export_recordings(sources, audio_offset_ms)?;
     let selection = ExportSelection {
+        maximum_bytes,
         aligned_start_ms: plan.aligned_start_ms,
         audio_offset_ms,
         windows: &plan.windows,
@@ -323,6 +327,7 @@ pub(crate) fn export_fragment_ranges_to_writer_with_audio_offset<W: Write + Seek
         },
         output,
         audio_offset_ms,
+        None,
         cancelled,
         progress,
     )
@@ -601,12 +606,12 @@ fn selected_export_track_indexes(
 ) -> anyhow::Result<Vec<usize>> {
     let mut selected = vec![false; reference_tracks.len()];
     for recording in recordings {
-        let mut reader = read_export_mp4(recording, cancelled)?;
+        let reader = read_export_mp4(recording, cancelled)?;
         let tracks = export_tracks(&reader)?;
         validate_track_layout(reference_tracks, &tracks)?;
         for (index, track) in tracks.iter().enumerate() {
             if !selected[index]
-                && track_has_selected_sample(&mut reader, recording, track, selection, cancelled)?
+                && track_has_selected_sample(&reader, recording, track, selection, cancelled)?
             {
                 selected[index] = true;
             }
@@ -639,7 +644,7 @@ fn validate_track_layout(
 }
 
 fn track_has_selected_sample<R: Read + Seek>(
-    reader: &mut mp4::Mp4Reader<R>,
+    reader: &mp4::Mp4Reader<R>,
     recording: &ExportRecording,
     track: &PlaybackTrack,
     selection: ExportSelection<'_>,
@@ -653,7 +658,7 @@ fn track_has_selected_sample<R: Read + Seek>(
         if cancelled() {
             bail!("export was cancelled");
         }
-        let Some(sample) = read_export_source_sample(reader, recording, track, sample_id)? else {
+        let Some(sample) = export_source_header(reader, recording, track, sample_id)? else {
             continue;
         };
         if selected_sample_time(&sample, recording, track)?.is_none() {
@@ -715,25 +720,30 @@ fn write_export_recording<R: Read + Seek, W: Write + Seek>(
             if let Some(sample) = read_export_sample(
                 reader, recording, track, sample_id, track_id, progress, callbacks,
             )? {
-                samples.push(sample);
+                samples.push((track.source_id, sample_id, sample));
             }
         }
     }
-    samples.sort_unstable_by(|left, right| {
+    samples.sort_unstable_by(|(_, _, left), (_, _, right)| {
         left.absolute_ms.cmp(&right.absolute_ms).then_with(|| {
             let left_rank = u8::from(left.track_type != mp4::TrackType::Video);
             let right_rank = u8::from(right.track_type != mp4::TrackType::Video);
             left_rank.cmp(&right_rank)
         })
     });
-    for sample in samples {
+    for (track_id, sample_id, mut sample) in samples {
+        let remaining = callbacks
+            .selection
+            .maximum_bytes
+            .map(|maximum| maximum.saturating_sub(progress.bytes_written));
+        sample.sample.bytes = limited_export::read_payload(reader, track_id, sample_id, remaining)?;
         append_export_sample(writer, sample, progress, callbacks)?;
     }
     Ok(())
 }
 
 fn read_export_sample<R: Read + Seek>(
-    reader: &mut mp4::Mp4Reader<R>,
+    reader: &mp4::Mp4Reader<R>,
     recording: &ExportRecording,
     track: &PlaybackTrack,
     sample_id: u32,
@@ -741,7 +751,7 @@ fn read_export_sample<R: Read + Seek>(
     progress: &mut ExportProgress,
     context: &ExportContext<'_>,
 ) -> anyhow::Result<Option<ExportSample>> {
-    let Some(mut sample) = read_export_source_sample(reader, recording, track, sample_id)? else {
+    let Some(mut sample) = export_source_header(reader, recording, track, sample_id)? else {
         return Ok(None);
     };
     let Some(absolute_ms) = selected_sample_time(&sample, recording, track)? else {
@@ -774,9 +784,15 @@ fn read_export_sample<R: Read + Seek>(
         .context("export source track disappeared")?;
     let description = source_track.sample_description_index(sample_id)?;
     let sample_description = source_track.media_config_for_description(description)?;
+    let source_bounds = ExportMediaBounds::source_sample(
+        recording.recording_started_at_ms,
+        track.config.timescale,
+        &sample,
+    );
     sample.start_time = start;
     Ok(Some(ExportSample {
         absolute_ms,
+        source_bounds,
         track_id,
         track_type: track.config.track_type,
         timescale: track.config.timescale,
@@ -812,8 +828,8 @@ fn export_intervals<'a>(recording: &'a ExportRecording, track: &PlaybackTrack) -
     }
 }
 
-fn read_export_source_sample<R: Read + Seek>(
-    reader: &mut mp4::Mp4Reader<R>,
+fn export_source_header<R: Read + Seek>(
+    reader: &mp4::Mp4Reader<R>,
     recording: &ExportRecording,
     track: &PlaybackTrack,
     sample_id: u32,
@@ -842,7 +858,10 @@ fn read_export_source_sample<R: Read + Seek>(
         }
     }
     let sample = reader
-        .read_sample(track.source_id, sample_id)?
+        .tracks()
+        .get(&track.source_id)
+        .context("export source track disappeared")?
+        .sample_header(sample_id)?
         .with_context(|| format!("track {} sample {sample_id} is missing", track.source_id))?;
     anyhow::ensure!(
         !recording.contextual
@@ -969,6 +988,9 @@ fn append_export_sample<W: Write + Seek>(
     }
     let audio_end =
         corrected_export_audio_end(&sample, progress, callbacks.selection.audio_offset_ms)?;
+    if callbacks.selection.audio_offset_ms == 0 {
+        progress.envelope.include_bounds(sample.source_bounds);
+    }
     let description_index =
         writer.add_sample_description(sample.track_id, sample.sample_description)?;
     progress
@@ -1120,6 +1142,7 @@ fn collect_compatibility_samples<R: Read + Seek>(
             let sample_description = reader.tracks()[&track.source_id]
                 .media_config_for_description(description_index)?;
             samples.push(ExportSample {
+                source_bounds: None,
                 absolute_ms: i64::try_from(
                     sample.start_time.saturating_mul(1_000) / u64::from(track.config.timescale),
                 )

@@ -720,6 +720,7 @@ struct ApiSessionControl {
     pending_event_count: Arc<AtomicUsize>,
     media_camera_ips: Mutex<HashSet<IpAddr>>,
     background_operation_in_flight: Arc<AtomicBool>,
+    share_inspection_in_flight: Arc<AtomicBool>,
 }
 
 struct ApiControlRuntime {
@@ -2855,6 +2856,7 @@ impl WebRtc {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         });
         self.live
             .inner
@@ -3432,7 +3434,7 @@ fn run_api_session(
     data_rx: Receiver<ApiSessionCommand>,
 ) -> anyhow::Result<()> {
     let mut media = ApiMediaRuntime::default();
-    let (dispatch_tx, dispatch_rx) = bounded(1);
+    let (dispatch_tx, dispatch_rx) = bounded(2);
     let mut control_runtime = ApiControlRuntime {
         dispatch_tx,
         dispatch_rx,
@@ -4250,10 +4252,8 @@ fn drain_api_outputs(
                     && let Some(handler) = handler.clone()
                 {
                     let request_id = request.request_id;
-                    if control
-                        .background_operation_in_flight
-                        .swap(true, Ordering::AcqRel)
-                    {
+                    let operation = background_operation_slot(control, &request).clone();
+                    if operation.swap(true, Ordering::AcqRel) {
                         enqueue_control_dispatch(
                             envelope_dispatch(failed_control_dispatch(
                                 request_id,
@@ -4268,9 +4268,7 @@ fn drain_api_outputs(
                         control,
                         control_runtime.dispatch_tx.clone(),
                     ) {
-                        control
-                            .background_operation_in_flight
-                            .store(false, Ordering::Release);
+                        operation.store(false, Ordering::Release);
                         enqueue_control_dispatch(
                             envelope_dispatch(failed_control_dispatch(
                                 request_id,
@@ -4458,6 +4456,20 @@ const fn is_background_control_request(request: &crate::api::proto::Request) -> 
     }
 }
 
+fn background_operation_slot<'a>(
+    control: &'a ApiSessionControl,
+    request: &crate::api::proto::Request,
+) -> &'a Arc<AtomicBool> {
+    if matches!(
+        request.command.as_ref(),
+        Some(crate::api::proto::request::Command::ShareCommand(_))
+    ) {
+        &control.share_inspection_in_flight
+    } else {
+        &control.background_operation_in_flight
+    }
+}
+
 fn spawn_background_control_operation(
     request: crate::api::proto::Request,
     handler: Arc<dyn ControlRequestHandler>,
@@ -4466,7 +4478,7 @@ fn spawn_background_control_operation(
 ) -> std::io::Result<()> {
     let session_id = control.session_id;
     let poller = control.poller.clone();
-    let operation_in_flight = control.background_operation_in_flight.clone();
+    let operation_in_flight = background_operation_slot(control, &request).clone();
     let data_group = control_data_group(request.command.as_ref());
     std::thread::Builder::new()
         .name(format!("webrtc-control-operation-{session_id}"))
@@ -5178,6 +5190,7 @@ impl WebRtc {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         });
         self.live.inner.sessions.insert_api(session_id, control);
         let mut media = ApiMediaRuntime::default();
@@ -6435,6 +6448,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         };
         let mut media = ApiMediaRuntime::default();
         media
@@ -6531,6 +6545,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         });
         webrtc
             .live
@@ -6609,6 +6624,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         });
         webrtc
             .live
@@ -6717,6 +6733,7 @@ mod tests {
                 pending_event_count: Arc::new(AtomicUsize::new(0)),
                 media_camera_ips: Mutex::new(media_camera_ips),
                 background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+                share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
             })
         };
         let affected = api_control(SessionId::from_u64(7), HashSet::from([camera_ip]));
@@ -6760,6 +6777,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         });
         webrtc.live.inner.sessions.insert_api(session_id, control);
         data_rx
@@ -6898,6 +6916,17 @@ mod tests {
                     })),
                 };
                 assert_eq!(is_background_control_request(&request), background);
+                if background {
+                    let control = test_background_control();
+                    let slot = background_operation_slot(&control, &request);
+                    assert!(
+                        control
+                            .background_operation_in_flight
+                            .load(Ordering::Acquire)
+                    );
+                    assert!(!slot.swap(true, Ordering::AcqRel));
+                    assert!(slot.swap(true, Ordering::AcqRel));
+                }
             }
         }
     }
@@ -6916,6 +6945,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(true)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -7288,6 +7318,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         };
         let mut media = ApiMediaRuntime {
             bandwidth: bandwidth::SessionBandwidth::default(),
@@ -7450,6 +7481,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         };
         let mut media = ApiMediaRuntime::default();
         let request = crate::api::proto::SubscribeMedia {

@@ -98,15 +98,39 @@ fn create(
     principal: &ApiPrincipal,
     request: proto::CreateShareGrant,
 ) -> Result<proto::IssuedShareGrant, ControlCommandError> {
-    let _configuration = coordination(state)?;
-    let context = context(state)?;
-    let evidence = evidence::preview(
+    let (inspected, _lease) = evidence::inspect(
         state,
         principal,
         &request.export_job_id,
         request.recording_range.as_ref(),
     )?;
-    if evidence.binding.artifact_id != request.artifact_id
+    create_inspected(state, principal, request, inspected)
+}
+
+pub(super) fn create_inspected(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    request: proto::CreateShareGrant,
+    inspected: evidence::ValidatedEvidence,
+) -> Result<proto::IssuedShareGrant, ControlCommandError> {
+    let _configuration = coordination(state)?;
+    let context = context(state)?;
+    let issuer = principal.sharing_issuer();
+    if !authentication::sharing_administrator(
+        state,
+        &issuer,
+        i64::try_from(unix_time_ms()).map_err(|_| unavailable())?,
+    ) {
+        return Err(denied());
+    }
+    let evidence = evidence::preview_binding(
+        state,
+        principal,
+        &request.export_job_id,
+        request.recording_range.as_ref(),
+    )?;
+    if evidence.binding != inspected.binding
+        || evidence.binding.artifact_id != request.artifact_id
         || encode_lower_hex(evidence.binding.sha256) != request.expected_sha256
     {
         return Err(ControlCommandError::new(
@@ -117,7 +141,7 @@ fn create(
     }
     let intent = CreateGrant {
         request_id: identity(&request.request_id)?,
-        issuer: principal.sharing_issuer(),
+        issuer,
         binding: evidence.binding,
         label: request.display_name,
         note: request.note,

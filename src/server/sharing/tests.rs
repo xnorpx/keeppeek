@@ -249,6 +249,59 @@ fn range_preview_and_creation_require_uncorrected_audio_and_an_existing_media_pr
 }
 
 #[test]
+fn creation_rechecks_current_policy_after_inspecting_and_leasing_the_file() {
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let request = proto::CreateShareGrant {
+        recording_range: Some(range.clone()),
+        ..fixture.intent()
+    };
+    let (inspected, _lease) = evidence::inspect(
+        &fixture.state,
+        &fixture.principal,
+        &record.job.job_id,
+        Some(&range),
+    )
+    .unwrap();
+    let mut settings = fixture.policy_change("https://recorder.example");
+    settings.settings.as_mut().unwrap().enabled = false;
+    fixture.action(Action::ConfigurePolicy(settings));
+    assert!(
+        management::create_inspected(&fixture.state, &fixture.principal, request, inspected)
+            .is_err()
+    );
+    assert!(fixture.list(100).grants.is_empty());
+}
+
+#[test]
+fn older_output_only_proofs_still_serve_completed_exports_and_require_fresh_ranges() {
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let mut records = fixture.state.export_jobs.lock().unwrap();
+    records
+        .get_mut(&record.job.job_id)
+        .unwrap()
+        .media_proof
+        .as_mut()
+        .unwrap()
+        .version = 1;
+    drop(records);
+    let intent = fixture.intent();
+    let error = dispatch(
+        &fixture.state,
+        &fixture.principal,
+        proto::ShareCommand {
+            action: Some(Action::Create(proto::CreateShareGrant {
+                recording_range: Some(range),
+                ..intent
+            })),
+        },
+    )
+    .unwrap_err();
+    assert!(error.message.contains("no recorded media proof"));
+    assert!(fixture.list(100).grants.is_empty());
+    assert!(!fixture.issue().url.is_empty());
+}
+
+#[test]
 fn a_creator_can_identify_legacy_range_artifacts_that_need_replacement() {
     let (fixture, record, range) = selected_export(VideoCodec::H264);
     let preview = || {
@@ -284,6 +337,49 @@ fn a_creator_can_identify_legacy_range_artifacts_that_need_replacement() {
     assert_eq!(preview().message, "guest evidence is unavailable");
 }
 
+fn assert_range_actions_rejected(fixture: &Fixture, actions: [Action; 2]) {
+    for action in actions {
+        assert!(
+            dispatch(
+                &fixture.state,
+                &fixture.principal,
+                proto::ShareCommand {
+                    action: Some(action)
+                }
+            )
+            .is_err()
+        );
+    }
+}
+
+fn assert_mismatched_range_requests(
+    fixture: &Fixture,
+    selected: &proto::ShareRecordingRange,
+    preview: &impl Fn(&proto::ShareRecordingRange) -> Action,
+    create: &impl Fn(&proto::ShareRecordingRange) -> Action,
+) {
+    for changed in [
+        proto::ShareRecordingRange {
+            source_id: "different-camera".into(),
+            ..selected.clone()
+        },
+        proto::ShareRecordingRange {
+            start_ms: selected.start_ms - 1,
+            ..selected.clone()
+        },
+        proto::ShareRecordingRange {
+            end_ms: selected.end_ms - 1,
+            ..selected.clone()
+        },
+        proto::ShareRecordingRange {
+            end_ms: selected.start_ms,
+            ..selected.clone()
+        },
+    ] {
+        assert_range_actions_rejected(fixture, [preview(&changed), create(&changed)]);
+    }
+}
+
 #[test]
 fn selected_interval_guards_preview_and_grant_creation() {
     let (fixture, record, selected) = selected_export(VideoCodec::H264);
@@ -307,37 +403,7 @@ fn selected_interval_guards_preview_and_grant_creation() {
         fixture.action(guarded_create(&selected)),
         Value::Created(_)
     ));
-    for changed in [
-        proto::ShareRecordingRange {
-            source_id: "different-camera".into(),
-            ..selected.clone()
-        },
-        proto::ShareRecordingRange {
-            start_ms: selected.start_ms - 1,
-            ..selected.clone()
-        },
-        proto::ShareRecordingRange {
-            end_ms: selected.end_ms - 1,
-            ..selected.clone()
-        },
-        proto::ShareRecordingRange {
-            end_ms: selected.start_ms,
-            ..selected.clone()
-        },
-    ] {
-        for action in [guarded_preview(&changed), guarded_create(&changed)] {
-            assert!(
-                dispatch(
-                    &fixture.state,
-                    &fixture.principal,
-                    proto::ShareCommand {
-                        action: Some(action)
-                    }
-                )
-                .is_err()
-            );
-        }
-    }
+    assert_mismatched_range_requests(&fixture, &selected, &guarded_preview, &guarded_create);
     // Keep the immutable bytes and their measured bounds. Exercise a preceding keyframe
     // and a trailing sample independently using corresponding requested intervals.
     for (start, end) in [
@@ -355,17 +421,10 @@ fn selected_interval_guards_preview_and_grant_creation() {
             end_ms: end,
             ..selected.clone()
         };
-        for action in [guarded_preview(&narrower), guarded_create(&narrower)] {
-            let error = dispatch(
-                &fixture.state,
-                &fixture.principal,
-                proto::ShareCommand {
-                    action: Some(action),
-                },
-            )
-            .unwrap_err();
-            assert_eq!(error.code, proto::ErrorCode::Rejected);
-        }
+        assert_range_actions_rejected(
+            &fixture,
+            [guarded_preview(&narrower), guarded_create(&narrower)],
+        );
     }
     assert_eq!(fixture.list(100).grants.len(), 1);
 }

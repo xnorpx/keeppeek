@@ -19,6 +19,40 @@ pub(super) fn preview(
     id: &str,
     range: Option<&proto::ShareRecordingRange>,
 ) -> Result<ValidatedEvidence, ControlCommandError> {
+    Ok(inspect(state, principal, id, range)?.0)
+}
+
+pub(super) fn inspect(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    id: &str,
+    range: Option<&proto::ShareRecordingRange>,
+) -> Result<(ValidatedEvidence, LeaseSet), ControlCommandError> {
+    let checked = preview_binding(state, principal, id, range)?;
+    let opened = open_guest(state, &checked.binding)?;
+    if range.is_some() {
+        super::super::guest_review::inspect_range_codec(opened.file, checked.binding.bytes)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::InvalidData {
+                    ControlCommandError::new(
+                        proto::ErrorCode::Rejected,
+                        409,
+                        "the selected recording could not be verified as browser-compatible",
+                    )
+                } else {
+                    unavailable()
+                }
+            })?;
+    }
+    Ok((checked, opened.lease))
+}
+
+pub(super) fn preview_binding(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    id: &str,
+    range: Option<&proto::ShareRecordingRange>,
+) -> Result<ValidatedEvidence, ControlCommandError> {
     if principal.role != AccessRole::Administrator {
         return Err(denied());
     }
@@ -37,7 +71,10 @@ pub(super) fn preview(
     let current_source = source(state, record.source_identity.ok_or_else(denied)?)?;
     camera_access::require_camera(&policy, &current_source)?;
     if range.is_some()
-        && record.media_proof.is_none()
+        && record
+            .media_proof
+            .as_ref()
+            .is_none_or(|proof| proof.version != SOURCE_BOUNDS_PROOF_VERSION)
         && record.job.status == proto::ExportJobStatus::Ready as i32
     {
         return Err(missing_range_proof());
@@ -46,23 +83,7 @@ pub(super) fn preview(
     if let Some(selected) = range {
         check_range(&record, &binding, &current_source, selected)?;
     }
-    let checked = live_evidence(state, &record, binding)?;
-    let opened = open_guest(state, &checked.binding)?;
-    if range.is_some() {
-        super::super::guest_review::inspect_range_codec(opened.file, checked.binding.bytes)
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::InvalidData {
-                    ControlCommandError::new(
-                        proto::ErrorCode::Rejected,
-                        409,
-                        "the selected recording could not be verified as browser-compatible",
-                    )
-                } else {
-                    unavailable()
-                }
-            })?;
-    }
-    Ok(checked)
+    live_evidence(state, &record, binding)
 }
 
 fn missing_range_proof() -> ControlCommandError {

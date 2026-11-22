@@ -4002,7 +4002,7 @@ fn complete_export_record(
     record.completed_at_ms = Some(now_ms);
     record.media_proof = None;
     let proof = ExportMediaProof {
-        version: 1,
+        version: SOURCE_BOUNDS_PROOF_VERSION,
         artifact_id: record.artifact_id.clone(),
         sha256: record.job.sha256.clone()?,
         bytes: artifact.bytes,
@@ -8190,6 +8190,9 @@ struct ExportJobRecord {
     downloaded_at_ms: Option<i64>,
 }
 
+// V1 records muxed output timing. V2 also includes the original source extent for unshifted samples.
+const SOURCE_BOUNDS_PROOF_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExportMediaProof {
@@ -8202,7 +8205,7 @@ struct ExportMediaProof {
 
 impl ExportMediaProof {
     fn matches(&self, record: &ExportJobRecord) -> bool {
-        self.version == 1
+        matches!(self.version, 1 | SOURCE_BOUNDS_PROOF_VERSION)
             && Uuid::parse_str(&self.artifact_id).is_ok_and(|id| !id.is_nil())
             && self.artifact_id == record.artifact_id
             && self.sha256.len() == 64
@@ -20508,8 +20511,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn export_active_duplicates_are_requester_scoped_and_option_exact() {
+    fn seeded_running_export() -> (ServerState, proto::CreateExportJob) {
         let mut state = media_test_state();
         state.catalog = None;
         let request = proto::CreateExportJob {
@@ -20529,22 +20531,16 @@ mod tests {
             .lock()
             .unwrap()
             .insert(request.job_id.clone(), active);
+        (state, request)
+    }
 
+    #[test]
+    fn export_active_duplicates_are_requester_scoped_and_option_exact() {
+        let (state, request) = seeded_running_export();
         let mut duplicate = request;
         duplicate.job_id = "new-client-id".to_owned();
         let reused = create_export_job(&state, "owner", duplicate.clone()).unwrap();
         assert_eq!(reused.job_id, "active-export");
-
-        duplicate.guest_range_preparation = Some(true);
-        let bounded = create_export_job(&state, "owner", duplicate.clone()).unwrap_err();
-        assert_eq!(bounded.code, proto::ErrorCode::Unavailable);
-        duplicate.guest_range_preparation = Some(false);
-        assert_eq!(
-            create_export_job(&state, "owner", duplicate.clone())
-                .unwrap()
-                .job_id,
-            "active-export"
-        );
 
         duplicate.allow_partial = true;
         let different_options = create_export_job(&state, "owner", duplicate.clone()).unwrap_err();
@@ -20575,6 +20571,22 @@ mod tests {
         );
         assert!(validate_export_job_id("../recordings").is_err());
         assert!(validate_export_job_id("safe-export_1.2").is_ok());
+    }
+
+    #[test]
+    fn a_bounded_guest_job_does_not_reuse_an_unbounded_running_export() {
+        let (state, mut duplicate) = seeded_running_export();
+        duplicate.job_id = "bounded-candidate".to_owned();
+        duplicate.guest_range_preparation = Some(true);
+        let bounded = create_export_job(&state, "owner", duplicate.clone()).unwrap_err();
+        assert_eq!(bounded.code, proto::ErrorCode::Unavailable);
+        duplicate.guest_range_preparation = Some(false);
+        assert_eq!(
+            create_export_job(&state, "owner", duplicate.clone())
+                .unwrap()
+                .job_id,
+            "active-export"
+        );
     }
 
     #[test]
