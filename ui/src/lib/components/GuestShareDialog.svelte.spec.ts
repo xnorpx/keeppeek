@@ -213,13 +213,13 @@ describe('creator guest share dialog', () => {
 		]);
 	});
 
-	it('reloads a rejected job by ID until the operator explicitly prepares another export', async () => {
+	it('reloads an over-budget job by ID until the operator explicitly prepares the alternate stream', async () => {
 		const { target, ready, rangeClient } = alternateRecordings();
 		const failed = {
 			...ready,
 			id: 'size-limit',
 			status: 'failed',
-			error: 'Selected export exceeds 512 MiB.'
+			error: 'export exceeds the guest preparation byte limit'
 		};
 		rangeClient.listExports.mockResolvedValue([]);
 		rangeClient.createExport.mockResolvedValueOnce(failed);
@@ -235,9 +235,15 @@ describe('creator guest share dialog', () => {
 		expect(rangeClient.getExport).toHaveBeenCalledExactlyOnceWith('size-limit');
 		expect(rangeClient.createExport).toHaveBeenCalledOnce();
 		expect(share.previewExport).not.toHaveBeenCalled();
-		await page.getByRole('button', { name: 'Prepare a fresh export' }).click();
+		await page.getByRole('button', { name: 'Prepare alternate stream' }).click();
 		await expect.element(page.getByLabelText('Display name')).toBeVisible();
 		expect(rangeClient.createExport).toHaveBeenCalledTimes(2);
+		expect(rangeClient.createExport).toHaveBeenLastCalledWith({
+			...target,
+			streamId: 'sub',
+			allowPartial: true,
+			guestRangePreparation: true
+		});
 	});
 
 	it.each([
