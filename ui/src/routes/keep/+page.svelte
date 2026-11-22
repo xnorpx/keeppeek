@@ -411,6 +411,7 @@
 	$effect(() => {
 		if (shuttleDirection !== -1 || !selected) return;
 		const reverse = () => {
+			if (reconnectPending || interruptedPlayback || !storedPlayback) return;
 			const current = playheadMs ?? selected?.start_time_ms;
 			if (current !== undefined) seekToTimestamp(current - shuttleSpeed * 250, false);
 		};
