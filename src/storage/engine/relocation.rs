@@ -28,6 +28,7 @@ pub(super) struct Scan {
     journal_cursor: String,
     journal_done: bool,
     published: bool,
+    pass_finished: bool,
 }
 
 impl Scan {
@@ -201,7 +202,7 @@ fn run_background(
         }
         // New finalizations may be in a directory already visited. Coalesce all of them
         // into one further complete pass, and finish the last pass on orderly shutdown.
-        let complete = delay.is_none() || delay.is_some_and(|d| d >= RETRY_DELAY);
+        let complete = scan.pass_finished;
         if complete && dirty {
             dirty = false;
             scan.due = Some(Instant::now());
@@ -211,6 +212,7 @@ fn run_background(
             if complete {
                 break;
             }
+            scan.due = Some(Instant::now());
             continue;
         }
         let received = match delay {
@@ -231,7 +233,7 @@ fn run_background(
 }
 
 impl Scan {
-    /// At most one file and a bounded directory page between incoming media commands.
+    /// Visit one journal record or one source-directory page per background turn.
     fn step(
         &mut self,
         config: &StorageConfig,
@@ -243,6 +245,7 @@ impl Scan {
         if now < due {
             return Some(due - now);
         }
+        self.pass_finished = false;
         if !self.journal_done
             && let Some(catalog) = catalog
         {
@@ -254,12 +257,15 @@ impl Scan {
                         health.relocation_failed(&job.stream);
                         tracing::debug!(%error,"recording relocation journal retry deferred");
                     }
+                    self.due = Some(now.max(Instant::now()) + PAGE_DELAY);
                     return Some(PAGE_DELAY);
                 }
                 Ok(None) => self.journal_done = true,
                 Err(error) => {
                     tracing::debug!(%error,"recording relocation journal unavailable");
                     self.incomplete = true;
+                    self.pass_finished = true;
+                    self.due = Some(now.max(Instant::now()) + RETRY_DELAY);
                     return Some(RETRY_DELAY);
                 }
             }
@@ -271,12 +277,14 @@ impl Scan {
                     self.fail(&stream, now);
                     health.relocation_failed(&stream);
                     tracing::warn!(camera = stream, %error, "recording relocation retry deferred");
+                } else {
+                    self.published = true;
                 }
-                self.published = true;
                 self.due = Some(now.max(Instant::now()) + PAGE_DELAY);
             }
             Ok(Next::More) => self.due = Some(now + PAGE_DELAY),
             Ok(Next::Done) => {
+                self.pass_finished = true;
                 if !self.incomplete {
                     health.finish_relocation_scan(&self.failed);
                 }
@@ -288,12 +296,14 @@ impl Scan {
                 self.incomplete = false;
             }
             Err(error) => {
+                self.pass_finished = true;
                 self.incomplete = true;
                 self.due = Some(now.max(Instant::now()) + RETRY_DELAY);
                 tracing::debug!(%error, "recording relocation directory retry deferred");
             }
         }
-        self.due.map(|at| at.saturating_duration_since(now))
+        self.due
+            .map(|at| at.saturating_duration_since(now.max(Instant::now())))
     }
 }
 
@@ -384,6 +394,9 @@ pub(super) fn move_recording(
                 "active recording reader defers relocation",
             ));
         }
+        if destination.try_exists()? {
+            verify_existing(path, &destination)?;
+        }
         let metadata = fs::symlink_metadata(path)?;
         let identity = crate::storage::catalog::recording_file_identity(path, &metadata);
         let job = catalog
@@ -393,6 +406,7 @@ pub(super) fn move_recording(
                 source: path.to_owned(),
                 destination: destination.clone(),
                 staged: uuid::Uuid::new_v4(),
+                destination_published: false,
                 source_identity: identity
                     .ok_or_else(|| io::Error::other("recording identity unavailable"))?,
             })
@@ -434,6 +448,11 @@ fn recover_job(
     // The UUID was reserved by the catalog before even one media byte could be written.
     remove_stage(&staged)?;
     if !job.source.try_exists()? {
+        if !job.destination_published && job.destination.try_exists()? {
+            return Err(io::Error::other(
+                "source disappeared before recording handoff",
+            ));
+        }
         return catalog.retire_relocation(job).map_err(io::Error::other);
     }
     let meta = fs::symlink_metadata(&job.source)?;
@@ -458,11 +477,26 @@ fn recover_job(
         ));
     }
     stage_source(&job.source, &job.destination, job.staged)?;
+    sync_parent(&job.destination)?;
     catalog
         .update_recording_path(&job.id, &job.destination, true)
         .map_err(io::Error::other)?;
+    if same_entry(&job.source, &job.destination)? {
+        return Err(io::Error::other(
+            "recording directories became aliases during publication",
+        ));
+    }
     fs::remove_file(&job.source)?;
+    sync_parent(&job.source)?;
     catalog.retire_relocation(job).map_err(io::Error::other)
+}
+
+fn sync_parent(path: &Path) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("missing recording directory"))?;
+    let directory = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())?;
+    crate::storage::long_term::inspection::removal::sync_directory(&directory)
 }
 
 fn staged_name(id: uuid::Uuid) -> String {
@@ -613,6 +647,27 @@ fn verify_existing(source: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blocked_worker_coalesces_capture_wakeups_without_waiting_for_the_copy() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let (release, gate) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            gate.recv().unwrap();
+            assert_eq!(receiver.into_iter().count(), 1);
+        });
+        let worker = Background {
+            sender: Some(sender),
+            thread: Some(thread),
+            published: Arc::new(AtomicBool::new(false)),
+        };
+        // The service worker is held until all notifications from the capture side returned.
+        for _ in 0..4096 {
+            worker.wake();
+        }
+        release.send(()).unwrap();
+        drop(worker);
+    }
 
     #[test]
     fn parent_aliases_keep_the_single_directory_entry() {

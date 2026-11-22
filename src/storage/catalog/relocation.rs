@@ -13,6 +13,7 @@ pub(crate) struct Move {
     pub destination: PathBuf,
     pub staged: uuid::Uuid,
     pub source_identity: String,
+    pub destination_published: bool,
 }
 
 pub(super) enum Request {
@@ -26,6 +27,13 @@ pub(super) async fn initialize(db: &turso::Connection) -> Result<()> {
         id TEXT PRIMARY KEY REFERENCES recording_files(id) ON DELETE RESTRICT,
         stream TEXT NOT NULL, source TEXT NOT NULL UNIQUE, destination TEXT NOT NULL UNIQUE,
         stage TEXT NOT NULL UNIQUE, source_identity TEXT NOT NULL);
+        CREATE TRIGGER IF NOT EXISTS legacy_relocation_path_insert BEFORE INSERT ON recording_files
+        WHEN EXISTS(SELECT 1 FROM legacy_recording_relocations WHERE id!=NEW.id AND (source=NEW.path OR destination=NEW.path))
+        BEGIN SELECT RAISE(ABORT,'recording location is reserved'); END;
+        CREATE TRIGGER IF NOT EXISTS legacy_relocation_path_update BEFORE UPDATE OF path ON recording_files
+        WHEN EXISTS(SELECT 1 FROM legacy_recording_relocations WHERE (id=NEW.id AND source!=NEW.path AND destination!=NEW.path)
+          OR (id!=NEW.id AND (source=NEW.path OR destination=NEW.path)))
+        BEGIN SELECT RAISE(ABORT,'recording location is reserved'); END;
         CREATE TRIGGER IF NOT EXISTS legacy_relocation_cleanup BEFORE UPDATE OF cleanup_pending ON recording_files
         WHEN NEW.cleanup_pending=1 AND EXISTS(SELECT 1 FROM legacy_recording_relocations WHERE id=NEW.id)
         BEGIN SELECT RAISE(ABORT,'recording relocation is pending'); END;
@@ -43,10 +51,12 @@ fn read(row: &turso::Row) -> Result<Move> {
         destination: PathBuf::from(row.get::<String>(3)?),
         staged: row.get::<String>(4)?.parse()?,
         source_identity: row.get(5)?,
+        destination_published: row.get::<i64>(6)? != 0,
     })
 }
 
-const COLUMNS: &str = "id,stream,source,destination,stage,source_identity";
+const COLUMNS: &str = "id,stream,source,destination,stage,source_identity,
+    EXISTS(SELECT 1 FROM recording_files f WHERE f.id=legacy_recording_relocations.id AND f.path=legacy_recording_relocations.destination)";
 
 pub(super) async fn dispatch(db: &turso::Connection, request: Request) -> Result<Option<Move>> {
     match request {

@@ -202,6 +202,105 @@ fn finalized_with_offline_destination(
     files[0].clone()
 }
 
+#[test]
+fn relocation_journal_fences_retention_and_recovers_owned_stages_after_restart() {
+    for published in [false, true] {
+        let mut config = storage_config(&format!("journal-restart-{}", uuid::Uuid::new_v4()));
+        let root = config.long_term_path.clone();
+        config.medium_term_path = root.join("source");
+        config.long_term_path = root.join("target");
+        std::fs::create_dir_all(&config.medium_term_path).unwrap();
+        std::fs::write(&config.long_term_path, b"offline").unwrap();
+        let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+        let source = finalized_with_offline_destination(&config, &catalog);
+        let destination = config
+            .long_term_path
+            .join(source.strip_prefix(&config.medium_term_path).unwrap());
+        std::fs::remove_file(&config.long_term_path).unwrap();
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        let handle = catalog.handle();
+        let (id, stream) = handle
+            .finalized_relocation(&source, &destination)
+            .unwrap()
+            .unwrap();
+        let identity = crate::storage::catalog::recording_file_identity(
+            &source,
+            &std::fs::metadata(&source).unwrap(),
+        )
+        .unwrap();
+        let job = handle
+            .reserve_relocation(crate::storage::catalog::relocation::Move {
+                id: id.clone(),
+                stream,
+                source: source.clone(),
+                destination: destination.clone(),
+                staged: uuid::Uuid::new_v4(),
+                source_identity: identity,
+                destination_published: false,
+            })
+            .unwrap();
+        let partial = destination.with_file_name(format!(".keeppeek-{}.partial", job.staged));
+        let other =
+            destination.with_file_name(format!(".keeppeek-{}.partial", uuid::Uuid::new_v4()));
+        std::fs::write(&partial, b"interrupted copy").unwrap();
+        std::fs::write(&other, b"separately owned").unwrap();
+        if published {
+            std::fs::copy(&source, &destination).unwrap();
+            handle
+                .update_recording_path(&id, &destination, true)
+                .unwrap();
+        } else {
+            std::fs::remove_file(&source).unwrap();
+        }
+        drop(handle);
+        catalog.shutdown();
+        let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+        let handle = catalog.handle();
+        let reserved = handle.next_relocation("").unwrap().unwrap();
+        assert_eq!(reserved.id, id);
+        assert_eq!(reserved.destination_published, published);
+        assert!(handle.claim_cleanup_candidate().unwrap().is_none());
+        pollster::block_on(async {
+            let db = turso::Builder::new_local(config.recording_catalog_path.to_str().unwrap())
+                .build()
+                .await
+                .unwrap();
+            let conn = db.connect().unwrap();
+            let result = conn
+                .execute(
+                    "UPDATE recording_files SET cleanup_pending=1 WHERE id=?1",
+                    [id.as_str()],
+                )
+                .await;
+            assert!(
+                result.is_err(),
+                "retention was able to select a partially relocated object"
+            );
+        });
+        let mut worker = WriterWorker::new(
+            config.clone(),
+            RecordingDemand::new(Duration::ZERO),
+            Some(handle.clone()),
+        );
+        let mut now = Instant::now();
+        for _ in 0..64 {
+            let Some(delay) = worker.retry_relocations(now) else {
+                break;
+            };
+            now += delay;
+        }
+        assert!(handle.next_relocation("").unwrap().is_none());
+        assert!(!partial.exists());
+        assert_eq!(std::fs::read(&other).unwrap(), b"separately owned");
+        assert!(!source.exists());
+        assert_eq!(destination.exists(), published);
+        drop(worker);
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 fn block_test_path_update(config: &StorageConfig, blocked: bool) {
     pollster::block_on(async {
         let db = turso::Builder::new_local(config.recording_catalog_path.to_str().unwrap())
