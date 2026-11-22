@@ -291,7 +291,7 @@ firmware coverage and stable production-load latency remain open under #124.
 
 The Windows 11 Pro x64 host (build 26200, AMD Ryzen 5 5600G, 16 GiB RAM) ran the
 Rust 1.100.0 unoptimized test profile while other builds were active. The source
-at commit `284b65d81d926a6075155c830b92e3f694b58d9b` was measured with:
+at commit `e16595192fa01c8ffd4be6d2037b16f9cac508f1` was measured by running the compiled test binary from the 144-test suite. The equivalent Cargo command is:
 
 ```sh
 cargo +1.100.0 test --locked -p keeppeek --lib measure_live_listener_timing -- --ignored --nocapture
@@ -306,9 +306,9 @@ payload occupancy during startup at the stable packet rate.
 
 | Offset  | p50 ms | p95 ms | p50 delta vs 0 ms | p95 delta vs 0 ms | Peak held audio bytes | Peak held video bytes |
 | ------- | -----: | -----: | ----------------: | ----------------: | --------------------: | --------------------: |
-| 0 ms    |  1.530 |  2.267 |                 0 |                 0 |                     0 |                     0 |
-| +120 ms |  5.133 |  6.263 |            +3.603 |            +3.996 |                 3,072 |                     0 |
-| −120 ms |  3.397 |  4.957 |            +1.867 |            +2.689 |                     0 |                98,304 |
+| 0 ms    |  2.217 |  2.426 |                 0 |                 0 |                     0 |                     0 |
+| +120 ms | 17.327 | 21.897 |           +15.110 |           +19.471 |                 3,072 |                     0 |
+| −120 ms |  9.693 | 14.158 |            +7.476 |           +11.732 |                     0 |                98,304 |
 
 The separate paired-event fixture introduces 120 ms of synthetic audio lead or
 lag and verifies identical client-handoff deadlines after applying the matching

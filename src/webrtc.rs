@@ -1320,7 +1320,7 @@ impl ApiMediaRuntime {
                 match track.runtime.delivery {
                     TrackDelivery::Rtp(mid) => self.available_video_mids.push(mid),
                     TrackDelivery::ReliableData(binding) => {
-                        self.cancel_group(&binding.stream_binding_id)
+                        self.cancel_group(&binding.stream_binding_id);
                     }
                 }
             } else if let Some(index) = self
@@ -1337,7 +1337,7 @@ impl ApiMediaRuntime {
                 match track.runtime.delivery {
                     TrackDelivery::Rtp(mid) => self.available_audio_mids.push(mid),
                     TrackDelivery::ReliableData(binding) => {
-                        self.cancel_group(&binding.stream_binding_id)
+                        self.cancel_group(&binding.stream_binding_id);
                     }
                 }
             }
