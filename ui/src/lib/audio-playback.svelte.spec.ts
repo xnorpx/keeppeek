@@ -18,7 +18,7 @@ function installAacPlaybackClock() {
 				return { duration: 0.02, getChannelData: () => new Float32Array(1) };
 			}
 			createBufferSource() {
-				const node = { connect: vi.fn(), start, stop, onended: null };
+				const node = { connect: vi.fn(), disconnect: vi.fn(), start, stop, onended: null };
 				nodes.push(node);
 				return node;
 			}
@@ -75,7 +75,7 @@ describe('reliable AAC presentation', () => {
 	it('schedules contiguous late blocks in order after a short delivery stall', async () => {
 		vi.useFakeTimers();
 		const { clock, start, stop } = installAacPlaybackClock();
-		const player = new AacAudioPlayback();
+		const player = new AacAudioPlayback(new AudioContext());
 		try {
 			await player.configure('aac', new Uint8Array([0x12, 0x10]), 48_000, 1);
 			pushTimestamp(player, 1, 0);
@@ -97,7 +97,7 @@ describe('reliable AAC presentation', () => {
 	it('retires cancelled nodes immediately even if a suspended audio clock never emits ended', async () => {
 		vi.useFakeTimers();
 		const { nodes, stop } = installAacPlaybackClock();
-		const player = new AacAudioPlayback();
+		const player = new AacAudioPlayback(new AudioContext());
 		try {
 			await player.configure('aac', new Uint8Array([0x12, 0x10]), 48_000, 1);
 			for (let frame = 0; frame < 128; frame++) {
@@ -117,7 +117,7 @@ describe('reliable AAC presentation', () => {
 	it('applies changes to saved timing while earlier decoded audio is still buffered', async () => {
 		vi.useFakeTimers();
 		const { start, stop } = installAacPlaybackClock();
-		const playback = new AacAudioPlayback();
+		const playback = new AacAudioPlayback(new AudioContext());
 		try {
 			await playback.configure('aac', new Uint8Array([0x12, 0x10]), 48_000, 1);
 			// The same binding goes from saved 0 to +80 ms, then back to 0.

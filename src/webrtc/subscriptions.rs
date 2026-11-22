@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::proto;
+use crate::{api::proto, cameras::MAX_LIVE_AUDIO_OFFSET_MS};
 
 impl ApiMediaRuntime {
     pub(super) fn subscribe(
@@ -8,12 +8,15 @@ impl ApiMediaRuntime {
         request: &proto::SubscribeMedia,
         plan: MediaSubscriptionPlan,
     ) -> Result<proto::SubscriptionResult, ControlHandlerError> {
-        if request.live_audio_preview_offset_ms.is_some_and(|value| {
-            value.unsigned_abs() > crate::cameras::MAX_LIVE_AUDIO_OFFSET_MS as u32
-        }) {
+        if request
+            .live_audio_preview_offset_ms
+            .is_some_and(|value| value.unsigned_abs() > MAX_LIVE_AUDIO_OFFSET_MS as u32)
+        {
             return Err(ControlHandlerError::new(
                 ErrorCode::InvalidRequest,
-                "live audio offset must be between -200 and 200 milliseconds",
+                format!(
+                    "live audio offset must be between -{MAX_LIVE_AUDIO_OFFSET_MS} and {MAX_LIVE_AUDIO_OFFSET_MS} milliseconds"
+                ),
             ));
         }
         if plan.media_kind == proto::MediaKind::Audio {

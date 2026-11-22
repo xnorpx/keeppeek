@@ -554,6 +554,55 @@ describe('LivePeer', () => {
 		await peer.close();
 	});
 
+	it('keeps an unlocked audio context through reliable preview and saved binding replacements', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		const constructed = vi.fn();
+		const closed = vi.fn();
+		const resumed = vi.fn();
+		vi.stubGlobal(
+			'AudioContext',
+			class {
+				state = 'suspended';
+				constructor() {
+					constructed();
+				}
+				async resume() {
+					this.state = 'running';
+					resumed();
+				}
+				async close() {
+					this.state = 'closed';
+					closed();
+				}
+			}
+		);
+		api.createSession.mockResolvedValue({
+			session_id: 'aac',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		FakeDataChannel.audioVariants = ['main'];
+		FakeDataChannel.audioUsesReliable = true;
+		const configured = vi
+			.spyOn(AacAudioPlayback.prototype, 'configure')
+			.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		const saved = { cameraId: 'front-door', quality: 'auto' as const, variantId: 'main' as const };
+		await peer.configure([saved]);
+		await peer.resumeAudioPlayback();
+		FakeDataChannel.audioBindingSuffix = '-preview';
+		await peer.configure([{ ...saved, liveAudioPreviewOffsetMs: -25 }]);
+		FakeDataChannel.audioBindingSuffix = '-reset';
+		await peer.configure([saved]);
+		await peer.resumeAudioPlayback();
+		expect(configured).toHaveBeenCalledTimes(3);
+		expect(constructed).toHaveBeenCalledTimes(1);
+		expect(resumed).toHaveBeenCalledTimes(1);
+		expect(closed).not.toHaveBeenCalled();
+		await peer.close();
+		expect(closed).toHaveBeenCalledTimes(1);
+	});
+
 	it('restores acknowledged saved timing and keeps video usable if this browser loses AAC support', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({

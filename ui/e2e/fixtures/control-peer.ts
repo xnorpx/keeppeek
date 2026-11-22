@@ -423,7 +423,7 @@ export type MockControlPeerOptions = {
 	health?: HealthFixture;
 	healthSequence?: readonly HealthFixture[];
 	healthError?: string;
-	mediaAdmissionError?: (subscription: SubscribeMedia) => string | null;
+	mediaAdmissionError?: (subscription: SubscribeMedia) => string | null | Promise<string | null>;
 	motionDetection?: MotionDetection;
 	ptzPresets?: readonly { id: number; name: string }[];
 	runtimeUpdateResult?: SettingsConfigUpdateResponse;
@@ -1167,12 +1167,8 @@ export async function mockControlPeer(
 		}
 		if (request.command.case === 'subscribeMedia') {
 			const subscription = request.command.value;
-			const result = fixtureSubscriptionResult(
-				subscription,
-				options,
-				requests.mediaSubscriptions
-			);
-			const error = options.mediaAdmissionError?.(subscription);
+			const result = fixtureSubscriptionResult(subscription, options, requests.mediaSubscriptions);
+			const error = await options.mediaAdmissionError?.(subscription);
 			return error
 				? encodedError(request.requestId, error)
 				: encodedOk(request.requestId, { case: 'subscriptionResult', value: result });

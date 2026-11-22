@@ -104,10 +104,20 @@
 	});
 	type LivePreview = { cameraId: string; stream: 'main' | 'sub'; offset: number };
 	let livePreview = $state.raw<LivePreview | null>(null);
+	const previewLifetime = $derived({
+		cameraId,
+		available: previewAvailable,
+		controller: new AbortController()
+	});
+	$effect.pre(() => {
+		const { controller } = previewLifetime;
+		return () => controller.abort();
+	});
 	$effect(() => {
 		if (
 			livePreview &&
-			(livePreview.cameraId !== cameraId ||
+			(!previewAvailable ||
+				livePreview.cameraId !== cameraId ||
 				livePeer.track(livePreview.cameraId)?.restoredSavedTiming)
 		)
 			livePreview = null;
@@ -136,17 +146,21 @@
 		}
 		if (!previewAvailable) throw new Error('The live camera is unavailable.');
 		const id = camera.id;
+		const lifetime = previewLifetime;
 		const previous = livePreview;
 		const candidate = offset === null ? null : { cameraId: id, stream, offset };
 		try {
+			void livePeer
+				.resumeAudioPlayback()
+				.catch((error) => console.warn('Audio playback could not resume', error));
 			await livePeer.configure([cameraPlan(id, candidate)]);
-			if (cameraId !== id) return;
+			if (lifetime.controller.signal.aborted || lifetime !== previewLifetime) return;
 			if (!previewAvailable) throw new Error('The live camera is unavailable.');
 			if (offset !== null && livePeer.track(id)?.liveAudioPreviewOffsetMs !== offset)
 				throw new Error('Reconnect the camera before previewing timing.');
 			livePreview = candidate;
 		} catch (cause) {
-			if (cameraId === id) {
+			if (!lifetime.controller.signal.aborted && lifetime === previewLifetime) {
 				livePreview = previous;
 				await livePeer.configure(livePlans).catch((restoreError) => {
 					console.warn('Unable to restore the previous camera preview', restoreError);

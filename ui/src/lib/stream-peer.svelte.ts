@@ -128,6 +128,7 @@ export class LivePeer {
 	#talkbackTrack: MediaStreamTrack | null = null;
 	#cameraByMid: Record<string, string> = {};
 	#audioCameraByMid: Record<string, string> = {};
+	#audioContext: AudioContext | null = null;
 	#audioPlaybackByBinding = new Map<string, AacAudioPlayback>();
 	#audioBindingByCamera: Record<string, string> = {};
 	#sourceSessionByCamera: Record<string, string> = {};
@@ -313,9 +314,9 @@ export class LivePeer {
 	}
 
 	resumeAudioPlayback(): Promise<void> {
-		return Promise.all(
-			[...this.#audioPlaybackByBinding.values()].map((playback) => playback.resume())
-		).then(() => undefined);
+		return this.#audioContext?.state === 'suspended'
+			? this.#audioContext.resume()
+			: Promise.resolve();
 	}
 
 	closeOnPageHide(): void {
@@ -1052,7 +1053,8 @@ export class LivePeer {
 		this.releaseAudioDecoder(cameraId);
 		let playback: AacAudioPlayback | undefined;
 		try {
-			playback = new AacAudioPlayback();
+			this.#audioContext ??= new AudioContext();
+			playback = new AacAudioPlayback(this.#audioContext);
 			await playback.configure(
 				variant.codec?.name ?? 'aac',
 				format.value.decoderConfig,
@@ -1503,6 +1505,8 @@ export class LivePeer {
 		this.#audioCameraByMid = {};
 		for (const playback of this.#audioPlaybackByBinding.values()) playback.close();
 		this.#audioPlaybackByBinding.clear();
+		void this.#audioContext?.close();
+		this.#audioContext = null;
 		this.#audioBindingByCamera = {};
 		this.#sourceSessionByCamera = {};
 		this.#trackEventByMid = {};

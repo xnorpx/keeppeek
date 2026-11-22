@@ -45,7 +45,7 @@ export class AudioJitterBuffer {
 }
 
 export class AacAudioPlayback {
-	readonly #context = new AudioContext();
+	readonly #context: AudioContext;
 	readonly #jitter = new AudioJitterBuffer();
 	#decoder: AudioDecoder | null = null;
 	#anchor: { timestampUs: number; contextTime: number } | null = null;
@@ -54,6 +54,10 @@ export class AacAudioPlayback {
 	#expectedTimestampUs?: number;
 	#fallbackTimestampUs = 0;
 	#closed = false;
+
+	constructor(context: AudioContext) {
+		this.#context = context;
+	}
 
 	async configure(
 		codec: string,
@@ -77,10 +81,6 @@ export class AacAudioPlayback {
 			error: (error) => console.warn('AAC decoder stopped', error)
 		});
 		this.#decoder.configure(config);
-	}
-
-	async resume(): Promise<void> {
-		if (this.#context.state === 'suspended') await this.#context.resume();
 	}
 
 	push(frame: AudioDataFrame): void {
@@ -108,8 +108,12 @@ export class AacAudioPlayback {
 		this.#closed = true;
 		this.#jitter.clear();
 		if (this.#decoder?.state !== 'closed') this.#decoder?.close();
+		for (const source of this.#scheduled.keys()) {
+			source.onended = null;
+			source.stop();
+			source.disconnect();
+		}
 		this.#scheduled.clear();
-		void this.#context.close();
 	}
 
 	#render(audioData: AudioData): void {

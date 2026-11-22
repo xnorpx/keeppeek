@@ -642,56 +642,112 @@ test('renders Board 24 mobile settings as the editable per-camera owner', async 
 	expect(controls.cameraUpdates).toEqual([]);
 });
 
-test('clears a listener preview when navigating away from and back to the camera', async ({
+for (const pending of ['settled', 'accepted', 'denied'] as const) {
+	test(`clears a ${pending} listener preview when navigating away from and back to the camera`, async ({
+		page
+	}) => {
+		const { camera, health } = mobilePtzCamera();
+		const cameras = [camera, { ...camera, id: 'garage', name: 'Garage', ip: '192.0.2.88' }];
+		let release!: (error: string | null) => void;
+		const gate = new Promise<string | null>((resolve) => {
+			release = resolve;
+		});
+		let held = false;
+		const controls = await mockControlPeer(page, {
+			mediaAdmissionError: (subscription) => {
+				if (pending === 'settled' || held || subscription.liveAudioPreviewOffsetMs !== 80)
+					return null;
+				held = true;
+				return gate;
+			},
+			cameras,
+			capabilityIds: ['keeppeek.live-audio-timing.v1'],
+			cameraSettings: cameras.map((item) => ({ ...configuredCamera(item), live_audio: {} })),
+			health: {
+				cameras: cameras.map((item) => ({
+					...health,
+					id: item.id,
+					ip: item.ip,
+					name: item.name!,
+					configured_profiles: item.profiles
+				}))
+			}
+		});
+		await page.goto(`/camera?camera=${camera.id}`);
+		const editor = page.getByRole('region', { name: 'Live audio synchronization' });
+		await editor.getByLabel('Preview stream').selectOption('main');
+		await editor.getByLabel('Preview offset (ms)').fill('80');
+		await editor.getByRole('button', { name: 'Apply preview' }).click();
+		if (pending === 'settled') await expect(editor.getByText(/Active preview/)).toBeVisible();
+		else await expect.poll(() => held).toBe(true);
+		const admittedPreviews = controls.mediaSubscriptions.filter(
+			(request) => request.previewOffsetMs === 80
+		).length;
+		expect(admittedPreviews).toBe(pending === 'settled' ? 2 : 1);
+		// A SvelteKit same-route navigation keeps the component mounted, as does browser Back.
+		const link = await page.evaluateHandle(() => {
+			const anchor = document.createElement('a');
+			anchor.href = '/camera?camera=garage';
+			anchor.textContent = 'Open Garage';
+			document.body.append(anchor);
+			return anchor;
+		});
+		await link.click();
+		await expect(page).toHaveURL(/camera=garage$/);
+		await expect(page.getByRole('heading', { name: 'Garage', exact: true }).first()).toBeVisible();
+		await expect(editor.getByRole('button', { name: 'Reset preview' })).toBeDisabled();
+		await page.goBack();
+		await expect(page).toHaveURL(new RegExp(`camera=${camera.id}$`));
+		await expect(
+			page.getByRole('heading', { name: camera.name!, exact: true }).first()
+		).toBeVisible();
+		await expect(editor.getByRole('button', { name: 'Reset preview' })).toBeDisabled();
+		release(pending === 'denied' ? 'preview admission failed' : null);
+		await editor.getByLabel('Preview offset (ms)').fill('-35');
+		await editor.getByRole('button', { name: 'Apply preview' }).click();
+		await expect(editor.getByText(/Active preview.*35/)).toBeVisible();
+		const oldRequests = controls.mediaSubscriptions.filter(
+			(request) => request.previewOffsetMs === 80
+		);
+		// An accepted in-flight video request can still finish its single audio handoff.
+		expect(oldRequests.length).toBeLessThanOrEqual(pending === 'denied' ? 1 : 2);
+		await editor.getByRole('button', { name: 'Reset preview' }).click();
+		await expect(editor.getByRole('button', { name: 'Reset preview' })).toBeDisabled();
+	});
+}
+
+test('drops a listener preview during offline health and returns with saved timing', async ({
 	page
 }) => {
 	const { camera, health } = mobilePtzCamera();
-	const cameras = [camera, { ...camera, id: 'garage', name: 'Garage', ip: '192.0.2.88' }];
+	const current = { ...health, configured_profiles: camera.profiles };
 	const controls = await mockControlPeer(page, {
-		cameras,
+		cameras: [camera],
 		capabilityIds: ['keeppeek.live-audio-timing.v1'],
-		cameraSettings: cameras.map((item) => ({ ...configuredCamera(item), live_audio: {} })),
-		health: {
-			cameras: cameras.map((item) => ({
-				...health,
-				id: item.id,
-				ip: item.ip,
-				name: item.name!,
-				configured_profiles: item.profiles
-			}))
-		}
+		cameraSettings: [{ ...configuredCamera(camera), live_audio: {} }],
+		health: { cameras: [current] }
 	});
 	await page.goto(`/camera?camera=${camera.id}`);
 	const editor = page.getByRole('region', { name: 'Live audio synchronization' });
-	await editor.getByLabel('Preview stream').selectOption('main');
-	await editor.getByLabel('Preview offset (ms)').fill('80');
+	await editor.getByLabel('Preview offset (ms)').fill('90');
 	await editor.getByRole('button', { name: 'Apply preview' }).click();
 	await expect(editor.getByText(/Active preview/)).toBeVisible();
-	const admittedPreviews = controls.mediaSubscriptions.filter(
-		(request) => request.previewOffsetMs === 80
+	const before = controls.mediaSubscriptions.filter(
+		(request) => request.previewOffsetMs === 90
 	).length;
-	expect(admittedPreviews).toBe(2);
-	// A SvelteKit same-route navigation keeps the component mounted, as does browser Back.
-	const link = await page.evaluateHandle(() => {
-		const anchor = document.createElement('a');
-		anchor.href = '/camera?camera=garage';
-		anchor.textContent = 'Open Garage';
-		document.body.append(anchor);
-		return anchor;
+	const healthy = current.state;
+	current.state = 'offline';
+	await expect(editor.getByRole('button', { name: 'Apply preview' })).toHaveCount(0, {
+		timeout: 12000
 	});
-	await link.click();
-	await expect(page).toHaveURL(/camera=garage$/);
-	await expect(page.getByRole('heading', { name: 'Garage', exact: true }).first()).toBeVisible();
-	await expect(editor.getByRole('button', { name: 'Reset preview' })).toBeDisabled();
-	await page.goBack();
-	await expect(page).toHaveURL(new RegExp(`camera=${camera.id}$`));
-	await expect(
-		page.getByRole('heading', { name: camera.name!, exact: true }).first()
-	).toBeVisible();
+	current.state = healthy;
+	await expect(editor.getByRole('button', { name: 'Apply preview' })).toBeEnabled({
+		timeout: 12000
+	});
 	await expect(editor.getByRole('button', { name: 'Reset preview' })).toBeDisabled();
 	expect(
-		controls.mediaSubscriptions.filter((request) => request.previewOffsetMs === 80)
-	).toHaveLength(admittedPreviews);
+		controls.mediaSubscriptions.filter((request) => request.previewOffsetMs === 90)
+	).toHaveLength(before);
 });
 
 for (const width of [320, 390, 1440]) {
