@@ -277,6 +277,20 @@ fn relocation_journal_fences_retention_and_recovers_owned_stages_after_restart()
                 "retention was able to select a partially relocated object"
             );
         });
+        let playback = published.then(|| {
+            handle
+                .leased_media_fragments_in_range("front/main", i64::MIN, i64::MAX)
+                .unwrap()
+        });
+        if let Some((fragments, _)) = &playback {
+            assert!(!fragments.is_empty());
+            assert!(
+                handle
+                    .reader_leases()
+                    .conflicts(&id, &destination.to_string_lossy())
+                    .unwrap()
+            );
+        }
         let mut worker = WriterWorker::new(
             config.clone(),
             RecordingDemand::new(Duration::ZERO),
@@ -294,6 +308,7 @@ fn relocation_journal_fences_retention_and_recovers_owned_stages_after_restart()
         assert_eq!(std::fs::read(&other).unwrap(), b"separately owned");
         assert!(!source.exists());
         assert_eq!(destination.exists(), published);
+        drop(playback);
         drop(worker);
         drop(handle);
         catalog.shutdown();

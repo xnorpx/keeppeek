@@ -128,20 +128,26 @@ pub(super) fn recover_job(
     if same_entry(&job.source, &job.destination)? {
         return catalog.retire_relocation(job).map_err(io::Error::other);
     }
-    if catalog
-        .reader_leases()
-        .conflicts(&job.id, &job.source.to_string_lossy())
-        .map_err(io::Error::other)?
-    {
-        return Err(io::Error::other(
-            "active recording reader defers relocation",
-        ));
+    if job.destination_published && job.destination.try_exists()? {
+        // All source readers left before the catalog switch. New readers own the
+        // destination and can continue through removal of the old directory entry.
+        verify_existing(&job.source, &job.destination)?;
+    } else {
+        if catalog
+            .reader_leases()
+            .conflicts(&job.id, &job.source.to_string_lossy())
+            .map_err(io::Error::other)?
+        {
+            return Err(io::Error::other(
+                "active recording reader defers relocation",
+            ));
+        }
+        stage_source(&job.source, &job.destination, job.staged)?;
+        sync_parent(&job.destination)?;
+        catalog
+            .update_recording_path(&job.id, &job.destination, true)
+            .map_err(io::Error::other)?;
     }
-    stage_source(&job.source, &job.destination, job.staged)?;
-    sync_parent(&job.destination)?;
-    catalog
-        .update_recording_path(&job.id, &job.destination, true)
-        .map_err(io::Error::other)?;
     if same_entry(&job.source, &job.destination)? {
         return Err(io::Error::other(
             "recording directories became aliases during publication",

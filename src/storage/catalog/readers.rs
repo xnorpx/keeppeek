@@ -558,7 +558,7 @@ async fn owned_locations(
             continue;
         }
         let mut rows = connection.query(
-            "SELECT r.path, EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind = 'recording' AND a.state != 'cancelled' AND (a.object_id = r.id OR a.destination_path = replace(r.path, char(92), '/') COLLATE NOCASE))
+            "SELECT r.path, (r.finalized=1 OR EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind = 'recording' AND a.state != 'cancelled' AND (a.object_id = r.id OR a.destination_path = replace(r.path, char(92), '/') COLLATE NOCASE)))
              FROM recording_files r WHERE r.id = ?1 AND r.cleanup_pending = 0
              AND NOT EXISTS (SELECT 1 FROM archive_replicas WHERE recording_id=r.id AND local_evicted!=0)
              AND NOT EXISTS (SELECT 1 FROM storage_recording_retirements WHERE recording_id = r.id AND complete = 0)
@@ -576,8 +576,8 @@ async fn owned_locations(
             same_primary_path(&row.get::<String>(0)?, &path),
             "recording reader location changed or is unavailable"
         );
-        // Legacy archive rotation precedes its catalog path update. It cannot use
-        // this fence until its owner adopts the location transition protocol.
+        // Finalized legacy segments retain the source entry through catalog publication.
+        // Open legacy writers still publish their first finalized name independently.
         if row.get::<i64>(1)? != 0 {
             owned.insert((id, path));
         }
@@ -887,11 +887,17 @@ mod tests {
             .leased_media_fragments_in_range("camera/main", 1000, 3000)
             .unwrap();
         assert!(
-            !handle
+            handle
                 .reader_leases()
                 .conflicts("reader-recording", "")
                 .unwrap()
         );
+        assert!(
+            handle
+                .update_recording_path("reader-recording", std::path::Path::new("moved.mp4"), true)
+                .is_err()
+        );
+        drop(legacy_guard);
         handle
             .update_recording_path("reader-recording", std::path::Path::new("moved.mp4"), true)
             .unwrap();
@@ -906,7 +912,6 @@ mod tests {
             .leased_media_fragments_in_range("camera/main", 1000, 3000)
             .unwrap();
         assert_eq!(fresh[0].path, "moved.mp4");
-        drop(legacy_guard);
         drop(lease);
         drop(handle);
         drop(catalog);
