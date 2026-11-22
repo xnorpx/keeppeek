@@ -4,6 +4,8 @@
 	import { capabilityActions } from '$lib/capability-actions';
 	import { useCapabilityState } from '$lib/capability-context';
 	import CapabilityGate from '$lib/components/CapabilityGate.svelte';
+	import GuestShareExportButton from '$lib/components/GuestShareExportButton.svelte';
+	import RecordedAudioTimingDetails from '$lib/components/RecordedAudioTimingDetails.svelte';
 	import { useControlClient } from '$lib/control-context';
 	import type { MediaExportJob } from '$lib/control-client';
 	import {
@@ -594,6 +596,9 @@
 							</dd>
 						</div>
 					</dl>
+					{#if job.recordedAudio}
+						<RecordedAudioTimingDetails timing={job.recordedAudio} snapshot />
+					{/if}
 					{#if job.alignedStartMs !== null && job.alignedStartMs < job.requestedStartMs}
 						<p class="flex items-start gap-2 text-xs leading-5 text-text-muted">
 							<InfoIcon class="mt-0.5 size-3.5 shrink-0" />
@@ -614,13 +619,20 @@
 								{downloading ? 'Verifying download' : 'Download'}
 							</button>
 						</CapabilityGate>
+						{#if capabilities.supports(capabilityActions.createGuestLink.capability) && !paperFrame}
+							<GuestShareExportButton controller={controlClient} exportJobId={job.id} />
+						{/if}
 						<p
 							class="text-text-muted {jobPresentation
 								? 'text-sm leading-[18px]'
 								: 'text-xs leading-5'}"
 						>
-							The file keeps the camera's own frames and the source timestamps. The checksum is what
-							an insurer or a police report quotes.
+							{#if job.recordedAudio}
+								This file uses its captured audio correction. The original recording is unchanged.
+							{:else}
+								Recorded audio timing unavailable. No correction snapshot was reported. Do not
+								assume zero correction.
+							{/if}
 						</p>
 					</div>
 				{:else if job.status === 'partial'}

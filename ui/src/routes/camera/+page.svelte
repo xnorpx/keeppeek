@@ -5,6 +5,7 @@
 	import { onMount, tick } from 'svelte';
 	import CameraConfigurationEditor from '$lib/components/CameraConfigurationEditor.svelte';
 	import CameraOverview from '$lib/components/CameraOverview.svelte';
+	import RecordedAudioSettings from '$lib/components/RecordedAudioSettings.svelte';
 	import PrivacyScheduleEditor from '$lib/components/PrivacyScheduleEditor.svelte';
 	import PrivacyStatus from '$lib/components/PrivacyStatus.svelte';
 	import MobileCameraPage, { type MobileCameraMode } from '$lib/components/MobileCameraPage.svelte';
@@ -21,6 +22,7 @@
 		ConfigurationSnapshot,
 		MotionDetection,
 		PrivacySchedulePatch,
+		RecordedAudioSettings as RecordedAudioConfiguration,
 		StreamHealth
 	} from '$lib/types';
 	import ArrowLeftIcon from '@lucide/svelte/icons/arrow-left';
@@ -55,6 +57,7 @@
 	let editingConfiguration = $state(false);
 	let editingPrivacy = $state(false);
 	let savingConfiguration = $state(false);
+	let savingRecordedAudio = $state(false);
 	let savingPrivacy = $state(false);
 	let privacyError = $state<string | null>(null);
 	let motionError = $state<string | null>(null);
@@ -306,6 +309,34 @@
 				cause instanceof Error ? cause.message : 'Camera settings were not saved.';
 		} finally {
 			savingConfiguration = false;
+		}
+	}
+
+	async function saveRecordedAudio(
+		settings: RecordedAudioConfiguration,
+		revision: string
+	): Promise<CameraSettings> {
+		const target = cameraSettings;
+		const id = cameraId;
+		if (!target || savingRecordedAudio) throw new Error('Camera settings are unavailable.');
+		savingRecordedAudio = true;
+		try {
+			const result = await controlClient.updateCamera(target.ip, {
+				recorded_audio: settings,
+				expected_configuration_revision: revision
+			});
+			if (result.camera.id !== target.id) throw new Error('Unexpected camera settings response.');
+			if (cameraId === id) cameraSettings = result.camera;
+			return result.camera;
+		} catch (cause) {
+			if (cause instanceof ConfigurationRequestError && cameraId === id) {
+				const current = await controlClient.getCameraSettings().catch(() => []);
+				if (cameraId === id)
+					cameraSettings = current.find((entry) => entry.id === target.id) ?? cameraSettings;
+			}
+			throw cause;
+		} finally {
+			savingRecordedAudio = false;
 		}
 	}
 
@@ -586,11 +617,20 @@
 						<CameraConfigurationEditor
 							{preRecordingSupported}
 							camera={cameraSettings}
-							saving={savingConfiguration}
+							saving={savingConfiguration || savingRecordedAudio}
 							error={configurationError}
 							oncancel={closeConfiguration}
 							onsave={saveConfiguration}
 						/>
+						<div class="mt-4">
+							{#key cameraSettings.id}
+								<RecordedAudioSettings
+									camera={cameraSettings}
+									disabled={savingConfiguration || savingPrivacy || savingRecordedAudio}
+									onsave={saveRecordedAudio}
+								/>
+							{/key}
+						</div>
 						<div id="privacy" class="mt-4">
 							{#if editingPrivacy}
 								<PrivacyScheduleEditor
@@ -669,7 +709,7 @@
 							<CameraConfigurationEditor
 								{preRecordingSupported}
 								camera={cameraSettings}
-								saving={savingConfiguration}
+								saving={savingConfiguration || savingRecordedAudio}
 								error={configurationError}
 								oncancel={closeConfiguration}
 								onsave={saveConfiguration}
@@ -1107,6 +1147,17 @@
 								<p class="text-xs text-text-muted">No audio profile was reported.</p>
 							{/each}
 						</div>
+						{#if cameraSettings}
+							<div class="mt-4">
+								{#key cameraSettings.id}
+									<RecordedAudioSettings
+										camera={cameraSettings}
+										disabled={savingConfiguration || savingPrivacy || savingRecordedAudio}
+										onsave={saveRecordedAudio}
+									/>
+								{/key}
+							</div>
+						{/if}
 					</section>
 
 					<section

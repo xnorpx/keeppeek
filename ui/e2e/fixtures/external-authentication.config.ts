@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
 	testDir: '..',
-	testMatch: 'external-authentication.e2e.ts',
+	testMatch: ['external-authentication.e2e.ts', 'guest-export-https.e2e.ts'],
 	workers: 1,
 	forbidOnly: Boolean(process.env.CI),
 	timeout: 90_000,

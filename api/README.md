@@ -12,6 +12,12 @@ The in-band WebRTC data-channel contract is defined by [webrtc.proto](webrtc.pro
 [webrtc.md](webrtc.md). The SDP data-channel topology required to establish a session is defined
 in [sdp-offer.md](sdp-offer.md).
 
+The [recorded-audio timing contract](webrtc.md#recorded-audio-timing) defines camera/stream
+inheritance, cursor-only calibration previews, and immutable export timing snapshots. These
+settings do not activate live-audio correction or change source recordings.
+The `keeppeek.recorded-audio.v1` capability gates initial playback overrides and explicit
+unadjusted recovery previews.
+
 Native live subscriptions can include optional `LiveQualityDiagnostics` in their result and
 stream-state notifications. Session network capacity, per-Auto-track allocation, active and
 pending variants, and the selection reason are separate runtime facts. See
@@ -267,3 +273,14 @@ Camera and server health numbers belong here, not on `ServerCapabilities`: proce
 RSS, host memory and load, recording-disk bytes, per-camera online/degraded gauges, ingress
 fps and bitrate, reconnects, drops, and WebRTC session counts. `ServerCapabilities.cameras`
 carries identity and `ptz.supported`; it is not a metrics feed.
+
+## Guest evidence review
+
+Administrator sharing policy, immutable export preview, one-time grant creation and
+revision-bound list/revocation use the additive `ShareCommand` contract in
+[webrtc.md](webrtc.md#guest-evidence-review). The isolated `/share` page and
+`/guest/session`, `/guest/media` and `/guest/download` routes use a separate
+opaque guest cookie. They accept no ordinary credential or trusted-local fallback.
+Guest authorization never becomes a normal KeepPeek principal. The exact HTTPS
+origin, token handoff, status distinction, byte ranges and isolation headers are
+defined in [openapi.yaml](openapi.yaml).

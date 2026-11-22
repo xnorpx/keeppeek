@@ -24,6 +24,7 @@ pub mod reolink;
 pub mod rtsp;
 pub mod runtime;
 pub mod server;
+pub(crate) mod shares;
 pub mod shutdown;
 pub mod stats;
 pub mod storage;

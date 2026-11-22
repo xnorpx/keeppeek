@@ -15,6 +15,45 @@ import {
 import { ConfigurationControlClient } from './control-client-configuration';
 
 describe('configuration control client', () => {
+	it.each([undefined, {}, { defaultOffsetMs: 250, mainOffsetMs: 0 }])(
+		'preserves recorded-audio support and explicit zero in the effective camera view: %j',
+		async (recordedAudio: { defaultOffsetMs?: number; mainOffsetMs?: number } | undefined) => {
+			const client = new ConfigurationControlClient(async () => ({
+				case: 'configurationResult',
+				value: create(ConfigurationResultSchema, {
+					result: {
+						case: 'snapshot',
+						value: create(ConfigurationSnapshotSchema, {
+							contractVersion: 1,
+							configurationRevision: 'audio-revision',
+							defaults: {},
+							limits: {},
+							cameras: [
+								{
+									camera: { id: 'camera', ip: '192.0.2.10', recordedAudio },
+									username: {},
+									password: {},
+									backend: {},
+									transport: {},
+									recordGenericMotionEvents: {},
+									recordingMode: {},
+									eventRecordingDurationSecs: {}
+								}
+							]
+						})
+					}
+				})
+			}));
+			const snapshot = await client.getSnapshot();
+			const settings = snapshot.cameras[0]!.camera.recorded_audio;
+			if (recordedAudio === undefined) expect(settings).toBeUndefined();
+			else {
+				expect(settings).toBeDefined();
+				expect(settings?.default_offset_ms).toBe(recordedAudio.defaultOffsetMs);
+				expect(settings?.main_offset_ms).toBe(recordedAudio.mainOffsetMs);
+			}
+		}
+	);
 	it('maps snapshots and encodes inherited camera values as clear operations', async () => {
 		const commands: Request['command'][] = [];
 		const send = async (command: Request['command']): Promise<Ok['result']> => {

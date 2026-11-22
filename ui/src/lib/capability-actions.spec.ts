@@ -15,6 +15,14 @@ describe('capability action ownership', () => {
 
 	it('assigns backend-owned actions to their owning contracts', () => {
 		expect(capabilityActions.createExport.capability).toBe('keeppeek.media-export.v1');
+		expect(capabilityActions.createGuestLink).toEqual({
+			action: 'Create guest link',
+			capability: 'keeppeek.guest-review.v1'
+		});
+		expect(capabilityActions.manageGuestLinks).toEqual({
+			action: 'Manage guest links',
+			capability: 'keeppeek.guest-review.v1'
+		});
 		expect(capabilityActions.inviteSomeone.capability).toBe('keeppeek.identity.v1');
 		expect(capabilityActions.addRule.capability).toBe('keeppeek.rules.v1');
 		expect(capabilityActions.newGroup.capability).toBe('keeppeek.group-admin.v1');

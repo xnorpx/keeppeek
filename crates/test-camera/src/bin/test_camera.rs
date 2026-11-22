@@ -88,6 +88,10 @@ struct CameraArgs {
 
 #[derive(Debug, Args)]
 struct SeedRecordingArgs {
+    /// Seed two bounded H.264/AAC calibration periods instead of looping video.
+    #[arg(long)]
+    calibration: bool,
+
     #[arg(long)]
     source: PathBuf,
 
@@ -112,6 +116,7 @@ struct SeedRecordingArgs {
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
@@ -138,6 +143,7 @@ fn seed(command: SeedRecordingArgs) -> anyhow::Result<()> {
         .map(|_| keeppeek::config::load().map(|(config, _)| config.storage))
         .transpose()?;
     seed_recording(&RecordingSeedOptions {
+        calibration: command.calibration,
         source: command.source,
         recordings: command.recordings.unwrap_or_default(),
         catalog: command.catalog.unwrap_or_default(),

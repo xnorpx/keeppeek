@@ -7,6 +7,16 @@ export type ServerCapabilityContract = {
 };
 
 export const serverCapabilityCatalog = {
+	'keeppeek.recorded-audio.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Bounded recorded audio correction, viewer previews, timing evidence and captured export settings',
+		unlocks: 'Recorded audio timing and explicit unadjusted preview recovery',
+		whenMissing:
+			'Initial correction failures cannot offer an unadjusted preview that an older server may ignore',
+		failureGuarantee:
+			'Unaccepted previews preserve saved settings and report the failure without rewriting recordings'
+	},
 	'keeppeek.local-archive.v1': {
 		delivery: 'ships',
 		serverOwns:
@@ -81,6 +91,15 @@ export const serverCapabilityCatalog = {
 		unlocks: 'Export range and export clip',
 		whenMissing: 'Ranges remain selectable and estimated; export commands require a server update',
 		failureGuarantee: 'Failed jobs remain retryable and expose no corrupt partial download'
+	},
+	'keeppeek.guest-review.v1': {
+		delivery: 'target',
+		serverOwns:
+			'Immutable evidence previews, expiring grants, one-time disclosure, bounded guest sessions and revisioned revocation',
+		unlocks: 'Administrator guest links for completed exports and guest sharing policy',
+		whenMissing: 'Guest link creation and management remain hidden',
+		failureGuarantee:
+			'Unconfirmed creation never re-discloses a secret; stale mutations require a fresh grant list'
 	},
 	'stored-media-keyframe-preview.v1': {
 		delivery: 'ships',

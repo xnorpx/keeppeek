@@ -50,28 +50,29 @@ Root fields must appear before a table header or they belong to that table.
 
 ## Section index
 
-| TOML section                                       | Owning type                                         | Ownership                                        |
-| -------------------------------------------------- | --------------------------------------------------- | ------------------------------------------------ |
-| Root fields                                        | `Config`                                            | Operator settings                                |
-| `[access]`                                         | `AccessConfig`                                      | Administrator security policy                    |
-| `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                   |
-| `[storage]`                                        | `StorageToml`                                       | Recording paths, retention, and safety           |
-| `[battery_wake]`                                   | `BatteryWakeConfig`                                 | Reolink battery-camera wake service              |
-| `[logging]`                                        | `LoggingConfig`                                     | Service log destination                          |
-| `[operational_events]`                             | `OperationalEventsConfig`                           | Health-event timing                              |
-| `[operational_events.cameras."<camera-id-or-ip>"]` | `OperationalEventOverride`                          | Per-camera timing overrides                      |
-| `[privacy.default]`                                | `PrivacySchedule`                                   | Inherited server-enforced recurring privacy      |
-| `[privacy.cameras."<camera-id-or-ip>"]`            | `PrivacySchedule`                                   | Per-camera server-enforced recurring privacy     |
-| `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision        |
-| `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                           |
-| `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                                  |
-| `[<namespace>.<camera-key>.events]`                | `EventConfig`                                       | Native camera event selection and filters        |
-| `[access_credentials]`                             | `PersistedAccessCatalog`                            | Server-managed credential records                |
-| `[peek_layouts]`                                   | `StoredRegistry`                                    | Server-managed layouts and per-user selection    |
-| `[configuration_templates]`                        | `StoredTemplateDocument`                            | Server-managed camera templates                  |
-| `[notifications]`                                  | `NotificationConfiguration`                         | Server-managed rule drafts and active rules      |
-| `[runtime_profiles]`                               | `ProfileRegistry`                                   | Server-managed profile definitions and selection |
-| `[storage_migration]`                              | `StorageMigration`                                  | Server-managed pending storage move              |
+| TOML section                                       | Owning type                                         | Ownership                                             |
+| -------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------- |
+| Root fields                                        | `Config`                                            | Operator settings                                     |
+| `[sharing]`                                        | `sharing::SharingConfig`                            | Guest review deployment policy; server-owned revision |
+| `[access]`                                         | `AccessConfig`                                      | Administrator security policy                         |
+| `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                        |
+| `[storage]`                                        | `StorageToml`                                       | Recording paths, retention, and safety                |
+| `[battery_wake]`                                   | `BatteryWakeConfig`                                 | Reolink battery-camera wake service                   |
+| `[logging]`                                        | `LoggingConfig`                                     | Service log destination                               |
+| `[operational_events]`                             | `OperationalEventsConfig`                           | Health-event timing                                   |
+| `[operational_events.cameras."<camera-id-or-ip>"]` | `OperationalEventOverride`                          | Per-camera timing overrides                           |
+| `[privacy.default]`                                | `PrivacySchedule`                                   | Inherited server-enforced recurring privacy           |
+| `[privacy.cameras."<camera-id-or-ip>"]`            | `PrivacySchedule`                                   | Per-camera server-enforced recurring privacy          |
+| `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision             |
+| `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                                |
+| `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                                       |
+| `[<namespace>.<camera-key>.events]`                | `EventConfig`                                       | Native camera event selection and filters             |
+| `[access_credentials]`                             | `PersistedAccessCatalog`                            | Server-managed credential records                     |
+| `[peek_layouts]`                                   | `StoredRegistry`                                    | Server-managed layouts and per-user selection         |
+| `[configuration_templates]`                        | `StoredTemplateDocument`                            | Server-managed camera templates                       |
+| `[notifications]`                                  | `NotificationConfiguration`                         | Server-managed rule drafts and active rules           |
+| `[runtime_profiles]`                               | `ProfileRegistry`                                   | Server-managed profile definitions and selection      |
+| `[storage_migration]`                              | `StorageMigration`                                  | Server-managed pending storage move                   |
 
 `homekit` is a reserved root section, not an implemented HomeKit configuration schema. Do not use
 it as a camera namespace. Every other non-reserved root table is interpreted as a camera namespace;
@@ -216,6 +217,44 @@ Type: `DirectCardConfig`, section `[direct_card]`.
 | ----------------- | ------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `allowed_origins` | `Vec<String>` | `[]`    | Unique canonical exact HTTP(S) origins, such as `"https://ha.example"`. No credentials, path, query, fragment, wildcard, or trailing slash. |
 
+## Guest review deployment policy
+
+Type: `sharing::SharingConfig`, section `[sharing]`. Guest sharing is disabled by default.
+These settings use the existing `config.toml`; they do not configure a tunnel, relay, DNS,
+TLS certificate or network exposure. An operator must provide the reachable HTTPS origin.
+
+| Field           | Type              | Default | Validation and meaning                                                                                                                                                                |
+| --------------- | ----------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`       | `bool`            | `false` | Enables guest handoff only when the remaining origin, evidence, private metadata and transport checks succeed.                                                                        |
+| `public_origin` | optional `String` | Absent  | Canonical HTTPS origin, 1 to 512 UTF-8 bytes. No credentials, path, query, fragment or trailing slash; for example `"https://review.example"`. An enabled policy requires this value. |
+| `revision`      | `u64`             | `1`     | Server-owned optimistic-write revision. Must be positive and fit a TOML signed integer. Successful Administrator policy writes increment it; stale revisions are rejected.            |
+
+Unknown fields in `[sharing]` are rejected by the real configuration loader. A
+`public_origin` may use the existing `{secret:KEY}` resolver. Saving an unchanged effective
+origin preserves its original secret reference in `config.toml`; it does not rewrite the
+resolved value or modify `secrets.toml`. The effective origin is visible to Administrators
+because it is the public address used in guest links.
+
+A policy save invalidates guest sessions and stops active guest delivery. Delivered view
+and download counters remain durable. If an atomic settings write returns an error after
+its commit point, guest access stops until an Administrator saves the policy successfully.
+Reloading a camera configuration cannot silently enable that suspended policy. Manual file
+edits take effect on restart; live policy changes use the Administrator control command.
+
+Grants, hashed token verifiers and audit counters are operational data under the private,
+identity-pinned metadata owner, in `guest-review/grants.db`; they are not a second settings
+file. The store requires private local filesystem ownership and rejects unsafe or unavailable
+roots. Guest sessions and active transfers do not survive restart. The dedicated guest cookie
+never becomes a normal KeepPeek principal, role or control-channel credential.
+
+The fixed grant limits are 256 active grants, 32 per creator, at most 24 hours and no later
+than the immutable export's expiry. Evidence is limited to two minutes and 512 MiB. Display
+names are limited to 128 UTF-8 bytes and notes to 512. There are at most eight media sessions
+globally and two per grant. Retention may remove evidence before a grant expires; sharing
+creates no evidence hold. Expired or revoked metadata disappears from management lists after
+30 days, with bounded physical cleanup scheduled at most once per minute. New grants are
+rejected when the retained audit store reaches its fixed capacity.
+
 ## External authentication configuration
 
 Type: `access::external::Config`, optional section `[external_auth]`. Configured
@@ -356,31 +395,85 @@ with the profile definitions. Earlier KeepPeek binaries reject this section rath
 with UUID targets that they cannot apply; restoring an older binary requires restoring a
 compatible pre-migration configuration as well. Unknown identity schema versions fail validation.
 
-| Field                               | Type                   | Default                           | Meaning                                                                                                                                         |
-| ----------------------------------- | ---------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ip`                                | `IpAddr`               | Required                          | Camera IP address, not a DNS hostname.                                                                                                          |
-| `name`                              | Optional `String`      | Camera table key                  | The loader replaces this value with the table key. Use `display_name` to change the UI label without changing storage identity.                 |
-| `display_name`                      | Optional `String`      | Falls back to `name`              | Human-readable camera label.                                                                                                                    |
-| `manufacturer`                      | Optional `String`      | No override                       | Nonempty trimmed value takes precedence over discovery.                                                                                         |
-| `username`                          | `String`               | Shared default or empty           | Camera username; literal or secret reference.                                                                                                   |
-| `password`                          | `String`               | Shared default or empty           | Camera password; literal or secret reference.                                                                                                   |
-| `onvif_port`                        | Optional `u16`         | `8000` when unset                 | ONVIF service port. Typed configuration operations require `1..65535`.                                                                          |
-| `http_port`                         | Optional `u16`         | `80` when unset                   | Direct camera HTTP control port; typed operations require `1..65535`.                                                                           |
-| `main_rtsp_url`                     | Optional `String`      | Discover stream                   | Explicit main-stream RTSP URL takes precedence over ONVIF discovery. Blank values are not explicit URLs.                                        |
-| `sub_rtsp_url`                      | Optional `String`      | Discover stream                   | Explicit sub-stream RTSP URL. Use URL-escaped references in credential components.                                                              |
-| `uid`                               | Optional `String`      | None                              | Reolink P2P UID for direct BCUDP discovery.                                                                                                     |
-| `backend`                           | `CameraBackend`        | Shared default or `"auto"`        | `"auto"`, `"retina"`, or `"reo-proto"`.                                                                                                         |
-| `transport`                         | `CameraTransport`      | Shared default or `"tcp"`         | `"tcp"` or `"udp"`.                                                                                                                             |
-| `record_generic_motion_events`      | `bool`                 | Shared default or `false`         | Opt in to supported generic motion events.                                                                                                      |
-| `recording_mode`                    | `CameraRecordingMode`  | Shared default or `"event-boost"` | `"off"`, `"sub"`, `"main"`, `"both"`, `"event-boost"`, or `"event-only"`.                                                                       |
-| `event_recording_duration_secs`     | `u64`                  | Shared default or `60`            | Event-triggered recording duration; typed operations and TOML loading for event-only or pre-roll-enabled event-boost require `1..3600` seconds. |
-| `event_pre_recording_duration_secs` | `u64`                  | Shared default or `0`             | Range `0..30` seconds; `0` disables pre-roll allocation.                                                                                        |
-| `event_recording_stream`            | `EventRecordingStream` | Shared default or `"main"`        | `"main"` or `"sub"`; selects the event-only recording stream. EventBoost always boosts to main.                                                 |
-| `events`                            | `EventConfig`          | Defaults below                    | Camera-native event policy, independent of video backend; configured through the file.                                                          |
+| Field                               | Type                    | Default                           | Meaning                                                                                                                                         |
+| ----------------------------------- | ----------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ip`                                | `IpAddr`                | Required                          | Camera IP address, not a DNS hostname.                                                                                                          |
+| `name`                              | Optional `String`       | Camera table key                  | The loader replaces this value with the table key. Use `display_name` to change the UI label without changing storage identity.                 |
+| `display_name`                      | Optional `String`       | Falls back to `name`              | Human-readable camera label.                                                                                                                    |
+| `manufacturer`                      | Optional `String`       | No override                       | Nonempty trimmed value takes precedence over discovery.                                                                                         |
+| `username`                          | `String`                | Shared default or empty           | Camera username; literal or secret reference.                                                                                                   |
+| `password`                          | `String`                | Shared default or empty           | Camera password; literal or secret reference.                                                                                                   |
+| `onvif_port`                        | Optional `u16`          | `8000` when unset                 | ONVIF service port. Typed configuration operations require `1..65535`.                                                                          |
+| `http_port`                         | Optional `u16`          | `80` when unset                   | Direct camera HTTP control port; typed operations require `1..65535`.                                                                           |
+| `main_rtsp_url`                     | Optional `String`       | Discover stream                   | Explicit main-stream RTSP URL takes precedence over ONVIF discovery. Blank values are not explicit URLs.                                        |
+| `sub_rtsp_url`                      | Optional `String`       | Discover stream                   | Explicit sub-stream RTSP URL. Use URL-escaped references in credential components.                                                              |
+| `uid`                               | Optional `String`       | None                              | Reolink P2P UID for direct BCUDP discovery.                                                                                                     |
+| `backend`                           | `CameraBackend`         | Shared default or `"auto"`        | `"auto"`, `"retina"`, or `"reo-proto"`.                                                                                                         |
+| `transport`                         | `CameraTransport`       | Shared default or `"tcp"`         | `"tcp"` or `"udp"`.                                                                                                                             |
+| `record_generic_motion_events`      | `bool`                  | Shared default or `false`         | Opt in to supported generic motion events.                                                                                                      |
+| `recording_mode`                    | `CameraRecordingMode`   | Shared default or `"event-boost"` | `"off"`, `"sub"`, `"main"`, `"both"`, `"event-boost"`, or `"event-only"`.                                                                       |
+| `event_recording_duration_secs`     | `u64`                   | Shared default or `60`            | Event-triggered recording duration; typed operations and TOML loading for event-only or pre-roll-enabled event-boost require `1..3600` seconds. |
+| `event_pre_recording_duration_secs` | `u64`                   | Shared default or `0`             | Range `0..30` seconds; `0` disables pre-roll allocation.                                                                                        |
+| `event_recording_stream`            | `EventRecordingStream`  | Shared default or `"main"`        | `"main"` or `"sub"`; selects the event-only recording stream. EventBoost always boosts to main.                                                 |
+| `events`                            | `EventConfig`           | Defaults below                    | Camera-native event policy, independent of video backend; configured through the file.                                                          |
+| `recorded_audio`                    | `RecordedAudioSettings` | All offsets inherit               | Recorded-media correction only; fields and bounds below.                                                                                        |
 
 These are stored configuration types, not promises that every camera supports every backend,
 transport, or recording capability. Discovery results such as `CameraCapabilities`, `CameraPorts`,
 `MediaProfile`, `VideoConfig`, and `AudioConfig` are not additional editable camera tables.
+
+### Recorded-audio timing
+
+Type: `RecordedAudioSettings`, section `[<namespace>.<camera-key>.recorded_audio]`, for example
+`[cameras.front_door.recorded_audio]`. Source:
+[recorded-audio settings](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/recorded_audio.rs).
+These settings are independent of camera-native events and do not apply to live audio.
+
+| Field               | Type           | Default         | Meaning                                                                  |
+| ------------------- | -------------- | --------------- | ------------------------------------------------------------------------ |
+| `default_offset_ms` | Optional `i32` | Zero when unset | Camera default correction in milliseconds.                               |
+| `main_offset_ms`    | Optional `i32` | Camera default  | Main-stream override; explicit zero disables correction for this stream. |
+| `sub_offset_ms`     | Optional `i32` | Camera default  | Sub-stream override; explicit zero disables correction for this stream.  |
+
+Every provided offset must be an integer in the inclusive range `-5000..5000`. Positive values
+delay audio; negative values advance it. The editor warns when the magnitude exceeds 1000 ms.
+There is no `[camera_defaults]` audio offset. These numeric fields do not accept secret references.
+Unknown nested keys, fractional values, and out-of-range values fail validation before a save.
+
+```toml
+[cameras.front_door.recorded_audio]
+default_offset_ms = 125
+main_offset_ms = 0
+# The sub stream inherits the 125 ms camera default.
+```
+
+Saving only these settings does not restart camera ingress or recording writers. The typed camera
+update replaces the complete nested message: omission preserves it, and an empty message resets
+all overrides to inheritance. Ordinary camera edits and configuration plans preserve this table.
+Camera identity, secret references, profile state, source recordings, and catalog times remain
+unchanged.
+
+Recorded playback and newly created exports apply the resolved setting without re-encoding.
+Resolution follows the stream actually stored; EventBoost main-stream review uses the Sub
+recording and its offset. An export retry rejects a changed recording stream before retiring
+the previous attempt; create a new export for that source change.
+Negative corrections can clip complete leading audio samples; partial encoded-sample trimming is
+unsupported. Calibration previews belong to one playback cursor and do not change saved settings
+or export defaults. Export retries retain their original timing snapshot. Timing diagnostics refer
+to normalized container timestamps and do not prove camera/RTP clock accuracy or lip sync.
+Nonzero correction supports AAC with zero audio composition offset; other AAC composition
+offsets fail explicitly. Signed video composition offsets are supported. Corrected exports fetch
+neighboring audio and select complete packets by their corrected presentation start inside the
+selected video intervals. They do not partially trim a packet at the end. Export edge lookup is
+limited to 32 extra periods and 64 MiB of indexed edge ranges, with 512 total source periods.
+Nonzero corrected exports reject overlapping indexed source periods and conflicting metadata
+instead of merging overlapping recording files.
+
+To calibrate, open a recording in **Keep** and use **Recorded audio preview** to compare offsets
+while watching the same action. Reset the preview to compare against the captured saved value.
+An Administrator saves a permanent default or Main/Sub override in **Camera / Audio**. Reopen
+the recording after saving to use the updated setting. New exports capture the saved
+setting when created; a temporary preview does not affect them.
 
 ### Native camera events
 

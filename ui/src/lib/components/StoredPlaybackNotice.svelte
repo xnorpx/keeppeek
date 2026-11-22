@@ -6,6 +6,7 @@
 		error,
 		canRetry = true,
 		onretry,
+		onunadjusted,
 		onclose
 	}: {
 		archive: boolean;
@@ -13,6 +14,7 @@
 		error: string | null;
 		canRetry?: boolean;
 		onretry: () => void;
+		onunadjusted?: () => void;
 		onclose: () => void;
 	} = $props();
 </script>
@@ -52,6 +54,15 @@
 				>{/if}
 			<Button type="button" variant="outline" class="h-11" onclick={onclose}>Close playback</Button>
 		</div>
+		{#if error && onunadjusted}
+			<p class="text-xs text-text-muted">
+				If saved audio correction prevents opening, try zero correction for this review. Saved
+				settings and exports keep their configured correction.
+			</p>
+			<Button type="button" variant="outline" class="min-h-11" onclick={onunadjusted}
+				>Try unadjusted audio preview</Button
+			>
+		{/if}
 	</section>
 {:else if archive}
 	<div
