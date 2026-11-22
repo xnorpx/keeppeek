@@ -37,7 +37,7 @@ struct SenderReport {
 
 /// Prefer the persisted profile identity. Unregistered cameras get an opaque address tag
 /// that stays stable across worker restarts within this recorder process.
-pub(crate) fn camera_tag(profile_identity: &str, ip: IpAddr) -> String {
+pub fn camera_tag(profile_identity: &str, ip: IpAddr) -> String {
     static FALLBACK_KEY: OnceLock<RandomState> = OnceLock::new();
     Uuid::parse_str(profile_identity).map_or_else(
         |_| {

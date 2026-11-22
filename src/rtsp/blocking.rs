@@ -697,7 +697,7 @@ impl RtspLoop {
         }
         let session = uuid::Uuid::new_v4();
         driver.play_reporting_failure(|tracks| {
-            self.report_source_timing(tracks, session, "play_failed")
+            self.report_source_timing(tracks, session, "play_failed");
         })?;
         if let Some(storage) = &self.storage {
             storage.reset_event_recording(&self.camera_ip.to_string());
