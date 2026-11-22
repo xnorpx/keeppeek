@@ -1,7 +1,22 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
 
 const streams = [{ cameraId: '127.0.0.1', width: 640, height: 360 }] as const;
 const skipsRealWebRtcOnWindowsCi = process.platform === 'win32' && Boolean(process.env.CI);
+
+async function assertFocusedAuto(focus: Locator, liveView: Locator): Promise<void> {
+	await expect(liveView).toHaveAttribute('data-requested-quality', 'auto');
+	await expect(liveView).not.toHaveAttribute('data-requested-variant');
+	await expect(liveView).toHaveAttribute('data-stream', /^(main|sub)$/);
+	await expect
+		.poll(() =>
+			focus.evaluate((section) => {
+				const live = section.querySelector<HTMLElement>('[data-peek-focus-stage] [data-camera-id]');
+				return section.dataset.focusedLiveSelectedVariant === live?.dataset.stream;
+			})
+		)
+		.toBe(true);
+	await expect(liveView).not.toHaveAttribute('data-pending-stream');
+}
 
 test('Peek presents native WebRTC frames without a canvas fallback', async ({ page }) => {
 	test.skip(
@@ -216,9 +231,7 @@ test('leaves and re-enters Dashboard without a failed session delete', async ({ 
 	expect(browserErrors).toEqual([]);
 });
 
-test('Peek focus automatic quality starts on the main stream and preserves explicit switches', async ({
-	page
-}) => {
+test('Peek focus delegates automatic quality and preserves explicit switches', async ({ page }) => {
 	test.setTimeout(75_000);
 	test.skip(
 		skipsRealWebRtcOnWindowsCi,
@@ -253,9 +266,7 @@ test('Peek focus automatic quality starts on the main stream and preserves expli
 	);
 	const video = liveView.locator('video');
 	await expect(liveView).toHaveAttribute('data-session-id', sessionId ?? '');
-	await expect(liveView).toHaveAttribute('data-requested-quality', 'auto');
-	await expect(liveView).toHaveAttribute('data-stream', 'main');
-	await expect(liveView).not.toHaveAttribute('data-pending-stream');
+	await assertFocusedAuto(focus, liveView);
 	await expect
 		.poll(() =>
 			video.evaluate((element) => {

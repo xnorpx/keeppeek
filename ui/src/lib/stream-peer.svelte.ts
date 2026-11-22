@@ -1,6 +1,7 @@
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { createSession, deleteSession } from './api';
 import { AacAudioPlayback } from './audio-playback';
+import { liveVariant, safeBitrate } from './live-quality';
 import {
 	ControlEnvelopeSchema,
 	CameraControlCommandSchema,
@@ -23,6 +24,8 @@ import {
 	type SubscribeMedia,
 	type Response as ControlResponse,
 	type ServerCapabilities,
+	type LiveQualityDiagnostics,
+	type SubscriptionStreamState,
 	type TalkbackTarget
 } from './proto/webrtc_pb';
 import type { CreateResponse, LiveQuality } from './types';
@@ -68,6 +71,7 @@ export type LivePeerTrack = {
 	activeStream: 'main' | 'sub';
 	pendingStream: 'main' | 'sub' | null;
 	estimatedBitrateBps: number | null;
+	liveQuality?: LiveQualityDiagnostics;
 	subscribed: boolean;
 	admissionError?: string | null;
 };
@@ -363,7 +367,7 @@ export class LivePeer {
 		this.#sourceSessionByCamera = {};
 		this.#trackEventByMid = {};
 		this.#capabilities = null;
-		controlChannel.onmessage = (event) => this.receiveControl(event);
+		controlChannel.onmessage = (event) => this.receiveCurrentControl(peer, event);
 		controlChannel.onclose = () => this.failPending('WebRTC control channel closed.');
 		reliableChannel.onmessage = (event) => this.receiveMediaData(event);
 
@@ -498,6 +502,7 @@ export class LivePeer {
 		variantId: 'main' | 'sub' | null = null,
 		replacement = false
 	): Promise<void> {
+		const owner = this.#peer;
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
 		if (!sourceSessionId) {
 			if (this.#capabilities?.cameras.some((camera) => camera.sourceId === cameraId)) {
@@ -522,12 +527,14 @@ export class LivePeer {
 			variantId: variantId ?? ''
 		});
 		const result = await this.requestMedia(cameraId, subscribe);
+		if (owner !== this.#peer) return;
 		if (result === null) return;
 		if (result.case !== 'subscriptionResult' || result.value.delivery.case !== 'rtp') {
 			throw new Error('Server returned an unexpected media subscription response.');
 		}
 		const mid = result.value.delivery.value.mid;
-		const selectedStream = result.value.selectedVariantId === 'main' ? 'main' : 'sub';
+		const selectedStream = liveVariant(result.value.selectedVariantId);
+		if (selectedStream === null) throw new Error('Server selected an unsupported live variant.');
 		const current = this.track(cameraId);
 		const pendingStream =
 			current !== null &&
@@ -544,6 +551,7 @@ export class LivePeer {
 			pendingStream,
 			subscribed: true
 		});
+		this.applyLiveQuality(cameraId, result.value.liveQuality);
 		const event = this.#trackEventByMid[mid];
 		if (event) this.attachTrackEvent(cameraId, event);
 		await this.subscribeAudio(cameraId, this.track(cameraId)?.audioTrackId ?? `audio-${cameraId}`);
@@ -641,7 +649,8 @@ export class LivePeer {
 			audioReceiver: null,
 			audioStream: null,
 			pendingStream: null,
-			estimatedBitrateBps: null
+			estimatedBitrateBps: null,
+			liveQuality: undefined
 		});
 	}
 
@@ -695,6 +704,10 @@ export class LivePeer {
 		return reply.result.value.result;
 	}
 
+	private receiveCurrentControl(peer: RTCPeerConnection, event: MessageEvent): void {
+		if (peer === this.#peer) this.receiveControl(event);
+	}
+
 	private receiveControl(event: MessageEvent): void {
 		if (!(event.data instanceof ArrayBuffer)) {
 			this.failPending('WebRTC control response was not binary.');
@@ -710,61 +723,16 @@ export class LivePeer {
 		if (envelope.message.case === 'notification') {
 			const event = envelope.message.value.event;
 			if (event.case === 'initialCapabilities') {
-				const capabilities = event.value;
-				this.#capabilities = capabilities;
-				this.cameraAudioAssets = Object.fromEntries(
-					capabilities.cameras
-						.filter((camera) => camera.deviceCapabilities?.twoWayAudio === true)
-						.map((camera) => [
-							camera.sourceId,
-							{
-								quickReplies: (camera.deviceCapabilities?.quickReplies ?? []).map((asset) => ({
-									id: asset.assetId,
-									label: asset.displayName
-								})),
-								chimes: (camera.deviceCapabilities?.chimes ?? []).map((asset) => ({
-									id: asset.assetId,
-									label: asset.displayName
-								}))
-							}
-						])
-				);
-				const groups = new Map<string, string>();
-				for (const camera of capabilities.cameras) {
-					if (camera.deviceCapabilities?.twoWayAudio !== true) continue;
-					for (const groupId of camera.groupIds) groups.set(groupId, groupId);
-				}
-				this.talkbackGroups = [...groups.keys()]
-					.sort((left, right) => left.localeCompare(right))
-					.map((id) => ({ id, label: id }));
-				this.#sourceSessionByCamera = Object.fromEntries(
-					capabilities.sourceSessions
-						.filter(
-							(source) =>
-								source.sourceId.length > 0 &&
-								(source.video !== undefined || source.audio !== undefined)
-						)
-						.map((source) => [source.sourceId, source.sourceSessionId])
-				);
-				for (const waiter of this.#capabilitiesWaiters) {
-					clearTimeout(waiter.timeout);
-					waiter.resolve(capabilities);
-				}
-				this.#capabilitiesWaiters = [];
+				this.receiveCapabilities(event.value);
+			}
+			if (event.case === 'connectionUpdate') {
+				this.receiveNetworkEstimate(event.value.availableBitrateBps);
 			}
 			if (event.case === 'subscriptionStreamState') {
-				const stream = event.value.activeVariantId;
-				if (stream !== 'main' && stream !== 'sub') return;
-				const cameraId = Object.values(this.tracks).find(
-					(track) => track.trackId === event.value.subscriptionId
-				)?.cameraId;
-				if (cameraId !== undefined) {
-					const track = this.track(cameraId);
-					this.replaceTrack(cameraId, {
-						activeStream: stream,
-						pendingStream: track?.pendingStream === stream ? null : (track?.pendingStream ?? null)
-					});
-				}
+				this.receiveStreamState(event.value);
+			}
+			if (event.case === 'sourceSessionRemoved') {
+				this.removeSourceDiagnostics(event.value.sourceSessionId);
 			}
 			return;
 		}
@@ -774,6 +742,106 @@ export class LivePeer {
 		this.#pending.delete(envelope.message.value.requestId);
 		clearTimeout(pending.timeout);
 		pending.resolve(envelope.message.value);
+	}
+
+	private acceptsTelemetry(): boolean {
+		return (
+			this.#peer !== null &&
+			!['failed', 'disconnected', 'closed'].includes(this.connectionState) &&
+			!['failed', 'disconnected', 'closed'].includes(this.iceConnectionState)
+		);
+	}
+
+	private receiveNetworkEstimate(bitsPerSecond: bigint | undefined): void {
+		if (this.acceptsTelemetry()) this.estimatedBitrateBps = safeBitrate(bitsPerSecond);
+	}
+
+	private applyLiveQuality(
+		cameraId: string,
+		liveQuality: LiveQualityDiagnostics | undefined
+	): void {
+		const current = this.track(cameraId);
+		if (!this.acceptsTelemetry() || !current?.subscribed || !this.#sourceSessionByCamera[cameraId])
+			return;
+		this.replaceTrack(cameraId, {
+			liveQuality,
+			...(liveQuality === undefined
+				? {}
+				: {
+						activeStream: liveVariant(liveQuality.activeVariantId) ?? current.activeStream,
+						pendingStream: liveVariant(liveQuality.pendingVariantId)
+					})
+		});
+		if (liveQuality !== undefined) this.receiveNetworkEstimate(liveQuality.sessionBandwidthBps);
+	}
+
+	private receiveStreamState(update: SubscriptionStreamState): void {
+		if (!this.acceptsTelemetry()) return;
+		const current = Object.values(this.tracks).find(
+			(track) => track.trackId === update.subscriptionId && track.subscribed
+		);
+		if (!current || !this.#sourceSessionByCamera[current.cameraId]) return;
+		if (update.liveQuality !== undefined) {
+			this.applyLiveQuality(current.cameraId, update.liveQuality);
+			return;
+		}
+		const activeStream = liveVariant(update.activeVariantId);
+		if (activeStream === null) return;
+		this.replaceTrack(current.cameraId, {
+			activeStream,
+			pendingStream: current.pendingStream === activeStream ? null : current.pendingStream,
+			liveQuality: undefined
+		});
+	}
+
+	private removeSourceDiagnostics(sourceSessionId: string): void {
+		for (const [cameraId, source] of Object.entries(this.#sourceSessionByCamera)) {
+			if (source !== sourceSessionId) continue;
+			delete this.#sourceSessionByCamera[cameraId];
+			this.replaceTrack(cameraId, { liveQuality: undefined, pendingStream: null });
+		}
+	}
+
+	private receiveCapabilities(capabilities: ServerCapabilities): void {
+		this.#capabilities = capabilities;
+		this.cameraAudioAssets = Object.fromEntries(
+			capabilities.cameras
+				.filter((camera) => camera.deviceCapabilities?.twoWayAudio === true)
+				.map((camera) => [
+					camera.sourceId,
+					{
+						quickReplies: (camera.deviceCapabilities?.quickReplies ?? []).map((asset) => ({
+							id: asset.assetId,
+							label: asset.displayName
+						})),
+						chimes: (camera.deviceCapabilities?.chimes ?? []).map((asset) => ({
+							id: asset.assetId,
+							label: asset.displayName
+						}))
+					}
+				])
+		);
+		const groups = new Map<string, string>();
+		for (const camera of capabilities.cameras) {
+			if (camera.deviceCapabilities?.twoWayAudio !== true) continue;
+			for (const groupId of camera.groupIds) groups.set(groupId, groupId);
+		}
+		this.talkbackGroups = [...groups.keys()]
+			.sort((left, right) => left.localeCompare(right))
+			.map((id) => ({ id, label: id }));
+		this.#sourceSessionByCamera = Object.fromEntries(
+			capabilities.sourceSessions
+				.filter(
+					(source) =>
+						source.sourceId.length > 0 && (source.video !== undefined || source.audio !== undefined)
+				)
+				.map((source) => [source.sourceId, source.sourceSessionId])
+		);
+		for (const waiter of this.#capabilitiesWaiters) {
+			clearTimeout(waiter.timeout);
+			waiter.resolve(capabilities);
+		}
+		this.#capabilitiesWaiters = [];
 	}
 
 	private receiveMediaData(event: MessageEvent): void {
@@ -913,10 +981,11 @@ export class LivePeer {
 	}
 
 	private markAllUnavailable(): void {
+		this.estimatedBitrateBps = null;
 		this.tracks = Object.fromEntries(
 			Object.entries(this.tracks).map(([cameraId, track]) => [
 				cameraId,
-				{ ...track, status: 'unavailable' }
+				{ ...track, status: 'unavailable', liveQuality: undefined }
 			])
 		);
 	}

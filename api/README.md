@@ -18,6 +18,11 @@ settings do not activate live-audio correction or change source recordings.
 The `keeppeek.recorded-audio.v1` capability gates initial playback overrides and explicit
 unadjusted recovery previews.
 
+Native live subscriptions can include optional `LiveQualityDiagnostics` in their result and
+stream-state notifications. Session network capacity, per-Auto-track allocation, active and
+pending variants, and the selection reason are separate runtime facts. See
+[live quality diagnostics](webrtc.md#live-quality-diagnostics).
+
 ## License
 
 All API definitions and documentation in this directory are licensed under the MIT License. See

@@ -3,6 +3,8 @@
 	import { observeGridVisibility, type GridTileVisibility } from '$lib/grid-visibility';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import type { LiveQuality } from '$lib/types';
+	import { liveQualityReason, liveVariantLabel, safeBitrate } from '$lib/live-quality';
+	import { LiveQualitySelectionReason } from '$lib/proto/webrtc_pb';
 	import type { PeekMediaFit } from '$lib/peek-wall-preferences';
 	import { emitTimelinePerformanceEvent } from '$lib/timeline-observability';
 	import CameraIcon from '@lucide/svelte/icons/camera';
@@ -186,13 +188,35 @@
 	);
 	let sessionId = $derived(livePeer.sessionId);
 	let activeStream = $derived(track?.activeStream ?? 'sub');
-	let estimatedBitrateBps = $derived(track?.estimatedBitrateBps ?? livePeer.estimatedBitrateBps);
+	let estimatedBitrateBps = $derived(livePeer.estimatedBitrateBps);
+	let liveQuality = $derived(track?.liveQuality);
+	let allocatedBitrateBps = $derived(safeBitrate(liveQuality?.allocatedBitrateBps));
+	let activeVariantLabel = $derived(
+		liveVariantLabel(liveQuality?.activeVariantId ?? activeStream, 'Awaiting media')
+	);
+	let pendingVariantLabel = $derived(
+		liveVariantLabel(liveQuality?.pendingVariantId ?? track?.pendingStream ?? '', 'No change')
+	);
 	let connectionState = $derived(livePeer.connectionState);
 	let iceConnectionState = $derived(livePeer.iceConnectionState);
 	let receiver = $derived(track?.receiver ?? null);
 	let requestedQuality = $derived<LiveQuality>(
 		track?.requestedQuality ?? quality ?? (stream === 'main' ? 'auto' : 'low')
 	);
+	let cameraBudget = $derived.by(() => {
+		if (liveQuality === undefined) return 'Unavailable';
+		if (liveQuality.selectionReason === LiveQualitySelectionReason.FIXED_DELIVERY)
+			return 'Fixed delivery';
+		if (
+			requestedQuality !== 'auto' ||
+			track?.requestedVariantId != null ||
+			liveQuality.selectionReason === LiveQualitySelectionReason.MANUAL
+		)
+			return 'Not used for manual';
+		if (liveQuality.selectionReason === LiveQualitySelectionReason.SINGLE_VARIANT)
+			return 'Single variant';
+		return allocatedBitrateBps === null ? 'Unknown' : formatBitrate(allocatedBitrateBps);
+	});
 	let resolution = $derived(
 		diagnostics.width && diagnostics.height
 			? `${diagnostics.width} × ${diagnostics.height}`
@@ -857,9 +881,15 @@
 									</dd>
 									<div class="col-span-2 my-1 border-t border-white/10"></div>
 								{/if}
-								<dt class="text-white/45">Quality</dt>
+								<dt class="text-white/45">Requested quality</dt>
 								<dd class="text-right font-medium capitalize">
-									{requestedQuality} · {activeStream}
+									{track?.requestedVariantId ?? requestedQuality}
+								</dd>
+								<dt class="text-white/45">Active stream</dt>
+								<dd class="font-mono" data-web-rtc-metric="active-stream">{activeVariantLabel}</dd>
+								<dt class="text-white/45">Pending stream</dt>
+								<dd class="font-mono" data-web-rtc-metric="pending-stream">
+									{pendingVariantLabel}
 								</dd>
 								<dt class="text-white/45">Codec</dt>
 								<dd class="font-mono uppercase">{negotiatedCodec?.replace('video/', '') ?? '—'}</dd>
@@ -879,8 +909,16 @@
 								<dd class="font-mono" data-web-rtc-metric="receive-bitrate">
 									{formatBitrate(diagnostics.receiveBitrateBps)}
 								</dd>
-								<dt class="text-white/45">Server capacity</dt>
-								<dd class="font-mono">{formatBitrate(estimatedBitrateBps)}</dd>
+								<dt class="text-white/45">Session network estimate</dt>
+								<dd class="font-mono" data-web-rtc-metric="session-network-estimate">
+									{estimatedBitrateBps === null ? 'Unknown' : formatBitrate(estimatedBitrateBps)}
+								</dd>
+								<dt class="text-white/45">Camera budget</dt>
+								<dd class="font-mono" data-web-rtc-metric="allocated-bitrate">{cameraBudget}</dd>
+								<dt class="text-white/45">Auto status</dt>
+								<dd class="font-mono text-amber-300" data-web-rtc-metric="quality-reason">
+									{liveQualityReason(liveQuality?.selectionReason)}
+								</dd>
 
 								<div class="col-span-2 my-1 border-t border-white/10"></div>
 
