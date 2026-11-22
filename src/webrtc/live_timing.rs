@@ -442,8 +442,8 @@ impl AudioClock {
         source: Option<Duration>,
         rate: u32,
     ) -> Duration {
-        let mapped = self.previous.map_or(
-            source.unwrap_or_default(),
+        let mapped = self.previous.map_or_else(
+            || source.unwrap_or_default(),
             |(old_wall, old_source, old_mapped)| {
                 let wall_step = received.saturating_duration_since(old_wall);
                 let step = old_source

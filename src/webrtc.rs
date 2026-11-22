@@ -2483,13 +2483,14 @@ impl Publisher {
     }
 
     pub(crate) fn reset_camera(&self, camera_ip: IpAddr) {
-        if let Some(timing) = self
+        let timing = self
             .inner
             .live_timing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&camera_ip)
-        {
+            .cloned();
+        if let Some(timing) = timing {
             timing.reset();
         }
         let mut generations = self
@@ -2669,14 +2670,14 @@ fn try_reserve_bytes(counter: &AtomicUsize, bytes: usize, maximum: usize) -> boo
 
 impl WebRtc {
     pub(crate) fn remove_live_audio(&self, ip: IpAddr) {
-        if let Some(timing) = self
+        let timing = self
             .live
             .inner
             .live_timing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&ip)
-        {
+            .remove(&ip);
+        if let Some(timing) = timing {
             timing.reset();
         }
     }
@@ -8089,7 +8090,7 @@ mod tests {
     #[test]
     fn live_audio_negative_preview_holds_video_and_invalidates_serialized_delivery_on_reset() {
         let camera = Arc::new(live_timing::CameraTiming::default());
-        let mut timing = live_timing::Queue::new(camera.clone());
+        let mut timing = live_timing::Queue::new(camera);
         timing.set_preview(Some(-100));
         let (tx, rx) = bounded(1);
         let received = Instant::now();
@@ -8114,15 +8115,13 @@ mod tests {
         assert!(Arc::ptr_eq(&raw.data, &frame.data));
         let permit = permit.unwrap();
         assert!(permit.current(received + Duration::from_millis(100)));
-        assert!(!permit.current(received + Duration::from_millis(251)));
-        assert!(
-            !permit
-                .clone()
-                .current(received + Duration::from_millis(252))
-        );
+        let chunks = [permit.clone(), permit];
+        for chunk in &chunks {
+            assert!(!chunk.current(received + Duration::from_millis(251)));
+        }
         assert_eq!(timing.report(source.stream).expired_drops, 1);
         timing.set_preview(None);
-        assert!(!permit.current(received + Duration::from_millis(100)));
+        assert!(!chunks[0].current(received + Duration::from_millis(100)));
     }
 
     #[test]
