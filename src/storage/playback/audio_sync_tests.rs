@@ -145,7 +145,7 @@ fn audio_sample(rate: u32, start_ms: u64, cts: i32, marker: u8) -> mp4::Mp4Sampl
     mp4::Mp4Sample {
         start_time: start_ms * u64::from(rate) / 1_000,
         duration: rate / 50,
-        rendering_offset: cts,
+        rendering_offset: i64::from(cts),
         is_sync: true,
         bytes: vec![marker, 0x55, 0xaa].into(),
     }
@@ -318,7 +318,7 @@ fn audio_sync_positive_delay_preserves_video_and_cross_recording_audio_payloads(
         expected[0].1 = i128::from(rate) * 150 / 1_000;
         expected[3].1 = i128::from(rate) * 2_150 / 1_000;
         assert_eq!(audio_timeline(&corrected), expected);
-        assert_eq!(corrected.audio[0].rendering_offset, source_cts);
+        assert_eq!(corrected.audio[0].rendering_offset, i64::from(source_cts));
     }
 }
 
