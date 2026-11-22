@@ -44,6 +44,13 @@ const defaultSessionTransport: LiveSessionTransport = {
 	delete: (sessionId, options) => deleteSession(sessionId, null, options)
 };
 
+type NegotiatedTrack = LivePeerPlan & {
+	trackId: string;
+	audioTrackId: string;
+	transceiver: RTCRtpTransceiver;
+	audioTransceiver: RTCRtpTransceiver;
+};
+
 type PendingRequest = {
 	resolve: (response: ControlResponse) => void;
 	reject: (error: Error) => void;
@@ -73,6 +80,7 @@ export type LivePeerTrack = {
 	estimatedBitrateBps: number | null;
 	liveQuality?: LiveQualityDiagnostics;
 	subscribed: boolean;
+	audioAdmission?: 'retry' | 'admitted';
 	admissionError?: string | null;
 };
 
@@ -96,6 +104,7 @@ export class LivePeer {
 	cameraAudioAssets = $state.raw<Record<string, CameraAudioAssets>>({});
 
 	#peer: RTCPeerConnection | null = null;
+	#closingPeer: RTCPeerConnection | null = null;
 	#sessionToken: string | null = null;
 	#previousSession: string | undefined;
 	#controlChannel: RTCDataChannel | null = null;
@@ -135,6 +144,11 @@ export class LivePeer {
 
 	track(cameraId: string): LivePeerTrack | null {
 		return this.tracks[cameraId] ?? null;
+	}
+
+	needsAdmission(cameraId: string): boolean {
+		const track = this.track(cameraId);
+		return !track?.subscribed || track.audioAdmission === 'retry';
 	}
 
 	attach(cameraId: string): () => void {
@@ -182,6 +196,7 @@ export class LivePeer {
 	}
 
 	close(): Promise<void> {
+		this.talkbackError = null;
 		this.#desiredPlans = [];
 		this.cancelRecovery();
 		return this.enqueue(async () => this.closeNow());
@@ -195,7 +210,6 @@ export class LivePeer {
 				throw new Error('Talkback is unavailable until the live session is connected.');
 			}
 			if (this.talkbackActive) return;
-			this.talkbackError = null;
 			const stream = await acquireTalkbackMicrophone(signal);
 			const track = stream.getAudioTracks()[0];
 			if (!track) {
@@ -220,7 +234,6 @@ export class LivePeer {
 			} catch (error) {
 				stream.getTracks().forEach((item) => item.stop());
 				await transceiver.sender.replaceTrack(null).catch(() => undefined);
-				this.talkbackError = error instanceof Error ? error.message : 'Talkback could not start.';
 				throw error;
 			}
 		});
@@ -280,6 +293,7 @@ export class LivePeer {
 	}
 
 	closeOnPageHide(): void {
+		this.talkbackError = null;
 		this.#desiredPlans = [];
 		this.cancelRecovery();
 		const sessionToken = this.releaseLocalResources();
@@ -306,11 +320,18 @@ export class LivePeer {
 				if (!owner) throw new Error('Connect to live view before sending this command.');
 				if (owner !== this.#peer)
 					throw new Error('The live connection changed. Send the command again if needed.');
+				this.talkbackError = null;
 				await task();
 			} catch (error) {
-				const message = error instanceof Error ? error.message : 'The live command failed.';
-				this.talkbackError = message;
-				throw error;
+				const failure =
+					owner && owner !== this.#peer
+						? new Error(
+								'The live connection changed before confirming the command. Check whether it ran before trying again.'
+							)
+						: error;
+				this.talkbackError =
+					failure instanceof Error ? failure.message : 'The live command failed.';
+				throw failure;
 			}
 		});
 	}
@@ -337,6 +358,10 @@ export class LivePeer {
 
 	private transportLost(owner: RTCPeerConnection): void {
 		if (owner !== this.#peer) return;
+		if (owner === this.#closingPeer) {
+			this.releaseLocalResources();
+			return;
+		}
 		// A replacement must survive a full wall health refresh before it earns a
 		// fresh retry budget. Rapid successful handshakes still count as failures.
 		if (this.#healthySince?.peer === owner && performance.now() - this.#healthySince.at >= 5000)
@@ -407,6 +432,8 @@ export class LivePeer {
 						track.requestedVariantId !== (plan.variantId ?? null))
 				) {
 					await this.setQuality(plan.cameraId, plan.quality, plan.variantId ?? null);
+				} else if (plan.active && track.audioAdmission === 'retry') {
+					await this.subscribeAudio(plan.cameraId, track.audioTrackId);
 				}
 			})
 		);
@@ -435,6 +462,28 @@ export class LivePeer {
 	}
 
 	private async connect(plans: LivePeerPlan[], topologyKey: string): Promise<void> {
+		const { peer, controlChannel } = this.preparePeer(topologyKey);
+		try {
+			const localTracks = this.prepareTracks(peer, plans);
+			this.observePeer(peer);
+			await this.negotiateTracks(peer, controlChannel, localTracks);
+		} catch (error) {
+			if (peer === this.#peer) {
+				const sessionToken = this.releaseLocalResources();
+				this.error = error instanceof Error ? error.message : 'Unable to start shared live view';
+				if (sessionToken !== null) {
+					try {
+						await this.#sessionTransport.delete(sessionToken);
+					} catch (closeError) {
+						console.debug('Unable to close failed shared live session', closeError);
+					}
+				}
+			}
+			throw error;
+		}
+	}
+
+	private preparePeer(topologyKey: string) {
 		const peer = new RTCPeerConnection();
 		const controlChannel = peer.createDataChannel('control-channel', {
 			negotiated: true,
@@ -471,8 +520,14 @@ export class LivePeer {
 		this.#capabilities = null;
 		controlChannel.onmessage = (event) => this.receiveCurrentControl(peer, event);
 		controlChannel.onclose = () => this.transportLost(peer);
-		reliableChannel.onmessage = (event) => this.receiveMediaData(event);
+		reliableChannel.onmessage = (event) => {
+			if (peer === this.#peer) this.receiveMediaData(event);
+		};
 
+		return { peer, controlChannel };
+	}
+
+	private prepareTracks(peer: RTCPeerConnection, plans: LivePeerPlan[]): NegotiatedTrack[] {
 		const localTracks = plans.map((plan, index) => {
 			const trackId = `camera-${index}`;
 			const transceiver = peer.addTransceiver('video', { direction: 'recvonly' });
@@ -503,6 +558,10 @@ export class LivePeer {
 			])
 		);
 
+		return localTracks;
+	}
+
+	private observePeer(peer: RTCPeerConnection): void {
 		peer.ontrack = (event) => {
 			if (peer !== this.#peer || event.transceiver.mid === null) return;
 			this.#trackEventByMid[event.transceiver.mid] = event;
@@ -526,69 +585,66 @@ export class LivePeer {
 				this.transportLost(peer);
 			}
 		};
+	}
 
+	private async negotiateTracks(
+		peer: RTCPeerConnection,
+		controlChannel: RTCDataChannel,
+		localTracks: NegotiatedTrack[]
+	): Promise<void> {
+		const offer = await peer.createOffer();
+		await peer.setLocalDescription(offer);
+		await waitForIceGathering(peer);
+
+		if (peer !== this.#peer || !peer.localDescription) return;
+
+		for (const track of localTracks) {
+			if (track.transceiver.mid === null) {
+				throw new Error(`No SDP MID assigned for ${track.cameraId}`);
+			}
+			if (track.audioTransceiver.mid === null) {
+				throw new Error(`No audio SDP MID assigned for ${track.cameraId}`);
+			}
+		}
+
+		const previous = this.#previousSession;
+		let session: CreateResponse;
 		try {
-			const offer = await peer.createOffer();
-			await peer.setLocalDescription(offer);
-			await waitForIceGathering(peer);
-
-			if (peer !== this.#peer || !peer.localDescription) return;
-
-			for (const track of localTracks) {
-				if (track.transceiver.mid === null) {
-					throw new Error(`No SDP MID assigned for ${track.cameraId}`);
-				}
-				if (track.audioTransceiver.mid === null) {
-					throw new Error(`No audio SDP MID assigned for ${track.cameraId}`);
-				}
-			}
-
-			const session = await this.#sessionTransport.create(
-				peer.localDescription,
-				this.#previousSession
-			);
-			if (peer !== this.#peer) {
-				await this.#sessionTransport.delete(session.session_id);
-				return;
-			}
-
-			this.#previousSession = undefined;
-			this.#sessionToken = session.session_id;
-			this.sessionId = session.session_id;
-			await peer.setRemoteDescription({
-				type: session.answer.type as RTCSdpType,
-				sdp: session.answer.sdp
-			});
-			// ponytail: Start the opening timeout only after signaling succeeds.
-			await waitForDataChannel(controlChannel);
-			await this.waitForCapabilities();
-			await Promise.all(
-				localTracks
-					.filter((track) => track.active)
-					.map((track) =>
-						this.subscribeTrack(
-							track.cameraId,
-							track.trackId,
-							track.quality,
-							track.variantId ?? null
-						)
-					)
-			);
+			session = await this.#sessionTransport.create(peer.localDescription, previous);
 		} catch (error) {
-			if (peer === this.#peer) {
-				const sessionToken = this.releaseLocalResources();
-				this.error = error instanceof Error ? error.message : 'Unable to start shared live view';
-				if (sessionToken !== null) {
-					try {
-						await this.#sessionTransport.delete(sessionToken);
-					} catch (closeError) {
-						console.debug('Unable to close failed shared live session', closeError);
-					}
-				}
+			if (previous && this.#previousSession === previous && this.isAccessDenied(error)) {
+				this.#previousSession = undefined;
+				await this.#sessionTransport.delete(previous).catch(() => undefined);
 			}
 			throw error;
 		}
+		// A successful server acknowledgement consumes the one-use continuation even if
+		// this opening peer was displaced while the HTTP response was in flight.
+		if (this.#previousSession === previous) this.#previousSession = undefined;
+		if (peer !== this.#peer) {
+			await this.#sessionTransport.delete(session.session_id);
+			return;
+		}
+		this.#sessionToken = session.session_id;
+		this.sessionId = session.session_id;
+		await peer.setRemoteDescription({
+			type: session.answer.type as RTCSdpType,
+			sdp: session.answer.sdp
+		});
+		// ponytail: Start the opening timeout only after signaling succeeds.
+		await waitForDataChannel(controlChannel);
+		if (peer !== this.#peer) return;
+		await this.waitForCapabilities();
+		if (peer !== this.#peer) return;
+		await Promise.all(
+			localTracks
+				.filter((track) => track.active)
+				.map((track) =>
+					this.subscribeTrack(track.cameraId, track.trackId, track.quality, track.variantId ?? null)
+				)
+		);
 	}
+
 	private async setQuality(
 		cameraId: string,
 		quality: LiveQuality,
@@ -669,7 +725,11 @@ export class LivePeer {
 		const variant =
 			source?.audio?.variants.find((item) => item.variantId === 'main') ??
 			source?.audio?.variants[0];
-		if (!variant) return;
+		if (!variant) {
+			this.replaceTrack(cameraId, { audioAdmission: undefined });
+			return;
+		}
+		const owner = this.#peer;
 		const requestedDeliveryTransport = variant.deliveryTransports.includes(
 			DeliveryTransport.RELIABLE_DATA
 		)
@@ -686,7 +746,8 @@ export class LivePeer {
 				variantId: variant.variantId
 			})
 		);
-		if (result?.case !== 'subscriptionResult') return;
+		if (owner !== this.#peer || result?.case !== 'subscriptionResult') return;
+		this.replaceTrack(cameraId, { audioAdmission: 'admitted', admissionError: null });
 		if (result.value.delivery.case === 'rtp') {
 			const mid = result.value.delivery.value.mid;
 			this.#audioCameraByMid[mid] = cameraId;
@@ -706,6 +767,10 @@ export class LivePeer {
 				format.value.sampleRateHz,
 				format.value.channelCount
 			);
+			if (owner !== this.#peer) {
+				playback.close();
+				return;
+			}
 			this.#audioPlaybackByBinding.set(result.value.delivery.value.streamBindingId, playback);
 			this.#audioBindingByCamera[cameraId] = result.value.delivery.value.streamBindingId;
 		} catch (error) {
@@ -722,6 +787,10 @@ export class LivePeer {
 			return await this.request({ case: 'subscribeMedia', value: subscribe });
 		} catch (error) {
 			if (!(error instanceof MediaAdmissionError)) throw error;
+			if (subscribe.kind === MediaKind.AUDIO) {
+				this.replaceTrack(cameraId, { audioAdmission: 'retry' });
+				return null;
+			}
 			this.replaceTrack(cameraId, {
 				status: 'unavailable',
 				admissionError: 'Server did not admit this stream'
@@ -752,6 +821,7 @@ export class LivePeer {
 			subscribed: false,
 			audioReceiver: null,
 			audioStream: null,
+			audioAdmission: undefined,
 			pendingStream: null,
 			estimatedBitrateBps: null,
 			liveQuality: undefined
@@ -994,6 +1064,8 @@ export class LivePeer {
 	}
 
 	private async closeNow(): Promise<void> {
+		const sessionToken = this.#sessionToken;
+		this.#closingPeer = this.#peer;
 		const subscriptionIds = Object.values(this.tracks)
 			.filter((track) => track.subscribed)
 			.flatMap((track) => [track.trackId, track.audioTrackId]);
@@ -1007,17 +1079,11 @@ export class LivePeer {
 				// Session deletion remains authoritative teardown.
 			}
 		}
-		const sessionToken = this.#sessionToken;
-		if (sessionToken === null) {
-			this.releaseLocalResources();
-			return;
-		}
-		try {
-			await this.#sessionTransport.delete(sessionToken);
-		} catch (error) {
-			console.debug('Unable to close shared live session', error);
-		} finally {
-			if (this.#sessionToken === sessionToken) this.releaseLocalResources();
+		this.releaseLocalResources();
+		if (sessionToken) {
+			await this.#sessionTransport
+				.delete(sessionToken)
+				.catch((error) => console.debug('Unable to close shared live session', error));
 		}
 	}
 
@@ -1029,6 +1095,7 @@ export class LivePeer {
 		const peer = this.#peer;
 		const sessionToken = this.#sessionToken;
 		this.#peer = null;
+		this.#closingPeer = null;
 		this.#sessionToken = null;
 		this.#topologyKey = '';
 		this.#cameraByMid = {};
@@ -1063,7 +1130,6 @@ export class LivePeer {
 		this.#talkbackTrack?.stop();
 		this.#talkbackTrack = null;
 		this.talkbackActive = false;
-		this.talkbackError = null;
 		peer?.close();
 		this.failPending('WebRTC media session closed.');
 		this.tracks = {};
