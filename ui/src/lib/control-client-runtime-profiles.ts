@@ -199,12 +199,19 @@ export class RuntimeProfilesControlClient {
 	}
 
 	async activate(profileId: string | null, expectedRevision: string): Promise<string> {
+		return (await this.activateWithHeader(profileId, expectedRevision)).revision;
+	}
+
+	async activateWithHeader(
+		profileId: string | null,
+		expectedRevision: string
+	): Promise<ReturnType<typeof runtimeProfileFromEntry>> {
 		const entry = await this.stateStore.put(runtimeProfilesNamespace, runtimeProfilesActiveKey, {
 			schema: runtimeProfilesActiveSchema,
 			value: { profile_id: profileId ?? '' },
 			expectedRevision: BigInt(expectedRevision)
 		});
-		return runtimeProfileFromEntry(entry).revision;
+		return runtimeProfileFromEntry(entry);
 	}
 
 	watchActive(

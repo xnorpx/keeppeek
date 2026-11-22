@@ -384,9 +384,13 @@
 		error = null;
 		announcement = null;
 		try {
-			const revision = await controlClient.runtimeProfiles.activate(profileId, activeRevision);
-			if (revision !== activeRevision || profileId !== activeProfileId)
-				acceptActive({ profileId, revision });
+			const observed = activeUpdates;
+			const accepted = await controlClient.runtimeProfiles.activateWithHeader(
+				profileId,
+				activeRevision
+			);
+			if (observed === activeUpdates || BigInt(accepted.revision) > BigInt(activeRevision))
+				acceptActive(accepted);
 			announcement = reapply
 				? 'Active policy reapplied.'
 				: profileId === null

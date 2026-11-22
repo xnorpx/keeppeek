@@ -42,7 +42,9 @@ function recoveryClient(profileId: string | null, state: 'degraded' | 'pending' 
 		watchStatus: vi.fn().mockResolvedValue({ close: vi.fn() }),
 		watchRegistry: vi.fn().mockResolvedValue({ close: vi.fn() }),
 		saveRegistry: vi.fn(),
-		activate: vi.fn().mockResolvedValue('4')
+		activateWithHeader: vi
+			.fn()
+			.mockImplementation(async (id: string | null) => ({ profileId: id, revision: '4' }))
 	};
 	return {
 		client: { runtimeProfiles } as unknown as ControlClient,
@@ -474,9 +476,45 @@ describe('RuntimeProfilesSection', () => {
 			const retry = page.getByRole('button', { name: 'Reapply active policy' });
 			await expect.element(retry).toBeEnabled();
 			await retry.click();
-			expect(runtimeProfiles.activate).toHaveBeenCalledExactlyOnceWith(id, '3');
+			expect(runtimeProfiles.activateWithHeader).toHaveBeenCalledExactlyOnceWith(id, '3');
 			await expect
 				.element(page.getByText('Active policy reapplied.', { exact: true }))
+				.toBeVisible();
+		}
+	);
+
+	it.each([false, true])(
+		'uses the acknowledged definition unless a newer header arrived (%s)',
+		async (watchFirst) => {
+			const { client, runtimeProfiles, status } = recoveryClient('away');
+			const activation = Promise.withResolvers<{
+				profileId: string;
+				revision: string;
+				definitionRevision: string;
+			}>();
+			runtimeProfiles.getActive.mockResolvedValue({
+				profileId: 'away',
+				revision: '3',
+				definitionRevision: '2'
+			});
+			runtimeProfiles.getStatus.mockResolvedValue({ ...status, definitionRevision: '2' });
+			runtimeProfiles.activateWithHeader.mockReturnValueOnce(activation.promise);
+			await render(RuntimeProfilesSectionFixture, { props: { client, cameras: [] } });
+			await page.getByRole('button', { name: 'Reapply active policy' }).click();
+			const observed = { ...status, revision: '4', definitionRevision: watchFirst ? '5' : '2' };
+			runtimeProfiles.watchStatus.mock.calls[0]![0](observed);
+			if (watchFirst)
+				runtimeProfiles.watchActive.mock.calls[0]![0]({
+					profileId: 'away',
+					revision: '4',
+					definitionRevision: '5'
+				});
+			activation.resolve({ profileId: 'away', revision: '4', definitionRevision: '2' });
+			await expect
+				.element(page.getByText('Active policy reapplied.', { exact: true }))
+				.toBeVisible();
+			await expect
+				.element(page.getByText('Camera application status for revision 4'))
 				.toBeVisible();
 		}
 	);
@@ -485,11 +523,11 @@ describe('RuntimeProfilesSection', () => {
 		const { client, runtimeProfiles } = recoveryClient('away');
 		const activation = Promise.withResolvers<string>();
 		const close = vi.fn();
-		runtimeProfiles.activate.mockReturnValueOnce(activation.promise);
+		runtimeProfiles.activateWithHeader.mockReturnValueOnce(activation.promise);
 		runtimeProfiles.watchStatus.mockResolvedValueOnce({ close });
 		const screen = await render(RuntimeProfilesSectionFixture, { props: { client, cameras: [] } });
 		await page.getByRole('button', { name: 'Reapply active policy' }).click();
-		expect(runtimeProfiles.activate).toHaveBeenCalledOnce();
+		expect(runtimeProfiles.activateWithHeader).toHaveBeenCalledOnce();
 		await screen.unmount();
 		expect(close).toHaveBeenCalledOnce();
 		activation.reject(new Error('Activation conflicted.'));
@@ -500,7 +538,7 @@ describe('RuntimeProfilesSection', () => {
 
 	it('keeps recovery available after a failed request refreshes the accepted revision', async () => {
 		const { client, runtimeProfiles, status } = recoveryClient('away');
-		runtimeProfiles.activate.mockRejectedValueOnce(new Error('Activation conflicted.'));
+		runtimeProfiles.activateWithHeader.mockRejectedValueOnce(new Error('Activation conflicted.'));
 		await render(RuntimeProfilesSectionFixture, { props: { client, cameras: [] } });
 		const retry = page.getByRole('button', { name: 'Reapply active policy' });
 		await expect.element(retry).toBeEnabled();
@@ -510,9 +548,9 @@ describe('RuntimeProfilesSection', () => {
 		await expect.element(page.getByRole('alert')).toHaveTextContent('Activation conflicted.');
 		await expect.element(retry).toBeEnabled();
 		await retry.click();
-		expect(runtimeProfiles.activate).toHaveBeenCalledTimes(2);
-		expect(runtimeProfiles.activate).toHaveBeenNthCalledWith(1, 'away', '3');
-		expect(runtimeProfiles.activate).toHaveBeenNthCalledWith(2, 'away', '5');
+		expect(runtimeProfiles.activateWithHeader).toHaveBeenCalledTimes(2);
+		expect(runtimeProfiles.activateWithHeader).toHaveBeenNthCalledWith(1, 'away', '3');
+		expect(runtimeProfiles.activateWithHeader).toHaveBeenNthCalledWith(2, 'away', '5');
 	});
 
 	it('does not reapply with unsaved edits', async () => {
@@ -522,7 +560,7 @@ describe('RuntimeProfilesSection', () => {
 		await expect.element(retry).toBeEnabled();
 		await page.getByLabelText('Display name').fill('Unsaved name');
 		await expect.element(retry).toBeDisabled();
-		expect(runtimeProfiles.activate).not.toHaveBeenCalled();
+		expect(runtimeProfiles.activateWithHeader).not.toHaveBeenCalled();
 	});
 
 	it('blocks recovery if the registry schema cannot be read', async () => {
@@ -535,7 +573,7 @@ describe('RuntimeProfilesSection', () => {
 		await expect
 			.element(page.getByRole('button', { name: 'Reapply active policy' }))
 			.toBeDisabled();
-		expect(runtimeProfiles.activate).not.toHaveBeenCalled();
+		expect(runtimeProfiles.activateWithHeader).not.toHaveBeenCalled();
 	});
 
 	it('does not offer recovery for Users', async () => {
@@ -550,7 +588,7 @@ describe('RuntimeProfilesSection', () => {
 			.element(page.getByRole('button', { name: 'Reapply active policy' }))
 			.not.toBeInTheDocument();
 		expect(runtimeProfiles.getRegistry).not.toHaveBeenCalled();
-		expect(runtimeProfiles.activate).not.toHaveBeenCalled();
+		expect(runtimeProfiles.activateWithHeader).not.toHaveBeenCalled();
 	});
 
 	it.each(['revision', 'identity', 'applied'])(
@@ -569,7 +607,7 @@ describe('RuntimeProfilesSection', () => {
 			await expect
 				.element(page.getByRole('button', { name: 'Reapply active policy' }))
 				.not.toBeInTheDocument();
-			expect(runtimeProfiles.activate).not.toHaveBeenCalled();
+			expect(runtimeProfiles.activateWithHeader).not.toHaveBeenCalled();
 		}
 	);
 
@@ -616,7 +654,7 @@ describe('RuntimeProfilesSection', () => {
 				watchStatus: vi.fn().mockResolvedValue({ close: vi.fn() }),
 				watchRegistry: vi.fn().mockResolvedValue({ close: vi.fn() }),
 				saveRegistry: vi.fn(),
-				activate: vi.fn()
+				activateWithHeader: vi.fn()
 			}
 		} as unknown as ControlClient;
 
@@ -664,7 +702,7 @@ describe('RuntimeProfilesSection', () => {
 				watchStatus: vi.fn().mockResolvedValue({ close: vi.fn() }),
 				watchRegistry: vi.fn().mockResolvedValue({ close: vi.fn() }),
 				saveRegistry,
-				activate: vi.fn()
+				activateWithHeader: vi.fn()
 			}
 		} as unknown as ControlClient;
 		const cameras = [

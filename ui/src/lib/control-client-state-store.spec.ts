@@ -400,7 +400,9 @@ describe('ControlClientStateStore', () => {
 					? snapshotResult(action.value.watchId, [testEntry('a', 1n)])
 					: unwatchResult('unused')
 			);
-			const client = new ControlClientStateStore((command) => transport.send(command));
+			const client = new ControlClientStateStore((command) => transport.send(command), {
+				maxWatches: 1
+			});
 			let interrupted = 0;
 			const watch = await client.watch(namespace, {
 				onInterrupted: () => {
@@ -415,8 +417,18 @@ describe('ControlClientStateStore', () => {
 			expect(interrupted).toBe(1);
 			client.handleConnectionClosed();
 			await client.handleConnectionOpened();
-			expect(transport.sent).toHaveLength(1);
+			expect(watch.status).toBe('closed');
+			expect(transport.sent.map((command) => storeAction(command).case)).toEqual([
+				'watch',
+				'unwatch'
+			]);
+			const replacement = await client.watch(namespace);
+			await client.handleWatchClosed(testClosed(watch.watchId));
 			await watch.close();
+			expect(interrupted).toBe(1);
+			expect(replacement.status).toBe('active');
+			expect(transport.sent).toHaveLength(3);
+			await replacement.close();
 		}
 	);
 
