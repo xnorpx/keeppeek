@@ -19,6 +19,14 @@ function observeNoncanonicalControlRequests(page: Page): string[] {
 	return requests;
 }
 
+function pendingOperation() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
+}
+
 async function openSupportedExport(page: Page, options: MockControlPeerOptions = {}) {
 	const noncanonicalRequests = observeNoncanonicalControlRequests(page);
 	const controls = await mockKeepModes(page, 10, {
@@ -129,7 +137,7 @@ test('Export stops reverse playback and returns to its frozen Timeline position'
 
 test('Export keeps the last drag position while a Timeline seek is pending', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 840 });
-	const seek = Promise.withResolvers<void>();
+	const seek = pendingOperation();
 	const requests = await mockKeepModes(page, 2, {
 		storedOpenGates: [Promise.resolve(), seek.promise]
 	});
@@ -171,7 +179,7 @@ test('entering Export during the first Timeline open retains its selection and r
 	page
 }) => {
 	test.setTimeout(90_000);
-	const opened = Promise.withResolvers<void>();
+	const opened = pendingOperation();
 	const requests = await mockKeepModes(page, 2, { storedOpenGates: [opened.promise] });
 	await page.goto(`/keep?camera=front-door&stream=main&at=${selectedStartMs}`);
 	await expect.poll(() => requests.storedOpens.length, { timeout: 45_000 }).toBe(1);
@@ -199,7 +207,7 @@ test('returning to Timeline during an Export camera change opens only the select
 	page
 }) => {
 	test.setTimeout(90_000);
-	const nextCamera = Promise.withResolvers<void>();
+	const nextCamera = pendingOperation();
 	const requests = await mockKeepModes(page, 2, {
 		beforeStoredTimelineQuery: (sourceIds) =>
 			sourceIds.includes('camera-2') ? nextCamera.promise : undefined
