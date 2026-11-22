@@ -440,7 +440,7 @@ export type MockControlPeerOptions = {
 	storedBucketedRanges?: readonly StoredRangeFixture[];
 	storedEvents?: readonly StoredEventFixture[];
 	storedTimelineGates?: readonly Promise<void>[];
-	beforeStoredTimelineQuery?: (sourceIds: readonly string[]) => Promise<void> | undefined;
+	beforeStoredTimelineQuery?: (sourceIds: readonly string[]) => Promise<void> | void;
 	eventSearchGates?: readonly Promise<void>[];
 	eventSearchPageError?: string;
 	eventMediaGates?: readonly Promise<void>[];

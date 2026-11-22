@@ -45,8 +45,8 @@ function observeGuestNetwork(context: BrowserContext, origin: string, privateVal
 			!directives.has('private') ||
 			!directives.has('no-store') ||
 			headers['referrer-policy'] !== 'no-referrer' ||
-			headers['x-content-type-options'] !== 'nosniff' ||
-			headers['x-frame-options'] !== 'DENY' ||
+			headers['x-content-type-options']?.toLowerCase() !== 'nosniff' ||
+			headers['x-frame-options']?.toLowerCase() !== 'deny' ||
 			headers['cross-origin-resource-policy'] !== 'same-origin' ||
 			!headers['content-security-policy']?.includes("frame-ancestors 'none'")
 		) {
