@@ -1102,9 +1102,18 @@ fn archived_export_preserves_sharing_metadata_and_fences_typed_create_and_retry(
         .unwrap();
     assert_eq!(archived.source_identity, Some(source_identity));
     assert_eq!(archived.owner_key, original.owner_key);
+    let original_proof = original.media_proof.as_ref().unwrap();
+    let archived_proof = archived.media_proof.as_ref().unwrap();
+    assert_eq!(original_proof.version, SOURCE_BOUNDS_PROOF_VERSION);
+    assert!(original_proof.source_bounds.is_some());
+    assert_eq!(archived_proof.version, 1);
+    assert!(archived_proof.source_bounds.is_none());
+    assert_eq!(archived_proof.artifact_id, original_proof.artifact_id);
+    assert_eq!(archived_proof.sha256, original_proof.sha256);
+    assert_eq!(archived_proof.bytes, original_proof.bytes);
     assert_eq!(
-        serde_json::to_value(&archived.media_proof).unwrap(),
-        serde_json::to_value(&original.media_proof).unwrap()
+        archived.verified_media_bounds(),
+        original.verified_media_bounds()
     );
     assert!(archived.job.expires_at.is_none());
     assert!(archived.path.is_none());
