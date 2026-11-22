@@ -266,6 +266,9 @@ fn percentile(values: &[u64], percent: usize) -> u64 {
 }
 
 fn observation(enabled: bool) -> Sample {
+    let directory =
+        std::env::temp_dir().join(format!("keeppeek-dashboard-bench-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
     let output = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -273,9 +276,14 @@ fn observation(enabled: bool) -> Sample {
             "--ignored",
             "--nocapture",
         ])
+        .current_dir(&directory)
+        .env("APPDATA", &directory)
+        .env("HOME", &directory)
+        .env("XDG_CONFIG_HOME", &directory)
         .env(CHILD_MODE, if enabled { "on" } else { "off" })
         .output()
         .unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
     assert!(
         output.status.success(),
         "{}",

@@ -109,6 +109,10 @@ fn foreground_lifecycle(detach: bool) -> Result<()> {
     let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_keeppeek"));
     cmd.cwd(&directory);
     cmd.args(["--config", "config.toml"]);
+    // Storage and credentials have OS-specific defaults even with an explicit --config.
+    cmd.env("APPDATA", &directory);
+    cmd.env("HOME", &directory);
+    cmd.env("XDG_CONFIG_HOME", &directory);
     cmd.env("TERM", "xterm-256color");
     cmd.env("NO_COLOR", "1");
     let mut recorder = Recorder {
