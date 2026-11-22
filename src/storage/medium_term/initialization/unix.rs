@@ -10,7 +10,7 @@ use std::{
     io,
 };
 
-pub(super) const RECOVERY_DIRECTORY: &str = ".keeppeek-header-recovery-v1";
+pub(super) use crate::storage::layout::HEADER_RECOVERY_DIRECTORY as RECOVERY_DIRECTORY;
 
 fn entry(directory: &Dir, name: &OsStr) -> io::Result<Option<Metadata>> {
     match directory.symlink_metadata(name) {

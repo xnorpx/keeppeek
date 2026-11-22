@@ -219,6 +219,7 @@ entry retains its original filename under `.keeppeek-header-recovery-v1/` in the
 recording hour. Its private `<active name>.pins-v2/` directory holds a hard link whose
 name records the device and inode from the writer's open file handle. This single link
 both holds the inode across a restart and identifies it before the move into recovery.
+Recording listings, integrity scans, and date or capacity pruning skip the recovery directory.
 When the active name is next requested, KeepPeek verifies the pin before reclaiming a partial
 file belonging to the failed write or restores a displaced entry to its vacant original name.
 For an older recording, stop writers for that directory and preserve the saved entry under a vacant
