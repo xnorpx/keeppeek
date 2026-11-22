@@ -176,13 +176,16 @@ import {
 	TemperatureHealthSnapshotSchema,
 	CpuHealthSnapshotSchema,
 	VideoDataFormatSchema,
+	VideoQuality,
 	WebRtcHealthSnapshotSchema,
 	WebRtcSessionQueueHealthSnapshotSchema,
 	WebRtcSourceHealthSnapshotSchema,
 	type Ok,
 	type ExportJob,
 	type ConfigurationResult as ProtoConfigurationResult,
-	type StoredMediaState
+	type StoredMediaState,
+	type SubscribeMedia,
+	type SubscriptionResult
 } from '../../src/lib/proto/webrtc_pb';
 import type {
 	CameraSettings,
@@ -368,7 +371,11 @@ export type ControlRequests = {
 	notificationActions: string[];
 	mqttUpdates: MqttSettingsUpdate[];
 	mqttTests: MqttSettingsUpdate[];
-	mediaSubscriptions: Array<{ subscriptionId: string; variantId: string }>;
+	mediaSubscriptions: Array<{
+		subscriptionId: string;
+		variantId: string;
+		videoQuality: VideoQuality;
+	}>;
 	mediaUnsubscriptions: string[][];
 	peekLayoutReads: number;
 	peekLayoutUpdates: JsonObject[];
@@ -805,6 +812,29 @@ function encodedData(message: ReturnType<typeof create<typeof MessageSchema>>): 
 	return Array.from(toBinary(MessageSchema, message));
 }
 
+function fixtureSubscriptionResult(
+	subscribe: SubscribeMedia,
+	cameras: readonly CameraListItem[],
+	subscriptions: ControlRequests['mediaSubscriptions']
+): SubscriptionResult {
+	const profiles =
+		cameras.find((camera) => `camera:${camera.id}` === subscribe.sourceSessionId)?.profiles ?? [];
+	const hasSub = profiles.some((profile) => profile.stream === 'sub');
+	const selectedVariantId =
+		subscribe.variantId ||
+		(subscribe.videoQuality === VideoQuality.HIGH ? 'main' : hasSub ? 'sub' : 'main');
+	subscriptions.push({
+		subscriptionId: subscribe.subscriptionId,
+		variantId: subscribe.variantId,
+		videoQuality: subscribe.videoQuality
+	});
+	return create(SubscriptionResultSchema, {
+		subscriptionId: subscribe.subscriptionId,
+		delivery: { case: 'rtp', value: create(RtpDeliverySchema, { mid: '0' }) },
+		selectedVariantId
+	});
+}
+
 export async function mockControlPeer(
 	page: Page,
 	options: MockControlPeerOptions = {}
@@ -1076,17 +1106,13 @@ export async function mockControlPeer(
 			}
 		}
 		if (request.command.case === 'subscribeMedia') {
-			requests.mediaSubscriptions.push({
-				subscriptionId: request.command.value.subscriptionId,
-				variantId: request.command.value.variantId
-			});
 			return encodedOk(request.requestId, {
 				case: 'subscriptionResult',
-				value: create(SubscriptionResultSchema, {
-					subscriptionId: request.command.value.subscriptionId,
-					delivery: { case: 'rtp', value: create(RtpDeliverySchema, { mid: '0' }) },
-					selectedVariantId: request.command.value.variantId
-				})
+				value: fixtureSubscriptionResult(
+					request.command.value,
+					options.cameras ?? [],
+					requests.mediaSubscriptions
+				)
 			});
 		}
 		if (request.command.case === 'unsubscribe') {

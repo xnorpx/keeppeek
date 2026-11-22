@@ -747,6 +747,50 @@ advertised `available_bitrate_bps` as its current delivery budget when making th
 viewer can retrieve the server's complete transport metrics through `GET /metrics` when it needs
 diagnostic detail.
 
+### Live quality diagnostics
+
+`SubscriptionResult.live_quality` and `SubscriptionStreamState.live_quality` optionally carry
+`LiveQualityDiagnostics` for a native live video subscription. Existing clients can ignore this
+message. An absent message means diagnostics are unavailable, including when an older server
+does not implement them. It does not mean the connection has zero capacity.
+
+`session_bandwidth_bps` is the latest transport-wide bandwidth estimate for this WebRTC session.
+An absent value means no transport-wide estimate exists. An explicit zero is a known zero
+estimate. MID-scoped REMB feedback can cap its own track but cannot establish session capacity.
+The estimate persists for the owning connection: str0m can omit unchanged estimates, so event
+age alone does not prove that feedback expired. A new session starts without an estimate.
+
+`allocated_bitrate_bps` is the network budget assigned to this native RTP Auto subscription
+after fixed video and audio reservations. It is absent for manual or fixed-delivery subscriptions
+and for a camera with only one available variant.
+Its explicit zero means no capacity remains for this Auto track. Session estimates are not
+independent budgets that every camera can spend. Neither field measures received payload bitrate,
+decoder capacity, captured-frame alignment or capture-to-display latency.
+
+`active_variant_id` identifies the source currently admitted by the keyframe gate and is empty
+until a live keyframe is admitted. It does not prove that the client decoded or displayed a frame.
+`pending_variant_id` is empty unless a replacement is armed. The result's existing
+`selected_variant_id` can identify a requested target before its first keyframe becomes active;
+clients use diagnostic active/pending identity for runtime status. Clients must not infer Main
+or Sub from an unfamiliar variant ID.
+
+`selection_reason` reports manual selection, fixed delivery, missing bandwidth evidence,
+insufficient bandwidth, stable selection, upgrade/downgrade hold, waiting for a keyframe, a single
+available variant, or an unavailable alternative. Unknown enum values and `UNSPECIFIED` mean
+the selection reason is unavailable. A reason is diagnostic evidence, not a new controller input.
+Clients preserve the user's explicit quality choice and do not start a second adaptation loop.
+
+Automatic H.264 source changes require a known compatible profile in the cached candidate and
+the live keyframe that admits the handoff, including negotiated packetization mode. An unknown or
+incompatible candidate remains unavailable while the current source stays active. Ordinary
+startup and explicitly requested delivery retain the writer's existing unknown-profile behavior.
+
+Diagnostic state is scoped to the subscription and its owning connection. Clients discard it
+on unsubscribe, replacement, disconnect or source removal. Periodic diagnostic snapshots are
+coalesced to at most one per second per subscription; an actual keyframe source switch can
+add its existing immediate stream-state notification. All notifications use the existing
+bounded control queue. Reliable media-data delivery remains fixed and reports that limitation.
+
 Data channels have no protocol-level count limit. A `DataSubscriptionRequest` identifies the
 source with `source_session_id` and supplies one `DataPayloadRoute` for each
 wanted payload type. Each route maps one `payload_type` to either

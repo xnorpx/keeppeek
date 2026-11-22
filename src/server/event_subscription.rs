@@ -206,6 +206,7 @@ impl Registry {
             )),
             selected_variant_id: String::new(),
             selected_lineage: Vec::new(),
+            live_quality: None,
         })
     }
 

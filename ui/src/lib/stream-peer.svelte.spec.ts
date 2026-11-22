@@ -2,7 +2,10 @@ import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	CameraInfoSchema,
+	ConnectionUpdateSchema,
 	ControlEnvelopeSchema,
+	LiveQualityDiagnosticsSchema,
+	LiveQualitySelectionReason,
 	MediaStreamCapabilitySchema,
 	NotificationSchema,
 	OkSchema,
@@ -10,7 +13,11 @@ import {
 	RtpDeliverySchema,
 	ServerCapabilitiesSchema,
 	SourceSessionSchema,
-	SubscriptionResultSchema
+	SourceSessionRemovedSchema,
+	SubscriptionResultSchema,
+	SubscriptionStreamStateSchema,
+	type LiveQualityDiagnostics,
+	type Notification
 } from './proto/webrtc_pb';
 
 const api = vi.hoisted(() => ({
@@ -27,6 +34,8 @@ class FakeDataChannel {
 	static offlineCamera: string | null = null;
 	static rejectedSubscription: string | null = null;
 	static rejectUnsubscribe = false;
+	static subscriptionQuality: LiveQualityDiagnostics | undefined;
+	static selectedVariant: string | null = null;
 
 	readyState: RTCDataChannelState = 'connecting';
 	binaryType: BinaryType = 'blob';
@@ -65,7 +74,9 @@ class FakeDataChannel {
 									mid: command.value.subscriptionId.replace('camera-', '')
 								})
 							},
-							selectedVariantId: command.value.variantId || 'sub'
+							selectedVariantId:
+								FakeDataChannel.selectedVariant ?? (command.value.variantId || 'sub'),
+							liveQuality: FakeDataChannel.subscriptionQuality
 						})
 					}
 				: undefined;
@@ -192,11 +203,262 @@ afterEach(() => {
 	FakeDataChannel.offlineCamera = null;
 	FakeDataChannel.rejectedSubscription = null;
 	FakeDataChannel.rejectUnsubscribe = false;
+	FakeDataChannel.subscriptionQuality = undefined;
+	FakeDataChannel.selectedVariant = null;
 	FakePeerConnection.failRemoteDescription = false;
 	FakePeerConnection.latest = null;
 });
 
+function notification(event: Notification['event']): MessageEvent {
+	const envelope = create(ControlEnvelopeSchema, {
+		message: {
+			case: 'notification',
+			value: create(NotificationSchema, { event })
+		}
+	});
+	return new MessageEvent('message', { data: toBinary(ControlEnvelopeSchema, envelope).buffer });
+}
+
+function networkEstimate(bitsPerSecond: bigint): MessageEvent {
+	return notification({
+		case: 'connectionUpdate',
+		value: create(ConnectionUpdateSchema, { availableBitrateBps: bitsPerSecond })
+	});
+}
+
+function streamState(
+	subscriptionId: string,
+	activeVariantId: string,
+	liveQuality?: LiveQualityDiagnostics
+): MessageEvent {
+	return notification({
+		case: 'subscriptionStreamState',
+		value: create(SubscriptionStreamStateSchema, { subscriptionId, activeVariantId, liveQuality })
+	});
+}
+
 describe('LivePeer', () => {
+	it('uses actual active and pending diagnostics instead of treating the selected target as active', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'quality',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const quality = create(LiveQualityDiagnosticsSchema, {
+			sessionBandwidthBps: 8_000_000n,
+			allocatedBitrateBps: 0n,
+			activeVariantId: 'main',
+			pendingVariantId: 'sub',
+			selectionReason: LiveQualitySelectionReason.WAITING_KEYFRAME
+		});
+		FakeDataChannel.subscriptionQuality = quality;
+		const peer = new LivePeer();
+		await peer.configure([{ cameraId: 'front-door', quality: 'auto' }]);
+		expect(peer.track('front-door')).toMatchObject({
+			activeStream: 'main',
+			pendingStream: 'sub',
+			requestedQuality: 'auto',
+			liveQuality: quality
+		});
+		expect(peer.estimatedBitrateBps).toBe(8_000_000);
+		await peer.close();
+	});
+
+	it('scopes rich updates to admitted video subscriptions and retires diagnostics on unsubscribe', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'quality',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		await peer.configure([{ cameraId: 'front-door', quality: 'auto' }]);
+		const channel = FakePeerConnection.latest!.channels[0];
+		const quality = create(LiveQualityDiagnosticsSchema, {
+			sessionBandwidthBps: 4_000_000n,
+			allocatedBitrateBps: 900_000n,
+			activeVariantId: 'sub',
+			pendingVariantId: 'main',
+			selectionReason: LiveQualitySelectionReason.UPGRADE_HOLD
+		});
+		const original = peer.track('front-door');
+		channel.onmessage?.(streamState('audio-0', 'main', quality));
+		expect(peer.track('front-door')).toBe(original);
+		channel.onmessage?.(streamState('camera-0', 'main', quality));
+		expect(peer.track('front-door')).toMatchObject({
+			activeStream: 'sub',
+			pendingStream: 'main',
+			liveQuality: quality
+		});
+		channel.onmessage?.(
+			streamState(
+				'camera-0',
+				'main',
+				create(LiveQualityDiagnosticsSchema, {
+					...quality,
+					activeVariantId: 'main',
+					pendingVariantId: '',
+					selectionReason: LiveQualitySelectionReason.STABLE
+				})
+			)
+		);
+		expect(peer.track('front-door')).toMatchObject({ activeStream: 'main', pendingStream: null });
+		await peer.configure([{ cameraId: 'front-door', quality: 'auto', active: false }]);
+		expect(peer.track('front-door')?.liveQuality).toBeUndefined();
+		const retired = peer.track('front-door');
+		channel.onmessage?.(streamState('camera-0', 'sub', quality));
+		expect(peer.track('front-door')).toBe(retired);
+		await peer.close();
+	});
+
+	it('preserves a known stream on unfamiliar variants and clears stale evidence for legacy and removed sources', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'quality',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		await peer.configure([{ cameraId: 'front-door', quality: 'high', variantId: 'main' }]);
+		const channel = FakePeerConnection.latest!.channels[0];
+		channel.onmessage?.(streamState('camera-0', 'main'));
+		const future = create(LiveQualityDiagnosticsSchema, {
+			activeVariantId: 'future-variant',
+			pendingVariantId: '',
+			selectionReason: 999 as LiveQualitySelectionReason
+		});
+		channel.onmessage?.(streamState('camera-0', 'future-variant', future));
+		expect(peer.track('front-door')).toMatchObject({
+			activeStream: 'main',
+			pendingStream: null,
+			liveQuality: future
+		});
+		channel.onmessage?.(streamState('camera-0', 'main'));
+		expect(peer.track('front-door')?.liveQuality).toBeUndefined();
+		channel.onmessage?.(
+			streamState(
+				'camera-0',
+				'main',
+				create(LiveQualityDiagnosticsSchema, { activeVariantId: 'main' })
+			)
+		);
+		channel.onmessage?.(
+			notification({
+				case: 'sourceSessionRemoved',
+				value: create(SourceSessionRemovedSchema, { sourceSessionId: 'camera:front-door' })
+			})
+		);
+		expect(peer.track('front-door')?.liveQuality).toBeUndefined();
+		await peer.close();
+	});
+
+	it('rejects an unfamiliar initially selected variant instead of guessing Sub', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'quality',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		FakeDataChannel.selectedVariant = 'future-variant';
+		const peer = new LivePeer();
+		await expect(peer.configure([{ cameraId: 'front-door', quality: 'auto' }])).rejects.toThrow(
+			'unsupported live variant'
+		);
+		expect(peer.tracks).toEqual({});
+		expect(api.deleteSession).toHaveBeenCalledWith('quality', null, undefined);
+	});
+
+	it('keeps network estimates session-wide and preserves zero without unsafe conversion', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'network',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		await peer.configure([
+			{ cameraId: 'front-door', quality: 'auto' },
+			{ cameraId: 'garage', quality: 'high', variantId: 'main' }
+		]);
+		const channel = FakePeerConnection.latest!.channels[0];
+		const manualTrack = peer.track('garage');
+		expect(peer.estimatedBitrateBps).toBeNull();
+		for (const [reported, expected] of [
+			[8_000_000n, 8_000_000],
+			[0n, 0],
+			[BigInt(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER],
+			[BigInt(Number.MAX_SAFE_INTEGER) + 1n, null],
+			[18_446_744_073_709_551_615n, null]
+		] as const) {
+			channel.onmessage?.(networkEstimate(reported));
+			expect(peer.estimatedBitrateBps).toBe(expected);
+		}
+		expect(peer.track('front-door')?.estimatedBitrateBps).toBeNull();
+		expect(peer.track('garage')).toMatchObject({
+			requestedQuality: 'high',
+			requestedVariantId: 'main',
+			pendingStream: 'main'
+		});
+		expect(peer.track('garage')).toBe(manualTrack);
+		expect(channel.commands).toEqual(['subscribeMedia', 'subscribeMedia']);
+		await peer.close();
+		expect(peer.estimatedBitrateBps).toBeNull();
+	});
+
+	it('resets network estimates on replacement and ignores messages from abandoned peers', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'network',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		await peer.configure([{ cameraId: 'front-door', quality: 'auto' }]);
+		const abandoned = FakePeerConnection.latest!.channels[0].onmessage!;
+		abandoned(networkEstimate(8_000_000n));
+		expect(peer.estimatedBitrateBps).toBe(8_000_000);
+		await peer.configure([{ cameraId: 'garage', quality: 'high' }]);
+		expect(peer.estimatedBitrateBps).toBeNull();
+		abandoned(networkEstimate(9_000_000n));
+		expect(peer.estimatedBitrateBps).toBeNull();
+		const current = FakePeerConnection.latest!.channels[0].onmessage!;
+		current(networkEstimate(3_000_000n));
+		expect(peer.estimatedBitrateBps).toBe(3_000_000);
+		peer.closeOnPageHide();
+		expect(peer.estimatedBitrateBps).toBeNull();
+		current(networkEstimate(4_000_000n));
+		expect(peer.estimatedBitrateBps).toBeNull();
+	});
+
+	it.each(['connection', 'ice'] as const)(
+		'clears the session estimate immediately on %s disconnect before asynchronous teardown',
+		async (kind) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			api.createSession.mockResolvedValue({
+				session_id: 'network',
+				answer: { type: 'answer', sdp: 'v=0' }
+			});
+			api.deleteSession.mockResolvedValue(undefined);
+			const peer = new LivePeer();
+			await peer.configure([{ cameraId: 'front-door', quality: 'auto' }]);
+			const connection = FakePeerConnection.latest!;
+			connection.channels[0].onmessage?.(networkEstimate(8_000_000n));
+			expect(peer.estimatedBitrateBps).toBe(8_000_000);
+			if (kind === 'connection') {
+				connection.connectionState = 'disconnected';
+				connection.onconnectionstatechange?.();
+			} else {
+				connection.iceConnectionState = 'disconnected';
+				connection.oniceconnectionstatechange?.();
+			}
+			expect(peer.estimatedBitrateBps).toBeNull();
+			connection.channels[0].onmessage?.(networkEstimate(9_000_000n));
+			expect(peer.estimatedBitrateBps).toBeNull();
+			await peer.close();
+		}
+	);
+
 	it('leaves no channel-opening timer when signaling rejects revoked access', async () => {
 		vi.useFakeTimers();
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);

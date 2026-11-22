@@ -335,6 +335,9 @@ mod backup_proto_json_tests {
 }
 
 #[cfg(test)]
+mod live_quality_tests;
+
+#[cfg(test)]
 mod tests {
     use super::proto;
     use prost::Message as _;

@@ -1,0 +1,64 @@
+{
+	"status": "proposal",
+	"issue": 131,
+	"source": {
+		"fileId": "01M0B0VBH78TMTX40GCYYQ37SG",
+		"pageId": "1-0",
+		"url": "https://app.paper.design/file/01M0B0VBH78TMTX40GCYYQ37SG/1-0",
+		"tokenRevision": "b35ec365"
+	},
+	"preserved": {
+		"priorArtboards": 96,
+		"unchangedMetadata": true,
+		"tokenRevisionUnchanged": true
+	},
+	"qualification": "Paper exports are design proposals. They do not establish runtime conformance, decoder capacity, capture-to-display latency or performance.",
+	"boards": [
+		{
+			"number": 61,
+			"nodeId": "DDM-0",
+			"states": ["desktop-auto-stable", "390-pending-sub", "320-unknown-estimate"],
+			"exportedAt": "2026-10-18T14:29:17.490Z",
+			"width": 2300,
+			"height": 1100,
+			"imageWidth": 4600,
+			"imageHeight": 2200,
+			"exportScale": "2x (Paper default)",
+			"artifacts": [
+				{
+					"path": "references/61-network-estimate-and-camera-budget@2x.png",
+					"bytes": 564514,
+					"sha256": "7901cba2b01b479e1e19201760d2ac49a76283db85e624c28e13ae2adf5b02de"
+				},
+				{
+					"path": "boards/61-network-estimate-and-camera-budget.jsx.txt",
+					"bytes": 50453,
+					"sha256": "4e6b9d0118ede4c43b77fddfed65d01002af32ffe21f61413215fbeb25d5a76c"
+				}
+			]
+		},
+		{
+			"number": 62,
+			"nodeId": "DDS-0",
+			"states": ["desktop-recovery-hold", "390-manual-high", "320-telemetry-unavailable"],
+			"exportedAt": "2026-10-18T14:29:17.718Z",
+			"width": 2300,
+			"height": 1100,
+			"imageWidth": 4600,
+			"imageHeight": 2200,
+			"exportScale": "2x (Paper default)",
+			"artifacts": [
+				{
+					"path": "references/62-recovery-manual-and-unavailable@2x.png",
+					"bytes": 519648,
+					"sha256": "edfd306d15e3144dc4942a164c0a4dea63a0f15d4d4915d2aa848c9031243cfe"
+				},
+				{
+					"path": "boards/62-recovery-manual-and-unavailable.jsx.txt",
+					"bytes": 50283,
+					"sha256": "a6fd1804f47237f429c03915fbfab9ddce8c02f29e42f816401ecb9123774edd"
+				}
+			]
+		}
+	]
+}

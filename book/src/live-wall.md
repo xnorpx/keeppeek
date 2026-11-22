@@ -151,6 +151,46 @@ Both modes suspend media subscriptions when the document becomes hidden. Wake lo
 override suspension. Returning to the visible wall resumes admission within the same budget.
 None of these actions stops camera ingest, recording, detection, or retention on the server.
 
+## Live video quality
+
+The focused Viewer's **Auto** quality uses native RTP bandwidth feedback to choose between
+compatible Main and Sub streams. It begins with Sub when available. A shared WebRTC connection
+has one network estimate for all of its tracks: KeepPeek reserves audio and explicitly selected
+video demand, then divides the remaining estimate among Auto video subscriptions. Adding another
+camera can therefore reduce the budget available to each Auto camera.
+
+Auto waits for sustained headroom before upgrading and sustained pressure before downgrading.
+The existing picture remains active until the replacement stream supplies a compatible keyframe.
+Changing quality does not start a second peer connection or change camera recording settings.
+**High** and **Low** keep the requested quality when it is compatible and available; Auto does not
+override a manual choice. The panel reports an unavailable alternative rather than treating it as
+a completed handover. A manual choice can still exceed the available network capacity.
+
+The bandwidth estimate describes the shared connection, not a camera's received bitrate or
+capture-to-display latency. An unavailable estimate is unknown. Reliable data delivery uses a
+fixed variant and does not use native RTP Auto adaptation. Browser decoder limits and the wall's
+stream admission budget remain separate from network quality selection.
+
+Open the live video's information panel to compare **Session network estimate**, **Camera
+budget** and **Receive bitrate**. The first describes the connection, the second describes an
+adaptive Auto camera's allocation, and the third describes media arriving in this browser.
+Manual and fixed selections do not receive an adaptive budget. A zero allocation is different
+from an unknown estimate or unavailable diagnostics on an older server.
+
+**Requested quality**, **Active stream**, **Pending stream** and **Auto status** distinguish
+the user's choice from the server's runtime selection. A pending change waits for a keyframe;
+the active source remains unchanged until that gate admits the replacement. An active source
+does not prove that this browser has decoded or displayed a new frame. The panel also identifies
+holds, missing network evidence, a single variant and unavailable alternatives. Reconnecting or
+removing a subscription clears its previous diagnostic values.
+
+Auto keeps the current picture if an alternative lacks the codec configuration needed to verify
+compatibility. That alternative is reported as unavailable. It does not replace a working stream
+with an unverified H.264 profile.
+
+Recorded playback does not use this live controller. A recording with a matching time range is
+not necessarily an aligned alternative view of the same captured frames.
+
 ## Frame freshness and health
 
 A camera's server-reported health and a browser tile's live admission are separate facts. A
