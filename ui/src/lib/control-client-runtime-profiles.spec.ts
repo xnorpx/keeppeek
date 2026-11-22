@@ -648,17 +648,35 @@ describe('runtime profile observations', () => {
 		await right.close();
 		expect(close).toHaveBeenCalledTimes(8);
 	});
-	it('releases all admitted watches when a competing feature holds the remaining slots', async () => {
+	it('withholds snapshots until every part watch opens and closes admitted watches on rejection', async () => {
 		const close = vi.fn(async () => {});
-		const watch = vi.fn(async (_namespace: string, options: { keyPrefix: string }) => {
-			if (options.keyPrefix === 'observed/7') throw new Error('State store watch limit reached.');
-			return { close };
-		});
+		const last = Promise.withResolvers<void>();
+		const snapshots = Promise.withResolvers<void>();
+		const watch = vi.fn(
+			async (
+				_namespace: string,
+				options: { keyPrefix: string; listener: (entries: StateEntry[]) => void }
+			) => {
+				const index = Number(options.keyPrefix.split('/')[1]);
+				options.listener([observedPart(index)]);
+				if (index === 7) {
+					snapshots.resolve();
+					await last.promise;
+				}
+				return { close };
+			}
+		);
 		const client = new RuntimeProfilesControlClient({
 			get: async () => activeHeader(),
 			watch
 		} as unknown as ControlClientStateStore);
-		await expect(client.watchStatus(vi.fn())).rejects.toThrow('watch limit');
+		const render = vi.fn();
+		const opening = client.watchStatus(render);
+		await snapshots.promise;
+		expect(render.mock.calls.every(([value]) => value === null)).toBe(true);
+		last.reject(new Error('State store watch limit reached.'));
+		await expect(opening).rejects.toThrow('watch limit');
+		expect(render.mock.calls.every(([value]) => value === null)).toBe(true);
 		expect(close).toHaveBeenCalledTimes(7);
 		await expect(client.watchStatus(vi.fn())).rejects.toThrow('watch limit');
 		expect(close).toHaveBeenCalledTimes(14);
