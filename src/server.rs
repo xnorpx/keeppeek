@@ -8899,7 +8899,7 @@ impl ServerState {
                         .as_ref()
                         .is_some_and(|schedule| !schedule.keep_camera_connected)
                     && let Some(runtime) = &self.camera_runtime
-                    && let Err(error) = runtime.stop_camera(camera_ip)
+                    && let Err(error) = self.update_scheduled_camera(&camera.info.id, true, runtime)
                 {
                     tracing::warn!(%camera_ip, %error, "privacy could not stop camera ingress");
                     record_access_audit(
@@ -8931,8 +8931,7 @@ impl ServerState {
                     .as_ref()
                     .is_some_and(|schedule| !schedule.keep_camera_connected)
                 && let Some(runtime) = &self.camera_runtime
-                && let Some(runtime_camera) = &camera.runtime_camera
-                && let Err(error) = runtime.start_camera(runtime_camera.clone())
+                && let Err(error) = self.update_scheduled_camera(&camera.info.id, false, runtime)
             {
                 tracing::warn!(%camera_ip, %error, "privacy could not restart camera ingress");
                 record_access_audit(
@@ -8947,6 +8946,29 @@ impl ServerState {
                 );
             }
         }
+    }
+
+    fn update_scheduled_camera(
+        &self,
+        id: &str,
+        stop: bool,
+        runtime: &KeepPeekControl,
+    ) -> anyhow::Result<()> {
+        let _update = self
+            .config_update
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The schedule snapshot may predate a removal, credential edit, or renewed deny.
+        if self.privacy.decision(id, chrono::Utc::now())?.0 == stop
+            && let Some(entry) = self.camera(id)
+        {
+            if stop {
+                runtime.stop_camera(entry.configuration.ip)?;
+            } else if let Some(camera) = entry.runtime_camera {
+                runtime.start_camera(camera)?;
+            }
+        }
+        Ok(())
     }
 
     fn camera(&self, id: &str) -> Option<CameraEntry> {
@@ -12914,6 +12936,10 @@ fn start_runtime_camera(
         tracing::error!(ip = %camera.config.ip, %error, "camera cannot start with an unavailable volume group registry");
         return None;
     }
+    let mut entry = camera_entry(&camera.config, Some(&camera));
+    entry.groups = groups;
+    // A queued start may outlive this request. Future schedule transitions need the saved endpoints.
+    state.activate_camera_entry(entry);
     let runtime_result = if restart {
         runtime.restart_camera(camera.clone())
     } else {
@@ -12923,20 +12949,35 @@ fn start_runtime_camera(
         tracing::warn!(ip = %config.ip, %error, "camera configuration could not be applied live");
         return None;
     }
-    if let Err(error) = state.privacy.replace_profile_overrides(profile_privacy) {
+    if let Err(error) = profile_privacy.apply(state, None) {
         tracing::warn!(ip = %config.ip, %error, "camera profile privacy could not finish its transition");
         return None;
     }
-    let mut entry = camera_entry(&camera.config, Some(&camera));
-    entry.groups = groups;
-    state.activate_camera_entry(entry);
     Some(camera.config)
+}
+
+struct RuntimeCameraProfileRefresh {
+    registry: crate::profiles::ProfileRegistry,
+    ids: crate::keeppeek::CameraProfileIds,
+    applications: Vec<crate::profiles::CameraRuntimeApplication>,
+}
+
+impl RuntimeCameraProfileRefresh {
+    fn apply(&self, state: &ServerState, stopped: Option<IpAddr>) -> anyhow::Result<()> {
+        state_store::profiles::apply_confirmed_privacy(
+            state,
+            &self.registry,
+            &self.ids,
+            &self.applications,
+            stopped,
+        )
+    }
 }
 
 fn refresh_runtime_profile_camera_ids(
     state: &ServerState,
     config_path: &Path,
-) -> anyhow::Result<BTreeMap<String, bool>> {
+) -> anyhow::Result<RuntimeCameraProfileRefresh> {
     let configuration = config::load_config(config_path)?;
     sharing::update_sources(state, &configuration)?;
     let identities = configuration.camera_profile_identities()?;
@@ -12960,12 +13001,11 @@ fn refresh_runtime_profile_camera_ids(
     } else {
         Vec::new()
     };
-    state_store::profiles::confirmed_privacy(
-        state,
-        &configuration.runtime_profiles,
-        &profile_camera_ids,
-        &applications,
-    )
+    Ok(RuntimeCameraProfileRefresh {
+        registry: configuration.runtime_profiles,
+        ids: profile_camera_ids,
+        applications,
+    })
 }
 
 fn runtime_camera_groups(config_path: &Path, camera_ip: IpAddr) -> Option<Vec<String>> {
@@ -13019,24 +13059,27 @@ fn delete_camera_settings(
     let current_revision = camera_configuration_revision(state)?;
     if !expected_configuration_revision.is_empty()
         && expected_configuration_revision != current_revision
+        && configured_camera_present(config_path, ip)?
     {
         return Err(configuration::revision_conflict(
             &current_revision,
             "camera configuration changed before removal; reload current values before retrying",
         ));
     }
-    match config::remove_camera(config_path, ip) {
-        Ok(()) => {
-            sharing::refresh_sources(state, config_path)?;
-            reconcile_removed_camera(state, config_path, ip)?;
-            camera_configuration_revision(state)
-        }
-        Err(error) => Err(ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            format!("unable to remove camera configuration: {error}"),
-        )),
-    }
+    reconcile_removed_camera(state, config_path, ip)?;
+    camera_configuration_revision(state)
+}
+
+fn configured_camera_present(config_path: &Path, ip: IpAddr) -> Result<bool, ControlCommandError> {
+    config::load_cameras(config_path)
+        .map(|groups| groups.values().flatten().any(|camera| camera.ip == ip))
+        .map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                "unable to read camera configuration",
+            )
+        })
 }
 
 fn reconcile_removed_camera(
@@ -13049,28 +13092,36 @@ fn reconcile_removed_camera(
             ControlCommandError::new(
                 proto::ErrorCode::Unavailable,
                 503,
-                "camera configuration was removed but its runtime stop could not be confirmed",
+                "camera stop could not be confirmed; retry removal after its workers retire",
             )
         })?;
     }
-    let mut profile_privacy =
-        refresh_runtime_profile_camera_ids(state, config_path).map_err(|_| {
+    // Keep the camera and existing privacy holds retryable until stop is confirmed.
+    if configured_camera_present(config_path, ip)? {
+        config::remove_camera(config_path, ip).map_err(|error| {
             ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                "camera was removed but profile identity reconciliation could not be confirmed",
+                proto::ErrorCode::Internal,
+                500,
+                format!("unable to remove camera configuration: {error}"),
             )
         })?;
-    // The removed source has completed its stop; other cameras retain unconfirmed denies.
-    profile_privacy.remove(&ip.to_string());
-    state
-        .privacy
-        .replace_profile_overrides(profile_privacy)
+    }
+    if let Some(entry) = state
+        .cameras
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter_mut()
+        .find(|entry| entry.configuration.ip == ip)
+    {
+        entry.runtime_camera = None;
+    }
+    refresh_runtime_profile_camera_ids(state, config_path)
+        .and_then(|refresh| refresh.apply(state, Some(ip)))
         .map_err(|_| {
             ControlCommandError::new(
                 proto::ErrorCode::Unavailable,
                 503,
-                "camera was removed but profile privacy reconciliation could not be confirmed",
+                "camera was removed but profile reconciliation could not be confirmed; retry removal",
             )
         })?;
     state.update_volume_groups(ip, None).map_err(|_| {
@@ -20428,8 +20479,8 @@ mod tests {
     #[test]
     fn export_range_is_limited_to_two_minutes_and_named_for_the_camera() {
         assert_eq!(
-            export_file_name(" Front / Dør ", 0, 120_000),
-            "Front-Dør_1970-01-01T00-00-00-000Z_to_1970-01-01T00-02-00-000Z.mp4"
+            export_file_name(" Front / DÃƒÂ¸r ", 0, 120_000),
+            "Front-DÃƒÂ¸r_1970-01-01T00-00-00-000Z_to_1970-01-01T00-02-00-000Z.mp4"
         );
         assert_eq!(
             export_file_name("///", 0, 1),

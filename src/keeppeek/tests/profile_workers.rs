@@ -65,7 +65,7 @@ fn profile_stop_gives_healthy_workers_the_shared_grace_period() {
 }
 
 #[test]
-fn profile_reapply_uses_saved_definition_after_restart_and_start_failures() {
+fn retiring_worker_resumes_the_latest_saved_definition_without_reapply() {
     let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
     let mut camera = runtime_rtsp_camera((Ipv4Addr::LOCALHOST, 0).into());
     let ip = camera.config.ip;
@@ -95,7 +95,7 @@ fn profile_reapply_uses_saved_definition_after_restart_and_start_failures() {
         revision: 1,
         ..Default::default()
     };
-    let blocked = recorder.apply_runtime_profiles(profile.clone()).unwrap();
+    let blocked = recorder.apply_runtime_profiles(profile).unwrap();
     assert_eq!(blocked[0].state, RuntimeApplicationState::Degraded);
     assert!(recorder.camera_workers.is_empty());
     assert!(recorder.retiring_workers.contains_key(&ip));
@@ -103,8 +103,12 @@ fn profile_reapply_uses_saved_definition_after_restart_and_start_failures() {
     recorder
         .finish_camera_stop(ip, Instant::now() + CAMERA_STOP_BUDGET)
         .unwrap();
-    let recovered = recorder.apply_runtime_profiles(profile).unwrap();
-    assert_eq!(recovered[0].state, RuntimeApplicationState::Applied);
+    recorder.retry_ready_camera_start();
+    assert!(recorder.deferred_camera_starts.is_empty());
+    assert_eq!(
+        recorder.runtime_profile_status.read().unwrap().cameras[&ip.to_string()].state,
+        RuntimeApplicationState::Applied
+    );
     let _connection = accept_rtsp_connection(&listener);
     let running = recorder.camera_workers[&ip].configuration.as_ref().unwrap();
     assert_eq!(running.username, "rotated");
@@ -113,7 +117,7 @@ fn profile_reapply_uses_saved_definition_after_restart_and_start_failures() {
 }
 
 #[test]
-fn profile_reapply_recovers_a_timed_out_event_edit_without_replacing_media() {
+fn retiring_event_worker_resumes_the_saved_event_edit_without_replacing_media() {
     let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
     let mut camera = runtime_rtsp_camera((Ipv4Addr::LOCALHOST, 0).into());
     let ip = camera.config.ip;
@@ -137,7 +141,7 @@ fn profile_reapply_recovers_a_timed_out_event_edit_without_replacing_media() {
         revision: 1,
         ..Default::default()
     };
-    let blocked = recorder.apply_runtime_profiles(profile.clone()).unwrap();
+    let blocked = recorder.apply_runtime_profiles(profile).unwrap();
     assert_eq!(blocked[0].state, RuntimeApplicationState::Degraded);
     release.send(()).unwrap();
     let deadline = Instant::now() + CAMERA_STOP_BUDGET;
@@ -145,8 +149,12 @@ fn profile_reapply_recovers_a_timed_out_event_edit_without_replacing_media() {
         assert!(Instant::now() < deadline);
         std::thread::yield_now();
     }
-    let recovered = recorder.apply_runtime_profiles(profile).unwrap();
-    assert_eq!(recovered[0].state, RuntimeApplicationState::Applied);
+    recorder.retry_ready_camera_start();
+    assert!(recorder.deferred_camera_starts.is_empty());
+    assert_eq!(
+        recorder.runtime_profile_status.read().unwrap().cameras[&ip.to_string()].state,
+        RuntimeApplicationState::Applied
+    );
     let workers = &recorder.camera_workers[&ip];
     assert!(
         workers
@@ -158,4 +166,33 @@ fn profile_reapply_recovers_a_timed_out_event_edit_without_replacing_media() {
     assert!(!media.is_cancelled());
     assert!(!workers.event_shutdown.is_cancelled());
     recorder.stop_camera(ip).unwrap();
+}
+
+#[test]
+fn a_new_stop_cancels_a_deferred_start_before_its_worker_retires() {
+    let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+    let camera = runtime_rtsp_camera((Ipv4Addr::LOCALHOST, 0).into());
+    let ip = camera.config.ip;
+    let (release, blocked) = mpsc::channel();
+    let mut workers = CameraWorkers::new();
+    workers.handles.push(std::thread::spawn(move || {
+        let _ = blocked.recv();
+    }));
+    recorder.retiring_workers.insert(ip, workers);
+    assert!(recorder.add_camera(&camera, true, true).is_err());
+    let (reply, response) = mpsc::sync_channel(1);
+    recorder
+        .command_tx
+        .send(KeepPeekCommand::Stop { ip, reply })
+        .unwrap();
+    recorder.handle_commands();
+    assert!(response.recv().unwrap().is_err());
+    release.send(()).unwrap();
+    recorder
+        .finish_camera_stop(ip, Instant::now() + CAMERA_STOP_BUDGET)
+        .unwrap();
+    recorder.retry_ready_camera_start();
+    assert!(recorder.deferred_camera_starts.is_empty());
+    assert!(!recorder.camera_definitions.contains_key(&ip));
+    assert!(!recorder.camera_workers.contains_key(&ip));
 }
