@@ -183,8 +183,11 @@ impl Debug for Timestamp {
 
 #[cfg(test)]
 mod timestamp_tests {
-    use super::Timestamp;
-    use std::{num::NonZeroU32, time::Duration};
+    use super::{Timestamp, WallTime};
+    use std::{
+        num::NonZeroU32,
+        time::{Duration, SystemTime},
+    };
 
     #[test]
     fn elapsed_duration_uses_the_rtp_clock_rate() {
@@ -197,6 +200,18 @@ mod timestamp_tests {
             Some(Duration::new(1, 33_333_333))
         );
         assert_eq!(before_start.elapsed_duration(), None);
+    }
+
+    #[test]
+    fn wall_time_round_trips_the_platform_clock_across_the_epoch() {
+        let epoch = SystemTime::UNIX_EPOCH;
+        let delta = Duration::new(1, 123_456_700);
+        for time in [epoch - delta, epoch, epoch + delta] {
+            assert_eq!(
+                SystemTime::from(WallTime::from_system_time(time).unwrap()),
+                time
+            );
+        }
     }
 }
 
@@ -269,7 +284,7 @@ impl Display for WallTime {
 impl From<WallTime> for SystemTime {
     #[inline]
     fn from(wall_time: WallTime) -> Self {
-        wall_time.0.into()
+        Self::try_from(wall_time.0).expect("WallTime originates from a platform SystemTime")
     }
 }
 

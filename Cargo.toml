@@ -26,7 +26,7 @@ members = [
 
 [workspace.dependencies]
 oauth2 = { version = "=5.0.0", default-features = false }
-jsonwebtoken = { version = "=11.1.0", default-features = false, features = [
+jsonwebtoken = { version = "=12.0.0", default-features = false, features = [
   "aws_lc_rs",
 ] }
 cap-fs-ext = { version = "=4.0.3", default-features = false, features = [
