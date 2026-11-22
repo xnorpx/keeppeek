@@ -2255,17 +2255,18 @@ mod tests {
     }
 
     fn active_privacy_schedule(id: &str) -> std::sync::Arc<crate::privacy::PrivacyRegistry> {
-        let now = chrono::Utc::now();
+        let windows = [("00:00", "12:00"), ("12:00", "00:00")].map(|(start, end)| {
+            crate::privacy::PrivacyWindow {
+                weekdays: (1..=7).collect(),
+                start: start.into(),
+                end: end.into(),
+            }
+        });
         let schedule = crate::privacy::PrivacySchedule {
             enabled: true,
             timezone: "UTC".into(),
-            windows: Vec::new(),
-            temporary_override: Some(crate::privacy::PrivacyOverride {
-                actor: "operator".into(),
-                reason: "scheduled privacy test".into(),
-                accepted_at: (now - chrono::Duration::minutes(1)).to_rfc3339(),
-                expires_at: (now + chrono::Duration::minutes(10)).to_rfc3339(),
-            }),
+            windows: windows.into(),
+            temporary_override: None,
             keep_camera_connected: false,
         };
         std::sync::Arc::new(
@@ -2289,6 +2290,7 @@ mod tests {
         assert_eq!(status.read().unwrap().cameras[&id].state, Pending);
         recorder.add_camera(&camera, true, false).unwrap();
         let privacy = active_privacy_schedule(&id);
+        assert!(privacy.decision(&id, chrono::Utc::now()).unwrap().0);
         recorder.set_privacy_registry(privacy.clone());
         let (reply, paused) = mpsc::sync_channel(1);
         recorder
