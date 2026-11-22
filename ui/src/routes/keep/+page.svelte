@@ -2807,7 +2807,7 @@
 							scrubbing ||
 							(frames.displayedNs === undefined && !frames.selection)}
 						frameTimeNs={frames.selection?.presentationTimeNs}
-						frameNotice={frames.notice || (frames.busy ? 'Loading recorded picture�' : '')}
+						frameNotice={frames.notice || (frames.busy ? 'Loading recorded picture…' : '')}
 						onoptions={mobilePortrait ? () => openMobilePanel('playback') : undefined}
 						{playing}
 						muted={playbackMuted}
