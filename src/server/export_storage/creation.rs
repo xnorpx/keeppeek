@@ -333,6 +333,8 @@ fn duplicate(
             record.requester_id == requester
                 && record.job.status == proto::ExportJobStatus::Running as i32
                 && recorded_audio::same_snapshot(record.job.recorded_audio.as_ref(), timing)
+                && record.request.guest_range_preparation.unwrap_or(false)
+                    == request.guest_range_preparation.unwrap_or(false)
                 && record.recording_stream_id.as_deref() == captured_stream
                 && partial.map_or_else(
                     || export_requests_match_output(&record.request, request),

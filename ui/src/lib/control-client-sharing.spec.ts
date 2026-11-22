@@ -35,6 +35,26 @@ function input() {
 afterEach(() => vi.restoreAllMocks());
 
 describe('sharing control client', () => {
+	it('allows the recorder verification deadline for guarded preview and creation', async () => {
+		vi.spyOn(Date, 'now').mockReturnValue(sharingFixtureNow);
+		const send = vi
+			.fn()
+			.mockResolvedValueOnce(
+				result({ result: { case: 'evidence', value: shareEvidenceFixture() } })
+			)
+			.mockResolvedValueOnce(result({ result: { case: 'created', value: shareIssuedFixture() } }));
+		const client = new SharingControlClient(send);
+		const evidence = shareEvidenceFixture();
+		const recordingRange = {
+			sourceId: evidence.sourceId,
+			startMs: evidence.startMs,
+			endMs: evidence.endMs
+		};
+		await client.previewExport(evidence.exportJobId, recordingRange);
+		await client.create({ ...input(), recordingRange }, sharingFixtureOrigin);
+		expect(send.mock.calls.map(([, timeout]) => timeout)).toEqual([30_000, 30_000]);
+	});
+
 	it('sends policy and immutable ready-export preview actions through the sharing contract', async () => {
 		const replies = [
 			result({ result: { case: 'policy', value: sharePolicyFixture() } }),

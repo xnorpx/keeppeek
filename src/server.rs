@@ -20168,6 +20168,7 @@ mod tests {
                             end_time: Some(millis_timestamp(end_ms)),
                             allow_partial: false,
                             burn_in_timestamp: false,
+                            guest_range_preparation: None,
                             event_seed: Some(proto::EventExportSeed {
                                 event_id: "export-event".to_owned(),
                                 bookmark_revision: None,
@@ -20374,6 +20375,7 @@ mod tests {
                 end_time: Some(millis_timestamp(end_ms + 2_000)),
                 allow_partial: false,
                 burn_in_timestamp: false,
+                guest_range_preparation: None,
                 event_seed: None,
             },
         )
@@ -20392,6 +20394,7 @@ mod tests {
                 end_time: Some(millis_timestamp(end_ms)),
                 allow_partial: false,
                 burn_in_timestamp: true,
+                guest_range_preparation: None,
                 event_seed: None,
             },
         )
@@ -20439,6 +20442,7 @@ mod tests {
                 end_time: Some(millis_timestamp(120_000)),
                 allow_partial: false,
                 burn_in_timestamp: false,
+                guest_range_preparation: None,
                 event_seed: None,
             },
         )
@@ -20456,6 +20460,7 @@ mod tests {
                 end_time: Some(millis_timestamp(120_001)),
                 allow_partial: false,
                 burn_in_timestamp: false,
+                guest_range_preparation: None,
                 event_seed: None,
             },
         )
@@ -20515,6 +20520,7 @@ mod tests {
             end_time: Some(millis_timestamp(2_000)),
             allow_partial: false,
             burn_in_timestamp: false,
+            guest_range_preparation: None,
             event_seed: None,
         };
         let active = active_export_fixture(&state, &request);
@@ -20528,6 +20534,17 @@ mod tests {
         duplicate.job_id = "new-client-id".to_owned();
         let reused = create_export_job(&state, "owner", duplicate.clone()).unwrap();
         assert_eq!(reused.job_id, "active-export");
+
+        duplicate.guest_range_preparation = Some(true);
+        let bounded = create_export_job(&state, "owner", duplicate.clone()).unwrap_err();
+        assert_eq!(bounded.code, proto::ErrorCode::Unavailable);
+        duplicate.guest_range_preparation = Some(false);
+        assert_eq!(
+            create_export_job(&state, "owner", duplicate.clone())
+                .unwrap()
+                .job_id,
+            "active-export"
+        );
 
         duplicate.allow_partial = true;
         let different_options = create_export_job(&state, "owner", duplicate.clone()).unwrap_err();
@@ -20601,6 +20618,7 @@ mod tests {
             end_time: Some(millis_timestamp(2_000)),
             allow_partial: false,
             burn_in_timestamp: false,
+            guest_range_preparation: None,
             event_seed: None,
         };
         let now_ms = i64::try_from(unix_time_ms()).unwrap();
@@ -20673,6 +20691,7 @@ mod tests {
                 end_time: Some(millis_timestamp(2_000)),
                 allow_partial: false,
                 burn_in_timestamp: false,
+                guest_range_preparation: None,
                 event_seed: None,
             };
             let cancel = Arc::new(AtomicBool::new(false));
@@ -20913,6 +20932,7 @@ mod tests {
             end_time: Some(millis_timestamp(2_000)),
             allow_partial: false,
             burn_in_timestamp: false,
+            guest_range_preparation: None,
             event_seed: None,
         };
         state.export_jobs.lock().unwrap().insert(
@@ -21006,6 +21026,7 @@ mod tests {
             end_time: Some(millis_timestamp(2_000)),
             allow_partial: false,
             burn_in_timestamp: false,
+            guest_range_preparation: None,
             event_seed: None,
         };
         let job = |job_id: &str, status: proto::ExportJobStatus, file_name: Option<&str>| {

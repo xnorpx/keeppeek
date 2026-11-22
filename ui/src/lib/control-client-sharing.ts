@@ -17,7 +17,9 @@ import {
 export const sharingCapability = 'keeppeek.guest-review.v1';
 export type ShareCreateInput = MessageInitShape<typeof CreateShareGrantSchema>;
 export type SharePolicyInput = MessageInitShape<typeof SharePolicySettingsSchema>;
-type Send = (command: Request['command']) => Promise<Ok['result']>;
+type Send = (command: Request['command'], timeoutMs?: number) => Promise<Ok['result']>;
+// Disk verification can consume 25 seconds before the control response returns.
+const rangeVerificationTimeoutMs = 30_000;
 const responseError = 'Server returned an invalid sharing response.';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const checksum = /^[0-9a-f]{64}$/i;
@@ -177,10 +179,16 @@ export class SharingControlClient {
 	private async request(
 		action: MessageInitShape<typeof ShareCommandSchema>['action']
 	): Promise<ShareResult['result']> {
-		const result = await this.send({
-			case: 'shareCommand',
+		const command = {
+			case: 'shareCommand' as const,
 			value: create(ShareCommandSchema, { action })
-		});
+		};
+		const guarded =
+			(action?.case === 'create' || action?.case === 'previewExport') &&
+			action.value?.recordingRange !== undefined;
+		const result = guarded
+			? await this.send(command, rangeVerificationTimeoutMs)
+			: await this.send(command);
 		if (result.case !== 'shareResult' || result.value.result.case === undefined)
 			throw new Error(responseError);
 		return result.value.result;

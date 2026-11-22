@@ -226,6 +226,7 @@ pub(super) fn setup_for_codec(
         end_time: Some(millis_timestamp(end)),
         allow_partial: false,
         burn_in_timestamp: false,
+        guest_range_preparation: None,
         event_seed: None,
     };
     (root, catalog, manager, state, request)

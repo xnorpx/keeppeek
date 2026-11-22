@@ -106,3 +106,17 @@ fn optional_recording_range_is_additive_on_preview_and_create() {
         Some(range)
     );
 }
+
+#[test]
+fn guest_export_preparation_is_an_optional_wire_budget() {
+    let mut request = proto::CreateExportJob::default();
+    assert!(request.encode_to_vec().is_empty());
+    request.guest_range_preparation = Some(true);
+    assert_eq!(request.encode_to_vec(), [72, 1]);
+    assert_eq!(
+        proto::CreateExportJob::decode(&[72, 1][..]).unwrap(),
+        request
+    );
+    request.guest_range_preparation = Some(false);
+    assert_eq!(request.encode_to_vec(), [72, 0]);
+}

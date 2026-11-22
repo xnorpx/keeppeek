@@ -89,6 +89,49 @@ fn export(fragments: &[CatalogMediaFragment], end_ms: i64) -> (ExportArtifact, C
 }
 
 #[test]
+fn bounded_export_removes_an_incomplete_file_and_publishes_at_the_exact_budget() {
+    let input = source(&[video()], vec![(1, sample(0, 90_000, 0))]);
+    let fragments = [fragment(&input, "guest-budget", 1000)];
+    let (artifact, _) = export(&fragments, 2000);
+    let sources = ExportSources {
+        video_fragments: &fragments,
+        audio_context: &[],
+        requested_end_ms: 2000,
+    };
+    let directory =
+        std::env::temp_dir().join(format!("guest-export-budget-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    let destination = directory.join("guest.mp4");
+    let rejected = export_sources_to_file_with_limit(
+        sources,
+        &destination,
+        0,
+        Some(artifact.bytes - 1),
+        || false,
+        |_| {},
+    );
+    assert!(rejected.is_err());
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+    let completed = export_sources_to_file_with_limit(
+        sources,
+        &destination,
+        0,
+        Some(artifact.bytes),
+        || false,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::metadata(&destination).unwrap().len(),
+        completed.bytes
+    );
+    assert_eq!(completed.bytes, artifact.bytes);
+    std::fs::remove_file(destination).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+    std::fs::remove_file(input).unwrap();
+}
+
+#[test]
 fn corrected_export_bounds_follow_the_final_aac_samples() {
     let path = source(
         &[video(), audio()],

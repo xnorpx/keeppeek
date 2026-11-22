@@ -4439,6 +4439,17 @@ const fn is_background_control_request(request: &crate::api::proto::Request) -> 
                     | crate::api::proto::stored_media_command::Action::SetPlayback(_)
             )
         ),
+        Some(crate::api::proto::request::Command::ShareCommand(command)) => {
+            match command.action.as_ref() {
+                Some(crate::api::proto::share_command::Action::PreviewExport(request)) => {
+                    request.recording_range.is_some()
+                }
+                Some(crate::api::proto::share_command::Action::Create(request)) => {
+                    request.recording_range.is_some()
+                }
+                _ => false,
+            }
+        }
         Some(crate::api::proto::request::Command::ExportCommand(command)) => matches!(
             command.action.as_ref(),
             Some(crate::api::proto::export_command::Action::Download(_))
@@ -6863,6 +6874,32 @@ mod tests {
                 watch_update_notification(1, 1),
             )
             .expect_err("a missing session must not accept notifications");
+    }
+
+    #[test]
+    fn only_guarded_share_previews_and_creations_use_the_bounded_worker() {
+        use crate::api::proto::{self, share_command::Action};
+        for range in [None, Some(proto::ShareRecordingRange::default())] {
+            let background = range.is_some();
+            for action in [
+                Action::PreviewExport(proto::PreviewShareExport {
+                    recording_range: range.clone(),
+                    ..Default::default()
+                }),
+                Action::Create(proto::CreateShareGrant {
+                    recording_range: range.clone(),
+                    ..Default::default()
+                }),
+            ] {
+                let request = proto::Request {
+                    request_id: 1,
+                    command: Some(proto::request::Command::ShareCommand(proto::ShareCommand {
+                        action: Some(action),
+                    })),
+                };
+                assert_eq!(is_background_control_request(&request), background);
+            }
+        }
     }
 
     fn test_background_control() -> ApiSessionControl {

@@ -17,6 +17,7 @@ use crate::storage::{
 mod audio_decode_tests;
 mod audio_timing;
 mod envelope;
+pub(crate) mod limited_export;
 pub(crate) mod recorded;
 use envelope::ExportEnvelope;
 pub use envelope::ExportMediaBounds;
@@ -214,6 +215,24 @@ pub(crate) fn export_sources_to_file(
     cancelled: impl Fn() -> bool,
     progress: impl Fn(u64),
 ) -> anyhow::Result<ExportArtifact> {
+    export_sources_to_file_with_limit(
+        sources,
+        destination,
+        audio_offset_ms,
+        None,
+        cancelled,
+        progress,
+    )
+}
+
+pub(crate) fn export_sources_to_file_with_limit(
+    sources: ExportSources<'_>,
+    destination: &Path,
+    audio_offset_ms: i32,
+    maximum: Option<u64>,
+    cancelled: impl Fn() -> bool,
+    progress: impl Fn(u64),
+) -> anyhow::Result<ExportArtifact> {
     sources
         .video_fragments
         .first()
@@ -225,18 +244,14 @@ pub(crate) fn export_sources_to_file(
     }
     let result = (|| {
         let mut output = BufWriter::new(File::create(&temporary)?);
-        let result = if sources.audio_context.is_empty() {
-            export_fragment_ranges_to_writer_with_audio_offset(
-                sources.video_fragments,
-                sources.requested_end_ms,
-                &mut output,
-                audio_offset_ms,
-                &cancelled,
-                progress,
-            )
-        } else {
-            export_sources_to_writer(sources, &mut output, audio_offset_ms, &cancelled, progress)
-        };
+        let result = limited_export::write(
+            sources,
+            &mut output,
+            audio_offset_ms,
+            maximum,
+            &cancelled,
+            progress,
+        );
         // Discard pending buffered bytes on failure instead of retrying writes during drop.
         let (file, _) = output.into_parts();
         drop(file);

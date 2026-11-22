@@ -64,6 +64,11 @@ bounds. Gaps and file expiry appear before creation. If a keyframe, audio sample
 trailing frame would extend outside the interval, KeepPeek declines the range. You can
 choose new bounds explicitly in Keep. The two-minute and 512 MiB evidence limits and
 the playback, download and expiry settings apply to range links too.
+For an event or bookmark the recorder checks which streams have footage inside the selected
+interval. Keep preserves the stream you selected. A nonzero recorded-audio correction prevents
+range sharing because a sample's original time can differ from its presentation time in the file.
+**Reload preview** checks the same file again. If a reused file lacks its original media proof,
+**Prepare a fresh export** creates a replacement for the same selection.
 
 ## What the guest receives
 

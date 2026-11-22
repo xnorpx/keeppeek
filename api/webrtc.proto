@@ -1157,6 +1157,8 @@ message CreateExportJob {
   bool allow_partial = 6;
   bool burn_in_timestamp = 7;
   optional EventExportSeed event_seed = 8;
+  // Negotiated by keeppeek.guest-range.v1. Bound writes to the guest evidence limit.
+  optional bool guest_range_preparation = 9;
 }
 
 message EventExportSeed {

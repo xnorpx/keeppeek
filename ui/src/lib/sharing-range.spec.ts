@@ -41,6 +41,7 @@ describe('recording range sharing', () => {
 		const recorder = client();
 		recorder.listExports.mockResolvedValue([
 			{ ...ready, id: 'other', streamId: 'main' },
+			{ ...ready, id: 'unbounded-running-job', status: 'running' },
 			{ ...ready, id: 'expired', expiresAtMs: 0 },
 			{ ...ready, id: 'nearby', requestedEndMs: 1999 },
 			ready
@@ -58,7 +59,11 @@ describe('recording range sharing', () => {
 		const result = await prepareRangeShare({ client: recorder, target }, signal(), true);
 		expect(result).toEqual({ exportJobId: ready.id, guard, reused: false });
 		expect(recorder.listExports).not.toHaveBeenCalled();
-		expect(recorder.createExport).toHaveBeenCalledWith({ ...target, allowPartial: true });
+		expect(recorder.createExport).toHaveBeenCalledWith({
+			...target,
+			allowPartial: true,
+			guestRangePreparation: true
+		});
 	});
 
 	it('prepares a new export using only the selected bookmark event and interval', async () => {
@@ -79,7 +84,11 @@ describe('recording range sharing', () => {
 				streamId: 'sub'
 			})
 		);
-		expect(recorder.createExport).toHaveBeenCalledWith({ ...target, allowPartial: true });
+		expect(recorder.createExport).toHaveBeenCalledWith({
+			...target,
+			allowPartial: true,
+			guestRangePreparation: true
+		});
 	});
 	it('does not prepare a different or missing bookmark, an open event or an oversized interval', async () => {
 		const recorder = client();
@@ -141,7 +150,11 @@ describe('recording range sharing', () => {
 			'main',
 			'sub'
 		]);
-		expect(recorder.createExport).toHaveBeenCalledWith({ ...target, allowPartial: true });
+		expect(recorder.createExport).toHaveBeenCalledWith({
+			...target,
+			allowPartial: true,
+			guestRangePreparation: true
+		});
 		recorder.queryStoredTimeline.mockResolvedValue({ ranges: [] });
 		await expect(
 			prepareRangeShare({ client: recorder, target: { ...target, streamId: undefined } }, signal())

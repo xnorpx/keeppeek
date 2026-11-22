@@ -147,13 +147,19 @@ export async function prepareRangeShare(
 			candidate.requestedStartMs === startMs &&
 			candidate.requestedEndMs === endMs &&
 			!candidate.burnInTimestamp &&
-			(candidate.status === 'running' ||
-				(candidate.status === 'ready' &&
-					candidate.expiresAtMs !== null &&
-					candidate.expiresAtMs > Date.now()))
+			candidate.status === 'ready' &&
+			candidate.expiresAtMs !== null &&
+			candidate.expiresAtMs > Date.now()
 	);
 	const reused = job !== undefined;
-	job ??= await client.createExport({ sourceId, streamId, startMs, endMs, allowPartial: true });
+	job ??= await client.createExport({
+		sourceId,
+		streamId,
+		startMs,
+		endMs,
+		allowPartial: true,
+		guestRangePreparation: true
+	});
 	const deadline = performance.now() + 60_000;
 	while (job.status === 'running' && performance.now() < deadline) {
 		signal.throwIfAborted();
