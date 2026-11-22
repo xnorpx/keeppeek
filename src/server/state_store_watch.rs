@@ -96,6 +96,7 @@ pub(super) enum WatchEventKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CloseReason {
+    SnapshotUnavailable,
     BufferOverflow,
     AckTimeout,
     AuthorizationRevoked,
@@ -104,6 +105,7 @@ enum CloseReason {
 impl CloseReason {
     const fn proto(self) -> proto::StateStoreWatchCloseReason {
         match self {
+            Self::SnapshotUnavailable => proto::StateStoreWatchCloseReason::SnapshotSendFailed,
             Self::BufferOverflow => proto::StateStoreWatchCloseReason::BufferOverflow,
             Self::AckTimeout => proto::StateStoreWatchCloseReason::AckTimeout,
             Self::AuthorizationRevoked => proto::StateStoreWatchCloseReason::AuthorizationRevoked,
@@ -288,8 +290,11 @@ impl WatchRegistry {
         let identities = needs_identities
             .then(|| profiles::camera_profile_ids(state).ok())
             .flatten();
-        let prepared =
-            has_profiles.then(|| profile_view::prepare(self, state, events, identities.as_ref()));
+        let mut prepared = if has_profiles {
+            profile_view::prepare(self, state, events, identities.as_ref())
+        } else {
+            HashMap::new()
+        };
         let mut sent = Vec::new();
         let mut watches = self.lock();
         let mut closed: Vec<(Watch, CloseReason)> = Vec::new();
@@ -306,6 +311,8 @@ impl WatchRegistry {
         }
         for (index, event) in events.iter().enumerate() {
             let mut visible_revisions = HashMap::new();
+            let mut unscoped = None;
+            let scoped = profile_view::needs_projection(event);
             let layout = validate_namespace(&event.namespace).ok();
             let mut terminate: Vec<((SessionId, String), Option<CloseReason>)> = Vec::new();
             for (key, watch) in watches.iter_mut() {
@@ -316,66 +323,67 @@ impl WatchRegistry {
                     terminate.push((key.clone(), Some(CloseReason::AuthorizationRevoked)));
                     continue;
                 }
-                let mut projected_event = if profile_view::needs_projection(event) {
+                let projection = if scoped {
                     prepared
-                        .as_ref()
-                        .and_then(|entries| entries.get(&(watch.session_id, index)))
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            // A watch registered after the preparation snapshot still gets a scoped update.
-                            profile_view::SessionView::new(
+                        .entry((watch.session_id, index))
+                        .or_insert_with(|| {
+                            // A watch registered after preparation still needs its session's camera scope.
+                            let event = profile_view::SessionView::new(
                                 state,
                                 watch.session_id,
                                 identities.as_ref(),
                             )
-                            .project(event)
+                            .project(event);
+                            profile_view::Projection::new(event)
                         })
                 } else {
-                    event.clone()
+                    unscoped.get_or_insert_with(|| profile_view::Projection::new(event.clone()))
                 };
+                let mut revision = event.revision;
                 if event.namespace == profiles::NAMESPACE {
-                    if let WatchEventKind::Put(entry) = &projected_event.kind {
-                        let fingerprint = profile_fingerprint(entry);
+                    if let Some(fingerprint) = projection.fingerprint {
                         if watch.profile_fingerprint == Some(fingerprint) {
                             continue;
                         }
                         watch.profile_fingerprint = Some(fingerprint);
                     }
                     if let Some(session) = &watch.profile_session {
-                        projected_event.revision = *visible_revisions
-                            .entry(watch.session_id)
-                            .or_insert_with(|| {
-                                // The watch lock serializes a session's snapshots and visible publications.
-                                let next = session
-                                    .profile_watch_revision
-                                    .load(Ordering::Relaxed)
-                                    .max(event.revision)
-                                    .checked_add(1)
-                                    .expect("profile watch revision space exhausted");
-                                session
-                                    .profile_watch_revision
-                                    .store(next, Ordering::Relaxed);
-                                next
-                            });
+                        revision =
+                            *visible_revisions
+                                .entry(watch.session_id)
+                                .or_insert_with(|| {
+                                    // The watch lock serializes a session's snapshots and visible publications.
+                                    let next = session
+                                        .profile_watch_revision
+                                        .load(Ordering::Relaxed)
+                                        .max(event.revision)
+                                        .checked_add(1)
+                                        .expect("profile watch revision space exhausted");
+                                    session
+                                        .profile_watch_revision
+                                        .store(next, Ordering::Relaxed);
+                                    next
+                                });
                     }
                 }
-                watch.delivered += 1;
-                let sequence = watch.delivered;
+                let sequence = watch.delivered + 1;
+                let Some(notification) =
+                    update_notification(watch, &projection.event, sequence, revision)
+                else {
+                    terminate.push((key.clone(), Some(CloseReason::SnapshotUnavailable)));
+                    continue;
+                };
+                if watch.unacked.len() >= MAX_IN_FLIGHT_UPDATES {
+                    terminate.push((key.clone(), Some(CloseReason::BufferOverflow)));
+                    continue;
+                }
+                watch.delivered = sequence;
                 watch.unacked.push_back(PendingUpdate {
                     sequence,
                     #[cfg(test)]
-                    revision: projected_event.revision,
+                    revision,
                     sent_ms: now_ms,
                 });
-                if watch.unacked.len() > MAX_IN_FLIGHT_UPDATES {
-                    terminate.push((key.clone(), Some(CloseReason::BufferOverflow)));
-                    continue;
-                }
-                let Some(notification) = update_notification(watch, &projected_event, sequence)
-                else {
-                    terminate.push((key.clone(), Some(CloseReason::BufferOverflow)));
-                    continue;
-                };
                 match enqueue(watch.session_id, notification.clone()) {
                     EnqueueOutcome::Sent => {
                         sent.push((watch.session_id, notification));
@@ -492,6 +500,7 @@ fn update_notification(
     watch: &Watch,
     event: &WatchEvent,
     sequence: u64,
+    revision: u64,
 ) -> Option<proto::Notification> {
     use prost::Message as _;
     let (kind, entry) = match &event.kind {
@@ -514,7 +523,7 @@ fn update_notification(
                 watch_id: watch.watch_id.clone(),
                 namespace: event.namespace.clone(),
                 key: event.key.clone(),
-                revision: event.revision,
+                revision,
                 kind: kind as i32,
                 entry,
                 watch_sequence: sequence,
@@ -881,6 +890,56 @@ mod tests {
             proto::StateStoreWatchCloseReason::BufferOverflow as i32
         );
         assert_eq!(delivered.len(), 1, "only the close is reported");
+    }
+
+    #[test]
+    fn unrepresentable_profile_updates_close_for_a_new_snapshot_and_allow_reopening() {
+        let state = ServerState::empty();
+        let session = SessionId::from_u64(241);
+        admin_session(&state, session);
+        let watches = &state.state_store_watches;
+        let namespace = profiles::NAMESPACE;
+        let key = profiles::STATUS_KEY;
+        let mut large = test_entry(namespace, key, 2);
+        large.value.fields.insert(
+            "value".into(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::StringValue(
+                    "x".repeat(profiles::PROFILE_DOCUMENT_BYTES_MAX + 1),
+                )),
+            },
+        );
+        for kind in [
+            WatchEventKind::ResnapshotRequired,
+            WatchEventKind::Put(large),
+        ] {
+            register(&state, session, "status", namespace, key);
+            let event = WatchEvent {
+                namespace: namespace.into(),
+                key: key.into(),
+                revision: 2,
+                kind,
+            };
+            let (_, enqueue) = recorder();
+            let sent = watches.publish(&state, &[event], false, NOW_MS, enqueue);
+            assert_eq!(sent.len(), 1);
+            assert_eq!(
+                close_of(&sent[0].1).reason,
+                proto::StateStoreWatchCloseReason::SnapshotSendFailed as i32
+            );
+            assert!(!watches.owns_watch(session, "status"));
+        }
+        register(&state, session, "status", namespace, key);
+        let (_, enqueue) = recorder();
+        let sent = watches.publish(
+            &state,
+            &[put_event(namespace, key, 3)],
+            false,
+            NOW_MS,
+            enqueue,
+        );
+        assert_eq!(sent.len(), 1);
+        assert!(watches.owns_watch(session, "status"));
     }
 
     #[test]

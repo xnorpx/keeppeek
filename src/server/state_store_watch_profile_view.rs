@@ -122,13 +122,31 @@ pub(super) fn needs_projection(event: &WatchEvent) -> bool {
     is_profile_status_event(event) || matches!(event.kind, WatchEventKind::ProfileHeader { .. })
 }
 
+pub(super) struct Projection {
+    pub(super) event: WatchEvent,
+    pub(super) fingerprint: Option<[u8; 32]>,
+}
+
+impl Projection {
+    pub(super) fn new(event: WatchEvent) -> Self {
+        let fingerprint = if event.namespace == profiles::NAMESPACE
+            && let WatchEventKind::Put(entry) = &event.kind
+        {
+            Some(profile_fingerprint(entry))
+        } else {
+            None
+        };
+        Self { event, fingerprint }
+    }
+}
+
 /// Prepare each watched key once per session, without holding the watch registry lock.
 pub(super) fn prepare(
     registry: &WatchRegistry,
     state: &ServerState,
     events: &[WatchEvent],
     identities: Option<&CameraProfileIds>,
-) -> HashMap<(SessionId, usize), WatchEvent> {
+) -> HashMap<(SessionId, usize), Projection> {
     let mut targets = HashMap::<SessionId, BTreeSet<String>>::new();
     for watch in registry.lock().values() {
         if watch.namespace == profiles::NAMESPACE && profiles::viewer_watch_key(&watch.key_prefix) {
@@ -146,7 +164,7 @@ pub(super) fn prepare(
                 let projected = view
                     .get_or_insert_with(|| SessionView::new(state, session, identities))
                     .project(event);
-                prepared.insert((session, index), projected);
+                prepared.insert((session, index), Projection::new(projected));
             }
         }
     }
