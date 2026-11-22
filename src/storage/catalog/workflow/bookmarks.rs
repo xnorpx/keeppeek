@@ -58,23 +58,20 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
              WHERE event_id = OLD.id AND source_id = OLD.camera_id;
          END;",
     ).await?;
-    migrate_event_times(connection).await
+    repair_event_times(connection).await
 }
 
-async fn migrate_event_times(connection: &turso::Connection) -> anyhow::Result<()> {
+async fn repair_event_times(connection: &turso::Connection) -> anyhow::Result<()> {
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
-        let inserted = connection
+        connection
             .execute(
                 "INSERT OR IGNORE INTO catalog_schema_migrations(version, applied_at_ms)
                  VALUES (4, CAST(unixepoch('subsec') * 1000 AS INTEGER))",
                 (),
             )
             .await?;
-        if inserted == 0 {
-            return anyhow::Ok(());
-        }
-        // An older catalog kept a moved event's original time. Deleted events keep that time.
+        // A rolled-back recorder can move events after migration 4. Repair matching live events on every open.
         connection
             .execute(
                 "UPDATE event_bookmarks SET event_start_ms = (

@@ -1070,6 +1070,21 @@ mod tests {
         );
 
         verify_historical_bookmark_repair(connection, &mut query).await;
+        // Legacy event writes after rollback leave migration 4 recorded and bypass index maintenance.
+        connection
+            .execute(
+                "UPDATE recording_events SET start_time_ms = 172801000, end_time_ms = 172801100 WHERE id = 'second'",
+                (),
+            )
+            .await
+            .unwrap();
+        bookmarks::initialize(connection).await.unwrap();
+        query.page_token.clear();
+        query.start_ms = 86_400_000;
+        assert_eq!(library::list(connection, &query).await.unwrap().total, 0);
+        query.start_ms = 172_800_000;
+        query.end_ms = 259_200_000;
+        assert_eq!(library::list(connection, &query).await.unwrap().total, 1);
         connection
             .execute("DELETE FROM recording_events WHERE id = 'second'", ())
             .await
@@ -1081,14 +1096,14 @@ mod tests {
             .await
             .unwrap();
         bookmarks::initialize(connection).await.unwrap();
-        query.start_ms = 86_400_000;
         query.page_token.clear();
         let page = library::list(connection, &query).await.unwrap();
         assert_eq!(page.total, 1);
+        assert_eq!(page.states[0].key.event_id, "second");
         assert!(!page.states[0].event_present);
         assert_eq!(
             page.states[0].bookmark.as_ref().unwrap().event_start_ms,
-            86_401_000
+            172_801_000
         );
     }
 
