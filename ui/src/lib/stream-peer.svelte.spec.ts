@@ -39,6 +39,7 @@ class FakeDataChannel {
 	static suppressCapabilities = false;
 	static audioVariants: string[] = [];
 	static audioUsesReliable = false;
+	static audioBindingSuffix = '';
 	static offlineCamera: string | null = null;
 	static rejectedSubscription: string | null = null;
 	static rejectUnsubscribe = false;
@@ -87,7 +88,13 @@ class FakeDataChannel {
 							subscriptionId: command.value.subscriptionId,
 							delivery:
 								command.value.kind === MediaKind.AUDIO && FakeDataChannel.audioUsesReliable
-									? { case: 'mediaData', value: { streamBindingId: command.value.subscriptionId } }
+									? {
+											case: 'mediaData',
+											value: {
+												streamBindingId:
+													command.value.subscriptionId + FakeDataChannel.audioBindingSuffix
+											}
+										}
 									: {
 											case: 'rtp',
 											value: create(RtpDeliverySchema, {
@@ -274,6 +281,7 @@ afterEach(() => {
 	FakeDataChannel.suppressCapabilities = false;
 	FakeDataChannel.audioVariants = [];
 	FakeDataChannel.audioUsesReliable = false;
+	FakeDataChannel.audioBindingSuffix = '';
 	FakeDataChannel.offlineCamera = null;
 	FakeDataChannel.rejectedSubscription = null;
 	FakeDataChannel.rejectUnsubscribe = false;
@@ -510,6 +518,33 @@ describe('LivePeer', () => {
 			])
 		).rejects.toThrow('cannot decode the audio timing preview');
 		expect(api.deleteSession).toHaveBeenCalledOnce();
+	});
+
+	it('restores acknowledged saved timing and keeps video usable if this browser loses AAC support', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'timing',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		FakeDataChannel.audioVariants = ['main'];
+		FakeDataChannel.audioUsesReliable = true;
+		const decoder = vi.spyOn(AacAudioPlayback.prototype, 'configure').mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		const saved = { cameraId: 'front-door', quality: 'auto' as const, variantId: 'main' as const };
+		await peer.configure([{ ...saved, liveAudioPreviewOffsetMs: 20 }]);
+		decoder.mockRejectedValue(new Error('decoder unavailable'));
+		// The server retires its reliable binding when returning to saved policy.
+		FakeDataChannel.audioBindingSuffix = '-saved';
+		await peer.configure([saved]);
+		expect(peer.track('front-door')).toMatchObject({
+			subscribed: true,
+			audioTiming: { preview: false }
+		});
+		expect(peer.track('front-door')?.liveAudioPreviewOffsetMs).toBeUndefined();
+		expect(decoder).toHaveBeenCalledTimes(2);
+		await peer.configure([saved]);
+		await peer.close();
 	});
 
 	it('keeps the video MID while awaiting the actual calibration keyframe handover', async () => {

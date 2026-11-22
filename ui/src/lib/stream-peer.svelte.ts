@@ -898,7 +898,12 @@ export class LivePeer {
 		if (confirmTiming && !timingConfirmed(result.value.liveAudio, previewOffset)) {
 			throw new Error('The server did not apply the audio timing preview.');
 		}
-		await this.attachAudioDelivery(cameraId, variant, result.value.delivery, confirmTiming);
+		await this.attachAudioDelivery(
+			cameraId,
+			variant,
+			result.value.delivery,
+			previewOffset !== undefined
+		);
 		this.replaceTrack(cameraId, {
 			audioVariantId: variant.variantId,
 			audioTiming: result.value.liveAudio
@@ -909,7 +914,7 @@ export class LivePeer {
 		cameraId: string,
 		variant: MediaVariantCapability,
 		delivery: SubscriptionResult['delivery'],
-		confirmTiming: boolean
+		requirePlayback: boolean
 	): Promise<void> {
 		if (delivery.case === 'rtp') {
 			const mid = delivery.value.mid;
@@ -924,13 +929,15 @@ export class LivePeer {
 			variant.codec?.name.toLowerCase() !== 'aac' ||
 			format?.case !== 'audio'
 		) {
-			if (confirmTiming) throw new Error('This audio delivery cannot be previewed in this viewer.');
+			if (requirePlayback)
+				throw new Error('This audio delivery cannot be previewed in this viewer.');
 			return;
 		}
 		if (this.#audioPlaybackByBinding.has(delivery.value.streamBindingId)) return;
 		this.releaseAudioDecoder(cameraId);
-		const playback = new AacAudioPlayback();
+		let playback: AacAudioPlayback | undefined;
 		try {
+			playback = new AacAudioPlayback();
 			await playback.configure(
 				variant.codec?.name ?? 'aac',
 				format.value.decoderConfig,
@@ -940,8 +947,8 @@ export class LivePeer {
 			this.#audioPlaybackByBinding.set(delivery.value.streamBindingId, playback);
 			this.#audioBindingByCamera[cameraId] = delivery.value.streamBindingId;
 		} catch (error) {
-			playback.close();
-			if (confirmTiming)
+			playback?.close();
+			if (requirePlayback)
 				throw new Error('This browser cannot decode the audio timing preview.', { cause: error });
 			console.warn(`AAC playback is unavailable for ${cameraId}`, error);
 		}

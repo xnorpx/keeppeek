@@ -1,11 +1,13 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
+	import LiveAudioPreviewControls from './LiveAudioPreviewControls.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import {
 		effectiveRecordedAudioOffset,
 		formatRecordedAudioOffset,
-		parseRecordedAudioOffset
+		parseRecordedAudioOffset,
+		timingEditorKinds
 	} from '$lib/recorded-audio';
 	import type { CameraSettings, RecordedAudioSettings } from '$lib/types';
 
@@ -29,33 +31,8 @@
 		appliedPreview,
 		previewRequested = false
 	}: Props = $props();
+	const editor = $derived(timingEditorKinds[kind]);
 	const live = $derived(kind === 'live');
-	let previewStream = $state<'main' | 'sub'>('main');
-	let previewInput = $state('0');
-	let previewing = $state(false);
-	let parsedPreview = $derived.by(() => {
-		try {
-			return parseRecordedAudioOffset(previewInput, 200);
-		} catch {
-			return null;
-		}
-	});
-	async function preview(offset: number | null) {
-		if (!onpreview || previewing) return;
-		previewing = true;
-		status = null;
-		error = null;
-		try {
-			await onpreview(previewStream, offset);
-			status = offset === null ? 'Saved live timing restored.' : 'Preview applied to this viewer.';
-		} catch (cause) {
-			error = cause instanceof Error ? cause.message : 'Live preview failed.';
-			await tick();
-			errorSummary?.focus();
-		} finally {
-			previewing = false;
-		}
-	}
 	const fields = [
 		{ key: 'default_offset_ms', label: 'Camera default' },
 		{ key: 'main_offset_ms', label: 'Main stream' },
@@ -84,7 +61,7 @@
 			const settings: RecordedAudioSettings = {};
 			for (const { key } of fields) {
 				if (draft[key].mode === 'custom')
-					settings[key] = parseRecordedAudioOffset(draft[key].text, live ? 200 : 5000);
+					settings[key] = parseRecordedAudioOffset(draft[key].text, editor.limit);
 			}
 			return { settings, error: null };
 		} catch (cause) {
@@ -102,7 +79,7 @@
 
 	function snapshot(value: CameraSettings) {
 		return {
-			settings: { ...(kind === 'live' ? value.live_audio : value.recorded_audio) },
+			settings: { ...value[editor.setting] },
 			revision: value.configuration_revision ?? ''
 		};
 	}
@@ -133,13 +110,7 @@
 
 	async function submit(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
-		if (
-			saving ||
-			disabled ||
-			!dirty ||
-			(live ? camera.live_audio : camera.recorded_audio) === undefined
-		)
-			return;
+		if (saving || disabled || !dirty || camera[editor.setting] === undefined) return;
 		error = null;
 		status = null;
 		try {
@@ -151,7 +122,7 @@
 			if (result.id !== camera.id) throw new Error('The camera changed while saving timing.');
 			saved = snapshot(result);
 			draft = draftFrom(saved.settings);
-			status = live ? 'Live timing saved.' : 'Recorded timing saved. Camera recording continues.';
+			status = editor.saved;
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Timing was not saved.';
 			await tick();
@@ -170,24 +141,18 @@
 >
 	<header class="border-b border-hairline p-4">
 		<p class="font-mono text-2xs tracking-caps text-primary-soft"
-			>{live ? 'LIVE AUDIO' : 'RECORDED AUDIO'}</p
+			>{editor.label.toUpperCase()} AUDIO</p
 		>
 		<h2 id={`${helpId}-heading`} class="mt-1 text-base font-semibold"
-			>{live ? 'Live' : 'Recorded'} audio synchronization</h2
+			>{editor.label} audio synchronization</h2
 		>
 		<p id={helpId} class="mt-1 text-xs leading-5 text-text-muted">
-			{#if live}
-				Positive offsets delay audio. Negative offsets delay video. Use whole milliseconds from −200
-				to +200. Explicit 0 disables correction at that level.
-			{:else}
-				Positive offsets delay audio. Negative offsets advance it. Source recordings stay unchanged.
-				Use whole milliseconds from −5000 to +5000. Explicit 0 disables correction at that level.
-			{/if}
+			{editor.description}
 		</p>
 	</header>
-	{#if (live ? camera.live_audio : camera.recorded_audio) === undefined}
+	{#if camera[editor.setting] === undefined}
 		<p class="p-4 text-sm text-text-muted">
-			{live ? 'Live-audio' : 'Recorded-audio'} settings are unavailable on this server.
+			{editor.label}-audio settings are unavailable on this server.
 		</p>
 	{:else}
 		<form class="min-w-0" onsubmit={submit}>
@@ -254,63 +219,7 @@
 						{/if}</div
 					>{/if}
 				{#if live && onpreview}
-					<div class="space-y-2">
-						<h3 class="text-sm font-semibold">Preview live timing</h3>
-						<p class="text-xs text-text-muted"
-							>Preview applies to the selected stream in this viewer.</p
-						>
-						<div class="grid gap-2 sm:grid-cols-2">
-							<label class="grid gap-1 text-xs"
-								>Preview stream
-								<select
-									class="h-11 rounded-sm border border-hairline bg-background px-3"
-									bind:value={previewStream}
-								>
-									<option value="main">Main stream</option><option value="sub">Sub stream</option>
-								</select></label
-							>
-							<label class="grid gap-1 text-xs"
-								>Preview offset (ms)<Input
-									inputmode="numeric"
-									bind:value={previewInput}
-									aria-describedby={`${helpId} ${helpId}-preview-notice`}
-									aria-invalid={parsedPreview === null}
-									onkeydown={(event) => {
-										if (event.key === 'Enter') {
-											event.preventDefault();
-											if (parsedPreview !== null) void preview(parsedPreview);
-										}
-									}}
-								/></label
-							>
-						</div>
-						<div id={`${helpId}-preview-notice`} role="status"
-							>{#if parsedPreview === null}
-								<p class="text-xs text-destructive">Enter a whole number from −200 to +200 ms.</p>
-							{:else if parsedPreview < 0}
-								<p class="text-warning text-xs"
-									>Video will play {Math.abs(parsedPreview)} ms later.</p
-								>
-							{/if}</div
-						>
-						<div class="flex flex-wrap gap-2">
-							<Button
-								type="button"
-								variant="outline"
-								disabled={previewing || parsedPreview === null}
-								onclick={() => preview(parsedPreview)}>Apply preview</Button
-							>
-							<Button
-								type="button"
-								variant="outline"
-								disabled={previewing || (appliedPreview === undefined && !previewRequested)}
-								onclick={() => preview(null)}>Reset preview</Button
-							>
-						</div>
-						{#if appliedPreview !== undefined}<p class="text-xs text-text-muted"
-								>Active preview {formatRecordedAudioOffset(appliedPreview)}</p
-							>{/if}
-					</div>
+					<LiveAudioPreviewControls {helpId} {onpreview} {appliedPreview} {previewRequested} />
 				{/if}
 				{#if largeOffset}
 					<p class="text-warning text-xs leading-5" role="status">
@@ -336,7 +245,7 @@
 				{#if status}<p class="text-xs text-healthy" role="status">{status}</p>{/if}
 				<div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
 					<Button type="submit" class="h-11 w-full sm:w-auto" disabled={!dirty}
-						>{saving ? 'Saving…' : live ? 'Save live timing' : 'Save recorded timing'}</Button
+						>{saving ? 'Saving…' : editor.save}</Button
 					>
 					<Button type="button" variant="outline" class="h-11 w-full sm:w-auto" onclick={reload}
 						>Reload saved values</Button

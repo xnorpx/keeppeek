@@ -830,6 +830,7 @@ struct ApiMediaTrack {
 }
 
 struct ApiAudioTrack {
+    source_session_id: String,
     reported_timing: Option<crate::api::proto::LiveAudioTiming>,
     runtime: AudioTrackRuntime,
     reserved_bitrate_bps: u64,
@@ -2324,6 +2325,31 @@ struct AudioTrackRuntime {
 }
 
 impl AudioTrackRuntime {
+    fn retime_frame(&mut self, frame: &mut WebRtcAudioFrame, due: Instant) {
+        let received = frame.received_at;
+        let delay = due.saturating_duration_since(received);
+        let duration = frame.encoded_duration();
+        let timestamp = match &self.delivery {
+            // Reliable AAC carries presentation timestamps directly. Apply the new
+            // hold to the source timeline even when RTP timestamps were missing.
+            TrackDelivery::ReliableData(_) => self
+                .clock
+                .map(received, frame.timestamp, frame.sample_rate_hz, duration)
+                .saturating_add(delay),
+            // A negotiated RTP sender must retain its monotonic clock across updates.
+            TrackDelivery::Rtp(_) => self.clock.map(
+                due,
+                frame
+                    .timestamp
+                    .map(|timestamp| timestamp.saturating_add(delay)),
+                frame.sample_rate_hz,
+                duration,
+            ),
+        };
+        frame.received_at = due;
+        frame.timestamp = Some(timestamp);
+    }
+
     fn new(
         session: &ApiSessionControl,
         track_id: TrackId,
@@ -3847,15 +3873,7 @@ fn drive_audio_track_runtime(
             track
                 .timing
                 .delivery_permit(track.source.stream, frame.value.received_at, due);
-        let delay = due.saturating_duration_since(frame.value.received_at);
-        frame.value.received_at = due;
-        let presented = frame.value.timestamp.map(|time| time.saturating_add(delay));
-        frame.value.timestamp = Some(track.clock.map(
-            due,
-            presented,
-            frame.value.sample_rate_hz,
-            frame.value.encoded_duration(),
-        ));
+        track.retime_frame(&mut frame.value, due);
         if let Some((wrote, messages)) = frame
             .deliver(|audio| write_audio_track_frame(rtc, &mut track.delivery, audio))
             .transpose()?
@@ -7871,6 +7889,108 @@ mod tests {
         );
     }
 
+    fn subscribe_test_aac(
+        session: &ApiSessionControl,
+        media: &mut ApiMediaRuntime,
+        source: Source,
+    ) {
+        use crate::api::proto;
+        let request = proto::SubscribeMedia {
+            subscription_id: "audio-front".into(),
+            ..Default::default()
+        };
+        media
+            .subscribe(
+                session,
+                &request,
+                MediaSubscriptionPlan {
+                    media_kind: proto::MediaKind::Audio,
+                    source_session_id: "front:first".into(),
+                    camera_ip: source.camera_ip,
+                    has_main_stream: true,
+                    has_sub_stream: false,
+                    recording_label: "front".into(),
+                    quality: StreamQuality::High,
+                    delivery_transport: proto::DeliveryTransport::ReliableData,
+                    codec: proto::CodecDescriptor {
+                        name: "aac".into(),
+                        ..Default::default()
+                    },
+                    format: Default::default(),
+                    selected_variant_id: "main".into(),
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn saved_offset_updates_the_playing_aac_binding_presentation_timestamps() {
+        use crate::api::proto::{audio_message, message};
+        use crate::cameras::LiveAudioSettings;
+        let session = test_background_control();
+        let publisher = Publisher {
+            inner: session.inner.clone(),
+        };
+        let source = Source {
+            camera_ip: Ipv4Addr::LOCALHOST.into(),
+            stream: StreamKind::Main,
+        };
+        let mut rtc = rtc_config().build(Instant::now());
+        let mut media = ApiMediaRuntime::default();
+        subscribe_test_aac(&session, &mut media, source);
+        let mut presentations = Vec::new();
+        let initial = Instant::now() + Duration::from_millis(1);
+        for (index, delay) in [0_u64, 0, 80, 80, 0].into_iter().enumerate() {
+            publisher.configure_live_audio(
+                source.camera_ip,
+                LiveAudioSettings {
+                    default_offset_ms: Some(delay as i32),
+                    ..Default::default()
+                },
+            );
+            let received = initial + Duration::from_millis(index as u64 * 20);
+            publisher.publish_audio(
+                source,
+                WebRtcAudioFrame {
+                    codec: WebRtcAudioCodec::Aac,
+                    sample_rate_hz: 48000,
+                    channel_count: 1,
+                    duration: Some(Duration::from_millis(20)),
+                    timestamp: None,
+                    received_at: received,
+                    data: Bytes::from_static(b"AAC"),
+                },
+            );
+            let track = &mut media.audio_tracks[0].runtime;
+            let result = drive_audio_track_runtime(
+                &mut rtc,
+                track,
+                true,
+                received + Duration::from_millis(delay),
+                &mut media.permits,
+            )
+            .unwrap();
+            let Some(message::Message::Audio(audio)) =
+                &result.data_messages[0].value[0].message.message
+            else {
+                panic!("expected listener audio")
+            };
+            let Some(audio_message::Message::Frame(frame)) = &audio.message else {
+                panic!("expected AAC frame")
+            };
+            let stamp = frame.timestamp.unwrap();
+            presentations.push((
+                frame.stream_binding_id.clone(),
+                i128::from(stamp.seconds) * 1_000_000_000 + i128::from(stamp.nanos),
+            ));
+        }
+        let (binding, anchor) = &presentations[0];
+        for ((id, t), ms) in presentations.iter().zip([0, 20, 120, 140, 80]) {
+            assert_eq!(id, binding);
+            assert_eq!(t - anchor, ms * 1_000_000);
+        }
+    }
+
     #[test]
     fn live_preview_admission_reuses_tracks_and_retires_stale_reliable_audio() {
         use crate::api::proto::{self, DeliveryTransport, MediaKind};
@@ -7929,6 +8049,17 @@ mod tests {
             request.live_audio_preview_offset_ms = Some(-200);
             let first = media.subscribe(&session, &request, plan.clone()).unwrap();
             assert_eq!(first.live_audio.unwrap().applied_offset_ms, -200);
+            let mut new_source = plan.clone();
+            new_source.source_session_id.push_str(":next");
+            let mut next_request = request.clone();
+            next_request
+                .source_session_id
+                .clone_from(&new_source.source_session_id);
+            assert!(
+                media
+                    .subscribe(&session, &next_request, new_source)
+                    .is_err()
+            );
             if transport == DeliveryTransport::ReliableData {
                 for incompatible in [
                     MediaSubscriptionPlan {

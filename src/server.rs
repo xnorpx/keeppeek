@@ -15767,6 +15767,7 @@ mod tests {
             capabilities.capability_ids,
             [
                 "keeppeek.media-export.v1",
+                "keeppeek.live-audio-timing.v1",
                 "keeppeek.event-search",
                 "keeppeek.event-publication.v1",
                 "stored-media-keyframe-preview.v1",

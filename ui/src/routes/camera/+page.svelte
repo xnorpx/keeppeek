@@ -137,13 +137,14 @@
 		try {
 			await livePeer.configure([cameraPlan(id, candidate)]);
 			if (cameraId !== id) return;
+			if (!previewAvailable) throw new Error('The live camera is unavailable.');
 			if (offset !== null && livePeer.track(id)?.liveAudioPreviewOffsetMs !== offset)
 				throw new Error('Reconnect the camera before previewing timing.');
 			livePreview = candidate;
 		} catch (cause) {
 			if (cameraId === id) {
 				livePreview = previous;
-				await livePeer.configure([cameraPlan(id, previous)]).catch((restoreError) => {
+				await livePeer.configure(livePlans).catch((restoreError) => {
 					console.warn('Unable to restore the previous camera preview', restoreError);
 				});
 			}

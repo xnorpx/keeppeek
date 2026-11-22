@@ -945,6 +945,11 @@ sends frames using that revision. A client-published media-data stream fixes its
 through `StartPublication.format`; it must stop and start a new publication to change that format.
 A frame always includes the configuration revision needed to decode it.
 
+A reliable live AAC listener schedules decoded blocks from the presentation timestamps on the
+active binding. A saved audio delay changes those timestamps on the first frame under the new
+policy, including sources without a usable RTP timestamp. This preserves the correction when the
+browser has already queued decoded audio.
+
 Each binary SCTP message carrying audio contains a `Message.audio.frame` value. `frame_id` is the
 monotonically increasing audio frame number within its stream binding. `timestamp_us` is the
 presentation timestamp, and `duration_us` is the frame duration. For AAC,

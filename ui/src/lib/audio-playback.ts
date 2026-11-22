@@ -48,7 +48,10 @@ export class AacAudioPlayback {
 	readonly #context = new AudioContext();
 	readonly #jitter = new AudioJitterBuffer();
 	#decoder: AudioDecoder | null = null;
+	#anchor: { timestampUs: number; contextTime: number } | null = null;
+	#scheduled = new Map<AudioBufferSourceNode, number>();
 	#nextStart = 0;
+	#fallbackTimestampUs = 0;
 	#closed = false;
 
 	async configure(
@@ -84,10 +87,11 @@ export class AacAudioPlayback {
 		this.#jitter.push(frame, (ready) => {
 			const timestampUs = ready.timestamp
 				? Number(ready.timestamp.seconds) * 1_000_000 + ready.timestamp.nanos / 1_000
-				: 0;
+				: this.#fallbackTimestampUs;
 			const durationUs = ready.duration
 				? Number(ready.duration.seconds) * 1_000_000 + ready.duration.nanos / 1_000
 				: 64_000;
+			this.#fallbackTimestampUs = timestampUs + durationUs;
 			this.#decoder?.decode(
 				new EncodedAudioChunk({
 					type: 'key',
@@ -103,6 +107,7 @@ export class AacAudioPlayback {
 		this.#closed = true;
 		this.#jitter.clear();
 		if (this.#decoder?.state !== 'closed') this.#decoder?.close();
+		this.#scheduled.clear();
 		void this.#context.close();
 	}
 
@@ -122,12 +127,39 @@ export class AacAudioPlayback {
 				format: 'f32-planar'
 			});
 		}
+		const timestampUs = audioData.timestamp;
 		audioData.close();
 		const source = this.#context.createBufferSource();
 		source.buffer = buffer;
 		source.connect(this.#context.destination);
-		this.#nextStart = Math.max(this.#nextStart, this.#context.currentTime);
-		source.start(this.#nextStart);
-		this.#nextStart += buffer.duration;
+		const start = this.#presentationTime(timestampUs);
+		this.#nextStart = start + buffer.duration;
+		this.#scheduled.set(source, this.#nextStart);
+		source.onended = () => this.#scheduled.delete(source);
+		source.start(start);
+	}
+
+	#presentationTime(timestampUs: number): number {
+		const now = this.#context.currentTime;
+		let start = this.#anchor
+			? this.#anchor.contextTime + (timestampUs - this.#anchor.timestampUs) / 1_000_000
+			: now;
+		// A source discontinuity or a suspended AudioContext must not accumulate
+		// more scheduled playback than the jitter buffer's existing age limit.
+		if (!this.#anchor || Math.abs(start - now) > maxAgeMs / 1000) {
+			this.#anchor = { timestampUs, contextTime: now };
+			start = now;
+		}
+		start = Math.max(now, start);
+		// Decoders report integer microseconds. Keep adjacent blocks contiguous.
+		if (Math.abs(start - this.#nextStart) < 0.000_002) return Math.max(now, this.#nextStart);
+		if (start < this.#nextStart) {
+			for (const [source, end] of this.#scheduled) {
+				if (end <= start) continue;
+				source.stop(start);
+				this.#scheduled.set(source, start);
+			}
+		}
+		return start;
 	}
 }

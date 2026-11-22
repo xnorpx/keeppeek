@@ -182,6 +182,7 @@ impl ApiMediaRuntime {
         );
         result.live_audio = Some(runtime.timing.report(selected_stream));
         self.audio_tracks.push(ApiAudioTrack {
+            source_session_id: plan.source_session_id,
             reported_timing: result.live_audio,
             runtime,
             reserved_bitrate_bps,
@@ -202,7 +203,14 @@ impl ApiMediaRuntime {
         index: usize,
         selected_stream: StreamKind,
     ) -> Result<proto::SubscriptionResult, ControlHandlerError> {
-        let runtime = &mut self.audio_tracks[index].runtime;
+        let track = &mut self.audio_tracks[index];
+        if track.source_session_id != plan.source_session_id {
+            return Err(ControlHandlerError::new(
+                ErrorCode::InvalidRequest,
+                "a media subscription replacement must keep the same source session",
+            ));
+        }
+        let runtime = &mut track.runtime;
         let matches_transport = matches!(
             (&runtime.delivery, plan.delivery_transport),
             (

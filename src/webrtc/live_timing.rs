@@ -8,7 +8,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+// One profile can delay either medium by up to 200 ms. An extra 50 ms allows the
+// session poller to deliver an eligible frame before latency forces a drop.
 pub(super) const MAX_AGE: Duration = Duration::from_millis(250);
+const _: () = assert!(MAX_AGE.as_millis() >= crate::cameras::MAX_LIVE_AUDIO_OFFSET_MS as u128 + 50);
+// Per camera profile across listeners: bound encoded video bursts by both byte
+// count and frame count, and reserve a separate smaller budget for audio units.
 const MAX_VIDEO_BYTES: usize = 2 * 1024 * 1024;
 const MAX_AUDIO_BYTES: usize = 256 * 1024;
 const MAX_FRAMES: usize = 128;
@@ -30,6 +35,7 @@ pub(super) struct CameraTiming {
 struct StreamPolicy {
     offset: i32,
     reset_at: Option<Instant>,
+    source_reset_at: Option<Instant>,
     generation: u64,
 }
 
@@ -82,6 +88,7 @@ impl CameraTiming {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter_mut()
         {
+            profile.source_reset_at = Some(now);
             profile.reset(now);
         }
     }
@@ -407,7 +414,7 @@ impl<T> Queue<T> {
             payload_address,
         } = packet;
         let policy = self.camera.policy(stream);
-        if policy.reset_at.is_some_and(|reset| received < reset) {
+        if policy.source_reset_at.is_some_and(|reset| received < reset) {
             return None;
         }
         let profile = &mut self.profiles[usize::from(stream == StreamKind::Sub)];
@@ -433,6 +440,9 @@ impl<T> Queue<T> {
             return Some((item, received));
         }
         let age = now.saturating_duration_since(received);
+        if policy.reset_at.is_some_and(|reset| received < reset) {
+            return None;
+        }
         if age > MAX_AGE {
             self.camera.record_expired(stream, audio);
             return None;
@@ -662,6 +672,31 @@ mod tests {
         assert_eq!(second.report(StreamKind::Main).held_video_frames, 1);
         assert_eq!(second.pop_due(due), Some((2, due)));
         assert_eq!(second.report(StreamKind::Main).held_video_bytes, 0);
+    }
+
+    #[test]
+    fn audio_only_save_preserves_inflight_video_until_the_source_itself_resets() {
+        let camera = Arc::new(CameraTiming::default());
+        let mut queue = Queue::new(camera.clone());
+        let earlier = Instant::now() - Duration::from_millis(10);
+        camera.configure(LiveAudioSettings {
+            main_offset_ms: Some(80),
+            ..Default::default()
+        });
+        let now = Instant::now();
+        assert_eq!(
+            queue.admit(1, packet(StreamKind::Main, VIDEO, earlier, 1), now),
+            Some((1, earlier))
+        );
+        assert_eq!(
+            queue.admit(2, packet(StreamKind::Main, AUDIO, earlier, 1), now),
+            None
+        );
+        camera.reset();
+        assert_eq!(
+            queue.admit(3, packet(StreamKind::Main, VIDEO, earlier, 1), now),
+            None
+        );
     }
 
     #[test]
