@@ -25,7 +25,7 @@ test('the selected Keep, event and bookmark intervals reach the same guarded HTT
 		const start = fixture.guestRecordingStartMs;
 		if (start === null || !Number.isSafeInteger(start))
 			throw new Error('The fixture requires retained video.');
-		await page.goto(`${fixture.origin}/keep?camera=127.0.0.1&stream=main&at=${start}&mode=export`);
+		await page.goto(`${fixture.origin}/keep?camera=127.0.0.1&stream=sub&at=${start}&mode=export`);
 		const panel = page.locator('[data-keep-export]');
 		const dialog = page.getByRole('dialog', { name: 'Create guest link', exact: true });
 		await panel.getByRole('button', { name: 'Create export', exact: true }).click();
