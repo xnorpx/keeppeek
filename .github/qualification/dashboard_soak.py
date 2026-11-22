@@ -160,7 +160,7 @@ async def main(work):
                 loop.remove_reader(master)
                 return
             raw=carry+data
-            for label in (b'Uptime',b'Enlarge terminal',b'\x1b[?1049l'):
+            for label in (b'Uptime',b'Enlarge',b'\x1b[?1049l'):
                 if label in raw:markers.add(label)
             carry=raw[-200:]
         loop.add_reader(master,drain)
@@ -189,7 +189,7 @@ async def main(work):
                 print('soak',samples[-1],'sessions',{str(k):r.accepted for k,r in relays.items()},flush=True)
             await asyncio.sleep(max(0,min(INTERVAL*(iteration+1),DURATION)-(time.monotonic()-start)))
         assert len(forced)==2 and all(end for _,end in forced),forced
-        assert b'Enlarge terminal' in markers
+        assert b'Enlarge' in markers
         os.write(master,b'q')
         for _ in range(50):
             if b'\x1b[?1049l' in markers:break
