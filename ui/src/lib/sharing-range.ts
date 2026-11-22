@@ -27,6 +27,8 @@ export type RangePreparation = {
 
 export class RangePreparationError extends Error {}
 export class FailedRangeExport extends RangePreparationError {}
+export const guestExportByteLimitError = 'export exceeds the guest preparation byte limit';
+const maxGuestExportBytes = 512 * 1024 * 1024;
 export type PreparedRange = {
 	exportJobId: string;
 	streamId: 'main' | 'sub';
@@ -177,6 +179,8 @@ export async function prepareRangeShare(
 				candidate.requestedEndMs === endMs &&
 				!candidate.burnInTimestamp &&
 				candidate.status === 'ready' &&
+				candidate.bytesWritten > 0 &&
+				candidate.bytesWritten <= maxGuestExportBytes &&
 				candidate.expiresAtMs !== null &&
 				candidate.expiresAtMs > Date.now()
 		)

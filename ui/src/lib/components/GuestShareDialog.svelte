@@ -5,7 +5,7 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import type { SharingControlClient } from '$lib/control-client-sharing';
-	import { RangeSharePreview } from '$lib/sharing-range-preview';
+	import { RangeSharePreview, type PreviewAction } from '$lib/sharing-range-preview';
 	import {
 		alternateRangeStream,
 		replaceableRangeArtifact,
@@ -41,7 +41,7 @@
 	let maxViews = $state('');
 	let maxDownloads = $state('');
 	let error = $state<string | null>(null);
-	let replaceable = $state(false);
+	let recovery = $state<Exclude<PreviewAction, 'reload'>>();
 	const rangePreview = new RangeSharePreview((jobId, guard) =>
 		controller.previewExport(jobId, guard)
 	);
@@ -72,11 +72,11 @@
 		};
 	});
 
-	async function load(replace = false): Promise<void> {
+	async function load(action: PreviewAction = 'reload'): Promise<void> {
 		const version = ++generation;
 		stage = 'loading';
 		error = null;
-		replaceable = false;
+		recovery = undefined;
 		try {
 			let nextPolicy: SharePolicy;
 			let nextEvidence: ShareEvidence;
@@ -92,7 +92,7 @@
 					throw new RangePreparationError(
 						'Enable sharing and configure its HTTPS origin in Settings before preparing a recording range.'
 					);
-				const result = await rangePreview.load(range, replace, lifetime.signal);
+				const result = await rangePreview.load(range, action, lifetime.signal);
 				nextEvidence = result.evidence;
 				guard = result.guard;
 			} else if (exportJobId) {
@@ -115,7 +115,7 @@
 		} catch (cause) {
 			if (version !== generation) return;
 			stage = 'error';
-			replaceable = rangePreview.canReplace(cause);
+			recovery = rangePreview.recovery(cause);
 			error = range
 				? cause instanceof Error &&
 					(cause instanceof RangePreparationError ||
@@ -241,9 +241,11 @@
 				<Button variant="outline" class="min-h-11" onclick={() => void load()}
 					>Reload preview</Button
 				>
-				{#if replaceable}
-					<Button variant="outline" class="min-h-11" onclick={() => void load(true)}
-						>Prepare a fresh export</Button
+				{#if recovery}
+					<Button variant="outline" class="min-h-11" onclick={() => recovery && void load(recovery)}
+						>{recovery === 'alternate'
+							? 'Prepare alternate stream'
+							: 'Prepare a fresh export'}</Button
 					>
 				{/if}
 			{:else if stage === 'created' && url}

@@ -2,6 +2,7 @@ import type { ShareEvidence } from './proto/webrtc_pb';
 import {
 	alternateRangeStream,
 	FailedRangeExport,
+	guestExportByteLimitError,
 	prepareRangeShare,
 	RangePreparationError,
 	replaceableRangeArtifact,
@@ -18,6 +19,7 @@ type Selection = {
 };
 
 type Preparation = 'initial' | 'alternate' | 'replacement';
+export type PreviewAction = 'reload' | 'alternate' | 'replacement';
 
 export class RangeSharePreview {
 	#selection?: Selection;
@@ -26,17 +28,20 @@ export class RangeSharePreview {
 		private readonly preview: (jobId: string, guard: RecordingRangeGuard) => Promise<ShareEvidence>
 	) {}
 
-	canReplace(cause: unknown): boolean {
-		return (
+	recovery(cause: unknown): Exclude<PreviewAction, 'reload'> | undefined {
+		if (cause instanceof FailedRangeExport && cause.message === guestExportByteLimitError)
+			return this.#selection?.fallback === 'available' ? 'alternate' : undefined;
+		if (
 			cause instanceof FailedRangeExport ||
-			(this.#selection?.job.reused === true && replaceableRangeArtifact(cause))
-		);
+			(this.#selection?.job.reused && replaceableRangeArtifact(cause))
+		)
+			return 'replacement';
 	}
 
-	async load(range: RangePreparation, replace: boolean, signal: AbortSignal) {
+	async load(range: RangePreparation, action: PreviewAction, signal: AbortSignal) {
 		let selected = this.#selection;
-		if (!selected || replace) {
-			selected = await this.prepare(range, replace ? 'replacement' : 'initial', signal);
+		if (!selected || action !== 'reload') {
+			selected = await this.prepare(range, action === 'reload' ? 'initial' : action, signal);
 		} else if (selected.phase === 'waiting') {
 			await waitForRangeExport(range.client, selected.job, signal);
 			selected.phase = 'ready';

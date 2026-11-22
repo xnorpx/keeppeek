@@ -17,6 +17,7 @@ const target: RecordingShareTarget = {
 const guard = { sourceId: 'front', startMs: 1000n, endMs: 2000n };
 const ready = {
 	id: 'recording-export',
+	bytesWritten: 100,
 	sourceId: 'front',
 	streamId: 'sub',
 	requestedStartMs: 1000,
@@ -75,9 +76,9 @@ describe('recording range sharing', () => {
 			.mockResolvedValue(evidence);
 		const recovery = new RangeSharePreview(preview);
 		const range = { client: recorder, target: { ...target, streamId: undefined } };
-		await expect(recovery.load(range, false, signal())).rejects.toThrow(failed.error);
-		expect(recovery.canReplace(new Error('Connection lost'))).toBe(false);
-		expect(await recovery.load(range, false, signal())).toEqual({ evidence, guard });
+		await expect(recovery.load(range, 'reload', signal())).rejects.toThrow(failed.error);
+		expect(recovery.recovery(new Error('Connection lost'))).toBeUndefined();
+		expect(await recovery.load(range, 'reload', signal())).toEqual({ evidence, guard });
 		expect(recorder.createExport).toHaveBeenCalledTimes(1);
 		expect(recorder.getExport).toHaveBeenCalledWith('sub-job');
 		expect(preview.mock.calls).toEqual([
@@ -102,6 +103,69 @@ describe('recording range sharing', () => {
 			guard
 		});
 		expect(recorder.createExport).not.toHaveBeenCalled();
+	});
+	it('prefers an eligible substream over a newer over-budget completed main export', async () => {
+		const recorder = client();
+		recorder.listExports.mockResolvedValue([
+			{
+				...ready,
+				id: 'large-main',
+				streamId: 'main',
+				expiresAtMs: ready.expiresAtMs + 1000,
+				bytesWritten: 512 * 1024 * 1024 + 1
+			},
+			{ ...ready, bytesWritten: 512 * 1024 * 1024 }
+		]);
+		const selected = await prepareRangeShare(
+			{ client: recorder, target: { ...target, streamId: undefined } },
+			signal()
+		);
+		expect(selected.exportJobId).toBe(ready.id);
+		expect(selected.guard).toEqual(guard);
+	});
+
+	it('rechecks a failed bounded job on reload and prepares another stream only on request', async () => {
+		const recorder = client();
+		recorder.getServerCapabilities.mockResolvedValue({
+			capabilityIds: ['keeppeek.guest-range.v1'],
+			storedMediaSources: []
+		});
+		recorder.queryStoredTimeline.mockResolvedValue({
+			ranges: ['main', 'sub'].map((streamId) => ({ ...target, streamId }))
+		});
+		const failed = {
+			...ready,
+			id: 'large-main',
+			streamId: 'main',
+			status: 'failed',
+			error: 'export exceeds the guest preparation byte limit'
+		};
+		recorder.createExport.mockResolvedValueOnce(failed).mockResolvedValueOnce(ready);
+		recorder.getExport.mockResolvedValue(failed);
+		const preview = new RangeSharePreview(vi.fn().mockResolvedValue(create(ShareEvidenceSchema)));
+		const range = { client: recorder, target: { ...target, streamId: undefined } };
+		const first = await preview.load(range, 'reload', signal()).catch((cause: unknown) => cause);
+		expect(preview.recovery(first)).toBe('alternate');
+		await expect(preview.load(range, 'reload', signal())).rejects.toThrow(failed.error);
+		expect(recorder.getExport).toHaveBeenCalledWith('large-main');
+		expect(recorder.createExport).toHaveBeenCalledTimes(1);
+		await expect(preview.load(range, 'alternate', signal())).resolves.toMatchObject({ guard });
+		expect(
+			recorder.createExport.mock.calls.map(([request]) => [
+				request.streamId,
+				request.startMs,
+				request.endMs
+			])
+		).toEqual([
+			['main', 1000, 2000],
+			['sub', 1000, 2000]
+		]);
+		recorder.createExport.mockResolvedValue(failed);
+		const explicit = new RangeSharePreview(vi.fn());
+		const fixed = await explicit
+			.load({ client: recorder, target: { ...target, streamId: 'main' } }, 'reload', signal())
+			.catch((cause: unknown) => cause);
+		expect(explicit.recovery(fixed)).toBeUndefined();
 	});
 	it('reuses the newest exact ready artifact even after the original footage is retained away', async () => {
 		const recorder = client();

@@ -29,6 +29,20 @@ pub(super) fn inspect(
     range: Option<&proto::ShareRecordingRange>,
 ) -> Result<(ValidatedEvidence, LeaseSet), ControlCommandError> {
     let checked = preview_binding(state, principal, id, range)?;
+    let _permit = range
+        .map(|_| state.guest_review.reserve_hash())
+        .transpose()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                ControlCommandError::new(
+                    proto::ErrorCode::Unavailable,
+                    503,
+                    "recording inspection is busy; retry the preview",
+                )
+            } else {
+                unavailable()
+            }
+        })?;
     let opened = open_guest(state, &checked.binding)?;
     if range.is_some() {
         super::super::guest_review::inspect_range_codec(opened.file, checked.binding.bytes)
@@ -79,10 +93,10 @@ pub(super) fn preview_binding(
     {
         return Err(missing_range_proof());
     }
-    let binding = binding(&record)?;
     if let Some(selected) = range {
-        check_range(&record, &binding, &current_source, selected)?;
+        check_range(&record, &current_source, selected)?;
     }
+    let binding = binding(&record)?;
     live_evidence(state, &record, binding)
 }
 
@@ -97,7 +111,6 @@ fn missing_range_proof() -> ControlCommandError {
 // The original selection and the pinned artifact must both fit the requested interval.
 fn check_range(
     record: &ExportJobRecord,
-    binding: &ExportBinding,
     current_source: &str,
     selected: &proto::ShareRecordingRange,
 ) -> Result<(), ControlCommandError> {
@@ -121,13 +134,19 @@ fn check_range(
             "recorded audio correction prevents verification of the selected source interval",
         ));
     }
+    let bounds = record
+        .media_proof
+        .as_ref()
+        .filter(|proof| proof.matches(record))
+        .ok_or_else(denied)?
+        .bounds;
     if selected.source_id != current_source
-        || selected.source_id != binding.source_id
+        || selected.source_id != record.job.source_id
         || selected.start_ms
             != required_timestamp_ms(record.request.start_time.as_ref(), "export start")?
         || selected.end_ms != required_timestamp_ms(record.request.end_time.as_ref(), "export end")?
-        || binding.start_ms < selected.start_ms
-        || binding.end_ms > selected.end_ms
+        || bounds.start_ms < selected.start_ms
+        || bounds.end_ms > selected.end_ms
     {
         return Err(ControlCommandError::new(
             proto::ErrorCode::Rejected,

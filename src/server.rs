@@ -833,7 +833,8 @@ impl ControlRequestHandler for ServerControlHandler {
                         self.handle_configuration(session_id, &principal, command)
                     }
                     Some(control_request::Command::ShareCommand(command)) => {
-                        sharing::dispatch(&self.state, &principal, command).map(Some)
+                        sharing::dispatch_for_session(&self.state, session_id, &principal, command)
+                            .map(Some)
                     }
                     Some(control_request::Command::EventWorkflowCommand(command)) => {
                         event_workflow::dispatch(&self.state, &principal, command).map(Some)

@@ -73,18 +73,32 @@ async function playGuestEvidence(dialog: Locator, recipient: BrowserContext) {
 		throw new Error('The guest page did not load.');
 	});
 	await expect(viewer.getByRole('heading', { name: 'Selected recording' })).toBeVisible();
-	await viewer.locator('video').evaluate(async (element) => {
+	const target = await viewer.locator('video').evaluate(async (element) => {
 		const video = element as HTMLVideoElement;
 		video.muted = true;
 		await video.play();
 		video.pause();
-		video.currentTime = video.duration / 2;
+		const middle = video.duration / 2;
+		const seeked = new Promise<void>((resolve) =>
+			video.addEventListener('seeked', () => resolve(), { once: true })
+		);
+		video.currentTime = middle;
+		await seeked;
+		return middle;
 	});
 	await expect
 		.poll(() =>
-			viewer.locator('video').evaluate((element) => (element as HTMLVideoElement).videoWidth)
+			viewer.locator('video').evaluate((video, expected) => {
+				const player = video as HTMLVideoElement;
+				return (
+					!player.seeking &&
+					player.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+					player.videoWidth > 0 &&
+					Math.abs(player.currentTime - expected) < 0.05
+				);
+			}, target)
 		)
-		.toBeGreaterThan(0);
+		.toBe(true);
 	await expect(viewer.getByRole('link', { name: 'Download MP4' })).toHaveCount(0);
 }
 

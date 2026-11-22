@@ -131,6 +131,7 @@ describe('creator guest share dialog', () => {
 		const streams = ['main', 'sub'];
 		const ready = {
 			id: 'main-file',
+			bytesWritten: 100,
 			sourceId: target.sourceId,
 			streamId: 'main',
 			requestedStartMs: target.startMs,
@@ -270,6 +271,7 @@ describe('creator guest share dialog', () => {
 			};
 			const old = {
 				id: evidence.exportJobId,
+				bytesWritten: 100,
 				sourceId: target.sourceId,
 				streamId: 'sub',
 				requestedStartMs: target.startMs,

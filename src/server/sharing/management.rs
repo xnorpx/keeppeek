@@ -2,8 +2,18 @@ use super::*;
 use crate::shares::CreateGrant;
 use proto::{share_command::Action, share_result::Result as Value};
 
+#[cfg(test)]
 pub(in crate::server) fn dispatch(
     state: &ServerState,
+    principal: &ApiPrincipal,
+    command: proto::ShareCommand,
+) -> Result<control_ok::Result, ControlCommandError> {
+    dispatch_for_session(state, SessionId::from_u64(0), principal, command)
+}
+
+pub(in crate::server) fn dispatch_for_session(
+    state: &ServerState,
+    session_id: SessionId,
     principal: &ApiPrincipal,
     command: proto::ShareCommand,
 ) -> Result<control_ok::Result, ControlCommandError> {
@@ -21,7 +31,9 @@ pub(in crate::server) fn dispatch(
                 request.recording_range.as_ref(),
             )?))
         }
-        Some(Action::Create(request)) => Value::Created(create(state, principal, request)?),
+        Some(Action::Create(request)) => {
+            Value::Created(create(state, session_id, principal, request)?)
+        }
         Some(Action::List(request)) => Value::Grants(list(state, principal, request)?),
         Some(Action::Revoke(request)) => Value::Grant(revoke(state, request)?),
         Some(Action::RevokeEvidence(request)) => {
@@ -95,6 +107,7 @@ pub(super) fn configure_with(
 
 fn create(
     state: &ServerState,
+    session_id: SessionId,
     principal: &ApiPrincipal,
     request: proto::CreateShareGrant,
 ) -> Result<proto::IssuedShareGrant, ControlCommandError> {
@@ -104,11 +117,12 @@ fn create(
         &request.export_job_id,
         request.recording_range.as_ref(),
     )?;
-    create_inspected(state, principal, request, inspected)
+    create_inspected(state, session_id, principal, request, inspected)
 }
 
 pub(super) fn create_inspected(
     state: &ServerState,
+    session_id: SessionId,
     principal: &ApiPrincipal,
     request: proto::CreateShareGrant,
     inspected: evidence::ValidatedEvidence,
@@ -151,8 +165,10 @@ pub(super) fn create_inspected(
         max_views: request.max_views,
         max_downloads: request.max_downloads,
     };
-    let (issued, now_ms) = with_store(state, |store, clock| {
-        Ok((store.create(intent, clock)?, clock.unix_ms))
+    let (issued, now_ms) = session_lifecycle::admit(state, session_id, || {
+        with_store(state, |store, clock| {
+            Ok((store.create(intent, clock)?, clock.unix_ms))
+        })
     })?;
     let url = format!("{}/share#{}", context.origin, issued.token.into_string());
     Ok(proto::IssuedShareGrant {

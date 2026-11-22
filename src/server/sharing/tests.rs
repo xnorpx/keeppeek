@@ -266,10 +266,101 @@ fn creation_rechecks_current_policy_after_inspecting_and_leasing_the_file() {
     settings.settings.as_mut().unwrap().enabled = false;
     fixture.action(Action::ConfigurePolicy(settings));
     assert!(
-        management::create_inspected(&fixture.state, &fixture.principal, request, inspected)
-            .is_err()
+        management::create_inspected(
+            &fixture.state,
+            SessionId::from_u64(0),
+            &fixture.principal,
+            request,
+            inspected
+        )
+        .is_err()
     );
     assert!(fixture.list(100).grants.is_empty());
+}
+
+#[test]
+fn range_preview_uses_the_recorders_shared_inspection_capacity() {
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let inspect = || {
+        evidence::preview(
+            &fixture.state,
+            &fixture.principal,
+            &record.job.job_id,
+            Some(&range),
+        )
+    };
+    let _first = fixture.state.guest_review.reserve_hash().unwrap();
+    let second = fixture.state.guest_review.reserve_hash().unwrap();
+    let error = inspect().err().unwrap();
+    assert_eq!(error.code, proto::ErrorCode::Unavailable);
+    assert!(error.message.contains("inspection is busy"));
+    assert!(
+        evidence::preview(&fixture.state, &fixture.principal, &record.job.job_id, None).is_ok()
+    );
+    drop(second);
+    assert!(inspect().is_ok());
+}
+
+#[test]
+fn closing_the_initiating_session_cancels_pending_grant_creation() {
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let id = SessionId::from_u64(751);
+    fixture
+        .state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .insert(id, super::super::tests::local_test_session());
+    let (inspected, _lease) = evidence::inspect(
+        &fixture.state,
+        &fixture.principal,
+        &record.job.job_id,
+        Some(&range),
+    )
+    .unwrap();
+    let request = proto::CreateShareGrant {
+        recording_range: Some(range),
+        ..fixture.intent()
+    };
+    session_lifecycle::admit(&fixture.state, id, || Ok(())).unwrap();
+    assert!(session_lifecycle::close(&fixture.state, id).is_some());
+    let error =
+        management::create_inspected(&fixture.state, id, &fixture.principal, request, inspected)
+            .unwrap_err();
+    assert!(error.message.contains("API session is unavailable"));
+    assert!(fixture.list(1).grants.is_empty());
+}
+
+#[test]
+fn a_maximum_interval_reports_a_crossed_source_edge_before_the_general_duration_limit() {
+    let (fixture, mut record, mut range) = selected_export(VideoCodec::H264);
+    range.end_ms = range.start_ms + crate::shares::MAX_MEDIA_DURATION_MS;
+    record.request.end_time = Some(millis_timestamp(range.end_ms));
+    let proof = record.media_proof.as_mut().unwrap();
+    proof.bounds.start_ms = range.start_ms - 1;
+    proof.bounds.end_ms = range.end_ms;
+    fixture
+        .state
+        .export_jobs
+        .lock()
+        .unwrap()
+        .insert(record.job.job_id.clone(), record.clone());
+    let preview = |selected| {
+        evidence::preview_binding(
+            &fixture.state,
+            &fixture.principal,
+            &record.job.job_id,
+            selected,
+        )
+    };
+    assert!(
+        preview(Some(&range))
+            .err()
+            .unwrap()
+            .message
+            .contains("within the selected range")
+    );
+    assert!(preview(None).is_err());
 }
 
 #[test]
