@@ -8,7 +8,8 @@ use std::{io::Cursor, time::Instant};
 
 pub(crate) const MAX_SAMPLES: u32 = 4_096;
 pub(crate) const MAX_ENCODED_BYTES: u64 = 32 * 1_024 * 1_024;
-pub(crate) const MAX_SPAN_NS: i128 = 10_000_000_000;
+pub(crate) const MAX_SPAN_MS: i64 = 10_000;
+pub(crate) const MAX_SPAN_NS: i128 = MAX_SPAN_MS as i128 * 1_000_000;
 pub(crate) const MAX_MOOF_BYTES: usize = 1_024 * 1_024;
 
 #[derive(Clone, Debug)]

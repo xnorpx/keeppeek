@@ -214,8 +214,7 @@ fn frame_step_catalog_window_reports_the_first_excess_fragment_as_a_limit() {
     let read = || {
         handle.frame_step_window(
             "front-door/sub",
-            1,
-            20_002,
+            10_001,
             Instant::now() + Duration::from_secs(2),
         )
     };

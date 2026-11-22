@@ -571,11 +571,9 @@ fn run(
         None => return Err(Unavailable::Stale),
     };
     let now = i64::try_from(anchor.div_euclid(1_000_000)).map_err(|_| Unavailable::Stale)?;
-    let start = now.saturating_sub(10_000);
-    let end = now.saturating_add(10_001);
     let catalog = op.state.catalog.as_ref().ok_or(Unavailable::Timing)?;
     let (revision, mut fragments, _leases) = catalog
-        .frame_step_window(stream, start, end, deadline)
+        .frame_step_window(stream, now, deadline)
         .map_err(window_failure)?;
     fragments.sort_by_key(|f| (f.start_ms, f.sequence));
     let cancelled = || op.cancelled();
@@ -603,7 +601,7 @@ fn run(
         // Recording on another camera also advances the catalog revision. Revalidate the
         // leased stream interval so unrelated writes cannot starve a paused viewer.
         let (_, mut latest, _latest_lease) = catalog
-            .frame_step_window(stream, start, end, deadline)
+            .frame_step_window(stream, now, deadline)
             .map_err(window_failure)?;
         latest.sort_by_key(|f| (f.start_ms, f.sequence));
         if latest != fragments {

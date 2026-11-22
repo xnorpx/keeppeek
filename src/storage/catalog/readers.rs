@@ -280,14 +280,13 @@ impl RecordingCatalogHandle {
     pub(crate) fn frame_step_window(
         &self,
         stream: &str,
-        start: i64,
-        end: i64,
+        anchor_ms: i64,
         deadline: std::time::Instant,
     ) -> anyhow::Result<(u64, Vec<CatalogMediaFragment>, LeaseSet)> {
-        anyhow::ensure!(
-            start < end && end.saturating_sub(start) <= 20_002,
-            "invalid frame lookup range"
-        );
+        use crate::storage::sample_index::MAX_SPAN_MS;
+        let start = anchor_ms.saturating_sub(MAX_SPAN_MS);
+        // The catalog range is half-open. Include the final millisecond after the anchor.
+        let end = anchor_ms.saturating_add(MAX_SPAN_MS + 1);
         let request = Request::FrameWindow {
             stream: stream.to_owned(),
             start,
