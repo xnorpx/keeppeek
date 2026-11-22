@@ -362,3 +362,35 @@ offset, including variable packet size and gaps. The approved server bounds are
 250 ms age, 256 KiB audio and 2 MiB/128 frames video per stream. The timing
 numbers compare disabled and enabled queue processing in this build. They do not
 measure capture-to-speaker latency, end-to-end ingest throughput or production CPU.
+
+### Physical output verification procedure
+
+Use a camera and a flash/click source with simultaneous visible and audible events. A
+clapboard closure is suitable if its contact frame and sound onset are identifiable.
+Use synthetic events in the test scene so the verification record needs no footage or
+conversation from an occupied space.
+
+1. Record the camera model, firmware, Main or Sub profile, configured codecs, frame
+   rate, RTSP transport, any transcoder, browser, display, audio output and build.
+   Keep the same equipment, positions and clock throughout a comparison. Record the
+   reference capture's frame rate and audio sample rate to establish measurement resolution.
+2. Set live and recorded corrections to zero. Capture several events using an independent
+   recorder that sees the viewer display and hears its loudspeaker. For each event,
+   measure audio onset minus visible contact time. A negative value indicates early
+   audio. Record the individual values and their spread.
+3. Apply a live preview of the opposite sign to the measured error. Record the displayed
+   video latency before applying a negative offset. Repeat the same series, save the
+   setting, reconnect, and measure again. Record server queue peaks and drops and
+   the browser jitter-buffer observations separately.
+4. Replay the same stored events with recorded correction zero, then apply a recorded
+   offset and repeat. Seek across a fragment boundary, change playback speed and
+   reopen the recording. Test the corrected export in a local player and record its
+   audible and visible event times. Preserve the original MP4 and its checksum for
+   comparison. Record an unsupported codec or export result verbatim.
+5. Repeat independently for every hardware and codec path being qualified. Capture
+   and listener output, source clocks, stored presentation times and receiver queue
+   statistics measure different points in the path. An unmeasured point stays unavailable.
+
+| Build, device, firmware and profile | Codec, transport and transcoder | Playback path and output | Raw skew and spread (ms) | Applied offset (ms) | Added video latency (ms) | Residual and spread (ms) | Queue peak and drops | Result after reconnect or seek |
+| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| Pending physical measurement | | | | | | | | |
