@@ -192,6 +192,17 @@ pub struct Stream {
     pub(crate) control: Option<Url>,
 }
 
+/// Original RTP timing from one stream, before depacketization or playback mapping.
+#[derive(Clone, Copy, Debug)]
+pub struct RtpClockSnapshot {
+    pub packets: u64,
+    pub clock: rtp::PacketClock,
+    /// RTP-Info origin supplied by PLAY and accepted by the initial timestamp policy.
+    pub play_origin: Option<u32>,
+    /// The latest matching RTCP sender report's RTP ticks and NTP timestamp.
+    pub sender_report: Option<(u32, crate::NtpTimestamp)>,
+}
+
 impl std::fmt::Debug for Stream {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -210,6 +221,18 @@ impl std::fmt::Debug for Stream {
 }
 
 impl Stream {
+    /// Returns timing only after this PLAY session has accepted an RTP packet.
+    pub fn rtp_clock(&self) -> Option<RtpClockSnapshot> {
+        match &self.state {
+            StreamState::Playing {
+                rtp_handler,
+                timeline,
+                ..
+            } => rtp_handler.clock_snapshot(timeline.play_origin),
+            _ => None,
+        }
+    }
+
     /// Returns the SDP media type.
     pub fn media(&self) -> &str {
         &self.media
