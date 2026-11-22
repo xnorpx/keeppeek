@@ -405,6 +405,7 @@ fn deadline_finalization_clamps_the_last_mp4_video_sample() {
     }
     let path = writer
         .finalize_before(start + Duration::from_millis(250))
+        .unwrap()
         .unwrap();
     let mut media = mp4::read_mp4(std::fs::File::open(path).unwrap()).unwrap();
     let track = *media.tracks().keys().next().unwrap();

@@ -742,9 +742,11 @@ impl WriterWorker {
                 continue;
             };
             let id = writer.recording_id().to_owned();
-            let result = writer.discard_pending().and_then(|()| writer.finalize());
+            let result = writer
+                .discard_pending()
+                .and_then(|()| writer.finalize_recording());
             match result {
-                Ok(path) if path.exists() => {
+                Ok(Some(path)) => {
                     if let Err(error) = self.move_to_long_term(&key, &path, &id) {
                         self.health.note_failure(&key, &error.to_string());
                     }
@@ -825,9 +827,10 @@ impl WriterWorker {
             return;
         };
         let id = writer.recording_id().to_owned();
-        let result = writer
-            .finalize_before(end)
-            .and_then(|path| self.move_to_long_term(&identity.storage_key, &path, &id));
+        let result = writer.finalize_before(end).and_then(|path| {
+            path.map(|path| self.move_to_long_term(&identity.storage_key, &path, &id))
+                .transpose()
+        });
         if let Err(error) = result {
             self.health
                 .note_failure(&identity.storage_key, &error.to_string());

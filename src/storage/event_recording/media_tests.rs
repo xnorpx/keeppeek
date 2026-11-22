@@ -120,7 +120,7 @@ fn drain(
             }
             EventOutput::Finish { end, .. } => {
                 if let Some(writer) = writer.take() {
-                    paths.push(writer.finalize_before(end).unwrap());
+                    paths.push(writer.finalize_before(end).unwrap().unwrap());
                 }
             }
         }

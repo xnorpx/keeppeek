@@ -367,13 +367,13 @@ struct WriteProgress {
 
 impl WriteProgress {
     fn report(self, health: &RecordingHealthRegistry, stream: &str) {
+        if self.wrote || !self.recorded_duration.is_zero() {
+            health.note_progress(stream, self.recorded_duration);
+        }
         if self.keyframe_gap {
             let error = super::medium_term::keyframe_budget_error();
             health.note_failure(stream, &error.to_string());
             tracing::warn!(camera = stream, %error, "recording gap");
-        }
-        if self.wrote {
-            health.note_progress(stream, self.recorded_duration);
         }
     }
 }
@@ -1079,8 +1079,9 @@ impl WriterWorker {
             return;
         };
         let recording_id = writer.recording_id().to_owned();
-        match writer.finalize() {
-            Ok(path) => {
+        match writer.finalize_recording() {
+            Ok(None) => {}
+            Ok(Some(path)) => {
                 if let Err(error) = self.move_to_long_term(storage_key, &path, &recording_id) {
                     self.health.note_failure(storage_key, &error.to_string());
                     tracing::error!(camera = storage_key, %error, "unable to finalize recording before queue gap");
@@ -1358,7 +1359,7 @@ impl WriterWorker {
         if needs_rotation && frame.is_video_keyframe() {
             let old = pipeline.medium_term.take().unwrap();
             let recording_id = old.recording_id().to_owned();
-            rotated = Some((old.finalize()?, recording_id));
+            rotated = old.finalize_recording()?.map(|path| (path, recording_id));
         }
 
         if pipeline.medium_term.is_none() {
@@ -1393,11 +1394,11 @@ impl WriterWorker {
             self.move_to_long_term(camera_id, &path, &recording_id)?;
         }
 
-        let recorded_duration = recorded_duration?;
+        let (recorded_duration, keyframe_gap) = recorded_duration?;
         Ok(WriteProgress {
             wrote,
-            recorded_duration: recorded_duration.unwrap_or_default(),
-            keyframe_gap: recorded_duration.is_none(),
+            recorded_duration,
+            keyframe_gap,
         })
     }
 
@@ -1440,7 +1441,7 @@ impl WriterWorker {
             }
             if let Some(old) = pipeline.medium_term.take() {
                 let recording_id = old.recording_id().to_owned();
-                rotated = Some((old.finalize()?, recording_id));
+                rotated = old.finalize_recording()?.map(|path| (path, recording_id));
             }
             let writer = create_medium_term_writer(
                 &self.config,
@@ -1532,8 +1533,9 @@ impl WriterWorker {
                 .and_then(|p| p.medium_term.take())
             {
                 let recording_id = writer.recording_id().to_owned();
-                match writer.finalize() {
-                    Ok(path) => {
+                match writer.finalize_recording() {
+                    Ok(None) => {}
+                    Ok(Some(path)) => {
                         if let Err(e) = self.move_to_long_term(&id, &path, &recording_id) {
                             tracing::error!(camera = %id, error = %e, "move to long-term failed");
                         }
@@ -1724,6 +1726,7 @@ pub struct ShortTermStats {
 #[cfg(test)]
 mod tests {
     mod finalization;
+    mod gop_recovery;
     mod named;
 
     use super::*;
