@@ -160,6 +160,7 @@ fn write_source(root: &Path, catalog: RecordingCatalogHandle) -> (i64, i64) {
         let elapsed = Duration::from_millis(offset);
         writer
             .append_one(crate::storage::RecordingFrame {
+                source_rtp: None,
                 received_at: started + elapsed,
                 timestamp: Some(elapsed),
                 frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {

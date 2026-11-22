@@ -47,6 +47,7 @@ fn fixture(codec: VideoCodec) -> Vec<RecordingFrame> {
             }
             bytes.extend_from_slice(&sample.bytes);
             RecordingFrame {
+                source_rtp: None,
                 received_at: start
                     + Duration::from_secs(u64::from(index / count))
                     + Duration::from_secs_f64(sample.start_time as f64 / f64::from(timescale)),
@@ -96,6 +97,7 @@ fn audio_fixture(start: Instant) -> Vec<RecordingFrame> {
             | usize::from(data[5] >> 5);
         assert!((7..=data.len()).contains(&length));
         packets.push(RecordingFrame {
+            source_rtp: None,
             received_at: start + Duration::from_millis(u64::try_from(packets.len()).unwrap() * 64),
             timestamp: None,
             frame: MediaFrame::Audio(AudioFrame {

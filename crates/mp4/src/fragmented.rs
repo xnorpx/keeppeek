@@ -59,6 +59,9 @@ struct FragmentTrack {
     pending_sample_description_index: Option<u32>,
     composition_range: CompositionRange,
     samples: Vec<Mp4Sample>,
+    source_timing: source_rtp::SourceTiming,
+    committed_epoch: Option<SourceRtpTime>,
+    pending_epoch: Option<SourceRtpTime>,
 }
 
 #[derive(Debug)]
@@ -96,7 +99,9 @@ impl<W> FragmentedMp4Writer<W> {
     pub fn discard_pending_samples(&mut self) {
         for track in &mut self.tracks {
             track.composition_range = CompositionRange::default();
+            track.pending_epoch = track.committed_epoch;
             track.samples.clear();
+            track.source_timing = source_rtp::SourceTiming::default();
             track.pending_sample_description_index = None;
         }
     }
@@ -171,6 +176,9 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
                 pending_sample_description_index: None,
                 composition_range: CompositionRange::default(),
                 samples: Vec::new(),
+                committed_epoch: None,
+                pending_epoch: None,
+                source_timing: source_rtp::SourceTiming::default(),
             });
         }
         write_initialization_metadata(&mut writer, moov_offset, config.timescale, &tracks)?;
@@ -263,6 +271,17 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
         sample_description_index: u32,
         sample: Mp4Sample,
     ) -> Result<()> {
+        self.write_sample_with_source_timing(track_id, sample_description_index, sample, None)
+    }
+
+    /// Attaches measured source packet timing to this stored access unit, when available.
+    pub fn write_sample_with_source_timing(
+        &mut self,
+        track_id: u32,
+        sample_description_index: u32,
+        sample: Mp4Sample,
+        source_rtp: Option<SourceRtpPacket>,
+    ) -> Result<()> {
         self.ensure_not_poisoned()?;
         if sample.duration == 0 {
             return Err(Error::InvalidData("fragmented MP4 sample duration is zero"));
@@ -301,6 +320,15 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
             ));
         }
         let composition_range = track.composition_range.including(sample.rendering_offset)?;
+        let measured = source_rtp
+            .map(|packet| {
+                let pts = i64::try_from(
+                    i128::from(sample.start_time) + i128::from(sample.rendering_offset),
+                )
+                .map_err(|_| Error::InvalidData("source RTP presentation anchor exceeds i64"))?;
+                Ok::<_, Error>(packet.recorded(track.pending_epoch, pts))
+            })
+            .transpose()?;
         if let Some(previous) = track.samples.last_mut() {
             let delta = sample
                 .start_time
@@ -314,6 +342,10 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
         }
         track.composition_range = composition_range;
         track.pending_sample_description_index = Some(sample_description_index);
+        track.pending_epoch = measured;
+        if let Some(value) = measured {
+            track.source_timing.add(track.samples.len() as u32, value);
+        }
         track.samples.push(sample);
         Ok(())
     }
@@ -365,6 +397,7 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
 
             let has_multiple_descriptions = track.sample_description_count > 1;
             moof.trafs.push(TrafBox {
+                source_timing: track.source_timing.clone(),
                 tfhd: TfhdBox {
                     flags: TfhdBox::FLAG_DEFAULT_BASE_IS_MOOF
                         | TfhdBox::FLAG_DEFAULT_SAMPLE_DURATION
@@ -468,7 +501,9 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
         let fragment_end = self.writer.stream_position()?;
         for track in &mut self.tracks {
             track.composition_range = CompositionRange::default();
+            track.committed_epoch = track.pending_epoch;
             track.samples.clear();
+            track.source_timing = source_rtp::SourceTiming::default();
             track.pending_sample_description_index = None;
         }
 
@@ -897,6 +932,123 @@ mod tests {
                 b"picture"
             );
         }
+    }
+
+    #[test]
+    fn original_rtp_is_indexed_by_stored_track_ordinal_across_fragments() {
+        let mut writer = FragmentedMp4Writer::write_start(
+            Cursor::new(Vec::new()),
+            &mp4_config(),
+            &[video_track(), audio_track()],
+        )
+        .unwrap();
+        let base = SourceRtpPacket {
+            session_id: [7; 16],
+            clock_rate: 90_000.try_into().unwrap(),
+            timestamp: i64::from(u32::MAX) - 2,
+            discontinuity: true,
+        };
+        let wrapped = SourceRtpPacket {
+            timestamp: base.timestamp + 9,
+            discontinuity: false,
+            ..base
+        };
+        let earlier = SourceRtpPacket {
+            timestamp: base.timestamp - 5,
+            discontinuity: false,
+            ..base
+        };
+        let reconnect = SourceRtpPacket {
+            session_id: [8; 16],
+            timestamp: -11,
+            ..base
+        };
+        let audio = SourceRtpPacket {
+            clock_rate: 48_000.try_into().unwrap(),
+            timestamp: 345,
+            ..base
+        };
+        for (i, timing) in [
+            Some(base),
+            Some(wrapped),
+            Some(earlier),
+            None,
+            Some(reconnect),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            writer
+                .write_sample_with_source_timing(
+                    1,
+                    1,
+                    sample(i as u64 * 1_000, i == 0, b"video"),
+                    timing,
+                )
+                .unwrap();
+        }
+        writer
+            .write_sample_with_source_timing(2, 1, sample(0, true, b"audio"), Some(audio))
+            .unwrap();
+        let first = writer.flush_fragment().unwrap().unwrap();
+        writer
+            .write_sample_with_source_timing(1, 1, sample(5_000, true, b"discard"), Some(base))
+            .unwrap();
+        writer.discard_pending_samples();
+        let tail = SourceRtpPacket {
+            timestamp: reconnect.timestamp + 3,
+            discontinuity: false,
+            ..reconnect
+        };
+        writer
+            .write_sample_with_source_timing(1, 1, sample(5_000, true, b"continued"), Some(tail))
+            .unwrap();
+        writer
+            .write_sample(1, sample(6_000, false, b"legacy"))
+            .unwrap();
+        writer.flush_fragment().unwrap().unwrap();
+        let bytes = writer.into_writer().into_inner();
+        let key = first.video_keyframe.unwrap();
+        assert_eq!(
+            &bytes[key.offset as usize..key.offset as usize + 5],
+            b"video"
+        );
+        let mut reader = Mp4Reader::read_header(Cursor::new(&bytes), bytes.len() as u64).unwrap();
+        let first_time = base.recorded(None, 0);
+        let reconnect_time = reconnect.recorded(None, 4000);
+        for (i, expected) in [
+            None,
+            Some(first_time),
+            Some(wrapped.recorded(Some(first_time), 1000)),
+            Some(earlier.recorded(Some(first_time), 2000)),
+            None,
+            Some(reconnect_time),
+            Some(tail.recorded(Some(reconnect_time), 5000)),
+            None,
+            None,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(reader.source_rtp_time(1, i as u32).unwrap(), expected);
+        }
+        assert_eq!(
+            reader.source_rtp_time(2, 1).unwrap(),
+            Some(audio.recorded(None, 0))
+        );
+        assert!(reader.source_rtp_time(99, 1).is_err());
+        assert_eq!(
+            reader.read_sample(1, 7).unwrap().unwrap().bytes.as_ref(),
+            b"legacy"
+        );
+        let partial = first.range.offset + first.range.size;
+        let recovered =
+            Mp4Reader::read_header(Cursor::new(&bytes[..partial as usize]), partial).unwrap();
+        assert_eq!(
+            recovered.source_rtp_time(1, 5).unwrap(),
+            Some(reconnect_time)
+        );
+        assert_eq!(recovered.source_rtp_time(1, 6).unwrap(), None);
     }
 
     #[test]

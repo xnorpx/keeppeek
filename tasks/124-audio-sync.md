@@ -266,3 +266,63 @@ seek figures measure the local stored-fragment write path. Browser latency,
 concurrent ingest, worker memory, CPU utilization, release-build throughput and
 hardware calibration still require qualification. The issue has no approved
 numeric performance budget for this comparison.
+
+## RTSP packet-clock diagnostics on 2026-11-22
+
+The recorder reports the original RTP header timestamps for the first and most
+recent accepted packet of each unambiguous audio and video track. The
+[operator guide](../book/src/recording-and-evidence.md#compare-rtsp-source-clocks)
+describes the PLAY origin, RTCP sender reference, sequence gaps and backwards
+timestamp steps. Measurements are scoped to the current RTSP session and
+profile. Historical media keeps its existing timing evidence.
+
+The optimized parser benchmark used Rust 1.100 on Windows 11 Pro build 26200,
+AMD Ryzen 5 5600G, six cores, 15.3 GiB available to the OS and a local SSD.
+The measured loop reads prebuilt packets from memory. Four 1,024-byte payloads
+share each 90 kHz frame timestamp. Each process warms up once and times 30 runs
+of 8,192 accepted packets. Ten pairs of baseline and candidate processes
+alternated order. The table gives the median of the ten per-process results.
+
+| Cost per accepted packet | Baseline `088331d` | With source timing |
+| ------------------------ | -----------------: | -----------------: |
+| Median                   |           70.58 ns |           52.16 ns |
+| p95                      |          126.14 ns |          105.42 ns |
+
+The workstation also ran other test jobs. Per-process p95 ranged from 82.75 to
+154.42 ns at baseline and 35.78 to 125.37 ns with diagnostics. Concurrent load
+prevents this comparison from establishing a speedup or a regression bound. The storage budget
+for timing evidence is fixed-size counters and timestamps per negotiated track,
+with zero packet payloads retained for reporting. A deployment throughput target
+and live latency budget still require qualification.
+
+Run the following command with `CARGO_PROFILE_RELEASE_LTO=false` and
+`CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16`. For the baseline, copy the same
+`timing_benchmark.rs` into the matching Retina test directory at `088331d` and
+register `mod timing_benchmark;` inside the RTP test module.
+
+```sh
+cargo +1.100.0 test --locked --release -p retina --lib measure_accepted_rtp_packets -- --ignored --nocapture
+```
+
+### Source timing collection and attribution
+
+Final source-clock samples use the persisted camera profile UUID and the unique PLAY
+attempt UUID, recorded as numeric 32-bit words. An unregistered camera allows
+session-level comparison only. A targeted `keeppeek::rtsp::timing=trace` filter
+opts into a single five-minute recorder-wide periodic collection. Final reports
+remain enabled at info after the window. The two-sink test uses the numeric
+secret `4` and checks that both identities retain their original values.
+
+### Original packet timing in new recordings
+
+The recorder carries measured RTSP packet timestamps through pre-record buffering
+and writes them alongside each stored AAC or H.264/H.265 access unit. The MP4
+reader exposes the original extended clock, rate, session, discontinuity and a
+stable track presentation anchor. The replay test reopens a two-track recording
+and checks source clocks independent of its normalized timestamps. The aggregate
+AAC fixture checks that a single packet's distinct presentation times retain its
+actual shared source clock. Fragment fixtures exercise wrapping and backward
+timestamps, missing evidence, partial-file recovery and restoring an epoch after
+discarding unpublished samples. Historical recordings have no per-sample evidence.
+
+The format and lookup contract are documented in the [MP4 crate guide](../crates/mp4/README.md#keeppeek-recording-source-clocks).

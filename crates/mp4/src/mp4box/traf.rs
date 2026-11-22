@@ -6,6 +6,7 @@ pub struct TrafBox {
     pub tfhd: TfhdBox,
     pub tfdt: Option<TfdtBox>,
     pub trun: Option<TrunBox>,
+    pub(crate) source_timing: source_rtp::SourceTiming,
 }
 
 impl TrafBox {
@@ -22,7 +23,7 @@ impl TrafBox {
         if let Some(ref trun) = self.trun {
             size += trun.box_size();
         }
-        size
+        size + self.source_timing.size()
     }
 }
 
@@ -53,6 +54,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for TrafBox {
         let mut tfhd = None;
         let mut tfdt = None;
         let mut trun = None;
+        let mut timing = None;
 
         let mut current = reader.stream_position()?;
         while current < end {
@@ -80,6 +82,13 @@ impl<R: Read + Seek> ReadBox<&mut R> for TrafBox {
                     }
                     trun = Some(TrunBox::read_box(reader, s)?);
                 }
+                BoxType::UuidBox => {
+                    if let Some(value) = source_rtp::SourceTiming::read(reader, s)?
+                        && timing.replace(value).is_some()
+                    {
+                        return Err(Error::InvalidData("duplicate source RTP timing box"));
+                    }
+                }
                 _ => {
                     // XXX warn!()
                     skip_box(reader, s)?;
@@ -95,7 +104,10 @@ impl<R: Read + Seek> ReadBox<&mut R> for TrafBox {
 
         skip_bytes_to(reader, end)?;
 
+        let source_timing = timing.unwrap_or_default();
+        source_timing.validate_count(trun.as_ref().map_or(0, |t| t.sample_count))?;
         Ok(Self {
+            source_timing,
             tfhd: tfhd.unwrap(),
             tfdt,
             trun,
@@ -116,6 +128,7 @@ impl<W: Write> WriteBox<&mut W> for TrafBox {
             trun.write_box(writer)?;
         }
 
+        self.source_timing.write(writer)?;
         Ok(size)
     }
 }
@@ -159,6 +172,7 @@ mod tests {
     #[test]
     fn traf_round_trip_includes_decode_time_and_sample_run() {
         let src_box = TrafBox {
+            source_timing: Default::default(),
             tfhd: TfhdBox {
                 flags: TfhdBox::FLAG_BASE_DATA_OFFSET,
                 track_id: 1,

@@ -2408,6 +2408,7 @@ mod tests {
 
     fn inter_frame() -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at: Instant::now(),
             timestamp: None,
             frame: MediaFrame::Video(VideoFrame {
@@ -2422,6 +2423,7 @@ mod tests {
 
     pub(super) fn key_frame(received_at: Instant) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at,
             timestamp: None,
             frame: MediaFrame::Video(VideoFrame {
@@ -2465,6 +2467,7 @@ mod tests {
         }
         data.extend_from_slice(&sample);
         RecordingFrame {
+            source_rtp: None,
             received_at,
             timestamp: None,
             frame: MediaFrame::Video(VideoFrame {
@@ -2479,6 +2482,7 @@ mod tests {
 
     fn audio_frame(received_at: Instant) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at,
             timestamp: None,
             frame: MediaFrame::Audio(AudioFrame {

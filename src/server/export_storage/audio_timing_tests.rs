@@ -105,6 +105,7 @@ fn write_source(root: &Path, catalog: RecordingCatalogHandle) -> PathBuf {
         };
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started + offset,
                 timestamp: Some(offset),
                 frame,

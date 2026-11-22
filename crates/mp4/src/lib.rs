@@ -76,6 +76,7 @@ mod types;
 pub use types::*;
 
 mod mp4box;
+pub use mp4box::source_rtp::{SourceRtpAnchor, SourceRtpPacket, SourceRtpTime};
 pub use mp4box::*;
 
 mod track;
