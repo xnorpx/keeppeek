@@ -60,9 +60,22 @@ pub struct Job {
     pub verified_ms: Option<i64>,
 }
 
+const BLOCKED_DELETION: &str = "Archive deletion blocked; check the primary and preview again";
 const REVERIFICATION_FAILURE: &str = "Archive reverification failed; check the target";
 
 impl Job {
+    pub(crate) fn error_code(&self) -> &'static str {
+        match self.error.as_deref() {
+            None => "",
+            Some(BLOCKED_DELETION) if self.state == "ready" => "archive_deletion_blocked",
+            Some("archive_primary_write_protection_required") => {
+                "archive_primary_write_protection_required"
+            }
+            Some(_) if self.reverification_failed() => "archive_reverification_failed",
+            Some(_) => "archive_operation_failed",
+        }
+    }
+
     pub(crate) fn reverification_failed(&self) -> bool {
         self.state == "ready"
             && self.kind != "probe"

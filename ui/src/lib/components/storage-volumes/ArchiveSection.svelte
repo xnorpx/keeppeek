@@ -83,6 +83,14 @@
 		jobs = [job, ...jobs.filter((current) => current.jobId !== job.jobId)].slice(0, 16);
 		message = 'Archive request accepted. Refresh archive jobs for progress.';
 	}
+	function jobStatus(job: ArchiveJob): string {
+		if (job.state === 'deleted') {
+			if (job.action === 'delete') return 'Deletion acknowledgement pending';
+			if (!job.action) return 'Deletion acknowledged';
+		}
+		return job.action ? `${job.state} · ${job.action}` : job.state;
+	}
+
 	async function action(kind: 'cancel' | 'retry' | 'restore' | 'evict', job: ArchiveJob) {
 		if (busy || disabled) return;
 		busy = true;
@@ -194,9 +202,7 @@
 				aria-label={`Archive job ${job.jobId}`}
 			>
 				<p class="font-medium break-all">
-					{job.kind === StorageObjectKind.EXPORT ? 'Export' : 'Recording'} · {job.state}{job.action
-						? ` · ${job.action}`
-						: ''}
+					{job.kind === StorageObjectKind.EXPORT ? 'Export' : 'Recording'} · {jobStatus(job)}
 				</p>
 				<p class="text-xs break-all text-text-muted">
 					Target {job.targetId} · {job.bytes.toString()} bytes · Attempt {job.attempts}{job.action
@@ -230,11 +236,13 @@
 				{#if job.errorCode}<p role="alert" class="text-sm text-destructive">
 						{job.errorCode === 'archive_reverification_failed'
 							? 'Archive verification failed. Check that the target is available, then retry verification.'
-							: job.errorCode === 'archive_primary_write_protection_required'
-								? 'Archive retained. The primary needs filesystem-enforced write protection before this archive copy can be removed. On Linux, the primary must have fs-verity and the immutable flag.'
-								: job.action === 'restore'
-									? 'Restore failed. Check the primary disk and retry. The archive copy is retained.'
-									: 'Archive operation failed. Refresh the job and destination status before retrying.'}
+							: job.errorCode === 'archive_deletion_blocked'
+								? 'Archive retained. Check that the primary copy is present and verified, resolve the blocking condition, then preview archive deletion again.'
+								: job.errorCode === 'archive_primary_write_protection_required'
+									? 'Archive retained. The primary needs filesystem-enforced write protection before this archive copy can be removed. On Linux, the primary must have fs-verity and the immutable flag.'
+									: job.action === 'restore'
+										? 'Restore failed. Check the primary disk and retry. The archive copy is retained.'
+										: 'Archive operation failed. Refresh the job and destination status before retrying.'}
 					</p>{/if}
 				<div class="flex flex-wrap gap-2">
 					{#if (job.state === 'queued' || job.state === 'copying' || job.action) && job.action !== 'delete' && job.primaryCopy !== ArchivePrimaryCopyState.EVICTING}<Button

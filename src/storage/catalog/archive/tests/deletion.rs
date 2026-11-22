@@ -476,14 +476,15 @@ fn archive_retention_backoff_retries_are_persisted_and_administrator_can_reset_t
             Reply::Job(None)
         ));
         connection.execute("UPDATE archive_replicas SET error='Archive deletion blocked; check the primary and preview again' WHERE job_id=?1",[id.as_str()]).await?;
-        assert!(!required(&connection, &id).await?.reverification_failed());
+        let blocked = required(&connection, &id).await?;
+        assert_eq!(blocked.error_code(), "archive_deletion_blocked");
+        assert!(!blocked.reverification_failed());
         assert!(retry(&connection, &id).await.is_err());
         run(&connection, Deletion::LegacyFailed(id.clone())).await?;
-        assert!(matches!(
-            run(&connection, next(true)).await?,
-            Reply::Job(None)
-        ));
-        assert!(required(&connection, &id).await?.reverification_failed());
+        assert!(matches!(run(&connection, next(true)).await?, Reply::Job(None)));
+        let failed = required(&connection, &id).await?;
+        assert!(failed.reverification_failed());
+        assert_eq!(failed.error_code(), "archive_reverification_failed");
         connection
             .execute(
                 "UPDATE archive_reverification_retries SET retry_after_ms=0",

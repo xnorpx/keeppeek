@@ -448,11 +448,25 @@ it('retries verification of a legacy archive and requires a fresh preview for a 
 		state: 'ready',
 		errorCode: 'archive_primary_write_protection_required'
 	};
+	const retained = {
+		jobId: 'retained',
+		objectId: 'retained-clip',
+		state: 'ready',
+		errorCode: 'archive_deletion_blocked'
+	};
+	const pending = { jobId: 'pending', state: 'deleted', action: 'delete' };
+	const acknowledged = { jobId: 'acknowledged', state: 'deleted', action: '' };
 	control.archive.mockImplementation(async (request) =>
 		create(ArchiveResultSchema, {
 			result:
 				request.action.case === 'list'
-					? { case: 'jobs', value: { jobs: [legacy, blocked], status: { runtimeAvailable: true } } }
+					? {
+							case: 'jobs',
+							value: {
+								jobs: [legacy, blocked, retained, pending, acknowledged],
+								status: { runtimeAvailable: true }
+							}
+						}
 					: { case: 'job', value: { ...legacy, errorCode: '' } }
 		})
 	);
@@ -468,6 +482,22 @@ it('retries verification of a legacy archive and requires a fresh preview for a 
 	await expect
 		.element(page.getByRole('button', { name: 'Preview archive deletion protected-clip' }))
 		.toBeVisible();
+	const retainedRow = page.getByRole('article', { name: 'Archive job retained' });
+	await expect
+		.element(retainedRow.getByRole('alert'))
+		.toHaveTextContent(/preview archive deletion again/);
+	await expect
+		.element(retainedRow.getByRole('button', { name: 'Retry archive job retained' }))
+		.not.toBeInTheDocument();
+	await expect
+		.element(retainedRow.getByRole('button', { name: 'Preview archive deletion retained-clip' }))
+		.toBeVisible();
+	await expect
+		.element(page.getByRole('article', { name: 'Archive job pending' }))
+		.toHaveTextContent('Deletion acknowledgement pending');
+	await expect
+		.element(page.getByRole('article', { name: 'Archive job acknowledged' }))
+		.toHaveTextContent('Deletion acknowledged');
 	await page.getByRole('button', { name: 'Retry archive job legacy' }).click();
 	expect(control.archive.mock.calls.at(-1)?.[0].action).toMatchObject({
 		case: 'retry',

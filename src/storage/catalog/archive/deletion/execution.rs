@@ -115,7 +115,7 @@ pub(super) async fn blocked(
     let message = if unprotected {
         "archive_primary_write_protection_required"
     } else {
-        "Archive deletion blocked; check the primary and preview again"
+        BLOCKED_DELETION
     };
     connection
         .execute(
