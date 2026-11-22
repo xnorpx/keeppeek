@@ -14,12 +14,12 @@ export class RecordedFramePlayer {
 	notice = $state('');
 	displayedNs = $state<bigint>();
 	private active?: AbortController;
-	private queue: Direction[] = [];
+	private pendingSteps = 0;
 
 	clear(): void {
 		this.active?.abort();
 		this.active = undefined;
-		this.queue = [];
+		this.pendingSteps = 0;
 		this.selection = undefined;
 		this.displayedNs = undefined;
 		this.busy = false;
@@ -61,16 +61,16 @@ export class RecordedFramePlayer {
 		present: (sample: PresentedStoredFrame) => void
 	): Promise<void> {
 		if (!cursor.canStepExactly || (!this.selection && this.displayedNs === undefined)) return;
-		if (this.queue.length >= 32) return;
-		this.queue.push(direction);
+		this.pendingSteps = Math.max(-32, Math.min(32, this.pendingSteps + direction));
 		if (this.active) return;
 		const active = new AbortController();
 		this.active = active;
 		this.busy = true;
 		this.notice = '';
 		try {
-			while (this.queue.length) {
-				const next = this.queue.shift()!;
+			while (this.pendingSteps !== 0) {
+				const next = this.pendingSteps > 0 ? 1 : -1;
+				this.pendingSteps -= next;
 				const anchor = this.selection
 					? { sampleToken: this.selection.sampleToken }
 					: { displayedTimeNs: this.displayedNs! };
@@ -89,7 +89,7 @@ export class RecordedFramePlayer {
 					cause instanceof Error ? cause.message : 'The recorder could not step this picture.';
 		} finally {
 			if (this.active === active) {
-				this.queue = [];
+				this.pendingSteps = 0;
 				this.active = undefined;
 				this.busy = false;
 			}
