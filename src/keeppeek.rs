@@ -489,8 +489,7 @@ impl KeepPeekLoop {
             .runtime_profile_status
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        status.revision = self.runtime_profiles.revision;
-        status.active_profile_id = self.runtime_profiles.active_profile_id.clone();
+        status.set_selection(&self.runtime_profiles);
         status.cameras.clear();
     }
 
@@ -806,8 +805,7 @@ impl KeepPeekLoop {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        status.revision = self.runtime_profiles.revision;
-        status.active_profile_id = self.runtime_profiles.active_profile_id.clone();
+        status.set_selection(&self.runtime_profiles);
         for camera in &cameras {
             let camera_id = self.runtime_profile_camera_ids.camera_id(camera.config.ip);
             status.cameras.insert(
@@ -907,8 +905,7 @@ impl KeepPeekLoop {
             status.revision <= self.runtime_profiles.revision,
             "runtime profile transition was superseded"
         );
-        status.revision = self.runtime_profiles.revision;
-        status.active_profile_id = self.runtime_profiles.active_profile_id.clone();
+        status.set_selection(&self.runtime_profiles);
         status.cameras = applications
             .iter()
             .cloned()

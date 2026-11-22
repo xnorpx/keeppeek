@@ -3060,6 +3060,7 @@ export class ControlClient {
 			this.#objectUrls.clear();
 		}
 		this.publishCapabilities([]);
+		this.#runtimeProfiles.handleConnectionClosed();
 		this.#stateStore.handleConnectionClosed();
 		this.failPending('WebRTC control connection closed.');
 		return sessionId;

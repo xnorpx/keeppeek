@@ -21,7 +21,7 @@ import {
 } from './proto/webrtc_pb';
 import { StateStoreRequestError } from './state-store-error';
 
-const maxWatchesPerClient = 8;
+const maxWatchesPerClient = 16;
 const maxRewatchAttempts = 3;
 const defaultMaxEntriesPerWatch = 1024;
 

@@ -83,6 +83,11 @@ pub(super) enum WatchEventKind {
     Put(StoredEntry),
     Delete,
     Expire,
+    ResnapshotRequired,
+    ProfileHeader {
+        entry: StoredEntry,
+        degraded: Option<std::collections::BTreeSet<String>>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,6 +135,17 @@ impl WatchRegistry {
     #[cfg(test)]
     pub(super) fn owns_watch(&self, session_id: SessionId, watch_id: &str) -> bool {
         self.lock().contains_key(&(session_id, watch_id.to_owned()))
+    }
+
+    pub(super) fn profile_status_keys(&self) -> std::collections::BTreeSet<String> {
+        self.lock()
+            .values()
+            .filter(|watch| {
+                watch.namespace == profiles::NAMESPACE
+                    && profiles::viewer_watch_key(&watch.key_prefix)
+            })
+            .map(|watch| watch.key_prefix.clone())
+            .collect()
     }
 
     pub(super) fn register(
@@ -234,11 +250,7 @@ impl WatchRegistry {
         now_ms: u64,
         enqueue: impl Fn(SessionId, proto::Notification) -> EnqueueOutcome,
     ) -> Vec<(SessionId, proto::Notification)> {
-        let identities = if events.iter().any(is_profile_status_event) {
-            profiles::camera_profile_ids(state).ok()
-        } else {
-            None
-        };
+        let identities = std::cell::OnceCell::new();
         let mut sent = Vec::new();
         let mut watches = self.lock();
         let mut closed: Vec<(Watch, CloseReason)> = Vec::new();
@@ -277,8 +289,12 @@ impl WatchRegistry {
                     continue;
                 }
                 let projected_event =
-                    project_event_for_watch(state, watch.session_id, event, identities.as_ref());
-                let notification = update_notification(watch, &projected_event, sequence);
+                    project_event_for_watch(state, watch.session_id, event, &identities);
+                let Some(notification) = update_notification(watch, &projected_event, sequence)
+                else {
+                    terminate.push((key.clone(), Some(CloseReason::BufferOverflow)));
+                    continue;
+                };
                 match enqueue(watch.session_id, notification.clone()) {
                     EnqueueOutcome::Sent => {
                         sent.push((watch.session_id, notification));
@@ -391,13 +407,25 @@ fn session_authorized(
     .is_ok()
 }
 
-fn update_notification(watch: &Watch, event: &WatchEvent, sequence: u64) -> proto::Notification {
+fn update_notification(
+    watch: &Watch,
+    event: &WatchEvent,
+    sequence: u64,
+) -> Option<proto::Notification> {
+    use prost::Message as _;
     let (kind, entry) = match &event.kind {
+        WatchEventKind::ResnapshotRequired | WatchEventKind::ProfileHeader { .. } => return None,
+        WatchEventKind::Put(entry)
+            if is_profile_status_event(event)
+                && entry.value.encoded_len() > profiles::PROFILE_DOCUMENT_BYTES_MAX =>
+        {
+            return None;
+        }
         WatchEventKind::Put(entry) => (proto::StateStoreUpdateKind::Put, Some(proto_entry(entry))),
         WatchEventKind::Delete => (proto::StateStoreUpdateKind::Delete, None),
         WatchEventKind::Expire => (proto::StateStoreUpdateKind::Expire, None),
     };
-    proto::Notification {
+    Some(proto::Notification {
         event: Some(notification::Event::StateStoreWatchUpdate(
             proto::StateStoreWatchUpdate {
                 watch_id: watch.watch_id.clone(),
@@ -409,12 +437,12 @@ fn update_notification(watch: &Watch, event: &WatchEvent, sequence: u64) -> prot
                 watch_sequence: sequence,
             },
         )),
-    }
+    })
 }
 
 fn is_profile_status_event(event: &WatchEvent) -> bool {
     event.namespace == profiles::NAMESPACE
-        && event.key == profiles::STATUS_KEY
+        && profiles::is_status_key(&event.key)
         && matches!(event.kind, WatchEventKind::Put(_))
 }
 
@@ -422,9 +450,11 @@ fn project_event_for_watch(
     state: &ServerState,
     session_id: SessionId,
     event: &WatchEvent,
-    identities: Option<&crate::keeppeek::CameraProfileIds>,
+    identities: &std::cell::OnceCell<Option<crate::keeppeek::CameraProfileIds>>,
 ) -> WatchEvent {
-    if !is_profile_status_event(event) {
+    if !is_profile_status_event(event)
+        && !matches!(event.kind, WatchEventKind::ProfileHeader { .. })
+    {
         return event.clone();
     }
     let principal = state
@@ -433,29 +463,41 @@ fn project_event_for_watch(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&session_id)
         .map(|session| session.principal.clone());
-    if principal
+    let identities = if principal
         .as_ref()
-        .is_some_and(|principal| principal.role == AccessRole::Administrator)
+        .is_some_and(|principal| principal.role != AccessRole::Administrator)
     {
-        return event.clone();
-    }
-    let visible = principal
-        .as_ref()
-        .map(|principal| profiles::visible_profile_camera_ids(state, principal, identities))
-        .unwrap_or_default();
-    let mut projected = event.clone();
-    if let WatchEventKind::Put(entry) = &mut projected.kind
-        && let Some(value) = entry.value.fields.get_mut("cameras")
-    {
-        if let Some(prost_types::value::Kind::StructValue(cameras)) = &mut value.kind {
-            cameras.fields.retain(|id, _| visible.contains(id));
-        } else {
-            value.kind = Some(prost_types::value::Kind::StructValue(
-                prost_types::Struct::default(),
-            ));
+        identities
+            .get_or_init(|| profiles::camera_profile_ids(state).ok())
+            .as_ref()
+    } else {
+        None
+    };
+    let kind = match &event.kind {
+        WatchEventKind::ProfileHeader { entry, degraded } => {
+            let mut entry = entry.clone();
+            profiles::observed::set_header_count(
+                state,
+                principal.as_ref(),
+                identities,
+                degraded.as_ref(),
+                &mut entry,
+            );
+            WatchEventKind::Put(entry)
         }
+        WatchEventKind::Put(entry) => {
+            let mut entry = entry.clone();
+            profiles::observed::project(state, principal.as_ref(), identities, &mut entry);
+            WatchEventKind::Put(entry)
+        }
+        _ => return event.clone(),
+    };
+    WatchEvent {
+        namespace: event.namespace.clone(),
+        key: event.key.clone(),
+        revision: event.revision,
+        kind,
     }
-    projected
 }
 
 fn closed_notification(watch: &Watch, reason: CloseReason) -> proto::Notification {
@@ -617,7 +659,8 @@ mod tests {
             }),
         };
 
-        let projected = project_event_for_watch(&state, session_id, &event, None);
+        let projected =
+            project_event_for_watch(&state, session_id, &event, &std::cell::OnceCell::new());
         let WatchEventKind::Put(entry) = projected.kind else {
             panic!("status projection must keep its entry update");
         };

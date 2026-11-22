@@ -156,8 +156,7 @@ impl KeepPeekLoop {
         if status.revision > self.runtime_profiles.revision {
             return;
         }
-        status.revision = self.runtime_profiles.revision;
-        status.active_profile_id = self.runtime_profiles.active_profile_id.clone();
+        status.set_selection(&self.runtime_profiles);
         status
             .cameras
             .insert(application.camera_id.clone(), application);

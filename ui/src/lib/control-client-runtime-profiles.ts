@@ -1,7 +1,13 @@
 import type { JsonObject } from '@bufbuild/protobuf';
-import type { StateEntry } from './proto/webrtc_pb';
+import { StateStoreErrorCode, type StateEntry } from './proto/webrtc_pb';
+import { StateStoreRequestError } from './state-store-error';
+import { SharedProfileWatch, type ProfileSubscription } from './runtime-profile-shared-watch';
 import type { ControlClientStateStore, StateStoreWatch } from './control-client-state-store';
 import {
+	assembleObservedParts,
+	observedPartCount,
+	observedPartFromEntry,
+	type ObservedPart,
 	runtimeProfilesActiveKey,
 	runtimeProfilesActiveSchema,
 	runtimeProfilesNamespace,
@@ -13,6 +19,8 @@ import {
 	runtimeProfilePartFromEntry,
 	runtimeProfilePartKey,
 	runtimeProfileFromEntry,
+	runtimeProfileHeaderFromEntry,
+	type ActiveRuntimeProfile,
 	maxRuntimeProfilePartCameras,
 	runtimeProfileStatusFromEntry,
 	runtimeProfileCamerasFromEntry,
@@ -25,9 +33,29 @@ import {
 
 const profilePartFetchConcurrency = 4;
 const registryReadRetries = 2;
+const observedIndices = Array.from({ length: observedPartCount }, (_, index) => index);
+
+function unsupportedObservationKey(error: unknown): boolean {
+	return (
+		error instanceof StateStoreRequestError &&
+		error.code === StateStoreErrorCode.KEY_INVALID &&
+		error.namespace === runtimeProfilesNamespace &&
+		/^observed\/[0-7]$/.test(error.key)
+	);
+}
 
 export class RuntimeProfilesControlClient {
+	private readonly activeWatch = new SharedProfileWatch<ActiveRuntimeProfile>();
+	private readonly statusWatch = new SharedProfileWatch<RuntimeProfileStatus>();
 	constructor(private readonly stateStore: ControlClientStateStore) {}
+
+	private connectionGeneration = 0;
+
+	handleConnectionClosed(): void {
+		this.connectionGeneration++;
+		this.activeWatch.invalidateSnapshot();
+		this.statusWatch.invalidateSnapshot();
+	}
 
 	async getCameras(): Promise<RuntimeProfileCameras> {
 		return runtimeProfileCamerasFromEntry(
@@ -67,9 +95,25 @@ export class RuntimeProfilesControlClient {
 	}
 
 	async getStatus(): Promise<RuntimeProfileStatus> {
-		return runtimeProfileStatusFromEntry(
-			await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesStatusKey)
-		);
+		for (let attempt = 0; attempt <= registryReadRetries; attempt++) {
+			let parts: ObservedPart[];
+			try {
+				parts = await mapBounded(observedIndices, profilePartFetchConcurrency, async (index) =>
+					observedPartFromEntry(
+						await this.stateStore.get(runtimeProfilesNamespace, `observed/${index}`),
+						index
+					)
+				);
+			} catch (cause) {
+				if (!unsupportedObservationKey(cause)) throw cause;
+				return runtimeProfileStatusFromEntry(
+					await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesStatusKey)
+				);
+			}
+			const assembled = assembleObservedParts(new Map(parts.entries()));
+			if (assembled) return assembled;
+		}
+		throw new Error('Runtime profile observations changed while they were being read.');
 	}
 
 	async saveRegistry(registry: RuntimeProfileRegistry): Promise<RuntimeProfileRegistry> {
@@ -166,10 +210,51 @@ export class RuntimeProfilesControlClient {
 
 	watchActive(
 		listener: (active: ReturnType<typeof runtimeProfileFromEntry>) => void
-	): Promise<StateStoreWatch> {
-		return this.watch(runtimeProfilesActiveKey, (entry) =>
-			listener(runtimeProfileFromEntry(entry))
+	): Promise<ProfileSubscription> {
+		return this.watchHeader(({ profileId, revision }) => listener({ profileId, revision }));
+	}
+
+	private watchHeader(
+		listener: (header: ActiveRuntimeProfile) => void
+	): Promise<ProfileSubscription> {
+		return this.activeWatch.subscribe(listener, (emit) =>
+			this.watch(runtimeProfilesActiveKey, (entry) => emit(runtimeProfileHeaderFromEntry(entry)))
 		);
+	}
+
+	async watchShellProfile(
+		listener: (profileId: string | null, degraded: number | null) => void
+	): Promise<ProfileSubscription> {
+		let header: ActiveRuntimeProfile | undefined;
+		let legacy: RuntimeProfileStatus | undefined;
+		const notify = () => {
+			if (!header) return;
+			const count =
+				header.degradedCameras === undefined && legacy?.revision === header.revision
+					? Object.values(legacy.cameras).filter((camera) => camera.state === 'degraded').length
+					: (header.degradedCameras ?? null);
+			listener(header.profileId, count);
+		};
+		const active = await this.watchHeader((next) => {
+			header = next;
+			notify();
+		});
+		if (header?.degradedCameras !== undefined) return active;
+		try {
+			// Older recorders supply the shell's health count through their single status watch.
+			const status = await this.watch(runtimeProfilesStatusKey, (entry) => {
+				legacy = runtimeProfileStatusFromEntry(entry);
+				notify();
+			});
+			return {
+				close: async () => {
+					await Promise.all([active.close(), status.close()]);
+				}
+			};
+		} catch (cause) {
+			await active.close();
+			throw cause;
+		}
 	}
 
 	async watchRegistry(
@@ -194,10 +279,51 @@ export class RuntimeProfilesControlClient {
 		});
 	}
 
-	watchStatus(listener: (status: RuntimeProfileStatus) => void): Promise<StateStoreWatch> {
-		return this.watch(runtimeProfilesStatusKey, (entry) =>
-			listener(runtimeProfileStatusFromEntry(entry))
+	watchStatus(listener: (status: RuntimeProfileStatus) => void): Promise<ProfileSubscription> {
+		return this.statusWatch.subscribe(listener, (emit) => this.openStatusWatch(emit));
+	}
+
+	private async openStatusWatch(
+		emit: (status: RuntimeProfileStatus) => void
+	): Promise<ProfileSubscription> {
+		let connectionGeneration = this.connectionGeneration;
+		const parts = new Map<number, ObservedPart>();
+		const results = await Promise.allSettled(
+			observedIndices.map((index) =>
+				this.watch(`observed/${index}`, (entry) => {
+					if (connectionGeneration !== this.connectionGeneration) {
+						parts.clear();
+						connectionGeneration = this.connectionGeneration;
+					}
+					parts.set(index, observedPartFromEntry(entry, index));
+					const status = assembleObservedParts(parts);
+					if (status) {
+						parts.clear();
+						emit(status);
+					}
+				})
+			)
 		);
+		const watches = results.flatMap((result) =>
+			result.status === 'fulfilled' ? [result.value] : []
+		);
+		const close = async () => {
+			await Promise.all(watches.map((watch) => watch.close()));
+		};
+		const failures = results.filter((result) => result.status === 'rejected');
+		if (failures.length) {
+			await close();
+			if (
+				failures.length === results.length &&
+				failures.every((result) => unsupportedObservationKey(result.reason))
+			) {
+				return this.watch(runtimeProfilesStatusKey, (entry) =>
+					emit(runtimeProfileStatusFromEntry(entry))
+				);
+			}
+			throw failures[0].reason;
+		}
+		return { close };
 	}
 
 	private watch(key: string, listener: (entry: StateEntry) => void): Promise<StateStoreWatch> {

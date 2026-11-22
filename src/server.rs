@@ -8666,6 +8666,7 @@ impl ServerState {
             runtime_profile_status: Arc::new(RwLock::new(crate::profiles::RuntimeProfileStatus {
                 revision: config.runtime_profiles.revision,
                 active_profile_id: config.runtime_profiles.active_profile_id.clone(),
+                definition_revision: config.runtime_profiles.active_definition_revision(),
                 cameras: BTreeMap::new(),
             })),
             runtime_profile_drafts: Arc::new(Mutex::new(

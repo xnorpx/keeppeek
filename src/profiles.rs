@@ -91,10 +91,29 @@ pub struct CameraRuntimeApplication {
 pub struct RuntimeProfileStatus {
     pub revision: u64,
     pub active_profile_id: Option<String>,
+    // The legacy status projection keeps its v1 field set.
+    #[serde(skip)]
+    pub definition_revision: Option<u64>,
     pub cameras: BTreeMap<String, CameraRuntimeApplication>,
 }
 
+impl RuntimeProfileStatus {
+    pub(crate) fn set_selection(&mut self, registry: &ProfileRegistry) {
+        self.revision = registry.revision;
+        self.active_profile_id
+            .clone_from(&registry.active_profile_id);
+        self.definition_revision = registry.active_definition_revision();
+    }
+}
+
 impl ProfileRegistry {
+    pub(crate) fn active_definition_revision(&self) -> Option<u64> {
+        self.active_profile_id
+            .as_ref()
+            .and_then(|id| self.profiles.get(id))
+            .map(|profile| profile.revision)
+    }
+
     pub(crate) fn missing_camera_applications(
         &self,
         configured_camera_ids: &BTreeSet<String>,

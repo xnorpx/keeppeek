@@ -102,7 +102,7 @@ arbitrary user metadata are not valid profile fields.
 
 | Boundary                                                                                | Current behavior                                                                                                                                                     | Remaining acceptance                                                                                                                |
 | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Durable state and watches                                                               | Config-backed CAS, bounded definition parts/staged writes, loop-owned coalesced status publication and registration fencing.                                         | Combined quota, multipart observed layout, retained memory and final transport performance.                                         |
+| Durable state and watches                                                               | Config-backed CAS, bounded definition and observation parts, scoped active-header and status watches.                                                                | Combined storage quota, retained memory and release-build transport performance.                                                    |
 | Camera identity                                                                         | Per-camera UUIDs, atomic legacy migration, explicit missing targets and source mapping at runtime boundaries.                                                        | Full cross-platform upgrade/restore qualification; ambiguous active source routing fails closed.                                    |
 | Recording                                                                               | Admission, queue acceptance, writer acknowledgement and covered later input write failures report per-camera status. Same-policy recovery retains desired selection. | Cleanup/finalization, periodic FlushAll, shutdown, producer queues, storage-pressure failures and complete media recovery evidence. |
 | Camera availability                                                                     | Loop-owned worker start/stop preserves Base definitions and accepted event edits.                                                                                    | Worker stop has no deadline; caller timeout does not preempt in-progress work.                                                      |
@@ -193,10 +193,12 @@ registry/active/observed entries = 626 entries. Actual protobuf sizes, including
 metadata and enclosing messages, must be measured before registering this schema.
 
 The full view uses ten narrow watches: registry, active, and eight observed parts. The
-shell uses only the two header watches. Definition reads use at most four concurrent Gets
+shell shares one active-header watch with Settings and receives a camera-filtered degraded count. Definition reads use at most four concurrent Gets
 and two retries if generation collection races a read. A client assembles at most two
-observed generations and never presents mixed generations as applied. A broad snapshot
-must fail explicitly when it exceeds transport bounds; it is not paginated implicitly.
+observed generations and never presents mixed generations as applied. The keys `observed/0` through `observed/7` carry opaque generation identifiers which can
+change as workers converge at the same desired revision. An empty watch prefix returns
+`KEY_INVALID`. Existing clients can read or watch the legacy `status` projection while
+it fits 16 KiB. A larger legacy projection returns `VALUE_TOO_LARGE` on Get or initial Watch.
 
 ## Commit and runtime ordering
 

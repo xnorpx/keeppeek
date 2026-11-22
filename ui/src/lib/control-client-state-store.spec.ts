@@ -505,6 +505,20 @@ describe('ControlClientStateStore', () => {
 		expect(draft.value).toEqual({ desired: true, key: 'intent/a' });
 	});
 
+	it('admits sixteen shared connection watches and reuses a released slot', async () => {
+		const transport = new FakeTransport((action) => {
+			if (action.case === 'watch') return snapshotResult(action.value.watchId, []);
+			if (action.case === 'unwatch') return unwatchResult(action.value.watchId);
+			throw new Error('Unexpected operation');
+		});
+		const client = new ControlClientStateStore((command) => transport.send(command));
+		const admitted = await Promise.all(Array.from({ length: 16 }, () => client.watch(namespace)));
+		await expect(client.watch(namespace)).rejects.toThrow('watch limit');
+		await admitted.pop()!.close();
+		admitted.push(await client.watch(namespace));
+		await Promise.all(admitted.map((handle) => handle.close()));
+	});
+
 	it('rejects a second concurrent watch while the first snapshot is pending', async () => {
 		const gate = deferred<Result>();
 		const requestedIds: string[] = [];

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { StateEntry } from './proto/webrtc_pb';
+import { StateStoreErrorCode, type StateEntry } from './proto/webrtc_pb';
+import { StateStoreRequestError } from './state-store-error';
 import { RuntimeProfilesControlClient } from './control-client-runtime-profiles';
 import {
 	runtimeProfilesNamespace,
@@ -195,6 +196,203 @@ describe('RuntimeProfilesControlClient', () => {
 		expect(commit?.value).toMatchObject({ revision: '0', active_profile_id: null });
 		expect(saved.revision).toBe('1');
 		expect(Object.keys(saved.profiles.away.cameras)).toHaveLength(35);
+	});
+});
+
+function observedPart(index: number, generation = 'a'.repeat(64), revision = 3n): StateEntry {
+	return entry(
+		`observed/${index}`,
+		'keeppeek.runtime-profiles.observed.v1',
+		{
+			generation,
+			part_index: index,
+			part_count: 8,
+			definition_revision: '2',
+			revision: revision.toString(),
+			active_profile_id: 'away',
+			cameras: {}
+		},
+		revision
+	);
+}
+
+describe('runtime profile observations', () => {
+	it('retries a mixed generation and bounds parallel reads', async () => {
+		let calls = 0;
+		let outstanding = 0;
+		let peak = 0;
+		const stateStore = {
+			get: async (_namespace: string, key: string) => {
+				const index = Number(key.split('/')[1]);
+				const old = calls++ < 8 && index === 0;
+				peak = Math.max(peak, ++outstanding);
+				await Promise.resolve();
+				outstanding--;
+				return observedPart(index, (old ? 'a' : 'b').repeat(64));
+			}
+		};
+		const client = new RuntimeProfilesControlClient(
+			stateStore as unknown as ControlClientStateStore
+		);
+		expect(await client.getStatus()).toEqual({
+			revision: '3',
+			active_profile_id: 'away',
+			cameras: {}
+		});
+		expect(calls).toBe(16);
+		expect(peak).toBeLessThanOrEqual(4);
+	});
+
+	it('shares eight watches, emits complete generations and closes after the last listener', async () => {
+		const listeners = new Map<number, (entries: StateEntry[]) => void>();
+		const close = vi.fn(async () => {});
+		const stateStore = {
+			watch: async (
+				_namespace: string,
+				options: { keyPrefix: string; listener: (entries: StateEntry[]) => void }
+			) => {
+				const index = Number(options.keyPrefix.split('/')[1]);
+				listeners.set(index, options.listener);
+				options.listener([observedPart(index)]);
+				return { close };
+			}
+		};
+		const client = new RuntimeProfilesControlClient(
+			stateStore as unknown as ControlClientStateStore
+		);
+		const first = vi.fn();
+		const second = vi.fn();
+		const [left, right] = await Promise.all([
+			client.watchStatus(first),
+			client.watchStatus(second)
+		]);
+		expect(listeners.size).toBe(8);
+		expect(first).toHaveBeenCalledTimes(1);
+		expect(second).toHaveBeenCalledTimes(1);
+		for (let i = 0; i < 7; i++) listeners.get(i)!([observedPart(i, 'b'.repeat(64), 4n)]);
+		expect(first).toHaveBeenCalledTimes(1);
+		listeners.get(7)!([observedPart(7, 'b'.repeat(64), 4n)]);
+		expect(first).toHaveBeenCalledTimes(2);
+		expect(second).toHaveBeenLastCalledWith({
+			revision: '4',
+			active_profile_id: 'away',
+			cameras: {}
+		});
+		await left.close();
+		expect(close).not.toHaveBeenCalled();
+		await right.close();
+		expect(close).toHaveBeenCalledTimes(8);
+	});
+	it('releases all admitted watches when a competing feature holds the remaining slots', async () => {
+		const close = vi.fn(async () => {});
+		const watch = vi.fn(async (_namespace: string, options: { keyPrefix: string }) => {
+			if (options.keyPrefix === 'observed/7') throw new Error('State store watch limit reached.');
+			return { close };
+		});
+		const client = new RuntimeProfilesControlClient({
+			watch
+		} as unknown as ControlClientStateStore);
+		await expect(client.watchStatus(vi.fn())).rejects.toThrow('watch limit');
+		expect(close).toHaveBeenCalledTimes(7);
+		await expect(client.watchStatus(vi.fn())).rejects.toThrow('watch limit');
+		expect(close).toHaveBeenCalledTimes(14);
+	});
+
+	it('reads an older recorder through its legacy status after a typed unknown-key response', async () => {
+		const get = async (_namespace: string, key: string) => {
+			if (key !== 'status')
+				throw new StateStoreRequestError('Unknown key', {
+					namespace: runtimeProfilesNamespace,
+					key,
+					code: StateStoreErrorCode.KEY_INVALID
+				});
+			return entry(
+				key,
+				'keeppeek.runtime-profiles.status.v1',
+				{ revision: '5', active_profile_id: null, cameras: {} },
+				5n
+			);
+		};
+		const client = new RuntimeProfilesControlClient({ get } as unknown as ControlClientStateStore);
+		expect((await client.getStatus()).revision).toBe('5');
+	});
+
+	it('rejects an invalid part without trying an older data format', async () => {
+		const get = vi.fn(async (_namespace: string, key: string) =>
+			observedPart(Number(key.split('/')[1]), 'bad')
+		);
+		const client = new RuntimeProfilesControlClient({ get } as unknown as ControlClientStateStore);
+		await expect(client.getStatus()).rejects.toThrow('observation generation');
+		expect(get.mock.calls.some(([, key]) => key === 'status')).toBe(false);
+	});
+	it('shares the shell header and releases full-fleet watches when the fleet view closes', async () => {
+		const closed: string[] = [];
+		const watch = vi.fn(
+			async (
+				_namespace: string,
+				options: { keyPrefix: string; listener: (entries: StateEntry[]) => void }
+			) => {
+				const key = options.keyPrefix;
+				options.listener([
+					key === 'active'
+						? entry(
+								key,
+								'keeppeek.runtime-profiles.active.v1',
+								{ profile_id: 'away', observed_parts: 8, degraded_cameras: 2 },
+								3n
+							)
+						: observedPart(Number(key.split('/')[1]))
+				]);
+				return {
+					close: async () => {
+						closed.push(key);
+					}
+				};
+			}
+		);
+		const client = new RuntimeProfilesControlClient({
+			watch
+		} as unknown as ControlClientStateStore);
+		const render = vi.fn();
+		const shell = await client.watchShellProfile(render);
+		expect(render).toHaveBeenCalledExactlyOnceWith('away', 2);
+		expect(watch).toHaveBeenCalledTimes(1);
+		const active = await client.watchActive(vi.fn());
+		const fleet = await client.watchStatus(vi.fn());
+		expect(watch).toHaveBeenCalledTimes(9);
+		await Promise.all([active.close(), fleet.close()]);
+		expect(closed.sort()).toEqual(Array.from({ length: 8 }, (_, i) => `observed/${i}`));
+		await shell.close();
+		expect(closed.at(-1)).toBe('active');
+	});
+	it('requires fresh parts after reconnect even when the desired revision stays the same', async () => {
+		const listeners = new Map<number, (entries: StateEntry[]) => void>();
+		const watch = async (
+			_namespace: string,
+			options: { keyPrefix: string; listener: (entries: StateEntry[]) => void }
+		) => {
+			const index = Number(options.keyPrefix.split('/')[1]);
+			listeners.set(index, options.listener);
+			options.listener([observedPart(index)]);
+			return { close: async () => {} };
+		};
+		const client = new RuntimeProfilesControlClient({
+			watch
+		} as unknown as ControlClientStateStore);
+		const render = vi.fn();
+		const full = await client.watchStatus(render);
+		const update = (index: number) => listeners.get(index)!([observedPart(index, 'b'.repeat(64))]);
+		for (let index = 0; index < 7; index++) update(index);
+		client.handleConnectionClosed();
+		const late = vi.fn();
+		const second = await client.watchStatus(late);
+		update(7);
+		expect(render).toHaveBeenCalledTimes(1);
+		expect(late).not.toHaveBeenCalled();
+		for (let index = 0; index < 7; index++) update(index);
+		expect(late).toHaveBeenCalledTimes(1);
+		expect(render).toHaveBeenCalledTimes(2);
+		await Promise.all([full.close(), second.close()]);
 	});
 });
 

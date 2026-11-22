@@ -3,7 +3,7 @@ import {
 	runtimeProfileTargetForSource,
 	type RuntimeProfileRegistry
 } from '../../src/lib/runtime-profiles';
-import type { StateStoreWatch } from '../../src/lib/control-client-state-store';
+import type { ProfileSubscription } from '../../src/lib/runtime-profile-shared-watch';
 
 type BrowserControlClient = {
 	runtimeProfiles: RuntimeProfilesControlClient;
@@ -33,7 +33,7 @@ export async function activateFromAnotherClient() {
 	const reader = await createClient();
 	const profileId = `e2e-${crypto.randomUUID()}`;
 	const observed: Array<{ profileId: string | null; revision: string }> = [];
-	let watch: StateStoreWatch | undefined;
+	let watch: ProfileSubscription | undefined;
 	let registrySaved = false;
 	try {
 		let registry = await writer.runtimeProfiles.getRegistry();
