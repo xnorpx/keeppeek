@@ -36,11 +36,7 @@ impl Scan {
 
     fn next(&mut self, source: &Path, destination: &Path) -> io::Result<Next> {
         if self.directories.is_empty() {
-            match fs::read_dir(source) {
-                Ok(entries) => self.directories.push(entries),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Next::Done),
-                Err(e) => return Err(e),
-            }
+            self.directories.push(fs::read_dir(source)?);
         }
         for _ in 0..DIRECTORY_ENTRIES_PER_PAGE {
             let Some(entries) = self.directories.last_mut() else {
@@ -201,6 +197,10 @@ pub(super) fn stage_source(source: &Path, destination: &Path) -> io::Result<()> 
         }
         Err(_) => {}
     }
+    copy_and_publish(source, destination, parent)
+}
+
+fn copy_and_publish(source: &Path, destination: &Path, parent: &Path) -> io::Result<()> {
     let directory = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())?;
     let temporary = format!(".keeppeek-{}.partial", uuid::Uuid::new_v4());
     let mut options = cap_std::fs::OpenOptions::new();
@@ -264,5 +264,28 @@ fn verify_existing(source: &Path, destination: &Path) -> io::Result<()> {
         if left_buf[..count] != right_buf[..count] {
             return Err(io::Error::other("conflicting finalized recording contents"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cross_filesystem_copy_publishes_exact_bytes_and_preserves_a_conflicting_destination() {
+        let root = std::env::temp_dir().join(format!("keeppeek-relocate-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source.mp4");
+        let destination = root.join("destination.mp4");
+        fs::write(&source, b"first recording").unwrap();
+        copy_and_publish(&source, &destination, &root).unwrap();
+        assert_eq!(fs::read(&source).unwrap(), b"first recording");
+        assert_eq!(fs::read(&destination).unwrap(), b"first recording");
+        copy_and_publish(&source, &destination, &root).unwrap();
+        fs::write(&source, b"later recording").unwrap();
+        assert!(copy_and_publish(&source, &destination, &root).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"first recording");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        fs::remove_dir_all(root).unwrap();
     }
 }
