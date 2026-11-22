@@ -1,0 +1,46 @@
+# Recorded frame timing
+
+Keep's focused-player arrow shortcuts currently seek by an estimated frame duration. On the
+variable-rate fixture below, picture 2 starts at 80 ms and picture 3 starts at 200 ms.
+Advancing 40 ms from picture 2 lands at 120 ms, still inside picture 2. Two pictures in
+the duplicate-timestamp fixture also share a start time. A timestamp alone cannot select
+between them.
+
+## Sample identity
+
+`Mp4Track::sample_timing` takes a one-based sample ordinal and returns decode time,
+presentation time and duration in track ticks. On a parsed track it reads the sample
+tables without reading encoded media bytes. The presentation time is the decode time
+plus the composition offset. Version 0 offsets are unsigned and version 1 offsets are
+signed. Presentation time can precede zero. The sample ordinal breaks ties within one
+track and timing epoch.
+
+The fixtures contain twelve independently identifiable H.264 pictures, two
+random-access GOPs and both forward- and backward-referenced pictures. Each of four
+luma stripes encodes one bit of the picture ID. The regression compares the MP4
+reader's timing and byte positions to FFprobe's returned picture positions and the
+IDs decoded from FFmpeg's raw pixels.
+
+| Fixture       | Presentation times in milliseconds, in picture order   |
+| ------------- | ------------------------------------------------------ |
+| Constant rate | 0, 40, 80, 120, 160, 200, 240, 280, 320, 360, 400, 440 |
+| Variable rate | 0, 40, 80, 200, 240, 280, 400, 440, 480, 600, 640, 680 |
+| Duplicate PTS | 0, 40, 40, 200, 240, 280, 400, 440, 480, 600, 640, 680 |
+
+Run `cargo test --locked -p mp4 --test exact_frame_timing` with FFmpeg and FFprobe on
+the path. The binary fixtures total less than 7 KiB. Regenerate them with
+`python tests/fixtures/exact_frame_step/generate.py` using FFmpeg with libx264.
+
+## Recorder timing provenance
+
+RTSP and native Reolink hand storage a single normalized camera timestamp per video
+frame. The medium-term writer uses that timestamp or elapsed arrival time for decode
+time, advances a duplicate or backward timestamp and writes a zero composition offset.
+Those operations can discard the distinction between presentation and decode order.
+A recording produced on these paths cannot establish original camera B-frame timing
+through its MP4 timestamps alone.
+
+Exact stepping on recorded camera inputs remains under issue #120. An exact control
+needs a verified recording timing source, a stable recording and sample identity, and
+a decoder that returns the expected picture. Crossing a gap or a codec change requires
+a new epoch. The current shortcuts continue to provide approximate seeking.

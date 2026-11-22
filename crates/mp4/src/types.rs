@@ -627,6 +627,14 @@ pub struct Mp4Sample {
     pub bytes: Bytes,
 }
 
+/// File-local media timestamps for one sample, in the track's timescale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mp4SampleTiming {
+    pub decode_time: u64,
+    pub presentation_time: i128,
+    pub duration: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Exact byte location of one encoded sample in the MP4 input.
 pub struct Mp4SampleLocation {

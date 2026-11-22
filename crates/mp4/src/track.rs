@@ -13,6 +13,7 @@ use crate::{
         stts::SttsEntry,
         traf::TrafBox,
         trak::TrakBox,
+        trun::TrunBox,
         tx3g::Tx3gBox,
         vmhd::VmhdBox,
         vp09::Vp09Box,
@@ -785,13 +786,20 @@ impl Mp4Track {
                     .unwrap_or(self.default_sample_duration);
                 let mut duration = default_duration;
                 if let Some(trun) = &traf.trun {
-                    for j in 0..sample_idx {
-                        start_time +=
-                            trun.sample_durations
-                                .get(j)
-                                .copied()
-                                .unwrap_or(default_duration) as u64;
-                    }
+                    let elapsed = if trun.flags & TrunBox::FLAG_SAMPLE_DURATION == 0 {
+                        u64::from(default_duration)
+                            * u64::try_from(sample_idx)
+                                .map_err(|_| Error::InvalidData("invalid fragment sample index"))?
+                    } else {
+                        let durations = trun
+                            .sample_durations
+                            .get(..sample_idx)
+                            .ok_or(Error::InvalidData("missing fragment sample durations"))?;
+                        durations.iter().map(|&value| u64::from(value)).sum()
+                    };
+                    start_time = start_time
+                        .checked_add(elapsed)
+                        .ok_or(Error::InvalidData("fragment sample time overflow"))?;
                     duration = trun
                         .sample_durations
                         .get(sample_idx)
@@ -828,24 +836,54 @@ impl Mp4Track {
         }
     }
 
-    fn sample_rendering_offset(&self, sample_id: u32) -> i32 {
-        if !self.trafs.is_empty() {
-            if let Some((traf_idx, sample_idx)) = self.find_traf_idx_and_sample_idx(sample_id)
-                && let Some(trun) = &self.trafs[traf_idx].trun
-                && let Some(cts) = trun.sample_cts.get(sample_idx)
-            {
-                return *cts as i32;
+    fn composition_offset(&self, sample_id: u32) -> Result<i64> {
+        let (version, bits) = if self.trafs.is_empty() {
+            let Some(ctts) = &self.trak.mdia.minf.stbl.ctts else {
+                return Ok(0);
+            };
+            let (index, _) = self.ctts_index(sample_id)?;
+            (
+                ctts.version,
+                u32::from_be_bytes(ctts.entries[index].sample_offset.to_be_bytes()),
+            )
+        } else {
+            let (traf_index, sample_index) = self
+                .find_traf_idx_and_sample_idx(sample_id)
+                .ok_or_else(|| {
+                    Error::EntryInTrunNotFound(self.track_id(), BoxType::TrunBox, sample_id)
+                })?;
+            let trun = self.trafs[traf_index]
+                .trun
+                .as_ref()
+                .ok_or_else(|| Error::BoxInTrafNotFound(self.track_id(), BoxType::TrunBox))?;
+            if trun.flags & TrunBox::FLAG_SAMPLE_CTS == 0 {
+                return Ok(0);
             }
-            return 0;
+            let bits = *trun.sample_cts.get(sample_index).ok_or_else(|| {
+                Error::EntryInTrunNotFound(self.track_id(), BoxType::TrunBox, sample_id)
+            })?;
+            (trun.version, bits)
+        };
+        match version {
+            0 => Ok(i64::from(bits)),
+            1 => Ok(i64::from(i32::from_be_bytes(bits.to_be_bytes()))),
+            _ => Err(Error::InvalidData("unsupported composition-time version")),
         }
+    }
 
-        if let Some(ref ctts) = self.trak.mdia.minf.stbl.ctts
-            && let Ok((ctts_index, _)) = self.ctts_index(sample_id)
-        {
-            let ctts_entry = ctts.entries.get(ctts_index).unwrap();
-            return ctts_entry.sample_offset;
+    /// Looks up one-based sample timing without reading or allocating encoded sample data.
+    pub fn sample_timing(&self, sample_id: u32) -> Result<Option<Mp4SampleTiming>> {
+        if sample_id == 0 || sample_id > self.sample_count() {
+            return Ok(None);
         }
-        0
+        let (decode_time, duration) = self.sample_time(sample_id)?;
+        let presentation_time =
+            i128::from(decode_time) + i128::from(self.composition_offset(sample_id)?);
+        Ok(Some(Mp4SampleTiming {
+            decode_time,
+            duration,
+            presentation_time,
+        }))
     }
 
     pub(crate) fn is_sync_sample(&self, sample_id: u32) -> bool {
@@ -920,7 +958,10 @@ impl Mp4Track {
             Err(Error::EntryInStblNotFound(_, _, _)) => return Ok(None),
             Err(err) => return Err(err),
         };
-        let rendering_offset = self.sample_rendering_offset(sample_id);
+        let rendering_offset =
+            i32::try_from(self.composition_offset(sample_id)?).map_err(|_| {
+                Error::InvalidData("composition offset exceeds Mp4Sample rendering range")
+            })?;
         let is_sync = self.is_sync_sample(sample_id);
 
         Ok(Some(Mp4Sample {
