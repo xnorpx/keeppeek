@@ -718,7 +718,9 @@ mod tests {
                 },
             )
             .unwrap();
-        handle.insert_event(test_event("moved", 4000)).unwrap();
+        let mut revised = test_event("moved", 4000);
+        revised.revision = 2;
+        handle.insert_event(revised).unwrap();
         let point = handle.event_workflow("alice", vec![key.clone()]).unwrap();
         assert_eq!(point[0].bookmark.as_ref().unwrap().event_start_ms, 4000);
         assert_search_matches_point_read(&handle, &key);
