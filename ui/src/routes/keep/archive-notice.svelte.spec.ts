@@ -220,6 +220,47 @@ it.each([true, false])(
 	}
 );
 
+it('holds reverse shuttle seeks until privacy recovery installs the new cursor', async () => {
+	const fixture = keepFixture(true);
+	const intervals = vi.spyOn(window, 'setInterval');
+	try {
+		await fixture.mount();
+		fixture.first.emitTiming(
+			create(RecordedAudioTimingSchema, { appliedOffsetMs: 137, preview: true })
+		);
+		const video = document.querySelector('video')!;
+		Object.defineProperty(video, 'currentTime', {
+			configurable: true,
+			value: 6.25,
+			writable: true
+		});
+		video.dispatchEvent(new Event('timeupdate'));
+		video.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }));
+		await vi.waitFor(() => expect(intervals.mock.calls.some(([, ms]) => ms === 250)).toBe(true));
+		const reverse = intervals.mock.calls.find(([, ms]) => ms === 250)?.[0];
+		if (typeof reverse !== 'function') throw new Error('Missing reverse shuttle timer.');
+		const player = document.querySelector('[data-keep-player]')!;
+		const interruptedMs = Number(player.getAttribute('data-recording-playhead-ms'));
+		const session = { principalId: 'viewer' };
+		fixture.emitAccess({ status: 'checking', session });
+		await vi.waitFor(() => expect(fixture.first.playback.close).toHaveBeenCalledOnce());
+		reverse();
+		await Promise.resolve();
+		expect(fixture.open).toHaveBeenCalledTimes(1);
+		fixture.emitAccess({ status: 'authenticated', session });
+		await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledTimes(2));
+		expect(fixture.open).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				timestampMs: interruptedMs,
+				recordedAudioPreview: 137
+			})
+		);
+	} finally {
+		intervals.mockRestore();
+		fixture.dispose();
+	}
+});
+
 it('clears a disposed Export cursor and waits for Timeline to reopen its exact moment', async () => {
 	const fixture = keepFixture();
 	const session = { principalId: 'viewer' };
