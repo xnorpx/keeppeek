@@ -305,6 +305,7 @@ test.describe('touch input', () => {
 			keepModeOlderDate
 		);
 		await page.getByRole('button', { name: 'Done', exact: true }).tap();
+		await expect(page.getByRole('dialog', { name: 'Camera and date', exact: true })).toBeHidden();
 		await expect(
 			player.getByText('No retained recording is available near this moment.', { exact: false })
 		).toBeVisible();

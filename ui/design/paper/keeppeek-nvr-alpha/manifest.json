@@ -1,19 +1,19 @@
 {
 	"schemaVersion": 1,
-	"exportedAt": "2026-09-13T00:27:09.9268456Z",
+	"exportedAt": "2026-10-18T06:55:40.352Z",
 	"source": {
 		"fileId": "01M0B0VBH78TMTX40GCYYQ37SG",
 		"url": "https://app.paper.design/file/01M0B0VBH78TMTX40GCYYQ37SG/1-0",
 		"pageId": "1-0",
 		"tokenHash": "b35ec365",
 		"tokenCount": 82,
-		"artboardCount": 86
+		"artboardCount": 92
 	},
 	"scope": {
 		"product": "KeepPeek NVR",
 		"boardNumbers": [
 			1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
-			27, 28, 29, 30, 31, 32, 33, 34, 45, 46, 47, 48, 49, 50
+			27, 28, 29, 30, 31, 32, 33, 34, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56
 		],
 		"excludedProducts": ["Native iOS and Android viewers", "KeepPeek Vision", "KeepPeek Service"]
 	},
@@ -1320,7 +1320,288 @@
 					"status": "proposal"
 				}
 			]
+		},
+		{
+			"number": 51,
+			"nodeId": "BPP-0",
+			"name": "51 - Guest review: target preview",
+			"width": 2310,
+			"height": 1202,
+			"jsx": {
+				"source": "boards/51-guest-review-target-preview.jsx.txt",
+				"bytes": 44447,
+				"sha256": "b578d9948e649e077a988820797ad6e76a884eeac769e40e5d1177c578bff738"
+			},
+			"references": [
+				{
+					"scenarioId": "sharing.creator.desktop.target-preview",
+					"nodeId": "BPX-0",
+					"source": "references/51-guest-review-target-preview-1440.png",
+					"bytes": 133881,
+					"sha256": "7eec86d887b7da310996a4bed1321fea5bc467b4d17bdf17533bffee4e405124",
+					"width": 1440,
+					"height": 900,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "sharing.creator.mobile390.target-preview",
+					"nodeId": "BSK-0",
+					"source": "references/51-guest-review-target-preview-390.png",
+					"bytes": 69509,
+					"sha256": "8059f4f371db92a53d068539c0b057a9b2f98b014fb50af667c5c080e8d46f78",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "sharing.creator.mobile320.target-preview",
+					"nodeId": "BUH-0",
+					"source": "references/51-guest-review-target-preview-320.png",
+					"bytes": 68769,
+					"sha256": "b6c6a2b3c81ec432f3ddc1e1e6c1a532077f2172f0a180beb18f3bbf23ce218c",
+					"width": 320,
+					"height": 918,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
+		},
+		{
+			"number": 52,
+			"nodeId": "BWV-0",
+			"name": "52 - Guest review: copy once",
+			"width": 2310,
+			"height": 1184,
+			"jsx": {
+				"source": "boards/52-guest-review-copy-once.jsx.txt",
+				"bytes": 34373,
+				"sha256": "fc59c510b841fbad61e76cc3130799cca574eb17b0db6833bf721d5f32ad8faf"
+			},
+			"references": [
+				{
+					"scenarioId": "sharing.creator.desktop.copy-once",
+					"nodeId": "BX4-0",
+					"source": "references/52-guest-review-copy-once-1440.png",
+					"bytes": 116995,
+					"sha256": "7d51a532611d194db1fbda97db0d2f8a413306af203d34fab9938c708ed617a1",
+					"width": 1440,
+					"height": 900,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "sharing.creator.mobile390.copy-once",
+					"nodeId": "BZ6-0",
+					"source": "references/52-guest-review-copy-once-390.png",
+					"bytes": 56066,
+					"sha256": "9bd5c222b0fb4790d6c9ba403a433fe15b4f67c2e99aa9caf0202911851c9069",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "sharing.creator.mobile320.copy-once",
+					"nodeId": "C0I-0",
+					"source": "references/52-guest-review-copy-once-320.png",
+					"bytes": 54574,
+					"sha256": "d17836b0ca5bd226b2f31cb6a72f1e64ab910db9d4d4263ea0defbdd5f3ec124",
+					"width": 320,
+					"height": 844,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
+		},
+		{
+			"number": 53,
+			"nodeId": "C1I-0",
+			"name": "53 - Guest review: list and revoke",
+			"width": 2310,
+			"height": 1184,
+			"jsx": {
+				"source": "boards/53-guest-review-list-revoke.jsx.txt",
+				"bytes": 31309,
+				"sha256": "37d61aab822d4cf9adebbc3310af5b46f63fdf663c2dcbf0ba599107f8bb0c64"
+			},
+			"references": [
+				{
+					"scenarioId": "sharing.creator.desktop.list-revoke",
+					"nodeId": "C1R-0",
+					"source": "references/53-guest-review-list-revoke-1440.png",
+					"bytes": 93996,
+					"sha256": "2cdd118484817b38d4e63419349fdbdc45018da30231de4b4d4eb8df9c60865b",
+					"width": 1440,
+					"height": 900,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "sharing.creator.mobile390.list-revoke",
+					"nodeId": "C3E-0",
+					"source": "references/53-guest-review-list-revoke-390.png",
+					"bytes": 54545,
+					"sha256": "8692f2dab68a1d6f6f7e1ab65db7b721ae29bed3913cc647538a70bc4790cc3e",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "sharing.creator.mobile320.list-revoke",
+					"nodeId": "C4S-0",
+					"source": "references/53-guest-review-list-revoke-320.png",
+					"bytes": 52555,
+					"sha256": "3d44145188ebd06082b0284d549a03205265145fd725e0ac9dc28bdc8e8ecab1",
+					"width": 320,
+					"height": 844,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
+		},
+		{
+			"number": 54,
+			"nodeId": "C62-0",
+			"name": "54 - Guest review: guest ready",
+			"width": 2310,
+			"height": 1184,
+			"jsx": {
+				"source": "boards/54-guest-review-ready.jsx.txt",
+				"bytes": 25265,
+				"sha256": "c606862e61e9e376c367dcdcca8c354464fe38d75ba39a209902e93232861bf4"
+			},
+			"references": [
+				{
+					"scenarioId": "sharing.guest.desktop.ready",
+					"nodeId": "C6B-0",
+					"source": "references/54-guest-review-ready-1440.png",
+					"bytes": 61871,
+					"sha256": "9f1247afb0a60b494ed472e490fa441da4afe7b59e6dc5814eeaf2df820abde1",
+					"width": 1440,
+					"height": 900,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "sharing.guest.mobile390.ready",
+					"nodeId": "C7I-0",
+					"source": "references/54-guest-review-ready-390.png",
+					"bytes": 42309,
+					"sha256": "0fd3a01bfb71dfeda76ad02d6ed4a456f6e8187a42b9ef6b46112ab7fb86a1ec",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "sharing.guest.mobile320.ready",
+					"nodeId": "C90-0",
+					"source": "references/54-guest-review-ready-320.png",
+					"bytes": 41178,
+					"sha256": "35a45a98a54dba0ef64bcea7aa05f6f0e5c6ba044018330620467e55e51b480d",
+					"width": 320,
+					"height": 844,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
+		},
+		{
+			"number": 55,
+			"nodeId": "CA2-0",
+			"name": "55 - Guest review: guest expired",
+			"width": 2310,
+			"height": 1184,
+			"jsx": {
+				"source": "boards/55-guest-review-expired.jsx.txt",
+				"bytes": 18194,
+				"sha256": "dbee3f83765e94f4999a8c14cde8e99f6af3c0543c7e39f4c821787f047fcc88"
+			},
+			"references": [
+				{
+					"scenarioId": "sharing.guest.desktop.expired",
+					"nodeId": "CAB-0",
+					"source": "references/55-guest-review-expired-1440.png",
+					"bytes": 56937,
+					"sha256": "9d9a16c01c568c03c0101eceb90028f5a10bd03cb7208ae1e4aec72fd2ca3a2e",
+					"width": 1440,
+					"height": 900,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "sharing.guest.mobile390.expired",
+					"nodeId": "CAY-0",
+					"source": "references/55-guest-review-expired-390.png",
+					"bytes": 38870,
+					"sha256": "b8ae786ce17434154d107f8950f83723211c221a91abdeb253867c3f8d045a7c",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "sharing.guest.mobile320.expired",
+					"nodeId": "CBW-0",
+					"source": "references/55-guest-review-expired-320.png",
+					"bytes": 37679,
+					"sha256": "32a229b7fc6aaab76c420bb785a6e9e069dc6163a3bf7a9eeaab556a905a4455",
+					"width": 320,
+					"height": 844,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
+		},
+		{
+			"number": 56,
+			"nodeId": "CCO-0",
+			"name": "56 - Guest review: guest unavailable",
+			"width": 2310,
+			"height": 1184,
+			"jsx": {
+				"source": "boards/56-guest-review-unavailable.jsx.txt",
+				"bytes": 18290,
+				"sha256": "c0e8083f88c070e66156d5b555e42b1d96cd86c67f6d7ffb0118bdca175c88fe"
+			},
+			"references": [
+				{
+					"scenarioId": "sharing.guest.desktop.unavailable",
+					"nodeId": "CCX-0",
+					"source": "references/56-guest-review-unavailable-1440.png",
+					"bytes": 57550,
+					"sha256": "df0837e21d04757075a947b4f32577a6c8ea015809107f0b32c3dc2be782eadd",
+					"width": 1440,
+					"height": 900,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "sharing.guest.mobile390.unavailable",
+					"nodeId": "CDK-0",
+					"source": "references/56-guest-review-unavailable-390.png",
+					"bytes": 40264,
+					"sha256": "abf9d99332bed1e7c6e10f2b1a7358855fdd6e261d644f0d1caa09497342ed11",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "sharing.guest.mobile320.unavailable",
+					"nodeId": "CEI-0",
+					"source": "references/56-guest-review-unavailable-320.png",
+					"bytes": 38372,
+					"sha256": "91495ce82f29353a232edf6360453da78675c304e8af6d9ab1184f77bb3b51e2",
+					"width": 320,
+					"height": 844,
+					"scale": 1,
+					"status": "proposal"
+				}
+			]
 		}
-	],
-	"updatedAt": "2026-10-18T03:33:58.440Z"
+	]
 }

@@ -14,6 +14,7 @@
 
 - [Live wall and kiosk display](./live-wall.md)
 - [Recording and evidence](./recording-and-evidence.md)
+- [Guest review links](./guest-review.md)
 - [Digital zoom and pan](./digital-zoom.md)
 - [Camera and stream health](./camera-health.md)
 

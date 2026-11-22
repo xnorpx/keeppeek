@@ -153,6 +153,9 @@ fn maintenance_blocks_export_retry_without_losing_the_existing_job() {
         super::super::ExportJobRecord {
             requester_id: "administrator".to_owned(),
             artifact_id: "failed-attempt".to_owned(),
+            source_identity: None,
+            owner_key: None,
+            media_proof: None,
             request,
             job: job.clone(),
             path: None,
