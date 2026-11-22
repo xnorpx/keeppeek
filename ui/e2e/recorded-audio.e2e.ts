@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import {
@@ -138,11 +138,70 @@ test('decodes recorded AAC through signed previews, reset, seek, and a second co
 	}
 });
 
+async function countFrameRegistrations(video: Locator) {
+	await video.evaluate((element) => {
+		const video = element as HTMLVideoElement;
+		const request = video.requestVideoFrameCallback.bind(video);
+		let registered = 0;
+		video.requestVideoFrameCallback = (callback) => {
+			video.dataset.initialRegistrations = String(++registered);
+			return request((now, frame) => {
+				Reflect.deleteProperty(video, 'requestVideoFrameCallback');
+				callback(now, frame);
+			});
+		};
+	});
+}
+
+async function checkPausedFrame(video: Locator, source: string, time: number) {
+	await expect
+		.poll(() =>
+			video.evaluate((element) => {
+				const video = element as HTMLVideoElement;
+				return {
+					source: video.dataset.recordedAudioPresentedSource,
+					paused: video.paused,
+					current: video.currentTime,
+					presented: Number(video.dataset.recordedAudioPresentedTime)
+				};
+			})
+		)
+		.toMatchObject({
+			source,
+			paused: true,
+			current: expect.closeTo(time, 1),
+			presented: expect.closeTo(time, 1)
+		});
+}
+
+async function seekAfterContinuousPlayback(video: Locator) {
+	return await video.evaluate(async (element) => {
+		const video = element as HTMLVideoElement;
+		video.loop = true;
+		await video.play();
+		await new Promise<void>((resolve) => {
+			let frames = 0;
+			const count = () => {
+				if (++frames === 260) resolve();
+				else video.requestVideoFrameCallback(count);
+			};
+			video.requestVideoFrameCallback(count);
+		});
+		video.pause();
+		// Deliberately seek away from the last painted frame on this same object URL.
+		const target = video.currentTime > 2 ? 0.5 : 3;
+		video.currentTime = target;
+		return target;
+	});
+}
+
 test('witnesses a paused replacement recording before later assertions attach', async ({
 	page,
 	baseURL
 }) => {
+	test.setTimeout(60_000);
 	if (!baseURL) throw new Error('Recorded audio calibration requires the configured UI origin.');
+	await installRecordedAudioFrameProbe(page);
 	await installRecordedAudioFrameProbe(page);
 	await page.route('**/recorded-frame-witness', (route) =>
 		route.fulfill({
@@ -161,6 +220,7 @@ test('witnesses a paused replacement recording before later assertions attach', 
 	);
 	await page.goto(new URL('/recorded-frame-witness', baseURL).href);
 	const video = page.locator('video');
+	await countFrameRegistrations(video);
 	for (const time of [0, 1]) {
 		const source = await video.evaluate(async (element, time) => {
 			const video = element as HTMLVideoElement;
@@ -175,19 +235,20 @@ test('witnesses a paused replacement recording before later assertions attach', 
 			video.src = url;
 			return url;
 		}, time);
-		await expect(video).toHaveAttribute('data-recorded-audio-presented-source', source);
-		const snapshot = () =>
-			video.evaluate((element) => {
+		try {
+			await checkPausedFrame(video, source, time);
+			await expect(video).toHaveAttribute('data-initial-registrations', '1');
+			if (time === 1) {
+				const sought = await seekAfterContinuousPlayback(video);
+				await checkPausedFrame(video, source, sought);
+			}
+		} finally {
+			await video.evaluate((element, source) => {
 				const video = element as HTMLVideoElement;
-				return {
-					paused: video.paused,
-					currentTime: video.currentTime,
-					presented: Number(video.dataset.recordedAudioPresentedTime)
-				};
-			});
-		await expect.poll(snapshot).toMatchObject({ paused: true, currentTime: time });
-		await expect
-			.poll(async () => (await snapshot()).presented)
-			.toBeGreaterThanOrEqual(Math.max(0, time - 0.1));
+				video.removeAttribute('src');
+				video.load();
+				URL.revokeObjectURL(source);
+			}, source);
+		}
 	}
 });

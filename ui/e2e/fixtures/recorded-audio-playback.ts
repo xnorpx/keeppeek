@@ -37,6 +37,9 @@ async function decodedSnapshot(video: Locator) {
 
 export async function installRecordedAudioFrameProbe(page: Page) {
 	await page.addInitScript(() => {
+		const installed = Symbol.for('keeppeek.recordedAudioFrameProbe');
+		if (Reflect.has(document, installed)) return;
+		Object.defineProperty(document, installed, { value: true });
 		const pending = new WeakMap<HTMLVideoElement, number>();
 		document.addEventListener(
 			'loadstart',
@@ -49,12 +52,11 @@ export async function installRecordedAudioFrameProbe(page: Page) {
 				delete video.dataset.recordedAudioPresentedTime;
 				const source = video.currentSrc || video.src;
 				if (!source) return;
-				let remaining = 250;
 				const presented: VideoFrameRequestCallback = (_, metadata) => {
 					if (video.currentSrc !== source) return;
 					video.dataset.recordedAudioPresentedTime = String(metadata.mediaTime);
 					video.dataset.recordedAudioPresentedSource = source;
-					if (--remaining > 0) pending.set(video, video.requestVideoFrameCallback(presented));
+					pending.set(video, video.requestVideoFrameCallback(presented));
 				};
 				pending.set(video, video.requestVideoFrameCallback(presented));
 			},
