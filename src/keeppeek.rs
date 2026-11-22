@@ -390,6 +390,7 @@ pub struct KeepPeekLoop {
     shutdown: Shutdown,
     camera_workers: HashMap<IpAddr, CameraWorkers>,
     camera_definitions: HashMap<IpAddr, Camera>,
+    unstarted_configurations: HashMap<IpAddr, (crate::cameras::CameraRecordingMode, bool)>,
     isapi_callbacks: Option<crate::isapi::callbacks::Runtime>,
     storage: Option<StorageHandle>,
     events: Option<EventStore>,
@@ -427,6 +428,7 @@ impl KeepPeekLoop {
             shutdown,
             camera_workers: HashMap::new(),
             camera_definitions: HashMap::new(),
+            unstarted_configurations: HashMap::new(),
             isapi_callbacks: None,
             storage,
             events: None,
@@ -577,33 +579,49 @@ impl KeepPeekLoop {
 
     /// Profile 0 is treated as Main, all others as Sub.
     /// Seed the inventory before the HTTP listener can expose the first observation snapshot.
-    pub(crate) fn seed_profile_observations(&self, cameras: &HashMap<IpAddr, Camera>) {
-        let mut applications = BTreeMap::new();
-        for camera in cameras.values() {
-            let id = self.runtime_profile_camera_ids.camera_id(camera.config.ip);
-            applications.insert(
-                id.clone(),
-                crate::profiles::CameraRuntimeApplication {
-                    camera_id: id,
-                    policy: self.effective_camera_policy(&camera.config),
-                    state: crate::profiles::RuntimeApplicationState::Pending,
-                    reason: None,
-                },
-            );
-        }
-        let configured = applications.keys().cloned().collect();
-        for missing in self
-            .runtime_profiles
-            .missing_camera_applications(&configured)
-        {
-            applications.insert(missing.camera_id.clone(), missing);
-        }
+    pub(crate) fn seed_profile_observations<'a>(
+        &mut self,
+        configs: impl Iterator<Item = &'a crate::cameras::CameraConfig>,
+    ) {
+        self.unstarted_configurations = configs
+            .map(|c| (c.ip, (c.recording_mode, c.username.is_empty())))
+            .collect();
+        let observations = self.inactive_profile_observations();
         let mut status = self
             .runtime_profile_status
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         status.set_selection(&self.runtime_profiles);
-        status.cameras = applications;
+        status.cameras = observations
+            .into_iter()
+            .map(|row| (row.camera_id.clone(), row))
+            .collect();
+    }
+
+    fn inactive_profile_observations(&self) -> Vec<crate::profiles::CameraRuntimeApplication> {
+        let configured_ids = self
+            .camera_definitions
+            .keys()
+            .chain(self.unstarted_configurations.keys())
+            .map(|ip| self.runtime_profile_camera_ids.camera_id(*ip))
+            .collect();
+        let mut observations = self
+            .runtime_profiles
+            .missing_camera_applications(&configured_ids);
+        for (&ip, &(recording_mode, missing_credentials)) in &self.unstarted_configurations {
+            observations.push(crate::profiles::CameraRuntimeApplication {
+                camera_id: self.runtime_profile_camera_ids.camera_id(ip),
+                policy: self.profile_policy_for(ip, recording_mode),
+                state: if missing_credentials {
+                    crate::profiles::RuntimeApplicationState::Degraded
+                } else {
+                    crate::profiles::RuntimeApplicationState::Pending
+                },
+                reason: missing_credentials
+                    .then(|| "camera credentials are not configured".to_owned()),
+            });
+        }
+        observations
     }
 
     pub fn add_cameras(&mut self, cameras: &HashMap<IpAddr, Camera>) -> anyhow::Result<()> {
@@ -624,10 +642,8 @@ impl KeepPeekLoop {
             .camera_definitions
             .keys()
             .map(|ip| self.runtime_profile_camera_ids.camera_id(*ip))
-            .collect();
-        let missing = self
-            .runtime_profiles
-            .missing_camera_applications(&configured_ids);
+            .collect::<HashSet<_>>();
+        let inactive = self.inactive_profile_observations();
         let mut status = self
             .runtime_profile_status
             .write()
@@ -639,7 +655,7 @@ impl KeepPeekLoop {
             .cameras
             .retain(|camera_id, _| configured_ids.contains(camera_id));
         status.cameras.extend(
-            missing
+            inactive
                 .into_iter()
                 .map(|application| (application.camera_id.clone(), application)),
         );
@@ -670,6 +686,7 @@ impl KeepPeekLoop {
         }
         self.camera_definitions
             .insert(camera.config.ip, camera.clone());
+        self.unstarted_configurations.remove(&camera.config.ip);
         if let Some(name) = &camera.config.name {
             self.camera_names
                 .insert(camera.config.ip.to_string(), name.clone());
@@ -760,9 +777,17 @@ impl KeepPeekLoop {
         &self,
         camera: &crate::cameras::CameraConfig,
     ) -> crate::profiles::EffectiveCameraPolicy {
+        self.profile_policy_for(camera.ip, camera.recording_mode)
+    }
+
+    fn profile_policy_for(
+        &self,
+        ip: IpAddr,
+        recording_mode: crate::cameras::CameraRecordingMode,
+    ) -> crate::profiles::EffectiveCameraPolicy {
         let base = crate::profiles::BaseCameraPolicy {
             available: true,
-            recording_mode: camera.recording_mode,
+            recording_mode,
             privacy_enforced: false,
             notifications_enabled: true,
         };
@@ -774,10 +799,10 @@ impl KeepPeekLoop {
             .and_then(|profile| {
                 profile
                     .cameras
-                    .get(&self.runtime_profile_camera_ids.camera_id(camera.ip))
+                    .get(&self.runtime_profile_camera_ids.camera_id(ip))
             });
         let mut policy = crate::profiles::resolve_camera_policy(&base, profile);
-        if self.privacy_active(&camera.ip.to_string()) {
+        if self.privacy_active(&ip.to_string()) {
             policy.privacy_enforced = true;
             policy.privacy_source =
                 if profile.is_some_and(|profile| profile.privacy_enforced == Some(true)) {
@@ -836,6 +861,11 @@ impl KeepPeekLoop {
             .cloned()
             .collect::<Vec<_>>();
         status.set_selection(&self.runtime_profiles);
+        status.cameras.extend(
+            self.inactive_profile_observations()
+                .into_iter()
+                .map(|row| (row.camera_id.clone(), row)),
+        );
         for camera in &cameras {
             let camera_id = self.runtime_profile_camera_ids.camera_id(camera.config.ip);
             status.cameras.insert(
@@ -910,15 +940,7 @@ impl KeepPeekLoop {
             applications.push(self.camera_runtime_application(&camera, policy, runtime_result));
         }
         self.finish_profile_recordings(&mut applications, pending);
-        let configured_ids = self
-            .camera_definitions
-            .keys()
-            .map(|ip| self.runtime_profile_camera_ids.camera_id(*ip))
-            .collect();
-        applications.extend(
-            self.runtime_profiles
-                .missing_camera_applications(&configured_ids),
-        );
+        applications.extend(self.inactive_profile_observations());
         self.complete_runtime_profiles(&applications)?;
         Ok(applications)
     }
@@ -1765,6 +1787,7 @@ impl KeepPeekLoop {
             match command {
                 KeepPeekCommand::Stop { ip, reply } => {
                     self.camera_definitions.remove(&ip);
+                    self.unstarted_configurations.remove(&ip);
                     self.stop_camera(ip);
                     if self.reconcile_missing_profile_targets() {
                         self.publish_runtime_profile_status();
@@ -2161,12 +2184,45 @@ mod tests {
     }
 
     #[test]
+    fn configured_camera_without_credentials_remains_degraded_across_startup_and_profile_changes() {
+        let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+        let mut config = runtime_rtsp_camera("127.0.0.1:8554".parse().unwrap()).config;
+        config.username.clear();
+        let id = config.ip.to_string();
+        recorder.seed_profile_observations(std::iter::once(&config));
+        let status = recorder.control().runtime_profile_status_handle();
+        let verify = || {
+            let view = status.read().unwrap();
+            let row = &view.cameras[&id];
+            assert_eq!(
+                row.state,
+                crate::profiles::RuntimeApplicationState::Degraded
+            );
+            assert_eq!(
+                row.reason.as_deref(),
+                Some("camera credentials are not configured")
+            );
+        };
+        verify();
+        recorder.add_cameras(&HashMap::new()).unwrap();
+        verify();
+        recorder
+            .apply_runtime_profiles(crate::profiles::ProfileRegistry {
+                revision: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        verify();
+        assert!(recorder.camera_workers.is_empty());
+    }
+
+    #[test]
     fn startup_observations_include_configured_and_missing_targets_before_any_worker_starts() {
         let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
         let mut camera = runtime_rtsp_camera("127.0.0.1:8554".parse().unwrap());
         camera.config.ip = "127.0.0.2".parse().unwrap();
         recorder.set_runtime_profiles(missing_target_profiles());
-        recorder.seed_profile_observations(&HashMap::from([(camera.config.ip, camera)]));
+        recorder.seed_profile_observations(std::iter::once(&camera.config));
         let status = recorder.runtime_profile_status.read().unwrap();
         assert_eq!(status.cameras.len(), 2);
         assert_eq!(
