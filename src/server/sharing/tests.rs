@@ -206,6 +206,49 @@ fn unsupported_range_codec_is_declined_before_disclosure() {
 }
 
 #[test]
+fn range_preview_and_creation_require_uncorrected_audio_and_an_existing_media_proof() {
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let intent = fixture.intent();
+    for (offset, missing_proof, reason) in [
+        (200, false, "audio correction"),
+        (-200, false, "audio correction"),
+        (0, true, "no recorded media proof"),
+    ] {
+        {
+            let mut records = fixture.state.export_jobs.lock().unwrap();
+            let job = records.get_mut(&record.job.job_id).unwrap();
+            let timing = job.job.recorded_audio.as_mut().unwrap();
+            timing.applied_offset_ms = offset;
+            timing.configured_offset_ms = offset;
+            if missing_proof {
+                job.media_proof = None;
+            }
+        }
+        for action in [
+            Action::PreviewExport(proto::PreviewShareExport {
+                export_job_id: record.job.job_id.clone(),
+                recording_range: Some(range.clone()),
+            }),
+            Action::Create(proto::CreateShareGrant {
+                recording_range: Some(range.clone()),
+                ..intent.clone()
+            }),
+        ] {
+            let err = dispatch(
+                &fixture.state,
+                &fixture.principal,
+                proto::ShareCommand {
+                    action: Some(action),
+                },
+            )
+            .unwrap_err();
+            assert!(err.message.contains(reason), "{}", err.message);
+        }
+    }
+    assert!(fixture.list(100).grants.is_empty());
+}
+
+#[test]
 fn selected_interval_guards_preview_and_grant_creation() {
     let (fixture, record, selected) = selected_export(VideoCodec::H264);
     let guarded_preview = |selected: &proto::ShareRecordingRange| {

@@ -289,7 +289,6 @@
 						client: sharingController,
 						target: {
 							sourceId: record.camera.id,
-							streamId: 'main',
 							startMs: record.event.start_time_ms,
 							endMs: record.event.end_time_ms
 						}

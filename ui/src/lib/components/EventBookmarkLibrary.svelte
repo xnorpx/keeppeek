@@ -193,7 +193,6 @@
 							client,
 							target: {
 								sourceId: current.sourceId,
-								streamId: 'main',
 								startMs: current.bookmark.eventStartMs,
 								endMs: null,
 								bookmarkEventId: current.eventId

@@ -27,6 +27,7 @@ function client() {
 		getServerCapabilities: vi
 			.fn()
 			.mockResolvedValue({ capabilityIds: ['keeppeek.guest-range.v1'] }),
+		queryStoredTimeline: vi.fn(),
 		searchEventMetadata: vi.fn(),
 		listExports: vi.fn().mockResolvedValue([]),
 		createExport: vi.fn().mockResolvedValue(ready),
@@ -46,6 +47,7 @@ describe('recording range sharing', () => {
 		]);
 		expect(await prepareRangeShare({ client: recorder, target }, signal())).toEqual({
 			exportJobId: ready.id,
+			reused: true,
 			guard
 		});
 		expect(recorder.createExport).not.toHaveBeenCalled();
@@ -54,7 +56,7 @@ describe('recording range sharing', () => {
 		const recorder = client();
 		recorder.listExports.mockResolvedValue([{ ...ready, id: 'legacy' }]);
 		const result = await prepareRangeShare({ client: recorder, target }, signal(), true);
-		expect(result).toEqual({ exportJobId: ready.id, guard });
+		expect(result).toEqual({ exportJobId: ready.id, guard, reused: false });
 		expect(recorder.listExports).not.toHaveBeenCalled();
 		expect(recorder.createExport).toHaveBeenCalledWith({ ...target, allowPartial: true });
 	});
@@ -67,7 +69,7 @@ describe('recording range sharing', () => {
 				{ client: recorder, target: { ...target, endMs: null, bookmarkEventId: 'saved' } },
 				signal()
 			)
-		).toEqual({ exportJobId: ready.id, guard });
+		).toEqual({ exportJobId: ready.id, guard, reused: false });
 		expect(recorder.searchEventMetadata).toHaveBeenCalledWith(
 			expect.objectContaining({
 				eventIds: ['saved'],
@@ -99,6 +101,54 @@ describe('recording range sharing', () => {
 		expect(recorder.listExports).not.toHaveBeenCalled();
 		expect(recorder.createExport).not.toHaveBeenCalled();
 	});
+	it('selects retained compatible footage for an event, preserving both interval edges', async () => {
+		const recorder = client();
+		recorder.getServerCapabilities.mockResolvedValue({
+			capabilityIds: ['keeppeek.guest-range.v1'],
+			storedMediaSources: [
+				{
+					sourceId: 'front',
+					streams: [
+						{ streamId: 'main', contentType: 'video/mp4; codecs="hvc1.1.6.L93.B0"' },
+						{ streamId: 'sub', contentType: 'video/mp4; codecs="avc1.42E01E"' }
+					]
+				}
+			]
+		});
+		recorder.queryStoredTimeline.mockResolvedValue({
+			ranges: [
+				{ sourceId: 'front', streamId: 'main', startMs: 1000, endMs: 2000 },
+				{ sourceId: 'front', streamId: 'sub', startMs: 1100, endMs: 1900 }
+			]
+		});
+		recorder.searchEventMetadata
+			.mockResolvedValueOnce({ hits: [] })
+			.mockResolvedValueOnce({ hits: [{ eventId: 'saved', ...target }] });
+		const { guard: selected } = await prepareRangeShare(
+			{
+				client: recorder,
+				target: {
+					sourceId: 'front',
+					startMs: 1000,
+					endMs: null,
+					bookmarkEventId: 'saved'
+				}
+			},
+			signal()
+		);
+		expect(selected).toEqual(guard);
+		expect(recorder.searchEventMetadata.mock.calls.map(([query]) => query.streamId)).toEqual([
+			'main',
+			'sub'
+		]);
+		expect(recorder.createExport).toHaveBeenCalledWith({ ...target, allowPartial: true });
+		recorder.queryStoredTimeline.mockResolvedValue({ ranges: [] });
+		await expect(
+			prepareRangeShare({ client: recorder, target: { ...target, streamId: undefined } }, signal())
+		).rejects.toThrow('No compatible recording');
+		expect(recorder.createExport).toHaveBeenCalledTimes(1);
+	});
+
 	it('keeps a legacy recorder and a closed dialog from preparing an export', async () => {
 		const recorder = client();
 		recorder.getServerCapabilities.mockResolvedValue({

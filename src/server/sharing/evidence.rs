@@ -26,9 +26,19 @@ pub(super) fn preview(
     let issuer = principal.sharing_issuer();
     require_owner(&record, &issuer)?;
     let policy = camera_access::for_principal(state, principal)?;
-    let binding = binding(&record)?;
-    let current_source = source(state, binding.source_identity)?;
+    let current_source = source(state, record.source_identity.ok_or_else(denied)?)?;
     camera_access::require_camera(&policy, &current_source)?;
+    if range.is_some()
+        && record.media_proof.is_none()
+        && record.job.status == proto::ExportJobStatus::Ready as i32
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "the completed export has no recorded media proof",
+        ));
+    }
+    let binding = binding(&record)?;
     if let Some(selected) = range {
         if selected.start_ms < 0
             || selected.end_ms <= selected.start_ms
@@ -36,6 +46,20 @@ pub(super) fn preview(
                 > crate::shares::MAX_MEDIA_DURATION_MS
         {
             return Err(invalid("select a recording interval of up to two minutes"));
+        }
+        // Corrected audio may come from neighboring source times. This proof describes
+        // the output presentation timeline, so it cannot authorize those samples.
+        if record
+            .job
+            .recorded_audio
+            .as_ref()
+            .is_some_and(|timing| timing.applied_offset_ms != 0)
+        {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                409,
+                "recorded audio correction prevents verification of the selected source interval",
+            ));
         }
         if selected.source_id != current_source
             || selected.source_id != binding.source_id

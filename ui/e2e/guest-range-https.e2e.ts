@@ -30,6 +30,7 @@ test('the selected Keep, event and bookmark intervals reach the same guarded HTT
 		const dialog = page.getByRole('dialog', { name: 'Create guest link', exact: true });
 		await panel.getByRole('button', { name: 'Create export', exact: true }).click();
 		await expect(panel).toHaveAttribute('data-export-status', 'ready');
+		await expect(panel.getByRole('button', { name: 'Share recording range' })).toBeVisible();
 		const readyStart = performance.now();
 		await panel.getByRole('button', { name: 'Create guest link', exact: true }).click();
 		await expect(dialog.getByLabel('Display name')).toBeVisible();

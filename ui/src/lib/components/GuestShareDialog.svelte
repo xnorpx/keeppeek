@@ -7,6 +7,7 @@
 	import type { SharingControlClient } from '$lib/control-client-sharing';
 	import {
 		prepareRangeShare,
+		missingRangeProof,
 		RangePreparationError,
 		type RangePreparation,
 		type RecordingRangeGuard
@@ -39,7 +40,8 @@
 	let maxViews = $state('');
 	let maxDownloads = $state('');
 	let error = $state<string | null>(null);
-	let freshExport = $state(false);
+	let replaceable = $state(false);
+	let preparedRange: Awaited<ReturnType<typeof prepareRangeShare>> | undefined;
 	let url = $state<string | null>(null);
 	let copied = $state(false);
 	let requestId = $state<string | null>(null);
@@ -67,10 +69,11 @@
 		};
 	});
 
-	async function load(): Promise<void> {
+	async function load(replace = false): Promise<void> {
 		const version = ++generation;
 		stage = 'loading';
 		error = null;
+		replaceable = false;
 		try {
 			let nextPolicy: SharePolicy;
 			let nextEvidence: ShareEvidence;
@@ -86,14 +89,17 @@
 					throw new RangePreparationError(
 						'Enable sharing and configure its HTTPS origin in Settings before preparing a recording range.'
 					);
-				const prepared = await prepareRangeShare(range, lifetime.signal, freshExport);
+				if (replace || !preparedRange)
+					preparedRange = await prepareRangeShare(range, lifetime.signal, replace);
+				const prepared = preparedRange;
 				if (version !== generation) return;
 				guard = prepared.guard;
 				try {
 					nextEvidence = await controller.previewExport(prepared.exportJobId, guard);
 				} catch (cause) {
 					// A matching older artifact can lack the proof required for a range grant.
-					freshExport = true;
+					replaceable =
+						prepared.reused && cause instanceof Error && cause.message === missingRangeProof;
 					throw cause;
 				}
 			} else if (exportJobId) {
@@ -119,7 +125,7 @@
 			error = range
 				? cause instanceof RangePreparationError
 					? cause.message
-					: 'This recording cannot be shared within the selected interval. Check recording coverage and codec boundaries, or select a different interval.'
+					: 'The recorder could not verify this recording for sharing. Check the connection, access, and selected footage, then reload the preview.'
 				: 'This export could not be previewed for sharing. Check access and file expiry, and use a new creator-owned export of at most 2 minutes and 512 MiB. Then reload.';
 		}
 	}
@@ -236,8 +242,13 @@
 				</p>
 			{:else if stage === 'error'}
 				<Button variant="outline" class="min-h-11" onclick={() => void load()}
-					>{range && freshExport ? 'Prepare a fresh export' : 'Reload preview'}</Button
+					>Reload preview</Button
 				>
+				{#if replaceable}
+					<Button variant="outline" class="min-h-11" onclick={() => void load(true)}
+						>Prepare a fresh export</Button
+					>
+				{/if}
 			{:else if stage === 'created' && url}
 				<div class="space-y-4">
 					<h3 class="text-base font-semibold">Copy this link now</h3>

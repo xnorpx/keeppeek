@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import '../../app.css';
 import GuestShareDialog from './GuestShareDialog.svelte';
+import { missingRangeProof } from '../sharing-range';
 import {
 	shareEvidenceFixture,
 	sharePolicyFixture,
@@ -94,6 +95,7 @@ describe('creator guest share dialog', () => {
 			listExports: vi.fn().mockResolvedValue([]),
 			createExport: vi.fn().mockResolvedValue({ id: evidence.exportJobId, status: 'ready' }),
 			getExport: vi.fn(),
+			queryStoredTimeline: vi.fn(),
 			searchEventMetadata: vi.fn()
 		};
 		await render(GuestShareDialog, {
@@ -117,6 +119,60 @@ describe('creator guest share dialog', () => {
 			sharingFixtureOrigin
 		);
 	});
+
+	it.each([
+		{ failure: 'Connection lost', existing: true, replacement: false },
+		{ failure: missingRangeProof, existing: false, replacement: false },
+		{ failure: missingRangeProof, existing: true, replacement: true }
+	])(
+		'only explicitly replaces an existing artifact without proof: $failure, existing=$existing',
+		async ({ failure, existing, replacement }) => {
+			const evidence = shareEvidenceFixture();
+			const target = {
+				sourceId: evidence.sourceId,
+				streamId: 'sub' as const,
+				startMs: Number(evidence.startMs),
+				endMs: Number(evidence.endMs)
+			};
+			const old = {
+				id: evidence.exportJobId,
+				sourceId: target.sourceId,
+				streamId: 'sub',
+				requestedStartMs: target.startMs,
+				requestedEndMs: target.endMs,
+				status: 'ready',
+				expiresAtMs: sharingFixtureNow + 60_000
+			};
+			const rangeClient = {
+				getServerCapabilities: vi
+					.fn()
+					.mockResolvedValue({ capabilityIds: ['keeppeek.guest-range.v1'] }),
+				queryStoredTimeline: vi.fn(),
+				searchEventMetadata: vi.fn(),
+				listExports: vi.fn().mockResolvedValue(existing ? [old] : []),
+				getExport: vi.fn(),
+				createExport: vi.fn().mockResolvedValue({ ...old, id: 'new-artifact' })
+			};
+			const share = controller();
+			share.previewExport.mockRejectedValueOnce(new Error(failure));
+			await render(GuestShareDialog, {
+				props: { controller: share, range: { target, client: rangeClient }, onclose: vi.fn() }
+			});
+			await expect.element(page.getByRole('alert')).toMatchTextContent('could not verify');
+			const fresh = page.getByRole('button', { name: 'Prepare a fresh export' });
+			const reload = page.getByRole('button', { name: 'Reload preview' });
+			await expect.element(reload).toBeVisible();
+			if (replacement) await fresh.click();
+			else {
+				await expect.element(fresh).not.toBeInTheDocument();
+				await reload.click();
+			}
+			await expect.element(page.getByLabelText('Display name')).toBeVisible();
+			expect(rangeClient.createExport).toHaveBeenCalledTimes(!existing || replacement ? 1 : 0);
+			expect(rangeClient.listExports).toHaveBeenCalledTimes(1);
+			expect(share.previewExport).toHaveBeenCalledTimes(2);
+		}
+	);
 
 	it('requires list/revoke recovery after an unconfirmed create and never retries automatically', async () => {
 		const client = controller();
