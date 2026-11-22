@@ -324,7 +324,7 @@
 	});
 	$effect(() => {
 		if (loading || !livePlansReady) return;
-		void livePeer.configure(livePlans).catch((error) => {
+		void livePeer.configure(livePlans, 'reconcile').catch((error) => {
 			console.error('Unable to configure shared live view', error);
 		});
 	});
@@ -516,26 +516,33 @@
 		if (healthRefreshInFlight) return;
 		healthRefreshInFlight = true;
 		const generation = peekViewState.generation;
+		let healthChanged = false;
 		try {
 			const health = await controlClient.getHealth();
-			const needsReconcile =
+			const changed =
 				health.cameras.some((camera) => {
 					const previous = cameraHealthById.get(camera.id);
 					return (
 						camera.privacy?.active !== previous?.privacy?.active ||
 						(camera.state === 'offline') !== (previous?.state === 'offline')
 					);
-				}) ||
-				cameraHealthById.size !== health.cameras.length ||
-				(livePeer.sessionId !== null &&
-					livePlans.some((plan) => plan.active && livePeer.needsAdmission(plan.cameraId)));
+				}) || cameraHealthById.size !== health.cameras.length;
 			if (!peekViewState.updateHealth(generation, health)) return;
 			publishShellHealth(health);
-			if (componentActive && needsReconcile) scheduleLivePlanReconcile();
+			healthChanged = changed;
 		} catch {
 			// Retain the last authoritative snapshot until a later refresh succeeds.
 		} finally {
 			healthRefreshInFlight = false;
+			const retryAdmission =
+				livePeer.sessionId !== null &&
+				livePlans.some((plan) => plan.active && livePeer.needsAdmission(plan.cameraId));
+			if (
+				componentActive &&
+				generation === peekViewState.generation &&
+				(healthChanged || retryAdmission)
+			)
+				scheduleLivePlanReconcile();
 		}
 	}
 
@@ -957,6 +964,7 @@
 
 	function activateFocus(cameraId: string): void {
 		const enteringFocus = focusedCameraId === null;
+		if (enteringFocus) livePeer.resumeRecovery();
 		rememberViewerCamera(cameraId);
 		focusReturnPending = false;
 		if (wallRevealTimer) clearTimeout(wallRevealTimer);

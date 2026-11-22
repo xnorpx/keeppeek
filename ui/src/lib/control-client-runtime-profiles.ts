@@ -471,13 +471,16 @@ export class RuntimeProfilesControlClient {
 			maxEntries: 1,
 			listener: (entries) => {
 				if (!entries.some((entry) => entry.key === runtimeProfilesRegistryKey)) return;
+				const connection = this.connectionGeneration;
 				const requestGeneration = ++generation;
+				const current = () =>
+					connection === this.connectionGeneration && requestGeneration === generation;
 				void this.getRegistry()
 					.then((registry) => {
-						if (requestGeneration === generation) listener(registry);
+						if (current()) listener(registry);
 					})
 					.catch((cause: unknown) => {
-						if (requestGeneration === generation) onError(cause);
+						if (current()) onError(cause);
 					});
 			}
 		});

@@ -1196,14 +1196,24 @@ describe('LivePeer', () => {
 		try {
 			for (const delay of [0, 750, 2000]) {
 				FakePeerConnection.latest!.channels[0].close();
+				const before = api.createSession.mock.calls.length;
+				for (let pulse = 0; pulse < 4; pulse++) await peer.configure(plans, 'reconcile');
+				expect(api.createSession).toHaveBeenCalledTimes(before);
 				await vi.advanceTimersByTimeAsync(delay);
-				await peer.configure(plans);
 				expect(peer.sessionId).toBe('flapping');
 			}
 			FakePeerConnection.latest!.channels[0].close();
 			await vi.runAllTimersAsync();
 			expect(api.createSession).toHaveBeenCalledTimes(4);
 			expect(peer.error).toMatch(/reopen/i);
+			for (let pulse = 0; pulse < 5; pulse++) {
+				await peer.configure(plans, 'reconcile');
+				await vi.advanceTimersByTimeAsync(5000);
+			}
+			expect(api.createSession).toHaveBeenCalledTimes(4);
+			peer.resumeRecovery();
+			await vi.runAllTimersAsync();
+			expect(api.createSession).toHaveBeenCalledTimes(5);
 		} finally {
 			vi.useRealTimers();
 			await peer.close();
@@ -1233,6 +1243,23 @@ describe('LivePeer', () => {
 			}
 		}
 	);
+
+	it('keeps automatic plan refreshes stopped after initial denial until authorization is confirmed', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession
+			.mockRejectedValueOnce(new ApiRequestError(403, 'denied'))
+			.mockResolvedValue({ session_id: 'authorized', answer: { type: 'answer', sdp: 'v=0' } });
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		const plans = [{ cameraId: 'front-door', quality: 'auto' as const }];
+		await expect(peer.configure(plans, 'reconcile')).rejects.toThrow('denied');
+		for (let pulse = 0; pulse < 4; pulse++) await peer.configure(plans, 'reconcile');
+		expect(api.createSession).toHaveBeenCalledOnce();
+		peer.resumeRecovery();
+		await vi.waitFor(() => expect(peer.sessionId).toBe('authorized'));
+		expect(api.createSession).toHaveBeenCalledTimes(2);
+		await peer.close();
+	});
 
 	it('leaves no channel-opening timer when signaling rejects revoked access', async () => {
 		vi.useFakeTimers();

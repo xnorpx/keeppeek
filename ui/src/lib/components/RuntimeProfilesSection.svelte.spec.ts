@@ -282,6 +282,32 @@ describe('RuntimeProfilesSection', () => {
 		await expect.element(page.getByLabelText('Display name')).toHaveValue('Away');
 		expect(runtimeProfiles.saveRegistry).not.toHaveBeenCalled();
 	});
+	it('restores an interrupted registry while the dirty draft keeps its original compare-and-set revision', async () => {
+		const { client, runtimeProfiles, registry } = recoveryClient('away');
+		let fail: (cause: unknown) => void = () => {};
+		let publish: (value: RuntimeProfileRegistry) => void = () => {};
+		runtimeProfiles.watchRegistry.mockImplementation(
+			async (receive: typeof publish, onError: typeof fail) => {
+				fail = onError;
+				publish = receive;
+				return { close: vi.fn() };
+			}
+		);
+		runtimeProfiles.saveRegistry.mockRejectedValue(new Error('The revision changed.'));
+		await render(RuntimeProfilesSectionFixture, { props: { client, cameras: [] } });
+		const name = page.getByLabelText('Display name');
+		await name.fill('My unfinished draft');
+		fail(new Error('Disconnected'));
+		await expect.element(name).toBeDisabled();
+		publish({ ...registry, revision: '4' });
+		await expect.element(name).toBeEnabled();
+		await expect.element(name).toHaveValue('My unfinished draft');
+		await page.getByRole('button', { name: 'Save profile changes' }).click();
+		expect(runtimeProfiles.saveRegistry).toHaveBeenCalledWith(
+			expect.objectContaining({ revision: '3' })
+		);
+		await expect.element(page.getByRole('alert')).toHaveTextContent('The revision changed.');
+	});
 	it('installs the newest deferred watch after a successful pending save', async () => {
 		const { client, runtimeProfiles, registry } = recoveryClient('away');
 		const pending = Promise.withResolvers<RuntimeProfileRegistry>();

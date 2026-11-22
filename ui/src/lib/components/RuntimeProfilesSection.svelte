@@ -40,6 +40,7 @@
 	let saving = $state(false);
 	let activating = $state(false);
 	let error = $state<string | null>(null);
+	let registryWatchError = $state<string | null>(null);
 	let announcement = $state<string | null>(null);
 	let dirty = $state(false);
 	let deferredRegistry: RuntimeProfileRegistry | null = null;
@@ -194,15 +195,18 @@
 		const registryFailure = (cause: unknown) => {
 			if (disposed) return;
 			registry = null;
-			setError(cause);
+			registryWatchError =
+				cause instanceof Error ? cause.message : 'Runtime profile registry is unavailable.';
 		};
 		void load(false);
 		if (administrator) {
 			void controlClient.runtimeProfiles
 				.watchRegistry((next) => {
-					if (disposed || error) return;
+					if (disposed) return;
+					registryWatchError = null;
 					// ponytail: Keep only the newest observation while the draft owns its CAS baseline.
 					if (dirty) {
+						registry ??= next;
 						if (!deferredRegistry || BigInt(next.revision) > BigInt(deferredRegistry.revision))
 							deferredRegistry = next;
 						return;
@@ -253,6 +257,7 @@
 		if (refreshObservation) retryObservation();
 		loading = true;
 		error = null;
+		registryWatchError = null;
 		cameraBindings = null;
 		const currentCameras = cameras;
 		try {
@@ -268,7 +273,7 @@
 					controlClient.runtimeProfiles.getRegistry(),
 					controlClient.runtimeProfiles.getCameras()
 				]);
-				if (error) return false;
+				if (error || registryWatchError) return false;
 				cameraBindings = bindings;
 				bindingsForCameras = currentCameras;
 				const accepted = acceptRegistry(next);
@@ -390,7 +395,7 @@
 		try {
 			const saved = await controlClient.runtimeProfiles.saveRegistry({
 				...draft,
-				revision: registry.revision
+				revision: draft.revision
 			});
 			if (!registry) return;
 			acceptRegistry(saved);
@@ -825,8 +830,8 @@
 			{/if}
 		{/if}
 
-		{#if error}
-			<p role="alert" class="text-sm text-destructive">{error}</p>
+		{#if error || registryWatchError}
+			<p role="alert" class="text-sm text-destructive">{error ?? registryWatchError}</p>
 			{#if administrator && dirty}
 				<button
 					type="button"

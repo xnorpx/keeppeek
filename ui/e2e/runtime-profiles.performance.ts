@@ -12,8 +12,8 @@ function observeOperator() {
 	const tasks: Array<{ start: number; duration: number }> = [];
 	const el = document.querySelector('[aria-label="Active runtime profile"] p')!;
 	const collect = () => {
-		const revision = el.textContent.match(/revision\s+(\d+)/)?.[1];
-		const name = el.querySelector('strong')?.textContent.trim();
+		const revision = el.textContent?.match(/revision\s+(\d+)/)?.[1];
+		const name = el.querySelector('strong')?.textContent?.trim();
 		if (revision && name && !revisions.has(revision))
 			revisions.set(revision, { name, time: performance.timeOrigin + performance.now() });
 	};
