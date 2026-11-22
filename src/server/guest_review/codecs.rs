@@ -3,7 +3,10 @@ use mp4::ReadBox;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 const MAX_MOOV_BYTES: u64 = 1_024 * 1_024;
-const MAX_TOP_METADATA_BOXES: usize = 4_096;
+const MAX_TOP_METADATA_BOXES: u64 = 4_096;
+// Allow a moof/mdat pair per fragment, including independently fragmented audio and video.
+const MAX_TOP_LEVEL_BOXES: u64 =
+    MAX_TOP_METADATA_BOXES + 2 * 1_024 * crate::server::MAX_EXPORT_DURATION.as_secs();
 const MAX_CHILD_BOXES: usize = 32;
 
 #[derive(Clone, Copy)]
@@ -53,7 +56,7 @@ pub(super) fn inspect(
     bytes: u64,
     mut check: impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
-    let (start, length) = initialization(reader, bytes, &mut check)?;
+    let (start, length) = initialization(reader, bytes, MAX_TOP_LEVEL_BOXES, &mut check)?;
     let mut moov = vec![0; usize::try_from(length).map_err(|_| unsupported())?];
     reader.seek(SeekFrom::Start(start))?;
     for chunk in moov.chunks_mut(CHUNK_BYTES) {
@@ -85,6 +88,7 @@ pub(super) fn inspect(
 fn initialization(
     reader: &mut (impl Read + Seek),
     bytes: u64,
+    mut remaining_boxes: u64,
     check: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<(u64, u64)> {
     let mut offset = 0u64;
@@ -97,6 +101,7 @@ fn initialization(
     // Every header consumes at least eight bytes and checks the caller's deadline.
     // A valid exporter may produce a moof/mdat pair for every sync frame.
     while offset < bytes {
+        remaining_boxes = remaining_boxes.checked_sub(1).ok_or_else(unsupported)?;
         check()?;
         let (kind, header, length) = top_header(reader, offset, bytes)?;
         if kind != *b"moof" && kind != *b"mdat" {

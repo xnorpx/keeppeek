@@ -114,6 +114,14 @@ fn actual_h264_and_optional_aac_lc_descriptions_define_admission() {
 }
 
 #[test]
+fn top_level_box_budget_counts_media_and_initialization_boxes() {
+    let bytes = artifact(vec![track(b"vide", vec![video_entry()], Vec::new())]);
+    let len = bytes.len() as u64;
+    assert!(initialization(&mut Cursor::new(&bytes), len, 3, &mut || Ok(())).is_ok());
+    assert!(initialization(&mut Cursor::new(&bytes), len, 2, &mut || Ok(())).is_err());
+}
+
+#[test]
 fn a_two_minute_export_with_a_fragment_for_each_keyframe_is_supported() {
     let config = mp4::Mp4Config {
         major_brand: "iso6".parse().unwrap(),
