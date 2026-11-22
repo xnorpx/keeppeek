@@ -64,9 +64,13 @@ describe('recorded-audio camera settings', () => {
 		const input = page.getByRole('textbox', { name: 'Preview offset (ms)' });
 		const apply = page.getByRole('button', { name: 'Apply preview' });
 		await input.fill('201');
+		await expect.element(input).toHaveAttribute('aria-invalid', 'true');
+		await expect.element(input).toHaveAccessibleDescription(/Enter a whole number/);
 		await expect.element(apply).toBeDisabled();
 		await page.getByRole('combobox', { name: 'Preview stream' }).selectOptions('sub');
 		await input.fill('-200');
+		await expect.element(input).toHaveAttribute('aria-invalid', 'false');
+		await expect.element(input).toHaveAccessibleDescription(/Video will play 200 ms later/);
 		await expect.element(page.getByText('Video will play 200 ms later.')).toBeVisible();
 		expect(onpreview).not.toHaveBeenCalled();
 		await input.click();

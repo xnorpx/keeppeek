@@ -130,7 +130,9 @@
 		} catch (cause) {
 			if (cameraId === id) {
 				livePreview = previous;
-				await livePeer.configure([cameraPlan(id, previous)]);
+				await livePeer.configure([cameraPlan(id, previous)]).catch((restoreError) => {
+					console.warn('Unable to restore the previous camera preview', restoreError);
+				});
 			}
 			throw cause;
 		}

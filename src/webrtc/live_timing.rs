@@ -4,6 +4,7 @@ use super::{StreamKind, WebRtcAudioCodec};
 use crate::{api::proto, cameras::LiveAudioSettings, storage::VideoCodec};
 use std::{
     collections::{HashMap, VecDeque},
+    mem::size_of,
     sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
@@ -21,19 +22,12 @@ pub(super) enum Format {
 
 #[derive(Default)]
 pub(super) struct CameraTiming {
-    settings: RwLock<Policy>,
+    settings: RwLock<[StreamPolicy; 2]>,
     audio: [Mutex<Usage>; 2],
     video: [Mutex<Usage>; 2],
 }
 
-#[derive(Default)]
-struct Policy {
-    settings: LiveAudioSettings,
-    reset_at: Option<Instant>,
-    generation: u64,
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct StreamPolicy {
     offset: i32,
     reset_at: Option<Instant>,
@@ -55,26 +49,42 @@ struct Counters {
     frames: usize,
 }
 
+impl StreamPolicy {
+    const fn reset(&mut self, now: Instant) {
+        self.generation = self.generation.wrapping_add(1);
+        self.reset_at = Some(now);
+    }
+}
+
 impl CameraTiming {
     pub(super) fn configure(&self, settings: LiveAudioSettings) {
         let mut policy = self
             .settings
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if policy.settings != settings {
-            policy.settings = settings;
-            policy.generation = policy.generation.wrapping_add(1);
-            policy.reset_at = Some(Instant::now());
+        let now = Instant::now();
+        for (profile, configured) in policy
+            .iter_mut()
+            .zip([settings.main_offset_ms, settings.sub_offset_ms])
+        {
+            let offset = configured.or(settings.default_offset_ms).unwrap_or(0);
+            if profile.offset != offset {
+                profile.offset = offset;
+                profile.reset(now);
+            }
         }
     }
 
     pub(super) fn reset(&self) {
-        let mut policy = self
+        let now = Instant::now();
+        for profile in self
             .settings
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        policy.reset_at = Some(Instant::now());
-        policy.generation = policy.generation.wrapping_add(1);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter_mut()
+        {
+            profile.reset(now);
+        }
     }
 
     fn budget(&self, stream: StreamKind, audio: bool) -> &Mutex<Usage> {
@@ -91,15 +101,7 @@ impl CameraTiming {
             .settings
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let value = match stream {
-            StreamKind::Main => policy.settings.main_offset_ms,
-            StreamKind::Sub => policy.settings.sub_offset_ms,
-        };
-        StreamPolicy {
-            offset: value.or(policy.settings.default_offset_ms).unwrap_or(0),
-            reset_at: policy.reset_at,
-            generation: policy.generation,
-        }
+        policy[usize::from(stream == StreamKind::Sub)]
     }
 
     fn record_expired(&self, stream: StreamKind, audio: bool) {
@@ -412,9 +414,10 @@ impl<T> Queue<T> {
         let profile = &mut self.profiles[usize::from(stream == StreamKind::Sub)];
         let state = (format, policy.generation);
         if profile.state != Some(state)
-            || timestamp
-                .zip(profile.last_timestamp)
-                .is_some_and(|(next, prev)| next < prev)
+            || matches!(format, Format::Audio(..))
+                && timestamp
+                    .zip(profile.last_timestamp)
+                    .is_some_and(|(next, prev)| next < prev)
         {
             profile.clear();
             profile.state = Some(state);
@@ -477,6 +480,12 @@ pub(super) struct AudioClock {
 }
 
 impl AudioClock {
+    pub(super) const fn reset_source(&mut self) {
+        if let Some((_, previous_source, _)) = &mut self.previous {
+            *previous_source = None;
+        }
+    }
+
     pub(super) fn map(
         &mut self,
         received: Instant,
@@ -697,6 +706,38 @@ mod tests {
         );
         assert_eq!(q.pop_due(t + Duration::from_millis(100)).unwrap().0, 4);
         assert!(q.deadline().is_none());
+    }
+
+    #[test]
+    fn delayed_video_preserves_decode_order_across_b_frames_and_other_profile_changes() {
+        let camera = Arc::new(CameraTiming::default());
+        camera.configure(LiveAudioSettings {
+            main_offset_ms: Some(-180),
+            ..Default::default()
+        });
+        let mut queue = Queue::new(camera.clone());
+        let start = Instant::now();
+        for (i, pts) in [0, 120, 40, 80].into_iter().enumerate() {
+            let received = start + Duration::from_millis(i as u64 * 10);
+            let mut frame = packet(StreamKind::Main, VIDEO, received, 100);
+            frame.timestamp = Some(Duration::from_millis(pts));
+            assert!(queue.admit(i, frame, received).is_none());
+        }
+        let generation = camera.policy(StreamKind::Main).generation;
+        camera.configure(LiveAudioSettings {
+            main_offset_ms: Some(-180),
+            sub_offset_ms: Some(30),
+            ..Default::default()
+        });
+        assert_eq!(camera.policy(StreamKind::Main).generation, generation);
+        for i in 0..4 {
+            let due = start + Duration::from_millis(180 + i * 10);
+            assert_eq!(queue.pop_due(due), Some((i as usize, due)));
+        }
+        let sub_generation = camera.policy(StreamKind::Sub).generation;
+        camera.reset();
+        assert_ne!(camera.policy(StreamKind::Main).generation, generation);
+        assert_ne!(camera.policy(StreamKind::Sub).generation, sub_generation);
     }
 
     #[test]

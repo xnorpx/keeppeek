@@ -44,10 +44,16 @@ impl ApiMediaRuntime {
         let track_id = self.tracks[index].runtime.track_id.clone();
         self.discard_queued_stream_states(&track_id);
         self.tracks[index].runtime.update_subscription(&plan);
-        self.tracks[index]
-            .runtime
+        let runtime = &mut self.tracks[index].runtime;
+        if runtime
             .timing
-            .set_preview(request.live_audio_preview_offset_ms);
+            .set_preview(request.live_audio_preview_offset_ms)
+        {
+            runtime.keyframe_gate.wait_for_live_keyframe();
+            if let Some(retired) = runtime.delivery.retire_binding(&request.subscription_id) {
+                self.cancel_group(&retired);
+            }
+        }
         self.bandwidth.dirty = true;
         session
             .media_camera_ips
@@ -143,55 +149,12 @@ impl ApiMediaRuntime {
             ControlHandlerError::new(ErrorCode::InvalidRequest, error.to_string())
         })?;
         let selected_stream = native_variant_stream(&plan.selected_variant_id)?;
-        if let Some(track) = self
+        if let Some(index) = self
             .audio_tracks
-            .iter_mut()
-            .find(|track| track.runtime.track_id == track_id)
+            .iter()
+            .position(|track| track.runtime.track_id == track_id)
         {
-            let runtime = &mut track.runtime;
-            let matches_transport = matches!(
-                (&runtime.delivery, plan.delivery_transport),
-                (
-                    TrackDelivery::ReliableData(_),
-                    proto::DeliveryTransport::ReliableData
-                ) | (TrackDelivery::Rtp(_), proto::DeliveryTransport::Rtp)
-            );
-            if runtime.source
-                != (Source {
-                    camera_ip: plan.camera_ip,
-                    stream: selected_stream,
-                })
-                || !matches_transport
-            {
-                return Err(ControlHandlerError::new(
-                    ErrorCode::InvalidRequest,
-                    "an audio timing update must keep its source, variant and delivery transport",
-                ));
-            }
-            let retired = if runtime
-                .timing
-                .set_preview(request.live_audio_preview_offset_ms)
-                && let TrackDelivery::ReliableData(binding) = &mut runtime.delivery
-            {
-                // SCTP data already handed off cannot be recalled. Retire its binding
-                // so late fragments cannot enter the new calibration decoder.
-                Some(std::mem::replace(
-                    &mut binding.stream_binding_id,
-                    audio_binding_id(&request.subscription_id),
-                ))
-            } else {
-                None
-            };
-            let mut result = subscription_result(
-                request.subscription_id.clone(),
-                &runtime.delivery,
-                plan.selected_variant_id,
-            );
-            result.live_audio = Some(runtime.timing.report(selected_stream));
-            if let Some(retired) = retired {
-                self.cancel_group(&retired);
-            }
-            return Ok(result);
+            return self.replace_audio_subscription(request, plan, index, selected_stream);
         }
         let reserved_bitrate_bps = bandwidth::audio_reservation_bps(&plan.format);
         let delivery = self.take_delivery(&request.subscription_id, &mut plan)?;
@@ -204,6 +167,12 @@ impl ApiMediaRuntime {
             },
             delivery,
         );
+        if let Some(mid) = runtime.delivery.mid()
+            && let Some(mut clock) = self.audio_clocks_by_mid.remove(&mid)
+        {
+            clock.reset_source();
+            runtime.clock = clock;
+        }
         runtime
             .timing
             .set_preview(request.live_audio_preview_offset_ms);
@@ -224,6 +193,50 @@ impl ApiMediaRuntime {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(plan.camera_ip);
+        Ok(result)
+    }
+
+    fn replace_audio_subscription(
+        &mut self,
+        request: &proto::SubscribeMedia,
+        plan: MediaSubscriptionPlan,
+        index: usize,
+        selected_stream: StreamKind,
+    ) -> Result<proto::SubscriptionResult, ControlHandlerError> {
+        let runtime = &mut self.audio_tracks[index].runtime;
+        let matches_transport = matches!(
+            (&runtime.delivery, plan.delivery_transport),
+            (
+                TrackDelivery::ReliableData(_),
+                proto::DeliveryTransport::ReliableData
+            ) | (TrackDelivery::Rtp(_), proto::DeliveryTransport::Rtp)
+        );
+        if runtime.source
+            != (Source {
+                camera_ip: plan.camera_ip,
+                stream: selected_stream,
+            })
+            || !matches_transport
+        {
+            return Err(ControlHandlerError::new(
+                ErrorCode::InvalidRequest,
+                "an audio timing update must keep its source, variant and delivery transport",
+            ));
+        }
+        let retired = runtime
+            .timing
+            .set_preview(request.live_audio_preview_offset_ms)
+            .then(|| runtime.delivery.retire_binding(&request.subscription_id))
+            .flatten();
+        let mut result = subscription_result(
+            request.subscription_id.clone(),
+            &runtime.delivery,
+            plan.selected_variant_id,
+        );
+        result.live_audio = Some(runtime.timing.report(selected_stream));
+        if let Some(retired) = retired {
+            self.cancel_group(&retired);
+        }
         Ok(result)
     }
 
@@ -249,11 +262,7 @@ impl ApiMediaRuntime {
             }
             proto::DeliveryTransport::ReliableData => {
                 Ok(TrackDelivery::ReliableData(Box::new(DataMediaBinding {
-                    stream_binding_id: if audio {
-                        audio_binding_id(subscription_id)
-                    } else {
-                        format!("media:{subscription_id}")
-                    },
+                    stream_binding_id: binding_id(subscription_id),
                     codec: std::mem::take(&mut plan.codec),
                     format: std::mem::take(&mut plan.format),
                     configuration_revision: 1,
@@ -320,6 +329,21 @@ fn native_variant_stream(variant_id: &str) -> Result<StreamKind, ControlHandlerE
     }
 }
 
-fn audio_binding_id(subscription_id: &str) -> String {
+impl TrackDelivery {
+    fn retire_binding(&mut self, subscription_id: &str) -> Option<String> {
+        let Self::ReliableData(binding) = self else {
+            return None;
+        };
+        binding.next_frame_id = 1;
+        binding.source_clock = None;
+        binding.pending_configuration = None;
+        Some(std::mem::replace(
+            &mut binding.stream_binding_id,
+            binding_id(subscription_id),
+        ))
+    }
+}
+
+fn binding_id(subscription_id: &str) -> String {
     format!("media:{subscription_id}:{}", uuid::Uuid::new_v4())
 }

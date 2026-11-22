@@ -211,7 +211,7 @@
 									class="h-11 w-full min-w-0 font-mono"
 									inputmode="numeric"
 									autocomplete="off"
-									aria-describedby={helpId}
+									aria-describedby={live ? `${helpId} ${helpId}-saved-latency` : helpId}
 									disabled={draft[field.key].mode === 'inherit'}
 									bind:value={draft[field.key].text}
 								/>
@@ -224,20 +224,22 @@
 						</p>
 					</div>
 				{/each}
-				{#if live && parsed.settings}
-					{#each ['main', 'sub'] as stream}
-						{@const offset = effectiveRecordedAudioOffset(
-							parsed.settings,
-							stream === 'main' ? 'main' : 'sub'
-						)}
-						{#if offset < 0}
-							<p class="text-warning text-xs leading-5"
-								>{stream === 'main' ? 'Main' : 'Sub'} video will play {Math.abs(offset)} ms later after
-								saving.</p
-							>
-						{/if}
-					{/each}
-				{/if}
+				{#if live}<div id={`${helpId}-saved-latency`} role="status">
+						{#if parsed.settings}
+							{#each ['main', 'sub'] as stream}
+								{@const offset = effectiveRecordedAudioOffset(
+									parsed.settings,
+									stream === 'main' ? 'main' : 'sub'
+								)}
+								{#if offset < 0}
+									<p class="text-warning text-xs leading-5"
+										>{stream === 'main' ? 'Main' : 'Sub'} video will play {Math.abs(offset)} ms later
+										after saving.</p
+									>
+								{/if}
+							{/each}
+						{/if}</div
+					>{/if}
 				{#if live && onpreview}
 					<div class="space-y-2">
 						<h3 class="text-sm font-semibold">Preview live timing</h3>
@@ -258,6 +260,8 @@
 								>Preview offset (ms)<Input
 									inputmode="numeric"
 									bind:value={previewInput}
+									aria-describedby={`${helpId} ${helpId}-preview-notice`}
+									aria-invalid={parsedPreview === null}
 									onkeydown={(event) => {
 										if (event.key === 'Enter') {
 											event.preventDefault();
@@ -267,12 +271,15 @@
 								/></label
 							>
 						</div>
-						{#if parsedPreview === null}
-							<p class="text-xs text-destructive">Enter a whole number from −200 to +200 ms.</p>
-						{:else if parsedPreview < 0}
-							<p class="text-warning text-xs">Video will play {Math.abs(parsedPreview)} ms later.</p
-							>
-						{/if}
+						<div id={`${helpId}-preview-notice`} role="status"
+							>{#if parsedPreview === null}
+								<p class="text-xs text-destructive">Enter a whole number from −200 to +200 ms.</p>
+							{:else if parsedPreview < 0}
+								<p class="text-warning text-xs"
+									>Video will play {Math.abs(parsedPreview)} ms later.</p
+								>
+							{/if}</div
+						>
 						<div class="flex flex-wrap gap-2">
 							<Button
 								type="button"

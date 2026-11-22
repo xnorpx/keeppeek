@@ -906,6 +906,7 @@ struct ApiMediaRuntime {
     bandwidth: bandwidth::SessionBandwidth,
     available_video_mids: Vec<Mid>,
     available_audio_mids: Vec<Mid>,
+    audio_clocks_by_mid: HashMap<Mid, live_timing::AudioClock>,
     tracks: Vec<ApiMediaTrack>,
     audio_tracks: Vec<ApiAudioTrack>,
     outbound: VecDeque<QueuedApiData>,
@@ -1335,7 +1336,10 @@ impl ApiMediaRuntime {
                 .unsubscribe_audio(session.session_id, &track.runtime.track_id);
                 self.discard_queued_stream_states(&track.runtime.track_id);
                 match track.runtime.delivery {
-                    TrackDelivery::Rtp(mid) => self.available_audio_mids.push(mid),
+                    TrackDelivery::Rtp(mid) => {
+                        self.audio_clocks_by_mid.insert(mid, track.runtime.clock);
+                        self.available_audio_mids.push(mid);
+                    }
                     TrackDelivery::ReliableData(binding) => {
                         self.cancel_group(&binding.stream_binding_id);
                     }
@@ -5468,6 +5472,9 @@ fn write_permitted_frame(
     let Some(mid) = video_mid else {
         return Ok(false);
     };
+    if timing.is_some_and(|permit| !permit.current(Instant::now())) {
+        return Ok(false);
+    }
     if matches!(frame.codec, VideoCodec::H264)
         && frame.is_keyframe
         && let Some(profile_level_id) = frame.data.h264_profile_level_id()
@@ -7618,6 +7625,7 @@ mod tests {
             bandwidth: bandwidth::SessionBandwidth::default(),
             available_video_mids: vec![Mid::from("video_0")],
             available_audio_mids: Vec::new(),
+            audio_clocks_by_mid: HashMap::new(),
             tracks: Vec::new(),
             audio_tracks: Vec::new(),
             outbound: VecDeque::new(),
@@ -7764,13 +7772,18 @@ mod tests {
         let session = test_background_control();
         let mut media = ApiMediaRuntime {
             available_video_mids: vec![Mid::from("video_0")],
+            available_audio_mids: vec![Mid::from("audio_0")],
             ..Default::default()
         };
         for (kind, transport) in [
             (MediaKind::Video, DeliveryTransport::Rtp),
             (MediaKind::Audio, DeliveryTransport::ReliableData),
+            (MediaKind::Video, DeliveryTransport::ReliableData),
+            (MediaKind::Audio, DeliveryTransport::Rtp),
         ] {
-            let id = if kind == MediaKind::Audio {
+            let id = if kind == MediaKind::Video && transport == DeliveryTransport::ReliableData {
+                "data-front"
+            } else if kind == MediaKind::Audio {
                 "audio-front"
             } else {
                 "video-front"
@@ -7811,7 +7824,7 @@ mod tests {
             request.live_audio_preview_offset_ms = Some(-200);
             let first = media.subscribe(&session, &request, plan.clone()).unwrap();
             assert_eq!(first.live_audio.unwrap().applied_offset_ms, -200);
-            if kind == MediaKind::Audio {
+            if transport == DeliveryTransport::ReliableData {
                 for incompatible in [
                     MediaSubscriptionPlan {
                         selected_variant_id: "main".into(),
@@ -7847,13 +7860,33 @@ mod tests {
             request.live_audio_preview_offset_ms = Some(200);
             let second = media.subscribe(&session, &request, plan.clone()).unwrap();
             assert_eq!(second.live_audio.unwrap().applied_offset_ms, 200);
-            if kind == MediaKind::Video {
+            if kind == MediaKind::Audio && transport == DeliveryTransport::Rtp {
+                let t = Instant::now();
+                let before = media.audio_tracks[0].runtime.clock.map(
+                    t,
+                    Some(Duration::from_secs(90)),
+                    8000,
+                    Some(Duration::from_millis(20)),
+                );
+                media.unsubscribe(&session, &[id.to_owned()]);
+                let mut replacement = plan;
+                replacement.selected_variant_id = "main".into();
+                media.subscribe(&session, &request, replacement).unwrap();
+                let after =
+                    media.audio_tracks[0]
+                        .runtime
+                        .clock
+                        .map(t, Some(Duration::ZERO), 8000, None);
+                assert_eq!(after, before + Duration::from_millis(20));
+                media.unsubscribe(&session, &[id.to_owned()]);
+            } else if transport == DeliveryTransport::Rtp {
                 assert_eq!(first.delivery, second.delivery);
                 assert!(media.available_video_mids.is_empty());
                 assert_eq!(media.tracks.len(), 1);
+                media.unsubscribe(&session, &[id.to_owned()]);
             } else {
                 assert_ne!(first.delivery, second.delivery);
-                assert_eq!(media.audio_tracks.len(), 1);
+                assert_eq!(media.audio_tracks.len() + media.tracks.len(), 1);
                 assert!(media.outbound.is_empty());
                 request.live_audio_preview_offset_ms = None;
                 let normal = media.subscribe(&session, &request, plan).unwrap();

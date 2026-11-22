@@ -27,6 +27,8 @@ import {
 	type ServerCapabilities,
 	type LiveQualityDiagnostics,
 	type LiveAudioTiming,
+	type MediaVariantCapability,
+	type SubscriptionResult,
 	type SubscriptionStreamState,
 	type TalkbackTarget
 } from './proto/webrtc_pb';
@@ -79,6 +81,7 @@ export type LivePeerTrack = {
 	liveAudio?: LiveAudioTiming;
 	audioVariantId?: string;
 	audioTiming?: LiveAudioTiming;
+	timingReconciliationNeeded?: boolean;
 	liveAudioPreviewOffsetMs?: number;
 	subscribed: boolean;
 	admissionError?: string | null;
@@ -304,7 +307,9 @@ export class LivePeer {
 				const track = this.track(plan.cameraId);
 				if (!track) return;
 				if (!plan.active) return;
-				const timingChanged = track.liveAudioPreviewOffsetMs !== plan.liveAudioPreviewOffsetMs;
+				const timingChanged =
+					track.timingReconciliationNeeded ||
+					track.liveAudioPreviewOffsetMs !== plan.liveAudioPreviewOffsetMs;
 				const variant = plan.variantId ?? null;
 				if (
 					track.subscribed &&
@@ -320,7 +325,8 @@ export class LivePeer {
 						plan.quality,
 						variant,
 						track.subscribed,
-						plan.liveAudioPreviewOffsetMs
+						plan.liveAudioPreviewOffsetMs,
+						timingChanged
 					);
 				} catch (error) {
 					if (track.subscribed && timingChanged) {
@@ -330,8 +336,15 @@ export class LivePeer {
 							track.requestedQuality,
 							track.requestedVariantId,
 							true,
-							track.liveAudioPreviewOffsetMs
-						);
+							track.liveAudioPreviewOffsetMs,
+							true
+						).catch((restoreError) => {
+							this.replaceTrack(plan.cameraId, {
+								timingReconciliationNeeded: true,
+								admissionError: 'Unable to restore the previous live timing.'
+							});
+							console.warn('Unable to restore the previous live timing', restoreError);
+						});
 					}
 					throw error;
 				}
@@ -522,11 +535,13 @@ export class LivePeer {
 		quality: LiveQuality,
 		variantId: 'main' | 'sub' | null = null,
 		replacement = false,
-		liveAudioPreviewOffsetMs?: number
+		liveAudioPreviewOffsetMs?: number,
+		confirmTiming = liveAudioPreviewOffsetMs !== undefined
 	): Promise<void> {
 		const owner = this.#peer;
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
 		if (!sourceSessionId) {
+			if (confirmTiming) throw new Error('The live camera is unavailable for timing calibration.');
 			if (this.#capabilities?.cameras.some((camera) => camera.sourceId === cameraId)) {
 				throw new Error(`Camera ${cameraId} has no live source session.`);
 			}
@@ -550,20 +565,18 @@ export class LivePeer {
 			variantId: variantId ?? ''
 		});
 		const result = await this.requestMedia(cameraId, subscribe);
-		if (owner !== this.#peer) return;
+		if (owner !== this.#peer) {
+			if (confirmTiming) throw new Error('The live timing session changed.');
+			return;
+		}
 		if (result === null) {
-			if (liveAudioPreviewOffsetMs !== undefined)
-				throw new Error('Video timing preview was not admitted.');
+			if (confirmTiming) throw new Error('Video timing preview was not admitted.');
 			return;
 		}
 		if (result.case !== 'subscriptionResult' || result.value.delivery.case !== 'rtp') {
 			throw new Error('Server returned an unexpected media subscription response.');
 		}
-		if (
-			liveAudioPreviewOffsetMs !== undefined &&
-			(!result.value.liveAudio?.preview ||
-				result.value.liveAudio.appliedOffsetMs !== liveAudioPreviewOffsetMs)
-		) {
+		if (confirmTiming && !timingConfirmed(result.value.liveAudio, liveAudioPreviewOffsetMs)) {
 			if (!replacement) await this.unsubscribeTrack(cameraId, subscriptionId);
 			throw new Error('The server did not apply the video timing preview.');
 		}
@@ -599,9 +612,10 @@ export class LivePeer {
 				cameraId,
 				this.track(cameraId)?.audioTrackId ?? `audio-${cameraId}`,
 				variantId,
-				liveAudioPreviewOffsetMs
+				liveAudioPreviewOffsetMs,
+				confirmTiming
 			);
-			this.replaceTrack(cameraId, { liveAudioPreviewOffsetMs });
+			this.replaceTrack(cameraId, { liveAudioPreviewOffsetMs, timingReconciliationNeeded: false });
 			this.followActiveAudio(cameraId);
 		} catch (error) {
 			if (!replacement && liveAudioPreviewOffsetMs !== undefined)
@@ -643,7 +657,8 @@ export class LivePeer {
 		cameraId: string,
 		subscriptionId: string,
 		videoVariant: 'main' | 'sub' | null,
-		previewOffset?: number
+		previewOffset?: number,
+		confirmTiming = previewOffset !== undefined
 	): Promise<void> {
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
 		const source = this.#capabilities?.sourceSessions.find(
@@ -654,8 +669,7 @@ export class LivePeer {
 				(item) => item.variantId === (videoVariant ?? this.track(cameraId)?.activeStream)
 			) ?? (previewOffset === undefined ? source?.audio?.variants[0] : undefined);
 		if (!variant) {
-			if (previewOffset !== undefined)
-				throw new Error('This stream has no matching live audio profile.');
+			if (confirmTiming) throw new Error('This stream has no matching live audio profile.');
 			return;
 		}
 		const previousVariant = this.track(cameraId)?.audioVariantId;
@@ -684,21 +698,27 @@ export class LivePeer {
 			})
 		);
 		if (result?.case !== 'subscriptionResult') {
-			if (previewOffset !== undefined) throw new Error('Audio timing preview was not admitted.');
+			if (confirmTiming) throw new Error('Audio timing preview was not admitted.');
 			return;
 		}
-		if (
-			previewOffset !== undefined &&
-			(!result.value.liveAudio?.preview || result.value.liveAudio.appliedOffsetMs !== previewOffset)
-		) {
+		if (confirmTiming && !timingConfirmed(result.value.liveAudio, previewOffset)) {
 			throw new Error('The server did not apply the audio timing preview.');
 		}
+		await this.attachAudioDelivery(cameraId, variant, result.value.delivery, confirmTiming);
 		this.replaceTrack(cameraId, {
 			audioVariantId: variant.variantId,
 			audioTiming: result.value.liveAudio
 		});
-		if (result.value.delivery.case === 'rtp') {
-			const mid = result.value.delivery.value.mid;
+	}
+
+	private async attachAudioDelivery(
+		cameraId: string,
+		variant: MediaVariantCapability,
+		delivery: SubscriptionResult['delivery'],
+		confirmTiming: boolean
+	): Promise<void> {
+		if (delivery.case === 'rtp') {
+			const mid = delivery.value.mid;
 			this.#audioCameraByMid[mid] = cameraId;
 			const event = this.#trackEventByMid[mid];
 			if (event) this.attachAudioTrackEvent(cameraId, event);
@@ -706,15 +726,14 @@ export class LivePeer {
 		}
 		const format = variant.format?.format;
 		if (
-			result.value.delivery.case !== 'mediaData' ||
+			delivery.case !== 'mediaData' ||
 			variant.codec?.name.toLowerCase() !== 'aac' ||
 			format?.case !== 'audio'
 		) {
-			if (previewOffset !== undefined)
-				throw new Error('This audio delivery cannot be previewed in this viewer.');
+			if (confirmTiming) throw new Error('This audio delivery cannot be previewed in this viewer.');
 			return;
 		}
-		if (this.#audioPlaybackByBinding.has(result.value.delivery.value.streamBindingId)) return;
+		if (this.#audioPlaybackByBinding.has(delivery.value.streamBindingId)) return;
 		this.releaseAudioDecoder(cameraId);
 		const playback = new AacAudioPlayback();
 		try {
@@ -724,11 +743,11 @@ export class LivePeer {
 				format.value.sampleRateHz,
 				format.value.channelCount
 			);
-			this.#audioPlaybackByBinding.set(result.value.delivery.value.streamBindingId, playback);
-			this.#audioBindingByCamera[cameraId] = result.value.delivery.value.streamBindingId;
+			this.#audioPlaybackByBinding.set(delivery.value.streamBindingId, playback);
+			this.#audioBindingByCamera[cameraId] = delivery.value.streamBindingId;
 		} catch (error) {
 			playback.close();
-			if (previewOffset !== undefined)
+			if (confirmTiming)
 				throw new Error('This browser cannot decode the audio timing preview.', { cause: error });
 			console.warn(`AAC playback is unavailable for ${cameraId}`, error);
 		}
@@ -991,7 +1010,10 @@ export class LivePeer {
 		})
 			.catch((error) => console.warn('Unable to follow live audio profile', error))
 			.finally(() => {
-				if (this.#audioSync.get(cameraId) !== pending) return;
+				if (this.#audioSync.get(cameraId) !== pending) {
+					this.followActiveAudio(cameraId);
+					return;
+				}
 				pending.busy = false;
 				if (this.track(cameraId)?.audioVariantId === pending.variant) {
 					this.clearAudioSync(cameraId);
@@ -1201,6 +1223,16 @@ export class LivePeer {
 			])
 		);
 	}
+}
+
+function timingConfirmed(
+	timing: LiveAudioTiming | undefined,
+	preview: number | undefined
+): boolean {
+	if (!timing) return false;
+	return preview === undefined
+		? !timing.preview && timing.appliedOffsetMs === timing.configuredOffsetMs
+		: timing.preview && timing.appliedOffsetMs === preview;
 }
 
 function preferH265(transceiver: RTCRtpTransceiver): void {

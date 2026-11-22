@@ -41,6 +41,8 @@ class FakeDataChannel {
 	static offlineCamera: string | null = null;
 	static rejectedSubscription: string | null = null;
 	static rejectUnsubscribe = false;
+	holdUnsubscribe = false;
+	releaseUnsubscribe: (() => void) | undefined;
 	static subscriptionQuality: LiveQualityDiagnostics | undefined;
 	static selectedVariant: string | null = null;
 
@@ -123,7 +125,14 @@ class FakeDataChannel {
 			}
 		});
 		const encoded = toBinary(ControlEnvelopeSchema, response);
-		queueMicrotask(() => this.onmessage?.({ data: encoded.buffer } as MessageEvent));
+		const deliver = () =>
+			queueMicrotask(() => this.onmessage?.({ data: encoded.buffer } as MessageEvent));
+		if (command.case === 'unsubscribe' && this.holdUnsubscribe) {
+			this.holdUnsubscribe = false;
+			this.releaseUnsubscribe = deliver;
+		} else {
+			deliver();
+		}
 	}
 
 	open(): void {
@@ -458,6 +467,54 @@ describe('LivePeer', () => {
 		expect(channel.subscriptions.filter((s) => s.kind === MediaKind.VIDEO)).toHaveLength(1);
 		await peer.close();
 	});
+
+	it('reconciles a reversed profile switch while the first audio unsubscribe is pending', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'timing',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		FakeDataChannel.audioVariants = ['main', 'sub'];
+		const peer = new LivePeer();
+		await peer.configure([{ cameraId: 'front-door', quality: 'auto' }]);
+		const channel = FakePeerConnection.latest!.channels[0];
+		channel.holdUnsubscribe = true;
+		channel.onmessage?.(streamState('camera-0', 'main'));
+		await vi.waitFor(() => expect(channel.releaseUnsubscribe).toBeDefined());
+		channel.onmessage?.(streamState('camera-0', 'sub'));
+		channel.releaseUnsubscribe!();
+		await vi.waitFor(() =>
+			expect(
+				channel.subscriptions.filter((s) => s.kind === MediaKind.AUDIO).map((s) => s.variantId)
+			).toEqual(['sub', 'main', 'sub'])
+		);
+		expect(peer.track('front-door')?.audioVariantId).toBe('sub');
+		await peer.close();
+	});
+
+	it.each(['camera-0', 'audio-0'])(
+		'keeps preview active when reset admission fails on %s',
+		async (id) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			api.createSession.mockResolvedValue({
+				session_id: 'timing',
+				answer: { type: 'answer', sdp: 'v=0' }
+			});
+			api.deleteSession.mockResolvedValue(undefined);
+			FakeDataChannel.audioVariants = ['sub'];
+			const plan = { cameraId: 'front-door', quality: 'auto', variantId: 'sub' } as const;
+			const peer = new LivePeer();
+			await peer.configure([{ ...plan, liveAudioPreviewOffsetMs: -90 }]);
+			FakeDataChannel.rejectedSubscription = id;
+			await expect(peer.configure([plan])).rejects.toThrow('timing preview was not admitted');
+			expect(peer.track('front-door')?.liveAudioPreviewOffsetMs).toBe(-90);
+			FakeDataChannel.rejectedSubscription = null;
+			await peer.configure([plan]);
+			expect(peer.track('front-door')?.liveAudioPreviewOffsetMs).toBeUndefined();
+			await peer.close();
+		}
+	);
 
 	it('follows the active video profile after an adaptive handover', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);

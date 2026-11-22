@@ -44,7 +44,9 @@ impl<const LIMIT_MS: i32> AudioOffsetSettings<LIMIT_MS> {
         {
             anyhow::ensure!(
                 (-LIMIT_MS..=LIMIT_MS).contains(&value),
-                "audio offset must be between -{LIMIT_MS} and {LIMIT_MS} milliseconds"
+                "audio offset must be between {} and {} milliseconds",
+                -LIMIT_MS,
+                LIMIT_MS
             );
         }
         Ok(())
@@ -100,6 +102,26 @@ mod tests {
                 assert!(settings.validate().is_err(), "{field}={value}");
             }
         }
+    }
+
+    #[test]
+    fn invalid_offsets_report_the_configured_bounds() {
+        let live = LiveAudioSettings {
+            default_offset_ms: Some(201),
+            ..Default::default()
+        };
+        let recorded = RecordedAudioSettings {
+            default_offset_ms: Some(5001),
+            ..Default::default()
+        };
+        assert_eq!(
+            live.validate().unwrap_err().to_string(),
+            "audio offset must be between -200 and 200 milliseconds"
+        );
+        assert_eq!(
+            recorded.validate().unwrap_err().to_string(),
+            "audio offset must be between -5000 and 5000 milliseconds"
+        );
     }
 
     #[test]
