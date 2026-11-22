@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import type { RecordingCoverageResponse } from '../src/lib/types';
+import { openSeekableRecording } from './fixtures/seeded-recording';
 import { eventDate, mockEvents } from './fixtures/events';
 import { keepModeDate, mockKeepModes } from './fixtures/keep-modes';
 import { mockMixedHealth } from './fixtures/peek';
@@ -208,22 +208,6 @@ async function seekPausedRecording(player: Locator) {
 	await expect
 		.poll(async () => Number(await player.getAttribute('data-recording-playhead-ms')))
 		.toBeGreaterThan(rewoundMs);
-}
-
-async function openSeekableRecording(page: Page) {
-	const response = await page.request.get('/recording-coverage?search=e2e-h264&stream=sub');
-	await expect(response).toBeOK();
-	const coverage: RecordingCoverageResponse = await response.json();
-	const camera = coverage.cameras.find((entry) => entry.camera_name === 'e2e-h264');
-	const stream = camera?.streams.find((entry) => entry.stream_id === 'sub');
-	// The fixture seeds the substream. A new live segment can be shorter than one slider step.
-	const recording = stream?.ranges.find((range) => range.end_ms - range.start_ms >= 10_000);
-	if (!camera || !recording) throw new Error('The fixture needs ten seconds of recorded video.');
-	const at = recording.start_ms + 1_000;
-	const date = new Date(at).toISOString().slice(0, 10);
-	await page.goto(
-		`/keep?camera=${encodeURIComponent(camera.camera_id)}&stream=sub&at=${at}&date=${date}`
-	);
 }
 
 test('real recorded pixels remain decoded through zoom, pause, seek, and viewport resize', async ({
