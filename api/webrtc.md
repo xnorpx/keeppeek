@@ -659,7 +659,10 @@ A second `Subscribe` that reuses an active `subscription_id` atomically replaces
 subscription. The replacement must keep the same target kind: a media subscription stays a
 media subscription for the same `(source_session_id, MediaKind)`, a data subscription stays a data
 subscription for the same source session, and an event subscription stays an event subscription.
-A successful replace keeps the existing RTP MID when transport and media kind still match.
+An audio replacement must retain its source variant and delivery transport. To change either,
+unsubscribe the existing audio subscription and wait for the acknowledgement before subscribing
+to the new variant or transport. A successful replace keeps the existing RTP MID when transport
+and media kind still match.
 Compatible media-data subscriptions keep their binding unless the viewer changes or clears
 its timing preview. That change assigns a fresh opaque binding for each affected reliable
 audio or video subscription. When a new binding is required, KeepPeek releases the old one

@@ -775,6 +775,53 @@ describe('LivePeer', () => {
 		}
 	);
 
+	it.each([
+		LiveQualitySelectionReason.WAITING_KEYFRAME,
+		LiveQualitySelectionReason.VARIANT_UNAVAILABLE
+	])(
+		'follows the active video when a pinned Main profile is pending or unavailable (%s)',
+		async (reason) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			api.createSession.mockResolvedValue({
+				session_id: 'pinned',
+				answer: { type: 'answer', sdp: 'v=0' }
+			});
+			api.deleteSession.mockResolvedValue(undefined);
+			FakeDataChannel.audioVariants = ['main', 'sub'];
+			const retained = create(LiveQualityDiagnosticsSchema, {
+				activeVariantId: 'sub',
+				pendingVariantId: reason === LiveQualitySelectionReason.WAITING_KEYFRAME ? 'main' : '',
+				selectionReason: reason
+			});
+			FakeDataChannel.subscriptionQuality = retained;
+			const peer = new LivePeer();
+			try {
+				await peer.configure([{ cameraId: 'front-door', quality: 'high', variantId: 'main' }]);
+				const channel = FakePeerConnection.latest!.channels[0];
+				const audio = () =>
+					channel.subscriptions.filter((s) => s.kind === MediaKind.AUDIO).map((s) => s.variantId);
+				expect(audio()).toEqual(['sub']);
+				channel.onmessage?.(
+					streamState(
+						'camera-0',
+						'main',
+						create(LiveQualityDiagnosticsSchema, { activeVariantId: 'main' })
+					)
+				);
+				await vi.waitFor(() => expect(audio()).toEqual(['sub', 'main']));
+				channel.onmessage?.(streamState('camera-0', 'sub', retained));
+				await vi.waitFor(() => expect(audio()).toEqual(['sub', 'main', 'sub']));
+				expect(peer.track('front-door')).toMatchObject({
+					requestedVariantId: 'main',
+					activeStream: 'sub',
+					audioVariantId: 'sub'
+				});
+			} finally {
+				await peer.close();
+			}
+		}
+	);
+
 	it('follows the active video profile after an adaptive handover', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({

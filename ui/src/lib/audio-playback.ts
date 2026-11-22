@@ -108,17 +108,29 @@ export class AacAudioPlayback {
 		this.#closed = true;
 		this.#jitter.clear();
 		if (this.#decoder?.state !== 'closed') this.#decoder?.close();
+		this.#clearScheduled();
+	}
+
+	#release(source: AudioBufferSourceNode): void {
+		source.onended = null;
+		source.disconnect();
+		this.#scheduled.delete(source);
+	}
+
+	#clearScheduled(): void {
 		for (const source of this.#scheduled.keys()) {
-			source.onended = null;
 			source.stop();
-			source.disconnect();
+			this.#release(source);
 		}
-		this.#scheduled.clear();
+		this.#anchor = null;
+		this.#nextStart = 0;
+		this.#expectedTimestampUs = undefined;
 	}
 
 	#render(audioData: AudioData): void {
-		if (this.#closed) {
+		if (this.#closed || this.#context.state !== 'running') {
 			audioData.close();
+			this.#clearScheduled();
 			return;
 		}
 		const buffer = this.#context.createBuffer(
@@ -140,7 +152,7 @@ export class AacAudioPlayback {
 		const start = this.#presentationTime(timestampUs, buffer.duration);
 		this.#nextStart = start + buffer.duration;
 		this.#scheduled.set(source, this.#nextStart);
-		source.onended = () => this.#scheduled.delete(source);
+		source.onended = () => this.#release(source);
 		source.start(start);
 	}
 
@@ -166,15 +178,11 @@ export class AacAudioPlayback {
 		if (Math.abs(start - this.#nextStart) < 0.000_002) start = Math.max(now, this.#nextStart);
 		for (const [source, end] of this.#scheduled) {
 			if (end <= now) {
-				source.onended = null;
-				this.#scheduled.delete(source);
+				this.#release(source);
 			} else if (end > start) {
 				source.stop(start);
-				// A suspended context never advances to dispatch an immediate onended.
-				if (start <= now) {
-					source.onended = null;
-					this.#scheduled.delete(source);
-				} else this.#scheduled.set(source, start);
+				if (start <= now) this.#release(source);
+				else this.#scheduled.set(source, start);
 			}
 		}
 		return start;

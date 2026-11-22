@@ -872,7 +872,7 @@ export class LivePeer {
 		await this.subscribeAudio(
 			cameraId,
 			this.track(cameraId)?.audioTrackId ?? `audio-${cameraId}`,
-			variantId,
+			liveAudioPreviewOffsetMs === undefined ? null : variantId,
 			liveAudioPreviewOffsetMs,
 			confirmTiming
 		);
@@ -1318,9 +1318,7 @@ export class LivePeer {
 			(item) => item.sourceSessionId === this.#sourceSessionByCamera[cameraId]
 		);
 		const variants = source?.audio?.variants;
-		const variant =
-			variants?.find((v) => v.variantId === (track?.requestedVariantId ?? track?.activeStream)) ??
-			variants?.[0];
+		const variant = variants?.find((v) => v.variantId === track?.activeStream) ?? variants?.[0];
 		if (
 			!track?.subscribed ||
 			this.calibratingAudio(cameraId) ||
@@ -1345,11 +1343,7 @@ export class LivePeer {
 			const latest = this.track(cameraId);
 			if (!latest?.subscribed || this.calibratingAudio(cameraId)) return;
 			pending.attempts++;
-			await this.subscribeAudio(
-				cameraId,
-				latest.audioTrackId,
-				latest.requestedVariantId ?? latest.activeStream
-			);
+			await this.subscribeAudio(cameraId, latest.audioTrackId, latest.activeStream);
 		})
 			.catch((error) => console.warn('Unable to follow live audio profile', error))
 			.finally(() => {

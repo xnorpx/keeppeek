@@ -4,7 +4,8 @@ import { create } from '@bufbuild/protobuf';
 import { AudioDataFrameSchema } from './proto/webrtc_pb';
 
 function installAacPlaybackClock() {
-	const clock = { now: 1 };
+	const clock = { now: 1, state: 'running' };
+	const closedData = vi.fn();
 	const nodes: Array<{ onended: (() => void) | null }> = [];
 	const start = vi.fn();
 	const stop = vi.fn();
@@ -12,6 +13,9 @@ function installAacPlaybackClock() {
 	vi.stubGlobal(
 		'AudioContext',
 		class {
+			get state() {
+				return clock.state;
+			}
 			get currentTime() {
 				return clock.now;
 			}
@@ -44,7 +48,7 @@ function installAacPlaybackClock() {
 					numberOfFrames: 960,
 					sampleRate: 48_000,
 					copyTo: vi.fn(),
-					close: vi.fn()
+					close: closedData
 				} as unknown as AudioData);
 			}
 		}
@@ -58,7 +62,7 @@ function installAacPlaybackClock() {
 			}
 		}
 	);
-	return { start, stop, disconnect, clock, nodes };
+	return { start, stop, disconnect, clock, nodes, closedData };
 }
 
 function pushTimestamp(player: AacAudioPlayback, frame: number, ms: number) {
@@ -95,19 +99,33 @@ describe('reliable AAC presentation', () => {
 		}
 	});
 
-	it('retires cancelled nodes immediately even if a suspended audio clock never emits ended', async () => {
+	it('discards suspended audio and releases its previously scheduled outputs before resuming', async () => {
 		vi.useFakeTimers();
-		const { nodes, stop } = installAacPlaybackClock();
+		const { clock, nodes, stop, disconnect, closedData, start } = installAacPlaybackClock();
 		const player = new AacAudioPlayback(new AudioContext());
 		try {
 			await player.configure('aac', new Uint8Array([0x12, 0x10]), 48_000, 1);
-			for (let frame = 0; frame < 128; frame++) {
+			pushTimestamp(player, 1, 0);
+			await vi.advanceTimersByTimeAsync(80);
+			clock.state = 'suspended';
+			for (let frame = 1; frame <= 128; frame++) {
 				pushTimestamp(player, frame + 1, frame * 20);
-				await vi.advanceTimersByTimeAsync(frame === 0 ? 80 : 2);
+				await vi.advanceTimersByTimeAsync(2);
 			}
-			expect(nodes.length).toBe(128);
-			expect(stop).toHaveBeenCalled();
-			expect(nodes.filter((node) => node.onended !== null).length).toBeLessThanOrEqual(32);
+			expect(nodes).toHaveLength(1);
+			expect(nodes[0]!.onended).toBeNull();
+			expect(stop).toHaveBeenCalledTimes(1);
+			expect(disconnect).toHaveBeenCalledTimes(1);
+			expect(closedData).toHaveBeenCalledTimes(129);
+			clock.state = 'running';
+			clock.now = 2;
+			pushTimestamp(player, 130, 2580);
+			await vi.advanceTimersByTimeAsync(2);
+			expect(start).toHaveBeenLastCalledWith(2);
+			nodes[1]!.onended?.();
+			expect(disconnect).toHaveBeenCalledTimes(2);
+			player.close();
+			expect(stop).toHaveBeenCalledTimes(1);
 		} finally {
 			player.close();
 			vi.unstubAllGlobals();
