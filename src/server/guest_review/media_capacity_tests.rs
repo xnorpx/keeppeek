@@ -104,7 +104,7 @@ fn revoke_and_observe(fixture: &Evidence, mut transfer: Transfer) -> Duration {
         },
     )
     .unwrap();
-    // The recipient's next normal media read occurs at its 20 ms playback cadence.
+    // This test waits 20 ms before the recipient's next read and includes it in the measured latency.
     std::thread::sleep(Duration::from_millis(20));
     let mut output = [0x5b; 1024];
     assert!(transfer.reader.read(&mut output).is_err());

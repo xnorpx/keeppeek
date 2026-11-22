@@ -119,6 +119,10 @@ fn restart_preserves_consumption_and_revocation_but_invalidates_sessions() {
             "{phase} failed: {}",
             String::from_utf8_lossy(&result.stderr)
         );
-        assert!(String::from_utf8_lossy(&result.stdout).contains("guest-restart-verified"));
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(
+            stdout.contains("guest-restart-verified"),
+            "{phase} must report restart verification: {stdout}"
+        );
     }
 }
