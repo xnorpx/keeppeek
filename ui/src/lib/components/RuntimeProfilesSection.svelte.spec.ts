@@ -73,6 +73,78 @@ describe('RuntimeProfilesSection', () => {
 		notify(null);
 		await expect.element(page.getByText('Camera application status pending.')).toBeVisible();
 	});
+	it('hides old camera results until the selected profile, desired revision and definition agree', async () => {
+		const { client, runtimeProfiles, status } = recoveryClient('away');
+		const applied = { ...status, definitionRevision: '2' };
+		applied.cameras['192.0.2.10']!.state = 'applied';
+		runtimeProfiles.getActive.mockResolvedValue({
+			profileId: 'away',
+			revision: '3',
+			definitionRevision: '2'
+		});
+		runtimeProfiles.getStatus.mockResolvedValue(applied);
+		await render(RuntimeProfilesSectionFixture, { props: { client, cameras: [] } });
+		const camera = page.getByLabelText('applied policy application');
+		const pending = page.getByText('Camera application status pending.');
+		await expect.element(camera).toBeVisible();
+		const active = runtimeProfiles.watchActive.mock.calls[0]![0];
+		const observed = runtimeProfiles.watchStatus.mock.calls[0]![0];
+		active({ profileId: 'away', revision: '3', definitionRevision: '4' });
+		await expect.element(pending).toBeVisible();
+		await expect.element(camera).not.toBeInTheDocument();
+		observed({ ...applied, definitionRevision: '4' });
+		await expect.element(camera).toBeVisible();
+		active({ profileId: 'home', revision: '4', definitionRevision: '4' });
+		observed({ ...applied, revision: '4', active_profile_id: 'away', definitionRevision: '4' });
+		await expect.element(pending).toBeVisible();
+		observed({ ...applied, revision: '4', active_profile_id: 'home', definitionRevision: '4' });
+		await expect.element(camera).toBeVisible();
+		active({ profileId: 'home', revision: '5', definitionRevision: '4' });
+		await expect.element(pending).toBeVisible();
+	});
+
+	it('retains registry and edits when observations fail and retries only camera status', async () => {
+		const { client, runtimeProfiles, status, registry } = recoveryClient('away');
+		const snapshot = Promise.withResolvers<RuntimeProfileStatus>();
+		const registryRead = Promise.withResolvers<RuntimeProfileRegistry>();
+		runtimeProfiles.getStatus.mockReturnValueOnce(snapshot.promise);
+		runtimeProfiles.getRegistry.mockReturnValueOnce(registryRead.promise);
+		runtimeProfiles.watchStatus.mockRejectedValueOnce(new Error('Observation watch refused.'));
+		await render(RuntimeProfilesSectionFixture, { props: { client, cameras: [] } });
+		registryRead.resolve(registry);
+		snapshot.resolve(status);
+		await expect.element(page.getByText(/Camera application status unavailable/)).toBeVisible();
+		await page.getByLabelText('Display name').fill('My draft');
+		await expect.element(page.getByRole('button', { name: 'Save profile changes' })).toBeEnabled();
+		await page.getByRole('button', { name: 'Retry camera status' }).click();
+		await expect.element(page.getByText('Camera application status for revision 3')).toBeVisible();
+		await expect.element(page.getByLabelText('Display name')).toHaveValue('My draft');
+		expect(runtimeProfiles.getStatus).toHaveBeenCalledTimes(2);
+		expect(runtimeProfiles.watchStatus).toHaveBeenCalledTimes(2);
+		expect(runtimeProfiles.getRegistry).toHaveBeenCalledOnce();
+		expect(runtimeProfiles.getCameras).toHaveBeenCalledOnce();
+	});
+
+	it('shows a recoverable watch error after opening and ignores callbacks from the retired watch', async () => {
+		const { client, runtimeProfiles, status } = recoveryClient('away');
+		const close = vi.fn();
+		runtimeProfiles.watchStatus.mockResolvedValueOnce({ close });
+		await render(RuntimeProfilesSectionFixture, { props: { client, cameras: [] } });
+		await expect.element(page.getByLabelText('degraded policy application')).toBeVisible();
+		const [oldStatus, oldError] = runtimeProfiles.watchStatus.mock.calls[0]!;
+		oldError(new Error('Recorder reconnected.'));
+		await expect.element(page.getByText(/Camera application status unavailable/)).toBeVisible();
+		await page.getByRole('button', { name: 'Retry camera status' }).click();
+		expect(close).toHaveBeenCalledOnce();
+		oldError(new Error('Old watch failed.'));
+		oldStatus(null);
+		runtimeProfiles.watchStatus.mock.calls[1]![0](status);
+		await expect.element(page.getByLabelText('degraded policy application')).toBeVisible();
+		await expect
+			.element(page.getByRole('button', { name: 'Retry camera status' }))
+			.not.toBeInTheDocument();
+	});
+
 	it('keeps newer watched active and registry state when initial reads complete late', async () => {
 		const { client, runtimeProfiles, registry, status } = recoveryClient('away');
 		const delayed = Promise.withResolvers<{ profileId: string | null; revision: string }>();
@@ -407,7 +479,9 @@ describe('RuntimeProfilesSection', () => {
 				'3',
 				expect.objectContaining({ revision: '3' })
 			);
-			await expect.element(page.getByRole('status')).toHaveTextContent('Active policy reapplied.');
+			await expect
+				.element(page.getByText('Active policy reapplied.', { exact: true }))
+				.toBeVisible();
 		}
 	);
 
@@ -485,9 +559,11 @@ describe('RuntimeProfilesSection', () => {
 			else if (scenario === 'identity') status.active_profile_id = null;
 			else status.cameras['192.0.2.10']!.state = 'applied';
 			await render(RuntimeProfilesSectionFixture, { props: { client, cameras: [] } });
-			await expect
-				.element(page.getByRole('region', { name: 'Runtime profile convergence' }))
-				.toBeVisible();
+			if (scenario === 'applied') {
+				await expect.element(page.getByLabelText('applied policy application')).toBeVisible();
+			} else {
+				await expect.element(page.getByText('Camera application status pending.')).toBeVisible();
+			}
 			await expect
 				.element(page.getByRole('button', { name: 'Reapply active policy' }))
 				.not.toBeInTheDocument();
