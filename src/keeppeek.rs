@@ -507,7 +507,7 @@ impl KeepPeekLoop {
         );
         let result = match &self.notifications {
             Some(handle) => handle
-                .update_profile_suppression(desired.clone(), fence)
+                .set_profile_suppressed_sources(desired.clone(), fence)
                 .map(|_| ()),
             None if desired.is_empty() => Ok(()),
             None => Err(anyhow::anyhow!("notification runtime is unavailable")),

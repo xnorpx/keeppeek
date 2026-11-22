@@ -152,7 +152,7 @@ enum Command {
 }
 
 #[derive(Debug)]
-pub(crate) struct ProfileRevisionFence {
+pub struct ProfileRevisionFence {
     pub(crate) status: Arc<std::sync::RwLock<crate::profiles::RuntimeProfileStatus>>,
     pub(crate) revision: u64,
 }
@@ -281,13 +281,6 @@ impl Handle {
     /// Applies profile suppression, canceling the request if it waits too long in the queue.
     /// A request already executing in the notification worker may finish after the timeout.
     pub fn set_profile_suppressed_sources(
-        &self,
-        source_ids: std::collections::BTreeSet<String>,
-    ) -> anyhow::Result<usize> {
-        self.update_profile_suppression(source_ids, None)
-    }
-
-    pub(crate) fn update_profile_suppression(
         &self,
         source_ids: std::collections::BTreeSet<String>,
         revision: Option<ProfileRevisionFence>,
@@ -886,7 +879,7 @@ mod profile_suppression_tests {
             profile_suppression: profile_suppression.clone(),
         };
         let caller = std::thread::spawn(move || {
-            handle.set_profile_suppressed_sources(BTreeSet::from(["front-door".to_owned()]))
+            handle.set_profile_suppressed_sources(BTreeSet::from(["front-door".to_owned()]), None)
         });
         assert!(caller.join().unwrap().is_err());
 
@@ -916,11 +909,11 @@ mod profile_suppression_tests {
         };
         let older = std::thread::spawn({
             let handle = handle.clone();
-            move || handle.set_profile_suppressed_sources(BTreeSet::from(["old".to_owned()]))
+            move || handle.set_profile_suppressed_sources(BTreeSet::from(["old".to_owned()]), None)
         });
         let old_command = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
         let newer = std::thread::spawn(move || {
-            handle.set_profile_suppressed_sources(BTreeSet::from(["new".to_owned()]))
+            handle.set_profile_suppressed_sources(BTreeSet::from(["new".to_owned()]), None)
         });
         let new_command = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
         tx.send(old_command).unwrap();
@@ -974,7 +967,9 @@ mod performance {
             };
             let started = Instant::now();
             assert_eq!(
-                handle.set_profile_suppressed_sources(source_ids).unwrap(),
+                handle
+                    .set_profile_suppressed_sources(source_ids, None)
+                    .unwrap(),
                 0
             );
             samples_ns.push(elapsed_ns(started));

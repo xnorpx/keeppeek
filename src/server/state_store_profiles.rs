@@ -2148,7 +2148,14 @@ mod tests {
             );
         }
         write.join().unwrap();
-        assert!(!watched().is_empty());
+        let frames = watched();
+        assert!(frames.iter().any(|frame| {
+            use prost::Message as _;
+            let envelope = proto::ControlEnvelope::decode(frame.as_slice()).unwrap();
+            matches!(envelope.message, Some(proto::control_envelope::Message::Notification(notification))
+                if matches!(notification.event, Some(proto::notification::Event::StateStoreWatchUpdate(ref update)) if update.revision == 3))
+        }));
+        assert_eq!(state.runtime_profiles.read().unwrap().revision, 3);
         let persisted = config::load_config(&fixture.config_path()).unwrap();
         assert_eq!(persisted.runtime_profiles.revision, 3);
         assert_eq!(
