@@ -1380,6 +1380,9 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
         "keeppeek.event-publication.v1".to_owned(),
         "stored-media-keyframe-preview.v1".to_owned(),
     ];
+    if state.catalog.is_some() {
+        capability_ids.push(stored_frame_step::CAPABILITY_ID.to_owned());
+    }
     if state.notifications.is_some() {
         capability_ids.push("keeppeek.rules.v1".to_owned());
     }

@@ -211,6 +211,7 @@ fn paused_cursor_steps_under_historical_access_rules_and_invalidates_previous_to
     use proto::stored_media_command::Action;
     let root = RecordingDirectory::new();
     let (state, catalog) = routed_fixture(&root.0);
+    assert!(super::super::server_capability_ids(&state).iter().any(|id| id == CAPABILITY_ID));
     let session = SessionId::from_u64(479);
     state
         .api_session_owners

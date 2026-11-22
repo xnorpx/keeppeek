@@ -4,6 +4,8 @@ mod tests;
 use super::*;
 use crate::storage::sample_index::{self as index, Unavailable};
 
+pub(super) const CAPABILITY_ID: &str = "keeppeek.stored-frame-step.v1";
+
 #[derive(Default)]
 pub(super) struct CursorFrames {
     active: Option<Uuid>,
