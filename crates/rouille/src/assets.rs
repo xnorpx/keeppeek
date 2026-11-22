@@ -121,8 +121,10 @@ where
     };
 
     let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-    let etag: String = (fs::metadata(&potential_file)
-        .map(|meta| filetime::FileTime::from_last_modification_time(&meta).unix_seconds() as u64)
+    let etag: String = (file
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .map(|modified| filetime::FileTime::from_system_time(modified).unix_seconds() as u64)
         .unwrap_or_else(|_| now.nanosecond() as u64)
         ^ 0xd3f4_0305_c9f8_e911_u64)
         .to_string();
