@@ -26,7 +26,7 @@ members = [
 
 [workspace.dependencies]
 oauth2 = { version = "=5.0.0", default-features = false }
-jsonwebtoken = { version = "=11.1.0", default-features = false, features = [
+jsonwebtoken = { version = "=12.0.0", default-features = false, features = [
   "aws_lc_rs",
 ] }
 cap-fs-ext = { version = "=4.0.3", default-features = false, features = [
@@ -50,7 +50,7 @@ serde_json = { version = "1.0.151", default-features = false, features = [
   "std",
 ] }
 subtle = { version = "2.6.1", default-features = false }
-ureq = { version = "=3.4.2", default-features = false }
+ureq = { version = "=3.5.2", default-features = false }
 url = { version = "2.5.8", default-features = false, features = ["std"] }
 xml = { version = "1.4.0", default-features = false }
 yaserde = "0.13.2"

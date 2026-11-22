@@ -109,7 +109,7 @@ fn read_jpeg(
     let bytes = response
         .into_body()
         .into_with_config()
-        .limit(JPEG_SIZE_BYTES_MAX + 1)
+        .limit(JPEG_SIZE_BYTES_MAX)
         .read_to_vec()
         .map_err(|error| {
             ClientError(match error {
@@ -118,10 +118,7 @@ fn read_jpeg(
             })
         })?;
     deadline.remaining()?;
-    if bytes.len() as u64 > JPEG_SIZE_BYTES_MAX
-        || !bytes.starts_with(&[0xff, 0xd8])
-        || !bytes.ends_with(&[0xff, 0xd9])
-    {
+    if !bytes.starts_with(&[0xff, 0xd8]) || !bytes.ends_with(&[0xff, 0xd9]) {
         return Err(ClientError(Failure::Protocol));
     }
     Ok(bytes)

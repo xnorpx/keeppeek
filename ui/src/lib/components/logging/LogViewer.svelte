@@ -264,8 +264,8 @@
 									<summary class="w-fit cursor-pointer select-none hover:text-white/70"
 										>Details</summary
 									>
-									<pre
-										class="mt-1 overflow-x-auto font-mono break-words whitespace-pre-wrap">{JSON.stringify(
+									<pre class="mt-1 overflow-x-auto font-mono break-words whitespace-pre-wrap"
+										>{JSON.stringify(
 											{
 												fields: entry.fields,
 												file: entry.file,
@@ -274,7 +274,8 @@
 											},
 											null,
 											2
-										)}</pre>
+										)}</pre
+									>
 								</details>
 							{/if}
 						</div>

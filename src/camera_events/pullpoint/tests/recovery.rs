@@ -93,7 +93,8 @@ fn cleanup_authentication_failure_is_not_hidden_by_a_prior_pull_failure() {
         fake.next_pull_response(Reply::http(503, "text/plain", "unavailable"))
             .unwrap();
     }
-    fake.next_pull_response(delayed_unavailable()).unwrap();
+    fake.next_pull_response(delayed_unavailable(Duration::from_millis(1200)))
+        .unwrap();
     let (producer, _received) = producer(&fake);
     let shutdown = producer.shutdown.clone();
     let slot = Arc::clone(&producer.slot);
