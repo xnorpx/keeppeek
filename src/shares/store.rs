@@ -6,7 +6,7 @@ use super::{
     database::Database,
     model::{MAX_ACTIVE_GRANTS, MAX_CREATOR_GRANTS, MAX_GRANT_RECORDS},
     record::{Record, bounded_text, valid_issuer, validate_intent},
-    secret::{digest, valid},
+    secret::{digest, range_digest, valid},
     sessions::Sessions,
 };
 use std::{fmt, path::Path};
@@ -47,6 +47,15 @@ impl Store {
     }
 
     pub fn create(&mut self, intent: CreateGrant, clock: Clock) -> Result<IssuedGrant, Error> {
+        self.create_with_evidence(intent, clock, false)
+    }
+
+    pub(crate) fn create_with_evidence(
+        &mut self,
+        intent: CreateGrant,
+        clock: Clock,
+        exact_range: bool,
+    ) -> Result<IssuedGrant, Error> {
         self.tick(clock)?;
         validate_intent(&intent, clock.unix_ms)?;
         let record = Record {
@@ -60,6 +69,11 @@ impl Store {
             last_access_at_ms: None,
         };
         let token = super::Secret::issue();
+        let token_hash = if exact_range {
+            token.range_hash()
+        } else {
+            token.hash()
+        };
         self.database.transaction(clock.unix_ms, |database| {
             database.prune(clock.unix_ms)?;
             if database.get(record.intent.request_id)?.is_some() {
@@ -83,7 +97,7 @@ impl Store {
             {
                 return Err(Error::Capacity);
             }
-            database.insert(&record, &token.hash())
+            database.insert(&record, &token_hash)
         })?;
         Ok(IssuedGrant {
             grant: record.summary(),
@@ -153,10 +167,13 @@ impl Store {
         if !valid(token) || !valid_context(context) {
             return Err(Error::Denied);
         }
-        let record = self
-            .database
-            .by_hash(&digest(token))?
-            .ok_or(Error::Denied)?;
+        let record = match self.database.by_hash(&digest(token))? {
+            Some(record) => record,
+            None => self
+                .database
+                .by_hash(&range_digest(token))?
+                .ok_or(Error::Denied)?,
+        };
         self.require_active(&record, clock)?;
         self.database.observe(clock.unix_ms)?;
         self.sessions.issue(&record, context, clock)

@@ -153,6 +153,7 @@ pub(super) fn create_inspected(
             "export preview changed",
         ));
     }
+    let exact_range = request.recording_range.is_some();
     let intent = CreateGrant {
         request_id: identity(&request.request_id)?,
         issuer,
@@ -167,7 +168,10 @@ pub(super) fn create_inspected(
     };
     let (issued, now_ms) = session_lifecycle::admit(state, session_id, || {
         with_store(state, |store, clock| {
-            Ok((store.create(intent, clock)?, clock.unix_ms))
+            Ok((
+                store.create_with_evidence(intent, clock, exact_range)?,
+                clock.unix_ms,
+            ))
         })
     })?;
     let url = format!("{}/share#{}", context.origin, issued.token.into_string());

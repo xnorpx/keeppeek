@@ -8194,7 +8194,7 @@ struct ExportJobRecord {
 // V1 records muxed output timing. V2 also includes the original source extent for unshifted samples.
 const SOURCE_BOUNDS_PROOF_VERSION: u32 = 2;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExportMediaProof {
     version: u32,
@@ -8253,6 +8253,8 @@ struct PersistedExportJobRecord {
     owner_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     media_proof: Option<ExportMediaProof>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_bounds_proof: Option<ExportMediaProof>,
     request: String,
     job: String,
     created_at_ms: i64,
@@ -8270,7 +8272,17 @@ impl PersistedExportJobRecord {
             artifact_id: record.artifact_id.clone(),
             source_identity: record.source_identity,
             owner_key: record.owner_key.clone(),
-            media_proof: record.media_proof.clone(),
+            // Older recorders round-trip this proof and ignore the additive source evidence.
+            media_proof: record.media_proof.clone().map(|mut proof| {
+                if proof.version == SOURCE_BOUNDS_PROOF_VERSION {
+                    proof.version = 1;
+                }
+                proof
+            }),
+            source_bounds_proof: record
+                .media_proof
+                .clone()
+                .filter(|proof| proof.version == SOURCE_BOUNDS_PROOF_VERSION),
             request: URL_SAFE_NO_PAD.encode(record.request.encode_to_vec()),
             job: URL_SAFE_NO_PAD.encode(record.job.encode_to_vec()),
             created_at_ms: record.created_at_ms,
@@ -8349,6 +8361,17 @@ impl PersistedExportJobRecord {
             downloaded_at_ms: self.downloaded_at_ms,
         };
         export_storage::history::recover(&mut record, export_root, catalog, now_ms)?;
+        if let (Some(base), Some(mut source)) = (&record.media_proof, self.source_bounds_proof)
+            && base.version == 1
+            && source.version == SOURCE_BOUNDS_PROOF_VERSION
+        {
+            source.version = 1;
+            // An orphaned or mismatched companion cannot promote a different generation.
+            if &source == base {
+                source.version = SOURCE_BOUNDS_PROOF_VERSION;
+                record.media_proof = Some(source);
+            }
+        }
         if record
             .media_proof
             .as_ref()
