@@ -170,6 +170,16 @@ fn single_gop_rotation_discontinuity_and_shutdown_publish_each_finalized_duratio
                 .sum::<u64>();
             assert_eq!(ticks * 1_000 / u64::from(timescale), 200);
         }
+        // A longer segment has already reported its first GOP through an ordinary append.
+        worker.config.medium_term_duration = Duration::from_secs(60);
+        for (ms, key) in [(600, true), (700, false), (800, true), (900, false)] {
+            worker.ingest(source.clone(), frame(start, ms, key, false));
+        }
+        worker.flush_all(true);
+        let active_duration = recorded_ms(&worker);
+        assert!(active_duration > 600);
+        worker.finalize_all();
+        assert_eq!(recorded_ms(&worker), active_duration);
         drop(worker);
         std::fs::remove_dir_all(root).unwrap();
     }
