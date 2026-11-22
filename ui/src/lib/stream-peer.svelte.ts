@@ -39,12 +39,12 @@ const controlTimeoutMs = 10_000;
 class MediaAdmissionError extends Error {}
 
 export type LiveSessionTransport = {
-	create: (offer: RTCSessionDescriptionInit) => Promise<CreateResponse>;
+	create: (offer: RTCSessionDescriptionInit, previousSession?: string) => Promise<CreateResponse>;
 	delete: (sessionId: string, options?: { keepalive?: boolean }) => Promise<void>;
 };
 
 const defaultSessionTransport: LiveSessionTransport = {
-	create: createSession,
+	create: (offer, previousSession) => createSession(offer, null, previousSession),
 	delete: (sessionId, options) => deleteSession(sessionId, null, options)
 };
 
@@ -109,6 +109,7 @@ export class LivePeer {
 
 	#peer: RTCPeerConnection | null = null;
 	#sessionToken: string | null = null;
+	#previousSession: string | undefined;
 	#controlChannel: RTCDataChannel | null = null;
 	#reliableChannel: RTCDataChannel | null = null;
 	#unreliableChannel: RTCDataChannel | null = null;
@@ -134,6 +135,7 @@ export class LivePeer {
 	#desiredPlans: LivePeerPlan[] = [];
 	#recoveryTimer?: ReturnType<typeof setTimeout>;
 	#recoveryAttempts = 0;
+	#healthySince?: { peer: RTCPeerConnection; at: number };
 	#operation: Promise<void> = Promise.resolve();
 	#closeScheduled = false;
 	#holds = 0;
@@ -187,7 +189,8 @@ export class LivePeer {
 			if (this.#desiredPlans !== nextPlans) return;
 			try {
 				await this.configureNow(nextPlans);
-				if (this.#peer || !nextPlans.some((plan) => plan.active)) this.cancelRecovery();
+				if (!nextPlans.some((plan) => plan.active)) this.cancelRecovery();
+				else this.markTransportHealthy();
 			} catch (error) {
 				if (recovering && !this.isAccessDenied(error)) this.scheduleRecovery();
 				throw error;
@@ -323,7 +326,6 @@ export class LivePeer {
 				await task();
 			} catch (error) {
 				const message = error instanceof Error ? error.message : 'The live command failed.';
-				this.error = message;
 				this.talkbackError = message;
 				throw error;
 			}
@@ -337,16 +339,28 @@ export class LivePeer {
 	private cancelRecovery(): void {
 		if (this.#recoveryTimer !== undefined) clearTimeout(this.#recoveryTimer);
 		this.#recoveryTimer = undefined;
+		if (this.#previousSession) {
+			void this.#sessionTransport.delete(this.#previousSession).catch(() => undefined);
+			this.#previousSession = undefined;
+		}
 		this.#recoveryAttempts = 0;
+		this.#healthySince = undefined;
+	}
+
+	private markTransportHealthy(): void {
+		if (this.#peer && this.#healthySince?.peer !== this.#peer)
+			this.#healthySince = { peer: this.#peer, at: performance.now() };
 	}
 
 	private transportLost(owner: RTCPeerConnection): void {
 		if (owner !== this.#peer) return;
+		// A replacement must survive a full wall health refresh before it earns a
+		// fresh retry budget. Rapid successful handshakes still count as failures.
+		if (this.#healthySince?.peer === owner && performance.now() - this.#healthySince.at >= 5000)
+			this.#recoveryAttempts = 0;
+		this.#healthySince = undefined;
 		const token = this.releaseLocalResources();
-		if (token !== null)
-			void this.#sessionTransport
-				.delete(token)
-				.catch((error) => console.debug('Unable to delete retired media session', error));
+		if (token) this.#previousSession = token;
 		this.scheduleRecovery();
 	}
 
@@ -368,7 +382,7 @@ export class LivePeer {
 			void this.enqueue(async () => {
 				if (this.#peer || !this.#desiredPlans.some((plan) => plan.active)) return;
 				await this.configureNow(this.#desiredPlans, true);
-				if (this.#peer) this.#recoveryAttempts = 0;
+				this.markTransportHealthy();
 			}).catch((error) => {
 				if (this.isAccessDenied(error)) return;
 				this.scheduleRecovery();
@@ -606,12 +620,16 @@ export class LivePeer {
 				}
 			}
 
-			const session = await this.#sessionTransport.create(peer.localDescription);
+			const session = await this.#sessionTransport.create(
+				peer.localDescription,
+				this.#previousSession
+			);
 			if (peer !== this.#peer) {
 				await this.#sessionTransport.delete(session.session_id);
 				return;
 			}
 
+			this.#previousSession = undefined;
 			this.#sessionToken = session.session_id;
 			this.sessionId = session.session_id;
 			await peer.setRemoteDescription({
@@ -1465,18 +1483,28 @@ function talkbackTarget(selection: TalkbackTargetSelection): TalkbackTarget {
 
 function waitForDataChannel(channel: RTCDataChannel): Promise<void> {
 	if (channel.readyState === 'open') return Promise.resolve();
+	const closed = () => new Error(`WebRTC ${channel.label} channel closed before opening.`);
+	if (channel.readyState === 'closing' || channel.readyState === 'closed')
+		return Promise.reject(closed());
 	return new Promise((resolve, reject) => {
+		const previousClose = channel.onclose;
 		const timeout = setTimeout(
-			() => reject(new Error(`WebRTC ${channel.label} channel did not open.`)),
+			() => finish(new Error(`WebRTC ${channel.label} channel did not open.`)),
 			controlTimeoutMs
 		);
-		channel.onopen = () => {
+		const finish = (error?: Error) => {
 			clearTimeout(timeout);
-			resolve();
+			channel.onopen = null;
+			channel.onerror = null;
+			channel.onclose = previousClose;
+			if (error) reject(error);
+			else resolve();
 		};
-		channel.onerror = () => {
-			clearTimeout(timeout);
-			reject(new Error(`WebRTC ${channel.label} channel failed.`));
+		channel.onopen = () => finish();
+		channel.onerror = () => finish(new Error(`WebRTC ${channel.label} channel failed.`));
+		channel.onclose = (event) => {
+			finish(closed());
+			previousClose?.call(channel, event);
 		};
 	});
 }

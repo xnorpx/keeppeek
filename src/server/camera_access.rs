@@ -91,7 +91,7 @@ pub(super) fn visible_cameras(
     session_id: SessionId,
 ) -> Option<Vec<CameraEntry>> {
     let principal = handler
-        .authorize_api_session(session_id, AccessRole::User, "camera_capabilities")
+        .check_api_session(session_id, AccessRole::User, "camera_capabilities", false)
         .ok()?;
     let policy = for_principal(&handler.state, &principal).ok()?;
     query_cameras(&handler.state, &policy, &[]).ok()

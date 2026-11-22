@@ -7,7 +7,8 @@
 //! order even when mutations race.
 //!
 //! Lock order: the store registry lock always precedes the watch lock. The
-//! sweeper and ack/unwatch paths take only the watch lock. Transport enqueue
+//! profile status read guard precedes the inventory projection guard, which precedes
+//! the watch lock. The sweeper and ack/unwatch paths take only the watch lock. Transport enqueue
 //! never calls back into either lock.
 //!
 //! A watch ends with an explicit `StateStoreWatchClosed` signal carrying one
@@ -39,6 +40,7 @@ pub(super) const ACK_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Default)]
 pub(super) struct WatchRegistry {
+    profile_views: std::sync::Mutex<()>,
     inner: Mutex<HashMap<(SessionId, String), Watch>>,
 }
 
@@ -132,6 +134,12 @@ pub(super) fn enqueue_notification(
 }
 
 impl WatchRegistry {
+    pub(in crate::server) fn lock_profile_views(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.profile_views
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<(SessionId, String), Watch>> {
         self.inner
             .lock()
@@ -280,6 +288,7 @@ impl WatchRegistry {
     ) -> Vec<(SessionId, proto::Notification)> {
         // Configuration reads may touch disk. Never run them under the global watch lock.
         let has_profiles = events.iter().any(profile_view::needs_projection);
+        let _inventory = has_profiles.then(|| self.lock_profile_views());
         let needs_identities = has_profiles
             && state
                 .api_session_owners

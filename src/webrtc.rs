@@ -198,6 +198,10 @@ pub(crate) trait ControlRequestHandler: Send + Sync {
 
     fn session_closed(&self, _session_id: SessionId) {}
 
+    fn session_privacy_retired(&self, session_id: SessionId) {
+        self.session_closed(session_id);
+    }
+
     fn resolve_media_subscription(
         &self,
         _request: &crate::api::proto::SubscribeMedia,
@@ -3054,7 +3058,7 @@ impl WebRtc {
             .name(format!("webrtc-api-{session_id}"))
             .stack_size(API_SESSION_THREAD_STACK_BYTES)
             .spawn(move || {
-                if let Err(error) = run_api_session(
+                let result = run_api_session(
                     rtc,
                     socket,
                     poller,
@@ -3062,7 +3066,8 @@ impl WebRtc {
                     thread_control.clone(),
                     shutdown,
                     data_rx,
-                ) {
+                );
+                if let Err(error) = &result {
                     tracing::debug!(%error, "API WebRTC session stopped with error");
                 }
                 if let Some(handler) = thread_control
@@ -3072,7 +3077,13 @@ impl WebRtc {
                     .as_ref()
                     .and_then(Weak::upgrade)
                 {
-                    handler.session_closed(session_id);
+                    if result
+                        .is_err_and(|error| error.is::<crate::privacy::PrivacyTransportRetired>())
+                    {
+                        handler.session_privacy_retired(session_id);
+                    } else {
+                        handler.session_closed(session_id);
+                    }
                 }
                 thread_inner.sessions.remove_api(session_id);
                 thread_control.finish();

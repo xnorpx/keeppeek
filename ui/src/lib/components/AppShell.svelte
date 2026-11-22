@@ -47,7 +47,7 @@
 	let { children }: { children: Snippet } = $props();
 	const controlClient = setControlClient();
 	const livePeer = setLivePeer({
-		create: (offer) => controlClient.createWebRtcSession(offer),
+		create: (offer, previous) => controlClient.createWebRtcSession(offer, previous),
 		delete: (sessionId, options) => controlClient.deleteWebRtcSession(sessionId, options)
 	});
 	const peekViewState = setPeekViewState();
@@ -59,6 +59,7 @@
 		message: null,
 		generation: 0
 	});
+	let recovering = $derived(accessState.status === 'checking' && accessState.session !== null);
 	let keyboardOverlay = $state<KeyboardOverlayMode>(null);
 	let keyboardReady = $state(false);
 	let navigationChordPending = $state(false);
@@ -66,7 +67,10 @@
 	let railPathname = '';
 	let navigationChordTimer: ReturnType<typeof setTimeout> | null = null;
 	let shellHealth = $state.raw<ServerHealthResponse | null>(null);
-	let shellProfileId = $state<string | null>(null);
+	let shellProfileId = $state<string | null>();
+	const shellProfileLabel = $derived(
+		shellProfileId === undefined ? 'Pending' : (shellProfileId ?? 'Base')
+	);
 	let shellDegradedCameras = $state<number | null>(null);
 	let shellHealthRequestVersion = 0;
 	setShellHealthPublisher((health) => (shellHealth = health));
@@ -169,7 +173,7 @@
 			const wasAuthenticated = accessState.status === 'authenticated';
 			const previousPrincipalId = accessState.session?.principalId ?? null;
 			accessState = state;
-			if (state.status !== 'authenticated' || state.session?.principalId !== previousPrincipalId) {
+			if (!state.session || state.session.principalId !== previousPrincipalId) {
 				peekViewState.reset();
 			}
 			const authenticated = state.status === 'authenticated';
@@ -208,7 +212,7 @@
 		const generation = ++profileWatchGeneration;
 		if (closeProfileActiveWatch) void closeProfileActiveWatch().catch(() => undefined);
 		closeProfileActiveWatch = undefined;
-		shellProfileId = null;
+		shellProfileId = undefined;
 		shellDegradedCameras = null;
 		if (!connected) return;
 		try {
@@ -221,7 +225,7 @@
 			else closeProfileActiveWatch = () => watch.close();
 		} catch {
 			if (generation === profileWatchGeneration) {
-				shellProfileId = null;
+				shellProfileId = undefined;
 				shellDegradedCameras = null;
 			}
 		}
@@ -259,6 +263,7 @@
 	}
 
 	function handleGlobalKeyboard(event: KeyboardEvent): void {
+		if (accessState.status !== 'authenticated') return;
 		const action = resolveGlobalKeyboardAction(event, {
 			overlay: keyboardOverlay,
 			navigationPending: navigationChordPending,
@@ -438,7 +443,12 @@
 
 {#if verificationWindow}
 	<AdministratorVerificationWindow />
-{:else if accessState.status === 'authenticated'}
+{:else if accessState.status === 'authenticated' || recovering}
+	{#if recovering}<p
+			role="status"
+			class="fixed top-2 right-2 z-50 rounded-md bg-background p-2 text-sm text-foreground"
+			>Reconnecting. Checking access…</p
+		>{/if}
 	{#if controlClient.externalAuthentication.error}
 		<p
 			role="alert"
@@ -449,6 +459,8 @@
 	{/if}
 	<Tooltip.Provider delayDuration={0}>
 		<div
+			inert={recovering}
+			aria-busy={recovering}
 			data-keyboard-ready={keyboardReady}
 			class="min-h-svh bg-background text-foreground md:grid md:grid-cols-[64px_minmax(0,1fr)]"
 		>
@@ -609,12 +621,11 @@
 						<a
 							href={resolve('/settings#runtime-profiles')}
 							class="ml-auto rounded-sm border border-border px-2 py-1 text-xs focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-							aria-label="Active camera profile {shellProfileId ??
-								'Base'}; {shellDegradedCameras === null
+							aria-label="Active camera profile {shellProfileLabel}; {shellDegradedCameras === null
 								? 'application status pending'
 								: `${shellDegradedCameras} cameras degraded`}"
 						>
-							{shellProfileId ?? 'Base'}
+							{shellProfileLabel}
 							{#if shellDegradedCameras !== null && shellDegradedCameras > 0}
 								<span class="text-destructive"> · degraded</span>
 							{/if}
@@ -667,11 +678,13 @@
 						? 'live-surface'
 						: 'workspace-surface'}"
 				>
-					{#if liveViewActive}
-						<PeekPage view={viewerActive ? 'viewer' : 'dashboard'} />
-					{:else}
-						{@render children()}
-					{/if}
+					{#key JSON.stringify([accessState.session?.principalId, accessState.session?.role])}
+						{#if liveViewActive}
+							<PeekPage view={viewerActive ? 'viewer' : 'dashboard'} />
+						{:else}
+							{@render children()}
+						{/if}
+					{/key}
 				</main>
 			</div>
 
@@ -686,7 +699,7 @@
 	</Tooltip.Provider>
 
 	<KeyboardOverlay
-		mode={keyboardOverlay}
+		mode={recovering ? null : keyboardOverlay}
 		pathname={page.url.pathname}
 		onclose={() => (keyboardOverlay = null)}
 		onnavigate={navigateFromKeyboard}

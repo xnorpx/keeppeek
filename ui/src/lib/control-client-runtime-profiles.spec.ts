@@ -457,9 +457,11 @@ describe('runtime profile observations', () => {
 		client.handleConnectionClosed();
 		const render = vi.fn();
 		const shell = await client.watchShellProfile(render);
-		expect(get).toHaveBeenCalledExactlyOnceWith(runtimeProfilesNamespace, 'active');
-		expect(watch).toHaveBeenCalledTimes(1);
-		expect(render).toHaveBeenCalledExactlyOnceWith('away', 300);
+		expect(render).toHaveBeenLastCalledWith(undefined, null);
+		expect(get).not.toHaveBeenCalled();
+		await client.handleConnectionOpened();
+		expect(watch).toHaveBeenCalledTimes(2);
+		expect(render).toHaveBeenLastCalledWith('away', 300);
 		expect(await client.getActive()).toEqual({ profileId: 'away', revision: '3' });
 		await Promise.all([shell.close(), retained.close()]);
 	});
@@ -863,15 +865,67 @@ describe('runtime profile observations', () => {
 		const existing = await client.watchShellProfile(first);
 		refuse = true;
 		interrupt!();
-		expect(first).toHaveBeenLastCalledWith(null, null);
+		expect(first).toHaveBeenLastCalledWith(undefined, null);
 		await vi.waitFor(() => expect(watch).toHaveBeenCalledTimes(2));
 		refuse = false;
 		header.value = { ...header.value, profile_id: 'replacement', degraded_cameras: 2 };
 		const next = vi.fn();
 		const replacement = await client.watchShellProfile(next);
-		expect(next.mock.calls).toEqual([['replacement', 2]]);
+		expect(next.mock.calls).toEqual([
+			[undefined, null],
+			['replacement', 2]
+		]);
 		expect(first).toHaveBeenLastCalledWith('replacement', 2);
 		await Promise.all([existing.close(), replacement.close()]);
+	});
+
+	it('withdraws the shared active header and fleet generation when only the header is interrupted', async () => {
+		let interrupt: (() => void) | undefined;
+		let refuseHeader = false;
+		const header = activeHeader();
+		const watch = vi.fn(
+			async (
+				_ns: string,
+				options: {
+					keyPrefix: string;
+					listener: (entries: StateEntry[]) => void;
+					onInterrupted: () => void;
+				}
+			) => {
+				if (options.keyPrefix === 'active') {
+					if (refuseHeader) throw new Error('Header unavailable');
+					interrupt = options.onInterrupted;
+					options.listener([header]);
+				} else {
+					options.listener([observedPart(Number(options.keyPrefix.split('/')[1]))]);
+				}
+				return { close: async () => {} };
+			}
+		);
+		const client = new RuntimeProfilesControlClient({
+			watch,
+			get: async () => header
+		} as unknown as ControlClientStateStore);
+		const selection = vi.fn(),
+			selectionError = vi.fn(),
+			fleet = vi.fn(),
+			label = vi.fn();
+		const handles = await Promise.all([
+			client.watchActive(selection, selectionError),
+			client.watchStatus(fleet),
+			client.watchShellProfile(label)
+		]);
+		refuseHeader = true;
+		interrupt!();
+		expect(selection).toHaveBeenLastCalledWith(null);
+		expect(fleet).toHaveBeenLastCalledWith(null);
+		expect(label).toHaveBeenLastCalledWith(undefined, null);
+		await vi.waitFor(() => expect(selectionError).toHaveBeenCalledOnce());
+		refuseHeader = false;
+		header.value = { ...header.value, profile_id: '', degraded_cameras: 0 };
+		handles.push(await client.watchActive(vi.fn()));
+		expect(label).toHaveBeenLastCalledWith(null, 0);
+		await Promise.all(handles.map((handle) => handle.close()));
 	});
 
 	it('withdraws a complete snapshot immediately when one watch fails before another event', async () => {

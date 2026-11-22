@@ -45,6 +45,12 @@ before calling the server and holds a read fence through queue admission. Status
 the same fence through watch registration to prevent a missed update. Existing session authorization
 and camera visibility projections apply to these notifications.
 
+A camera configured without credentials stays Degraded at startup and after a profile change.
+Other configured cameras remain Pending until the recorder attempts to start them. During a
+header interruption the shell and Settings show Pending until they receive fresh selection data.
+Camera inventory changes, scoped watch registration and publication are serialized so a newly
+visible camera reaches existing viewers and newly opened watches.
+
 Saved targets absent from the configured cameras remain degraded with `configured camera is missing`
 after startup, profile completion and live removal. Restoring the same saved identity replaces this
 placeholder with its application result; a newly added camera has a different identity. Activating

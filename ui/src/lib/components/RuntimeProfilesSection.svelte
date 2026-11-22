@@ -24,6 +24,9 @@
 	let draft = $state.raw<RuntimeProfileRegistry | null>(null);
 	let activeProfileId = $state<string | null>(null);
 	let activeRevision = $state('0');
+	let headerAvailable = $state(false);
+	let headerInterrupted = false;
+	let headerError = $state<string | null>(null);
 	let runtimeStatus = $state.raw<RuntimeProfileStatus | null>(null);
 	let activeDefinitionRevision = $state<string | null>();
 	let activeUpdates = 0;
@@ -51,7 +54,8 @@
 	);
 	const cameraBindingsAvailable = $derived(cameraBindings !== null);
 	const currentStatus = $derived(
-		runtimeStatus?.revision === activeRevision &&
+		headerAvailable &&
+			runtimeStatus?.revision === activeRevision &&
 			runtimeStatus.active_profile_id === activeProfileId &&
 			runtimeStatus.definitionRevision === activeDefinitionRevision
 			? runtimeStatus
@@ -78,7 +82,8 @@
 	}
 
 	function acceptActive(active: ActiveRuntimeProfile): void {
-		if (BigInt(active.revision) < BigInt(activeRevision)) return;
+		if (headerAvailable && BigInt(active.revision) < BigInt(activeRevision)) return;
+		headerAvailable = true;
 		activeProfileId = active.profileId;
 		activeRevision = active.revision;
 		activeDefinitionRevision = active.definitionRevision;
@@ -87,6 +92,43 @@
 	function acceptRuntimeStatus(next: RuntimeProfileStatus | null): void {
 		if (next && runtimeStatus && BigInt(next.revision) < BigInt(runtimeStatus.revision)) return;
 		runtimeStatus = next;
+	}
+
+	function observeHeader(): () => void {
+		headerError = null;
+		let stopped = false;
+		let watch: { close: () => Promise<void> } | undefined;
+		const unavailable = (cause?: unknown) => {
+			if (stopped) return;
+			activeUpdates++;
+			headerInterrupted = true;
+			headerAvailable = false;
+			runtimeStatus = null;
+			headerError =
+				cause === undefined
+					? null
+					: cause instanceof Error
+						? cause.message
+						: 'Active profile header is unavailable.';
+		};
+		void controlClient.runtimeProfiles
+			.watchActive((next) => {
+				if (stopped) return;
+				if (!next) return unavailable();
+				activeUpdates++;
+				headerInterrupted = false;
+				headerError = null;
+				acceptActive(next);
+			}, unavailable)
+			.then((opened) => {
+				if (stopped) void opened.close();
+				else watch = opened;
+			})
+			.catch(unavailable);
+		return () => {
+			stopped = true;
+			if (watch) void watch.close();
+		};
 	}
 
 	function observeStatus(): () => void {
@@ -139,12 +181,14 @@
 
 	onMount(() => {
 		let registryWatch: { close: () => Promise<void> } | undefined;
-		let activeWatch: { close: () => Promise<void> } | undefined;
+		let stopHeader = observeHeader();
 		let stopObserving = observeStatus();
 		let disposed = false;
 		retryObservation = () => {
 			if (disposed) return;
+			stopHeader();
 			stopObserving();
+			stopHeader = observeHeader();
 			stopObserving = observeStatus();
 		};
 		const registryFailure = (cause: unknown) => {
@@ -153,17 +197,6 @@
 			setError(cause);
 		};
 		void load(false);
-		void controlClient.runtimeProfiles
-			.watchActive((next) => {
-				if (disposed) return;
-				activeUpdates++;
-				acceptActive(next);
-			})
-			.then((watch) => {
-				if (disposed) void watch.close();
-				else activeWatch = watch;
-			})
-			.catch((cause: unknown) => setError(cause));
 		if (administrator) {
 			void controlClient.runtimeProfiles
 				.watchRegistry((next) => {
@@ -185,7 +218,7 @@
 		return () => {
 			disposed = true;
 			if (registryWatch) void registryWatch.close();
-			if (activeWatch) void activeWatch.close();
+			stopHeader();
 			stopObserving();
 		};
 	});
@@ -225,7 +258,10 @@
 		try {
 			const observed = activeUpdates;
 			const active = await controlClient.runtimeProfiles.getActive();
-			if (observed === activeUpdates || BigInt(active.revision) > BigInt(activeRevision))
+			if (
+				!headerInterrupted &&
+				(observed === activeUpdates || BigInt(active.revision) > BigInt(activeRevision))
+			)
 				acceptActive(active);
 			if (administrator) {
 				const [next, bindings] = await Promise.all([
@@ -390,7 +426,10 @@
 				activeRevision,
 				registry
 			);
-			if (observed === activeUpdates || BigInt(accepted.revision) > BigInt(activeRevision))
+			if (
+				!headerInterrupted &&
+				(observed === activeUpdates || BigInt(accepted.revision) > BigInt(activeRevision))
+			)
 				acceptActive(accepted);
 			announcement = reapply
 				? 'Active policy reapplied.'
@@ -406,7 +445,8 @@
 	}
 
 	function deleteSelectedProfile(): void {
-		if (!draft || !selectedProfile || selectedProfile.id === activeProfileId) return;
+		if (!headerAvailable || !draft || !selectedProfile || selectedProfile.id === activeProfileId)
+			return;
 		const profiles = { ...draft.profiles };
 		delete profiles[selectedProfile.id];
 		draft = { ...draft, profiles };
@@ -440,17 +480,25 @@
 			<div class="flex flex-wrap items-center gap-3" aria-label="Active runtime profile">
 				<p class="text-sm">
 					Active policy: <strong
-						>{activeProfileId
-							? (registry?.profiles[activeProfileId]?.name ?? activeProfileId)
-							: 'Base'}</strong
+						>{!headerAvailable
+							? 'Pending'
+							: activeProfileId
+								? (registry?.profiles[activeProfileId]?.name ?? activeProfileId)
+								: 'Base'}</strong
 					>
-					<span class="text-text-muted"> · revision {activeRevision}</span>
+					{#if headerAvailable}<span class="text-text-muted">
+							· revision {activeRevision}</span
+						>{/if}
 				</p>
 				{#if administrator}
 					<button
 						type="button"
 						class="min-h-11 rounded-sm border border-hairline-strong bg-raised px-3 text-sm focus-visible:outline-2 focus-visible:outline-primary"
-						disabled={activating || activeProfileId === null || dirty || !cameraBindingsAvailable}
+						disabled={!headerAvailable ||
+							activating ||
+							activeProfileId === null ||
+							dirty ||
+							!cameraBindingsAvailable}
 						onclick={() => void activate(null)}
 					>
 						Select Base
@@ -501,9 +549,9 @@
 					</ul>
 				</div>
 			{:else}
-				{#if observationError}
+				{#if headerError || observationError}
 					<p role="status" class="text-sm text-text-muted"
-						>Camera application status unavailable. {observationError}</p
+						>Camera application status unavailable. {headerError ?? observationError}</p
 					>
 					<button
 						type="button"
@@ -586,6 +634,7 @@
 											type="button"
 											class="min-h-11 rounded-sm bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
 											disabled={activating ||
+												!headerAvailable ||
 												selectedProfile.id === activeProfileId ||
 												dirty ||
 												saving}
@@ -596,7 +645,9 @@
 										<button
 											type="button"
 											class="min-h-11 rounded-sm border border-destructive px-3 text-sm text-destructive disabled:opacity-50"
-											disabled={selectedProfile.id === activeProfileId || saving}
+											disabled={!headerAvailable ||
+												selectedProfile.id === activeProfileId ||
+												saving}
 											onclick={deleteSelectedProfile}
 										>
 											Delete
