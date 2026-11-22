@@ -26,7 +26,7 @@ pub fn default_serde(input: TokenStream) -> TokenStream {
             fn serialize<W: ::std::io::Write>(
                 &self,
                 writer: &mut ::yaserde::ser::Serializer<W>,
-            ) -> ::std::result::Result<(), ::std::string::String> {
+            ) -> ::yaserde::Result<()> {
                 ::xsd_types::utils::yaserde::serialize(
                     self,
                     #struct_name_literal,
@@ -38,13 +38,11 @@ pub fn default_serde(input: TokenStream) -> TokenStream {
                 &self,
                 attributes: ::std::vec::Vec<::yaserde::__xml::attribute::OwnedAttribute>,
                 namespace: ::yaserde::__xml::namespace::Namespace,
-            ) -> ::std::result::Result<
+            ) -> ::yaserde::Result<
                 (
                     ::std::vec::Vec<::yaserde::__xml::attribute::OwnedAttribute>,
                     ::yaserde::__xml::namespace::Namespace,
-                ),
-                ::std::string::String,
-            > {
+                )> {
                 Ok((attributes, namespace))
             }
         }
@@ -52,7 +50,7 @@ pub fn default_serde(input: TokenStream) -> TokenStream {
         impl ::yaserde::YaDeserialize for #struct_name {
             fn deserialize<R: ::std::io::Read>(
                 reader: &mut ::yaserde::de::Deserializer<R>,
-            ) -> ::std::result::Result<Self, ::std::string::String> {
+            ) -> ::yaserde::Result<Self> {
                 ::xsd_types::utils::yaserde::deserialize(
                     reader,
                     |s| #struct_name::from_str(s).map_err(|e| e.to_string()),

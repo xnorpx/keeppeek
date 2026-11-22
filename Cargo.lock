@@ -19,7 +19,7 @@ dependencies = [
  "transport",
  "types",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -32,7 +32,7 @@ dependencies = [
  "transport",
  "types",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -69,7 +69,7 @@ version = "0.1.0"
 dependencies = [
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -175,7 +175,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -383,7 +383,7 @@ dependencies = [
  "transport",
  "types",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -426,7 +426,7 @@ dependencies = [
  "t_1",
  "validate",
  "ws_addr",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -889,7 +889,7 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -1006,7 +1006,7 @@ dependencies = [
  "transport",
  "types",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -1239,7 +1239,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -1253,7 +1253,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -1345,7 +1345,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -2104,7 +2104,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -2596,7 +2596,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -2610,7 +2610,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -3073,7 +3073,7 @@ dependencies = [
  "ureq",
  "url",
  "uuid",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xmltree",
  "xsd-types",
  "yaserde",
@@ -3088,7 +3088,7 @@ dependencies = [
  "common",
  "soap_envelope",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xmlmime",
  "xop",
  "xsd-macro-utils",
@@ -3825,7 +3825,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -3838,7 +3838,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -3895,7 +3895,7 @@ dependencies = [
  "hex-literal",
  "md-5 0.11.0",
  "tracing",
- "xml-rs 1.0.0",
+ "xml-rs",
 ]
 
 [[package]]
@@ -3905,7 +3905,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -4024,7 +4024,7 @@ version = "0.1.0"
 dependencies = [
  "onvif-xsd",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -4277,7 +4277,7 @@ dependencies = [
  "uplink",
  "ws_addr",
  "ws_discovery",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xml_xsd",
  "xmlmime",
  "xop",
@@ -4443,14 +4443,14 @@ dependencies = [
 
 [[package]]
 name = "serde_tokenstream"
-version = "0.2.3"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7c49585c52c01f13c5c2ebb333f14f6885d76daa768d8a037d28017ec538c69"
+checksum = "db95b8acf6eca5bc1bc771a7d7fb1a0d1485bdef0c46eec2f573bbaf4b4118f8"
 dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "syn 2.0.119",
+ "syn 3.0.7",
 ]
 
 [[package]]
@@ -4589,7 +4589,7 @@ name = "soap_envelope"
 version = "0.1.0"
 dependencies = [
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -4836,7 +4836,7 @@ name = "t_1"
 version = "0.1.0"
 dependencies = [
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -4914,7 +4914,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -5485,7 +5485,7 @@ name = "types"
 version = "0.1.0"
 dependencies = [
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -6210,7 +6210,7 @@ name = "ws_addr"
 version = "0.1.0"
 dependencies = [
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -6284,12 +6284,6 @@ checksum = "2f45bb2c13fec6a6cb4c0f76a7e94839e110a14ec803ec2940777a94c347bc52"
 
 [[package]]
 name = "xml-rs"
-version = "0.8.29"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
-
-[[package]]
-name = "xml-rs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3a56132a0d6ecbe77352edc10232f788fc4ceefefff4cab784a98e0e16b6b51"
@@ -6310,7 +6304,7 @@ name = "xmlmime"
 version = "0.1.0"
 dependencies = [
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -6353,7 +6347,7 @@ dependencies = [
  "roxmltree",
  "similar",
  "syn 3.0.7",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -6367,7 +6361,7 @@ dependencies = [
  "bigdecimal",
  "num-bigint 0.5.1",
  "sad-chrono",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "yaserde",
  "yaserde_derive",
@@ -6381,19 +6375,19 @@ checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
 
 [[package]]
 name = "yaserde"
-version = "0.12.0"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bfa0d2b420fd005aa9b6f99f9584ebd964e6865d7ca787304cc1a3366c39231"
+checksum = "e9f6b774e7afd9d40002e67140a060951a2ddc494e2faef2498ad55f20c66c82"
 dependencies = [
  "log",
- "xml-rs 0.8.29",
+ "xml",
 ]
 
 [[package]]
 name = "yaserde_derive"
-version = "0.12.0"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f785831c0e09e0f1a83f917054fd59c088f6561db5b2a42c1c3e1687329325f"
+checksum = "26caf626d6f9307024285cd9a9c1ba4b3eb29a9b61d3db632e22e676cf784367"
 dependencies = [
  "heck",
  "log",
@@ -6401,8 +6395,7 @@ dependencies = [
  "quote",
  "serde",
  "serde_tokenstream",
- "syn 2.0.119",
- "xml-rs 0.8.29",
+ "syn 3.0.7",
 ]
 
 [[package]]

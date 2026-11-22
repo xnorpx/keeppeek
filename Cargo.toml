@@ -51,6 +51,8 @@ subtle = { version = "2.6.1", default-features = false }
 ureq = { version = "=3.4.2", default-features = false }
 url = { version = "2.5.8", default-features = false, features = ["std"] }
 xml = { version = "1.4.0", default-features = false }
+yaserde = "0.13.2"
+yaserde_derive = "0.13.2"
 
 [patch.crates-io]
 # Turso and oauth2 still request chrono by its original package name.
