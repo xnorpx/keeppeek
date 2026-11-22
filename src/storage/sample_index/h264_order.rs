@@ -13,15 +13,16 @@ use h264_reader::{
     },
 };
 
-pub(super) struct PictureOrder {
+pub(super) struct PictureOrder<'a> {
+    configuration: AvcDecoderConfigurationRecord<'a>,
     context: Context,
     length_size: usize,
     previous_reference: Option<i64>,
     parameter_set: Option<PicParamSetId>,
 }
 
-impl PictureOrder {
-    pub(super) fn new(decoder: &mp4::Mp4VideoDecoderConfig) -> Option<Self> {
+impl<'a> PictureOrder<'a> {
+    pub(super) fn new(decoder: &'a mp4::Mp4VideoDecoderConfig) -> Option<Self> {
         if !decoder.codec.starts_with("avc1.") {
             return None;
         }
@@ -33,6 +34,7 @@ impl PictureOrder {
         }
         Some(Self {
             context: config.create_context().ok()?,
+            configuration: config,
             length_size: usize::from(length),
             previous_reference: None,
             parameter_set: None,
@@ -59,6 +61,22 @@ impl PictureOrder {
             let nal = RefNal::new(&unit[..prefix_len], &[], prefix_len == unit.len());
             let header = nal.header().ok()?;
             let idr = match header.nal_unit_type() {
+                UnitType::SeqParameterSet
+                    if self
+                        .configuration
+                        .sequence_parameter_sets()
+                        .any(|p| p.is_ok_and(|bytes| bytes == unit)) =>
+                {
+                    continue;
+                }
+                UnitType::PicParameterSet
+                    if self
+                        .configuration
+                        .picture_parameter_sets()
+                        .any(|p| p.is_ok_and(|bytes| bytes == unit)) =>
+                {
+                    continue;
+                }
                 UnitType::SliceLayerWithoutPartitioningIdr => true,
                 UnitType::SliceLayerWithoutPartitioningNonIdr => false,
                 UnitType::AccessUnitDelimiter | UnitType::SEI | UnitType::FillerData => continue,
@@ -149,6 +167,23 @@ mod tests {
             // 10 before reference picture 11 even though 11 is decoded first at the same PTS.
             assert_eq!(observed, [0, 6, 2, 4, 10, 8]);
         }
+        let mut counts = PictureOrder::new(&decoder).unwrap();
+        let track = &reader.tracks()[&1];
+        let mut prefixed = Vec::new();
+        for set in [
+            track.sequence_parameter_set().unwrap(),
+            track.picture_parameter_set().unwrap(),
+        ] {
+            prefixed.extend_from_slice(&u32::try_from(set.len()).unwrap().to_be_bytes());
+            prefixed.extend_from_slice(set);
+        }
+        let sync_picture = reader.read_sample(1, 1).unwrap().unwrap();
+        prefixed.extend_from_slice(&sync_picture.bytes);
+        assert_eq!(counts.next(&prefixed, true), Some(0));
+        // An in-band SPS replacement needs its own qualified configuration.
+        prefixed[5] ^= 1;
+        let mut counts = PictureOrder::new(&decoder).unwrap();
+        assert!(counts.next(&prefixed, true).is_none());
         let mut counts = PictureOrder::new(&decoder).unwrap();
         let non_idr = reader.read_sample(1, 2).unwrap().unwrap();
         assert!(counts.next(&non_idr.bytes, false).is_none());
