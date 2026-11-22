@@ -113,12 +113,13 @@ test('User sees profile state but has no profile mutation or activation controls
 	await mockControlPeer(page, {
 		accessRole: 'user',
 		runtimeConfiguration: config,
+		runtimeProfileDegradedCameras: 300,
 		capabilityIds: ['keeppeek.runtime-profiles.v1']
 	});
 	await page.goto('/');
 
 	await expect(
-		page.getByRole('link', { name: 'Active camera profile Base; 0 cameras degraded' })
+		page.getByRole('link', { name: 'Active camera profile Base; 300 cameras degraded' })
 	).toBeVisible();
 	await expect(page.locator('#runtime-profiles')).toHaveCount(0);
 });

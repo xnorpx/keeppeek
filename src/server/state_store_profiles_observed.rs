@@ -15,7 +15,7 @@ pub(in crate::server) fn part_index(key: &str) -> Option<usize> {
     (index < PART_COUNT).then_some(index)
 }
 
-pub(super) fn generation(status: &RuntimeProfileStatus) -> Result<String, Error> {
+pub(in crate::server) fn generation(status: &RuntimeProfileStatus) -> Result<String, Error> {
     if status.cameras.len() > MAX_OBSERVED_CAMERAS {
         return Err(Error::Invalid(Invalid::ValueTooLarge));
     }
@@ -29,7 +29,7 @@ pub(super) fn generation(status: &RuntimeProfileStatus) -> Result<String, Error>
     hex_digest(digest)
 }
 
-pub(super) fn part_entry(
+pub(in crate::server) fn part_entry(
     status: &RuntimeProfileStatus,
     index: usize,
     generation: &str,
@@ -182,21 +182,15 @@ pub(in crate::server) fn entry_for_key(
     }
 }
 
-pub(in crate::server) fn project(
-    state: &ServerState,
-    principal: Option<&ApiPrincipal>,
-    identities: Option<&crate::keeppeek::CameraProfileIds>,
+pub(in crate::server) fn filter_status_rows(
+    visible: Option<&BTreeSet<String>>,
     entry: &mut StoredEntry,
 ) {
-    if principal.is_some_and(|principal| principal.role == AccessRole::Administrator) {
-        return;
-    }
-    let visible = principal
-        .and_then(|principal| visible_profile_camera_ids(state, principal, identities))
-        .unwrap_or_default();
     if let Some(value) = entry.value.fields.get_mut("cameras") {
         if let Some(Kind::StructValue(cameras)) = &mut value.kind {
-            cameras.fields.retain(|id, _| visible.contains(id));
+            cameras
+                .fields
+                .retain(|id, _| visible.is_some_and(|allowed| allowed.contains(id)));
         } else {
             value.kind = Some(Kind::StructValue(Struct::default()));
         }
@@ -254,6 +248,10 @@ pub(in crate::server) fn set_header_count(
                 .map(|visible| ids.intersection(&visible).count())
         }
     });
+    write_header_count(count, entry);
+}
+
+pub(in crate::server) fn write_header_count(count: Option<usize>, entry: &mut StoredEntry) {
     entry.value.fields.insert(
         "degraded_cameras".to_owned(),
         Value {
