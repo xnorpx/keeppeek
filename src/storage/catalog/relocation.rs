@@ -19,7 +19,13 @@ pub struct Move {
 pub(super) enum Request {
     Reserve(Move),
     Next(String),
-    Retire(String, uuid::Uuid),
+    Published {
+        id: String,
+        stage: uuid::Uuid,
+        file_identity: String,
+        bytes: i64,
+        retire: bool,
+    },
 }
 
 pub(super) async fn initialize(db: &turso::Connection) -> Result<()> {
@@ -122,15 +128,29 @@ pub(super) async fn dispatch(db: &turso::Connection, request: Request) -> Result
             );
             Ok(Some(existing))
         }
-        Request::Retire(id, stage) => {
+        Request::Published {
+            id,
+            stage,
+            file_identity,
+            bytes,
+            retire,
+        } => {
+            let filter = "FROM legacy_recording_relocations WHERE id=?1 AND stage=?2
+                     AND EXISTS(SELECT 1 FROM recording_files f WHERE f.id=legacy_recording_relocations.id
+                         AND f.path=legacy_recording_relocations.destination AND f.file_identity=?3 AND f.file_bytes=?4)";
+            let parameters = turso::params![id, stage.to_string(), file_identity, bytes];
+            let matched = if retire {
+                db.execute(format!("DELETE {filter}"), parameters).await? == 1
+            } else {
+                db.query(format!("SELECT 1 {filter}"), parameters)
+                    .await?
+                    .next()
+                    .await?
+                    .is_some()
+            };
             ensure!(
-                db.execute(
-                    "DELETE FROM legacy_recording_relocations WHERE id=?1 AND stage=?2",
-                    (id, stage.to_string())
-                )
-                .await?
-                    == 1,
-                "recording relocation ownership changed"
+                matched,
+                "published recording no longer matches the durable catalog"
             );
             Ok(None)
         }
@@ -156,7 +176,28 @@ impl RecordingCatalogHandle {
         self.relocation(Request::Next(after.to_owned()))
     }
     pub(crate) fn retire_relocation(&self, job: &Move) -> Result<()> {
-        self.relocation(Request::Retire(job.id.clone(), job.staged))?;
+        self.match_published_relocation(job, true)
+    }
+
+    pub(crate) fn verify_published_relocation(&self, job: &Move) -> Result<()> {
+        self.match_published_relocation(job, false)
+    }
+
+    fn match_published_relocation(&self, job: &Move, retire: bool) -> Result<()> {
+        let metadata = std::fs::symlink_metadata(&job.destination)?;
+        ensure!(
+            metadata.is_file(),
+            "published recording is not a regular file"
+        );
+        let file_identity = super::recording_file_identity(&job.destination, &metadata)
+            .ok_or_else(|| anyhow::anyhow!("published recording identity unavailable"))?;
+        self.relocation(Request::Published {
+            retire,
+            id: job.id.clone(),
+            stage: job.staged,
+            file_identity,
+            bytes: i64::try_from(metadata.len())?,
+        })?;
         Ok(())
     }
 }

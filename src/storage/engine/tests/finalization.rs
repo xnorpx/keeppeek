@@ -244,14 +244,15 @@ fn relocation_journal_fences_retention_and_recovers_owned_stages_after_restart()
             destination.with_file_name(format!(".keeppeek-{}.partial", uuid::Uuid::new_v4()));
         std::fs::write(&partial, b"interrupted copy").unwrap();
         std::fs::write(&other, b"separately owned").unwrap();
+        let original_bytes = std::fs::read(&source).unwrap();
         if published {
             std::fs::copy(&source, &destination).unwrap();
             handle
                 .update_recording_path(&id, &destination, true)
                 .unwrap();
-        } else {
-            std::fs::remove_file(&source).unwrap();
         }
+        let unavailable = root.join("detached-capture");
+        std::fs::rename(&source, &unavailable).unwrap();
         drop(handle);
         catalog.shutdown();
         let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
@@ -277,6 +278,42 @@ fn relocation_journal_fences_retention_and_recovers_owned_stages_after_restart()
                 "retention was able to select a partially relocated object"
             );
         });
+        // Missing mounts and a same-length foreign destination must retain the durable
+        // reservation and remaining staging bytes until the original inode is available.
+        let displaced = root.join("detached-archive");
+        if published {
+            std::fs::rename(&destination, &displaced).unwrap();
+        }
+        let assert_deferred = || {
+            let mut recovering = WriterWorker::new(
+                config.clone(),
+                RecordingDemand::new(Duration::ZERO),
+                Some(handle.clone()),
+            );
+            recovering.retry_relocations(Instant::now());
+            assert!(
+                recovering
+                    .health
+                    .snapshot()
+                    .streams
+                    .iter()
+                    .any(|entry| entry.last_error.is_some())
+            );
+            assert!(handle.next_relocation("").unwrap().is_some());
+            assert_eq!(std::fs::read(&partial).unwrap(), b"interrupted copy");
+        };
+        assert_deferred();
+        if published {
+            std::fs::write(&destination, vec![0x55; original_bytes.len()]).unwrap();
+            assert_deferred();
+            assert_eq!(
+                std::fs::read(&destination).unwrap(),
+                vec![0x55; original_bytes.len()]
+            );
+            std::fs::remove_file(&destination).unwrap();
+            std::fs::rename(&displaced, &destination).unwrap();
+        }
+        std::fs::rename(&unavailable, &source).unwrap();
         let playback = published.then(|| {
             handle
                 .leased_media_fragments_in_range("front/main", i64::MIN, i64::MAX)
@@ -332,7 +369,7 @@ fn relocation_journal_fences_retention_and_recovers_owned_stages_after_restart()
         assert!(!partial.exists());
         assert_eq!(std::fs::read(&other).unwrap(), b"separately owned");
         assert!(!source.exists());
-        assert_eq!(destination.exists(), published);
+        assert_eq!(std::fs::read(&destination).unwrap(), original_bytes);
         drop(playback);
         drop(worker);
         drop(handle);

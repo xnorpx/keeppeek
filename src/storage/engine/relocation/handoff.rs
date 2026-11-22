@@ -124,17 +124,22 @@ pub(super) fn recover_job(
     validate_reserved_paths(job)?;
     let staged = job.destination.with_file_name(staged_name(job.staged));
     // The UUID was reserved by the catalog before even one media byte could be written.
-    remove_stage(&staged)?;
     if !job.source.try_exists()? {
-        if !job.destination_published && job.destination.try_exists()? {
+        if !job.destination_published || !job.destination.try_exists()? {
             return Err(io::Error::other(
                 "source disappeared before recording handoff",
             ));
         }
+        // Keep the only remaining staging bytes through source/target outages or replacement.
+        catalog
+            .verify_published_relocation(job)
+            .map_err(io::Error::other)?;
+        remove_stage(&staged)?;
         sync_parent(&job.source)?;
         return catalog.retire_relocation(job).map_err(io::Error::other);
     }
     verify_source(job)?;
+    remove_stage(&staged)?;
     if same_entry(&job.source, &job.destination)? {
         if !job.destination_published {
             catalog
@@ -146,6 +151,9 @@ pub(super) fn recover_job(
     if job.destination_published && job.destination.try_exists()? {
         // All source readers left before the catalog switch. New readers own the
         // destination and can continue through removal of the old directory entry.
+        catalog
+            .verify_published_relocation(job)
+            .map_err(io::Error::other)?;
         verify_existing(&job.source, &job.destination, stop)?;
     } else {
         if catalog
