@@ -1153,6 +1153,65 @@ fn download_persists_managed_history_and_cannot_recreate_missing_history() {
     std::fs::remove_dir_all(metadata_dir).unwrap();
 }
 
+fn archive_deletion_response(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    action: proto::archive_command::Action,
+) -> Result<proto::ArchiveDeletionPreview, ControlCommandError> {
+    let command = proto::ArchiveCommand {
+        action: Some(action),
+    };
+    let proto::ok::Result::ArchiveResult(result) =
+        super::storage_archive::dispatch(state, principal, command)?
+    else {
+        panic!("expected archive result")
+    };
+    let Some(proto::archive_result::Result::DeletionPreview(preview)) = result.result else {
+        panic!("expected archive deletion preview")
+    };
+    Ok(preview)
+}
+
+#[test]
+fn confirmed_archive_receipt_replays_without_the_worker_but_new_confirmation_is_refused() {
+    use proto::archive_command::Action;
+    let (root, catalog, manager, mut state) = completed_named_export();
+    let (worker, job) = archive_completed_export(&root, &catalog, &state);
+    state.storage_config.archive_runtime = Some(worker.handle());
+    let administrator = ApiPrincipal::local("127.0.0.1".parse().unwrap());
+    let preview = Action::PreviewDeletion(proto::PreviewArchiveDeletion {
+        selection: Some(proto::preview_archive_deletion::Selection::JobId(
+            job.clone(),
+        )),
+    });
+    let confirm = |plan: &proto::ArchiveDeletionPreview| {
+        assert!(!plan.confirmation_nonce.is_empty());
+        Action::ConfirmDeletion(proto::ConfirmArchiveDeletion {
+            plan_id: plan.plan_id.clone(),
+            expected_revision: plan.revision.clone(),
+            confirmation_nonce: plan.confirmation_nonce.clone(),
+        })
+    };
+    let first = archive_deletion_response(&state, &administrator, preview.clone()).unwrap();
+    let second = archive_deletion_response(&state, &administrator, preview).unwrap();
+    let receipt = archive_deletion_response(&state, &administrator, confirm(&first)).unwrap();
+    assert!(receipt.confirmed);
+    state.storage_config.archive_runtime = None;
+    worker.shutdown().unwrap();
+    let restored = archive_deletion_response(&state, &administrator, confirm(&first)).unwrap();
+    assert!(restored.confirmed && restored.confirmation_nonce.is_empty());
+    assert_eq!(restored.plan_id, receipt.plan_id);
+    assert_eq!(restored.revision, receipt.revision);
+    assert_eq!(restored.items[0].job_id, job);
+    let refused = archive_deletion_response(&state, &administrator, confirm(&second)).unwrap_err();
+    assert_eq!(refused.code, proto::ErrorCode::Rejected);
+    assert_eq!(refused._http_status, 503);
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn archived_export_preserves_sharing_metadata_and_fences_typed_create_and_retry() {
     let (root, catalog, manager, mut state, request) = setup(16 * 1024 * 1024);
