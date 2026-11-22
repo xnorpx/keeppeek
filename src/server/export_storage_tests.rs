@@ -211,6 +211,25 @@ pub(super) fn setup(
     (root, catalog, manager, state, request)
 }
 
+pub(super) fn pin_metadata(state: &mut ServerState, manager: &Manager) {
+    let primary = &manager.configuration().volumes[0];
+    let root = crate::storage::volumes::root::Root::open(&primary.root).unwrap();
+    let identity = root.identity().clone();
+    let handoff = Uuid::new_v4();
+    let binding = crate::config::MetadataBinding {
+        volume_id: primary.id.clone(),
+        catalog_file: format!("catalog-{handoff}.db"),
+        history_file: format!("exports-{handoff}.json"),
+        catalog_id: Uuid::new_v4().to_string(),
+        generation: 1,
+        filesystem: identity.filesystem,
+        root_identity: identity.directory,
+    };
+    root.initialize_history(&binding.history_file).unwrap();
+    state.storage_config.recording_catalog_path = primary.root.join(&binding.catalog_file);
+    state.storage_config.metadata = Some(binding);
+}
+
 pub(super) fn completed(state: &ServerState) -> proto::ExportJob {
     completed_for(state, "owner")
 }
