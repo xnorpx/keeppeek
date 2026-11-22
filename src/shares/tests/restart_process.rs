@@ -9,19 +9,19 @@ use std::{
 const TEST: &str = "shares::tests::restart_process::restart_preserves_consumption_and_revocation_but_invalidates_sessions";
 
 #[derive(Deserialize, Serialize)]
-struct Client {
-    id: Uuid,
-    token: String,
-    session: String,
+struct RestartFixture {
+    grant_id: Uuid,
+    bearer_token: String,
+    session_handle: String,
     unix_ms: i64,
     origin: String,
     policy_revision: u64,
 }
 
 fn verify_after_restart(path: &Path, phase: &str) {
-    // Only the client knows these values. Carry them through stdin, outside process
-    // arguments, the recorder database and captured test output.
-    let client: Client = serde_json::from_reader(io::stdin().lock()).unwrap();
+    // The bearer token and session handle are client secrets. The grant ID, clock and
+    // policy are fixture context. Send the complete fixture through the stdin pipe.
+    let client: RestartFixture = serde_json::from_reader(io::stdin().lock()).unwrap();
     let now = Clock {
         unix_ms: client.unix_ms,
         monotonic: Instant::now(),
@@ -31,18 +31,24 @@ fn verify_after_restart(path: &Path, phase: &str) {
         policy_revision: client.policy_revision,
     };
     let mut store = Store::open(path, now.unix_ms).unwrap();
-    let grant = store.get(client.id, now).unwrap().unwrap();
+    let grant = store.get(client.grant_id, now).unwrap().unwrap();
     assert_eq!(grant.views, 1);
     assert_eq!(
         store
-            .inspect_session(&client.session, None, &context, now)
+            .inspect_session(&client.session_handle, None, &context, now)
             .unwrap_err(),
         Error::Denied
     );
     for mode in [Mode::Stream, Mode::Download] {
         assert_eq!(
             store
-                .begin_delivery(&client.session, &context, &grant.intent.binding, mode, now)
+                .begin_delivery(
+                    &client.session_handle,
+                    &context,
+                    &grant.intent.binding,
+                    mode,
+                    now
+                )
                 .unwrap_err(),
             Error::Denied
         );
@@ -51,7 +57,7 @@ fn verify_after_restart(path: &Path, phase: &str) {
         "after-use" => {
             assert!(grant.revoked_at_ms.is_none());
             let new = store
-                .exchange(&client.token, &context, now)
+                .exchange(&client.bearer_token, &context, now)
                 .unwrap()
                 .handle
                 .into_string();
@@ -72,7 +78,9 @@ fn verify_after_restart(path: &Path, phase: &str) {
         "after-revocation" => {
             assert!(grant.revoked_at_ms.is_some());
             assert_eq!(
-                store.exchange(&client.token, &context, now).unwrap_err(),
+                store
+                    .exchange(&client.bearer_token, &context, now)
+                    .unwrap_err(),
                 Error::Denied
             );
         }
@@ -104,10 +112,10 @@ fn restart_preserves_consumption_and_revocation_but_invalidates_sessions() {
         ..
     } = fixture;
     drop(store);
-    let client = Client {
-        id: grant.id,
-        token,
-        session: handle,
+    let client = RestartFixture {
+        grant_id: grant.id,
+        bearer_token: token,
+        session_handle: handle,
         unix_ms: now.unix_ms,
         origin: context.origin,
         policy_revision: context.policy_revision,
