@@ -1,5 +1,13 @@
-import { expect, test, type Locator, type Page, type Route, type TestInfo } from '@playwright/test';
-import { writeFile } from 'node:fs/promises';
+import {
+	expect,
+	test,
+	type BrowserContext,
+	type Locator,
+	type Page,
+	type TestInfo
+} from '@playwright/test';
+import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
 	cardAdminKey,
 	cardSourceIds,
@@ -17,10 +25,9 @@ const archiveViewports = [
 	{ name: 'mobile', width: 390, height: 844 }
 ];
 
-function isolatedBackendRoute(origin: string, backend: string) {
-	return async (route: Route) => {
-		const url = new URL(route.request().url());
-		if (
+async function routeIsolatedBackend(context: BrowserContext, origin: string, backend: string) {
+	await context.route(
+		(url) =>
 			url.origin === origin &&
 			(url.pathname === '/create' ||
 				url.pathname === '/delete' ||
@@ -28,11 +35,12 @@ function isolatedBackendRoute(origin: string, backend: string) {
 				url.pathname.startsWith('/auth/') ||
 				url.pathname.startsWith('/config/') ||
 				url.pathname === '/metrics' ||
-				url.pathname === '/logs')
-		) {
-			await route.continue({ url: `${backend}${url.pathname}${url.search}` });
-		} else await route.continue();
-	};
+				url.pathname === '/logs'),
+		(route) => {
+			const url = new URL(route.request().url());
+			return route.continue({ url: backend + url.pathname + url.search });
+		}
+	);
 }
 
 async function selectSeededRecording(archive: Locator, objectId: string) {
@@ -77,7 +85,7 @@ async function refreshUntil(archive: Locator, job: Locator, text: string) {
 	await expect(async () => {
 		await archive.getByRole('button', { name: 'Refresh archive jobs' }).click();
 		latest = await job.innerText();
-		expect(latest.includes(text) || latest.includes('· failed')).toBe(true);
+		expect(latest.includes(text) || latest.includes('Ã‚Â· failed')).toBe(true);
 	}).toPass({ timeout: 30_000, intervals: [250, 500, 1000] });
 	expect(latest).toContain(text);
 }
@@ -131,28 +139,36 @@ async function captureSetupThemes(info: TestInfo, page: Page, archive: Locator) 
 	}
 }
 
+async function probeDestination(archive: Locator, online: boolean) {
+	const message = online
+		? 'Archive destination is available.'
+		: 'Archive destination unavailable. Recording continues';
+	await archive.getByRole('button', { name: 'Test archive destination' }).click();
+	await expect(async () => {
+		await archive.getByRole('button', { name: 'Refresh archive jobs' }).click();
+		await expect(archive).toContainText(message, { timeout: 1000 });
+	}).toPass({ timeout: 20_000 });
+}
+
 async function configureArchive(
 	page: Page,
 	archive: Locator,
 	fixture: Awaited<ReturnType<typeof startHomeAssistantServer>>,
-	info: TestInfo
+	info?: TestInfo
 ) {
 	await page.goto('/settings#storage');
-	await expect(archive).toContainText('Archive runtime unavailable.');
+	// The first navigation also compiles the settings route on the isolated Vite server.
+	await expect(archive).toContainText('Archive runtime unavailable.', { timeout: 45_000 });
 	await archive.getByRole('button', { name: 'Edit archive settings' }).click();
 	await archive.getByLabel('Archive folder', { exact: true }).fill(fixture.archiveRoot);
 	await archive.getByLabel('Enable local archive', { exact: true }).check();
-	await captureSetupThemes(info, page, archive);
+	if (info) await captureSetupThemes(info, page, archive);
 	await archive.getByRole('button', { name: 'Save archive settings', exact: true }).click();
 	await expect(archive).toContainText('Archive settings saved. Restart to apply them.');
 	await fixture.restart();
-	await reportBackendProcess(info, fixture);
+	if (info) await reportBackendProcess(info, fixture);
 	await page.reload();
-	await archive.getByRole('button', { name: 'Test archive destination' }).click();
-	await expect(async () => {
-		await archive.getByRole('button', { name: 'Refresh archive jobs' }).click();
-		await expect(archive).toContainText('Archive destination is available.', { timeout: 1000 });
-	}).toPass({ timeout: 20_000 });
+	await probeDestination(archive, true);
 }
 
 async function reportBackendProcess(
@@ -224,7 +240,7 @@ async function copyAndEvict(
 	const startedAt = performance.now();
 	await archive.getByRole('button', { name: 'Queue archive copy' }).click();
 	const job = archive.getByRole('article').first();
-	await refreshUntil(archive, job, '· ready');
+	await refreshUntil(archive, job, 'Ã‚Â· ready');
 	evidence.transfers.push({
 		operation: 'copy',
 		elapsed_ms: performance.now() - startedAt,
@@ -303,7 +319,7 @@ async function restorePrimary(
 		evidence: await expectContinuity(live, fixture.url, baseline)
 	});
 	await fixture.restart();
-	await reportBackendProcess(info, fixture);
+	if (info) await reportBackendProcess(info, fixture);
 	await page.reload();
 	await expect(job).toContainText('Primary copy retained.');
 }
@@ -354,7 +370,7 @@ test('local archive survives restart and plays evicted media before restoring it
 		trustedLocal: true,
 		archiveFixture: true
 	});
-	await context.route('**/*', isolatedBackendRoute(new URL(baseURL).origin, fixture.url));
+	await routeIsolatedBackend(context, new URL(baseURL).origin, fixture.url);
 	await installArchiveVideoProbe(page);
 	const live = await context.newPage();
 	const evidence: ArchiveEvidence = { timings: [], transfers: [], continuity: [] };
@@ -387,6 +403,73 @@ test('local archive survives restart and plays evicted media before restoring it
 	} finally {
 		try {
 			await attachArchiveEvidence(info, page, fixture, evidence, context.browser()?.version());
+		} finally {
+			await live.close();
+			await fixture.close();
+		}
+	}
+});
+
+test('live, recording and primary timeline playback continue when the bound archive disappears or is replaced', async ({
+	page,
+	context,
+	baseURL
+}, info) => {
+	test.setTimeout(180_000);
+	if (!baseURL) throw new Error('Archive outage coverage requires the configured UI origin.');
+	const fixture = await startHomeAssistantServer(new URL(baseURL).origin, {
+		trustedLocal: true,
+		archiveFixture: true
+	});
+	const root = fixture.archiveRoot;
+	const live = await context.newPage();
+	const evidence = [];
+	try {
+		await routeIsolatedBackend(context, new URL(baseURL).origin, fixture.url);
+		await installArchiveVideoProbe(page);
+		const archive = page.getByRole('region', { name: 'Local archive', exact: true });
+		await configureArchive(page, archive, fixture);
+		await live.goto('/');
+		const pid = fixture.backendProcessId();
+		for (const mode of ['missing', 'replaced'] as const) {
+			await page.goto('/settings#storage');
+			const before = await continuitySnapshot(live, fixture.url);
+			const detached = root + '.detached';
+			await rename(root, detached);
+			try {
+				if (mode === 'replaced') {
+					await mkdir(root);
+					await writeFile(join(root, 'unrelated.txt'), 'keep this file');
+				}
+				await probeDestination(archive, false);
+				const playback = await measureArchivePlayback(page, fixture.seededAtMs + 5000, 'local');
+				const continuity = await expectContinuity(live, fixture.url, before);
+				expect(fixture.backendProcessId()).toBe(pid);
+				if (mode === 'missing') {
+					await expect(stat(root)).rejects.toMatchObject({ code: 'ENOENT' });
+				} else {
+					expect(await readdir(root)).toEqual(['unrelated.txt']);
+					expect(await readFile(join(root, 'unrelated.txt'), 'utf8')).toBe('keep this file');
+				}
+				evidence.push({ mode, playback, continuity });
+			} finally {
+				if (mode === 'replaced') await rename(root, root + '.replacement');
+				await rename(detached, root);
+			}
+			await page.goto('/settings#storage');
+			await probeDestination(archive, true);
+		}
+		expect(fixture.backendProcessId()).toBe(pid);
+		await info.attach('isolated-target-outages', {
+			contentType: 'application/json',
+			body: JSON.stringify(evidence)
+		});
+	} finally {
+		try {
+			await info.attach('isolated-archive-outage-server.log', {
+				contentType: 'text/plain',
+				body: fixture.logs()
+			});
 		} finally {
 			await live.close();
 			await fixture.close();
