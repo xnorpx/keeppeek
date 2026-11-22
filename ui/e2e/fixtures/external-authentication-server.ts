@@ -6,7 +6,13 @@ import { StringDecoder } from 'node:string_decoder';
 
 export type AuthenticationFixtureCommand =
 	'outage' | 'healthy' | 'user' | 'administrator' | 'revoke' | 'proxy' | 'oidc';
-type Manifest = { backend: string; issuer: string; certificate_path: string; key_path: string };
+type Manifest = {
+	backend: string;
+	issuer: string;
+	certificate_path: string;
+	key_path: string;
+	guest_recording_start_ms: number | null;
+};
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
 
 class ProtocolChild {
@@ -186,7 +192,7 @@ function startTlsProxy(port: number, endpoints: Manifest): ProtocolChild {
 	);
 }
 
-function startRustFixture(origin: string): ProtocolChild {
+function startRustFixture(origin: string, guestRecording: boolean): ProtocolChild {
 	// A precompiled binary keeps build-lock waits outside the browser runtime deadline.
 	const executable = process.env.KEEPPEEK_AUTH_E2E_BINARY;
 	if (!executable)
@@ -194,11 +200,12 @@ function startRustFixture(origin: string): ProtocolChild {
 	const testArgs = ['issue123_browser_fixture', '--ignored', '--nocapture', '--test-threads=1'];
 	return new ProtocolChild(executable, testArgs, {
 		...process.env,
-		KEEPPEEK_AUTH_E2E_ORIGIN: origin
+		KEEPPEEK_AUTH_E2E_ORIGIN: origin,
+		KEEPPEEK_GUEST_E2E_RECORDING: guestRecording ? '1' : undefined
 	});
 }
 
-export async function startAuthenticationFixture() {
+export async function startAuthenticationFixture(guestRecording = false) {
 	const reservation = createServer();
 	reservation.listen(0, '127.0.0.1');
 	await once(reservation, 'listening');
@@ -213,7 +220,7 @@ export async function startAuthenticationFixture() {
 			reservation.close((error) => (error ? reject(error) : done()))
 		);
 	};
-	const rust = startRustFixture(origin);
+	const rust = startRustFixture(origin, guestRecording);
 	let proxy: ProtocolChild | null = null;
 	const close = async () => {
 		await release();
@@ -231,6 +238,7 @@ export async function startAuthenticationFixture() {
 		return {
 			origin,
 			issuer: endpoints.issuer,
+			guestRecordingStartMs: endpoints.guest_recording_start_ms,
 			close,
 			async audit() {
 				const observed = await proxy!.audit('KEEPPEEK_AUTH_PROXY_');

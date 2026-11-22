@@ -143,6 +143,7 @@ pub(super) enum Request {
         stream: String,
         start: i64,
         end: i64,
+        maximum: Option<u32>,
     },
     Object {
         source: String,
@@ -238,9 +239,33 @@ impl RecordingCatalogHandle {
             stream: stream.to_owned(),
             start,
             end,
+            maximum: None,
         })? {
             Reply::Fragments(fragments, lease) => Ok((fragments, lease)),
             _ => anyhow::bail!("unexpected recording reader reply"),
+        }
+    }
+
+    pub(crate) fn leased_media_fragments_in_range_bounded(
+        &self,
+        stream: &str,
+        start: i64,
+        end: i64,
+        maximum: u32,
+    ) -> anyhow::Result<(Vec<CatalogMediaFragment>, LeaseSet)> {
+        anyhow::ensure!(start < end, "recording range must be nonempty");
+        anyhow::ensure!(
+            (1..=32).contains(&maximum),
+            "invalid bounded fragment limit"
+        );
+        match self.read_lease(Request::Fragments {
+            stream: stream.to_owned(),
+            start,
+            end,
+            maximum: Some(maximum),
+        })? {
+            Reply::Fragments(fragments, lease) => Ok((fragments, lease)),
+            _ => anyhow::bail!("unexpected bounded recording reader reply"),
         }
     }
 
@@ -345,9 +370,12 @@ pub(super) async fn execute(
             attachment,
             revision,
         } => image(connection, registry, &event, &attachment, revision).await,
-        Request::Fragments { stream, start, end } => {
-            fragments_reply(connection, registry, &stream, start, end).await
-        }
+        Request::Fragments {
+            stream,
+            start,
+            end,
+            maximum,
+        } => fragments_reply(connection, registry, &stream, start, end, maximum).await,
         Request::Object {
             source,
             stream,
@@ -406,8 +434,10 @@ async fn fragments_reply(
     stream: &str,
     start: i64,
     end: i64,
+    maximum: Option<u32>,
 ) -> anyhow::Result<Reply> {
-    let fragments = super::media_fragments_in_range(connection, stream, start, end).await?;
+    let fragments =
+        super::media_fragments_in_range_with_limit(connection, stream, start, end, maximum).await?;
     let owned = owned_locations(connection, fragment_keys(&fragments)?).await?;
     anyhow::ensure!(
         fragments
@@ -948,6 +978,7 @@ mod tests {
                     stream: "camera/main".into(),
                     start: 1000,
                     end: 3000,
+                    maximum: None,
                 },
                 reply,
             })

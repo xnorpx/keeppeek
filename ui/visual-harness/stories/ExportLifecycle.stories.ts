@@ -21,6 +21,7 @@ const meta = {
 			reference: 'references/29-export-job-lifecycle-states.png',
 			referenceSha256: 'dde0bb83ff0ddb16a499bd5a88feb1af998c4a6f24838292e1dfe6b379a480e1',
 			exceptions: [
+				'Ready identifies a missing historical audio correction snapshot.',
 				'Partial does not claim a reconnect cause because ExportJob exposes missing ranges, not a cause.',
 				'Failed does not prescribe 200 MB because ExportJob exposes the server error, not required free space.'
 			]

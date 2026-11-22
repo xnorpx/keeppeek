@@ -230,6 +230,7 @@ pub fn run(
     );
     storage_engine.set_privacy_registry(server_state.privacy_registry());
     server_state.open_state_store();
+    server_state.open_guest_store();
     let backup_manager = BackupManager::open_with_config_update(
         config_path.to_path_buf(),
         server_state.configuration_update_lock(),

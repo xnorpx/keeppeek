@@ -1,7 +1,10 @@
 pub mod events;
 mod hikvision;
 mod network;
+mod recorded_audio;
 pub mod reolink;
+
+pub use recorded_audio::{MAX_RECORDED_AUDIO_OFFSET_MS, RecordedAudioSettings};
 
 use crate::camera_catalog::common_onvif_probe_ports;
 use ipnet::Ipv4Net;
@@ -249,6 +252,8 @@ pub struct CameraConfig {
     pub event_pre_recording_duration_secs: u64,
     #[serde(default)]
     pub event_recording_stream: EventRecordingStream,
+    #[serde(default, skip_serializing_if = "RecordedAudioSettings::is_default")]
+    pub recorded_audio: RecordedAudioSettings,
 }
 
 impl fmt::Debug for CameraConfig {
@@ -278,6 +283,7 @@ impl fmt::Debug for CameraConfig {
                 &self.event_pre_recording_duration_secs,
             )
             .field("event_recording_stream", &self.event_recording_stream)
+            .field("recorded_audio", &self.recorded_audio)
             .field("recording_mode", &self.recording_mode)
             .field(
                 "event_recording_duration_secs",
@@ -1917,6 +1923,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
 
         let camera = configured_camera(&config);
@@ -1957,6 +1964,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config])]);
 
@@ -1996,6 +2004,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config])]);
 
@@ -2036,6 +2045,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
         let mut camera = Camera {
             config,
@@ -2107,6 +2117,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
         let mut camera = Camera {
             config,

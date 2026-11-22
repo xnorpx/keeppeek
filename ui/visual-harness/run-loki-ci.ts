@@ -47,6 +47,10 @@ async function runLoki(configuration: 'desktop' | 'mobile'): Promise<number> {
 			`http://host.docker.internal:${server.port}`,
 			'--configurationFilter',
 			`^chrome\\.${configuration}$`,
+			'--output',
+			`.loki/current/${configuration}`,
+			'--difference',
+			`.loki/difference/${configuration}`,
 			'--requireReference=false',
 			'--verboseRenderer'
 		],

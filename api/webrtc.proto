@@ -51,6 +51,7 @@ message Request {
     TalkbackCommand talkback_command = 28;
     StorageVolumeCommand storage_volume_command = 29;
     ArchiveCommand archive_command = 30;
+    ShareCommand share_command = 31;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -414,6 +415,41 @@ message UpdateCameraConfiguration {
   string expected_configuration_revision = 16;
   optional uint32 event_pre_recording_duration_secs = 17;
   optional EventRecordingStream event_recording_stream = 18;
+  // Absence preserves the saved settings. An empty message restores inheritance.
+  RecordedAudioSettings recorded_audio = 19;
+}
+
+// Values are -5000..5000 milliseconds. Positive offsets delay recorded audio.
+// Unset stream values inherit the camera default, which resolves to zero when unset.
+message RecordedAudioSettings {
+  optional sint32 default_offset_ms = 1;
+  optional sint32 main_offset_ms = 2;
+  optional sint32 sub_offset_ms = 3;
+}
+
+// A preview affects only its stored-media cursor and never changes saved settings.
+message RecordedAudioPreview {
+  oneof selection {
+    // This value must be true.
+    bool use_configured = 1;
+    sint32 offset_ms = 2;
+  }
+}
+
+message RecordedAudioTiming {
+  sint32 configured_offset_ms = 1;
+  sint32 applied_offset_ms = 2;
+  // A fingerprint of the captured source ID and timing settings, not the settings write revision.
+  string configuration_revision = 3;
+  bool preview = 4;
+  uint32 mapping_version = 5;
+  // These values describe the uncorrected normalized container period, not RTP or lip sync.
+  optional sint64 first_video_pts_us = 6;
+  optional sint64 first_audio_pts_us = 7;
+  optional sint64 stored_skew_us = 8;
+  // Absence means that the media has not been inspected.
+  optional bool audio_present = 9;
+  optional uint32 clipped_audio_samples = 10;
 }
 
 message ConfigurationCommand {
@@ -1181,6 +1217,8 @@ message ExportJob {
   bool retryable = 16;
   bool burn_in_timestamp = 17;
   optional EventExportSeed event_seed = 18;
+  // The server captures configured timing once. Retry preserves the original snapshot.
+  RecordedAudioTiming recorded_audio = 19;
 }
 
 message ExportMissingRange {
@@ -2037,6 +2075,8 @@ message OpenStoredMedia {
   DataChannelKind media_channel = 9;
   repeated DataPayloadRoute data_payload_routes = 10;
   google.protobuf.Duration max_buffer_duration = 11;
+  // Absence selects the configured offset.
+  RecordedAudioPreview recorded_audio_preview = 12;
 }
 
 message SeekStoredMedia {
@@ -2049,6 +2089,8 @@ message SetStoredMediaPlayback {
   optional bool playing = 2;
   optional double playback_rate = 3;
   optional StoredMediaMode mode = 4;
+  // Absence preserves the current preview selection.
+  RecordedAudioPreview recorded_audio_preview = 5;
 }
 
 message CloseStoredMedia {
@@ -2078,6 +2120,7 @@ message StoredMediaState {
   double playback_rate = 9;
   StoredMediaDelivery delivery = 10;
   bool archive = 11;
+  RecordedAudioTiming recorded_audio = 12;
 }
 
 enum StoredMediaStatus {
@@ -2951,6 +2994,7 @@ message Ok {
     ExternalAuthenticationResult external_authentication_result = 42;
     StorageVolumeResult storage_volume_result = 43;
     ArchiveResult archive_result = 44;
+    ShareResult share_result = 45;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -3112,6 +3156,7 @@ message CameraSettings {
   uint32 event_recording_duration_secs = 18;
   uint32 event_pre_recording_duration_secs = 19;
   EventRecordingStream event_recording_stream = 20;
+  RecordedAudioSettings recorded_audio = 21;
 }
 
 message RuntimeConfigurationResult {
@@ -4284,5 +4329,144 @@ message ArchiveResult {
     ArchiveStatus status = 1;
     ArchiveJob job = 2;
     ArchiveJobList jobs = 3;
+  }
+}
+
+message ShareCommand {
+  oneof action {
+    GetSharePolicy get_policy = 1;
+    ConfigureSharePolicy configure_policy = 2;
+    PreviewShareExport preview_export = 3;
+    CreateShareGrant create = 4;
+    ListShareGrants list = 5;
+    RevokeShareGrant revoke = 6;
+    RevokeShareEvidence revoke_evidence = 7;
+  }
+}
+
+message SharePolicySettings {
+  bool enabled = 1;
+  optional string public_origin = 2;
+}
+
+message SharePolicy {
+  SharePolicySettings settings = 1;
+  string revision = 2;
+  bool available = 3;
+  optional string unavailable_reason = 4;
+}
+
+message GetSharePolicy {}
+
+message ConfigureSharePolicy {
+  SharePolicySettings settings = 1;
+  string expected_revision = 2;
+}
+
+message PreviewShareExport {
+  string export_job_id = 1;
+}
+
+message ShareEvidence {
+  string export_job_id = 1;
+  string artifact_id = 2;
+  string sha256 = 3;
+  string source_id = 4;
+  string source_identity = 5;
+  string camera_name = 6;
+  int64 start_ms = 7;
+  int64 end_ms = 8;
+  uint64 bytes = 9;
+  int64 available_until_ms = 10;
+  bool has_gaps = 11;
+}
+
+message CreateShareGrant {
+  string request_id = 1;
+  string export_job_id = 2;
+  string artifact_id = 3;
+  string expected_sha256 = 4;
+  int64 expires_at_ms = 5;
+  string display_name = 6;
+  string note = 7;
+  bool allow_stream = 8;
+  bool allow_download = 9;
+  optional uint32 max_views = 10;
+  optional uint32 max_downloads = 11;
+}
+
+message ListShareGrants {
+  uint32 page_size = 1;
+  optional string after_grant_id = 2;
+  bool all_creators = 3;
+}
+
+message RevokeShareGrant {
+  string grant_id = 1;
+  uint64 expected_revision = 2;
+  string reason = 3;
+}
+
+message RevokeShareEvidence {
+  oneof evidence {
+    string artifact_id = 1;
+    string source_identity = 2;
+  }
+  string reason = 3;
+}
+
+enum ShareGrantStatus {
+  SHARE_GRANT_STATUS_UNSPECIFIED = 0;
+  SHARE_GRANT_STATUS_ACTIVE = 1;
+  SHARE_GRANT_STATUS_EXPIRED = 2;
+  SHARE_GRANT_STATUS_REVOKED = 3;
+  SHARE_GRANT_STATUS_UNAVAILABLE = 4;
+  SHARE_GRANT_STATUS_LIMIT_REACHED = 5;
+}
+
+message ShareGrant {
+  string grant_id = 1;
+  uint64 revision = 2;
+  string creator_id = 3;
+  string display_name = 4;
+  string note = 5;
+  int64 created_at_ms = 6;
+  int64 expires_at_ms = 7;
+  optional int64 revoked_at_ms = 8;
+  optional string revoke_reason = 9;
+  ShareGrantStatus status = 10;
+  bool allow_stream = 11;
+  bool allow_download = 12;
+  optional uint32 max_views = 13;
+  optional uint32 max_downloads = 14;
+  uint32 views = 15;
+  uint32 downloads = 16;
+  optional int64 last_access_at_ms = 17;
+  ShareEvidence evidence = 18;
+}
+
+message IssuedShareGrant {
+  ShareGrant grant = 1;
+  // This bearer URL appears only in the successful creation response.
+  string url = 2;
+}
+
+message ShareGrantList {
+  repeated ShareGrant grants = 1;
+  optional string next_after_grant_id = 2;
+}
+
+message RevokedShareEvidence {
+  uint32 revoked_count = 1;
+}
+
+message ShareResult {
+  oneof result {
+    SharePolicy policy = 1;
+    ShareEvidence evidence = 2;
+    IssuedShareGrant created = 3;
+    ShareGrant grant = 4;
+    ShareGrantList grants = 5;
+    RevokedShareEvidence revoked_evidence = 6;
   }
 }
