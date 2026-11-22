@@ -379,8 +379,9 @@ export class RuntimeProfilesControlClient {
 	): Promise<ProfileSubscription> {
 		const generation = this.connectionGeneration;
 		let retired = false;
+		const current = () => !retired && generation === this.connectionGeneration;
 		const interrupt = () => {
-			if (retired || generation !== this.connectionGeneration) return;
+			if (!current()) return;
 			retired = true;
 			this.statusWatch.pause(null);
 			void this.statusWatch.resume();
@@ -402,31 +403,14 @@ export class RuntimeProfilesControlClient {
 		}
 
 		emit(null);
-		let published: ObservedPart | undefined;
-		const parts = new Map<number, ObservedPart>();
-		let admitted = false;
-		const publishComplete = () => {
-			if (!admitted || retired || generation !== this.connectionGeneration) return;
-			const status = assembleObservedParts(parts);
-			if (status) {
-				published = parts.get(0);
-				parts.clear();
-				emit(status);
-			}
-		};
+		const delivery = observedStatusDelivery(emit, current);
 		const results = await Promise.allSettled(
 			observedIndices.map((index) =>
 				this.watch(
 					`observed/${index}`,
 					(entry) => {
-						if (retired || generation !== this.connectionGeneration) return;
-						const part = observedPartFromEntry(entry, index);
-						if (published && !sameObservationGeneration(published, part)) {
-							published = undefined;
-							emit(null);
-						}
-						parts.set(index, part);
-						publishComplete();
+						if (!current()) return;
+						delivery.receive(index, observedPartFromEntry(entry, index));
 					},
 					interrupt
 				)
@@ -441,8 +425,7 @@ export class RuntimeProfilesControlClient {
 		const failure = results.find((result) => result.status === 'rejected');
 		try {
 			if (failure) throw failure.reason;
-			admitted = true;
-			publishComplete();
+			delivery.admit();
 		} catch (cause) {
 			await close();
 			throw cause;
@@ -525,6 +508,37 @@ export class RuntimeProfilesControlClient {
 			profiles: Object.fromEntries(definitions)
 		};
 	}
+}
+
+function observedStatusDelivery(
+	emit: (status: RuntimeProfileStatus | null) => void,
+	current: () => boolean
+) {
+	const parts = new Map<number, ObservedPart>();
+	let published: ObservedPart | undefined;
+	let admitted = false;
+	function publishComplete() {
+		if (!admitted || !current()) return;
+		const status = assembleObservedParts(parts);
+		if (!status) return;
+		published = parts.get(0);
+		parts.clear();
+		emit(status);
+	}
+	return {
+		receive(index: number, part: ObservedPart) {
+			if (published && !sameObservationGeneration(published, part)) {
+				published = undefined;
+				emit(null);
+			}
+			parts.set(index, part);
+			publishComplete();
+		},
+		admit() {
+			admitted = true;
+			publishComplete();
+		}
+	};
 }
 
 function nextRevision(revision: string): string {
