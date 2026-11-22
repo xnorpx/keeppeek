@@ -133,6 +133,43 @@ pub(super) fn enqueue_notification(
     }
 }
 
+fn send_closures(
+    closed: Vec<(Watch, CloseReason)>,
+    enqueue: impl Fn(SessionId, proto::Notification) -> EnqueueOutcome,
+    sent: &mut Vec<(SessionId, proto::Notification)>,
+) {
+    for (watch, reason) in closed {
+        let notification = closed_notification(&watch, reason);
+        if enqueue(watch.session_id, notification.clone()) == EnqueueOutcome::Sent {
+            sent.push((watch.session_id, notification));
+        }
+    }
+}
+
+impl Watch {
+    fn queue_update(
+        &mut self,
+        event: &WatchEvent,
+        revision: u64,
+        now_ms: u64,
+    ) -> Result<proto::Notification, CloseReason> {
+        let sequence = self.delivered + 1;
+        let notification = update_notification(self, event, sequence, revision)
+            .ok_or(CloseReason::SnapshotUnavailable)?;
+        if self.unacked.len() >= MAX_IN_FLIGHT_UPDATES {
+            return Err(CloseReason::BufferOverflow);
+        }
+        self.delivered = sequence;
+        self.unacked.push_back(PendingUpdate {
+            sequence,
+            #[cfg(test)]
+            revision,
+            sent_ms: now_ms,
+        });
+        Ok(notification)
+    }
+}
+
 impl WatchRegistry {
     pub(in crate::server) fn lock_profile_views(&self) -> std::sync::MutexGuard<'_, ()> {
         self.profile_views
@@ -289,39 +326,19 @@ impl WatchRegistry {
         // Configuration reads may touch disk. Never run them under the global watch lock.
         let has_profiles = events.iter().any(profile_view::needs_projection);
         let _inventory = has_profiles.then(|| self.lock_profile_views());
-        let needs_identities = has_profiles
-            && state
-                .api_session_owners
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .values()
-                .any(|owner| owner.principal.role != AccessRole::Administrator);
-        let identities = needs_identities
-            .then(|| profiles::camera_profile_ids(state).ok())
-            .flatten();
-        let mut prepared = if has_profiles {
-            profile_view::prepare(self, state, events, identities.as_ref())
-        } else {
-            HashMap::new()
-        };
+        let mut projections = profile_view::Batch::new(self, state, events, has_profiles);
         let mut sent = Vec::new();
         let mut watches = self.lock();
         let mut closed: Vec<(Watch, CloseReason)> = Vec::new();
         if pending_overflowed {
-            closed.extend(watches.drain().map(|(_, watch)| {
-                (
-                    Watch {
-                        unacked: VecDeque::new(),
-                        ..watch
-                    },
-                    CloseReason::BufferOverflow,
-                )
+            closed.extend(watches.drain().map(|(_, mut watch)| {
+                watch.unacked = VecDeque::new();
+                (watch, CloseReason::BufferOverflow)
             }));
         }
         for (index, event) in events.iter().enumerate() {
             let mut visible_revisions = HashMap::new();
             let mut unscoped = None;
-            let scoped = profile_view::needs_projection(event);
             let layout = validate_namespace(&event.namespace).ok();
             let mut terminate: Vec<((SessionId, String), Option<CloseReason>)> = Vec::new();
             for (key, watch) in watches.iter_mut() {
@@ -332,67 +349,19 @@ impl WatchRegistry {
                     terminate.push((key.clone(), Some(CloseReason::AuthorizationRevoked)));
                     continue;
                 }
-                let projection = if scoped {
-                    prepared
-                        .entry((watch.session_id, index))
-                        .or_insert_with(|| {
-                            // A watch registered after preparation still needs its session's camera scope.
-                            let event = profile_view::SessionView::new(
-                                state,
-                                watch.session_id,
-                                identities.as_ref(),
-                            )
-                            .project(event);
-                            profile_view::Projection::new(event)
-                        })
-                } else {
-                    unscoped.get_or_insert_with(|| profile_view::Projection::new(event.clone()))
-                };
-                let mut revision = event.revision;
-                if event.namespace == profiles::NAMESPACE {
-                    if let Some(fingerprint) = projection.fingerprint {
-                        if watch.profile_fingerprint == Some(fingerprint) {
-                            continue;
-                        }
-                        watch.profile_fingerprint = Some(fingerprint);
-                    }
-                    if let Some(session) = &watch.profile_session {
-                        revision =
-                            *visible_revisions
-                                .entry(watch.session_id)
-                                .or_insert_with(|| {
-                                    // The watch lock serializes a session's snapshots and visible publications.
-                                    let next = session
-                                        .profile_watch_revision
-                                        .load(Ordering::Relaxed)
-                                        .max(event.revision)
-                                        .checked_add(1)
-                                        .expect("profile watch revision space exhausted");
-                                    session
-                                        .profile_watch_revision
-                                        .store(next, Ordering::Relaxed);
-                                    next
-                                });
-                    }
-                }
-                let sequence = watch.delivered + 1;
-                let Some(notification) =
-                    update_notification(watch, &projection.event, sequence, revision)
+                let projection =
+                    projections.for_session(state, watch.session_id, index, event, &mut unscoped);
+                let Some(revision) = projection.visible_revision(watch, &mut visible_revisions)
                 else {
-                    terminate.push((key.clone(), Some(CloseReason::SnapshotUnavailable)));
                     continue;
                 };
-                if watch.unacked.len() >= MAX_IN_FLIGHT_UPDATES {
-                    terminate.push((key.clone(), Some(CloseReason::BufferOverflow)));
-                    continue;
-                }
-                watch.delivered = sequence;
-                watch.unacked.push_back(PendingUpdate {
-                    sequence,
-                    #[cfg(test)]
-                    revision,
-                    sent_ms: now_ms,
-                });
+                let notification = match watch.queue_update(&projection.event, revision, now_ms) {
+                    Ok(notification) => notification,
+                    Err(reason) => {
+                        terminate.push((key.clone(), Some(reason)));
+                        continue;
+                    }
+                };
                 match enqueue(watch.session_id, notification.clone()) {
                     EnqueueOutcome::Sent => {
                         sent.push((watch.session_id, notification));
@@ -411,12 +380,7 @@ impl WatchRegistry {
                 }
             }
         }
-        for (watch, reason) in closed {
-            let notification = closed_notification(&watch, reason);
-            if enqueue(watch.session_id, notification.clone()) == EnqueueOutcome::Sent {
-                sent.push((watch.session_id, notification));
-            }
-        }
+        send_closures(closed, enqueue, &mut sent);
         sent
     }
 
@@ -456,12 +420,7 @@ impl WatchRegistry {
             }
         }
         drop(watches);
-        for (watch, reason) in closed {
-            let notification = closed_notification(&watch, reason);
-            if enqueue(watch.session_id, notification.clone()) == EnqueueOutcome::Sent {
-                sent.push((watch.session_id, notification));
-            }
-        }
+        send_closures(closed, enqueue, &mut sent);
         sent
     }
 }
