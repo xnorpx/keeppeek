@@ -75,8 +75,15 @@ fn fragment(path: &Path, id: &str, start_ms: i64) -> CatalogMediaFragment {
 
 fn export(fragments: &[CatalogMediaFragment], end_ms: i64) -> (ExportArtifact, Cursor<Vec<u8>>) {
     let mut output = Cursor::new(Vec::new());
-    let artifact =
-        export_fragment_ranges_to_writer(fragments, end_ms, &mut output, || false, |_| {}).unwrap();
+    let artifact = export_fragment_ranges_to_writer_with_audio_offset(
+        fragments,
+        end_ms,
+        &mut output,
+        0,
+        || false,
+        |_| {},
+    )
+    .unwrap();
     output.set_position(0);
     (artifact, output)
 }
