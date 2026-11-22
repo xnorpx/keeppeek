@@ -8645,7 +8645,6 @@ impl ServerState {
         for camera in &entries {
             if let Ok(camera_ip) = camera.info.ip.parse::<IpAddr>() {
                 privacy.set_alias(camera_ip.to_string(), camera.info.id.clone());
-                webrtc.set_privacy_camera_id(camera_ip, camera.info.id.clone());
             }
         }
 
@@ -20469,7 +20468,7 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    fn active_export_fixture(
+    pub(super) fn active_export_fixture(
         state: &ServerState,
         request: &proto::CreateExportJob,
     ) -> ExportJobRecord {

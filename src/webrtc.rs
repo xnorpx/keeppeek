@@ -7,7 +7,7 @@ use crate::{
     },
     keeppeek::StreamKind,
     media_time::duration_to_ticks,
-    privacy::PrivacyRegistry,
+    privacy::{MediaPermit, PrivacyRegistry},
     storage::{RecordingDemand, RecordingDemandGuard, VideoCodec, nal},
 };
 use bytes::Bytes;
@@ -928,8 +928,24 @@ impl QueuedApiData {
 
     const fn byte_len(&self) -> usize {
         match self {
-            Self::Message(message) => message.payload.len(),
+            Self::Message(message) => message.payload.value.len(),
             Self::Complete { .. } => 0,
+        }
+    }
+}
+
+/// Carries the original privacy epoch across a bounded media queue.
+#[derive(Clone)]
+struct GuardedMedia<T> {
+    value: T,
+    permit: Option<MediaPermit>,
+}
+
+impl<T> GuardedMedia<T> {
+    fn deliver<R>(&self, write: impl FnOnce(&T) -> R) -> Option<R> {
+        match &self.permit {
+            Some(permit) => permit.deliver(|| write(&self.value)),
+            None => Some(write(&self.value)),
         }
     }
 }
@@ -937,7 +953,7 @@ impl QueuedApiData {
 struct QueuedDataMessage {
     target: DataChannelTarget,
     group: String,
-    payload: Vec<u8>,
+    payload: GuardedMedia<Vec<u8>>,
 }
 
 pub(crate) fn control_notification_encoded_len(
@@ -963,6 +979,14 @@ impl ApiMediaRuntime {
     }
 
     fn enqueue(&mut self, messages: Vec<OutboundDataMessage>) -> anyhow::Result<()> {
+        self.enqueue_with_permit(messages, None)
+    }
+
+    fn enqueue_with_permit(
+        &mut self,
+        messages: Vec<OutboundDataMessage>,
+        permit: Option<&MediaPermit>,
+    ) -> anyhow::Result<()> {
         let mut queued = Vec::with_capacity(messages.len());
         let mut added_bytes = 0usize;
         for message in messages {
@@ -973,7 +997,10 @@ impl ApiMediaRuntime {
             queued.push(QueuedApiData::Message(QueuedDataMessage {
                 target: message.target,
                 group: message.group,
-                payload,
+                payload: GuardedMedia {
+                    value: payload,
+                    permit: permit.cloned(),
+                },
             }));
         }
         let total_bytes = self
@@ -1000,7 +1027,10 @@ impl ApiMediaRuntime {
             .push_back(QueuedApiData::Message(QueuedDataMessage {
                 target: message.target,
                 group: message.group,
-                payload,
+                payload: GuardedMedia {
+                    value: payload,
+                    permit: None,
+                },
             }));
     }
 
@@ -1217,14 +1247,22 @@ impl ApiMediaRuntime {
                 DataChannelTarget::Reliable => channels.reliable_data,
                 DataChannelTarget::Unreliable => channels.unreliable_data,
             };
-            let Some(mut channel) = rtc.channel(channel_id) else {
-                anyhow::bail!("WebRTC data channel disappeared before queued delivery");
-            };
-            if !channel.write(true, &message.payload)? {
+            let wrote = message
+                .payload
+                .deliver(|payload| -> anyhow::Result<bool> {
+                    let Some(mut channel) = rtc.channel(channel_id) else {
+                        anyhow::bail!("WebRTC data channel disappeared before queued delivery");
+                    };
+                    Ok(channel.write(true, payload)?)
+                })
+                .transpose()?;
+            if wrote == Some(false) {
                 self.outbound.push_front(QueuedApiData::Message(message));
                 break;
             }
-            self.outbound_bytes = self.outbound_bytes.saturating_sub(message.payload.len());
+            self.outbound_bytes = self
+                .outbound_bytes
+                .saturating_sub(message.payload.value.len());
         }
         Ok(())
     }
@@ -1467,7 +1505,6 @@ impl SourceBitrate {
 #[derive(Default)]
 struct Inner {
     sources: Mutex<HashMap<Source, SourceState>>,
-    audio_sources: Mutex<HashMap<Source, AudioQueue>>,
     audio_capabilities: Mutex<HashMap<Source, LiveAudioSourceCapability>>,
     audio_subscribers: Mutex<Vec<AudioSubscriber>>,
     talkback_routes: Mutex<HashMap<SessionId, Vec<String>>>,
@@ -1475,7 +1512,6 @@ struct Inner {
     camera_generations: Mutex<HashMap<IpAddr, u64>>,
     camera_preview_keyframes: Mutex<HashMap<IpAddr, CameraPreviewKeyframe>>,
     privacy: RwLock<Option<Arc<PrivacyRegistry>>>,
-    privacy_camera_ids: Mutex<HashMap<IpAddr, String>>,
     privacy_epochs: Mutex<HashMap<IpAddr, u64>>,
     sessions: SessionRegistry,
     control_handler: Arc<RwLock<Option<Weak<dyn ControlRequestHandler>>>>,
@@ -1571,7 +1607,7 @@ struct AudioSubscriber {
     session_id: SessionId,
     track_id: TrackId,
     source: Source,
-    sender: Sender<WebRtcAudioFrame>,
+    sender: Sender<GuardedMedia<WebRtcAudioFrame>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2207,7 +2243,7 @@ impl TrackRuntime {
 struct AudioTrackRuntime {
     track_id: TrackId,
     delivery: TrackDelivery,
-    rx: Receiver<WebRtcAudioFrame>,
+    rx: Receiver<GuardedMedia<WebRtcAudioFrame>>,
 }
 
 impl AudioTrackRuntime {
@@ -2241,14 +2277,6 @@ impl Publisher {
             .privacy
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(privacy);
-    }
-
-    pub(crate) fn set_privacy_camera_id(&self, camera_ip: IpAddr, camera_id: String) {
-        self.inner
-            .privacy_camera_ids
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(camera_ip, camera_id);
     }
 
     pub(crate) fn arm_talkback(&self, session_id: SessionId, source_ids: Vec<String>) {
@@ -2314,42 +2342,54 @@ impl Publisher {
         if frame.sample_rate_hz == 0 || frame.channel_count == 0 || frame.data.is_empty() {
             return;
         }
-        self.inner
-            .audio_capabilities
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                source,
-                LiveAudioSourceCapability {
-                    stream: source.stream,
-                    codec: audio_codec_name(frame.codec),
-                    sample_rate_hz: frame.sample_rate_hz,
-                    channel_count: frame.channel_count,
-                    decoder_config: Vec::new(),
-                },
-            );
-        let mut subscribers = self
+        let registry = self
             .inner
-            .audio_subscribers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        subscribers.retain(|subscriber| {
-            if subscriber.source != source {
-                return true;
-            }
-            match subscriber.sender.try_send(frame.clone()) {
-                Ok(()) | Err(TrySendError::Full(_)) => true,
-                Err(TrySendError::Disconnected(_)) => false,
-            }
-        });
-        drop(subscribers);
-        self.inner
-            .audio_sources
-            .lock()
+            .privacy
+            .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(source)
-            .or_default()
-            .push(frame, Instant::now());
+            .clone();
+        let permit = if let Some(registry) = registry {
+            let Some(permit) = registry.media_permit(source.camera_ip.to_string().into()) else {
+                return;
+            };
+            Some(permit)
+        } else {
+            None
+        };
+        let guarded = GuardedMedia {
+            value: frame,
+            permit,
+        };
+        guarded.deliver(|frame| {
+            self.inner
+                .audio_capabilities
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    source,
+                    LiveAudioSourceCapability {
+                        stream: source.stream,
+                        codec: audio_codec_name(frame.codec),
+                        sample_rate_hz: frame.sample_rate_hz,
+                        channel_count: frame.channel_count,
+                        decoder_config: Vec::new(),
+                    },
+                );
+            let mut subscribers = self
+                .inner
+                .audio_subscribers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            subscribers.retain(|subscriber| {
+                if subscriber.source != source {
+                    return true;
+                }
+                match subscriber.sender.try_send(guarded.clone()) {
+                    Ok(()) | Err(TrySendError::Full(_)) => true,
+                    Err(TrySendError::Disconnected(_)) => false,
+                }
+            });
+        });
     }
 
     fn subscribe_audio(
@@ -2357,7 +2397,7 @@ impl Publisher {
         session_id: SessionId,
         track_id: TrackId,
         source: Source,
-    ) -> Receiver<WebRtcAudioFrame> {
+    ) -> Receiver<GuardedMedia<WebRtcAudioFrame>> {
         let (sender, receiver) = bounded(128);
         self.inner
             .audio_subscribers
@@ -2453,16 +2493,8 @@ impl Publisher {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         if let Some(privacy) = privacy {
-            let camera_id = self
-                .inner
-                .privacy_camera_ids
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&source.camera_ip)
-                .cloned()
-                .unwrap_or_else(|| source.camera_ip.to_string());
             let (active, epoch) = privacy
-                .decision(&camera_id, chrono::Utc::now())
+                .decision_for_ip(source.camera_ip, chrono::Utc::now())
                 .unwrap_or((true, u64::MAX));
             let transition = self
                 .inner
@@ -2564,10 +2596,6 @@ impl WebRtc {
 
     pub(crate) fn set_privacy_registry(&self, privacy: Arc<PrivacyRegistry>) {
         self.live.set_privacy_registry(privacy);
-    }
-
-    pub(crate) fn set_privacy_camera_id(&self, camera_ip: IpAddr, camera_id: String) {
-        self.live.set_privacy_camera_id(camera_ip, camera_id);
     }
 
     pub(crate) fn arm_talkback(&self, session_id: SessionId, source_ids: Vec<String>) {
@@ -3538,13 +3566,17 @@ fn drive_api_session(
                 applied_streams.push((track.runtime.track_id.clone(), stream));
             }
         }
+        if !media_data_messages.is_empty() {
+            media.enqueue(media_data_messages)?;
+        }
+        let mut audio_batches = Vec::new();
         for track in &mut media.audio_tracks {
             let result = drive_audio_track_runtime(rtc, &mut track.runtime, connected)?;
             wrote_media |= result.wrote_media;
-            media_data_messages.extend(result.data_messages);
+            audio_batches.extend(result.data_messages);
         }
-        if !media_data_messages.is_empty() {
-            media.enqueue(media_data_messages)?;
+        for batch in audio_batches {
+            media.enqueue_with_permit(batch.value, batch.permit.as_ref())?;
         }
         for notification in control_notifications {
             media.enqueue_control_notification(notification)?;
@@ -3636,7 +3668,7 @@ fn drive_api_session(
 
 struct AudioTrackDriveResult {
     wrote_media: bool,
-    data_messages: Vec<OutboundDataMessage>,
+    data_messages: Vec<GuardedMedia<Vec<OutboundDataMessage>>>,
 }
 
 fn drive_audio_track_runtime(
@@ -3650,9 +3682,18 @@ fn drive_audio_track_runtime(
         if !connected {
             continue;
         }
-        let messages = write_audio_track_frame(rtc, &mut track.delivery, &frame)?;
-        wrote_media |= messages.0;
-        data_messages.extend(messages.1);
+        if let Some((wrote, messages)) = frame
+            .deliver(|audio| write_audio_track_frame(rtc, &mut track.delivery, audio))
+            .transpose()?
+        {
+            wrote_media |= wrote;
+            if !messages.is_empty() {
+                data_messages.push(GuardedMedia {
+                    value: messages,
+                    permit: frame.permit,
+                });
+            }
+        }
     }
     Ok(AudioTrackDriveResult {
         wrote_media,
@@ -5455,7 +5496,10 @@ mod tests {
             .push_back(QueuedApiData::Message(QueuedDataMessage {
                 target: DataChannelTarget::Reliable,
                 group: "full".to_owned(),
-                payload: vec![0; API_BACKGROUND_OUTBOUND_MAX_BYTES],
+                payload: GuardedMedia {
+                    value: vec![0; API_BACKGROUND_OUTBOUND_MAX_BYTES],
+                    permit: None,
+                },
             }));
         media.outbound_bytes = API_BACKGROUND_OUTBOUND_MAX_BYTES;
 
@@ -6294,7 +6338,8 @@ mod tests {
             let QueuedApiData::Message(queued) = queued else {
                 panic!("live event output must contain only attachment messages");
             };
-            let message = crate::api::proto::Message::decode(queued.payload.as_slice()).unwrap();
+            let message =
+                crate::api::proto::Message::decode(queued.payload.value.as_slice()).unwrap();
             let Some(crate::api::proto::message::Message::Event(event)) = message.message else {
                 panic!("live event output must use an event message");
             };
@@ -6366,7 +6411,8 @@ mod tests {
             let QueuedApiData::Message(queued) = queued else {
                 panic!("expected attachment chunk")
             };
-            let message = crate::api::proto::Message::decode(queued.payload.as_slice()).unwrap();
+            let message =
+                crate::api::proto::Message::decode(queued.payload.value.as_slice()).unwrap();
             let Some(crate::api::proto::message::Message::Event(event)) = message.message else {
                 panic!("expected event")
             };
@@ -7736,6 +7782,97 @@ mod tests {
     }
 
     #[test]
+    fn camera_audio_privacy_revokes_queued_frames_and_reliable_chunks() {
+        let publisher = Publisher::default();
+        let registry = Arc::new(PrivacyRegistry::default());
+        publisher.set_privacy_registry(registry.clone());
+        let source = Source {
+            camera_ip: "127.0.0.1".parse().unwrap(),
+            stream: StreamKind::Main,
+        };
+        registry.set_alias(source.camera_ip.to_string(), "front".into());
+        let rx = publisher.subscribe_audio(
+            SessionId::from_u64(1),
+            TrackId::parse("audio-front".into()).unwrap(),
+            source,
+        );
+        let publish = || {
+            publisher.publish_audio(
+                source,
+                WebRtcAudioFrame {
+                    codec: audio::AudioCodec::Aac,
+                    sample_rate_hz: 48_000,
+                    channel_count: 1,
+                    timestamp: None,
+                    received_at: Instant::now(),
+                    data: Bytes::from_static(b"synthetic audio"),
+                },
+            )
+        };
+        publish();
+        let first = rx.try_recv().unwrap();
+        assert_eq!(
+            first.deliver(|f| f.data.clone()),
+            Some(Bytes::from_static(b"synthetic audio"))
+        );
+        let mut rtc = rtc_config().build(Instant::now());
+        let channels = configure_session_channels(&mut rtc);
+        let mut track = AudioTrackRuntime {
+            track_id: TrackId::parse("audio-front".into()).unwrap(),
+            rx: rx.clone(),
+            delivery: TrackDelivery::ReliableData(Box::new(DataMediaBinding {
+                stream_binding_id: "audio-front".into(),
+                codec: crate::api::proto::CodecDescriptor {
+                    name: "aac".into(),
+                    ..Default::default()
+                },
+                format: Default::default(),
+                configuration_revision: 1,
+                next_frame_id: 1,
+                source_clock: None,
+                pending_configuration: None,
+            })),
+        };
+        publish();
+        let encoded = drive_audio_track_runtime(&mut rtc, &mut track, true).unwrap();
+        assert!(encoded.wrote_media);
+        let mut media = ApiMediaRuntime::default();
+        for batch in encoded.data_messages {
+            media
+                .enqueue_with_permit(batch.value, batch.permit.as_ref())
+                .unwrap();
+        }
+        assert!(media.outbound_bytes > 0);
+        assert_eq!(media.outbound.len(), 1);
+        publish(); // Remains in the track queue across the profile transition.
+        let other = registry.media_permit("back".into()).unwrap();
+        registry
+            .replace_profile_overrides([("front".into(), true)].into())
+            .unwrap();
+        publish();
+        assert_eq!(rx.len(), 1);
+        assert_eq!(first.deliver(|_| true), None);
+        assert_eq!(other.deliver(|| true), Some(true));
+        registry
+            .replace_profile_overrides(Default::default())
+            .unwrap();
+        assert_eq!(first.deliver(|_| true), None);
+        let stale = drive_audio_track_runtime(&mut rtc, &mut track, true).unwrap();
+        assert!(!stale.wrote_media);
+        assert!(stale.data_messages.is_empty());
+        // An unopened SCTP channel cannot accept a write. The stale chunk must be
+        // discarded before consulting it and must release its full queue reservation.
+        media.flush_outbound(&mut rtc, channels).unwrap();
+        assert!(media.outbound.is_empty());
+        assert_eq!(media.outbound_bytes, 0);
+        publish();
+        assert_eq!(
+            rx.try_recv().unwrap().deliver(|f| f.data.clone()),
+            Some(Bytes::from_static(b"synthetic audio"))
+        );
+    }
+
+    #[test]
     fn published_camera_audio_is_fanned_out_to_each_media_subscriber() {
         let publisher = Publisher::default();
         let source = Source {
@@ -7763,7 +7900,13 @@ mod tests {
                 data: Bytes::from_static(&[0xd5]),
             },
         );
-        assert_eq!(first.try_recv().unwrap().data, Bytes::from_static(&[0xd5]));
-        assert_eq!(second.try_recv().unwrap().data, Bytes::from_static(&[0xd5]));
+        assert_eq!(
+            first.try_recv().unwrap().value.data,
+            Bytes::from_static(&[0xd5])
+        );
+        assert_eq!(
+            second.try_recv().unwrap().value.data,
+            Bytes::from_static(&[0xd5])
+        );
     }
 }
