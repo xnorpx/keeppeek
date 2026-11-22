@@ -11,3 +11,7 @@ approve an implementation screenshot or change an existing baseline.
 Read the [design decisions](keeppeek-nvr-alpha/DESIGN-DECISIONS.md) before resolving a difference.
 Keep deliberate, supported functionality; record application defects in [bugs.md](../../../bugs.md).
 Change the Paper source first, then export its JSX and lossless PNGs with provenance and hashes.
+
+The [live audio timing board](124-live-audio/manifest.json) records the desktop, 390 px
+and 320 px calibration layout from Paper artboard DOW-0, including the pre-activation
+video latency notice, stream inheritance and viewer-scoped preview controls.

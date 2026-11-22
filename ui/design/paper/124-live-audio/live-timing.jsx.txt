@@ -1,0 +1,230 @@
+(
+    <div id="DOW-0" style={{ backgroundColor: '#101820', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSynthesis: 'none', gap: '24px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', overflowWrap: 'anywhere', padding: '24px', WebkitFontSmoothing: 'antialiased' }}>
+      <div id="DOX-0" style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '24px', padding: '16px', width: '1450px' }}>
+        <div id="DOY-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '28px', fontWeight: 600, lineHeight: '36px' }}>
+          Live audio timing and calibration
+        </div>
+        <div id="DOZ-0" style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '24px' }}>
+          <div id="DP0-0" style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '6px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: 0, gap: '12px', padding: '16px', width: '560px' }}>
+            <div id="DP1-0" style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+              LIVE AUDIO
+            </div>
+            <div id="DP2-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '20px', fontWeight: 600, lineHeight: '28px' }}>
+              Audio synchronization
+            </div>
+            <div id="DP3-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+              Positive offsets delay audio. Negative offsets delay video. Use whole milliseconds from −200 to +200.
+            </div>
+            <div id="DP4-0" style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
+              <div id="DP5-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '20px' }}>
+                Camera default
+              </div>
+              <div id="DP6-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+                Custom · −80 ms
+              </div>
+            </div>
+            <div id="DP7-0" style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
+              <div id="DP8-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '20px' }}>
+                Main stream
+              </div>
+              <div id="DP9-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+                Inherit camera default · −80 ms
+              </div>
+            </div>
+            <div id="DPA-0" style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
+              <div id="DPB-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '20px' }}>
+                Sub stream
+              </div>
+              <div id="DPC-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+                Custom · 0 ms
+              </div>
+            </div>
+            <div id="DPD-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '20px' }}>
+              Preview live timing
+            </div>
+            <div id="DPE-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+              Preview applies to the selected stream in this viewer.
+            </div>
+            <div id="DPF-0" style={{ boxSizing: 'border-box', display: 'flex', gap: '8px' }}>
+              <div id="DPG-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+                <div id="DPH-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                  Main stream
+                </div>
+              </div>
+              <div id="DPI-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+                <div id="DPJ-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                  −80 ms
+                </div>
+              </div>
+            </div>
+            <div id="DPK-0" style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+              Video will play 80 ms later.
+            </div>
+            <div id="DPL-0" style={{ boxSizing: 'border-box', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              <div id="DPM-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+                <div id="DPN-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                  Apply preview
+                </div>
+              </div>
+              <div id="DPO-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+                <div id="DPP-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                  Reset preview
+                </div>
+              </div>
+            </div>
+            <div id="DPQ-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+              <div id="DPR-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                Save live timing
+              </div>
+            </div>
+          </div>
+          <div id="DPS-0" style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '6px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: 0, gap: '12px', padding: '16px', width: '390px' }}>
+            <div id="DPT-0" style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+              LIVE AUDIO
+            </div>
+            <div id="DPU-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '20px', fontWeight: 600, lineHeight: '28px' }}>
+              Audio synchronization
+            </div>
+            <div id="DPV-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+              Positive offsets delay audio. Negative offsets delay video. Use whole milliseconds from −200 to +200.
+            </div>
+            <div id="DPW-0" style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
+              <div id="DPX-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '20px' }}>
+                Camera default
+              </div>
+              <div id="DPY-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+                Custom · −80 ms
+              </div>
+            </div>
+            <div id="DPZ-0" style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
+              <div id="DQ0-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '20px' }}>
+                Main stream
+              </div>
+              <div id="DQ1-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+                Inherit camera default · −80 ms
+              </div>
+            </div>
+            <div id="DQ2-0" style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
+              <div id="DQ3-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '20px' }}>
+                Sub stream
+              </div>
+              <div id="DQ4-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+                Custom · 0 ms
+              </div>
+            </div>
+            <div id="DQ5-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '20px' }}>
+              Preview live timing
+            </div>
+            <div id="DQ6-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+              Preview applies to the selected stream in this viewer.
+            </div>
+            <div id="DQ7-0" style={{ boxSizing: 'border-box', display: 'flex', gap: '8px' }}>
+              <div id="DQ8-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+                <div id="DQ9-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                  Main stream
+                </div>
+              </div>
+              <div id="DQA-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+                <div id="DQB-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                  −80 ms
+                </div>
+              </div>
+            </div>
+            <div id="DQC-0" style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+              Video will play 80 ms later.
+            </div>
+            <div id="DQD-0" style={{ boxSizing: 'border-box', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              <div id="DQE-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+                <div id="DQF-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                  Apply preview
+                </div>
+              </div>
+              <div id="DQG-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+                <div id="DQH-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                  Reset preview
+                </div>
+              </div>
+            </div>
+            <div id="DQI-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+              <div id="DQJ-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                Save live timing
+              </div>
+            </div>
+          </div>
+          <div id="DQK-0" style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '6px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: 0, gap: '12px', padding: '16px', width: '320px' }}>
+            <div id="DQL-0" style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+              LIVE AUDIO
+            </div>
+            <div id="DQM-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '20px', fontWeight: 600, lineHeight: '28px' }}>
+              Audio synchronization
+            </div>
+            <div id="DQN-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+              Positive offsets delay audio. Negative offsets delay video. Use whole milliseconds from −200 to +200.
+            </div>
+            <div id="DQO-0" style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
+              <div id="DQP-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '20px' }}>
+                Camera default
+              </div>
+              <div id="DQQ-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+                Custom · −80 ms
+              </div>
+            </div>
+            <div id="DQR-0" style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
+              <div id="DQS-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '20px' }}>
+                Main stream
+              </div>
+              <div id="DQT-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+                Inherit camera default · −80 ms
+              </div>
+            </div>
+            <div id="DQU-0" style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
+              <div id="DQV-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '20px' }}>
+                Sub stream
+              </div>
+              <div id="DQW-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+                Custom · 0 ms
+              </div>
+            </div>
+            <div id="DQX-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '20px' }}>
+              Preview live timing
+            </div>
+            <div id="DQY-0" style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px' }}>
+              Preview applies to the selected stream in this viewer.
+            </div>
+            <div id="DQZ-0" style={{ boxSizing: 'border-box', display: 'flex', gap: '8px' }}>
+              <div id="DR0-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+                <div id="DR1-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                  Sub stream
+                </div>
+              </div>
+              <div id="DR2-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+                <div id="DR3-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                  −80 ms
+                </div>
+              </div>
+            </div>
+            <div id="DR4-0" style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+              Video will play 80 ms later.
+            </div>
+            <div id="DR5-0" style={{ boxSizing: 'border-box', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              <div id="DR6-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+                <div id="DR7-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                  Apply preview
+                </div>
+              </div>
+              <div id="DR8-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+                <div id="DR9-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                  Reset preview
+                </div>
+              </div>
+            </div>
+            <div id="DRA-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '5px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', minHeight: '40px', paddingBlock: '8px', paddingInline: '12px' }}>
+              <div id="DRB-0" style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '20px' }}>
+                Save live timing
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
