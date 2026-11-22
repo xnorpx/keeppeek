@@ -198,6 +198,8 @@ class FakeDataChannel {
 	cancelledTimelineQueryIds: string[] = [];
 	eventSearchQueries: QueryEvents[] = [];
 	eventSearchRefusals: string[] = [];
+	eventSearchRefusalDelay = 0;
+	eventSearchCancelled: string[] = [];
 	exportRecordedAudio?: import('./proto/webrtc_pb').RecordedAudioTiming;
 
 	send(data: ArrayBuffer | ArrayBufferView): void {
@@ -387,11 +389,13 @@ class FakeDataChannel {
 							})
 						}
 					});
-					queueMicrotask(() =>
+					const deliverRefusal = () =>
 						this.onmessage?.({
 							data: toBinary(ControlEnvelopeSchema, reply).buffer
-						} as MessageEvent)
-					);
+						} as MessageEvent);
+					if (this.eventSearchRefusalDelay)
+						setTimeout(deliverRefusal, this.eventSearchRefusalDelay);
+					else queueMicrotask(deliverRefusal);
 					return;
 				}
 
@@ -599,6 +603,7 @@ class FakeDataChannel {
 				);
 				return;
 			}
+			if (action.case === 'cancelQuery') this.eventSearchCancelled.push(action.value.queryId);
 			if (action.case === 'cancelQuery' || action.case === 'cancelMedia') return;
 			throw new Error('unexpected event search action');
 		}
@@ -2729,6 +2734,38 @@ describe('ControlClient', () => {
 		await expect(client.searchEventMetadata(options)).rejects.toThrow(capacity);
 		expect(channel.eventSearchQueries).toHaveLength(11);
 		await client.close();
+	});
+
+	it('stops retrying a slow event query at its delivery deadline', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'search-deadline',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+		await client.connect();
+		const channel = FakePeerConnection.latest!.channels.find(
+			(item) => item.label === 'control-channel'
+		)!;
+		vi.useFakeTimers();
+		try {
+			channel.eventSearchRefusalDelay = 9_980;
+			channel.eventSearchRefusals.push('event search task limit is reached');
+			const query = client.searchEventMetadata({
+				sourceIds: ['front-door'],
+				streamId: 'main',
+				startMs: 1,
+				endMs: 5000
+			});
+			const failure = expect(query).rejects.toThrow('Event search timed out.');
+			await vi.advanceTimersByTimeAsync(10_100);
+			await failure;
+			expect(channel.eventSearchQueries).toHaveLength(1);
+			expect(channel.eventSearchCancelled).toEqual([channel.eventSearchQueries[0]!.queryId]);
+		} finally {
+			await client.close();
+			vi.useRealTimers();
+		}
 	});
 
 	it('encodes metadata filters and decodes a rich bounded event page', async () => {

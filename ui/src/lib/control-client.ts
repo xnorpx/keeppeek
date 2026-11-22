@@ -419,7 +419,6 @@ type EventSearchPending = {
 	sequences: Set<number>;
 	resolve: (page: EventPreviewPage) => void;
 	reject: (error: Error) => void;
-	timeout: ReturnType<typeof setTimeout>;
 };
 
 type EventMediaAccumulator = {
@@ -1008,61 +1007,47 @@ export class ControlClient {
 	): Promise<EventPreviewPage> {
 		if (signal?.aborted) throw timelineAbortError();
 		const queryId = `event-search-${this.#nextStoredId++}`;
+		const admission = new AbortController();
 		const completed = new Promise<EventPreviewPage>((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				this.#eventSearchPending.delete(queryId);
-				reject(new Error('Event search timed out.'));
-			}, controlTimeoutMs);
-			this.#eventSearchPending.set(queryId, {
-				hits: [],
-				sequences: new Set(),
-				resolve,
-				reject,
-				timeout
-			});
+			this.#eventSearchPending.set(queryId, { hits: [], sequences: new Set(), resolve, reject });
 		});
-		let awaitingDelivery = false;
-		let aborted = false;
-		const abort = () => {
-			aborted = true;
-			const pending = this.#eventSearchPending.get(queryId);
-			if (pending) {
-				clearTimeout(pending.timeout);
-				this.#eventSearchPending.delete(queryId);
-				if (awaitingDelivery) pending.reject(timelineAbortError());
-			}
+		const cancel = (reason: Error) => {
+			admission.abort(reason);
+			this.#eventSearchPending.get(queryId)?.reject(reason);
 			void this.cancelEventSearchQuery(queryId).catch(() => undefined);
 		};
+		const abort = () => cancel(timelineAbortError());
+		const deadline = setTimeout(
+			() => cancel(new Error('Event search timed out.')),
+			controlTimeoutMs
+		);
 		signal?.addEventListener('abort', abort, { once: true });
 		try {
 			const command = create(EventSearchCommandSchema, {
-				action: {
-					case: 'query',
-					value: query(queryId)
+				action: { case: 'query', value: query(queryId) }
+			});
+			const admitted = this.admitEventSearch(
+				{ case: 'eventSearchCommand', value: command },
+				admission.signal
+			).then((result) => {
+				if (
+					result.case !== 'eventSearchDelivery' ||
+					result.value.queryId !== queryId ||
+					result.value.channel !== DataChannelKind.RELIABLE_DATA
+				) {
+					throw new Error('Server returned an unexpected event search response.');
 				}
 			});
-			const result = await this.admitEventSearch(
-				{ case: 'eventSearchCommand', value: command },
-				signal
-			);
-			if (
-				result.case !== 'eventSearchDelivery' ||
-				result.value.queryId !== queryId ||
-				result.value.channel !== DataChannelKind.RELIABLE_DATA
-			) {
-				throw new Error('Server returned an unexpected event search response.');
-			}
-			if (aborted) throw timelineAbortError();
-			awaitingDelivery = true;
-			if (signal?.aborted) abort();
-			return await completed;
+			const [, page] = await Promise.all([admitted, completed]);
+			return page;
 		} catch (error) {
-			const pending = this.#eventSearchPending.get(queryId);
-			if (pending) clearTimeout(pending.timeout);
-			this.#eventSearchPending.delete(queryId);
+			if (admission.signal.aborted) throw admission.signal.reason;
 			throw error;
 		} finally {
+			clearTimeout(deadline);
 			signal?.removeEventListener('abort', abort);
+			this.#eventSearchPending.delete(queryId);
+			admission.abort();
 		}
 	}
 
@@ -2711,7 +2696,6 @@ export class ControlClient {
 		const pending = this.#eventSearchPending.get(end.queryId);
 		if (!pending) return;
 		this.#eventSearchPending.delete(end.queryId);
-		clearTimeout(pending.timeout);
 		if (pending.hits.length !== numeric(end.resultCount)) {
 			pending.reject(new Error('Event search delivery was incomplete.'));
 			return;
@@ -2858,7 +2842,6 @@ export class ControlClient {
 		const pending = this.#eventSearchPending.get(queryId);
 		if (!pending) return;
 		this.#eventSearchPending.delete(queryId);
-		clearTimeout(pending.timeout);
 		pending.reject(new Error(message));
 	}
 
