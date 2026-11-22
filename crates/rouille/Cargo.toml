@@ -41,6 +41,7 @@ threadpool = "1"
 sha1_smol = "1.0.1"
 
 [dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 native-tls = "0.2"
 postgres = { version = "0.19", default-features = false }
 log = "0.4"
