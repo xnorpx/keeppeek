@@ -1043,10 +1043,42 @@ impl AccessManager {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.catalog.audit.len() == MAX_AUDIT_EVENTS {
-            state.catalog.audit.remove(0);
+        let audit = &mut state.catalog.audit;
+        let sampled =
+            |event: &AccessAuditEvent| event.profile.is_some() && event.result != "accepted";
+        if sampled(&event) {
+            // Keep the most recent equivalent outcome per actor/per minute. The structured trace
+            // below retains each individual denial. Bound samples independently of accepted actions.
+            let equivalent = audit.iter().rposition(|old| {
+                old.profile == event.profile
+                    && old.principal_id == event.principal_id
+                    && old.role == event.role
+                    && old.action == event.action
+                    && old.result == event.result
+                    && old.client_classification == event.client_classification
+                    && old.timestamp_ms.abs_diff(event.timestamp_ms) < 60_000
+            });
+            if let Some(index) = equivalent {
+                audit.remove(index);
+            } else if audit.iter().filter(|old| sampled(old)).count() >= 64
+                && let Some(index) = audit.iter().position(sampled)
+            {
+                audit.remove(index);
+            }
         }
-        state.catalog.audit.push(event);
+        if audit.len() == MAX_AUDIT_EVENTS {
+            // Sampling cannot displace completed mutations, credentials or login events.
+            if sampled(&event) {
+                if let Some(index) = audit.iter().position(sampled) {
+                    audit.remove(index);
+                }
+            } else {
+                audit.remove(0);
+            }
+        }
+        if audit.len() < MAX_AUDIT_EVENTS {
+            audit.push(event);
+        }
         tracing::info!(
             event = "access_audit",
             action = record.action,

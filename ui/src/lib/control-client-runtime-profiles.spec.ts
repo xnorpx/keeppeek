@@ -18,31 +18,53 @@ import {
 import type { ControlClientStateStore } from './control-client-state-store';
 
 describe('RuntimeProfilesControlClient', () => {
-	it('pins the displayed definition even after a newer active header arrives', async () => {
-		const put = vi
-			.fn()
-			.mockResolvedValue(entry('active', runtimeProfilesActiveSchema, { profile_id: 'away' }, 9n));
-		const client = new RuntimeProfilesControlClient({ put } as unknown as ControlClientStateStore);
+	it('pins the displayed definition across active updates and detects recreated profiles', async () => {
+		const original = await profile('away', 0, '3');
 		const selection = {
 			revision: '6',
 			active_profile_id: null,
-			profiles: { away: { id: 'away', name: 'Away', revision: '3', cameras: {} } }
+			profiles: { away: original.definition }
 		};
+		const summary = {
+			id: 'away',
+			name: original.definition.name,
+			revision: '3',
+			target_count: 0,
+			part_count: 0,
+			digest: original.digest
+		};
+		const manifest = { revision: '8', active_profile_id: null, profiles: { away: summary } };
+		const get = vi
+			.fn()
+			.mockResolvedValue(entry('registry', runtimeProfilesRegistrySchema, manifest, 8n));
+		const put = vi
+			.fn()
+			.mockResolvedValue(entry('active', runtimeProfilesActiveSchema, { profile_id: 'away' }, 9n));
+		const client = new RuntimeProfilesControlClient({
+			put,
+			get
+		} as unknown as ControlClientStateStore);
 		await client.activate('away', '8', {
 			...selection,
 			activation_schema: runtimeProfileSelectSchema
 		});
 		expect(put).toHaveBeenLastCalledWith(runtimeProfilesNamespace, 'active', {
 			schema: runtimeProfileSelectSchema,
-			value: { profile_id: 'away', definition_revision: '3' },
+			value: { profile_id: 'away', definition_revision: '3', definition_digest: original.digest },
 			expectedRevision: 8n
 		});
 		await client.activate('away', '8', selection);
 		expect(put).toHaveBeenLastCalledWith(runtimeProfilesNamespace, 'active', {
 			schema: runtimeProfilesActiveSchema,
 			value: { profile_id: 'away' },
-			expectedRevision: 6n
+			expectedRevision: 8n
 		});
+		const recreated = { ...manifest, profiles: { away: { ...summary, digest: '0'.repeat(64) } } };
+		get.mockResolvedValue(entry('registry', runtimeProfilesRegistrySchema, recreated, 8n));
+		await expect(client.activate('away', '8', selection)).rejects.toMatchObject({
+			code: StateStoreErrorCode.CONFLICT
+		});
+		expect(put).toHaveBeenCalledTimes(2);
 		await client.activate(null, '8', selection);
 		expect(put).toHaveBeenLastCalledWith(runtimeProfilesNamespace, 'active', {
 			schema: runtimeProfilesActiveSchema,
@@ -101,6 +123,23 @@ describe('RuntimeProfilesControlClient', () => {
 					profiles: expect.objectContaining({
 						home: expect.objectContaining({ revision: '3', digest: first.digest }),
 						away: expect.objectContaining({ revision: '5' })
+					})
+				})
+			})
+		);
+		put.mockClear();
+		await client.saveRegistry({
+			...manifest,
+			profiles: { home: { ...first.definition, name: 'Recreated', revision: '0' } }
+		});
+		expect(put).toHaveBeenCalledWith(
+			runtimeProfilesNamespace,
+			'registry',
+			expect.objectContaining({
+				expectedRevision: 8n,
+				value: expect.objectContaining({
+					profiles: expect.objectContaining({
+						home: expect.objectContaining({ revision: '4', name: 'Recreated' })
 					})
 				})
 			})

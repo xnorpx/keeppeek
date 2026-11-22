@@ -141,7 +141,8 @@ fn run(state: &ServerState) {
         match current_identities(state, &desired) {
             Ok(Some(ids)) => {
                 let result = result.and_then(|applications| {
-                    release_privacy(state, &desired.registry, &ids, &applications)?;
+                    let privacy = confirmed_privacy(state, &desired.registry, &ids, &applications)?;
+                    state.privacy.replace_profile_overrides(privacy)?;
                     Ok(applications)
                 });
                 match result {
@@ -183,18 +184,19 @@ fn current_identities(
         .ok_or_else(|| anyhow::anyhow!("Camera configuration is unavailable"))?;
     let config = config::load_config(path)?;
     let ids = config.camera_profile_identities()?;
-    if config.runtime_profiles != desired.registry || ids != desired.camera_ids {
-        return Ok(None);
-    }
+    anyhow::ensure!(
+        config.runtime_profiles == desired.registry && ids == desired.camera_ids,
+        "Camera configuration changed during application. Reapply the current profile to retry."
+    );
     Ok(Some(crate::keeppeek::CameraProfileIds::new(ids)?))
 }
 
-fn release_privacy(
+pub(in crate::server) fn confirmed_privacy(
     state: &ServerState,
     registry: &ProfileRegistry,
     ids: &crate::keeppeek::CameraProfileIds,
     applications: &[CameraRuntimeApplication],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<BTreeMap<String, bool>> {
     let held = state.privacy.profile_overrides_snapshot();
     let mut next = ids.privacy_overrides(registry);
     let current = state
@@ -221,5 +223,5 @@ fn release_privacy(
             next.insert(source, true);
         }
     }
-    state.privacy.replace_profile_overrides(next)
+    Ok(next)
 }
