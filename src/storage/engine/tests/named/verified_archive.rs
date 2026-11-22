@@ -480,10 +480,32 @@ fn with_archive_target<T>(
     // Only successful exclusive creation grants permission to clean up an external child.
     std::fs::create_dir(&target)?;
     let result = runtime::tests::protect_created_root(&target).and_then(|()| run(&target));
-    if archive_parent.is_some() {
-        std::fs::remove_dir_all(&target)?;
+    if archive_parent.is_none() {
+        return result;
     }
-    result
+    let cleanup = std::fs::remove_dir_all(&target);
+    let report = result?;
+    cleanup?;
+    Ok(report)
+}
+
+#[test]
+fn qualification_reports_the_run_error_before_a_secondary_cleanup_error() -> anyhow::Result<()> {
+    let parent = std::fs::canonicalize(std::env::temp_dir())?;
+    let failed = with_archive_target(&parent, Some(&parent), |target| -> anyhow::Result<()> {
+        std::fs::remove_dir(target)?;
+        anyhow::bail!("fixture run failed")
+    });
+    assert_eq!(failed.unwrap_err().to_string(), "fixture run failed");
+    let completed = with_archive_target(&parent, Some(&parent), |target| {
+        std::fs::remove_dir(target)?;
+        Ok(())
+    });
+    assert_eq!(
+        completed.unwrap_err().downcast::<std::io::Error>()?.kind(),
+        std::io::ErrorKind::NotFound
+    );
+    Ok(())
 }
 
 #[test]
