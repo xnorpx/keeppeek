@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import {
+	expect,
+	test,
+	type BrowserContext,
+	type Locator,
+	type Page,
+	type Request,
+	type Response
+} from '@playwright/test';
 import { startAuthenticationFixture } from './fixtures/external-authentication-server';
 
 function observeGuestNetwork(context: BrowserContext, origin: string, privateValues: string[]) {
@@ -13,7 +21,7 @@ function observeGuestNetwork(context: BrowserContext, origin: string, privateVal
 		if (value.length > 8192) problems.add('guest request observation exceeded the length limit');
 		else observed.push(value);
 	}
-	context.on('request', (request) => {
+	const onRequest = (request: Request) => {
 		if (checks.length >= 512) {
 			problems.add('guest request observation limit exceeded');
 			return;
@@ -31,8 +39,8 @@ function observeGuestNetwork(context: BrowserContext, origin: string, privateVal
 				}
 			)
 		);
-	});
-	context.on('response', (response) => {
+	};
+	const onResponse = (response: Response) => {
 		const path = new URL(response.url()).pathname;
 		if (path !== '/share' && !path.startsWith('/guest/')) return;
 		if (routes.includes(path)) paths.add(path);
@@ -52,8 +60,13 @@ function observeGuestNetwork(context: BrowserContext, origin: string, privateVal
 		) {
 			problems.add('missing guest response protection');
 		}
-	});
+	};
+	context.on('request', onRequest);
+	context.on('response', onResponse);
 	return async () => {
+		await Promise.all(context.pages().map((page) => page.close()));
+		context.off('request', onRequest);
+		context.off('response', onResponse);
 		await Promise.all(checks);
 		expect([...problems]).toEqual([]);
 		expect(observed.some((value) => privateValues.some((secret) => value.includes(secret)))).toBe(

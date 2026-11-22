@@ -19,6 +19,14 @@ function observeNoncanonicalControlRequests(page: Page): string[] {
 	return requests;
 }
 
+function pendingOperation() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
+}
+
 async function openSupportedExport(page: Page, options: MockControlPeerOptions = {}) {
 	const noncanonicalRequests = observeNoncanonicalControlRequests(page);
 	const controls = await mockKeepModes(page, 10, {
@@ -129,7 +137,7 @@ test('Export stops reverse playback and returns to its frozen Timeline position'
 
 test('Export keeps the last drag position while a Timeline seek is pending', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 840 });
-	const seek = Promise.withResolvers<void>();
+	const seek = pendingOperation();
 	const requests = await mockKeepModes(page, 2, {
 		storedOpenGates: [Promise.resolve(), seek.promise]
 	});
@@ -171,7 +179,7 @@ test('entering Export during the first Timeline open retains its selection and r
 	page
 }) => {
 	test.setTimeout(90_000);
-	const opened = Promise.withResolvers<void>();
+	const opened = pendingOperation();
 	const requests = await mockKeepModes(page, 2, { storedOpenGates: [opened.promise] });
 	await page.goto(`/keep?camera=front-door&stream=main&at=${selectedStartMs}`);
 	await expect.poll(() => requests.storedOpens.length, { timeout: 45_000 }).toBe(1);
@@ -199,7 +207,7 @@ test('returning to Timeline during an Export camera change opens only the select
 	page
 }) => {
 	test.setTimeout(90_000);
-	const nextCamera = Promise.withResolvers<void>();
+	const nextCamera = pendingOperation();
 	const requests = await mockKeepModes(page, 2, {
 		beforeStoredTimelineQuery: (sourceIds) =>
 			sourceIds.includes('camera-2') ? nextCamera.promise : undefined
@@ -257,7 +265,7 @@ test('preserves an export range while job creation fails closed', async ({ page 
 	const gate = page
 		.locator('[data-capability-gate][data-capability="keeppeek.media-export.v1"]')
 		.filter({ hasText: 'Create export' });
-	await expect(gate).toContainText('Server update required · keeppeek.media-export.v1');
+	await expect(gate).toContainText('Server update required Â· keeppeek.media-export.v1');
 	await expect(fromInput).toHaveValue('06:20:00');
 	await expect(page.getByRole('checkbox', { name: /burn in timestamp/i })).toBeChecked();
 	expect(noncanonicalRequests).toEqual([]);
@@ -284,7 +292,7 @@ test('shows Board 29 running progress and cancels without offering a partial fil
 		'aria-valuenow',
 		'62'
 	);
-	await expect(page.getByText('62% · 74 MB OF 118 MB')).toBeVisible();
+	await expect(page.getByText('62% Â· 74 MB OF 118 MB')).toBeVisible();
 	await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 	await expect(panel).toHaveAttribute('data-export-status', 'cancelled');
 	await expect(page.getByText('No partial file was kept.')).toBeVisible();
@@ -317,7 +325,7 @@ test('polls a running export to ready and downloads checksum-verified WebRTC byt
 	await expect(panel).toHaveAttribute('data-export-status', 'running');
 	await expect(panel).toHaveAttribute('data-export-status', 'ready');
 	await expect(page.getByText('Your file is ready')).toBeVisible();
-	await expect(page.locator('[data-export-checksum]')).toContainText('· · ·');
+	await expect(page.locator('[data-export-checksum]')).toContainText('Â· Â· Â·');
 	await expect(page.getByText(/preceding keyframe/)).toBeVisible();
 
 	const downloadPromise = page.waitForEvent('download');
@@ -358,7 +366,7 @@ test('names every missing range before exporting what exists', async ({ page }) 
 	await expect(panel).toHaveAttribute('data-export-status', 'partial');
 	await expect(page.getByText('1m 30s of 2m 0s you asked for')).toBeVisible();
 	await expect(page.locator('[data-export-missing-range]')).toHaveText(
-		'NOTHING WAS RECORDED 06:21:00 → 06:21:30'
+		'NOTHING WAS RECORDED 06:21:00 â†’ 06:21:30'
 	);
 	await page.getByRole('button', { name: 'Export what exists' }).click();
 	await expect(panel).toHaveAttribute('data-export-status', 'ready');
