@@ -163,7 +163,6 @@ impl<W> FragmentedMp4Writer<W> {
     /// Drops uncommitted media without changing fragments already written.
     pub fn discard_pending_samples(&mut self) {
         for track in &mut self.tracks {
-            track.composition_range = CompositionRange::default();
             track.pending_epoch = track.committed_epoch;
             track.composition_range = CompositionRange::default();
             track.samples.clear();
@@ -382,12 +381,6 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
                 "fragmented MP4 video fragment must start with a sync sample",
             ));
         }
-        if track.samples.len() == u32::MAX as usize {
-            return Err(Error::InvalidData(
-                "fragmented MP4 fragment has too many samples",
-            ));
-        }
-        let composition_range = track.composition_range.including(sample.rendering_offset)?;
         let measured = source_rtp
             .map(|packet| {
                 let pts = i64::try_from(
@@ -587,7 +580,6 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
         self.committed_metadata_bytes += metadata_size;
         self.committed_box_count += 2 + source_events.len() as u64;
         for track in &mut self.tracks {
-            track.composition_range = CompositionRange::default();
             track.committed_epoch = track.pending_epoch;
             track.composition_range = CompositionRange::default();
             track.samples.clear();
