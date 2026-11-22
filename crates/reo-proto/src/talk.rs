@@ -63,10 +63,8 @@ impl TalkAbility {
             .iter()
             .find(|profile| {
                 profile.audio_type.eq_ignore_ascii_case("adpcm")
-                    && matches!(profile.sample_rate, 8_000 | 16_000)
-                    && profile.sample_precision == 16
-                    && profile.sound_track.eq_ignore_ascii_case("mono")
-                    && profile.length_per_encoder <= profile.sample_rate / 4
+                    && profile.sample_rate > 0
+                    && profile.sample_precision > 0
                     && profile.length_per_encoder >= 2
                     && profile.length_per_encoder.is_multiple_of(2)
             })
@@ -433,52 +431,6 @@ const fn align8(value: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rejects_unplayable_talkback_profiles_before_allocating_blocks() {
-        let mut ability = TalkAbility::default();
-        ability
-            .duplex_modes
-            .push(ArrayString::try_from("fullDuplex").unwrap());
-        ability
-            .audio_stream_modes
-            .push(ArrayString::try_from("speaker").unwrap());
-        let valid = TalkAudioProfile {
-            audio_type: ArrayString::try_from("adpcm").unwrap(),
-            sample_rate: 16_000,
-            sample_precision: 16,
-            length_per_encoder: 1_016,
-            sound_track: ArrayString::try_from("mono").unwrap(),
-        };
-        for invalid in [
-            TalkAudioProfile {
-                sample_rate: 48_000,
-                ..valid.clone()
-            },
-            TalkAudioProfile {
-                length_per_encoder: 4_002,
-                ..valid.clone()
-            },
-            TalkAudioProfile {
-                length_per_encoder: 3,
-                ..valid.clone()
-            },
-            TalkAudioProfile {
-                sample_precision: 8,
-                ..valid.clone()
-            },
-            TalkAudioProfile {
-                sound_track: ArrayString::try_from("stereo").unwrap(),
-                ..valid.clone()
-            },
-        ] {
-            ability.audio_profiles.clear();
-            ability.audio_profiles.push(invalid);
-            assert!(ability.select_adpcm(0).is_err());
-            ability.audio_profiles.push(valid.clone());
-            assert_eq!(ability.select_adpcm(0).unwrap().audio_profile, valid);
-        }
-    }
 
     #[test]
     fn selects_adpcm_profile_from_nested_ability() {

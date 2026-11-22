@@ -6,7 +6,7 @@ use reo_proto::{
     header::PacketHeader,
     session::{BcSession, Command, Input},
     stream::{StreamSubscription, StreamType},
-    talk::{ImaAdpcmEncoder, TalkCommand, TalkConfig, TalkEvent},
+    talk::{ImaAdpcmEncoder, TalkAbility, TalkCommand, TalkConfig, TalkEvent},
 };
 use std::sync::Arc;
 use std::{
@@ -59,7 +59,7 @@ impl Talkback {
     ) -> Result<(), reo_proto::BcError> {
         match event {
             TalkEvent::Ability(ability) if self.stream_id.is_some() => {
-                match ability.select_adpcm(self.channel) {
+                match select_profile(*ability, self.channel) {
                     Ok(config) => {
                         self.blocks = Some(SpeakerBlocks::new(&config));
                         session.handle_input(Input::Command(Command::Talk(
@@ -179,6 +179,16 @@ impl Talkback {
     }
 }
 
+fn select_profile(mut ability: TalkAbility, channel: u8) -> Result<TalkConfig, reo_proto::BcError> {
+    ability.audio_profiles.retain(|profile| {
+        matches!(profile.sample_rate, 8_000 | 16_000)
+            && profile.sample_precision == 16
+            && profile.sound_track.eq_ignore_ascii_case("mono")
+            && profile.length_per_encoder <= profile.sample_rate / 4
+    });
+    ability.select_adpcm(channel)
+}
+
 /// Joins short WebRTC microphone packets into one paced camera ADPCM block.
 struct SpeakerBlocks {
     rate: u32,
@@ -294,6 +304,53 @@ mod tests {
                     .flat_map(|sample| sample.to_le_bytes())
                     .collect::<Vec<_>>(),
             ),
+        }
+    }
+
+    #[test]
+    fn rejects_unplayable_talkback_profiles_before_allocating_blocks() {
+        let mut ability = TalkAbility::default();
+        ability.duplex_modes.push("fullDuplex".try_into().unwrap());
+        ability
+            .audio_stream_modes
+            .push("speaker".try_into().unwrap());
+        let valid = TalkAudioProfile {
+            audio_type: "adpcm".try_into().unwrap(),
+            sample_rate: 16_000,
+            sample_precision: 16,
+            length_per_encoder: 1_016,
+            sound_track: "mono".try_into().unwrap(),
+        };
+        for invalid in [
+            TalkAudioProfile {
+                sample_rate: 48_000,
+                ..valid.clone()
+            },
+            TalkAudioProfile {
+                length_per_encoder: 4_002,
+                ..valid.clone()
+            },
+            TalkAudioProfile {
+                length_per_encoder: 3,
+                ..valid.clone()
+            },
+            TalkAudioProfile {
+                sample_precision: 8,
+                ..valid.clone()
+            },
+            TalkAudioProfile {
+                sound_track: "stereo".try_into().unwrap(),
+                ..valid.clone()
+            },
+        ] {
+            ability.audio_profiles.clear();
+            ability.audio_profiles.push(invalid);
+            assert!(select_profile(ability.clone(), 0).is_err());
+            ability.audio_profiles.push(valid.clone());
+            assert_eq!(
+                select_profile(ability.clone(), 0).unwrap().audio_profile,
+                valid
+            );
         }
     }
 
