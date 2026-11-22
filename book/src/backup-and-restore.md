@@ -44,7 +44,8 @@ Protect all owned volume roots with a separate archive policy when they need rec
 | Browser sign-in key, media handles and active wake lock                                                                 | Page/browser runtime state; reload or reconnect as required. Saved dashboard wake-lock intent remains configuration.   |
 
 An evidence guest link has its own durable authorization store on the target metadata volume.
-Applying a configuration ZIP preserves that store. An empty target needs newly issued links.
+Applying a configuration ZIP to an existing named metadata volume preserves its current grants,
+revocations and counters. A replacement target with an empty guest store needs newly issued links.
 See [Recover guest links](./recording-archive-recovery.md#recover-guest-links) when restoring
 an entire metadata volume.
 

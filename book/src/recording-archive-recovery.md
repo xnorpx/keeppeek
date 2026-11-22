@@ -62,12 +62,17 @@ Guest link verifiers, revocations and consumed view or download limits live in t
 volume’s `guest-review/grants.db` database. The configuration ZIP contains the sharing policy.
 A restart ends existing guest sessions and active transfers.
 
-Keep guest sharing disabled during recovery. An older volume image can contain links revoked
-after the copy or counters that have since increased. On a replacement recorder, recover the
-recordings and completed exports with a fresh guest store, then issue new links for the evidence
-an Administrator still authorizes. If you explicitly restore the original guest store, use its
-consistent database family and verify the latest revocations and counts before enabling sharing.
-When those later changes cannot be established, use a fresh store and reissue links.
+Before starting a recorder from a historical volume image, set `enabled = false` in the
+restored `[sharing]` configuration and keep its public guest origin offline. An older image
+can contain grants that an Administrator has since revoked or counters that recipients have
+since consumed.
+
+Preserve the complete backup offline. In the working copy of the recovered metadata volume,
+leave the entire `guest-review` directory out of the active volume, including database
+sidecars. KeepPeek initializes a fresh guest store at startup. Once the recorder is isolated
+and its evidence has been checked, enable sharing and confirm that the Administrator's
+all-creators guest-link list is empty before restoring public access. Issue new links only
+for the recordings and completed exports that an Administrator still authorizes.
 
 ## Restore the runtime state store before accepting watches
 
