@@ -114,7 +114,8 @@ test('the selected Keep, event and bookmark intervals reach the same guarded HTT
 		await fixture.command('administrator');
 		await page.goto(fixture.origin);
 		await page.getByRole('button', { name: 'Continue with Fixture sign-in' }).click();
-		await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
+		// Cold recorder sign-in precedes the timed evidence previews.
+		await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible({ timeout: 45_000 });
 		const start = fixture.guestRecordingStartMs;
 		if (start === null || !Number.isSafeInteger(start))
 			throw new Error('The fixture requires retained video.');
