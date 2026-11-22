@@ -481,7 +481,10 @@ fn archive_retention_backoff_retries_are_persisted_and_administrator_can_reset_t
         assert!(!blocked.reverification_failed());
         assert!(retry(&connection, &id).await.is_err());
         run(&connection, Deletion::LegacyFailed(id.clone())).await?;
-        assert!(matches!(run(&connection, next(true)).await?, Reply::Job(None)));
+        assert!(matches!(
+            run(&connection, next(true)).await?,
+            Reply::Job(None)
+        ));
         let failed = required(&connection, &id).await?;
         assert!(failed.reverification_failed());
         assert_eq!(failed.error_code(), "archive_reverification_failed");
