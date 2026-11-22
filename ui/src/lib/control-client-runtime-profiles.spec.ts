@@ -1,3 +1,5 @@
+import { fromJson, toBinary, type JsonObject } from '@bufbuild/protobuf';
+import { StructSchema } from '@bufbuild/protobuf/wkt';
 import { describe, expect, it, vi } from 'vitest';
 import { StateStoreErrorCode, type StateEntry } from './proto/webrtc_pb';
 import { StateStoreRequestError } from './state-store-error';
@@ -146,61 +148,44 @@ describe('RuntimeProfilesControlClient', () => {
 		);
 	});
 
-	it.each([false, true])(
-		'saves 32 maximum-length profiles with legacy recorder %s',
-		async (legacy) => {
-			const profiles = Object.fromEntries(
-				Array.from({ length: 32 }, (_, i) => {
-					const id = 'p'.repeat(126) + String(i).padStart(2, '0');
-					const name = '界'.repeat(26) + String(i).padStart(2, '0');
-					expect(new TextEncoder().encode(name).byteLength).toBe(80);
-					return [id, { id, name, revision: '0', cameras: {} }];
-				})
-			);
-			let stored = entry(
-				'registry',
-				runtimeProfilesRegistrySchema,
-				{ revision: '0', active_profile_id: null, profiles: {} },
-				0n
-			);
-			const put = vi.fn(
-				async (
-					_namespace: string,
-					key: string,
-					input: { schema: string; value: Record<string, unknown>; expectedRevision: bigint }
-				) => {
-					if (legacy && input.schema === runtimeProfileCompactRegistrySchema)
-						throw new StateStoreRequestError('Unsupported schema', {
-							namespace: runtimeProfilesNamespace,
-							key,
-							code: StateStoreErrorCode.SCHEMA_INVALID
-						});
-					const { draft_id: _draft, ...value } = input.value;
-					stored = entry(key, input.schema, { ...value, revision: '1' }, 1n);
-					return stored;
-				}
-			);
-			const client = new RuntimeProfilesControlClient({
-				get: async () => stored,
-				put
-			} as unknown as ControlClientStateStore);
-			const accepted = await client.saveRegistry({
-				revision: '0',
-				active_profile_id: null,
-				profiles
-			});
-			expect(stored.schema).toBe(
-				legacy ? runtimeProfilesRegistrySchema : runtimeProfileCompactRegistrySchema
-			);
-			expect(put.mock.calls.map(([, , input]) => input.expectedRevision)).toEqual(
-				legacy ? [0n, 0n] : [0n]
-			);
-			if (legacy)
-				expect(put.mock.calls[0][2].value.draft_id).toBe(put.mock.calls[1][2].value.draft_id);
-			expect(Object.keys(accepted.profiles)).toEqual(Object.keys(profiles));
-			for (const [id, profile] of Object.entries(accepted.profiles)) {
-				expect(profile).toEqual({ ...profiles[id], revision: '1' });
+	it('stores all 32 maximum-length profiles on a compact-capable recorder', async () => {
+		const { client, put } = profileRegistryRecorder(false);
+		const registry = capacityRegistry(128);
+		const accepted = await client.saveRegistry(registry);
+		expect(put.mock.calls.map(([, , input]) => input.schema)).toEqual([
+			runtimeProfileCompactRegistrySchema
+		]);
+		for (const [id, definition] of Object.entries(registry.profiles)) {
+			expect(accepted.profiles[id]).toEqual({ ...definition, revision: '1' });
+		}
+	});
+
+	it.each([
+		{ idLength: 128, storedBytes: 16704, fits: false },
+		{ idLength: 124, storedBytes: 16349, fits: true }
+	])(
+		'enforces the legacy recorder limit for a $storedBytes-byte stored registry',
+		async ({ idLength, storedBytes, fits }) => {
+			const { client, put, current } = profileRegistryRecorder(true);
+			const previous = current();
+			const saving = client.saveRegistry(capacityRegistry(idLength));
+			if (fits) {
+				const accepted = await saving;
+				expect(Object.keys(accepted.profiles)).toHaveLength(32);
+				expect(current().schema).toBe(runtimeProfilesRegistrySchema);
+			} else {
+				await expect(saving).rejects.toMatchObject({ code: StateStoreErrorCode.VALUE_TOO_LARGE });
+				expect(current()).toBe(previous);
 			}
+			const writes = put.mock.calls.map(([, , input]) => input);
+			expect(writes.map(({ schema }) => schema)).toEqual([
+				runtimeProfileCompactRegistrySchema,
+				runtimeProfilesRegistrySchema
+			]);
+			expect(writes.map(({ expectedRevision }) => expectedRevision)).toEqual([0n, 0n]);
+			expect(writes[0].value.draft_id).toBe(writes[1].value.draft_id);
+			const { draft_id: _draft, ...header } = writes[1].value;
+			expect(toBinary(StructSchema, fromJson(StructSchema, header)).byteLength).toBe(storedBytes);
 		}
 	);
 
@@ -971,6 +956,59 @@ describe('runtime profile observations', () => {
 		await handle.close();
 	});
 });
+
+function capacityRegistry(idLength: number) {
+	const profiles = Object.fromEntries(
+		Array.from({ length: 32 }, (_, i) => {
+			const suffix = String(i).padStart(2, '0');
+			const id = 'p'.repeat(idLength - suffix.length) + suffix;
+			const name = '界'.repeat(26) + suffix;
+			return [id, { id, name, revision: '0', cameras: {} }];
+		})
+	);
+	return { revision: '0', active_profile_id: null, profiles };
+}
+
+function profileRegistryRecorder(legacy: boolean) {
+	let stored = entry(
+		'registry',
+		runtimeProfilesRegistrySchema,
+		{ revision: '0', active_profile_id: null, profiles: {} },
+		0n
+	);
+	const put = vi.fn(
+		async (
+			namespace: string,
+			key: string,
+			input: { schema: string; value: JsonObject; expectedRevision: bigint }
+		) => {
+			if (legacy && input.schema === runtimeProfileCompactRegistrySchema) {
+				throw new StateStoreRequestError('Unsupported schema', {
+					namespace,
+					key,
+					code: StateStoreErrorCode.SCHEMA_INVALID
+				});
+			}
+			const { draft_id: _draft, ...value } = input.value;
+			const header = { ...value, revision: '1' };
+			if (toBinary(StructSchema, fromJson(StructSchema, header)).byteLength > 16 * 1024) {
+				throw new StateStoreRequestError('Registry exceeds the document limit', {
+					namespace,
+					key,
+					code: StateStoreErrorCode.VALUE_TOO_LARGE
+				});
+			}
+			stored = entry(key, input.schema, header, 1n);
+			return stored;
+		}
+	);
+	const current = () => stored;
+	const client = new RuntimeProfilesControlClient({
+		get: current,
+		put
+	} as unknown as ControlClientStateStore);
+	return { client, put, current };
+}
 
 function entry(key: string, schema: string, value: unknown, revision: bigint): StateEntry {
 	return {

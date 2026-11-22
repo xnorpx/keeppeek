@@ -500,7 +500,19 @@ fn profile_only_privacy_excludes_tagged_recording_bytes_through_restart_and_supe
     lifecycle.send_tagged_frames("sub", ACCEPTED);
     lifecycle.wait_for_progress("sub", 0);
     lifecycle.stop();
-    let mut directories = vec![lifecycle.directory.clone()];
+    assert_final_recording_markers(
+        &lifecycle.directory,
+        ACCEPTED,
+        &[PRIVATE, RESTARTED, SUPERSEDED],
+    );
+}
+
+fn assert_final_recording_markers(
+    directory: &std::path::Path,
+    accepted: &[u8],
+    forbidden: &[&[u8]],
+) {
+    let mut directories = vec![directory.to_path_buf()];
     let mut accepted_recording = false;
     while let Some(directory) = directories.pop() {
         for entry in std::fs::read_dir(directory).unwrap() {
@@ -510,7 +522,7 @@ fn profile_only_privacy_excludes_tagged_recording_bytes_through_restart_and_supe
                 directories.push(entry.path());
             } else if kind.is_file() {
                 let bytes = std::fs::read(entry.path()).unwrap();
-                for private in [PRIVATE, RESTARTED, SUPERSEDED] {
+                for &private in forbidden {
                     assert!(
                         !bytes.windows(private.len()).any(|sample| sample == private),
                         "private media was written to {:?}",
@@ -523,8 +535,8 @@ fn profile_only_privacy_excludes_tagged_recording_bytes_through_restart_and_supe
                     .is_some_and(|extension| extension == "mp4")
                 {
                     accepted_recording |= bytes
-                        .windows(ACCEPTED.len())
-                        .any(|sample| sample == ACCEPTED);
+                        .windows(accepted.len())
+                        .any(|sample| sample == accepted);
                 }
             }
         }
