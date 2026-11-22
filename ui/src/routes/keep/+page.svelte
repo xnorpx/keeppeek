@@ -1562,6 +1562,10 @@
 	function switchMode(nextMode: KeepMode): void {
 		if (nextMode === mode) return;
 		mode = nextMode;
+		if (selected && (nextMode === 'export' || (nextMode === 'timeline' && !storedPlayback))) {
+			const offset = ((playheadMs ?? selected.start_time_ms) - selected.start_time_ms) / 1000;
+			void selectSegment(selected, offset);
+		}
 		updateUrl();
 	}
 
@@ -1698,6 +1702,19 @@
 		if (selected?.url !== segment.url) {
 			exportRangeStartMs = null;
 			exportRangeEndMs = null;
+		}
+		if (mode === 'export') {
+			// No video element is mounted here. A playback fallback must not change
+			// the operator's chosen stream or discard its draft and one-time link.
+			playbackVersion += 1;
+			selected = segment;
+			playheadMs = requestedTimestampMs;
+			playing = false;
+			playerError = null;
+			playbackStartupPhase = 'idle';
+			releaseSecondaryLoads();
+			await closeStoredPlayback();
+			return;
 		}
 		const requestedOffsetSeconds = (requestedTimestampMs - segment.start_time_ms) / 1_000;
 		playerError = null;
