@@ -670,7 +670,6 @@ impl KeepPeekLoop {
         pending: &mut Vec<PendingCameraRecording<'a>>,
     ) -> anyhow::Result<()> {
         self.reap_stopped_cameras();
-        self.ensure_worker_slot(camera)?;
         if self.camera_workers.contains_key(&camera.config.ip) {
             anyhow::bail!("camera '{}' is already running", camera.config.ip)
         }
@@ -680,6 +679,10 @@ impl KeepPeekLoop {
             self.camera_names
                 .insert(camera.config.ip.to_string(), name.clone());
             self.camera_names.insert(name.clone(), name.clone());
+        }
+        if let Err(error) = self.ensure_worker_slot(camera) {
+            self.record_camera_runtime_status(camera, Err(error.to_string()));
+            return Err(error);
         }
         let recording = self.configure_profile_recording(camera)?;
         let result = self.start_camera_runtime(camera, enable_main, enable_sub);
@@ -885,6 +888,7 @@ impl KeepPeekLoop {
         let mut applications = Vec::with_capacity(cameras.len());
         let mut pending = Vec::with_capacity(cameras.len());
         let stop_deadline = std::time::Instant::now() + CAMERA_STOP_BUDGET;
+        self.cancel_unavailable_camera_workers(&cameras)?;
         for camera in cameras {
             let recording = match self.configure_profile_recording(&camera) {
                 Ok(recording) => recording,
@@ -895,13 +899,9 @@ impl KeepPeekLoop {
             };
             let policy = self.effective_camera_policy(&camera.config);
             let runtime_result = if policy.available {
-                if self.camera_workers.contains_key(&camera.config.ip) {
-                    Ok(())
-                } else {
-                    self.start_camera_runtime(&camera, true, true)
-                }
+                self.apply_available_camera(&camera)
             } else {
-                self.stop_camera_until(camera.config.ip, stop_deadline)
+                self.finish_camera_stop(camera.config.ip, stop_deadline)
             };
             let runtime_result = runtime_result
                 .map_err(|error| error.to_string())
@@ -923,6 +923,49 @@ impl KeepPeekLoop {
         );
         self.complete_runtime_profiles(&applications)?;
         Ok(applications)
+    }
+
+    fn cancel_unavailable_camera_workers(&mut self, cameras: &[Camera]) -> anyhow::Result<()> {
+        let status_handle = self.runtime_profile_status.clone();
+        let status = status_handle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        anyhow::ensure!(
+            status.revision == self.runtime_profiles.revision,
+            "runtime profile transition was superseded"
+        );
+        for camera in cameras {
+            if !self.effective_camera_policy(&camera.config).available {
+                self.begin_camera_stop(camera.config.ip);
+            }
+        }
+        drop(status);
+        Ok(())
+    }
+
+    fn apply_available_camera(&mut self, camera: &Camera) -> anyhow::Result<()> {
+        let Some(workers) = self.camera_workers.get(&camera.config.ip) else {
+            return self.start_camera_runtime(camera, true, true);
+        };
+        if workers.event_shutdown.is_cancelled() {
+            anyhow::ensure!(
+                workers.event_handles.iter().all(JoinHandle::is_finished),
+                "previous camera event workers are still stopping"
+            );
+            // A persisted event edit can outlive its first stop deadline.
+            let status_handle = self.runtime_profile_status.clone();
+            let status = status_handle
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            anyhow::ensure!(
+                status.revision == self.runtime_profiles.revision,
+                "runtime profile transition was superseded"
+            );
+            let route = resolve_configured_camera_route(&camera.config, camera.is_reolink)?;
+            self.replace_camera_events(camera, route)?;
+            drop(status);
+        }
+        Ok(())
     }
 
     fn complete_runtime_profiles(
@@ -1356,28 +1399,29 @@ impl KeepPeekLoop {
     }
 
     fn restart_camera(&mut self, camera: &Camera) -> anyhow::Result<()> {
-        resolve_configured_camera_route(&camera.config, camera.is_reolink)?;
+        let route = resolve_configured_camera_route(&camera.config, camera.is_reolink)?;
+        self.camera_definitions
+            .insert(camera.config.ip, camera.clone());
         if self
             .camera_workers
             .get(&camera.config.ip)
             .and_then(|workers| workers.configuration.as_ref())
             .is_some_and(|previous| event_only_update(previous, &camera.config))
         {
-            self.stop_camera_events(camera.config.ip)?;
-            self.camera_workers
-                .get_mut(&camera.config.ip)
-                .expect("existing camera workers")
-                .configuration = Some(camera.config.clone());
-            self.add_event_workers(
-                camera,
-                resolve_configured_camera_route(&camera.config, camera.is_reolink)?,
-            );
-            self.camera_definitions
-                .insert(camera.config.ip, camera.clone());
-            return Ok(());
+            return self.replace_camera_events(camera, route);
         }
         self.stop_camera(camera.config.ip)?;
         self.add_camera(camera, true, true)
+    }
+
+    fn replace_camera_events(&mut self, camera: &Camera, route: CameraRoute) -> anyhow::Result<()> {
+        self.stop_camera_events(camera.config.ip)?;
+        self.camera_workers
+            .get_mut(&camera.config.ip)
+            .expect("existing camera workers")
+            .configuration = Some(camera.config.clone());
+        self.add_event_workers(camera, route);
+        Ok(())
     }
 
     fn stop_camera_events(&mut self, camera_ip: IpAddr) -> anyhow::Result<()> {
@@ -1416,24 +1460,42 @@ impl KeepPeekLoop {
     }
 
     fn stop_camera(&mut self, camera_ip: IpAddr) -> anyhow::Result<()> {
-        self.stop_camera_until(camera_ip, std::time::Instant::now() + CAMERA_STOP_BUDGET)
-    }
-
-    fn stop_camera_until(
-        &mut self,
-        camera_ip: IpAddr,
-        deadline: std::time::Instant,
-    ) -> anyhow::Result<()> {
         anyhow::ensure!(
             !self.retiring_workers.contains_key(&camera_ip),
             "previous camera workers are still stopping"
         );
+        let deadline = std::time::Instant::now() + CAMERA_STOP_BUDGET;
+        self.begin_camera_stop(camera_ip);
+        self.finish_camera_stop(camera_ip, deadline)
+    }
+
+    fn begin_camera_stop(&mut self, camera_ip: IpAddr) {
         if let Some(callbacks) = &self.isapi_callbacks {
             callbacks.deactivate(camera_ip);
         }
-        let mut stopped = true;
         if let Some(workers) = self.camera_workers.remove(&camera_ip) {
             workers.cancel();
+            self.retiring_workers.insert(camera_ip, workers);
+        }
+    }
+
+    fn clear_stopped_camera_state(&mut self, camera_ip: IpAddr) {
+        self.stream_statuses.remove(&camera_ip);
+        self.battery_uids.remove(&camera_ip);
+        self.health.remove(camera_ip);
+        self.health.events.remove(camera_ip);
+        if let Some(live) = &self.live {
+            live.reset_camera(camera_ip);
+        }
+    }
+
+    fn finish_camera_stop(
+        &mut self,
+        camera_ip: IpAddr,
+        deadline: std::time::Instant,
+    ) -> anyhow::Result<()> {
+        let mut stopped = true;
+        if let Some(workers) = self.retiring_workers.remove(&camera_ip) {
             stopped =
                 self.wait_for_camera_workers(deadline, Some(camera_ip), || workers.is_finished());
             if stopped {
@@ -1442,13 +1504,7 @@ impl KeepPeekLoop {
                 self.retiring_workers.insert(camera_ip, workers);
             }
         }
-        self.stream_statuses.remove(&camera_ip);
-        self.battery_uids.remove(&camera_ip);
-        self.health.remove(camera_ip);
-        self.health.events.remove(camera_ip);
-        if let Some(live) = &self.live {
-            live.reset_camera(camera_ip);
-        }
+        self.clear_stopped_camera_state(camera_ip);
         anyhow::ensure!(stopped, "camera workers did not stop before the deadline");
         Ok(())
     }
@@ -1515,6 +1571,7 @@ impl KeepPeekLoop {
                 .remove(&ip)
                 .expect("finished worker retained until queue drained")
                 .join(ip);
+            self.clear_stopped_camera_state(ip);
         }
     }
 
@@ -1937,6 +1994,7 @@ mod tests {
     mod isapi;
     mod native;
     mod profile_identity;
+    mod profile_workers;
     mod recording_ack;
     mod recording_admission;
     mod recording_health;
