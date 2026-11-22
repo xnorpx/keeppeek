@@ -316,7 +316,7 @@
 	);
 	let olderDate = $derived(dateIndex >= 0 ? (dates[dateIndex + 1] ?? null) : null);
 	let newerDate = $derived(dateIndex > 0 ? (dates[dateIndex - 1] ?? null) : null);
-	let frameDurationSeconds = $derived.by(() => {
+	let estimatedFrameIntervalSeconds = $derived.by(() => {
 		const frameRate = configuredFrameRates.get(`${cameraId}:${stream}`);
 		return frameRate && frameRate > 0 ? 1 / frameRate : null;
 	});
@@ -443,14 +443,16 @@
 			}
 			if (access.status === 'authenticated' && reconnectPending) {
 				reconnectPending = false;
-				const interrupted = interruptedPlayback;
-				interruptedPlayback = null;
-				if (access.cameraSourceIds && !access.cameraSourceIds.includes(cameraId)) return;
-				if (interrupted) void resumeStoredPlayback(interrupted);
+				if (access.cameraSourceIds && !access.cameraSourceIds.includes(cameraId)) {
+					interruptedPlayback = null;
+					return;
+				}
+				void resumeStoredPlayback();
 				timelineRepository.revalidate();
 				if (latestTimelineViewport) void loadTimelineViewport(latestTimelineViewport);
 			}
 			if (!access.session) {
+				interruptedPlayback = null;
 				workflow.setActor('');
 				workflowIdentity = null;
 				selectedWorkflowEvent = null;
@@ -1580,6 +1582,7 @@
 	function switchMode(nextMode: KeepMode): void {
 		if (nextMode === mode) return;
 		mode = nextMode;
+		if (mode === 'timeline') void resumeStoredPlayback();
 		updateUrl();
 	}
 
@@ -1869,22 +1872,35 @@
 
 	function interruptStoredPlayback() {
 		const target = retryPlaybackTarget;
-		if ((!storedPlayback && !playbackOpenController) || !target || mode === 'export') return;
+		if ((!storedPlayback && !playbackOpenController && !scrubOpenController) || !target) return;
 		const opening = playbackOpenController !== null;
-		const segment = opening ? target.segment : selected;
+		const openingScrub = scrubOpenController !== null;
+		const targetTime = target.segment.start_time_ms + target.offsetSeconds * 1_000;
+		const timestampMs =
+			openingScrub || scrubbing
+				? (scrubTargetMs ?? playheadMs ?? targetTime)
+				: opening
+					? targetTime
+					: (playheadMs ?? targetTime);
+		const segment =
+			openingScrub || scrubbing
+				? recordingTarget(orderedSegments, timestampMs)?.segment
+				: opening
+					? target.segment
+					: selected;
 		if (!segment) return;
 		interruptedPlayback = {
 			camera: cameraId,
 			segment,
-			timestampMs: opening
-				? segment.start_time_ms + target.offsetSeconds * 1_000
-				: (scrubTargetMs ?? playheadMs ?? segment.start_time_ms),
-			play: opening ? target.play : scrubbing ? scrubPlayIntent : playbackIntent(),
-			audioPreview: opening
-				? openingAudioPreview
-				: recordedAudio?.preview
-					? recordedAudio.appliedOffsetMs
-					: undefined,
+			timestampMs,
+			play: openingScrub || scrubbing ? scrubPlayIntent : opening ? target.play : playbackIntent(),
+			audioPreview: openingScrub
+				? undefined
+				: opening
+					? openingAudioPreview
+					: recordedAudio?.preview
+						? recordedAudio.appliedOffsetMs
+						: undefined,
 			version: ++playbackVersion
 		};
 		scrubVersion++;
@@ -1896,11 +1912,14 @@
 		void closeStoredPlayback();
 	}
 
-	async function resumeStoredPlayback(target: NonNullable<typeof interruptedPlayback>) {
+	async function resumeStoredPlayback() {
+		const target = interruptedPlayback;
+		if (!target) return;
 		// Let an authority change unmount this page before opening another cursor.
 		await tick();
-		if (target.version !== playbackVersion || target.camera !== cameraId || mode === 'export')
-			return;
+		if (target !== interruptedPlayback || reconnectPending || mode === 'export') return;
+		interruptedPlayback = null;
+		if (target.version !== playbackVersion || target.camera !== cameraId) return;
 		rememberPlaybackTarget(
 			target.segment,
 			(target.timestampMs - target.segment.start_time_ms) / 1_000,
@@ -2179,10 +2198,10 @@
 		setPlaying(true);
 	}
 
-	function stepFrame(direction: -1 | 1): void {
-		if (!selected || frameDurationSeconds === null) return;
+	function seekEstimatedFrameInterval(direction: -1 | 1): void {
+		if (!selected || estimatedFrameIntervalSeconds === null) return;
 		pauseTransport();
-		skip(direction * frameDurationSeconds);
+		skip(direction * estimatedFrameIntervalSeconds);
 	}
 
 	function jumpToLive(): void {
@@ -2216,8 +2235,8 @@
 		else if (event.key === ' ' && !event.repeat) toggleTransport();
 		else if (event.key === '[') setExportBoundary('start');
 		else if (event.key === ']') setExportBoundary('end');
-		else if (event.key === 'ArrowLeft' && playerFocused) stepFrame(-1);
-		else if (event.key === 'ArrowRight' && playerFocused) stepFrame(1);
+		else if (event.key === 'ArrowLeft' && playerFocused) seekEstimatedFrameInterval(-1);
+		else if (event.key === 'ArrowRight' && playerFocused) seekEstimatedFrameInterval(1);
 		else if (event.key === 'Home' && playerFocused) jumpToLive();
 		else return;
 		event.preventDefault();

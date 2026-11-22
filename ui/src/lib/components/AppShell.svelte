@@ -33,7 +33,7 @@
 		resolveGlobalKeyboardAction,
 		type KeyboardOverlayMode
 	} from '$lib/keyboard-shortcuts';
-	import type { AccessConnectionState } from '$lib/access';
+	import { workspaceAccessChanged, type AccessConnectionState } from '$lib/access';
 	import type { ServerHealthResponse } from '$lib/types';
 	import { setShellHealthPublisher } from '$lib/shell-health-context';
 
@@ -59,6 +59,7 @@
 		message: null,
 		generation: 0
 	});
+	let workspaceRevision = $state(0);
 	let recovering = $derived(accessState.status === 'checking' && accessState.session !== null);
 	let keyboardOverlay = $state<KeyboardOverlayMode>(null);
 	let keyboardReady = $state(false);
@@ -173,11 +174,12 @@
 			const wasAuthenticated = accessState.status === 'authenticated';
 			const previousPrincipalId = accessState.session?.principalId ?? null;
 			const previous = accessState;
-			const authorityChanged =
-				!!previous.session &&
-				(state.session?.principalId !== previousPrincipalId ||
-					state.session?.role !== previous.session.role ||
-					JSON.stringify(state.cameraSourceIds) !== JSON.stringify(previous.cameraSourceIds));
+			const authorityChanged = workspaceAccessChanged(
+				previous,
+				state.session,
+				state.cameraSourceIds
+			);
+			if (authorityChanged) workspaceRevision += 1;
 			accessState = state;
 			if (!state.session || authorityChanged) {
 				if (previous.session) void livePeer.close().catch(() => undefined);
@@ -272,6 +274,20 @@
 					return bounds.width > 0 && bounds.height > 0;
 				}) ?? null
 		);
+	}
+
+	function lockWorkspace(dialog: HTMLDialogElement) {
+		// A native modal also locks portaled controls and dialogs already in the top layer.
+		const previous = document.activeElement;
+		dialog.showModal();
+		return () => {
+			dialog.close();
+			queueMicrotask(() => {
+				if (previous instanceof HTMLElement && previous.isConnected) {
+					previous.focus({ preventScroll: true });
+				}
+			});
+		};
 	}
 
 	function handleGlobalKeyboard(event: KeyboardEvent): void {
@@ -461,11 +477,16 @@
 {#if verificationWindow}
 	<AdministratorVerificationWindow />
 {:else if accessState.status === 'authenticated' || recovering}
-	{#if recovering}<p
-			role="status"
-			class="fixed top-2 right-2 z-50 rounded-md bg-background p-2 text-sm text-foreground"
-			>Reconnecting. Checking access…</p
-		>{/if}
+	{#if recovering}
+		<dialog
+			{@attach lockWorkspace}
+			aria-label="Checking access"
+			oncancel={(event) => event.preventDefault()}
+			class="m-auto rounded-md border border-hairline bg-background p-4 text-sm text-foreground shadow-lg backdrop:bg-black/40"
+		>
+			<p role="status">Reconnecting. Checking access…</p>
+		</dialog>
+	{/if}
 	{#if controlClient.externalAuthentication.error}
 		<p
 			role="alert"
@@ -695,7 +716,7 @@
 						? 'live-surface'
 						: 'workspace-surface'}"
 				>
-					{#key JSON.stringify( [accessState.session?.principalId, accessState.session?.role, accessState.cameraSourceIds] )}
+					{#key workspaceRevision}
 						{#if liveViewActive}
 							<PeekPage view={viewerActive ? 'viewer' : 'dashboard'} />
 						{:else}

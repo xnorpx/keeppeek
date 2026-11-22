@@ -585,6 +585,30 @@ class FakeDataChannel {
 		}
 		if (command.case === 'storedMediaCommand') {
 			const action = command.value.action;
+			if (action.case === 'open') {
+				const preview = action.value.recordedAudioPreview?.selection;
+				const state = recordedTimingState(
+					1n,
+					Date.UTC(2026, 7, 20, 12),
+					preview?.case === 'offsetMs' ? preview.value : undefined
+				);
+				state.storedMediaId = action.value.storedMediaId;
+				const response = create(ControlEnvelopeSchema, {
+					message: {
+						case: 'response',
+						value: {
+							requestId: request.message.value.requestId,
+							result: { case: 'ok', value: { result: { case: 'storedMediaState', value: state } } }
+						}
+					}
+				});
+				queueMicrotask(() =>
+					this.onmessage?.({
+						data: toBinary(ControlEnvelopeSchema, response).buffer
+					} as MessageEvent)
+				);
+				return;
+			}
 			if (action.case === 'queryTimeline') {
 				this.storedTimelineQueries.push(action.value);
 				const delivery = create(StoredMediaQueryDeliverySchema, {
@@ -1440,7 +1464,7 @@ function recordedTimingState(generation: bigint, anchorMs: number, appliedOffset
 	});
 }
 
-function recordedTimingPlayback(appliedOffsetMs?: number) {
+function installRecordedTimingSource() {
 	class TimingSourceBuffer extends EventTarget {
 		updating = false;
 		mode: AppendMode = 'segments';
@@ -1469,6 +1493,11 @@ function recordedTimingPlayback(appliedOffsetMs?: number) {
 	vi.stubGlobal('MediaSource', TimingMediaSource);
 	vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:recorded-timing');
 	vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+	return TimingMediaSource;
+}
+
+function recordedTimingPlayback(appliedOffsetMs?: number) {
+	const TimingMediaSource = installRecordedTimingSource();
 	const anchorMs = Date.UTC(2026, 7, 20, 12);
 	const seek = vi.fn(async (timestampMs: number) =>
 		recordedTimingState(2n, timestampMs - 500, appliedOffsetMs)
@@ -1985,6 +2014,105 @@ describe('ControlClient', () => {
 		expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith('unconfirmed', 'original-bearer');
 		await client.close();
 	});
+
+	it.each(['control-channel', 'reliable-data'])(
+		'publishes the interruption before stored playback errors when %s closes first',
+		async (channel) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			installRecordedTimingSource();
+			const answer = { type: 'answer', sdp: 'v=0' };
+			const recovered = Promise.withResolvers<{ session_id: string; answer: typeof answer }>();
+			api.createSession
+				.mockResolvedValueOnce({ session_id: 'old', answer })
+				.mockReturnValueOnce(recovered.promise);
+			api.deleteSession.mockResolvedValue(undefined);
+			const client = new ControlClient();
+			const observed: string[] = [];
+			client.onAccessState((state) => observed.push(state.status));
+			await client.signIn('viewer');
+			const playback = await client.openStoredMedia({
+				sourceId: 'front-door',
+				streamId: 'main',
+				timestampMs: 1000,
+				endTimeMs: 9000,
+				playing: false,
+				playbackRate: 2,
+				recordedAudioPreview: -40
+			});
+			expect(playback.recordedAudio?.appliedOffsetMs).toBe(-40);
+			playback.onError(() => observed.push('playback error'));
+			observed.length = 0;
+			FakePeerConnection.latest!.channels.find((item) => item.label === channel)!.close();
+			expect(observed).toEqual(['checking', 'playback error']);
+			recovered.resolve({ session_id: 'restored', answer });
+			await vi.waitFor(() => expect(observed.at(-1)).toBe('authenticated'));
+			await client.close();
+		}
+	);
+
+	it.each([
+		{ local: true, confirmed: false },
+		{ local: true, confirmed: true },
+		{ local: false, confirmed: false },
+		{ local: false, confirmed: true }
+	])(
+		'reports an interrupted connection for local=$local when replacement creation succeeds=$confirmed',
+		async ({ local, confirmed }) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			FakeDataChannel.localAccess = local;
+			const answer = { type: 'answer', sdp: 'v=0' };
+			api.createSession.mockResolvedValueOnce({ session_id: 'original', answer });
+			if (confirmed) api.createSession.mockResolvedValueOnce({ session_id: 'unconfirmed', answer });
+			else
+				api.createSession.mockRejectedValueOnce(
+					new api.ApiRequestError(401, 'Previous session unavailable.')
+				);
+			api.deleteSession.mockResolvedValue(undefined);
+			const client = new ControlClient();
+			const states: Array<{ status: string; message: string | null }> = [];
+			client.onAccessState(({ status, message }) => states.push({ status, message }));
+			if (local) await client.getServerCapabilities();
+			else await client.signIn('remote-key');
+			FakeDataChannel.omitAccessSession = confirmed;
+			FakePeerConnection.latest!.channels[0].close();
+			await vi.waitFor(() =>
+				expect(states.at(-1)).toEqual({
+					status: local ? 'error' : 'sign-in-required',
+					message: local
+						? 'The recorder connection was interrupted. Retry to reconnect.'
+						: 'The recorder connection was interrupted. Sign in again to reconnect.'
+				})
+			);
+			expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith(
+				confirmed ? 'unconfirmed' : 'original',
+				local ? null : 'remote-key'
+			);
+			expect(api.createSession).toHaveBeenCalledTimes(2);
+			await expect(client.createWebRtcSession({ type: 'offer', sdp: 'v=0' })).rejects.toThrow(
+				'Sign in again'
+			);
+			if (local) {
+				FakeDataChannel.omitAccessSession = false;
+				api.createSession.mockResolvedValueOnce({ session_id: 'fresh', answer });
+				vi.stubGlobal(
+					'fetch',
+					vi.fn().mockResolvedValue(
+						Response.json({
+							local: true,
+							bearer_enabled: true,
+							methods: [],
+							identity: null,
+							csrf_token: null
+						})
+					)
+				);
+				await client.checkAccess();
+				expect(states.at(-1)?.status).toBe('authenticated');
+				expect(api.createSession).toHaveBeenLastCalledWith(expect.any(Object), null);
+			}
+			await client.close();
+		}
+	);
 
 	it('lets the recorder decide continuity when the browser clock is ahead', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);

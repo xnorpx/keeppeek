@@ -393,10 +393,7 @@
 		error = null;
 		announcement = null;
 		try {
-			const saved = await controlClient.runtimeProfiles.saveRegistry({
-				...draft,
-				revision: draft.revision
-			});
+			const saved = await controlClient.runtimeProfiles.saveRegistry(draft);
 			if (!registry) return;
 			acceptRegistry(saved);
 			if (deferredRegistry) acceptRegistry(deferredRegistry);
