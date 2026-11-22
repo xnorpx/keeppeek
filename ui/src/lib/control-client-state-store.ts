@@ -33,6 +33,8 @@ export type StateStoreWatchOptions = {
 	keyPrefix?: string;
 	maxEntries?: number;
 	listener?: StateStoreWatchListener;
+	/** The owner reopens this watch together with its other dependent snapshots. */
+	onInterrupted?: () => void;
 };
 
 export type StateStorePutOptions = {
@@ -50,6 +52,7 @@ type WatchRecord = {
 	keyPrefix: string;
 	maxEntries: number;
 	listener: StateStoreWatchListener | undefined;
+	onInterrupted: (() => void) | undefined;
 	entries: Map<string, StateEntry>;
 	snapshotRevision: bigint;
 	appliedSequence: bigint;
@@ -217,6 +220,7 @@ export class ControlClientStateStore {
 				keyPrefix,
 				maxEntries,
 				listener: options.listener,
+				onInterrupted: options.onInterrupted,
 				entries: new Map(),
 				snapshotRevision: 0n,
 				appliedSequence: 0n,
@@ -288,7 +292,7 @@ export class ControlClientStateStore {
 		if (this.#disposed) return;
 		const records = [...this.#watches.values()]
 			.map(recordOf)
-			.filter((record) => record.status !== 'closed');
+			.filter((record) => record.status !== 'closed' && !record.onInterrupted);
 		await Promise.all(records.map((record) => this.rewatch(record, { unwatchFirst: false })));
 	}
 
@@ -366,6 +370,10 @@ export class ControlClientStateStore {
 		const previousWatchId = record.watchId;
 		record.generation += 1;
 		record.status = 'rewatching';
+		if (record.onInterrupted) {
+			record.onInterrupted();
+			return;
+		}
 		const generation = record.generation;
 		if (options.unwatchFirst) await this.bestEffortUnwatch(previousWatchId);
 		for (let attempt = 0; attempt < maxRewatchAttempts; attempt += 1) {

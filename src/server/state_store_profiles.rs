@@ -551,7 +551,16 @@ fn register_profile_watch(
 }
 
 fn parse_active_profile_id(value: &Struct) -> Result<Option<String>, Error> {
-    if value.fields.len() != 1 {
+    if value.fields.keys().any(|field| {
+        !matches!(
+            field.as_str(),
+            "profile_id"
+                | "revision"
+                | "definition_revision"
+                | "observed_parts"
+                | "degraded_cameras"
+        )
+    }) {
         return Err(Error::Invalid(Invalid::Schema));
     }
     let profile_id = match value
@@ -2843,6 +2852,46 @@ mod tests {
                 "camera configuration field {field} must not be a profile override"
             );
         }
+    }
+
+    #[test]
+    fn active_v1_read_modify_write_ignores_server_metadata_and_honors_request_cas() {
+        let fixture = Fixture::new();
+        let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let session = SessionId::from_u64(20_291);
+        let dispatch =
+            |request| super::super::dispatch(&fixture.state, session, &principal, request);
+        let control_ok::Result::StateStoreResult(proto::StateStoreResult {
+            result: Some(state_store_result::Result::Entry(entry)),
+        }) = dispatch(get_key(ACTIVE_KEY)).unwrap()
+        else {
+            panic!("active entry expected")
+        };
+        let mut document = entry.value.unwrap();
+        document.fields.get_mut("profile_id").unwrap().kind =
+            Some(Kind::StringValue("away".into()));
+        let mut request = put_active("away", entry.revision);
+        let Some(state_store_command::Action::Put(put)) = request.action.as_mut() else {
+            unreachable!()
+        };
+        put.value = Some(document.clone());
+        dispatch(request.clone()).unwrap();
+        assert_eq!(
+            config::load_config(&fixture.config_path())
+                .unwrap()
+                .runtime_profiles
+                .active_profile_id
+                .as_deref(),
+            Some("away")
+        );
+        assert!(
+            dispatch(request).is_err(),
+            "the original CAS revision is stale"
+        );
+        document
+            .fields
+            .insert("unexpected".to_owned(), Value::default());
+        assert!(parse_active_profile_id(&document).is_err());
     }
 
     #[test]
