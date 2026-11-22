@@ -485,6 +485,23 @@ describe('RuntimeProfilesSection', () => {
 		}
 	);
 
+	it('keeps the observation subscription closed when an activation fails after unmount', async () => {
+		const { client, runtimeProfiles } = recoveryClient('away');
+		const activation = Promise.withResolvers<string>();
+		const close = vi.fn();
+		runtimeProfiles.activate.mockReturnValueOnce(activation.promise);
+		runtimeProfiles.watchStatus.mockResolvedValueOnce({ close });
+		const screen = await render(RuntimeProfilesSectionFixture, { props: { client, cameras: [] } });
+		await page.getByRole('button', { name: 'Reapply active policy' }).click();
+		expect(runtimeProfiles.activate).toHaveBeenCalledOnce();
+		await screen.unmount();
+		expect(close).toHaveBeenCalledOnce();
+		activation.reject(new Error('Activation conflicted.'));
+		await activation.promise.catch(() => {});
+		expect(runtimeProfiles.watchStatus).toHaveBeenCalledOnce();
+		expect(runtimeProfiles.getStatus).toHaveBeenCalledOnce();
+	});
+
 	it('keeps recovery available after a failed request refreshes the accepted revision', async () => {
 		const { client, runtimeProfiles, status, registry } = recoveryClient('away');
 		runtimeProfiles.activate.mockRejectedValueOnce(new Error('Activation conflicted.'));

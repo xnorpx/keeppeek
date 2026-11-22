@@ -62,6 +62,10 @@ export class SharedProfileWatch<T> {
 				});
 				if (current()) group.subscription = opened;
 				else await opened.close();
+			})
+			.catch((cause: unknown) => {
+				if (current()) group.failed = true;
+				throw cause;
 			});
 		return group.opened;
 	}
@@ -74,7 +78,6 @@ export class SharedProfileWatch<T> {
 			await opened;
 		} catch (error) {
 			if (this.group !== group || group.opened !== opened) return;
-			group.failed = true;
 			for (const onError of group.listeners.values()) onError?.(error);
 		}
 	}
