@@ -1186,6 +1186,131 @@ mod tests {
     }
 
     #[test]
+    fn fragment_sample_timing_and_bytes_match_across_index_boundaries() {
+        let mut writer = FragmentedMp4Writer::write_start(
+            Cursor::new(Vec::new()),
+            &mp4_config(),
+            &[video_track()],
+        )
+        .unwrap();
+        let mut time = 0;
+        let mut expected = Vec::new();
+        for ordinal in 1_u32..=260 {
+            let duration = 23 + ordinal % 19;
+            let bytes = ordinal.to_le_bytes().repeat(1 + (ordinal % 5) as usize);
+            expected.push((time, duration, bytes.clone()));
+            writer
+                .write_sample(
+                    1,
+                    Mp4Sample {
+                        start_time: time,
+                        duration,
+                        rendering_offset: 0,
+                        is_sync: ordinal % 130 == 1,
+                        bytes: bytes.into(),
+                    },
+                )
+                .unwrap();
+            time += u64::from(duration);
+            if ordinal.is_multiple_of(130) {
+                writer.flush_fragment().unwrap();
+            }
+        }
+        let input = writer.into_writer().into_inner();
+        let mut reader = Mp4Reader::read_header(Cursor::new(&input), input.len() as u64).unwrap();
+        for (index, (time, duration, bytes)) in expected.iter().enumerate().rev() {
+            let ordinal = 1 + index as u32;
+            let timing = reader.tracks()[&1].sample_timing(ordinal).unwrap().unwrap();
+            assert_eq!(
+                (
+                    timing.decode_time,
+                    timing.presentation_time,
+                    timing.duration
+                ),
+                (*time, i128::from(*time), *duration)
+            );
+            let sample = reader.read_sample(1, ordinal).unwrap().unwrap();
+            assert_eq!(sample.bytes.as_ref(), bytes.as_slice());
+        }
+    }
+
+    #[test]
+    fn fragment_track_defaults_preserve_timing_and_byte_offsets_without_sample_entries() {
+        let mut writer = FragmentedMp4Writer::write_start(
+            Cursor::new(Vec::new()),
+            &mp4_config(),
+            &[video_track()],
+        )
+        .unwrap();
+        for index in 0_u32..130 {
+            writer
+                .write_sample(
+                    1,
+                    Mp4Sample {
+                        start_time: u64::from(index) * 40,
+                        duration: 40,
+                        rendering_offset: 0,
+                        is_sync: true,
+                        bytes: Vec::from(index.to_le_bytes()).into(),
+                    },
+                )
+                .unwrap();
+        }
+        writer.flush_fragment().unwrap();
+        let input = writer.into_writer().into_inner();
+        let reader = Mp4Reader::read_header(Cursor::new(&input), input.len() as u64).unwrap();
+        for inherit in [false, true] {
+            let mut moov = reader.moov.clone();
+            let mut moof = reader.moofs[0].clone();
+            let traf = &mut moof.trafs[0];
+            let run = traf.trun.as_mut().unwrap();
+            run.flags &= !(TrunBox::FLAG_SAMPLE_DURATION | TrunBox::FLAG_SAMPLE_SIZE);
+            run.sample_durations.clear();
+            run.sample_sizes.clear();
+            if inherit {
+                let trex = &mut moov.mvex.as_mut().unwrap().trexs[0];
+                trex.default_sample_duration = 40;
+                trex.default_sample_size = 4;
+                traf.tfhd.flags &=
+                    !(TfhdBox::FLAG_DEFAULT_SAMPLE_DURATION | TfhdBox::FLAG_DEFAULT_SAMPLE_SIZE);
+                traf.tfhd.default_sample_duration = None;
+                traf.tfhd.default_sample_size = None;
+            }
+            let payload_offset = i32::try_from(moof.get_size() + HEADER_SIZE).unwrap();
+            moof.trafs[0].trun.as_mut().unwrap().data_offset = Some(payload_offset);
+            let mut bytes = Vec::new();
+            reader.ftyp.write_box(&mut bytes).unwrap();
+            moov.write_box(&mut bytes).unwrap();
+            moof.write_box(&mut bytes).unwrap();
+            bytes.extend_from_slice(&(130_u32 * 4 + 8).to_be_bytes());
+            bytes.extend_from_slice(b"mdat");
+            for i in 0..130_u32 {
+                bytes.extend_from_slice(&i.to_le_bytes());
+            }
+            let mut input =
+                Mp4Reader::read_header(Cursor::new(&bytes), bytes.len() as u64).unwrap();
+            for index in 0_u32..130 {
+                let timing = input.tracks()[&1]
+                    .sample_timing(index + 1)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(timing.decode_time, u64::from(index) * 40);
+                assert_eq!(timing.presentation_time, i128::from(index) * 40);
+                assert_eq!(timing.duration, 40);
+                assert_eq!(
+                    input
+                        .read_sample(1, index + 1)
+                        .unwrap()
+                        .unwrap()
+                        .bytes
+                        .as_ref(),
+                    index.to_le_bytes()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn fragmented_writer_round_trips_samples_and_ranges() {
         let mut writer = FragmentedMp4Writer::write_start(
             Cursor::new(Vec::new()),
