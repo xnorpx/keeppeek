@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 
-FROM oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6 AS bun
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS bun
 
-FROM rust:1-slim-bookworm@sha256:2775a09d208ff0d7c1f50490c45b62db929e87ba1dcbc3f2132ac71a704bcdd3 AS builder
+FROM rust:1-slim-bookworm@sha256:7c7d4eb4d05b7781187a327809466cfddf29753f6defdc3d19a0e291951b7a37 AS builder
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends libssl-dev pkg-config \
@@ -18,7 +18,7 @@ RUN bun install --no-save --cwd ui --registry=https://registry.npmjs.org/ \
     && cargo build --locked --release --bin keeppeek \
     && mkdir --parents /container-config/keeppeek
 
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:adcd20c7b4c988b73cbfbddb26d2eee574571e6d7c9ffea29b3821e0690efb77
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 
 ENV XDG_CONFIG_HOME=/config
 
