@@ -670,10 +670,16 @@ export class LivePeer {
 			if (event) this.attachAudioTrackEvent(cameraId, event);
 			return;
 		}
-		if (result.value.delivery.case !== 'mediaData' || variant.codec?.name.toLowerCase() !== 'aac')
-			return;
 		const format = variant.format?.format;
-		if (format?.case !== 'audio') return;
+		if (
+			result.value.delivery.case !== 'mediaData' ||
+			variant.codec?.name.toLowerCase() !== 'aac' ||
+			format?.case !== 'audio'
+		) {
+			if (previewOffset !== undefined)
+				throw new Error('This audio delivery cannot be previewed in this viewer.');
+			return;
+		}
 		if (this.#audioPlaybackByBinding.has(result.value.delivery.value.streamBindingId)) return;
 		const playback = new AacAudioPlayback();
 		try {
@@ -687,6 +693,8 @@ export class LivePeer {
 			this.#audioBindingByCamera[cameraId] = result.value.delivery.value.streamBindingId;
 		} catch (error) {
 			playback.close();
+			if (previewOffset !== undefined)
+				throw new Error('This browser cannot decode the audio timing preview.', { cause: error });
 			console.warn(`AAC playback is unavailable for ${cameraId}`, error);
 		}
 	}

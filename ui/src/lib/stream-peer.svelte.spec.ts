@@ -10,6 +10,7 @@ import {
 	LiveQualityDiagnosticsSchema,
 	LiveQualitySelectionReason,
 	MediaStreamCapabilitySchema,
+	MediaVariantCapabilitySchema,
 	NotificationSchema,
 	OkSchema,
 	ResponseSchema,
@@ -31,10 +32,12 @@ const api = vi.hoisted(() => ({
 vi.mock('./api', () => api);
 
 import { LivePeer } from './stream-peer.svelte';
+import { AacAudioPlayback } from './audio-playback';
 
 class FakeDataChannel {
 	static suppressCapabilities = false;
 	static audioVariants: string[] = [];
+	static audioUsesReliable = false;
 	static offlineCamera: string | null = null;
 	static rejectedSubscription: string | null = null;
 	static rejectUnsubscribe = false;
@@ -74,12 +77,15 @@ class FakeDataChannel {
 						case: 'subscriptionResult' as const,
 						value: create(SubscriptionResultSchema, {
 							subscriptionId: command.value.subscriptionId,
-							delivery: {
-								case: 'rtp',
-								value: create(RtpDeliverySchema, {
-									mid: command.value.subscriptionId.replace('camera-', '')
-								})
-							},
+							delivery:
+								command.value.kind === MediaKind.AUDIO && FakeDataChannel.audioUsesReliable
+									? { case: 'mediaData', value: { streamBindingId: command.value.subscriptionId } }
+									: {
+											case: 'rtp',
+											value: create(RtpDeliverySchema, {
+												mid: command.value.subscriptionId.replace('camera-', '')
+											})
+										},
 							selectedVariantId:
 								FakeDataChannel.selectedVariant ?? (command.value.variantId || 'sub'),
 							liveAudio: {
@@ -134,10 +140,23 @@ class FakeDataChannel {
 									video: create(MediaStreamCapabilitySchema),
 									audio: FakeDataChannel.audioVariants.length
 										? create(MediaStreamCapabilitySchema, {
-												variants: FakeDataChannel.audioVariants.map((variantId) => ({
-													variantId,
-													deliveryTransports: [DeliveryTransport.RTP]
-												}))
+												variants: FakeDataChannel.audioVariants.map((variantId) =>
+													create(MediaVariantCapabilitySchema, {
+														variantId,
+														codec: { name: 'aac' },
+														format: {
+															format: {
+																case: 'audio',
+																value: { sampleRateHz: 48000, channelCount: 1 }
+															}
+														},
+														deliveryTransports: [
+															FakeDataChannel.audioUsesReliable
+																? DeliveryTransport.RELIABLE_DATA
+																: DeliveryTransport.RTP
+														]
+													})
+												)
 											})
 										: undefined
 								})
@@ -219,6 +238,7 @@ afterEach(() => {
 	vi.clearAllMocks();
 	FakeDataChannel.suppressCapabilities = false;
 	FakeDataChannel.audioVariants = [];
+	FakeDataChannel.audioUsesReliable = false;
 	FakeDataChannel.offlineCamera = null;
 	FakeDataChannel.rejectedSubscription = null;
 	FakeDataChannel.rejectUnsubscribe = false;
@@ -304,6 +324,32 @@ describe('LivePeer', () => {
 				{ cameraId: 'front-door', variantId: 'sub', quality: 'auto', liveAudioPreviewOffsetMs: 25 }
 			])
 		).rejects.toThrow('no matching live audio profile');
+		expect(api.deleteSession).toHaveBeenCalledOnce();
+	});
+
+	it('does not confirm a reliable audio preview the browser cannot decode', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'timing',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		FakeDataChannel.audioVariants = ['main'];
+		FakeDataChannel.audioUsesReliable = true;
+		vi.spyOn(AacAudioPlayback.prototype, 'configure').mockRejectedValue(
+			new Error('decoder unavailable')
+		);
+		const peer = new LivePeer();
+		await expect(
+			peer.configure([
+				{
+					cameraId: 'front-door',
+					variantId: 'main',
+					quality: 'auto',
+					liveAudioPreviewOffsetMs: -25
+				}
+			])
+		).rejects.toThrow('cannot decode the audio timing preview');
 		expect(api.deleteSession).toHaveBeenCalledOnce();
 	});
 
