@@ -2,7 +2,7 @@
 
 use super::{
     Root,
-    file::{file_identity, file_options, hash, validate_key},
+    file::{create_owned_leaf, file_identity, file_options, hash, validate_key},
     identity,
 };
 use crate::storage::long_term::inspection::removal::{
@@ -431,14 +431,7 @@ fn write_receipt(directory: &Dir, name: &str, receipt: &Receipt) -> anyhow::Resu
         bytes.len() <= usize::try_from(MAX_RECEIPT_BYTES)?,
         "retirement receipt is too large"
     );
-    let mut options = file_options();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use cap_std::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = directory.open_with(name, &options)?.into_std();
+    let mut file = create_owned_leaf(directory, name)?;
     let identity = file_identity(&file)?;
     file.write_all(&bytes)?;
     file.sync_all()?;
