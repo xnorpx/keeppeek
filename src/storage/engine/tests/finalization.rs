@@ -449,13 +449,25 @@ fn retention_expires_a_nested_published_stream_only_after_relocation() {
     let catalog = RecordingCatalog::open(&root.join("catalog.db")).unwrap();
     let handle = catalog.handle();
     insert_cleanup_recording(&handle, "expired", &source, 1_000, 40);
-    let settings = toml::from_str("[default]\ncontinuous_days=0.0").unwrap();
+    let settings = toml::from_str("[default]\ncontinuous_days=1.0").unwrap();
     handle.request_retention_settings(Some(&settings)).unwrap();
-    for _ in 0..16 {
-        if !handle.reconcile_retention_runtime(4).unwrap().pending {
-            break;
+    let reconcile = || {
+        for _ in 0..16 {
+            if !handle.reconcile_retention_runtime(4).unwrap().pending {
+                assert_eq!(
+                    handle
+                        .retention_decision("expired")
+                        .unwrap()
+                        .unwrap()
+                        .deadline_ms,
+                    Some(86_402_000)
+                );
+                return;
+            }
         }
-    }
+        panic!("retention reconciliation did not finish");
+    };
+    reconcile();
     let store = LongTermStore::for_recording_roots(&root, &config.medium_term_path);
     assert!(!retention::expire_legacy(&handle, &store, "expired").unwrap());
     assert_eq!(std::fs::read(&source).unwrap().len(), 40);
@@ -469,6 +481,8 @@ fn retention_expires_a_nested_published_stream_only_after_relocation() {
     )
     .unwrap();
     assert_eq!(target, root.join(relative));
+    // Publication changes the file identity and schedules its normal retention re-evaluation.
+    reconcile();
     assert!(retention::expire_legacy(&handle, &store, "expired").unwrap());
     assert!(!target.exists());
     catalog.shutdown();
