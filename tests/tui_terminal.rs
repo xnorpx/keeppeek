@@ -123,7 +123,9 @@ fn foreground_lifecycle(detach: bool) -> Result<()> {
 
     output.through(b"Uptime")?;
     pair.master.resize(terminal_size(36, 7))?;
-    output.through(b"Enlarge terminal")?;
+    // A differential render can position the cursor between words.
+    output.through(b"Enlarge")?;
+    output.through(b"details")?;
     pair.master.resize(terminal_size(80, 24))?;
     output.through(b"Uptime")?;
     if detach {

@@ -38,6 +38,12 @@ const UI_INPUTS: &[&str] = &[
 const OPTIONAL_UI_INPUTS: &[&str] = &["ui/static"];
 
 fn main() -> io::Result<()> {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        // Debug catalog initialization exceeds the default 1 MiB Windows main-thread stack.
+        println!("cargo::rustc-link-arg-bin=keeppeek=/STACK:2097152");
+    }
     let manifest_dir = PathBuf::from(
         env::var_os("CARGO_MANIFEST_DIR").expect("Cargo must set CARGO_MANIFEST_DIR"),
     );
