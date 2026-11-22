@@ -160,11 +160,7 @@ impl StreamHistory {
                 return false;
             }
         }
-        if self.awaiting_keyframe && !keyframe {
-            return false;
-        }
-
-        true
+        keyframe || !self.awaiting_keyframe
     }
 
     fn expire(&mut self, now: Instant) {

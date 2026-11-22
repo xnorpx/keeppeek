@@ -279,9 +279,8 @@ fn restore_confirmation_is_bound_to_live_parent_target_and_exact_archive() {
 #[test]
 fn restore_upload_rejects_wrong_offsets_and_digest_and_removes_private_temporary_files() {
     for wrong_offset in [false, true] {
-        let (fixture, archive) = fixture();
-        let receipt = begin_archive(&fixture, &archive);
-        let mut bytes = archive.clone();
+        let (fixture, mut bytes) = fixture();
+        let receipt = begin_archive(&fixture, &bytes);
         if !wrong_offset {
             bytes[0] ^= 1;
         }
