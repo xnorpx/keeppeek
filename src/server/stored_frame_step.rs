@@ -623,11 +623,7 @@ pub(super) fn step(
     let deadline = Instant::now() + Duration::from_secs(2);
     let check_access = || {
         let access = camera_access::for_session(state, session)?;
-        camera_access::require_camera(&access, &request.source_id)?;
-        if privacy_active_for_media(state, &request.source_id)? {
-            return Err(rejected("camera privacy is active"));
-        }
-        Ok(())
+        camera_access::require_camera(&access, &request.source_id)
     };
     check_access()?;
     let key = (session, request.stored_media_id.clone());

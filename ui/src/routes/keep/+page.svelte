@@ -9,6 +9,8 @@
 	import EventDetailDrawer from '$lib/components/EventDetailDrawer.svelte';
 	import EventWorkflowNotice from '$lib/components/EventWorkflowNotice.svelte';
 	import FocusedMediaViewport from '$lib/components/FocusedMediaViewport.svelte';
+	import { RecordedFramePlayer } from '$lib/recorded-frame-player.svelte';
+	import type { PresentedStoredFrame } from '$lib/stored-frame-step';
 	import RecordedPlaybackControls from '$lib/components/RecordedPlaybackControls.svelte';
 	import StoredPlaybackNotice from '$lib/components/StoredPlaybackNotice.svelte';
 	import RecordedAudioPreview from '$lib/components/RecordedAudioPreview.svelte';
@@ -129,6 +131,15 @@
 	let playbackVolume = $state(1);
 	let storedPlayback = $state.raw<StoredMediaPlayback | null>(null);
 	let playbackUrl: string | null = $state(null);
+	const frames = new RecordedFramePlayer();
+	let frameCanvas = $state<HTMLCanvasElement | null>(null);
+	$effect(() => {
+		const element = video;
+		const cursor = storedPlayback;
+		const url = playbackUrl;
+		if (mode !== 'timeline' || scrubbing || !element || !cursor || !url) return;
+		return untrack(() => frames.follow(element, cursor));
+	});
 	let playbackAnchorMs = 0;
 	let playbackVersion = 0;
 	let playbackSourceCommitVersion: number | null = null;
@@ -1667,6 +1678,7 @@
 	}
 
 	async function selectSegment(segment: RecordingSegment | null, offsetSeconds = 0, play = false) {
+		frames.clear();
 		rememberPlaybackTarget(segment, offsetSeconds, play);
 		if (!segment) {
 			cameraSwitchPending = false;
@@ -1699,7 +1711,6 @@
 			exportRangeStartMs = null;
 			exportRangeEndMs = null;
 		}
-		const requestedOffsetSeconds = (requestedTimestampMs - segment.start_time_ms) / 1_000;
 		playerError = null;
 		if (sameSegment) {
 			await seekWithinSelectedSegment(segment, requestedTimestampMs, play);
@@ -1717,6 +1728,16 @@
 		if (reusablePlayback && previousPlayback) {
 			await reuseStoredSegment(previousPlayback, segment, requestedTimestampMs, play, version);
 		} else await openStoredSegment(segment, requestedTimestampMs, play, version, previousPlayback);
+	}
+
+	function playbackOffsetAfterSeek(playback: StoredMediaPlayback, requestedMs: number): number {
+		// Cursor lookup uses milliseconds. The browser can resume at the fractional sample time.
+		const fractionMs = requestedMs - Math.trunc(requestedMs);
+		return Math.max(
+			0,
+			playback.initialOffsetSeconds +
+				(requestedMs >= playback.anchorTimeMs ? fractionMs / 1_000 : 0)
+		);
 	}
 
 	async function reuseStoredSegment(
@@ -1740,7 +1761,7 @@
 		playheadMs = timestampMs;
 		playbackUrl = playback.url;
 		playbackAnchorMs = playback.anchorTimeMs;
-		pendingSeekSeconds = playback.initialOffsetSeconds;
+		pendingSeekSeconds = playbackOffsetAfterSeek(playback, timestampMs);
 		playback.setPlaybackRate(playbackRate);
 		playback.setPlaying(play);
 		await tick();
@@ -1799,7 +1820,7 @@
 		observePlaybackStartup(playback, version, segment, requestedTimestampMs);
 		playbackUrl = playback.url;
 		playbackAnchorMs = playback.anchorTimeMs;
-		pendingSeekSeconds = playback.initialOffsetSeconds;
+		pendingSeekSeconds = playbackOffsetAfterSeek(playback, requestedTimestampMs);
 		await tick();
 		applyPendingSeek();
 		if (previousPlayback && previousPlayback !== playback) {
@@ -1837,7 +1858,7 @@
 			playbackSourceCommitVersion = version;
 			playbackUrl = playback.url;
 			playbackAnchorMs = playback.anchorTimeMs;
-			pendingSeekSeconds = playback.initialOffsetSeconds;
+			pendingSeekSeconds = playbackOffsetAfterSeek(playback, requestedTimestampMs);
 		}
 		try {
 			await tick();
@@ -2076,6 +2097,18 @@
 	}
 
 	function setPlaying(nextPlaying: boolean): void {
+		if (nextPlaying && frames.selection) {
+			const precise = frames.selection.storedTimeNs;
+			const cursor = storedPlayback;
+			const storedMs = Number(precise / 1_000_000n) + Number(precise % 1_000_000n) / 1e6;
+			frames.clear();
+			if (!cursor || !video || !cursor.canSeekLocally(storedMs)) {
+				seekToTimestamp(storedMs, true);
+				return;
+			}
+			video.currentTime = Number(precise - BigInt(cursor.anchorTimeMs) * 1_000_000n) / 1e9;
+		}
+		if (nextPlaying && frames.busy) frames.clear();
 		playing = nextPlaying;
 		rememberPlayIntent(nextPlaying);
 		storedPlayback?.setPlaying(nextPlaying);
@@ -2117,6 +2150,24 @@
 		skip(direction * estimatedFrameIntervalSeconds);
 	}
 
+	function presentSteppedFrame(sample: PresentedStoredFrame): void {
+		if (!frameCanvas || !video?.paused) throw new Error('The paused player changed.');
+		const context = frameCanvas.getContext('2d');
+		if (!context) throw new Error('The browser could not display this picture.');
+		frameCanvas.width = sample.frame.displayWidth;
+		frameCanvas.height = sample.frame.displayHeight;
+		context.drawImage(sample.frame, 0, 0);
+		clearStillPreview();
+		playheadMs =
+			Number(sample.presentationTimeNs / 1_000_000n) +
+			Number(sample.presentationTimeNs % 1_000_000n) / 1e6;
+	}
+
+	function stepRecordedPicture(direction: -1 | 1): void {
+		if (mode !== 'timeline' || playing || !video?.paused || scrubbing || !storedPlayback) return;
+		void frames.step(direction, storedPlayback, presentSteppedFrame);
+	}
+
 	function jumpToLive(): void {
 		const latest = orderedSegments.at(-1);
 		if (!latest) return;
@@ -2140,7 +2191,7 @@
 		if (target?.closest('[role="dialog"], dialog')) return;
 		if (target?.closest('[data-recorded-playback-controls]')) return;
 		if (event.key.startsWith('Arrow') && target?.closest('[data-digital-pan-active]')) return;
-		const playerFocused = target?.closest('[data-keep-player]') !== null;
+		const playerFocused = Boolean(target?.closest('[data-keep-player]'));
 		const key = event.key.toLowerCase();
 		if (key === 'j') shuttle(-1);
 		else if (key === 'k') pauseTransport();
@@ -2148,9 +2199,13 @@
 		else if (event.key === ' ' && !event.repeat) toggleTransport();
 		else if (event.key === '[') setExportBoundary('start');
 		else if (event.key === ']') setExportBoundary('end');
-		else if (event.key === 'ArrowLeft' && playerFocused) seekEstimatedFrameInterval(-1);
-		else if (event.key === 'ArrowRight' && playerFocused) seekEstimatedFrameInterval(1);
-		else if (event.key === 'Home' && playerFocused) jumpToLive();
+		else if ((key === 'arrowleft' || key === 'arrowright') && playerFocused) {
+			const direction = key === 'arrowleft' ? -1 : 1;
+			if (storedPlayback?.canStepExactly) {
+				if (playing) return;
+				stepRecordedPicture(direction);
+			} else seekEstimatedFrameInterval(direction);
+		} else if (event.key === 'Home' && playerFocused) jumpToLive();
 		else return;
 		event.preventDefault();
 	}
@@ -2188,6 +2243,7 @@
 	}
 
 	function updatePlayhead() {
+		if (frames.selection) return;
 		if (!video || !selected || playbackSourceCommitVersion !== null) return;
 		playheadMs = playbackAnchorMs + video.currentTime * 1_000;
 		storedPlayback?.observe(video.currentTime);
@@ -2673,6 +2729,14 @@
 										onvolumechange={updateMutedPreference}
 										onerror={handlePlayerError}
 									></video>
+									{#if storedPlayback?.canStepExactly}
+										<canvas
+											bind:this={frameCanvas}
+											hidden={!frames.selection}
+											aria-label="Selected recorded picture"
+											class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
+										></canvas>
+									{/if}
 								{/key}
 								{#if stillPreviewUrl}
 									<img
@@ -2736,6 +2800,14 @@
 					{/if}
 
 					<RecordedPlaybackControls
+						onframe={storedPlayback?.canStepExactly && mode === 'timeline'
+							? stepRecordedPicture
+							: undefined}
+						frameDisabled={playing ||
+							scrubbing ||
+							(frames.displayedNs === undefined && !frames.selection)}
+						frameTimeNs={frames.selection?.presentationTimeNs}
+						frameNotice={frames.notice || (frames.busy ? 'Loading recorded picture�' : '')}
 						onoptions={mobilePortrait ? () => openMobilePanel('playback') : undefined}
 						{playing}
 						muted={playbackMuted}

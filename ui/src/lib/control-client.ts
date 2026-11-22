@@ -1,4 +1,8 @@
-import { awaitFrameOperation, StoredFrameWindow, type PresentedStoredFrame } from './stored-frame-step';
+import {
+	awaitFrameOperation,
+	StoredFrameWindow,
+	type PresentedStoredFrame
+} from './stored-frame-step';
 import {
 	StepStoredFrameSchema,
 	StoredFrameStepDirection,
@@ -3346,7 +3350,16 @@ export class StoredMediaPlayback {
 								}
 							}
 			});
-			const result = await awaitFrameOperation(this.requestFrameStep(request, abort.signal), abort.signal);
+			const send = this.requestFrameStep;
+			const result = await awaitFrameOperation(
+				this.cursorOperation(() => {
+					abort.signal.throwIfAborted();
+					if (this.#playing || this.#generation !== request.generation)
+						throw new Error('The paused playback cursor changed.');
+					return send(request, abort.signal);
+				}),
+				abort.signal
+			);
 			clearTimeout(startDeadline);
 			abort.signal.throwIfAborted();
 			decodeDeadline = setTimeout(cancel, 5000);

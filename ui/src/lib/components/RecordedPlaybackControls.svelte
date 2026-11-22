@@ -6,6 +6,8 @@
 	import { onMount } from 'svelte';
 	import { Button } from './ui/button/index.js';
 	import PlayIcon from '@lucide/svelte/icons/play';
+	import StepBackIcon from '@lucide/svelte/icons/step-back';
+	import StepForwardIcon from '@lucide/svelte/icons/step-forward';
 	import PauseIcon from '@lucide/svelte/icons/pause';
 	import VolumeIcon from '@lucide/svelte/icons/volume-2';
 	import VolumeOffIcon from '@lucide/svelte/icons/volume-x';
@@ -29,6 +31,10 @@
 		onskip: (seconds: number) => void;
 		onvolumechange: (volume: number) => void;
 		onratechange: (rate: number) => void;
+		onframe?: (direction: -1 | 1) => void;
+		frameDisabled?: boolean;
+		frameNotice?: string;
+		frameTimeNs?: bigint;
 		onoptions?: () => void;
 	};
 
@@ -47,6 +53,10 @@
 		onskip,
 		onvolumechange,
 		onratechange,
+		onframe,
+		frameDisabled = false,
+		frameNotice = '',
+		frameTimeNs,
 		onoptions
 	}: Props = $props();
 	let fullscreen = $state(false);
@@ -62,6 +72,12 @@
 			active = false;
 		};
 	});
+
+	function preciseFrameTime(ns: bigint): string {
+		const fraction = ((ns % 1_000_000_000n) + 1_000_000_000n) % 1_000_000_000n;
+		const date = new Date(Number((ns - fraction) / 1_000_000n));
+		return date.toISOString().replace(/\.000Z$/, '.' + fraction.toString().padStart(9, '0') + 'Z');
+	}
 
 	function formatTime(seconds: number): string {
 		const total = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
@@ -93,6 +109,25 @@
 	}}
 />
 
+{#snippet frameButtons()}
+	{#each [-1, 1] as direction (direction)}
+		{@const previous = direction === -1}
+		{@const label = previous ? 'Previous recorded frame' : 'Next recorded frame'}
+		<Button
+			variant="outline"
+			size="icon"
+			class="size-11"
+			disabled={disabled || frameDisabled}
+			aria-label={label}
+			title={frameDisabled ? 'Pause on a displayed picture to step frames' : label}
+			aria-keyshortcuts={previous ? 'ArrowLeft' : 'ArrowRight'}
+			onclick={() => onframe?.(previous ? -1 : 1)}
+		>
+			{#if previous}<StepBackIcon />{:else}<StepForwardIcon />{/if}
+		</Button>
+	{/each}
+{/snippet}
+
 <div
 	data-recorded-playback-controls
 	role="group"
@@ -111,6 +146,7 @@
 		>
 			{#if playing}<PauseIcon />{:else}<PlayIcon />{/if}
 		</Button>
+		{#if onframe && (!onoptions || fullscreen)}{@render frameButtons()}{/if}
 		<Button
 			variant="outline"
 			size="icon"
@@ -209,5 +245,18 @@
 			onchange={(event) => onseek(Number(event.currentTarget.value))}
 		/>
 	</div>
+	{#if onframe && onoptions && !fullscreen && !playing}
+		<div role="group" aria-label="Recorded frames" class="flex items-center gap-1">
+			{@render frameButtons()}
+		</div>
+	{/if}
+	{#if frameTimeNs !== undefined}
+		<p class="font-mono text-xs tabular-nums">
+			Recorded frame <time datetime={preciseFrameTime(frameTimeNs)}
+				>{preciseFrameTime(frameTimeNs)}</time
+			>
+		</p>
+	{/if}
+	{#if frameNotice}<p role="status" class="text-xs text-muted-foreground">{frameNotice}</p>{/if}
 	{#if fullscreenError}<p role="alert" class="text-xs text-destructive">{fullscreenError}</p>{/if}
 </div>

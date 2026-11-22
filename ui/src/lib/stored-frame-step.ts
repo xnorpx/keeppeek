@@ -211,14 +211,22 @@ function stepUnavailable(status: StoredFrameStepStatus): string {
 	}
 }
 
-export async function awaitFrameOperation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+export async function awaitFrameOperation<T>(
+	operation: Promise<T>,
+	signal: AbortSignal
+): Promise<T> {
 	signal.throwIfAborted();
 	let rejectAbort: (cause: unknown) => void = () => {};
-	const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+	const aborted = new Promise<never>((_, reject) => {
+		rejectAbort = reject;
+	});
 	const cancel = () => rejectAbort(signal.reason);
 	signal.addEventListener('abort', cancel, { once: true });
-	try { return await Promise.race([operation, aborted]); }
-	finally { signal.removeEventListener('abort', cancel); }
+	try {
+		return await Promise.race([operation, aborted]);
+	} finally {
+		signal.removeEventListener('abort', cancel);
+	}
 }
 
 async function decodePicture(
@@ -256,6 +264,17 @@ async function decodePicture(
 	try {
 		decoder.configure(config);
 		for (const sample of samples) {
+			while (decoder.decodeQueueSize >= 2) {
+				const queued = Promise.withResolvers<void>();
+				const wake = () => queued.resolve();
+				decoder.addEventListener('dequeue', wake, { once: true });
+				try {
+					await awaitFrameOperation(queued.promise, signal);
+				} finally {
+					decoder.removeEventListener('dequeue', wake);
+				}
+			}
+			if (failure) throw failure;
 			decoder.decode(
 				new EncodedVideoChunk({
 					type: sample.randomAccess ? 'key' : 'delta',

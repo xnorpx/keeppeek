@@ -63,6 +63,31 @@ describe('RecordedPlaybackControls', () => {
 		expect(actions.onratechange).toHaveBeenLastCalledWith(2);
 	});
 
+	it('keeps the compact primary row intact and exposes touch-sized step controls while paused', async () => {
+		const onframe = vi.fn();
+		const view = await render(RecordedPlaybackControls, {
+			props: { ...props(), onframe, onoptions: vi.fn(), frameTimeNs: 1_234_567_891n }
+		});
+		const root = view.container.querySelector('[data-recorded-playback-controls]') as HTMLElement;
+		root.style.width = '390px';
+		const play = page.getByRole('button', { name: 'Play recording', exact: true }).element();
+		const mute = page.getByRole('button', { name: 'Unmute recording', exact: true }).element();
+		const back = page.getByRole('button', { name: 'Previous recorded frame' });
+		const next = page.getByRole('button', { name: 'Next recorded frame' });
+		expect(play.getBoundingClientRect().top).toBe(mute.getBoundingClientRect().top);
+		expect(back.element().getBoundingClientRect().top).toBeGreaterThan(
+			play.getBoundingClientRect().bottom
+		);
+		expect(next.element().getBoundingClientRect().width).toBeGreaterThanOrEqual(44);
+		expect(next.element().getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+		await userEvent.click(back);
+		await userEvent.click(next);
+		expect(onframe.mock.calls).toEqual([[-1], [1]]);
+		expect(root.querySelector('time')?.dateTime).toBe('1970-01-01T00:00:01.234567891Z');
+		await view.rerender({ playing: true });
+		await expect.element(next).not.toBeInTheDocument();
+	});
+
 	it('disables unavailable media and never uses a non-finite seek range', async () => {
 		await render(RecordedPlaybackControls, {
 			props: { ...props(), disabled: true, durationSeconds: Number.POSITIVE_INFINITY }
