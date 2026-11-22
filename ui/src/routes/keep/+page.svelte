@@ -2805,7 +2805,7 @@
 							class="min-h-11 justify-start text-xs"
 							disabled={scrubbing || audioPreviewBusy}
 							onclick={openRecordedAudioPreview}
-								>Recorded audio preview{recordedAudio.preview ? ' · Active' : ''}</Button
+							>Recorded audio preview{recordedAudio.preview ? ' · Active' : ''}</Button
 						>
 					{/if}
 				</section>
