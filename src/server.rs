@@ -10423,7 +10423,11 @@ fn api_preflight(request: &Request, state: &ServerState) -> Response {
         .with_additional_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         .with_additional_header(
             "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, Content-Encoding, Prefer",
+            if request.url() == "/create" {
+                "Authorization, Content-Type, Content-Encoding, Prefer, X-KeepPeek-Previous-Session"
+            } else {
+                "Authorization, Content-Type, Content-Encoding, Prefer"
+            },
         )
 }
 
@@ -10687,7 +10691,9 @@ fn create_api_session(
         .with_status_code(201)
         .with_additional_header("Content-Encoding", "gzip");
     if let Some(id) = previous {
-        response.with_additional_header(session_recovery::HEADER, id.to_string())
+        response
+            .with_additional_header(session_recovery::HEADER, id.to_string())
+            .with_additional_header("Access-Control-Expose-Headers", session_recovery::HEADER)
     } else {
         response
     }
@@ -15330,7 +15336,7 @@ mod tests {
         }));
         assert!(allowed.headers.iter().any(|(name, value)| {
             name.eq_ignore_ascii_case("Access-Control-Allow-Headers")
-                && value == "Authorization, Content-Type, Content-Encoding, Prefer"
+                && value == "Authorization, Content-Type, Content-Encoding, Prefer, X-KeepPeek-Previous-Session"
         }));
 
         let unauthenticated = handle_request(

@@ -359,6 +359,16 @@ paths:
       parameters:
         - $ref: "#/components/parameters/GzipContentEncoding"
         - $ref: "#/components/parameters/BrowserCsrf"
+        - name: X-KeepPeek-Previous-Session
+          in: header
+          required: false
+          description: >-
+            Requests one privacy-retired transport replacement for the same authenticated
+            principal and effective client address within 60 seconds, preserving original
+            activity and expiry times. The client verifies the echoed ID before using the session.
+          schema:
+            type: string
+            pattern: "^[1-9][0-9]*$"
       requestBody:
         required: true
         content:
@@ -371,6 +381,16 @@ paths:
           headers:
             Access-Control-Allow-Origin:
               $ref: "#/components/headers/AccessControlAllowOrigin"
+            X-KeepPeek-Previous-Session:
+              description: Echoed only when the requested session continuity was accepted.
+              schema:
+                type: string
+                pattern: "^[1-9][0-9]*$"
+            Access-Control-Expose-Headers:
+              description: Exposes the continuity acknowledgement for an allowed browser origin.
+              schema:
+                type: string
+                const: X-KeepPeek-Previous-Session
             Content-Encoding:
               $ref: "#/components/headers/GzipContentEncoding"
           content:
@@ -407,7 +427,10 @@ paths:
             Access-Control-Allow-Methods:
               $ref: "#/components/headers/AccessControlAllowMethods"
             Access-Control-Allow-Headers:
-              $ref: "#/components/headers/AccessControlAllowHeaders"
+              description: Request headers allowed for signaling on the configured origin.
+              schema:
+                type: string
+                const: "Authorization, Content-Type, Content-Encoding, Prefer, X-KeepPeek-Previous-Session"
         "403":
           $ref: "#/components/responses/CorsOriginRejected"
   /delete:
