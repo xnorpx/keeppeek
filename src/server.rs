@@ -128,6 +128,7 @@ mod stored_read;
 use stored_read::StoredReadRange;
 mod runtime_configuration;
 mod session_lifecycle;
+mod session_recovery;
 mod sharing;
 pub(crate) mod state_store;
 #[cfg(test)]
@@ -962,6 +963,11 @@ impl ControlRequestHandler for ServerControlHandler {
             data_messages,
             notifications,
         }
+    }
+
+    fn session_privacy_retired(&self, session_id: SessionId) {
+        self.state.session_recovery.retire(&self.state, session_id);
+        close_api_session(&self.state, session_id);
     }
 
     fn session_closed(&self, session_id: SessionId) {
@@ -3311,6 +3317,7 @@ impl ServerControlHandler {
                 )
             })?;
         let removed = session_lifecycle::close(&self.state, target_session_id);
+        self.state.session_recovery.cancel(target_session_id, None);
         record_access_audit(
             &self.state,
             now_ms,
@@ -8525,6 +8532,7 @@ pub struct ServerState {
     api_session_policy: ApiSessionPolicy,
     allowed_origins: Arc<HashSet<String>>,
     api_session_owners: Arc<Mutex<HashMap<SessionId, ApiSessionRecord>>>,
+    session_recovery: Arc<session_recovery::Directory>,
     http_stream_cancellations: Arc<Mutex<Vec<HttpStreamCancellation>>>,
     stored_media_cursors: Arc<Mutex<HashMap<(SessionId, String), StoredMediaCursor>>>,
     recorded_audio_workers: Arc<AtomicUsize>,
@@ -8713,6 +8721,7 @@ impl ServerState {
             api_session_policy: initial_session_policy(config),
             allowed_origins: Arc::new(config.direct_card.allowed_origins.iter().cloned().collect()),
             api_session_owners: Arc::new(Mutex::new(HashMap::new())),
+            session_recovery: Arc::default(),
             http_stream_cancellations: Arc::new(Mutex::new(Vec::new())),
             stored_media_cursors: Arc::new(Mutex::new(HashMap::new())),
             recorded_audio_workers: Arc::new(AtomicUsize::new(0)),
@@ -10015,6 +10024,7 @@ fn expire_event_publications(state: &ServerState) {
 
 fn expire_api_sessions(state: &ServerState) {
     let now_at = Instant::now();
+    state.session_recovery.prune(now_at);
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
     let expired = {
         let sessions = state
@@ -10634,6 +10644,10 @@ fn create_api_session(
         Ok(offer) => offer,
         Err(response) => return response,
     };
+    let previous = match session_recovery::requested(request) {
+        Ok(previous) => previous,
+        Err(response) => return response,
+    };
     let session = match state.webrtc.accept_api_offer(offer) {
         Ok(session) => session,
         Err(error) => return api_status(400, &format!("unable to accept SDP offer: {error}")),
@@ -10653,12 +10667,17 @@ fn create_api_session(
         }
     };
     remove_stale_api_sessions(state);
-    if let Err(response) = register_api_session(state, &identity, session.id) {
+    if let Err(response) = register_api_session(state, &identity, session.id, previous) {
         return response;
     }
-    Response::from_data("application/json", compressed)
+    let response = Response::from_data("application/json", compressed)
         .with_status_code(201)
-        .with_additional_header("Content-Encoding", "gzip")
+        .with_additional_header("Content-Encoding", "gzip");
+    if let Some(id) = previous {
+        response.with_additional_header(session_recovery::HEADER, id.to_string())
+    } else {
+        response
+    }
 }
 
 fn decode_api_offer(request: &Request) -> Result<str0m::change::SdpOffer, Response> {
@@ -10741,6 +10760,7 @@ fn register_api_session(
     state: &ServerState,
     identity: &AuthenticatedApiRequest,
     session_id: SessionId,
+    previous: Option<SessionId>,
 ) -> Result<(), Response> {
     let mut owners = state
         .api_session_owners
@@ -10769,18 +10789,27 @@ fn register_api_session(
             "authentication expired during session creation",
         ));
     }
-    owners.insert(
-        session_id,
-        ApiSessionRecord {
-            lifecycle: Arc::default(),
-            principal: identity.principal.clone(),
-            classification: identity.classification,
-            created_at_ms: now_ms,
-            last_activity_at_ms: now_ms,
-            absolute_expires_at_ms,
-            last_activity: now_at,
-        },
-    );
+    let mut record = ApiSessionRecord {
+        lifecycle: Arc::default(),
+        principal: identity.principal.clone(),
+        classification: identity.classification,
+        created_at_ms: now_ms,
+        last_activity_at_ms: now_ms,
+        absolute_expires_at_ms,
+        last_activity: now_at,
+    };
+    if let Some(previous) = previous
+        && !state.session_recovery.restore(
+            previous,
+            &mut record,
+            state.api_session_policy.idle_timeout,
+        )
+    {
+        drop(owners);
+        state.webrtc.close_api_session(session_id);
+        return Err(api_status(401, "the previous session cannot be resumed"));
+    }
+    owners.insert(session_id, record);
     drop(owners);
     state
         .access_metrics
@@ -10883,6 +10912,7 @@ fn delete_owned_api_session(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match owners.get(&session_id) {
             None => {
+                state.session_recovery.cancel(session_id, Some(&identity));
                 return if return_representation {
                     Response::text("deleted").with_status_code(200)
                 } else {
@@ -10913,6 +10943,7 @@ fn delete_owned_api_session(
         return api_status(404, "WebRTC session not found");
     };
     close_api_session(state, session_id);
+    state.session_recovery.cancel(session_id, Some(&identity));
     record_access_audit(
         state,
         i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
@@ -14740,6 +14771,58 @@ mod tests {
             video_quality: quality as i32,
             variant_id: variant_id.to_owned(),
         }
+    }
+
+    #[test]
+    fn signaling_resumes_only_one_server_confirmed_privacy_retirement() {
+        let state = ServerState::empty();
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let offer = gzip_json(&CreateRequest {
+            offer: crate::api::SdpOffer {
+                sdp_type: "offer".into(),
+                sdp: crate::webrtc::test_api_offer().to_sdp_string(),
+            },
+        });
+        let create = |previous: Option<&str>| {
+            let mut headers = vec![("Content-Encoding".into(), "gzip".into())];
+            if let Some(id) = previous {
+                headers.push((session_recovery::HEADER.into(), id.to_owned()));
+            }
+            handle_request(
+                &Request::fake_http("POST", "/create", headers, offer.clone()),
+                &router_tx,
+                &state,
+            )
+        };
+        let opened = create(None);
+        assert_eq!(opened.status_code, 201);
+        let body = response_data(opened);
+        let initial: CreateResponse =
+            serde_json::from_reader(GzDecoder::new(body.as_slice())).unwrap();
+        let id = SessionId::from_u64(initial.session_id.parse().unwrap());
+        assert_eq!(create(Some("00")).status_code, 400);
+        assert_eq!(create(Some(&initial.session_id)).status_code, 401);
+        let original = state.api_session_owners.lock().unwrap()[&id].clone();
+        test_control_handler(state.clone()).session_privacy_retired(id);
+        state.webrtc.close_api_session(id);
+        let resumed = create(Some(&initial.session_id));
+        assert_eq!(resumed.status_code, 201);
+        assert!(resumed.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case(session_recovery::HEADER)
+                && value.as_ref() == initial.session_id
+        }));
+        let body = response_data(resumed);
+        let next: CreateResponse =
+            serde_json::from_reader(GzDecoder::new(body.as_slice())).unwrap();
+        let next_id = SessionId::from_u64(next.session_id.parse().unwrap());
+        let record = state.api_session_owners.lock().unwrap()[&next_id].clone();
+        assert_eq!(
+            record.absolute_expires_at_ms,
+            original.absolute_expires_at_ms
+        );
+        assert_eq!(record.last_activity, original.last_activity);
+        assert_eq!(create(Some(&initial.session_id)).status_code, 401);
+        state.webrtc.close_api_session(next_id);
     }
 
     #[test]

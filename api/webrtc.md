@@ -6,6 +6,21 @@
 channels open. The server sends a complete `ServerCapabilities` snapshot on the
 control channel before sending live-source events, stored-media state, or stream payloads.
 
+## Privacy-retired viewer sessions
+
+A viewer may send the decimal ID of its retired session in the
+`X-KeepPeek-Previous-Session` header on the existing authenticated `POST /create`. The server
+accepts one replacement within 60 seconds of retiring that transport for a camera privacy
+transition. It checks the same authenticated identity, credential revision, effective client
+address, original idle timeout and absolute deadline. The replacement inherits the previous
+activity and expiry times. A successful `201` echoes the previous session ID in the same header.
+An invalid ID yields `400`. A retired session that cannot be resumed yields `401`.
+
+The viewer verifies the echoed ID before restoring subscriptions. If recovery cannot be confirmed,
+it closes the unconfirmed transport and requests fresh authorization. In-flight control commands
+are discarded. An unsaved draft remains mounted while the same principal's authorization is
+being checked.
+
 ## Channels
 
 | SCTP stream ID | Label             | Delivery                       | Payload                           |

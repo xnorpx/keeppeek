@@ -205,6 +205,18 @@ impl MediaPermit {
     }
 }
 
+/// Only an actual privacy epoch transition permits reauthentication on a new transport.
+#[derive(Debug)]
+pub(crate) struct PrivacyTransportRetired;
+
+impl std::fmt::Display for PrivacyTransportRetired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RTC media privacy epoch changed")
+    }
+}
+
+impl std::error::Error for PrivacyTransportRetired {}
+
 /// Remembers every camera epoch admitted to one multiplexed RTC transport.
 /// The encrypted datagrams and SCTP retransmissions no longer expose a camera ID.
 #[derive(Default)]
@@ -230,11 +242,16 @@ impl TransportPermits {
             .permits
             .binary_search_by(|p| (Arc::as_ptr(&p.gate), p.camera_id.as_ref()).cmp(&key))
         {
-            Ok(i) => anyhow::ensure!(
-                self.permits[i].epoch == permit.epoch
-                    && self.permits[i].alias_generation == permit.alias_generation,
-                "RTC media privacy epoch changed"
-            ),
+            Ok(i) => {
+                anyhow::ensure!(
+                    self.permits[i].alias_generation == permit.alias_generation,
+                    "RTC media privacy identity changed"
+                );
+                anyhow::ensure!(
+                    self.permits[i].epoch == permit.epoch,
+                    PrivacyTransportRetired
+                );
+            }
             Err(i) => {
                 anyhow::ensure!(
                     self.permits.len() < 128,
@@ -279,10 +296,7 @@ impl TransportPermits {
                 );
                 let active = state.active(id, now);
                 let epoch = permit.gate.set_active_locked(active);
-                anyhow::ensure!(
-                    !active && epoch == permit.epoch,
-                    "RTC media privacy epoch changed"
-                );
+                anyhow::ensure!(!active && epoch == permit.epoch, PrivacyTransportRetired);
             }
             Ok(write()?)
         })
@@ -1456,6 +1470,36 @@ mod transport_tests {
     use super::*;
 
     #[test]
+    fn only_the_retired_camera_epoch_qualifies_a_transport_for_privacy_recovery() {
+        let registry = Arc::new(PrivacyRegistry::default());
+        let old = registry.media_permit("front".into()).unwrap();
+        let mut permits = TransportPermits::default();
+        permits.remember(Some(&old)).unwrap();
+        registry
+            .replace_profile_overrides(BTreeMap::from([("front".to_owned(), true)]))
+            .unwrap();
+        let denied = permits.send(|| Ok(())).unwrap_err();
+        assert!(denied.is::<PrivacyTransportRetired>());
+        registry.replace_profile_overrides(BTreeMap::new()).unwrap();
+        assert!(
+            permits
+                .send(|| Ok(()))
+                .unwrap_err()
+                .is::<PrivacyTransportRetired>()
+        );
+        let fresh = registry.media_permit("front".into()).unwrap();
+        assert!(
+            permits
+                .remember(Some(&fresh))
+                .unwrap_err()
+                .is::<PrivacyTransportRetired>()
+        );
+        let mut clean = TransportPermits::default();
+        clean.remember(Some(&fresh)).unwrap();
+        assert!(clean.send(|| Ok(())).is_ok());
+    }
+
+    #[test]
     fn restored_alias_cannot_resurrect_old_protected_output() {
         let registry = Arc::new(PrivacyRegistry::default());
         registry.set_alias("input".into(), "front".into());
@@ -1465,9 +1509,19 @@ mod transport_tests {
         registry.set_alias("input".into(), "back".into());
         registry.set_alias("input".into(), "front".into());
         assert!(old.deliver(|| ()).is_none());
-        assert!(permits.send(|| Ok(())).is_err());
+        assert!(
+            !permits
+                .send(|| Ok(()))
+                .unwrap_err()
+                .is::<PrivacyTransportRetired>()
+        );
         let fresh = registry.media_permit("input".into()).unwrap();
-        assert!(permits.remember(Some(&fresh)).is_err());
+        assert!(
+            !permits
+                .remember(Some(&fresh))
+                .unwrap_err()
+                .is::<PrivacyTransportRetired>()
+        );
         assert_eq!(fresh.deliver(|| true), Some(true));
     }
 }
