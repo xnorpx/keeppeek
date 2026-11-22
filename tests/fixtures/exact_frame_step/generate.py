@@ -72,6 +72,13 @@ def duplicate_presentation_time(path):
     if struct.unpack_from(">i", data, offset)[0] != -40:
         raise ValueError("Unexpected composition offset")
     struct.pack_into(">i", data, offset, -80)
+    # In the second GOP, reference picture 11 is decoded before B picture 10.
+    # Give them the same PTS while retaining the encoder's display order.
+    second_run = data.index(b"trun", run) + 4
+    reference_offset = second_run + 16 + 4 * 12 + 8
+    if struct.unpack_from(">II", data, second_run) != (0x01000B05, 6) or struct.unpack_from(">i", data, reference_offset)[0] != 40:
+        raise ValueError("Unexpected second fragment layout")
+    struct.pack_into(">i", data, reference_offset, 0)
     (ROOT / "duplicate-pts.mp4").write_bytes(data)
 
 

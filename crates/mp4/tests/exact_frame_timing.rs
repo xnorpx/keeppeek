@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path, process::Command};
+use std::{collections::BTreeMap, fs::File, path::Path, process::Command};
 
 const DECODE_ORDER: [u8; 12] = [0, 3, 1, 2, 5, 4, 6, 9, 7, 8, 11, 10];
 #[path = "../../../tests/fixtures/decoded_picture_ids.rs"]
@@ -17,7 +17,7 @@ fn verify(name: &str, expected_pts: &[i128; 12], durations: [u32; 12]) {
     assert_eq!(track.sample_timing(0).unwrap(), None);
     assert_eq!(track.sample_timing(13).unwrap(), None);
 
-    let mut presentation = Vec::new();
+    let mut pictures_by_position = BTreeMap::new();
     let mut decode_time = 0;
     for (index, &frame_id) in DECODE_ORDER.iter().enumerate() {
         let ordinal = u32::try_from(index + 1).unwrap();
@@ -32,18 +32,18 @@ fn verify(name: &str, expected_pts: &[i128; 12], durations: [u32; 12]) {
         );
         decode_time += u64::from(durations[index]);
         let position = reader.sample_location(1, ordinal).unwrap().unwrap().offset;
-        presentation.push((timing.presentation_time, ordinal, frame_id, position));
+        assert!(pictures_by_position.insert(position, frame_id).is_none());
     }
-    presentation.sort_unstable();
-
     let ids = decoded_picture_ids::decoded_picture_ids(&path);
     let positions = decoded_positions(&path);
-    assert_eq!(positions.len(), presentation.len());
-    assert_eq!(ids.len(), presentation.len());
-    for ((id, position), (_, _, expected_id, expected_position)) in
-        ids.into_iter().zip(positions).zip(presentation)
-    {
-        assert_eq!((id, position), (expected_id, expected_position));
+    assert_eq!(positions.len(), DECODE_ORDER.len());
+    assert_eq!(ids.len(), DECODE_ORDER.len());
+    for (expected_id, (id, position)) in (0_u8..12).zip(ids.into_iter().zip(positions)) {
+        assert_eq!(
+            id, expected_id,
+            "burned picture identity in decoder presentation order"
+        );
+        assert_eq!(pictures_by_position.get(&position), Some(&id));
     }
 }
 
@@ -91,7 +91,7 @@ fn sample_timing_matches_decoded_picture_id_for_cfr_vfr_and_duplicate_pts() {
     );
     verify(
         "duplicate-pts.mp4",
-        &[0, 40, 40, 200, 240, 280, 400, 440, 480, 600, 640, 680],
+        &[0, 40, 40, 200, 240, 280, 400, 440, 480, 600, 640, 640],
         VARIABLE_DURATIONS,
     );
 }
