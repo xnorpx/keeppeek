@@ -18,11 +18,11 @@ impl std::fmt::Debug for Materialization {
 }
 
 pub(super) async fn migrate(connection: &turso::Connection) -> anyhow::Result<()> {
-    let mut rows = connection.query(
+    let exists = connection.query(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'storage_volume_allocations'",
         (),
-    ).await?;
-    if rows.next().await?.is_some() {
+    ).await?.next().await?.is_some();
+    if exists {
         super::super::ensure_column(connection, "storage_volume_allocations", "materialized_bytes",
             "INTEGER NOT NULL DEFAULT 0 CHECK(typeof(materialized_bytes) = 'integer' AND materialized_bytes >= 0 AND materialized_bytes <= bytes)").await?;
     }

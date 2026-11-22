@@ -764,7 +764,7 @@ fn metadata(resources: &mut Resources) {
     resources.system.refresh_cpu_all();
     emit(
         json!({"workload":"metadata", "schema":1, "profile":"release",
-        "version":env!("CARGO_PKG_VERSION"), "os":sysinfo::System::long_os_version(),
+        "version":env!("CARGO_PKG_VERSION"), "os":sysinfo::System::long_os_version().ok(),
         "arch":std::env::consts::ARCH, "logical_cpus":resources.system.cpus().len(),
         "cpu":resources.system.cpus().first().map(sysinfo::Cpu::brand),
         "build_label":std::env::var("KEEPPEEK_BENCH_BUILD").ok(),
@@ -819,7 +819,8 @@ fn issue123_authentication_benchmark() {
         "run this workload with --release"
     );
     let mut resources = Resources {
-        system: sysinfo::System::new(),
+        system: sysinfo::System::new()
+            .expect("process metrics must be available for qualification"),
         rss_high_water: 0,
     };
     metadata(&mut resources);

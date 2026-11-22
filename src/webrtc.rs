@@ -3361,8 +3361,8 @@ fn rtc_config() -> RtcConfig {
         .set_snap_enabled(true)
         .set_dtls_version(DtlsVersion::Auto)
         .clear_codecs()
-        .enable_pcma(true)
-        .enable_pcmu(true)
+        .enable_pcma(true, false)
+        .enable_pcmu(true, false)
         .enable_h264(true)
         .enable_h265(true)
         .enable_bwe(Some(INITIAL_EGRESS_BITRATE))
@@ -4714,7 +4714,7 @@ fn drain_outputs(
             }
             Output::Event(Event::EgressBitrateEstimate(estimate)) => {
                 let bitrate = match estimate {
-                    BweKind::Twcc(bitrate) | BweKind::Remb(_, bitrate) => bitrate,
+                    BweKind::Twcc { estimate, .. } | BweKind::Remb { estimate, .. } => estimate,
                     _ => continue,
                 };
                 subscription.update_estimate(bitrate);

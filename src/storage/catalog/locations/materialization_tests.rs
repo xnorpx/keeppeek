@@ -13,14 +13,16 @@ fn legacy_pending_allocation_migrates_with_its_entire_reservation_outstanding() 
         let row = rows.next().await.unwrap().unwrap();
         assert_eq!(row.get::<i64>(0).unwrap(), 90);
         assert_eq!(row.get::<i64>(1).unwrap(), 0);
+        drop(rows);
+        let result = connection
+            .execute(
+                "UPDATE storage_volume_allocations SET materialized_bytes = 91",
+                (),
+            )
+            .await;
         assert!(
-            connection
-                .execute(
-                    "UPDATE storage_volume_allocations SET materialized_bytes = 91",
-                    ()
-                )
-                .await
-                .is_err()
+            matches!(result, Err(turso::Error::Constraint(_))),
+            "{result:?}"
         );
     });
 }

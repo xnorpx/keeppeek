@@ -565,10 +565,10 @@ pub struct TemperatureHealth {
 }
 
 pub struct SystemMonitor {
-    system: System,
-    networks: Networks,
-    disks: Disks,
-    components: Components,
+    system: Option<System>,
+    networks: Option<Networks>,
+    disks: Option<Disks>,
+    components: Option<Components>,
     pid: Pid,
     last_refresh: Instant,
 }
@@ -585,14 +585,18 @@ impl SystemMonitor {
             RefreshKind::nothing()
                 .with_cpu(CpuRefreshKind::everything())
                 .with_memory(MemoryRefreshKind::everything()),
-        );
+        )
+        .inspect_err(|error| tracing::warn!(%error, "System resource monitoring is unavailable"))
+        .ok();
         let pid = Pid::from_u32(std::process::id());
-        system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        if let Some(system) = &mut system {
+            system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        }
         Self {
             system,
-            networks: Networks::new_with_refreshed_list(),
-            disks: Disks::new_with_refreshed_list(),
-            components: Components::new_with_refreshed_list(),
+            networks: Networks::new_with_refreshed_list().ok(),
+            disks: Disks::new_with_refreshed_list().ok(),
+            components: Components::new_with_refreshed_list().ok(),
             pid,
             last_refresh: Instant::now(),
         }
@@ -601,31 +605,41 @@ impl SystemMonitor {
     pub fn snapshot(&mut self, recording_path: &Path) -> SystemHealth {
         let elapsed = self.last_refresh.elapsed().as_secs_f64().max(0.001);
         self.last_refresh = Instant::now();
-        self.system.refresh_cpu_usage();
-        self.system.refresh_cpu_frequency();
-        self.system.refresh_memory();
-        self.system
-            .refresh_processes(ProcessesToUpdate::Some(&[self.pid]), true);
-        self.networks.refresh(true);
-        self.disks.refresh(true);
-        self.components.refresh(true);
+        if let Some(system) = &mut self.system {
+            system.refresh_cpu_usage();
+            system.refresh_cpu_frequency();
+            system.refresh_memory();
+            system.refresh_processes(ProcessesToUpdate::Some(&[self.pid]), true);
+        }
+        if let Some(networks) = &mut self.networks {
+            networks.refresh(true);
+        }
+        if let Some(disks) = &mut self.disks {
+            disks.refresh(true);
+        }
+        if let Some(components) = &mut self.components {
+            components.refresh(true);
+        }
 
-        let process = self.system.process(self.pid);
-        let logical_cores = self.system.cpus().len();
+        let system = self.system.as_ref();
+        let cpus = system.map(System::cpus).unwrap_or_default();
+        let process = system.and_then(|system| system.process(self.pid));
+        let logical_cores = cpus.len();
         let process_cpu_percent = process.map(sysinfo::Process::cpu_usage);
         let (process_cpu_capacity_percent, process_cpu_core_equivalents) =
             normalized_process_cpu(process_cpu_percent, logical_cores);
-        let total_memory_bytes = self.system.total_memory();
+        let total_memory_bytes = system.map_or(0, System::total_memory);
         let process_resident_memory_bytes = process.map(sysinfo::Process::memory);
         let process_memory_capacity_percent =
             process_memory_percent(process_resident_memory_bytes, total_memory_bytes);
         let process_disk = process.map(sysinfo::Process::disk_usage);
-        let load = System::load_average();
+        let load = System::load_average().unwrap_or_default();
         let mut networks = self
             .networks
             .iter()
+            .flat_map(|networks| networks.iter())
             .map(|(name, network)| NetworkHealth {
-                name: name.clone(),
+                name: name.to_string_lossy().into_owned(),
                 received_bytes_per_second: rate(network.received(), elapsed),
                 transmitted_bytes_per_second: rate(network.transmitted(), elapsed),
                 received_packets_per_second: rate(network.packets_received(), elapsed),
@@ -646,16 +660,13 @@ impl SystemMonitor {
                 .unwrap_or_default()
                 .join(recording_path)
         };
-        let recording_mount = self
-            .disks
-            .list()
+        let mounted_disks = self.disks.as_deref().unwrap_or_default();
+        let recording_mount = mounted_disks
             .iter()
             .filter(|disk| recording_path.starts_with(disk.mount_point()))
             .max_by_key(|disk| disk.mount_point().components().count())
             .map(|disk| disk.mount_point().to_path_buf());
-        let mut disks = self
-            .disks
-            .list()
+        let mut disks = mounted_disks
             .iter()
             .map(|disk| DiskHealth {
                 name: disk.name().to_string_lossy().into_owned(),
@@ -680,7 +691,8 @@ impl SystemMonitor {
 
         let mut temperatures = self
             .components
-            .list()
+            .as_deref()
+            .unwrap_or_default()
             .iter()
             .map(|component| TemperatureHealth {
                 label: component.label().to_owned(),
@@ -692,17 +704,17 @@ impl SystemMonitor {
         temperatures.sort_unstable_by(|left, right| left.label.cmp(&right.label));
 
         SystemHealth {
-            host_name: System::host_name(),
-            os_name: System::name(),
-            os_version: System::long_os_version(),
-            kernel_version: System::kernel_version(),
+            host_name: System::host_name().ok(),
+            os_name: System::name().ok(),
+            os_version: System::long_os_version().ok(),
+            kernel_version: System::kernel_version().ok(),
             architecture: std::env::consts::ARCH,
-            system_uptime_seconds: System::uptime(),
-            boot_time_seconds: System::boot_time(),
+            system_uptime_seconds: System::uptime().unwrap_or_default(),
+            boot_time_seconds: System::boot_time().unwrap_or_default(),
             logical_cores,
-            physical_cores: System::physical_core_count(),
-            cpu_brand: self.system.cpus().first().map(|cpu| cpu.brand().to_owned()),
-            system_cpu_percent: self.system.global_cpu_usage(),
+            physical_cores: System::physical_core_count().ok(),
+            cpu_brand: cpus.first().map(|cpu| cpu.brand().to_owned()),
+            system_cpu_percent: system.map_or(0.0, System::global_cpu_usage),
             process: ProcessHealth {
                 pid: self.pid.as_u32(),
                 name: process.map(|process| process.name().to_string_lossy().into_owned()),
@@ -730,23 +742,21 @@ impl SystemMonitor {
             },
             memory: MemoryHealth {
                 total_bytes: total_memory_bytes,
-                used_bytes: self.system.used_memory(),
-                available_bytes: self.system.available_memory(),
-                total_swap_bytes: self.system.total_swap(),
-                used_swap_bytes: self.system.used_swap(),
+                used_bytes: system.map_or(0, System::used_memory),
+                available_bytes: system.map_or(0, System::available_memory),
+                total_swap_bytes: system.map_or(0, System::total_swap),
+                used_swap_bytes: system.map_or(0, System::used_swap),
             },
             load: LoadHealth {
                 one_minute: load.one,
                 five_minutes: load.five,
                 fifteen_minutes: load.fifteen,
             },
-            cpus: self
-                .system
-                .cpus()
+            cpus: cpus
                 .iter()
                 .map(|cpu| CpuHealth {
                     name: cpu.name().to_owned(),
-                    usage_percent: cpu.cpu_usage(),
+                    usage_percent: cpu.usage(),
                     frequency_mhz: cpu.frequency(),
                 })
                 .collect(),
@@ -824,6 +834,23 @@ fn is_loopback_interface(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_system_collectors_preserve_process_identity_and_recording_capacity() {
+        let mut monitor = SystemMonitor {
+            system: None,
+            networks: None,
+            disks: None,
+            components: None,
+            pid: Pid::from_u32(std::process::id()),
+            last_refresh: Instant::now(),
+        };
+        let snapshot = monitor.snapshot(&std::env::temp_dir());
+        assert_eq!(snapshot.process.pid, std::process::id());
+        assert_eq!(snapshot.process.resident_memory_bytes, None);
+        assert!(snapshot.networks.is_empty());
+        assert!(snapshot.disks.iter().any(|disk| disk.stores_recordings));
+    }
 
     #[test]
     fn fallback_recording_disk_reports_unenumerated_paths() {

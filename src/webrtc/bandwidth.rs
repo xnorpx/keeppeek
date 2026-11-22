@@ -28,12 +28,17 @@ struct BandwidthDemand {
 impl ApiMediaRuntime {
     fn observe_bandwidth(&mut self, estimate: &BweKind, _now: Instant) {
         match estimate {
-            BweKind::Twcc(bitrate) => {
-                // str0m emits changed values, so a stable estimate has no event-age deadline.
+            BweKind::Twcc {
+                estimate: bitrate, ..
+            } => {
+                // TWCC retains the last estimate when probing stops or the bitrate stays stable.
                 self.bandwidth.transport_estimate_bps = Some(bitrate.as_u64());
                 self.bandwidth.dirty = true;
             }
-            BweKind::Remb(mid, bitrate) => {
+            BweKind::Remb {
+                mid,
+                estimate: bitrate,
+            } => {
                 if let Some(track) = self
                     .tracks
                     .iter_mut()

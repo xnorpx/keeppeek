@@ -268,7 +268,8 @@ struct ProcessMeter {
 impl ProcessMeter {
     fn new() -> Self {
         Self {
-            system: sysinfo::System::new(),
+            system: sysinfo::System::new()
+                .expect("process metrics must be available for qualification"),
             pid: sysinfo::Pid::from_u32(std::process::id()),
             resident: 0,
         }

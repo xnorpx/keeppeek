@@ -2,6 +2,21 @@ use super::*;
 use crate::api::proto as api;
 
 #[test]
+fn shared_feedback_poll_hook_observes_an_actual_str0m_event() {
+    let mut fixture = SharedFixture::new(&[StreamQuality::Auto]);
+    let mut handshake = ApiHandshake::new();
+    handshake.media = fixture.media;
+    let emitted = handshake.observe_initial_feedback();
+    fixture.media = handshake.media;
+    assert!(emitted > 0);
+    assert!(
+        fixture.allocation(0) > 0,
+        "the shared poll hook discarded the BWE event"
+    );
+    assert!(fixture.allocation(0) <= emitted);
+}
+
+#[test]
 fn shared_feedback_pre_sctp_drain_preserves_updates_until_control_opens() {
     let mut handshake = ApiHandshake::new();
     assert!(
@@ -19,7 +34,7 @@ fn shared_feedback_pre_sctp_drain_preserves_updates_until_control_opens() {
     handshake
         .drain_server()
         .expect("initial bandwidth feedback must not terminate a pre-SCTP API session");
-    assert!(!handshake.connected);
+    handshake.assert_pre_sctp();
     assert_eq!(handshake.media.control_notifications, queued);
     assert_eq!(handshake.media.control_notification_bytes, queued_bytes);
     handshake.receive_initial_notifications();
@@ -92,6 +107,13 @@ impl ApiHandshake {
         let mut peer = local_rtc(start, &peer_socket, rtc_config().set_snap_enabled(false));
         let channels = configure_session_channels(&mut server);
         let mut changes = peer.sdp_api();
+        changes.add_media(
+            MediaKind::Video,
+            str0m::media::Direction::RecvOnly,
+            None,
+            None,
+            None,
+        );
         let [control_config, reliable_config, unreliable_config] = session_channel_configs();
         let peer_control = changes.add_channel_with_config(control_config);
         changes.add_channel_with_config(reliable_config);
@@ -133,28 +155,26 @@ impl ApiHandshake {
         }
     }
 
-    fn observe_initial_feedback(&mut self) {
+    fn observe_initial_feedback(&mut self) -> u64 {
         self.server.bwe().reset(Bitrate::mbps(4));
-        self.drain_server()
-            .expect("the BWE reset must drain before its timeout input");
-        if self.media.bandwidth.transport_estimate_bps.is_none() {
-            self.server
-                .handle_input(Input::Timeout(Instant::now()))
-                .unwrap();
-            self.drain_server()
-                .expect("initial native feedback must drain before SCTP opens");
+        for _ in 0..5_000 {
+            self.progress()
+                .expect("the loopback handshake must reach SRTP");
+            if let Some(estimate) = self.media.bandwidth.transport_estimate_bps {
+                return estimate;
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(
-            self.media.bandwidth.transport_estimate_bps.is_some(),
-            "the production drain did not observe native initial TWCC before SCTP opened"
+        panic!(
+            "the negotiated video did not produce native TWCC feedback: {}",
+            self.diagnostics()
         );
     }
 
     fn assert_pre_sctp(&mut self) {
         assert!(
             !self.runtime.control_output_ready
-                && self.server.channel(self.channels.control).is_none()
-                && !self.connected,
+                && self.server.channel(self.channels.control).is_none(),
             "the fixture passed its pre-SCTP capture point: {}",
             self.diagnostics()
         );

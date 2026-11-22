@@ -309,7 +309,11 @@ test.describe('touch input', () => {
 		await expect(
 			player.getByText('No retained recording is available near this moment.', { exact: false })
 		).toBeVisible();
-		await expect(page).toHaveURL((url) => url.searchParams.get('at') === String(olderDayMs));
+		await expect(page).toHaveURL(
+			(url) =>
+				url.searchParams.get('date') === keepModeOlderDate &&
+				url.searchParams.get('at') === String(olderDayMs)
+		);
 	});
 
 	test('same-clock camera switches query new timeline events and recorded days', async ({

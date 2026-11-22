@@ -421,6 +421,7 @@ fn nonce_debug_is_redacted_and_catalog_stores_only_a_digest() {
             .await
             .unwrap();
         let digest: String = rows.next().await.unwrap().unwrap().get(0).unwrap();
+        drop(rows);
         assert_eq!(digest.len(), 64);
         assert_ne!(digest, nonce.as_str());
         assert!(read(&connection, &prepared.id).await.confirmation.is_none());

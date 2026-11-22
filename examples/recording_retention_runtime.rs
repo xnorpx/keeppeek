@@ -249,7 +249,7 @@ fn run(root: &Path, sources: u32, days: u32) -> Result<()> {
     let files = u64::from(sources) * u64::from(days) * 48 * 2;
     let events = u64::from(sources) * u64::from(days) * 24;
     let limit = files.div_ceil(8) + events.div_ceil(128) + 10000;
-    let mut resources = sysinfo::System::new();
+    let mut resources = sysinfo::System::new()?;
     let began = Instant::now();
     let catalog = RecordingCatalog::open(&path)?;
     let startup_with_index_rebuild_us = began.elapsed().as_micros();

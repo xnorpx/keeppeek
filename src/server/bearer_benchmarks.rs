@@ -72,7 +72,8 @@ fn percentile(samples: &[u64], percent: usize) -> u64 {
 #[ignore = "release before/after workload; run alone with --nocapture --test-threads=1"]
 fn issue123_bearer_comparison() {
     assert!(!black_box(cfg!(debug_assertions)), "use --release");
-    let mut system = sysinfo::System::new();
+    let mut system =
+        sysinfo::System::new().expect("process metrics must be available for qualification");
     system.refresh_cpu_all();
     let executable = executable_sha256();
     let (state, request) = fixture();
@@ -95,7 +96,7 @@ fn issue123_bearer_comparison() {
             "run":std::env::var("KEEPPEEK_BENCH_RUN").ok(),
             "harness_sha256":hex(&Sha256::digest(include_bytes!("bearer_benchmarks.rs"))),
             "executable_sha256":executable, "version":env!("CARGO_PKG_VERSION"),
-            "os":sysinfo::System::long_os_version(), "arch":std::env::consts::ARCH,
+            "os":sysinfo::System::long_os_version().ok(), "arch":std::env::consts::ARCH,
             "cpu":system.cpus().first().map(sysinfo::Cpu::brand),
             "logical_cpus":system.cpus().len(),
             "scope":"real authorization function; synthetic HTTPS request; no socket/browser",
