@@ -528,7 +528,7 @@
 				}) ||
 				cameraHealthById.size !== health.cameras.length ||
 				(livePeer.sessionId !== null &&
-					livePlans.some((plan) => plan.active && !livePeer.track(plan.cameraId)?.subscribed));
+					livePlans.some((plan) => plan.active && livePeer.needsAdmission(plan.cameraId)));
 			if (!peekViewState.updateHealth(generation, health)) return;
 			publishShellHealth(health);
 			if (componentActive && needsReconcile) scheduleLivePlanReconcile();
