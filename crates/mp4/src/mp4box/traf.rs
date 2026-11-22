@@ -73,6 +73,11 @@ impl<R: Read + Seek> ReadBox<&mut R> for TrafBox {
                     tfdt = Some(TfdtBox::read_box(reader, s)?);
                 }
                 BoxType::TrunBox => {
+                    if trun.is_some() {
+                        return Err(Error::InvalidData(
+                            "multiple track runs in one traf are unsupported",
+                        ));
+                    }
                     trun = Some(TrunBox::read_box(reader, s)?);
                 }
                 _ => {
@@ -119,6 +124,37 @@ impl<W: Write> WriteBox<&mut W> for TrafBox {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn multiple_runs_are_reported_before_a_partial_track_can_be_indexed() {
+        let run = TrunBox {
+            flags: TrunBox::FLAG_SAMPLE_SIZE,
+            sample_count: 1,
+            sample_sizes: vec![12],
+            ..Default::default()
+        };
+        let traf = TrafBox {
+            tfhd: TfhdBox {
+                track_id: 1,
+                ..Default::default()
+            },
+            trun: Some(run.clone()),
+            ..Default::default()
+        };
+        let mut bytes = Vec::new();
+        traf.write_box(&mut bytes).unwrap();
+        run.write_box(&mut bytes).unwrap();
+        let size = u32::try_from(bytes.len()).unwrap();
+        bytes[..4].copy_from_slice(&size.to_be_bytes());
+        let mut reader = Cursor::new(bytes);
+        let header = BoxHeader::read(&mut reader).unwrap();
+        assert!(matches!(
+            TrafBox::read_box(&mut reader, header.size),
+            Err(Error::InvalidData(
+                "multiple track runs in one traf are unsupported"
+            ))
+        ));
+    }
 
     #[test]
     fn traf_round_trip_includes_decode_time_and_sample_run() {
