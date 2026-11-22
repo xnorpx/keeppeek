@@ -140,3 +140,51 @@ fn decoded_corrected_seek_uses_previous_fragment_audio_on_the_original_video_clo
     }
     fixture.assert_source();
 }
+
+#[test]
+#[ignore = "run explicitly to measure recorded audio export and playback"]
+fn measure_recorded_audio_file_operations() {
+    let fixture = Fixture::new();
+    let end = fixture.fragments.last().unwrap();
+    let end_ms = end.start_ms + i64::try_from(end.duration_ms).unwrap();
+    let path = fixture.root.join("measurement.mp4");
+    let measure = |run, operation, offset, action: &dyn Fn()| {
+        let started = Instant::now();
+        action();
+        let elapsed_us = started.elapsed().as_micros();
+        let bytes = std::fs::metadata(&path).unwrap().len();
+        std::fs::remove_file(&path).unwrap();
+        if run > 0 {
+            println!("audio-measurement,{run},{operation},{offset},{elapsed_us},{bytes}");
+        }
+    };
+    for run in 0..=30 {
+        let offsets = if run % 2 == 0 { [0, 200] } else { [200, 0] };
+        for offset in offsets {
+            measure(run, "export", offset, &|| {
+                export_fragment_ranges_with_audio_offset(
+                    &fixture.fragments,
+                    end_ms,
+                    &path,
+                    offset,
+                    || false,
+                    |_| {},
+                )
+                .unwrap();
+            });
+            measure(run, "playback", offset, &|| {
+                source::stored(&fixture.fragments, offset, 0, 0, &path);
+            });
+            measure(run, "seek", offset, &|| {
+                source::stored(
+                    &fixture.fragments,
+                    offset,
+                    1,
+                    fixture.fragments[1].start_ms,
+                    &path,
+                );
+            });
+        }
+    }
+    fixture.assert_source();
+}
