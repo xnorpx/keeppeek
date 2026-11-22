@@ -66,7 +66,10 @@
 	let railPathname = '';
 	let navigationChordTimer: ReturnType<typeof setTimeout> | null = null;
 	let shellHealth = $state.raw<ServerHealthResponse | null>(null);
-	let shellProfileId = $state<string | null>(null);
+	let shellProfileId = $state<string | null>();
+	const shellProfileLabel = $derived(
+		shellProfileId === undefined ? 'Pending' : (shellProfileId ?? 'Base')
+	);
 	let shellDegradedCameras = $state<number | null>(null);
 	let shellHealthRequestVersion = 0;
 	setShellHealthPublisher((health) => (shellHealth = health));
@@ -208,7 +211,7 @@
 		const generation = ++profileWatchGeneration;
 		if (closeProfileActiveWatch) void closeProfileActiveWatch().catch(() => undefined);
 		closeProfileActiveWatch = undefined;
-		shellProfileId = null;
+		shellProfileId = undefined;
 		shellDegradedCameras = null;
 		if (!connected) return;
 		try {
@@ -221,7 +224,7 @@
 			else closeProfileActiveWatch = () => watch.close();
 		} catch {
 			if (generation === profileWatchGeneration) {
-				shellProfileId = null;
+				shellProfileId = undefined;
 				shellDegradedCameras = null;
 			}
 		}
@@ -609,12 +612,11 @@
 						<a
 							href={resolve('/settings#runtime-profiles')}
 							class="ml-auto rounded-sm border border-border px-2 py-1 text-xs focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-							aria-label="Active camera profile {shellProfileId ??
-								'Base'}; {shellDegradedCameras === null
+							aria-label="Active camera profile {shellProfileLabel}; {shellDegradedCameras === null
 								? 'application status pending'
 								: `${shellDegradedCameras} cameras degraded`}"
 						>
-							{shellProfileId ?? 'Base'}
+							{shellProfileLabel}
 							{#if shellDegradedCameras !== null && shellDegradedCameras > 0}
 								<span class="text-destructive"> · degraded</span>
 							{/if}
