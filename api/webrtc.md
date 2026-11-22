@@ -1736,10 +1736,11 @@ rate, stored playback time, target presentation rank, codec configuration, sampl
 total encoded bytes. The reliable data channel delivers `StoredFrameStepChunk` messages for
 that step ID and cursor generation in decode order. Each access unit declares its full byte
 length. All chunks before its last contain 32 KiB. The first sample is a random
-access point. Presentation rank orders by source presentation time then decode ordinal, so
-duplicate presentation times have distinct identities. Give each encoded chunk its sample's
-unique rank as the WebCodecs timestamp, then match the returned VideoFrame timestamp to the
-target rank. Keep the real presentation time with the sample token.
+access point. Presentation rank follows the evidenced picture order of the decode window.
+Source timestamps can coincide even when two access units have distinct identities. If the
+recorder cannot establish their display order, it returns `AMBIGUOUS_ANCHOR`. Give each
+encoded chunk its sample's unique rank as the WebCodecs timestamp, then match the returned
+VideoFrame timestamp to the target rank. Keep the source time with the sample token.
 
 One player may have one active operation and up to 32 coalesced repeats. The decoder window
 is limited to 4,096 samples, 10 seconds and 32 MiB encoded, including any reorder lookahead.

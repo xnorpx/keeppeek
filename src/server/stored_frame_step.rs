@@ -3,7 +3,6 @@
 mod tests;
 use super::*;
 use crate::storage::sample_index::{self as index, Unavailable};
-use sha2::{Digest as _, Sha256};
 
 #[derive(Default)]
 pub(super) struct CursorFrames {
@@ -560,8 +559,7 @@ fn run(
         return Err(Unavailable::Limit);
     }
     fragments.sort_by_key(|f| (f.start_ms, f.sequence));
-    let cancelled =
-        || op.cancelled() || privacy_active_for_media(op.state, &request.source_id).unwrap_or(true);
+    let cancelled = || op.cancelled();
     let work = crate::storage::archive::target::Work {
         deadline,
         cancelled: &cancelled,
