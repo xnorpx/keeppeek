@@ -418,7 +418,7 @@ pub(super) async fn execute(
         )),
         Request::FrameWindow { stream, start, end } => {
             let Reply::Fragments(fragments, lease) =
-                fragments_reply(connection, registry, &stream, start, end, Some(33)).await?
+                fragments_reply(connection, registry, &stream, start, end, Some(32)).await?
             else {
                 unreachable!()
             };

@@ -533,6 +533,14 @@ fn encode(
     })
 }
 
+fn window_failure(error: anyhow::Error) -> Unavailable {
+    if error.is::<crate::storage::catalog::FragmentWindowLimit>() {
+        Unavailable::Limit
+    } else {
+        Unavailable::Stale
+    }
+}
+
 fn run(
     op: &Operation<'_>,
     request: &proto::StepStoredFrame,
@@ -568,10 +576,7 @@ fn run(
     let catalog = op.state.catalog.as_ref().ok_or(Unavailable::Timing)?;
     let (revision, mut fragments, _leases) = catalog
         .frame_step_window(stream, start, end, deadline)
-        .map_err(|_| Unavailable::Stale)?;
-    if fragments.len() > 32 {
-        return Err(Unavailable::Limit);
-    }
+        .map_err(window_failure)?;
     fragments.sort_by_key(|f| (f.start_ms, f.sequence));
     let cancelled = || op.cancelled();
     let work = crate::storage::archive::target::Work {
@@ -599,7 +604,7 @@ fn run(
         // leased stream interval so unrelated writes cannot starve a paused viewer.
         let (_, mut latest, _latest_lease) = catalog
             .frame_step_window(stream, start, end, deadline)
-            .map_err(|_| Unavailable::Stale)?;
+            .map_err(window_failure)?;
         latest.sort_by_key(|f| (f.start_ms, f.sequence));
         if latest != fragments {
             return Err(Unavailable::Stale);

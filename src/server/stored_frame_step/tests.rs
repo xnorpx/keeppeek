@@ -207,6 +207,46 @@ fn routed_fixture(path: &Path) -> (ServerState, crate::storage::RecordingCatalog
 }
 
 #[test]
+fn frame_step_catalog_window_reports_the_first_excess_fragment_as_a_limit() {
+    let root = RecordingDirectory::new();
+    let (state, catalog) = routed_fixture(&root.0);
+    let handle = state.catalog.as_ref().unwrap();
+    let read = || {
+        handle.frame_step_window(
+            "front-door/sub",
+            1,
+            20_002,
+            Instant::now() + Duration::from_secs(2),
+        )
+    };
+    let (_, initial, leases) = read().unwrap();
+    drop(leases);
+    assert_eq!(initial.len(), 2);
+    for i in 2_u32..33 {
+        handle
+            .insert_fragment(crate::storage::CatalogFragment {
+                recording_id: initial[0].recording_id.clone(),
+                sequence: initial[0].sequence + u64::from(i),
+                start_ms: 10_000 + 120 * i64::from(i),
+                duration_ms: 120,
+                byte_offset: initial[0].byte_offset,
+                byte_len: initial[0].byte_len,
+                random_access: true,
+            })
+            .unwrap();
+        if i == 31 {
+            assert_eq!(read().unwrap().1.len(), 32);
+        }
+    }
+    let Err(error) = read() else {
+        panic!("33 fragments exceeded the bounded frame window");
+    };
+    assert_eq!(window_failure(error), Unavailable::Limit);
+    drop(state);
+    catalog.shutdown();
+}
+
+#[test]
 fn paused_cursor_steps_under_historical_access_rules_and_invalidates_previous_tokens() {
     use proto::stored_media_command::Action;
     let root = RecordingDirectory::new();
