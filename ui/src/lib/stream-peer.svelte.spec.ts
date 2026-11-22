@@ -526,7 +526,7 @@ describe('LivePeer', () => {
 		expect(api.deleteSession).toHaveBeenCalledOnce();
 	});
 
-	it('releases newly admitted audio before restoring the saved profile after decoder failure', async () => {
+	it('restores saved audio on the active profile after decoder failure, then follows its video handover', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({
 			session_id: 'timing',
@@ -546,9 +546,21 @@ describe('LivePeer', () => {
 		await expect(
 			peer.configure([{ ...saved, variantId: 'main', liveAudioPreviewOffsetMs: -80 }])
 		).rejects.toThrow('cannot decode the audio timing preview');
-		expect(
-			channel.subscriptions.filter((s) => s.kind === MediaKind.AUDIO).map((s) => s.variantId)
-		).toEqual(['sub', 'main', 'sub']);
+		const audio = () => channel.subscriptions.filter((s) => s.kind === MediaKind.AUDIO);
+		expect(audio().map((s) => [s.variantId, s.liveAudioPreviewOffsetMs])).toEqual([
+			['sub', undefined],
+			['main', -80],
+			['main', undefined]
+		]);
+		expect(peer.track('front-door')).toMatchObject({
+			activeStream: 'main',
+			pendingStream: 'sub',
+			audioVariantId: 'main'
+		});
+		channel.onmessage?.(streamState('camera-0', 'sub'));
+		await vi.waitFor(() =>
+			expect(audio().map((s) => s.variantId)).toEqual(['sub', 'main', 'main', 'sub'])
+		);
 		expect(channel.unsubscribed.flat()).toEqual(['audio-0', 'audio-0']);
 		expect(peer.track('front-door')).toMatchObject({ subscribed: true, audioVariantId: 'sub' });
 		await peer.close();
@@ -1241,6 +1253,9 @@ describe('LivePeer', () => {
 			});
 			api.deleteSession.mockResolvedValue(undefined);
 			FakeDataChannel.audioVariants = ['main', 'sub'];
+			FakeDataChannel.subscriptionQuality = create(LiveQualityDiagnosticsSchema, {
+				activeVariantId: variant
+			});
 			FakeDataChannel.rejectedSubscription = 'audio-0';
 			const peer = new LivePeer();
 			const plans = [{ cameraId: 'front-door', quality: 'auto', variantId: variant }] as const;
