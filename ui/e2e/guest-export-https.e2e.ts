@@ -3,10 +3,16 @@ import { readFile } from 'node:fs/promises';
 import { expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { startAuthenticationFixture } from './fixtures/external-authentication-server';
 
-function observeGuestNetwork(context: BrowserContext, origin: string, token: string) {
+function observeGuestNetwork(context: BrowserContext, origin: string, privateValues: string[]) {
+	const routes = ['/guest/download', '/guest/media', '/guest/session', '/share'];
+	const observed: string[] = [];
 	const paths = new Set<string>();
 	const checks: Promise<void>[] = [];
 	const problems = new Set<string>();
+	function record(value: string) {
+		if (value.length > 8192) problems.add('guest request observation exceeded the length limit');
+		else observed.push(value);
+	}
 	context.on('request', (request) => {
 		if (checks.length >= 512) {
 			problems.add('guest request observation limit exceeded');
@@ -14,15 +20,14 @@ function observeGuestNetwork(context: BrowserContext, origin: string, token: str
 		}
 		const destination = new URL(request.url());
 		if (destination.origin !== origin) problems.add('third-party request');
-		if ((destination.pathname + destination.search).includes(token))
-			problems.add('token in request URL');
+		record(destination.pathname + destination.search);
 		checks.push(
-			request.allHeaders().then(
-				(headers) => {
-					if (headers.referer?.includes(token)) problems.add('token in referrer');
+			request.headerValue('referer').then(
+				(referer) => {
+					if (referer) record(referer);
 				},
 				() => {
-					problems.add('unreadable request headers');
+					problems.add('unreadable request referrer');
 				}
 			)
 		);
@@ -30,7 +35,8 @@ function observeGuestNetwork(context: BrowserContext, origin: string, token: str
 	context.on('response', (response) => {
 		const path = new URL(response.url()).pathname;
 		if (path !== '/share' && !path.startsWith('/guest/')) return;
-		paths.add(path);
+		if (routes.includes(path)) paths.add(path);
+		else problems.add('unexpected guest endpoint');
 		const headers = response.headers();
 		if (
 			headers['cache-control'] !== 'private, no-store' ||
@@ -46,12 +52,10 @@ function observeGuestNetwork(context: BrowserContext, origin: string, token: str
 	return async () => {
 		await Promise.all(checks);
 		expect([...problems]).toEqual([]);
-		expect([...paths].sort()).toEqual([
-			'/guest/download',
-			'/guest/media',
-			'/guest/session',
-			'/share'
-		]);
+		expect(observed.some((value) => privateValues.some((secret) => value.includes(secret)))).toBe(
+			false
+		);
+		expect([...paths].sort()).toEqual(routes);
 	};
 }
 
@@ -212,8 +216,8 @@ test('an Administrator shares a completed export over HTTPS and revokes the gues
 		const { url, administratorDownload } = await createLink(page, fixture);
 		const token = new URL(url).hash.slice(1);
 		expect(token.length).toBe(43);
-		const verifyNetwork = observeGuestNetwork(guest, fixture.origin, token);
 		const privateValues = [token];
+		const verifyNetwork = observeGuestNetwork(guest, fixture.origin, privateValues);
 		const viewer = await guest.newPage();
 		const verifyViewerConsole = observePrivateConsole(viewer, privateValues);
 		await openGuest(viewer, url);
