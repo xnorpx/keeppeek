@@ -440,7 +440,7 @@ export type MockControlPeerOptions = {
 	storedBucketedRanges?: readonly StoredRangeFixture[];
 	storedEvents?: readonly StoredEventFixture[];
 	storedTimelineGates?: readonly Promise<void>[];
-	beforeStoredTimeline?: (sourceIds: readonly string[]) => Promise<void> | undefined;
+	beforeStoredTimelineQuery?: (sourceIds: readonly string[]) => Promise<void> | undefined;
 	eventSearchGates?: readonly Promise<void>[];
 	eventSearchPageError?: string;
 	eventMediaGates?: readonly Promise<void>[];
@@ -1761,9 +1761,9 @@ export async function mockControlPeer(
 		if (request.command.case === 'storedMediaCommand') {
 			const action = request.command.value.action;
 			if (action.case === 'queryTimeline') {
-				await storedTimelineGates.shift();
 				const query = action.value;
-				await options.beforeStoredTimeline?.(query.sourceIds);
+				await options.beforeStoredTimelineQuery?.(query.sourceIds);
+				await storedTimelineGates.shift();
 				const startMs = query.startTime ? timestampFromProto(query.startTime) : 0;
 				const endMs = query.endTime ? timestampFromProto(query.endTime) : Number.MAX_SAFE_INTEGER;
 				requests.storedTimelineQueries.push({

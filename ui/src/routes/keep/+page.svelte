@@ -402,12 +402,12 @@
 	});
 
 	$effect(() => {
-		if (shuttleDirection !== -1 || !selected) return;
+		if (mode === 'export' || shuttleDirection !== -1 || !selected) return;
 		const reverse = () => {
 			const current = playheadMs ?? selected?.start_time_ms;
 			if (current !== undefined) seekToTimestamp(current - shuttleSpeed * 250, false);
 		};
-		reverse();
+		untrack(reverse);
 		const timer = window.setInterval(reverse, 250);
 		return () => window.clearInterval(timer);
 	});
@@ -591,10 +591,18 @@
 	}
 
 	async function loadRouteEvent(route: KeepRoute, version: number): Promise<void> {
-		if (!route.eventId || route.timestampMs === null || !cameraId) return;
+		const sourceId = cameraId;
+		if (
+			!route.eventId ||
+			route.timestampMs === null ||
+			!sourceId ||
+			(route.cameraId && route.cameraId !== sourceId)
+		)
+			return;
 		const switchVersion = cameraSwitchVersion;
-		const event = await resolveExportSeedEvent(route.eventId, cameraId, route.timestampMs);
-		if (version !== routeVersion || switchVersion !== cameraSwitchVersion) return;
+		const event = await resolveExportSeedEvent(route.eventId, sourceId, route.timestampMs);
+		if (version !== routeVersion || sourceId !== cameraId || switchVersion !== cameraSwitchVersion)
+			return;
 		exportSeedEvent = event;
 		if (event && mode === 'export') {
 			const range = createEventExportRange(event, selectedBitrateKbps);
@@ -1062,7 +1070,7 @@
 				})
 				.finally(() => {
 					scrubPump = null;
-					if (scrubTargetMs !== null && version === scrubVersion) {
+					if (scrubTargetMs !== null) {
 						void queueTimelineScrub(scrubTargetMs);
 					}
 				});
@@ -1540,13 +1548,15 @@
 		timestampMs = playheadMs ?? undefined
 	): void {
 		if (nextCameraId === cameraId) return;
-		const play = playbackIntent();
-		beginCameraSwitch(direction);
-		timelineRepository.deactivate();
-		selected = null;
+		const play = mode === 'export' ? false : playbackIntent();
 		exportSeedEvent = null;
 		exportRangeStartMs = null;
 		exportRangeEndMs = null;
+		if (mode === 'export') {
+			cameraSwitchVersion += 1;
+			void selectSegment(null);
+		} else beginCameraSwitch(direction);
+		timelineRepository.deactivate();
 		cameraId = nextCameraId;
 		void loadRecordings(selectedDate || undefined, timestampMs, play, null, {
 			exactMoment: timestampMs !== undefined
@@ -1572,7 +1582,33 @@
 
 	function switchMode(nextMode: KeepMode): void {
 		if (nextMode === mode) return;
+		const scrubTarget =
+			nextMode === 'export' && scrubbing && playheadMs !== null
+				? recordingTarget(orderedSegments, playheadMs)
+				: null;
+		if (nextMode === 'export') {
+			shuttleDirection = 0;
+			scrubVersion += 1;
+			scrubTargetMs = null;
+			scrubbing = false;
+			scrubPlayIntent = false;
+			targetLoadVersion += 1;
+			targetLoadController?.abort();
+			clearColdSeek();
+		}
 		mode = nextMode;
+		if (scrubTarget) {
+			void selectSegment(scrubTarget.segment, scrubTarget.offsetSeconds);
+		} else if (nextMode === 'export' || (nextMode === 'timeline' && selected && !storedPlayback)) {
+			const target = retryPlaybackTarget;
+			if (target?.cameraId === cameraId && target.segment.date === selectedDate) {
+				const offset =
+					selected?.url === target.segment.url && playheadMs !== null
+						? (playheadMs - target.segment.start_time_ms) / 1000
+						: target.offsetSeconds;
+				void selectSegment(target.segment, offset);
+			} else void selectSegment(null);
+		}
 		updateUrl();
 	}
 
@@ -1689,11 +1725,12 @@
 			clearPlaybackStartupTimer();
 			detachPlaybackObservers();
 			playbackStartupPhase = 'idle';
-			await closeStoredPlayback();
 			selected = null;
 			playheadMs = null;
 			playing = false;
+			pendingPlay = false;
 			releaseSecondaryLoads();
+			await closeStoredPlayback();
 			return;
 		}
 		const requestedTimestampMs =
@@ -1709,6 +1746,23 @@
 		if (selected?.url !== segment.url) {
 			exportRangeStartMs = null;
 			exportRangeEndMs = null;
+		}
+		if (mode === 'export') {
+			// No video element is mounted here. A playback fallback must not change
+			// the operator's chosen stream or discard its draft and one-time link.
+			cameraSwitchPending = false;
+			cameraSwitchAnimating = false;
+			clearCameraSwitchFrame();
+			playbackVersion += 1;
+			selected = segment;
+			playheadMs = requestedTimestampMs;
+			playing = false;
+			pendingPlay = false;
+			playerError = null;
+			playbackStartupPhase = 'idle';
+			releaseSecondaryLoads();
+			await closeStoredPlayback();
+			return;
 		}
 		const requestedOffsetSeconds = (requestedTimestampMs - segment.start_time_ms) / 1_000;
 		playerError = null;
@@ -2153,6 +2207,7 @@
 		if (event.key.startsWith('Arrow') && target?.closest('[data-digital-pan-active]')) return;
 		const playerFocused = target?.closest('[data-keep-player]') !== null;
 		const key = event.key.toLowerCase();
+		if (mode === 'export' && key !== '[' && key !== ']') return;
 		if (key === 'j') shuttle(-1);
 		else if (key === 'k') pauseTransport();
 		else if (key === 'l') shuttle(1);

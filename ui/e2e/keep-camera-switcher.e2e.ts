@@ -103,7 +103,7 @@ test('switching cameras clears the previous export range while the new recording
 			{ sourceId: 'deck', streamId: 'sub', startMs: start, endMs: start + 60_000 },
 			{ sourceId: 'garden', streamId: 'sub', startMs: start - 2_000, endMs: start + 40_000 }
 		],
-		beforeStoredTimeline(sourceIds) {
+		beforeStoredTimelineQuery(sourceIds) {
 			if (sourceIds.includes('garden')) {
 				requested.resolve();
 				return delayed.promise;

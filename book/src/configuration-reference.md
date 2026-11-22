@@ -252,8 +252,10 @@ than the immutable export's expiry. Evidence is limited to two minutes and 512 M
 names are limited to 128 UTF-8 bytes and notes to 512. There are at most eight media sessions
 globally and two per grant. Retention may remove evidence before a grant expires; sharing
 creates no evidence hold. Expired or revoked metadata disappears from management lists after
-30 days, with bounded physical cleanup scheduled at most once per minute. New grants are
-rejected when the retained audit store reaches its fixed capacity.
+30 days. On startup the recorder removes all overdue rows before serving grants, bounded by
+the 4,096-record history capacity. During normal operation a cleanup transaction removes at
+most 256 rows. A full batch schedules another pass, otherwise maintenance waits one minute.
+The recorder rejects new grants when its retained audit store reaches capacity.
 
 ## External authentication configuration
 
