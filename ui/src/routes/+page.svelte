@@ -1251,11 +1251,7 @@
 		class:wall-toolbar-space={!cameraViewActive}
 	>
 		{#if loading}
-			<div
-				data-peek-layout-loading
-				class="size-full"
-				role="status"
-				aria-label="Loading live view"
+			<div data-peek-layout-loading class="size-full" role="status" aria-label="Loading live view"
 			></div>
 		{:else if error}
 			<div
