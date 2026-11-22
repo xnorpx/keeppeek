@@ -283,13 +283,14 @@ share each 90 kHz frame timestamp. Each process warms up once and times 30 runs
 of 8,192 accepted packets. Ten pairs of baseline and candidate processes
 alternated order. The table gives the median of the ten per-process results.
 
-| Cost per accepted packet | Baseline `088331d` | With source timing |     Delta |
-| ------------------------ | -----------------: | -----------------: | --------: |
-| Median                   |           70.58 ns |           52.16 ns | −18.42 ns |
-| p95                      |          126.14 ns |          105.42 ns | −20.72 ns |
+| Cost per accepted packet | Baseline `088331d` | With source timing |
+| ------------------------ | -----------------: | -----------------: |
+| Median                   |           70.58 ns |           52.16 ns |
+| p95                      |          126.14 ns |          105.42 ns |
 
 The workstation also ran other test jobs. Per-process p95 ranged from 82.75 to
-154.42 ns at baseline and 35.78 to 125.37 ns with diagnostics. The storage budget
+154.42 ns at baseline and 35.78 to 125.37 ns with diagnostics. Concurrent load
+prevents this comparison from establishing a speedup or a regression bound. The storage budget
 for timing evidence is fixed-size counters and timestamps per negotiated track,
 with zero packet payloads retained for reporting. A deployment throughput target
 and live latency budget still require qualification.

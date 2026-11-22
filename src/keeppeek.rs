@@ -1215,6 +1215,10 @@ impl KeepPeekLoop {
             );
 
             let camera_loop = RtspLoop {
+                timing_camera_id: crate::rtsp::timing::camera_tag(
+                    &self.runtime_profile_camera_ids.camera_id(camera.config.ip),
+                    camera.config.ip,
+                ),
                 camera_ip: camera.config.ip,
                 camera_name: camera.config.name.clone(),
                 camera_brand: camera.device.manufacturer.clone(),

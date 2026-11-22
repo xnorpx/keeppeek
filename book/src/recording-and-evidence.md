@@ -339,10 +339,11 @@ normal export path preserves source frames and timestamps without re-encoding.
 
 When an RTSP camera is streaming, look for `camera.rtsp.source_timing` or
 `RTSP source timing` in the recorder's information-level logs. Match the camera,
-main or sub profile, and session number. Each PLAY session starts a new set of
+main or sub profile, and PLAY session UUID. The camera ID is its persisted profile UUID.
+Unregistered cameras have a process-local opaque ID that survives worker restarts. Each PLAY session starts a new set of
 readings. A report is emitted periodically and when the session ends, including a
 short-lived session. Each report includes a track only when that media type has a
-single configured track and the recorder has accepted at least one RTP packet.
+single configured track and the recorder has accepted at least one RTP packet. Each track emits its own structured entry.
 
 - `first_rtp_ticks` and `latest_rtp_ticks` are the original 32-bit packet header
   timestamps. Multiply elapsed ticks by 1,000 and divide by `clock_rate_hz` to get
@@ -351,8 +352,8 @@ single configured track and the recorder has accepted at least one RTP packet.
   `backward_timestamp_steps` counts backwards presentation timestamps. Picture
   reordering can produce such a step. Neither counter identifies a clock reset
   by itself.
-- `sender_report` preserves the latest matching RTCP sender's RTP timestamp
-  and the seconds and fractional words of its reported NTP clock. These values
+- `sender_rtp_ticks`, `sender_ntp_seconds` and `sender_ntp_fraction` preserve the latest
+  matching RTCP sender's RTP timestamp and both words of its NTP clock. These values
   describe the camera's clock and can be absent or inaccurate.
 - `latest_audio_minus_video_play_us` compares the latest accepted packet
   positions on the camera's PLAY timeline. A positive value means the last audio

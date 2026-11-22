@@ -1,14 +1,19 @@
 use retina::client::{RtpClockSnapshot, Stream};
-use serde::Serialize;
+use std::{
+    hash::{BuildHasher, RandomState},
+    net::IpAddr,
+    sync::OnceLock,
+};
+use uuid::Uuid;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub(super) struct SourceTiming {
     video: Option<TrackTiming>,
     audio: Option<TrackTiming>,
     latest_audio_minus_video_play_us: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct TrackTiming {
     track_index: usize,
     clock_rate_hz: u32,
@@ -23,11 +28,26 @@ struct TrackTiming {
     sender_report: Option<SenderReport>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct SenderReport {
     rtp_ticks: u32,
     ntp_seconds: u32,
     ntp_fraction: u32,
+}
+
+/// Prefer the persisted profile identity. Unregistered cameras get an opaque address tag
+/// that stays stable across worker restarts within this recorder process.
+pub(crate) fn camera_tag(profile_identity: &str, ip: IpAddr) -> String {
+    static FALLBACK_KEY: OnceLock<RandomState> = OnceLock::new();
+    Uuid::parse_str(profile_identity).map_or_else(
+        |_| {
+            format!(
+                "local-{:016x}",
+                FALLBACK_KEY.get_or_init(RandomState::new).hash_one(ip)
+            )
+        },
+        |identity| identity.to_string(),
+    )
 }
 
 impl SourceTiming {
@@ -43,6 +63,40 @@ impl SourceTiming {
             Some(TrackTiming::new(index, track.rtp_clock()?))
         };
         Self::new(unique("video"), unique("audio"))
+    }
+
+    pub(super) fn emit(
+        &self,
+        camera_id: &str,
+        stream: crate::keeppeek::StreamKind,
+        session: Uuid,
+        phase: &'static str,
+    ) {
+        for (kind, track) in [
+            ("video", self.video.as_ref()),
+            ("audio", self.audio.as_ref()),
+        ] {
+            let Some(track) = track else {
+                continue;
+            };
+            let report = track.sender_report.as_ref();
+            tracing::info!(
+                name: "camera.rtsp.source_timing",
+                camera_id, stream = %stream, session = %session, phase, kind,
+                track_index = track.track_index as u64,
+                clock_rate_hz = track.clock_rate_hz,
+                play_origin_ticks = track.play_origin_ticks,
+                first_rtp_ticks = track.first_rtp_ticks, latest_rtp_ticks = track.latest_rtp_ticks,
+                first_extended_ticks = track.first_extended_ticks, latest_extended_ticks = track.latest_extended_ticks,
+                accepted_packets = track.accepted_packets, missing_sequence_numbers = track.missing_sequence_numbers,
+                backward_timestamp_steps = track.backward_timestamp_steps,
+                sender_rtp_ticks = report.map(|r| r.rtp_ticks),
+                sender_ntp_seconds = report.map(|r| r.ntp_seconds),
+                sender_ntp_fraction = report.map(|r| r.ntp_fraction),
+                latest_audio_minus_video_play_us = self.latest_audio_minus_video_play_us,
+                "RTSP source timing"
+            );
+        }
     }
 
     fn new(video: Option<TrackTiming>, audio: Option<TrackTiming>) -> Option<Self> {
@@ -116,6 +170,18 @@ mod tests {
                 sender_report: None,
             },
         )
+    }
+
+    #[test]
+    fn profile_ids_and_process_local_fallbacks_distinguish_unnamed_cameras() {
+        let ip = "192.0.2.1".parse().unwrap();
+        let other = "192.0.2.2".parse().unwrap();
+        let id = Uuid::new_v4().to_string();
+        assert_eq!(camera_tag(&id, ip), id);
+        let fallback = camera_tag("unregistered", ip);
+        assert_eq!(fallback, camera_tag("unregistered", ip));
+        assert_ne!(fallback, camera_tag("unregistered", other));
+        assert!(!fallback.contains("192.0.2."));
     }
 
     #[test]
