@@ -162,9 +162,15 @@ pub enum KeepPeekEvent {
     },
 }
 
+enum CameraStopReason {
+    ConfigurationRemoved,
+    Privacy,
+}
+
 enum KeepPeekCommand {
     Stop {
         ip: IpAddr,
+        reason: CameraStopReason,
         reply: SyncSender<anyhow::Result<()>>,
     },
     StartCamera {
@@ -199,13 +205,21 @@ impl KeepPeekControl {
 
     /// Stops a camera's media and event sources before acknowledging removal.
     pub fn stop_camera(&self, ip: IpAddr) -> anyhow::Result<()> {
+        self.request_camera_stop(ip, CameraStopReason::ConfigurationRemoved)
+    }
+
+    pub(crate) fn pause_camera_for_privacy(&self, ip: IpAddr) -> anyhow::Result<()> {
+        self.request_camera_stop(ip, CameraStopReason::Privacy)
+    }
+
+    fn request_camera_stop(&self, ip: IpAddr, reason: CameraStopReason) -> anyhow::Result<()> {
         let (reply, received) = mpsc::sync_channel(1);
         self.tx
-            .send(KeepPeekCommand::Stop { ip, reply })
+            .send(KeepPeekCommand::Stop { ip, reason, reply })
             .map_err(|_| anyhow::anyhow!("KeepPeek loop is no longer running"))?;
         received
             .recv_timeout(CAMERA_CONTROL_TIMEOUT)
-            .map_err(|_| anyhow::anyhow!("KeepPeek loop did not acknowledge camera removal"))?
+            .map_err(|_| anyhow::anyhow!("KeepPeek loop did not acknowledge camera stop"))?
     }
     pub fn start_camera(&self, camera: Camera) -> anyhow::Result<()> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
@@ -1785,9 +1799,24 @@ impl KeepPeekLoop {
                 Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
             };
             match command {
-                KeepPeekCommand::Stop { ip, reply } => {
-                    self.camera_definitions.remove(&ip);
-                    self.unstarted_configurations.remove(&ip);
+                KeepPeekCommand::Stop { ip, reason, reply } => {
+                    let definition = self.camera_definitions.remove(&ip);
+                    match reason {
+                        CameraStopReason::ConfigurationRemoved => {
+                            self.unstarted_configurations.remove(&ip);
+                        }
+                        CameraStopReason::Privacy => {
+                            if let Some(camera) = definition {
+                                self.unstarted_configurations.insert(
+                                    ip,
+                                    (
+                                        camera.config.recording_mode,
+                                        camera.config.username.is_empty(),
+                                    ),
+                                );
+                            }
+                        }
+                    }
                     self.stop_camera(ip);
                     if self.reconcile_missing_profile_targets() {
                         self.publish_runtime_profile_status();
@@ -2206,6 +2235,18 @@ mod tests {
         verify();
         recorder.add_cameras(&HashMap::new()).unwrap();
         verify();
+        let (reply, stopped) = mpsc::sync_channel(1);
+        recorder
+            .command_tx
+            .send(KeepPeekCommand::Stop {
+                ip: config.ip,
+                reason: CameraStopReason::Privacy,
+                reply,
+            })
+            .unwrap();
+        recorder.handle_commands();
+        stopped.try_recv().unwrap().unwrap();
+        verify();
         recorder
             .apply_runtime_profiles(crate::profiles::ProfileRegistry {
                 revision: 1,
@@ -2214,6 +2255,19 @@ mod tests {
             .unwrap();
         verify();
         assert!(recorder.camera_workers.is_empty());
+
+        let (reply, removed) = mpsc::sync_channel(1);
+        recorder
+            .command_tx
+            .send(KeepPeekCommand::Stop {
+                ip: config.ip,
+                reason: CameraStopReason::ConfigurationRemoved,
+                reply,
+            })
+            .unwrap();
+        recorder.handle_commands();
+        removed.try_recv().unwrap().unwrap();
+        assert!(!status.read().unwrap().cameras.contains_key(&id));
     }
 
     #[test]
@@ -2299,6 +2353,7 @@ mod tests {
             .command_tx
             .send(KeepPeekCommand::Stop {
                 ip: camera.config.ip,
+                reason: CameraStopReason::ConfigurationRemoved,
                 reply,
             })
             .unwrap();
@@ -2344,6 +2399,7 @@ mod tests {
             .command_tx
             .send(KeepPeekCommand::Stop {
                 ip: camera.config.ip,
+                reason: CameraStopReason::ConfigurationRemoved,
                 reply,
             })
             .unwrap();

@@ -66,7 +66,9 @@ export async function activateFromAnotherClient() {
 		};
 		const saved = await writer.runtimeProfiles.saveRegistry(candidate);
 		registrySaved = true;
-		watch = await reader.runtimeProfiles.watchActive((active) => observed.push(active));
+		watch = await reader.runtimeProfiles.watchActive((active) => {
+			if (active) observed.push(active);
+		});
 		const activatedRevision = await writer.runtimeProfiles.activate(profileId, saved.revision);
 		await until(() =>
 			observed.some(
