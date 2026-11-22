@@ -11,7 +11,7 @@ use crate::{
         mfhd::MfhdBox, mvex::MvexBox, tfdt::TfdtBox, tfhd::TfhdBox, traf::TrafBox, trex::TrexBox,
         trun::TrunBox,
     },
-    track::Mp4TrackWriter,
+    track::{CompositionRange, Mp4TrackWriter},
     *,
 };
 use std::io::{Cursor, Seek, SeekFrom, Write};
@@ -57,6 +57,7 @@ struct FragmentTrack {
     sample_descriptions: Vec<MediaConfig>,
     sample_description_count: u32,
     pending_sample_description_index: Option<u32>,
+    composition_range: CompositionRange,
     samples: Vec<Mp4Sample>,
     source_timing: source_rtp::SourceTiming,
     committed_epoch: Option<SourceRtpTime>,
@@ -163,6 +164,7 @@ impl<W> FragmentedMp4Writer<W> {
     pub fn discard_pending_samples(&mut self) {
         for track in &mut self.tracks {
             track.pending_epoch = track.committed_epoch;
+            track.composition_range = CompositionRange::default();
             track.samples.clear();
             track.source_timing = source_rtp::SourceTiming::default();
             track.pending_sample_description_index = None;
@@ -237,6 +239,7 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
                 sample_descriptions: track_config.sample_descriptions.clone(),
                 sample_description_count,
                 pending_sample_description_index: None,
+                composition_range: CompositionRange::default(),
                 samples: Vec::new(),
                 committed_epoch: None,
                 pending_epoch: None,
@@ -387,6 +390,12 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
                 Ok::<_, Error>(packet.recorded(track.pending_epoch, pts))
             })
             .transpose()?;
+        if track.samples.len() == u32::MAX as usize {
+            return Err(Error::InvalidData(
+                "fragmented MP4 fragment has too many samples",
+            ));
+        }
+        let composition_range = track.composition_range.including(sample.rendering_offset)?;
         if let Some(previous) = track.samples.last_mut() {
             let delta = sample
                 .start_time
@@ -398,11 +407,7 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
             previous.duration = u32::try_from(delta)
                 .map_err(|_| Error::InvalidData("fragmented MP4 sample duration exceeds u32"))?;
         }
-        if track.samples.len() == u32::MAX as usize {
-            return Err(Error::InvalidData(
-                "fragmented MP4 fragment has too many samples",
-            ));
-        }
+        track.composition_range = composition_range;
         track.pending_sample_description_index = Some(sample_description_index);
         track.pending_epoch = measured;
         if let Some(value) = measured {
@@ -440,10 +445,6 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
                 .samples
                 .iter()
                 .any(|sample| sample.rendering_offset != 0);
-            let signed_composition_offsets = track
-                .samples
-                .iter()
-                .any(|sample| sample.rendering_offset < 0);
             let mut flags = TrunBox::FLAG_DATA_OFFSET
                 | TrunBox::FLAG_SAMPLE_DURATION
                 | TrunBox::FLAG_SAMPLE_SIZE
@@ -496,7 +497,7 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
                     ..TfdtBox::default()
                 }),
                 trun: Some(TrunBox {
-                    version: u8::from(signed_composition_offsets),
+                    version: track.composition_range.version(),
                     flags,
                     sample_count,
                     data_offset: Some(0),
@@ -580,6 +581,7 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
         self.committed_box_count += 2 + source_events.len() as u64;
         for track in &mut self.tracks {
             track.committed_epoch = track.pending_epoch;
+            track.composition_range = CompositionRange::default();
             track.samples.clear();
             track.source_timing = source_rtp::SourceTiming::default();
             track.pending_sample_description_index = None;
@@ -956,9 +958,7 @@ mod tests {
         .enumerate()
         {
             let mut unit = sample(i as u64 * 1_000, i == 0, b"video");
-            if i == 0 {
-                unit.rendering_offset = -8;
-            }
+            unit.rendering_offset = [-8, 1000, 0, -2000, 0][i];
             writer
                 .write_sample_with_source_timing(1, 1, unit, timing)
                 .unwrap();
@@ -1017,6 +1017,12 @@ mod tests {
             b"video"
         );
         let mut reader = Mp4Reader::read_header(Cursor::new(&bytes), bytes.len() as u64).unwrap();
+        // Two decode ordinals may have the same stored PTS and distinct source RTP timestamps.
+        for (ordinal, pts) in [(1, -8), (2, 2000), (3, 2000), (4, 1000), (5, 4000)] {
+            let timing = reader.tracks()[&1].sample_timing(ordinal).unwrap().unwrap();
+            assert_eq!(timing.decode_time, u64::from(ordinal - 1) * 1000);
+            assert_eq!(timing.presentation_time, pts);
+        }
         let first_time = base.recorded(None, -8);
         assert_eq!(first_time.anchor.presentation_time, -8);
         let reconnect_time = reconnect.recorded(None, 4000);
@@ -1120,6 +1126,136 @@ mod tests {
             10
         );
         assert_eq!(indexed.source_rtp_time(1, 2).unwrap().unwrap(), second);
+    }
+
+    #[test]
+    fn flat_writer_preserves_versioned_offsets_and_rejects_incompatible_samples_atomically() {
+        for (offsets, version) in [
+            ([0, 0, 0], None),
+            ([0, 15, i64::from(u32::MAX)], Some(0)),
+            ([0, 15, -20], Some(1)),
+        ] {
+            let mut buffer = Cursor::new(Vec::new());
+            let mut writer = Mp4Writer::write_start(&mut buffer, &mp4_config()).unwrap();
+            writer.add_track(&video_track()).unwrap();
+            for (index, offset) in offsets.iter().enumerate() {
+                let mut entry = sample(index as u64 * 1000, true, b"picture");
+                entry.rendering_offset = *offset;
+                writer.write_sample(1, &entry).unwrap();
+            }
+            let mut invalid = sample(3000, true, b"rejected");
+            invalid.rendering_offset = match version {
+                Some(0) => -1,
+                Some(1) => i64::from(u32::MAX),
+                _ => i64::MAX,
+            };
+            assert!(writer.write_sample(1, &invalid).is_err());
+            writer.write_end().unwrap();
+            drop(writer);
+            let size = buffer.position();
+            buffer.set_position(0);
+            let mut reader = Mp4Reader::read_header(buffer, size).unwrap();
+            let track = &reader.tracks()[&1];
+            assert_eq!(track.sample_count(), 3);
+            assert_eq!(
+                track.trak.mdia.minf.stbl.ctts.as_ref().map(|b| b.version),
+                version
+            );
+            for (index, offset) in offsets.into_iter().enumerate() {
+                let ordinal = u32::try_from(index + 1).unwrap();
+                let decode_time = index as u64 * 1000;
+                let timing = reader.tracks()[&1].sample_timing(ordinal).unwrap().unwrap();
+                assert_eq!(
+                    (
+                        timing.decode_time,
+                        timing.duration,
+                        timing.presentation_time
+                    ),
+                    (
+                        decode_time,
+                        1000,
+                        i128::from(decode_time) + i128::from(offset)
+                    )
+                );
+                let sample = reader.read_sample(1, ordinal).unwrap().unwrap();
+                assert_eq!(
+                    (sample.rendering_offset, sample.bytes.as_ref()),
+                    (offset, b"picture".as_slice())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fragmented_offset_version_resets_at_each_fragment() {
+        let mut writer = FragmentedMp4Writer::write_start(
+            Cursor::new(Vec::new()),
+            &mp4_config(),
+            &[video_track()],
+        )
+        .unwrap();
+        for (index, offset) in [i64::from(u32::MAX), -1].into_iter().enumerate() {
+            let mut entry = sample(index as u64 * 1000, true, b"picture");
+            entry.rendering_offset = offset;
+            writer.write_sample(1, entry).unwrap();
+            let mut incompatible = sample(index as u64 * 1000 + 10, false, b"rejected");
+            incompatible.rendering_offset = if offset < 0 { i64::from(u32::MAX) } else { -1 };
+            assert!(writer.write_sample(1, incompatible).is_err());
+            writer.flush_fragment().unwrap();
+        }
+        let mut buffer = writer.into_writer();
+        let size = buffer.position();
+        buffer.set_position(0);
+        let mut reader = Mp4Reader::read_header(buffer, size).unwrap();
+        for (ordinal, offset) in [(1, i64::from(u32::MAX)), (2, -1)] {
+            let entry = reader.read_sample(1, ordinal).unwrap().unwrap();
+            assert_eq!(
+                (entry.rendering_offset, entry.duration, entry.bytes.as_ref()),
+                (offset, 1000, b"picture".as_slice())
+            );
+        }
+    }
+
+    #[test]
+    fn empty_track_fragments_leave_timing_and_payload_indices_aligned() {
+        let mut writer = FragmentedMp4Writer::write_start(
+            Cursor::new(Vec::new()),
+            &mp4_config(),
+            &[video_track()],
+        )
+        .unwrap();
+        let mut starts = Vec::new();
+        for start in [0, 1000] {
+            writer
+                .write_sample(1, sample(start, true, b"picture"))
+                .unwrap();
+            starts.push(writer.flush_fragment().unwrap().unwrap().range.offset as usize);
+        }
+        let mut bytes = writer.into_writer().into_inner();
+        let reader = Mp4Reader::read_header(Cursor::new(&bytes), bytes.len() as u64).unwrap();
+        let mut empty = reader.moofs[0].clone();
+        empty.trafs[0].trun = None;
+        empty.trafs[0].tfhd.flags |= 0x010000; // duration-is-empty
+        let mut encoded = Vec::new();
+        empty.write_box(&mut encoded).unwrap();
+        for start in starts.into_iter().rev() {
+            bytes.splice(start..start, encoded.iter().copied());
+        }
+        let mut reader = Mp4Reader::read_header(Cursor::new(&bytes), bytes.len() as u64).unwrap();
+        assert_eq!(reader.sample_count(1).unwrap(), 2);
+        for (ordinal, decode_time) in [(1, 0), (2, 1000)] {
+            let timing = reader.tracks()[&1].sample_timing(ordinal).unwrap().unwrap();
+            assert_eq!(timing.decode_time, decode_time);
+            assert_eq!(
+                reader
+                    .read_sample(1, ordinal)
+                    .unwrap()
+                    .unwrap()
+                    .bytes
+                    .as_ref(),
+                b"picture"
+            );
+        }
     }
 
     #[test]

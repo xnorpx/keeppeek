@@ -134,14 +134,11 @@ impl<R: Read + Seek> Mp4Reader<R> {
                     let track_id = traf.tfhd.track_id;
                     if let Some(track) = tracks.get_mut(&track_id) {
                         let sample_count = traf.trun.as_ref().map_or(0, |t| t.sample_count);
-                        let last_count = track.traf_sample_counts.last().copied().unwrap_or(0);
-                        track.traf_sample_counts.push(
-                            last_count
-                                .checked_add(sample_count)
-                                .ok_or(Error::InvalidData(
-                                    "cumulative trun sample_count overflow",
-                                ))?,
-                        );
+                        let previous = track.traf_sample_counts.last().copied().unwrap_or(0);
+                        let cumulative = previous
+                            .checked_add(sample_count)
+                            .ok_or(Error::InvalidData("cumulative trun sample_count overflow"))?;
+                        track.traf_sample_counts.push(cumulative);
                         let base_offset = traf.tfhd.base_data_offset.unwrap_or({
                             if traf.tfhd.flags & TfhdBox::FLAG_DEFAULT_BASE_IS_MOOF != 0 {
                                 moof_offset
