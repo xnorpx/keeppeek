@@ -8083,7 +8083,7 @@ mod tests {
         else {
             panic!("reliable media subscription must return a data binding");
         };
-        assert_eq!(delivery.stream_binding_id, "media:detector-input");
+        assert!(!delivery.stream_binding_id.is_empty());
         assert_eq!(
             delivery.channel,
             crate::api::proto::DataChannelKind::ReliableData as i32
@@ -8098,6 +8098,7 @@ mod tests {
         let TrackDelivery::ReliableData(binding) = &mut media.tracks[0].runtime.delivery else {
             panic!("reliable media track must retain its data binding");
         };
+        assert_eq!(delivery.stream_binding_id, binding.stream_binding_id);
         let received_at = Instant::now() - Duration::from_millis(25);
         let mut frame = live_frame_at(true, received_at, API_MEDIA_FRAME_CHUNK_BYTES + 7);
         frame.timestamp = Some(Duration::from_secs(10));
