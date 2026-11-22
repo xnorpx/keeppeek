@@ -526,6 +526,34 @@ describe('LivePeer', () => {
 		expect(api.deleteSession).toHaveBeenCalledOnce();
 	});
 
+	it('releases newly admitted audio before restoring the saved profile after decoder failure', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'timing',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		FakeDataChannel.audioVariants = ['main', 'sub'];
+		FakeDataChannel.audioUsesReliable = true;
+		vi.spyOn(AacAudioPlayback.prototype, 'configure')
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error('decoder unavailable'))
+			.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		const saved = { cameraId: 'front-door', variantId: 'sub' as const, quality: 'auto' as const };
+		await peer.configure([saved]);
+		const channel = FakePeerConnection.latest!.channels[0];
+		await expect(
+			peer.configure([{ ...saved, variantId: 'main', liveAudioPreviewOffsetMs: -80 }])
+		).rejects.toThrow('cannot decode the audio timing preview');
+		expect(
+			channel.subscriptions.filter((s) => s.kind === MediaKind.AUDIO).map((s) => s.variantId)
+		).toEqual(['sub', 'main', 'sub']);
+		expect(channel.unsubscribed.flat()).toEqual(['audio-0', 'audio-0']);
+		expect(peer.track('front-door')).toMatchObject({ subscribed: true, audioVariantId: 'sub' });
+		await peer.close();
+	});
+
 	it('restores acknowledged saved timing and keeps video usable if this browser loses AAC support', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({
@@ -940,6 +968,7 @@ describe('LivePeer', () => {
 		expect(peer.track('front-door')?.subscribed).toBe(true);
 		expect(peer.track('garage')?.subscribed).toBe(false);
 		const fresh = FakePeerConnection.latest!;
+		expect(peer.talkbackError).toMatch(/check whether it ran/i);
 		expect(fresh).not.toBe(old);
 		expect(
 			fresh.channels[0].subscriptions
@@ -1044,6 +1073,94 @@ describe('LivePeer', () => {
 		expect(peer.error).toBeNull();
 		expect(peer.talkbackError).toMatch(/connect to live view/i);
 	});
+
+	it('releases an intentionally closed peer before remote delete and opens the next viewer without a continuation', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		const response = { session_id: 'intentional', answer: { type: 'answer', sdp: 'v=0' } };
+		api.createSession.mockResolvedValue(response);
+		const peer = new LivePeer();
+		const plan = { cameraId: 'front-door', quality: 'auto' } as const;
+		await peer.configure([plan]);
+		const old = FakePeerConnection.latest!;
+		api.deleteSession.mockImplementationOnce(async () => {
+			expect(peer.sessionId).toBeNull();
+			old.channels[0].close();
+		});
+		await peer.configure([plan, { cameraId: 'garage', quality: 'low' }]);
+		expect(api.createSession).toHaveBeenLastCalledWith(expect.anything(), null, undefined);
+		await peer.close();
+	});
+
+	it('forgets a refused privacy continuation and waits for a new authorized configure', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		const response = { session_id: 'initial', answer: { type: 'answer', sdp: 'v=0' } };
+		api.createSession
+			.mockResolvedValueOnce(response)
+			.mockRejectedValueOnce(new ApiRequestError(401, 'ordinary disconnect'))
+			.mockResolvedValueOnce({ ...response, session_id: 'authorized' });
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		const plans = [{ cameraId: 'front-door', quality: 'auto' }] as const;
+		await peer.configure([...plans]);
+		FakePeerConnection.latest!.channels[0].close();
+		await vi.waitFor(() =>
+			expect(api.deleteSession).toHaveBeenCalledWith('initial', null, undefined)
+		);
+		expect(api.createSession).toHaveBeenCalledTimes(2);
+		expect(peer.sessionId).toBeNull();
+		await peer.configure([...plans]);
+		expect(api.createSession).toHaveBeenLastCalledWith(expect.anything(), null, undefined);
+		expect(peer.sessionId).toBe('authorized');
+		await peer.close();
+	});
+
+	it('consumes an acknowledged continuation even if its opening media peer was displaced', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		const response = { session_id: 'original', answer: { type: 'answer', sdp: 'v=0' } };
+		const accepted = Promise.withResolvers<typeof response>();
+		api.createSession
+			.mockResolvedValueOnce(response)
+			.mockReturnValueOnce(accepted.promise)
+			.mockResolvedValueOnce({ ...response, session_id: 'fresh' });
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		await peer.configure([{ cameraId: 'front-door', quality: 'auto' }]);
+		FakePeerConnection.latest!.channels[0].close();
+		await vi.waitFor(() => expect(api.createSession).toHaveBeenCalledTimes(2));
+		FakePeerConnection.latest!.channels[0].close();
+		accepted.resolve({ ...response, session_id: 'unused' });
+		await vi.waitFor(() => expect(peer.sessionId).toBe('fresh'));
+		expect(api.deleteSession).toHaveBeenCalledWith('unused', null, undefined);
+		expect(api.createSession).toHaveBeenLastCalledWith(expect.anything(), null, undefined);
+		await peer.close();
+	});
+
+	it.each(['main', 'sub'] as const)(
+		'reconciles a refused pinned %s audio track without replacing admitted video',
+		async (variant) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			api.createSession.mockResolvedValue({
+				session_id: 'partial',
+				answer: { type: 'answer', sdp: 'v=0' }
+			});
+			api.deleteSession.mockResolvedValue(undefined);
+			FakeDataChannel.audioVariants = ['main', 'sub'];
+			FakeDataChannel.rejectedSubscription = 'audio-0';
+			const peer = new LivePeer();
+			const plans = [{ cameraId: 'front-door', quality: 'auto', variantId: variant }] as const;
+			await peer.configure([...plans]);
+			expect(peer.track('front-door')?.subscribed).toBe(true);
+			expect(peer.needsAdmission('front-door')).toBe(true);
+			FakeDataChannel.rejectedSubscription = null;
+			await peer.configure([...plans]);
+			await vi.waitFor(() => expect(peer.needsAdmission('front-door')).toBe(false));
+			expect(
+				FakePeerConnection.latest!.channels[0].subscriptions.map((s) => s.subscriptionId)
+			).toEqual(['camera-0', 'audio-0', 'audio-0']);
+			expect(FakePeerConnection.latest!.channels[0].subscriptions.at(-1)?.variantId).toBe(variant);
+			await peer.close();
+		}
+	);
 
 	it('recovers immediately if the signaled control channel is retired before opening', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);

@@ -642,6 +642,58 @@ test('renders Board 24 mobile settings as the editable per-camera owner', async 
 	expect(controls.cameraUpdates).toEqual([]);
 });
 
+test('clears a listener preview when navigating away from and back to the camera', async ({
+	page
+}) => {
+	const { camera, health } = mobilePtzCamera();
+	const cameras = [camera, { ...camera, id: 'garage', name: 'Garage', ip: '192.0.2.88' }];
+	const controls = await mockControlPeer(page, {
+		cameras,
+		capabilityIds: ['keeppeek.live-audio-timing.v1'],
+		cameraSettings: cameras.map((item) => ({ ...configuredCamera(item), live_audio: {} })),
+		health: {
+			cameras: cameras.map((item) => ({
+				...health,
+				id: item.id,
+				ip: item.ip,
+				name: item.name!,
+				configured_profiles: item.profiles
+			}))
+		}
+	});
+	await page.goto(`/camera?camera=${camera.id}`);
+	const editor = page.getByRole('region', { name: 'Live audio synchronization' });
+	await editor.getByLabel('Preview stream').selectOption('main');
+	await editor.getByLabel('Preview offset (ms)').fill('80');
+	await editor.getByRole('button', { name: 'Apply preview' }).click();
+	await expect(editor.getByText(/Active preview/)).toBeVisible();
+	const admittedPreviews = controls.mediaSubscriptions.filter(
+		(request) => request.previewOffsetMs === 80
+	).length;
+	expect(admittedPreviews).toBe(2);
+	// A SvelteKit same-route navigation keeps the component mounted, as does browser Back.
+	const link = await page.evaluateHandle(() => {
+		const anchor = document.createElement('a');
+		anchor.href = '/camera?camera=garage';
+		anchor.textContent = 'Open Garage';
+		document.body.append(anchor);
+		return anchor;
+	});
+	await link.click();
+	await expect(page).toHaveURL(/camera=garage$/);
+	await expect(page.getByRole('heading', { name: 'Garage', exact: true }).first()).toBeVisible();
+	await expect(editor.getByRole('button', { name: 'Reset preview' })).toBeDisabled();
+	await page.goBack();
+	await expect(page).toHaveURL(new RegExp(`camera=${camera.id}$`));
+	await expect(
+		page.getByRole('heading', { name: camera.name!, exact: true }).first()
+	).toBeVisible();
+	await expect(editor.getByRole('button', { name: 'Reset preview' })).toBeDisabled();
+	expect(
+		controls.mediaSubscriptions.filter((request) => request.previewOffsetMs === 80)
+	).toHaveLength(admittedPreviews);
+});
+
 for (const width of [320, 390, 1440]) {
 	test(`saves only recorded audio timing and reloads at ${width}px`, async ({ page }) => {
 		await page.setViewportSize({ width, height: 900 });

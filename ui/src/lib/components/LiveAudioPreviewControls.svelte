@@ -61,6 +61,7 @@
 		>
 		<label class="grid gap-1 text-xs"
 			>Preview offset (ms)<Input
+				class="h-11"
 				inputmode="numeric"
 				bind:value={previewInput}
 				aria-describedby={`${helpId} ${helpId}-preview-notice`}
@@ -83,12 +84,14 @@
 	>
 	<div class="flex flex-wrap gap-2">
 		<Button
+			class="h-11"
 			type="button"
 			variant="outline"
 			disabled={previewing || parsedPreview === null}
 			onclick={() => preview(parsedPreview)}>Apply preview</Button
 		>
 		<Button
+			class="h-11"
 			type="button"
 			variant="outline"
 			disabled={previewing || (appliedPreview === undefined && !previewRequested)}

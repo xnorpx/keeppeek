@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 import type { BrowserSession } from '../../src/lib/external-authentication.svelte';
-import { protoRecordedAudioSettings, recordedAudioSettings } from '../../src/lib/recorded-audio';
+import {
+	protoLiveAudioSettings,
+	protoRecordedAudioSettings,
+	recordedAudioSettings
+} from '../../src/lib/recorded-audio';
 import {
 	ExternalAuthenticationConfigurationSchema,
 	ExternalAuthenticationResultSchema,
@@ -376,6 +380,7 @@ export type ControlRequests = {
 		subscriptionId: string;
 		variantId: string;
 		videoQuality: VideoQuality;
+		previewOffsetMs?: number;
 	}>;
 	mediaUnsubscriptions: string[][];
 	peekLayoutReads: number;
@@ -835,11 +840,12 @@ function encodedData(message: ReturnType<typeof create<typeof MessageSchema>>): 
 
 function fixtureSubscriptionResult(
 	subscribe: SubscribeMedia,
-	cameras: readonly CameraListItem[],
+	options: MockControlPeerOptions,
 	subscriptions: ControlRequests['mediaSubscriptions']
 ): SubscriptionResult {
 	const profiles =
-		cameras.find((camera) => `camera:${camera.id}` === subscribe.sourceSessionId)?.profiles ?? [];
+		options.cameras?.find((camera) => `camera:${camera.id}` === subscribe.sourceSessionId)
+			?.profiles ?? [];
 	const hasSub = profiles.some((profile) => profile.stream === 'sub');
 	const selectedVariantId =
 		subscribe.variantId ||
@@ -847,11 +853,27 @@ function fixtureSubscriptionResult(
 	subscriptions.push({
 		subscriptionId: subscribe.subscriptionId,
 		variantId: subscribe.variantId,
-		videoQuality: subscribe.videoQuality
+		videoQuality: subscribe.videoQuality,
+		...(subscribe.liveAudioPreviewOffsetMs === undefined
+			? {}
+			: { previewOffsetMs: subscribe.liveAudioPreviewOffsetMs })
 	});
 	return create(SubscriptionResultSchema, {
 		subscriptionId: subscribe.subscriptionId,
-		delivery: { case: 'rtp', value: create(RtpDeliverySchema, { mid: '0' }) },
+		delivery: {
+			case: 'rtp',
+			value: create(RtpDeliverySchema, { mid: subscribe.kind === MediaKind.AUDIO ? '1' : '0' })
+		},
+		liveAudio: options.capabilityIds?.includes('keeppeek.live-audio-timing.v1')
+			? {
+					preview: subscribe.liveAudioPreviewOffsetMs !== undefined,
+					appliedOffsetMs: subscribe.liveAudioPreviewOffsetMs ?? 0
+				}
+			: undefined,
+		liveQuality:
+			subscribe.liveAudioPreviewOffsetMs !== undefined
+				? { activeVariantId: selectedVariantId }
+				: undefined,
 		selectedVariantId
 	});
 }
@@ -1147,7 +1169,7 @@ export async function mockControlPeer(
 				case: 'subscriptionResult',
 				value: fixtureSubscriptionResult(
 					request.command.value,
-					options.cameras ?? [],
+					options,
 					requests.mediaSubscriptions
 				)
 			});
@@ -3098,6 +3120,21 @@ function encodedCapabilities(
 									sourceSessionId: `camera:${camera.id}`,
 									sourceId: camera.id,
 									displayName: camera.name ?? camera.id,
+									audio: capabilityIds.includes('keeppeek.live-audio-timing.v1')
+										? {
+												variants: camera.profiles.flatMap((profile) =>
+													profile.audio
+														? [
+																{
+																	variantId: profile.stream,
+																	codec: { name: profile.audio.encoding ?? '' },
+																	deliveryTransports: [DeliveryTransport.RTP]
+																}
+															]
+														: []
+												)
+											}
+										: undefined,
 									video: create(MediaStreamCapabilitySchema, {
 										variants: camera.profiles
 											.filter((profile) => profile.encoding)
@@ -3839,7 +3876,8 @@ function protoCameraSettings(camera: CameraSettings) {
 				: ProtoEventRecordingStream.MAIN,
 		health: camera.health ?? undefined,
 		model: camera.model ?? undefined,
-		recordedAudio: protoRecordedAudioSettings(camera.recorded_audio)
+		recordedAudio: protoRecordedAudioSettings(camera.recorded_audio),
+		liveAudio: protoLiveAudioSettings(camera.live_audio)
 	});
 }
 

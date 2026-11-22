@@ -214,10 +214,15 @@ describe('recorded-audio camera settings', () => {
 		expect(onsave).not.toHaveBeenCalled();
 	});
 
-	it.each([320, 390])('fits controls and actions inside a %ipx viewport', async (width) => {
+	it.each([
+		{ width: 320, kind: 'recorded' },
+		{ width: 390, kind: 'recorded' },
+		{ width: 320, kind: 'live' },
+		{ width: 390, kind: 'live' }
+	] as const)('fits $kind controls at $width px', async ({ width, kind }) => {
 		await page.viewport(width, 850);
 		const view = await render(RecordedAudioSettings, {
-			props: { camera: camera(), onsave: vi.fn() }
+			props: { camera: camera({ live_audio: {} }), kind, onsave: vi.fn(), onpreview: vi.fn() }
 		});
 		const form = view.container.querySelector('form')!;
 		expect(form.scrollWidth).toBeLessThanOrEqual(width);

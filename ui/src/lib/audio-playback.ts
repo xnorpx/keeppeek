@@ -51,6 +51,7 @@ export class AacAudioPlayback {
 	#anchor: { timestampUs: number; contextTime: number } | null = null;
 	#scheduled = new Map<AudioBufferSourceNode, number>();
 	#nextStart = 0;
+	#expectedTimestampUs?: number;
 	#fallbackTimestampUs = 0;
 	#closed = false;
 
@@ -132,32 +133,44 @@ export class AacAudioPlayback {
 		const source = this.#context.createBufferSource();
 		source.buffer = buffer;
 		source.connect(this.#context.destination);
-		const start = this.#presentationTime(timestampUs);
+		const start = this.#presentationTime(timestampUs, buffer.duration);
 		this.#nextStart = start + buffer.duration;
 		this.#scheduled.set(source, this.#nextStart);
 		source.onended = () => this.#scheduled.delete(source);
 		source.start(start);
 	}
 
-	#presentationTime(timestampUs: number): number {
+	#presentationTime(timestampUs: number, duration: number): number {
 		const now = this.#context.currentTime;
-		let start = this.#anchor
+		const continuous =
+			this.#expectedTimestampUs !== undefined &&
+			Math.abs(timestampUs - this.#expectedTimestampUs) <= 2;
+		this.#expectedTimestampUs = timestampUs + duration * 1_000_000;
+		const mapped = this.#anchor
 			? this.#anchor.contextTime + (timestampUs - this.#anchor.timestampUs) / 1_000_000
 			: now;
-		// A source discontinuity or a suspended AudioContext must not accumulate
-		// more scheduled playback than the jitter buffer's existing age limit.
-		if (!this.#anchor || Math.abs(start - now) > maxAgeMs / 1000) {
-			this.#anchor = { timestampUs, contextTime: now };
+		// Late delivery changes the local clock mapping but does not reverse presentation order.
+		let start = Math.max(now, continuous ? this.#nextStart : mapped);
+		if (
+			!this.#anchor ||
+			Math.abs(mapped - now) > maxAgeMs / 1000 ||
+			start - now > maxAgeMs / 1000 ||
+			this.#scheduled.size >= maxFrames
+		)
 			start = now;
-		}
-		start = Math.max(now, start);
-		// Decoders report integer microseconds. Keep adjacent blocks contiguous.
-		if (Math.abs(start - this.#nextStart) < 0.000_002) return Math.max(now, this.#nextStart);
-		if (start < this.#nextStart) {
-			for (const [source, end] of this.#scheduled) {
-				if (end <= start) continue;
+		this.#anchor = { timestampUs, contextTime: start };
+		if (Math.abs(start - this.#nextStart) < 0.000_002) start = Math.max(now, this.#nextStart);
+		for (const [source, end] of this.#scheduled) {
+			if (end <= now) {
+				source.onended = null;
+				this.#scheduled.delete(source);
+			} else if (end > start) {
 				source.stop(start);
-				this.#scheduled.set(source, start);
+				// A suspended context never advances to dispatch an immediate onended.
+				if (start <= now) {
+					source.onended = null;
+					this.#scheduled.delete(source);
+				} else this.#scheduled.set(source, start);
 			}
 		}
 		return start;

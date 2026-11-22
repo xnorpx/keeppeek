@@ -2546,6 +2546,17 @@ mod tests {
         verify();
         recorder.add_cameras(&HashMap::new()).unwrap();
         verify();
+        let (reply, stopped) = mpsc::sync_channel(1);
+        recorder
+            .command_tx
+            .send(KeepPeekCommand::SuspendForPrivacy {
+                ip: config.ip,
+                reply,
+            })
+            .unwrap();
+        recorder.handle_commands();
+        stopped.try_recv().unwrap().unwrap();
+        verify();
         recorder
             .apply_runtime_profiles(crate::profiles::ProfileRegistry {
                 revision: 1,
@@ -2554,6 +2565,18 @@ mod tests {
             .unwrap();
         verify();
         assert!(recorder.camera_workers.is_empty());
+
+        let (reply, removed) = mpsc::sync_channel(1);
+        recorder
+            .command_tx
+            .send(KeepPeekCommand::Stop {
+                ip: config.ip,
+                reply,
+            })
+            .unwrap();
+        recorder.handle_commands();
+        removed.try_recv().unwrap().unwrap();
+        assert!(!status.read().unwrap().cameras.contains_key(&id));
     }
 
     #[test]

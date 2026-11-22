@@ -105,7 +105,11 @@
 	type LivePreview = { cameraId: string; stream: 'main' | 'sub'; offset: number };
 	let livePreview = $state.raw<LivePreview | null>(null);
 	$effect(() => {
-		if (livePreview && livePeer.track(livePreview.cameraId)?.restoredSavedTiming)
+		if (
+			livePreview &&
+			(livePreview.cameraId !== cameraId ||
+				livePeer.track(livePreview.cameraId)?.restoredSavedTiming)
+		)
 			livePreview = null;
 	});
 	function cameraPlan(id: string, preview: LivePreview | null) {
@@ -118,7 +122,7 @@
 		};
 	}
 	let livePlans = $derived(
-		previewAvailable && camera !== null ? [cameraPlan(camera.id, livePreview)] : []
+		previewAvailable && camera?.id === cameraId ? [cameraPlan(cameraId, livePreview)] : []
 	);
 	async function previewLiveAudio(stream: 'main' | 'sub', offset: number | null) {
 		if (!camera) throw new Error('The live camera is unavailable.');

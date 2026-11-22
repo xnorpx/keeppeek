@@ -15,13 +15,14 @@ const state = vi.hoisted(() => ({
 	estimate: null as number | null,
 	timing: undefined as LiveAudioTiming | undefined,
 	quality: undefined as LiveQualityDiagnostics | undefined,
+	announceFailure: false,
 	requestedQuality: 'high' as 'auto' | 'high'
 }));
 
 vi.mock('$lib/stream-peer-context', () => ({
 	useLivePeer: () => ({
 		track: () => ({
-			status: 'queued',
+			status: state.announceFailure ? 'live' : 'queued',
 			subscribed: false,
 			requestedQuality: state.requestedQuality,
 			activeStream: 'main',
@@ -29,6 +30,12 @@ vi.mock('$lib/stream-peer-context', () => ({
 			liveQuality: state.quality,
 			liveAudio: state.timing
 		}),
+		cameraAudioAssets: { 'front-door': { quickReplies: [], chimes: [] } },
+		startTalkback: async () => {
+			throw new Error(
+				'The live connection changed. Check whether the command ran before trying again.'
+			);
+		},
 		attach: () => () => {},
 		markPlaying: () => {},
 		resumeAudioPlayback: async () => {},
@@ -78,6 +85,19 @@ describe('Live network estimate diagnostics', () => {
 		}
 	});
 
+	it('announces interrupted focused commands beside the control', async () => {
+		state.announceFailure = true;
+		try {
+			const view = await render(LiveVideo, { props: { cameraId: 'front-door', stream: 'main' } });
+			await page.getByRole('button', { name: 'Talk to front-door' }).click();
+			await expect
+				.poll(() => view.container.querySelector('p[role="status"]')?.textContent?.trim())
+				.toBe('The live connection changed. Check whether the command ran before trying again.');
+			await view.unmount();
+		} finally {
+			state.announceFailure = false;
+		}
+	});
 	it.each([
 		[320, null, 'Unknown'],
 		[390, 0, '0 bps'],
