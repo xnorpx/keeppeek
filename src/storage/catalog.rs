@@ -36,6 +36,7 @@ mod event_write;
 pub mod locations;
 pub mod maintenance;
 pub(crate) mod readers;
+pub(crate) mod relocation;
 pub mod retention;
 pub mod workflow;
 
@@ -217,7 +218,7 @@ pub(crate) struct CatalogCleanupCandidate {
 
 #[derive(Default)]
 struct CleanupFilter {
-    expiry_root: Option<PathBuf>,
+    store: Option<super::long_term::LongTermStore>,
     recording_id: Option<String>,
     deadline: Option<std::time::Instant>,
 }
@@ -448,6 +449,10 @@ enum Command {
         fragment: CatalogFragment,
         keyframe: CatalogKeyframe,
         reply: SyncSender<anyhow::Result<()>>,
+    },
+    Relocation {
+        request: relocation::Request,
+        reply: SyncSender<anyhow::Result<Option<relocation::Move>>>,
     },
     FinalizedRelocation {
         source: String,
@@ -1398,20 +1403,21 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    #[cfg(test)]
     pub(crate) fn claim_cleanup_candidate(
         &self,
     ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
         self.claim_automatic_cleanup(CleanupFilter::default())
     }
 
-    pub(crate) fn claim_expired_recording(
+    pub(crate) fn claim_archive_cleanup(
         &self,
-        root: &Path,
-        recording_id: &str,
+        store: &super::long_term::LongTermStore,
+        expired_recording: Option<&str>,
     ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
         self.claim_automatic_cleanup(CleanupFilter {
-            expiry_root: Some(root.to_path_buf()),
-            recording_id: Some(recording_id.into()),
+            store: Some(store.clone()),
+            recording_id: expired_recording.map(str::to_owned),
             deadline: None,
         })
     }
@@ -1800,6 +1806,12 @@ fn run_catalog(
                     &connection,
                     fragment,
                     keyframe,
+                )));
+            }
+            Command::Relocation { request, reply } => {
+                let _ = reply.send(pollster::block_on(relocation::dispatch(
+                    &connection,
+                    request,
                 )));
             }
             Command::FinalizedRelocation {
@@ -2559,9 +2571,13 @@ async fn select_cleanup_candidate(
     readers: &readers::Registry,
     filter: &CleanupFilter,
 ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
-    let expiry_root = filter.expiry_root.as_deref();
     if let Some(candidate) = pending_cleanup_candidate(connection).await? {
-        if expiry_root.is_some() && !candidate.retention_expiry {
+        if (filter.recording_id.is_some() && !candidate.retention_expiry)
+            || filter
+                .store
+                .as_ref()
+                .is_some_and(|store| !store.contains_cleanup_path(&candidate.path))
+        {
             return Ok(None);
         }
         retention::ensure_cleanup_allowed(connection, &candidate.recording_id).await?;
@@ -2595,22 +2611,34 @@ async fn find_cleanup_candidate(
     connection: &turso::Connection,
     filter: &CleanupFilter,
 ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
-    let expiry_root = filter.expiry_root.as_deref();
-    let prefix = expiry_root.map(|root| {
-        format!(
-            "{}/",
-            root.to_string_lossy()
-                .replace('\\', "/")
-                .trim_end_matches('/')
-        )
-    });
+    let prefix = |root: &Path| {
+        let root = root.to_string_lossy();
+        if cfg!(windows) {
+            format!("{}/", root.replace('\\', "/").trim_end_matches('/'))
+        } else {
+            format!("{}/", root.trim_end_matches('/'))
+        }
+    };
+    let root = filter.store.as_ref().map(|store| prefix(store.root()));
+    let source = filter
+        .store
+        .as_ref()
+        .and_then(|store| store.pending_source())
+        .map(prefix);
+    let (column, collation) = if cfg!(windows) {
+        ("replace(path,char(92),'/')", "NOCASE")
+    } else {
+        ("path", "BINARY")
+    };
     let mut rows = connection
             .query(
                 format!("SELECT id, path, file_bytes, cleanup_pending
                  FROM recording_files
                  WHERE finalized = 1 AND protected = 0 AND retention_pending=0
-                   AND (?2 IS NULL OR (substr(replace(path,char(92),'/'),1,length(?2))=?2 COLLATE NOCASE
-                       AND EXISTS(SELECT 1 FROM recording_retention_policies p WHERE p.camera_id=recording_files.source_id OR p.camera_id='')
+                   AND NOT EXISTS(SELECT 1 FROM legacy_recording_relocations m WHERE m.id=recording_files.id)
+                   AND (?2 IS NULL OR substr({column},1,length(?2))=?2 COLLATE {collation})
+                   AND (?4 IS NULL OR substr({column},1,length(?4))!=?4 COLLATE {collation})
+                   AND (?3 IS NULL OR (EXISTS(SELECT 1 FROM recording_retention_policies p WHERE p.camera_id=recording_files.source_id OR p.camera_id='')
                        AND retention_generation=(SELECT generation FROM recording_retention_runtime WHERE singleton=1)
                        AND EXISTS(SELECT 1 FROM recording_retention_decisions d WHERE d.recording_id=recording_files.id)))
                    AND NOT EXISTS (SELECT 1 FROM recording_retention_camera_work w WHERE w.camera_id=recording_files.source_id)
@@ -2624,7 +2652,7 @@ async fn find_cleanup_candidate(
                                    WHERE a.kind='recording' AND a.recording_id=recording_files.id AND (a.state='ready' OR a.local_evicted!=0))
                  {} ORDER BY cleanup_pending DESC, started_at_ms, id
                  LIMIT 1",if filter.recording_id.is_some(){"AND id=?3"} else {"AND ?3 IS NULL"}),
-                turso::params![retention::now_ms()?,prefix.as_deref(),filter.recording_id.as_deref()],
+                turso::params![retention::now_ms()?,root.as_deref(),filter.recording_id.as_deref(),source.as_deref()],
             )
             .await?;
     let candidate = rows
@@ -2636,7 +2664,7 @@ async fn find_cleanup_candidate(
                 path: PathBuf::from(row.get::<String>(1)?),
                 file_bytes: to_u64(row.get(2)?, "cleanup candidate file bytes")?,
                 pending: row.get::<i64>(3)? != 0,
-                retention_expiry: expiry_root.is_some(),
+                retention_expiry: filter.recording_id.is_some(),
             })
         })
         .transpose()?;
@@ -3088,6 +3116,7 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     backfill_recording_coverage(connection).await?;
     initialize_operational_schema(connection).await?;
     archive::initialize(connection).await?;
+    relocation::initialize(connection).await?;
     Ok(())
 }
 

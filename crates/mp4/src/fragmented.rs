@@ -165,6 +165,7 @@ impl<W> FragmentedMp4Writer<W> {
         for track in &mut self.tracks {
             track.composition_range = CompositionRange::default();
             track.pending_epoch = track.committed_epoch;
+            track.composition_range = CompositionRange::default();
             track.samples.clear();
             track.source_timing = source_rtp::SourceTiming::default();
             track.pending_sample_description_index = None;
@@ -396,6 +397,12 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
                 Ok::<_, Error>(packet.recorded(track.pending_epoch, pts))
             })
             .transpose()?;
+        if track.samples.len() == u32::MAX as usize {
+            return Err(Error::InvalidData(
+                "fragmented MP4 fragment has too many samples",
+            ));
+        }
+        let composition_range = track.composition_range.including(sample.rendering_offset)?;
         if let Some(previous) = track.samples.last_mut() {
             let delta = sample
                 .start_time
@@ -582,6 +589,7 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
         for track in &mut self.tracks {
             track.composition_range = CompositionRange::default();
             track.committed_epoch = track.pending_epoch;
+            track.composition_range = CompositionRange::default();
             track.samples.clear();
             track.source_timing = source_rtp::SourceTiming::default();
             track.pending_sample_description_index = None;
@@ -1088,9 +1096,7 @@ mod tests {
         .enumerate()
         {
             let mut unit = sample(i as u64 * 1_000, i == 0, b"video");
-            if i == 0 {
-                unit.rendering_offset = -8;
-            }
+            unit.rendering_offset = [-8, 1000, 0, -2000, 0][i];
             writer
                 .write_sample_with_source_timing(1, 1, unit, timing)
                 .unwrap();
@@ -1149,6 +1155,12 @@ mod tests {
             b"video"
         );
         let mut reader = Mp4Reader::read_header(Cursor::new(&bytes), bytes.len() as u64).unwrap();
+        // Two decode ordinals may have the same stored PTS and distinct source RTP timestamps.
+        for (ordinal, pts) in [(1, -8), (2, 2000), (3, 2000), (4, 1000), (5, 4000)] {
+            let timing = reader.tracks()[&1].sample_timing(ordinal).unwrap().unwrap();
+            assert_eq!(timing.decode_time, u64::from(ordinal - 1) * 1000);
+            assert_eq!(timing.presentation_time, pts);
+        }
         let first_time = base.recorded(None, -8);
         assert_eq!(first_time.anchor.presentation_time, -8);
         let reconnect_time = reconnect.recorded(None, 4000);

@@ -202,6 +202,145 @@ fn finalized_with_offline_destination(
     files[0].clone()
 }
 
+#[test]
+fn relocation_journal_fences_retention_and_recovers_owned_stages_after_restart() {
+    for published in [false, true] {
+        let mut config = storage_config(&format!("journal-restart-{}", uuid::Uuid::new_v4()));
+        let root = config.long_term_path.clone();
+        config.medium_term_path = root.join("source");
+        config.long_term_path = root.join("target");
+        std::fs::create_dir_all(&config.medium_term_path).unwrap();
+        std::fs::write(&config.long_term_path, b"offline").unwrap();
+        let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+        let source = finalized_with_offline_destination(&config, &catalog);
+        let destination = config
+            .long_term_path
+            .join(source.strip_prefix(&config.medium_term_path).unwrap());
+        std::fs::remove_file(&config.long_term_path).unwrap();
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        let handle = catalog.handle();
+        let (id, stream) = handle
+            .finalized_relocation(&source, &destination)
+            .unwrap()
+            .unwrap();
+        let identity = crate::storage::catalog::recording_file_identity(
+            &source,
+            &std::fs::metadata(&source).unwrap(),
+        )
+        .unwrap();
+        let job = handle
+            .reserve_relocation(crate::storage::catalog::relocation::Move {
+                id: id.clone(),
+                stream,
+                source: source.clone(),
+                destination: destination.clone(),
+                staged: uuid::Uuid::new_v4(),
+                source_identity: identity,
+                destination_published: false,
+            })
+            .unwrap();
+        let partial = destination.with_file_name(format!(".keeppeek-{}.partial", job.staged));
+        let other =
+            destination.with_file_name(format!(".keeppeek-{}.partial", uuid::Uuid::new_v4()));
+        std::fs::write(&partial, b"interrupted copy").unwrap();
+        std::fs::write(&other, b"separately owned").unwrap();
+        if published {
+            std::fs::copy(&source, &destination).unwrap();
+            handle
+                .update_recording_path(&id, &destination, true)
+                .unwrap();
+        } else {
+            std::fs::remove_file(&source).unwrap();
+        }
+        drop(handle);
+        catalog.shutdown();
+        let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+        let handle = catalog.handle();
+        let reserved = handle.next_relocation("").unwrap().unwrap();
+        assert_eq!(reserved.id, id);
+        assert_eq!(reserved.destination_published, published);
+        assert!(handle.claim_cleanup_candidate().unwrap().is_none());
+        pollster::block_on(async {
+            let db = turso::Builder::new_local(config.recording_catalog_path.to_str().unwrap())
+                .build()
+                .await
+                .unwrap();
+            let conn = db.connect().unwrap();
+            let result = conn
+                .execute(
+                    "UPDATE recording_files SET cleanup_pending=1 WHERE id=?1",
+                    [id.as_str()],
+                )
+                .await;
+            assert!(
+                result.is_err(),
+                "retention was able to select a partially relocated object"
+            );
+        });
+        let playback = published.then(|| {
+            handle
+                .leased_media_fragments_in_range("front/main", i64::MIN, i64::MAX)
+                .unwrap()
+        });
+        if let Some((fragments, _)) = &playback {
+            assert!(!fragments.is_empty());
+            assert!(
+                handle
+                    .reader_leases()
+                    .conflicts(&id, &destination.to_string_lossy())
+                    .unwrap()
+            );
+        }
+        // Configured storage roots may have converged between runs. The immutable
+        // journal still owns each original endpoint, including an already published copy.
+        config.medium_term_path = config.long_term_path.clone();
+        if !published {
+            let parent = source.parent().unwrap();
+            let inaccessible = parent.with_file_name("unavailable-directory");
+            std::fs::rename(parent, &inaccessible).unwrap();
+            let mut recovering = WriterWorker::new(
+                config.clone(),
+                RecordingDemand::new(Duration::ZERO),
+                Some(handle.clone()),
+            );
+            recovering.retry_relocations(Instant::now());
+            assert!(
+                recovering
+                    .health
+                    .snapshot()
+                    .streams
+                    .iter()
+                    .any(|entry| entry.last_error.is_some())
+            );
+            assert!(handle.next_relocation("").unwrap().is_some());
+            std::fs::rename(&inaccessible, parent).unwrap();
+        }
+        let mut worker = WriterWorker::new(
+            config,
+            RecordingDemand::new(Duration::ZERO),
+            Some(handle.clone()),
+        );
+        let mut now = Instant::now();
+        for _ in 0..64 {
+            let Some(delay) = worker.retry_relocations(now) else {
+                break;
+            };
+            now += delay;
+        }
+        assert!(worker.relocation_scan.take_published());
+        assert!(handle.next_relocation("").unwrap().is_none());
+        assert!(!partial.exists());
+        assert_eq!(std::fs::read(&other).unwrap(), b"separately owned");
+        assert!(!source.exists());
+        assert_eq!(destination.exists(), published);
+        drop(playback);
+        drop(worker);
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 fn block_test_path_update(config: &StorageConfig, blocked: bool) {
     pollster::block_on(async {
         let db = turso::Builder::new_local(config.recording_catalog_path.to_str().unwrap())
@@ -217,4 +356,58 @@ fn block_test_path_update(config: &StorageConfig, blocked: bool) {
         };
         conn.execute_batch(sql).await.unwrap();
     });
+}
+
+#[test]
+fn aliased_archive_root_publishes_its_spelling_and_keeps_the_only_file() {
+    let mut config = storage_config(&format!("alias-root-{}", uuid::Uuid::new_v4()));
+    let root = config.long_term_path.clone();
+    config.medium_term_path = root.join("source");
+    config.long_term_path = root.join("offline");
+    std::fs::create_dir_all(config.medium_term_path.join("alias")).unwrap();
+    std::fs::write(&config.long_term_path, b"offline").unwrap();
+    let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+    let source = finalized_with_offline_destination(&config, &catalog);
+    config.long_term_path = config.medium_term_path.join("alias/..");
+    let destination = config
+        .long_term_path
+        .join(source.strip_prefix(&config.medium_term_path).unwrap());
+    let bytes = std::fs::read(&source).unwrap();
+    let handle = catalog.handle();
+    let (id, stream) = handle
+        .finalized_relocation(&source, &destination)
+        .unwrap()
+        .unwrap();
+    let worker = WriterWorker::new(
+        config,
+        RecordingDemand::new(Duration::ZERO),
+        Some(handle.clone()),
+    );
+    assert_eq!(
+        worker.move_to_long_term(&stream, &source, &id).unwrap(),
+        destination
+    );
+    let (fragments, lease) = handle
+        .leased_media_fragments_in_range(&stream, i64::MIN, i64::MAX)
+        .unwrap();
+    assert!(!fragments.is_empty());
+    assert!(
+        fragments
+            .iter()
+            .all(|f| f.path == destination.to_string_lossy())
+    );
+    assert!(
+        handle
+            .reader_leases()
+            .conflicts(&id, &destination.to_string_lossy())
+            .unwrap()
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+    assert!(handle.next_relocation("").unwrap().is_none());
+    drop(lease);
+    drop(worker);
+    drop(handle);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
 }

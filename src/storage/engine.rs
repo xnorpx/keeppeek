@@ -909,6 +909,7 @@ struct WriterWorker {
     pipelines: HashMap<String, CameraPipeline>,
     long_term: LongTermStore,
     relocation_scan: relocation::Scan,
+    relocator: Option<relocation::Background>,
     admission: RecordingAdmission,
     event_recordings: Option<EventRecordings>,
     event_sources: HashMap<String, EventSourceState>,
@@ -934,10 +935,12 @@ impl WriterWorker {
         health: RecordingHealthRegistry,
         admission: RecordingAdmission,
     ) -> Self {
-        let long_term = LongTermStore::new(config.long_term_path.clone());
+        let long_term =
+            LongTermStore::for_recording_roots(&config.long_term_path, &config.medium_term_path);
         let safety = health.storage();
-        let relocation_scan =
-            relocation::Scan::new(config.medium_term_path != config.long_term_path);
+        let relocation_scan = relocation::Scan::new(
+            catalog.is_some() || config.medium_term_path != config.long_term_path,
+        );
         Self {
             config,
             demand,
@@ -947,6 +950,7 @@ impl WriterWorker {
             pipelines: HashMap::new(),
             long_term,
             relocation_scan,
+            relocator: None,
             admission,
             event_recordings: None,
             event_sources: HashMap::new(),
@@ -955,6 +959,13 @@ impl WriterWorker {
     }
 
     fn run(&mut self, rx: StorageCommandReceiver) {
+        if self.catalog.is_some() || self.config.medium_term_path != self.config.long_term_path {
+            self.relocator = Some(relocation::Background::start(
+                self.config.clone(),
+                self.catalog.clone(),
+                self.health.clone(),
+            ));
+        }
         let reap_interval = Duration::from_secs(300);
         let mut last_reap = Instant::now();
         let safety_enabled = self.catalog.is_some() && self.config.has_safety_limits();
@@ -980,10 +991,12 @@ impl WriterWorker {
             } else {
                 None
             };
-            let timeout = timeout
-                .into_iter()
-                .chain(self.retry_relocations(Instant::now()))
-                .min();
+            if let Some(worker) = &self.relocator
+                && worker.take_published()
+                && safety_enabled
+            {
+                self.enforce_storage_limit(StorageCleanupTrigger::SegmentFinalized);
+            }
             let cmd = if let Some(timeout) = timeout {
                 match rx.recv_timeout(timeout) {
                     Ok(cmd) => Some(cmd),
@@ -1152,9 +1165,11 @@ impl WriterWorker {
         let mut bytes_removed = 0u64;
 
         while capacity.keeppeek_bytes > target_bytes {
-            let candidate = catalog.claim_cleanup_candidate()?.ok_or_else(|| {
-                anyhow::anyhow!("no eligible finalized recording remains to restore headroom")
-            })?;
+            let candidate = catalog
+                .claim_archive_cleanup(&self.long_term, None)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no eligible finalized recording remains to restore headroom")
+                })?;
             let removed = self.remove_cleanup_candidate(&catalog, &candidate, reason)?;
             files_removed = files_removed.saturating_add(u64::from(removed > 0));
             bytes_removed = bytes_removed.saturating_add(removed);
@@ -1208,7 +1223,10 @@ impl WriterWorker {
         capacity: &mut FilesystemCapacity,
     ) -> anyhow::Result<()> {
         if let Some(candidate) = catalog.pending_cleanup_candidate()? {
-            if !candidate.path.exists() {
+            if !self.long_term.contains_cleanup_path(&candidate.path) {
+                // A previous build could claim a finalized capture before its move began.
+                catalog.cancel_cleanup(&candidate.recording_id)?;
+            } else if !candidate.path.exists() {
                 self.safety
                     .cleanup_started(StorageCleanupReason::Reconciliation);
                 catalog.complete_cleanup(
@@ -1470,75 +1488,20 @@ impl WriterWorker {
         path: &Path,
         recording_id: &str,
     ) -> std::io::Result<PathBuf> {
-        if self.config.volume_runtime.is_some() {
-            use super::catalog::locations::{Kind, Object, Reply, Request};
-            if let Some(catalog) = &self.catalog
-                && matches!(
-                    catalog
-                        .volume_location(Request::Lookup(Object {
-                            kind: Kind::Recording,
-                            id: recording_id.to_owned()
-                        }))
-                        .map_err(std::io::Error::other)?,
-                    Reply::Location(Some(_))
-                )
-            {
-                if let Some(mover) = &self.config.volume_mover {
-                    mover.scan().map_err(std::io::Error::other)?;
-                }
-                if let Some(archive) = &self.config.archive_runtime
-                    && let Err(error) = archive.scan()
-                {
-                    tracing::warn!(%error,"archive wakeup deferred; finalized recording remains available locally");
-                }
-                return Ok(path.to_path_buf());
-            }
-        }
-        let destination = if self.config.medium_term_path == self.config.long_term_path {
-            tracing::info!(
-                camera = camera_id,
-                path = %path.display(),
-                "segment finalized to long-term storage",
-            );
-            path.to_path_buf()
-        } else {
-            let rel = path
-                .strip_prefix(&self.config.medium_term_path)
-                .map_err(std::io::Error::other)?;
-            let destination = self.config.long_term_path.join(rel);
-            // A long playback lease can outlive many retries. Avoid restaging or comparing
-            // the recording on the capture worker until a catalog handoff is possible.
-            if let Some(catalog) = &self.catalog
-                && catalog
-                    .reader_leases()
-                    .conflicts(recording_id, &path.to_string_lossy())
-                    .map_err(std::io::Error::other)?
-            {
-                return Err(std::io::Error::other(
-                    "active recording reader defers relocation",
-                ));
-            }
-            relocation::stage_source(path, &destination)?;
-
-            tracing::info!(
-                camera = camera_id,
-                from = %path.display(),
-                to = %destination.display(),
-                "finalized recording staged in long-term storage",
-            );
-            destination
-        };
-        // Writer finalization already committed the catalog entry at the same root.
-        if self.config.medium_term_path != self.config.long_term_path
-            && let Some(catalog) = &self.catalog
+        if let Some(background) = &self.relocator
+            && relocation::legacy_path(&self.config, path)
         {
-            catalog
-                .update_recording_path(recording_id, &destination, true)
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            background.wake();
+            return Ok(path.to_path_buf());
         }
-        if self.config.medium_term_path != self.config.long_term_path {
-            std::fs::remove_file(path)?;
-        }
+        let destination = relocation::move_recording(
+            &self.config,
+            self.catalog.as_ref(),
+            camera_id,
+            path,
+            recording_id,
+            &std::sync::atomic::AtomicBool::new(false),
+        )?;
         if self.catalog.is_some() && self.config.has_safety_limits() {
             self.enforce_storage_limit(StorageCleanupTrigger::SegmentFinalized);
         }
@@ -1831,6 +1794,89 @@ mod tests {
         drop(handle);
         catalog.shutdown();
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn capacity_cleanup_skips_unrelocated_capture_even_before_the_move_is_reserved() {
+        for nested in [false, true] {
+            let mut config = storage_config("cleanup-unrelocated-capture");
+            let fixture =
+                std::env::temp_dir().join(format!("cleanup-unrelocated-{}", uuid::Uuid::new_v4()));
+            let archive = fixture.join("archive");
+            let medium = if nested {
+                archive.join("capture")
+            } else {
+                fixture.join("archive-capture")
+            };
+            config.long_term_path.clone_from(&archive);
+            config.medium_term_path.clone_from(&medium);
+            config.recording_catalog_path = fixture.join("catalog.db");
+            let relative = Path::new("front/sub/2026-08-12/12/0000000.mp4");
+            let source = medium.join(relative);
+            let archived = archive.join("older-archived.mp4");
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(&archive).unwrap();
+            let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+            let handle = catalog.handle();
+            insert_cleanup_recording(&handle, "source", &source, 1_000, 40);
+            insert_cleanup_recording(&handle, "archived", &archived, 2_000, 40);
+            // Reproduce the orphaned claim a previous version could leave before its worker ran.
+            assert_eq!(
+                handle
+                    .claim_cleanup_candidate()
+                    .unwrap()
+                    .unwrap()
+                    .recording_id,
+                "source"
+            );
+            config.long_term_max_bytes = 50;
+            let worker = WriterWorker::new(
+                config,
+                RecordingDemand::new(Duration::ZERO),
+                Some(handle.clone()),
+            );
+            assert!(worker.relocator.is_none());
+            assert!(handle.next_relocation("").unwrap().is_none());
+            worker.enforce_storage_limit_with_capacity(
+                StorageCleanupTrigger::Periodic,
+                FilesystemCapacity {
+                    total_bytes: 1_000,
+                    available_bytes: 500,
+                    keeppeek_bytes: 0,
+                },
+            );
+            assert!(source.exists());
+            assert!(!archived.exists());
+            assert!(handle.pending_cleanup_candidate().unwrap().is_none());
+            assert_eq!(
+                worker.safety.snapshot().recording_state,
+                StorageRecordingState::Active
+            );
+            let relocated = relocation::move_recording(
+                &worker.config,
+                Some(&handle),
+                "front/sub",
+                &source,
+                "source",
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(relocated, archive.join(relative));
+            assert_eq!(std::fs::read(relocated).unwrap().len(), 40);
+            assert!(!source.exists());
+            assert_eq!(
+                handle
+                    .claim_archive_cleanup(&worker.long_term, None)
+                    .unwrap()
+                    .unwrap()
+                    .recording_id,
+                "source"
+            );
+            drop(worker);
+            drop(handle);
+            catalog.shutdown();
+            std::fs::remove_dir_all(fixture).unwrap();
+        }
     }
 
     #[test]
