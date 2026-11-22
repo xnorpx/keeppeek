@@ -6428,14 +6428,20 @@ fn current_unix_time_ms() -> i64 {
 }
 
 #[cfg(unix)]
-fn recording_file_identity(_path: &Path, metadata: &std::fs::Metadata) -> Option<String> {
+pub(crate) fn recording_file_identity(
+    _path: &Path,
+    metadata: &std::fs::Metadata,
+) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
 
     Some(format!("{}:{}", metadata.dev(), metadata.ino()))
 }
 
 #[cfg(windows)]
-fn recording_file_identity(path: &Path, _metadata: &std::fs::Metadata) -> Option<String> {
+pub(crate) fn recording_file_identity(
+    path: &Path,
+    _metadata: &std::fs::Metadata,
+) -> Option<String> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
@@ -6454,7 +6460,10 @@ fn recording_file_identity(path: &Path, _metadata: &std::fs::Metadata) -> Option
 }
 
 #[cfg(not(any(unix, windows)))]
-fn recording_file_identity(_path: &Path, _metadata: &std::fs::Metadata) -> Option<String> {
+pub(crate) fn recording_file_identity(
+    _path: &Path,
+    _metadata: &std::fs::Metadata,
+) -> Option<String> {
     None
 }
 

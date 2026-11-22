@@ -211,6 +211,16 @@ function stepUnavailable(status: StoredFrameStepStatus): string {
 	}
 }
 
+export async function awaitFrameOperation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+	signal.throwIfAborted();
+	let rejectAbort: (cause: unknown) => void = () => {};
+	const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+	const cancel = () => rejectAbort(signal.reason);
+	signal.addEventListener('abort', cancel, { once: true });
+	try { return await Promise.race([operation, aborted]); }
+	finally { signal.removeEventListener('abort', cancel); }
+}
+
 async function decodePicture(
 	config: VideoDecoderConfig,
 	samples: Sample[],
@@ -219,7 +229,7 @@ async function decodePicture(
 ): Promise<VideoFrame> {
 	if (
 		typeof VideoDecoder === 'undefined' ||
-		!(await VideoDecoder.isConfigSupported(config)).supported
+		!(await awaitFrameOperation(VideoDecoder.isConfigSupported(config), signal)).supported
 	) {
 		throw new Error('This browser cannot decode exact pictures for this stream.');
 	}
@@ -254,7 +264,7 @@ async function decodePicture(
 				})
 			);
 		}
-		await decoder.flush();
+		await awaitFrameOperation(decoder.flush(), signal);
 		signal.throwIfAborted();
 		if (failure) throw failure;
 		if (!selected) throw new Error('The decoder did not return the requested picture.');

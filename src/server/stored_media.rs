@@ -164,6 +164,9 @@ pub(super) fn dispatch(
 ) -> Result<StoredMediaDispatch, ControlCommandError> {
     match command.action {
         Some(stored_media_command::Action::Open(open)) => open_cursor(state, session_id, open),
+        Some(stored_media_command::Action::StepFrame(request)) => {
+            super::stored_frame_step::step(state, session_id, request)
+        }
         Some(stored_media_command::Action::Seek(seek)) => {
             let (state_message, messages) = seek_stored_media(state, session_id, seek)?;
             let notifications = terminal_stored_media_notification(&state_message);

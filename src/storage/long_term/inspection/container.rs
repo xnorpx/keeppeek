@@ -147,7 +147,16 @@ pub(in crate::storage) fn inspect(
     size: u64,
     deadline: Instant,
 ) -> anyhow::Result<Index> {
-    let (initialization, ranges) = scan(reader, size, deadline)?;
+    inspect_with_sample_limit(reader, size, deadline, u64::MAX)
+}
+
+pub(in crate::storage) fn inspect_with_sample_limit(
+    reader: &mut (impl Read + Seek),
+    size: u64,
+    deadline: Instant,
+    sample_limit: u64,
+) -> anyhow::Result<Index> {
+    let (initialization, ranges) = scan(reader, size, deadline, sample_limit)?;
     reader.seek(SeekFrom::Start(0))?;
     let bounded = Bounded {
         reader: BufReader::new(reader),
@@ -308,6 +317,7 @@ fn scan(
     reader: &mut (impl Read + Seek),
     size: u64,
     deadline: Instant,
+    mut remaining_samples: u64,
 ) -> anyhow::Result<(mp4::Mp4ByteRange, Vec<MediaRange>)> {
     let mut position = 0;
     let mut metadata_bytes = 0;
@@ -352,7 +362,7 @@ fn scan(
                 if initialization.size == 0 {
                     initialization.size = position;
                 }
-                guard_samples(reader, payload, end, deadline)?;
+                guard_samples(reader, payload, end, deadline, &mut remaining_samples)?;
                 fragment = Some(position);
             }
             mp4::BoxType::MdatBox => {
@@ -406,6 +416,7 @@ fn guard_samples(
     start: u64,
     end: u64,
     deadline: Instant,
+    remaining_samples: &mut u64,
 ) -> anyhow::Result<()> {
     let mut pending = vec![(start, end, false)];
     let mut count = 0;
@@ -450,6 +461,9 @@ fn guard_samples(
                     flags & 0x301 == 0x301 && (1..=65_536).contains(&samples),
                     "unsupported sample table"
                 );
+                *remaining_samples = remaining_samples
+                    .checked_sub(u64::from(samples))
+                    .ok_or_else(|| anyhow::anyhow!("sample window limit exceeded"))?;
                 anyhow::ensure!(end - payload >= 12, "missing media offset");
                 let mut offset = [0_u8; 4];
                 reader.read_exact(&mut offset)?;
@@ -571,7 +585,15 @@ mod tests {
         bytes[moof..moof + 4].copy_from_slice(&(moof_size + traf_size).to_be_bytes());
         let deadline = Instant::now() + Duration::from_secs(2);
 
-        assert!(scan(&mut Cursor::new(&bytes), bytes.len() as u64, deadline).is_err());
+        assert!(
+            scan(
+                &mut Cursor::new(&bytes),
+                bytes.len() as u64,
+                deadline,
+                u64::MAX
+            )
+            .is_err()
+        );
     }
 
     #[test]

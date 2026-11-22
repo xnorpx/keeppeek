@@ -1,4 +1,4 @@
-import { StoredFrameWindow, type PresentedStoredFrame } from './stored-frame-step';
+import { awaitFrameOperation, StoredFrameWindow, type PresentedStoredFrame } from './stored-frame-step';
 import {
 	StepStoredFrameSchema,
 	StoredFrameStepDirection,
@@ -3346,7 +3346,7 @@ export class StoredMediaPlayback {
 								}
 							}
 			});
-			const result = await this.requestFrameStep(request, abort.signal);
+			const result = await awaitFrameOperation(this.requestFrameStep(request, abort.signal), abort.signal);
 			clearTimeout(startDeadline);
 			abort.signal.throwIfAborted();
 			decodeDeadline = setTimeout(cancel, 5000);

@@ -139,6 +139,12 @@ impl Drop for LeaseSet {
 }
 
 pub(super) enum Request {
+    FrameWindow {
+        stream: String,
+        start: i64,
+        end: i64,
+    },
+    FrameCatalogRevision,
     Fragments {
         stream: String,
         start: i64,
@@ -167,6 +173,8 @@ pub(super) enum Request {
 }
 
 pub(super) enum Reply {
+    FrameWindow(u64, Vec<CatalogMediaFragment>, LeaseSet),
+    FrameCatalogRevision(u64),
     Fragments(Vec<CatalogMediaFragment>, LeaseSet),
     Object(Option<(CatalogMediaObjectLocation, LeaseSet)>),
     Snapshots(LeaseSet),
@@ -269,6 +277,38 @@ impl RecordingCatalogHandle {
         }
     }
 
+    pub(crate) fn frame_step_window(
+        &self,
+        stream: &str,
+        start: i64,
+        end: i64,
+        deadline: std::time::Instant,
+    ) -> anyhow::Result<(u64, Vec<CatalogMediaFragment>, LeaseSet)> {
+        anyhow::ensure!(
+            start < end && end.saturating_sub(start) <= 20_002,
+            "invalid frame lookup range"
+        );
+        let request = Request::FrameWindow {
+            stream: stream.to_owned(),
+            start,
+            end,
+        };
+        match self.read_lease_until(request, deadline)? {
+            Reply::FrameWindow(revision, fragments, lease) => Ok((revision, fragments, lease)),
+            _ => anyhow::bail!("unexpected frame-window response"),
+        }
+    }
+
+    pub(crate) fn frame_catalog_revision(
+        &self,
+        deadline: std::time::Instant,
+    ) -> anyhow::Result<u64> {
+        match self.read_lease_until(Request::FrameCatalogRevision, deadline)? {
+            Reply::FrameCatalogRevision(revision) => Ok(revision),
+            _ => anyhow::bail!("unexpected frame revision response"),
+        }
+    }
+
     pub(crate) fn leased_resolve_media_object(
         &self,
         source: &str,
@@ -333,12 +373,20 @@ impl RecordingCatalogHandle {
     }
 
     fn read_lease(&self, request: Request) -> anyhow::Result<Reply> {
+        self.read_lease_until(request, std::time::Instant::now() + super::BUSY_TIMEOUT)
+    }
+
+    fn read_lease_until(
+        &self,
+        request: Request,
+        deadline: std::time::Instant,
+    ) -> anyhow::Result<Reply> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
             .try_send(Command::ReadLease { request, reply })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
         response
-            .recv_timeout(super::BUSY_TIMEOUT)
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 }
@@ -365,6 +413,21 @@ pub(super) async fn execute(
     request: Request,
 ) -> anyhow::Result<Reply> {
     match request {
+        Request::FrameCatalogRevision => Ok(Reply::FrameCatalogRevision(
+            frame_catalog_revision(connection).await?,
+        )),
+        Request::FrameWindow { stream, start, end } => {
+            let Reply::Fragments(fragments, lease) =
+                fragments_reply(connection, registry, &stream, start, end, Some(33)).await?
+            else {
+                unreachable!()
+            };
+            Ok(Reply::FrameWindow(
+                frame_catalog_revision(connection).await?,
+                fragments,
+                lease,
+            ))
+        }
         Request::Image {
             event,
             attachment,
@@ -426,6 +489,20 @@ pub(super) async fn execute(
             expected,
         } => archive_export_reply(connection, registry, &job_id, &artifact_id, expected).await,
     }
+}
+
+async fn frame_catalog_revision(connection: &turso::Connection) -> anyhow::Result<u64> {
+    let mut rows = connection
+        .query(
+            "SELECT revision FROM recording_catalog_state WHERE id = 1",
+            (),
+        )
+        .await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing recording catalog revision"))?;
+    super::to_u64(row.get(0)?, "recording catalog revision")
 }
 
 async fn fragments_reply(

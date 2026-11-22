@@ -925,6 +925,11 @@ impl Mp4Track {
         }))
     }
 
+    /// Returns whether a present, one-based sample can start a decoder.
+    pub fn sample_random_access(&self, sample_id: u32) -> Option<bool> {
+        (sample_id > 0 && sample_id <= self.sample_count()).then(|| self.is_sync_sample(sample_id))
+    }
+
     pub(crate) fn is_sync_sample(&self, sample_id: u32) -> bool {
         if !self.trafs.is_empty() {
             if let Some((traf_idx, sample_idx)) = self.find_traf_idx_and_sample_idx(sample_id) {

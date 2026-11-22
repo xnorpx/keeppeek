@@ -89,6 +89,7 @@ fn initial_cursor(
     recording: String,
 ) -> StoredMediaCursor {
     StoredMediaCursor {
+        frames: Default::default(),
         incarnation: Uuid::new_v4(),
         identifiers: batch.identifiers,
         recorded_audio: timing,
@@ -401,6 +402,9 @@ fn commit(
             )
         })?;
     let reset = next.generation != before.generation || next.mode != before.mode;
+    if reset || next.playing != before.playing {
+        cursor.frames = Default::default();
+    }
     cursor.requested_time_ms = next.requested_time_ms;
     cursor.mode = next.mode;
     cursor.playing = next.playing;

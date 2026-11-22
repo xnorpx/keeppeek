@@ -144,6 +144,7 @@ pub(crate) mod state_store_settings;
 pub(crate) mod state_store_watch;
 mod storage_archive;
 mod storage_volumes;
+mod stored_frame_step;
 mod stored_media;
 mod talkback;
 
@@ -8145,6 +8146,7 @@ fn proto_access_audit_event(event: AccessAuditEvent) -> proto::AccessAuditEvent 
 }
 
 struct StoredMediaCursor {
+    frames: stored_frame_step::CursorFrames,
     incarnation: Uuid,
     identifiers: StoredMediaIdentifiers,
     recorded_audio: proto::RecordedAudioTiming,

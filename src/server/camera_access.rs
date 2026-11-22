@@ -285,7 +285,9 @@ fn authorize_stored_media(
         Some(stored_media_command::Action::Open(request)) => {
             require_camera(policy, &request.source_id)
         }
-        Some(stored_media_command::Action::StepFrame(request)) => require_camera(policy, &request.source_id),
+        Some(stored_media_command::Action::StepFrame(request)) => {
+            require_camera(policy, &request.source_id)
+        }
         Some(stored_media_command::Action::QueryTimeline(request)) => {
             require_cameras(policy, &request.source_ids)
         }
