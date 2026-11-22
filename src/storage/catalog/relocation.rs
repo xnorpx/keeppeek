@@ -6,7 +6,7 @@ use std::{
     sync::mpsc,
 };
 
-pub(crate) struct Move {
+pub struct Move {
     pub id: String,
     pub stream: String,
     pub source: PathBuf,
