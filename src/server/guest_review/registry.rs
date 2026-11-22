@@ -17,7 +17,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const MAX_TRANSFERS: usize = 8;
+use crate::privacy::MAX_GUEST_MEDIA_TRANSFERS as MAX_TRANSFERS;
 const MAX_SESSION_TRANSFERS: usize = 2;
 const MAX_HASH_READERS: usize = 2;
 const WATCHDOG_INTERVAL: Duration = Duration::from_millis(50);

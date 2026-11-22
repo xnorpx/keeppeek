@@ -404,6 +404,7 @@ pub struct KeepPeekLoop {
     camera_workers: HashMap<IpAddr, CameraWorkers>,
     retiring_workers: HashMap<IpAddr, CameraWorkers>,
     camera_definitions: HashMap<IpAddr, Camera>,
+    deferred_camera_starts: HashMap<IpAddr, (bool, bool)>,
     isapi_callbacks: Option<crate::isapi::callbacks::Runtime>,
     storage: Option<StorageHandle>,
     events: Option<EventStore>,
@@ -443,6 +444,7 @@ impl KeepPeekLoop {
             camera_workers: HashMap::new(),
             retiring_workers: HashMap::new(),
             camera_definitions: HashMap::new(),
+            deferred_camera_starts: HashMap::new(),
             isapi_callbacks: None,
             storage,
             events: None,
@@ -681,11 +683,24 @@ impl KeepPeekLoop {
             self.camera_names.insert(name.clone(), name.clone());
         }
         if let Err(error) = self.ensure_worker_slot(camera) {
+            self.deferred_camera_starts
+                .insert(camera.config.ip, (enable_main, enable_sub));
             self.record_camera_runtime_status(camera, Err(error.to_string()));
             return Err(error);
         }
+        self.begin_camera_change(camera, pending, |recorder| {
+            recorder.start_camera_runtime(camera, enable_main, enable_sub)
+        })
+    }
+
+    fn begin_camera_change<'a>(
+        &mut self,
+        camera: &'a Camera,
+        pending: &mut Vec<PendingCameraRecording<'a>>,
+        apply: impl FnOnce(&mut Self) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         let recording = self.configure_profile_recording(camera)?;
-        let result = self.start_camera_runtime(camera, enable_main, enable_sub);
+        let result = apply(self);
         let runtime_result = result.as_ref().map_err(ToString::to_string).map(|_| ());
         self.record_camera_runtime_state(
             camera,
@@ -719,6 +734,7 @@ impl KeepPeekLoop {
             },
         )?;
         if !self.effective_camera_policy(&camera.config).available {
+            self.deferred_camera_starts.remove(&camera.config.ip);
             return Ok(());
         }
         let status_handle = self.runtime_profile_status.clone();
@@ -744,6 +760,7 @@ impl KeepPeekLoop {
             .expect("registered camera workers")
             .configuration = Some(camera.config.clone());
         self.add_camera_workers(camera, route, enable_main, enable_sub);
+        self.deferred_camera_starts.remove(&camera.config.ip);
         drop(status);
         Ok(())
     }
@@ -1408,14 +1425,29 @@ impl KeepPeekLoop {
             .and_then(|workers| workers.configuration.as_ref())
             .is_some_and(|previous| event_only_update(previous, &camera.config))
         {
-            return self.replace_camera_events(camera, route);
+            let mut pending = Vec::with_capacity(1);
+            let result = self.begin_camera_change(camera, &mut pending, |recorder| {
+                recorder.replace_camera_events(camera, route)
+            });
+            self.finish_camera_recordings(pending);
+            return result;
         }
-        self.stop_camera(camera.config.ip)?;
+        if let Err(error) = self.stop_camera(camera.config.ip) {
+            self.deferred_camera_starts
+                .insert(camera.config.ip, (true, true));
+            self.record_camera_runtime_status(camera, Err(error.to_string()));
+            return Err(error);
+        }
         self.add_camera(camera, true, true)
     }
 
     fn replace_camera_events(&mut self, camera: &Camera, route: CameraRoute) -> anyhow::Result<()> {
-        self.stop_camera_events(camera.config.ip)?;
+        if let Err(error) = self.stop_camera_events(camera.config.ip) {
+            self.deferred_camera_starts
+                .insert(camera.config.ip, (true, true));
+            return Err(error);
+        }
+        self.deferred_camera_starts.remove(&camera.config.ip);
         self.camera_workers
             .get_mut(&camera.config.ip)
             .expect("existing camera workers")
@@ -1575,12 +1607,51 @@ impl KeepPeekLoop {
         }
     }
 
+    fn retry_ready_camera_start(&mut self) {
+        if self.deferred_camera_starts.is_empty()
+            || self
+                .runtime_profile_status
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .revision
+                > self.runtime_profiles.revision
+        {
+            return;
+        }
+        // Execute one ready change per loop. Retiring workers still own their source.
+        let ready = self.deferred_camera_starts.iter().find_map(|(ip, flags)| {
+            let camera = self.camera_definitions.get(ip)?;
+            let workers_ready = self.camera_workers.get(ip).is_none_or(|workers| {
+                workers.event_shutdown.is_cancelled()
+                    && workers.event_handles.iter().all(JoinHandle::is_finished)
+            });
+            (workers_ready && self.ensure_worker_slot(camera).is_ok())
+                .then(|| (camera.clone(), *flags))
+        });
+        let Some((camera, (main, sub))) = ready else {
+            return;
+        };
+        self.deferred_camera_starts.remove(&camera.config.ip);
+        if !self.effective_camera_policy(&camera.config).available {
+            return;
+        }
+        let result = if self.camera_workers.contains_key(&camera.config.ip) {
+            self.restart_camera(&camera)
+        } else {
+            self.add_camera(&camera, main, sub)
+        };
+        if let Err(error) = result {
+            tracing::warn!(ip = %camera.config.ip, %error, "deferred camera change could not be applied");
+        }
+    }
+
     pub fn run(mut self) {
         tracing::info!("KeepPeek loop started");
 
         while !self.shutdown.is_cancelled() {
             self.reap_stopped_cameras();
             self.handle_commands();
+            self.retry_ready_camera_start();
             self.refresh_recording_runtime_status();
             self.close_retired_native_events();
             match self.rx.recv_timeout(EVENT_POLL_INTERVAL) {
@@ -1901,6 +1972,7 @@ impl KeepPeekLoop {
             match command {
                 KeepPeekCommand::Stop { ip, reply } => {
                     self.camera_definitions.remove(&ip);
+                    self.deferred_camera_starts.remove(&ip);
                     let outcome = self.stop_camera(ip);
                     if self.reconcile_missing_profile_targets() {
                         self.publish_runtime_profile_status();
@@ -2973,7 +3045,9 @@ mod tests {
     fn an_unresponsive_camera_worker_cannot_block_the_control_loop_or_be_replaced() {
         let shutdown = Shutdown::new();
         let mut recorder = KeepPeekLoop::new(shutdown.clone(), None);
-        let camera = runtime_rtsp_camera("127.0.0.1:8554".parse().unwrap());
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let camera = runtime_rtsp_camera(listener.local_addr().unwrap());
         let ip = camera.config.ip;
         let mut workers = CameraWorkers::new();
         let stopping = workers.shutdown.clone();
@@ -2994,21 +3068,9 @@ mod tests {
         } else {
             None
         };
+        assert!(listener.accept().is_err());
         release.send(()).unwrap();
-        let recovered = if matches!(replacement, Some(Err(_))) {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            loop {
-                if control.start_camera(camera.clone()).is_ok() {
-                    break true;
-                }
-                if Instant::now() >= deadline {
-                    break false;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        } else {
-            false
-        };
+        let _connection = accept_rtsp_connection(&listener);
         shutdown.cancel();
         caller.join().unwrap();
         loop_thread.join().unwrap();
@@ -3020,10 +3082,6 @@ mod tests {
         assert!(
             matches!(replacement, Some(Err(_))),
             "a replacement must wait for the previous worker to exit"
-        );
-        assert!(
-            recovered,
-            "the camera must become available for restart after its previous worker exits"
         );
     }
 

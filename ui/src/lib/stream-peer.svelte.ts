@@ -1,5 +1,5 @@
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
-import { createSession, deleteSession } from './api';
+import { ApiRequestError, createSession, deleteSession } from './api';
 import { AacAudioPlayback } from './audio-playback';
 import { liveVariant, safeBitrate } from './live-quality';
 import {
@@ -129,6 +129,9 @@ export class LivePeer {
 	}> = [];
 	#viewers: string[] = [];
 	#topologyKey = '';
+	#desiredPlans: LivePeerPlan[] = [];
+	#recoveryTimer?: ReturnType<typeof setTimeout>;
+	#recoveryAttempts = 0;
 	#operation: Promise<void> = Promise.resolve();
 	#closeScheduled = false;
 	#holds = 0;
@@ -174,15 +177,21 @@ export class LivePeer {
 			}
 			cameraIds[plan.cameraId] = true;
 		}
-		return this.enqueue(async () => this.configureNow(nextPlans));
+		this.cancelRecovery();
+		this.#desiredPlans = nextPlans;
+		return this.enqueue(async () => {
+			if (this.#desiredPlans === nextPlans) await this.configureNow(nextPlans);
+		});
 	}
 
 	close(): Promise<void> {
+		this.#desiredPlans = [];
+		this.cancelRecovery();
 		return this.enqueue(async () => this.closeNow());
 	}
 
 	startTalkback(target: TalkbackTargetSelection): Promise<void> {
-		return this.enqueue(async () => {
+		return this.enqueueCommand(async () => {
 			if (this.#talkbackTransceiver === null) {
 				throw new Error('Talkback is unavailable until the live session is connected.');
 			}
@@ -208,7 +217,7 @@ export class LivePeer {
 				this.#talkbackTrack = track;
 				this.talkbackActive = true;
 			} catch (error) {
-				await this.#talkbackTransceiver.sender.replaceTrack(null);
+				await this.#talkbackTransceiver?.sender.replaceTrack(null);
 				stream.getTracks().forEach((item) => item.stop());
 				this.talkbackError = error instanceof Error ? error.message : 'Talkback could not start.';
 				throw error;
@@ -217,7 +226,7 @@ export class LivePeer {
 	}
 
 	stopTalkback(): Promise<void> {
-		return this.enqueue(async () => {
+		return this.enqueueCommand(async () => {
 			if (!this.talkbackActive) return;
 			try {
 				await this.request({
@@ -236,7 +245,7 @@ export class LivePeer {
 	}
 
 	playQuickReply(sourceId: string, assetId: string): Promise<void> {
-		return this.enqueue(async () => {
+		return this.enqueueCommand(async () => {
 			await this.request({
 				case: 'cameraControlCommand',
 				value: create(CameraControlCommandSchema, {
@@ -250,7 +259,7 @@ export class LivePeer {
 	}
 
 	playChime(sourceId: string, assetId: string): Promise<void> {
-		return this.enqueue(async () => {
+		return this.enqueueCommand(async () => {
 			await this.request({
 				case: 'cameraControlCommand',
 				value: create(CameraControlCommandSchema, {
@@ -270,6 +279,8 @@ export class LivePeer {
 	}
 
 	closeOnPageHide(): void {
+		this.#desiredPlans = [];
+		this.cancelRecovery();
 		const sessionToken = this.releaseLocalResources();
 		if (sessionToken === null) return;
 		void this.#sessionTransport.delete(sessionToken, { keepalive: true });
@@ -285,6 +296,57 @@ export class LivePeer {
 		const track = this.track(cameraId);
 		if (!track) return;
 		this.replaceTrack(cameraId, { status: 'unavailable' });
+	}
+
+	private enqueueCommand(task: () => Promise<void>): Promise<void> {
+		const owner = this.#peer;
+		return this.enqueue(async () => {
+			if (!owner || owner !== this.#peer)
+				throw new Error('The live connection changed. Send the command again if needed.');
+			await task();
+		});
+	}
+
+	private cancelRecovery(): void {
+		if (this.#recoveryTimer !== undefined) clearTimeout(this.#recoveryTimer);
+		this.#recoveryTimer = undefined;
+		this.#recoveryAttempts = 0;
+	}
+
+	private transportLost(owner: RTCPeerConnection): void {
+		if (owner !== this.#peer) return;
+		const token = this.releaseLocalResources();
+		if (token !== null)
+			void this.#sessionTransport
+				.delete(token)
+				.catch((error) => console.debug('Unable to delete retired media session', error));
+		this.scheduleRecovery();
+	}
+
+	private scheduleRecovery(): void {
+		if (
+			this.#recoveryTimer !== undefined ||
+			!this.#desiredPlans.some((plan) => plan.active) ||
+			this.#peer
+		)
+			return;
+		const delays = [0, 750, 2000];
+		if (this.#recoveryAttempts >= delays.length) {
+			this.error = 'Unable to reconnect live media. Reopen the viewer to try again.';
+			return;
+		}
+		const delay = delays[this.#recoveryAttempts++];
+		this.#recoveryTimer = setTimeout(() => {
+			this.#recoveryTimer = undefined;
+			void this.enqueue(async () => {
+				if (this.#peer || !this.#desiredPlans.some((plan) => plan.active)) return;
+				await this.configureNow(this.#desiredPlans);
+				if (this.#peer) this.#recoveryAttempts = 0;
+			}).catch((error) => {
+				if (error instanceof ApiRequestError && [401, 403].includes(error.status)) return;
+				this.scheduleRecovery();
+			});
+		}, delay);
 	}
 
 	private enqueue(task: () => Promise<void>): Promise<void> {
@@ -410,7 +472,7 @@ export class LivePeer {
 		this.#trackEventByMid = {};
 		this.#capabilities = null;
 		controlChannel.onmessage = (event) => this.receiveCurrentControl(peer, event);
-		controlChannel.onclose = () => this.failPending('WebRTC control channel closed.');
+		controlChannel.onclose = () => this.transportLost(peer);
 		reliableChannel.onmessage = (event) => this.receiveMediaData(event);
 
 		const localTracks = plans.map((plan, index) => {
@@ -456,16 +518,14 @@ export class LivePeer {
 			if (peer !== this.#peer) return;
 			this.connectionState = peer.connectionState;
 			if (['failed', 'disconnected', 'closed'].includes(peer.connectionState)) {
-				this.markAllUnavailable();
-				void this.close();
+				this.transportLost(peer);
 			}
 		};
 		peer.oniceconnectionstatechange = () => {
 			if (peer !== this.#peer) return;
 			this.iceConnectionState = peer.iceConnectionState;
-			if (peer.iceConnectionState === 'disconnected') {
-				this.markAllUnavailable();
-				void this.close();
+			if (['disconnected', 'failed', 'closed'].includes(peer.iceConnectionState)) {
+				this.transportLost(peer);
 			}
 		};
 
@@ -1212,16 +1272,6 @@ export class LivePeer {
 			this.#closeScheduled = false;
 			if (this.#viewers.length === 0 && this.#holds === 0) void this.close();
 		});
-	}
-
-	private markAllUnavailable(): void {
-		this.estimatedBitrateBps = null;
-		this.tracks = Object.fromEntries(
-			Object.entries(this.tracks).map(([cameraId, track]) => [
-				cameraId,
-				{ ...track, status: 'unavailable', liveQuality: undefined }
-			])
-		);
 	}
 }
 

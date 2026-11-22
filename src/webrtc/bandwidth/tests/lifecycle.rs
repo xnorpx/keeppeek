@@ -116,7 +116,12 @@ fn shared_feedback_rtp_audio_reserves_capacity_but_reliable_data_audio_does_not(
 fn shared_feedback_fixed_data_variant_change_fails_without_false_success_or_mutation() {
     let mut fixture = SharedFixture::new(&[StreamQuality::Auto]);
     let first = fixture.subscribe_fixed_data(0, StreamKind::Main).unwrap();
-    let before = fixture.media.control_notifications.clone();
+    let before = fixture
+        .media
+        .control_notifications
+        .iter()
+        .map(|n| n.value.clone())
+        .collect::<Vec<_>>();
     let before_bytes = fixture.media.control_notification_bytes;
     let error = fixture
         .subscribe_fixed_data(0, StreamKind::Sub)
@@ -124,7 +129,15 @@ fn shared_feedback_fixed_data_variant_change_fails_without_false_success_or_muta
     assert_eq!(error.code, ErrorCode::Unavailable);
     assert_eq!(fixture.active_stream(1), StreamKind::Main);
     assert_eq!(fixture.media.tracks.len(), 2);
-    assert_eq!(fixture.media.control_notifications, before);
+    assert_eq!(
+        fixture
+            .media
+            .control_notifications
+            .iter()
+            .map(|n| n.value.clone())
+            .collect::<Vec<_>>(),
+        before
+    );
     assert_eq!(fixture.media.control_notification_bytes, before_bytes);
     let repeated = fixture.subscribe_fixed_data(0, StreamKind::Main).unwrap();
     assert_eq!(repeated.delivery, first.delivery);
@@ -139,7 +152,8 @@ fn shared_feedback_remove_and_replace_discard_only_their_blocked_stream_states()
         .media
         .control_notifications
         .iter()
-        .find_map(|notification| {
+        .find_map(|guarded| {
+            let notification = &guarded.value;
             if let Some(crate::api::proto::notification::Event::SubscriptionStreamState(state)) =
                 &notification.event
                 && state.subscription_id == "camera-1"

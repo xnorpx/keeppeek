@@ -29,7 +29,8 @@ const api = vi.hoisted(() => ({
 	deleteSession: vi.fn()
 }));
 
-vi.mock('./api', () => api);
+vi.mock('./api', async (load) => ({ ...(await load<typeof import('./api')>()), ...api }));
+import { ApiRequestError } from './api';
 
 import { LivePeer } from './stream-peer.svelte';
 import { AacAudioPlayback } from './audio-playback';
@@ -43,6 +44,7 @@ class FakeDataChannel {
 	static rejectUnsubscribe = false;
 	holdUnsubscribe = false;
 	releaseUnsubscribe: (() => void) | undefined;
+	holdCameraCommand = false;
 	static subscriptionQuality: LiveQualityDiagnostics | undefined;
 	static selectedVariant: string | null = null;
 
@@ -124,6 +126,7 @@ class FakeDataChannel {
 				})
 			}
 		});
+		if (this.holdCameraCommand && command.case === 'cameraControlCommand') return;
 		const encoded = toBinary(ControlEnvelopeSchema, response);
 		const deliver = () =>
 			queueMicrotask(() => this.onmessage?.({ data: encoded.buffer } as MessageEvent));
@@ -727,6 +730,39 @@ describe('LivePeer', () => {
 		expect(peer.estimatedBitrateBps).toBeNull();
 	});
 
+	it('renegotiates current camera capabilities after losing a shared peer without replaying a command', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession
+			.mockResolvedValueOnce({ session_id: 'first', answer: { type: 'answer', sdp: 'v=0' } })
+			.mockResolvedValueOnce({ session_id: 'replacement', answer: { type: 'answer', sdp: 'v=0' } });
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		const plans = [
+			{ cameraId: 'front-door', quality: 'auto' },
+			{ cameraId: 'garage', quality: 'low' }
+		] as const;
+		await peer.configure([...plans]);
+		const old = FakePeerConnection.latest!;
+		old.channels[0].holdCameraCommand = true;
+		const pending = peer.playChime('front-door', 'bell');
+		const rejected = expect(pending).rejects.toThrow(/closed|changed/);
+		await vi.waitFor(() => expect(old.channels[0].commands).toContain('cameraControlCommand'));
+		FakeDataChannel.rejectedSubscription = 'camera-1';
+		old.connectionState = 'disconnected';
+		old.onconnectionstatechange?.();
+		await rejected;
+		await vi.waitFor(() => expect(peer.sessionId).toBe('replacement'));
+		expect(api.deleteSession).toHaveBeenCalledWith('first', null, undefined);
+		expect(peer.track('front-door')?.subscribed).toBe(true);
+		expect(peer.track('garage')?.subscribed).toBe(false);
+		const fresh = FakePeerConnection.latest!;
+		expect(fresh).not.toBe(old);
+		expect(fresh.channels[0].commands).not.toContain('cameraControlCommand');
+		await peer.playChime('front-door', 'bell');
+		expect(fresh.channels[0].commands.filter((c) => c === 'cameraControlCommand')).toHaveLength(1);
+		await peer.close();
+	});
+
 	it.each(['connection', 'ice'] as const)(
 		'clears the session estimate immediately on %s disconnect before asynchronous teardown',
 		async (kind) => {
@@ -752,6 +788,30 @@ describe('LivePeer', () => {
 			connection.channels[0].onmessage?.(networkEstimate(9_000_000n));
 			expect(peer.estimatedBitrateBps).toBeNull();
 			await peer.close();
+		}
+	);
+
+	it.each([403, 503])(
+		'rechecks authorization and bounds retries after signaling fails with %i',
+		async (status) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			api.createSession
+				.mockResolvedValueOnce({ session_id: 'first', answer: { type: 'answer', sdp: 'v=0' } })
+				.mockRejectedValue(new ApiRequestError(status, 'signaling refused'));
+			api.deleteSession.mockResolvedValue(undefined);
+			const peer = new LivePeer();
+			await peer.configure([{ cameraId: 'front-door', quality: 'auto' }]);
+			vi.useFakeTimers();
+			try {
+				FakePeerConnection.latest!.channels[0].close();
+				await vi.runAllTimersAsync();
+				expect(api.createSession).toHaveBeenCalledTimes(status === 403 ? 2 : 4);
+				expect(peer.sessionId).toBeNull();
+				expect(vi.getTimerCount()).toBe(0);
+			} finally {
+				vi.useRealTimers();
+				await peer.close();
+			}
 		}
 	);
 

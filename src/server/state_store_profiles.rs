@@ -13,7 +13,7 @@ use std::{
 };
 #[path = "state_store_profiles_application.rs"]
 mod application;
-pub(in crate::server) use application::{ProfileApplicationQueue, confirmed_privacy};
+pub(in crate::server) use application::{ProfileApplicationQueue, apply_confirmed_privacy};
 #[path = "state_store_profiles_identity.rs"]
 mod identity;
 #[path = "state_store_profiles_observed.rs"]
@@ -659,7 +659,21 @@ fn parse_selection(
         }
         return Ok((Some(id.clone()), Some(DefinitionPin { revision, digest })));
     }
-    if value.fields.len() != 1 {
+    let unexpected = if require_definition {
+        value.fields.len() != 1
+    } else {
+        value.fields.keys().any(|field| {
+            !matches!(
+                field.as_str(),
+                "profile_id"
+                    | "revision"
+                    | "definition_revision"
+                    | "observed_parts"
+                    | "degraded_cameras"
+            )
+        })
+    };
+    if unexpected {
         return Err(invalid());
     }
     Ok(((!id.is_empty()).then(|| id.clone()), None))
@@ -1541,7 +1555,8 @@ pub(in crate::server) fn publish_status_event(state: &ServerState, updated_ms: u
     if keys.is_empty() {
         return;
     }
-    let shared_status = std::sync::Arc::new(status.clone());
+    let shared_status =
+        std::sync::Arc::new(application::observed_status(state, &status).into_owned());
     let generation = std::cell::OnceCell::new();
     let events = keys
         .into_iter()
@@ -1557,18 +1572,21 @@ pub(in crate::server) fn publish_status_event(state: &ServerState, updated_ms: u
                     revision: registry.revision,
                     kind: WatchEventKind::ProfileHeader {
                         entry: active_entry(&registry),
-                        degraded: observed::degraded_camera_ids(&registry, &status),
+                        degraded: observed::degraded_camera_ids(&registry, &shared_status),
                     },
                 };
             }
             let entry = observed::part_index(&key).map_or_else(
-                || status_entry(status.clone()).map_err(|error| Error::Storage(error.to_string())),
+                || {
+                    status_entry((*shared_status).clone())
+                        .map_err(|error| Error::Storage(error.to_string()))
+                },
                 |index| {
                     let generation = generation
-                        .get_or_init(|| observed::generation(&status))
+                        .get_or_init(|| observed::generation(&shared_status))
                         .as_ref()
                         .map_err(Clone::clone)?;
-                    observed::part_entry(&status, index, generation)
+                    observed::part_entry(&shared_status, index, generation)
                 },
             );
             WatchEvent {
@@ -2404,7 +2422,7 @@ mod tests {
         let mut definition = RuntimeProfile {
             id: "lobby".into(),
             name: "Lobby".into(),
-            revision: 0,
+            revision: 1,
             cameras: BTreeMap::new(),
         };
         registry
@@ -2942,6 +2960,35 @@ mod tests {
     }
 
     #[test]
+    fn completion_fence_changes_on_same_identity_recording_mode_edit() {
+        let fixture = Fixture::new();
+        let ip = "192.0.2.23".parse().unwrap();
+        let mut definition = camera_config(ip);
+        fixture.add_camera(&definition);
+        let registry = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        let ids = config::load_camera_profile_identities(&fixture.config_path()).unwrap();
+        let current = || {
+            application::camera_fingerprint(&config::load_config(&fixture.config_path()).unwrap())
+                .unwrap()
+        };
+        let before = current();
+        definition.recording_mode =
+            if definition.recording_mode == crate::cameras::CameraRecordingMode::Main {
+                crate::cameras::CameraRecordingMode::Sub
+            } else {
+                crate::cameras::CameraRecordingMode::Main
+            };
+        fixture.add_camera(&definition);
+        let after = current();
+        let updated = config::load_config(&fixture.config_path()).unwrap();
+        assert_eq!(updated.runtime_profiles, registry);
+        assert_eq!(updated.camera_profile_identities().unwrap(), ids);
+        assert_ne!(before, after);
+    }
+
+    #[test]
     fn delayed_profile_completion_preserves_live_failure_before_privacy_projection() {
         let (fixture, profiles, returned) = delayed_runtime_completion_fixture();
         update_runtime_status(
@@ -3358,6 +3405,46 @@ mod tests {
                 "camera configuration field {field} must not be a profile override"
             );
         }
+    }
+
+    #[test]
+    fn active_v1_read_modify_write_ignores_server_metadata_and_honors_request_cas() {
+        let fixture = Fixture::new();
+        let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let session = SessionId::from_u64(20_291);
+        let dispatch =
+            |request| super::super::dispatch(&fixture.state, session, &principal, request);
+        let control_ok::Result::StateStoreResult(proto::StateStoreResult {
+            result: Some(state_store_result::Result::Entry(entry)),
+        }) = dispatch(get_key(ACTIVE_KEY)).unwrap()
+        else {
+            panic!("active entry expected")
+        };
+        let mut document = entry.value.unwrap();
+        document.fields.get_mut("profile_id").unwrap().kind =
+            Some(Kind::StringValue("away".into()));
+        let mut request = put_active("away", entry.revision);
+        let Some(state_store_command::Action::Put(put)) = request.action.as_mut() else {
+            unreachable!()
+        };
+        put.value = Some(document.clone());
+        dispatch(request.clone()).unwrap();
+        assert_eq!(
+            config::load_config(&fixture.config_path())
+                .unwrap()
+                .runtime_profiles
+                .active_profile_id
+                .as_deref(),
+            Some("away")
+        );
+        assert!(
+            dispatch(request).is_err(),
+            "the original CAS revision is stale"
+        );
+        document
+            .fields
+            .insert("unexpected".to_owned(), Value::default());
+        assert!(parse_selection(&document, false).is_err());
     }
 
     #[test]

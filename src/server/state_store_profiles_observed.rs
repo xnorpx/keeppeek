@@ -139,6 +139,8 @@ pub(super) fn snapshot_entry(
     status: &RuntimeProfileStatus,
     key: &str,
 ) -> Result<StoredEntry, Error> {
+    let displayed = application::observed_status(state, status);
+    let status = displayed.as_ref();
     let visible;
     let projected = if principal.role == AccessRole::Administrator {
         status
@@ -221,12 +223,13 @@ pub(super) fn header_snapshot(
     registry: &crate::profiles::ProfileRegistry,
     status: &RuntimeProfileStatus,
 ) -> StoredEntry {
+    let status = application::observed_status(state, status);
     let mut entry = active_entry(registry);
     set_header_count(
         state,
         Some(principal),
         identities,
-        degraded_camera_ids(registry, status).as_ref(),
+        degraded_camera_ids(registry, &status).as_ref(),
         &mut entry,
     );
     entry

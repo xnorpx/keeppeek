@@ -579,7 +579,10 @@ fn profile_privacy_blocks_an_existing_export_download_after_activation_and_resta
         panic!("expected export chunk")
     };
     assert_eq!(chunk.payload.as_slice(), CONTENT);
+    let permit = messages[0].permit.as_ref().unwrap();
+    assert!(permit.deliver(|| ()).is_some());
     lifecycle.activate("away", 0);
+    assert!(permit.deliver(|| ()).is_none());
     let denied = |state: &ServerState| {
         let error = download(state).unwrap_err();
         assert_eq!(error.code, proto::ErrorCode::Rejected);

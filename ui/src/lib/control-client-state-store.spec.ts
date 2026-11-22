@@ -392,6 +392,34 @@ describe('ControlClientStateStore', () => {
 		]);
 	});
 
+	it.each(['gap', 'closed'])(
+		'hands an interrupted %s snapshot to its group for recovery',
+		async (reason) => {
+			const transport = new FakeTransport((action) =>
+				action.case === 'watch'
+					? snapshotResult(action.value.watchId, [testEntry('a', 1n)])
+					: unwatchResult('unused')
+			);
+			const client = new ControlClientStateStore((command) => transport.send(command));
+			let interrupted = 0;
+			const watch = await client.watch(namespace, {
+				onInterrupted: () => {
+					interrupted++;
+				}
+			});
+			if (reason === 'gap')
+				await client.handleWatchUpdate(
+					testUpdate(watch.watchId, 'a', StateStoreUpdateKind.DELETE, 3n)
+				);
+			else await client.handleWatchClosed(testClosed(watch.watchId));
+			expect(interrupted).toBe(1);
+			client.handleConnectionClosed();
+			await client.handleConnectionOpened();
+			expect(transport.sent).toHaveLength(1);
+			await watch.close();
+		}
+	);
+
 	it('reconnects watches with fresh snapshots after a connection drop', async () => {
 		let calls = 0;
 		const transport = new FakeTransport((action) => {

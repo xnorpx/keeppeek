@@ -90,6 +90,13 @@ Pending replay means media is queued; it does not prove a successful disk or cat
 Use Recording integrity and playback to inspect committed evidence. Audio packets crossing the
 selected video boundary are omitted without re-encoding.
 
+When a profile activates camera privacy, a viewer carrying that camera's media can briefly
+disconnect. KeepPeek makes up to three attempts to reconnect and restore the viewer's authorized
+streams. An access denial ends the retries. If a talkback, chime, or quick reply was interrupted,
+start it again only if you still want the camera to perform it. An active guest download for the
+camera stops when privacy takes effect. Previously stored recordings remain available to authorized
+operators in the timeline.
+
 If a runtime profile reports a camera as **Degraded** because storage rejected its recording
 settings or could not queue the change, new recording input for that camera stops. Live viewing
 can continue, and other cameras still apply their profile changes. **Pending** means the recording

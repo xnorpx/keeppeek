@@ -71,6 +71,7 @@ export type RuntimeProfileManifest = {
 
 export type RuntimeProfileStatus = {
 	revision: string;
+	definitionRevision?: string | null;
 	active_profile_id: string | null;
 	cameras: Record<string, CameraRuntimeApplication>;
 };
@@ -254,14 +255,19 @@ export function runtimeProfilePartFromEntry(
 export type ActiveRuntimeProfile = {
 	profileId: string | null;
 	revision: string;
+	definitionRevision?: string | null;
 	degradedCameras?: number | null;
 };
 
 export function runtimeProfileFromEntry(
 	entry: StateEntry
-): Pick<ActiveRuntimeProfile, 'profileId' | 'revision'> {
-	const { profileId, revision } = runtimeProfileHeaderFromEntry(entry);
-	return { profileId, revision };
+): Pick<ActiveRuntimeProfile, 'profileId' | 'revision' | 'definitionRevision'> {
+	const { profileId, revision, definitionRevision } = runtimeProfileHeaderFromEntry(entry);
+	return {
+		profileId,
+		revision,
+		...(definitionRevision === undefined ? {} : { definitionRevision })
+	};
 }
 
 export function runtimeProfileHeaderFromEntry(entry: StateEntry): ActiveRuntimeProfile {
@@ -286,6 +292,7 @@ export function runtimeProfileHeaderFromEntry(entry: StateEntry): ActiveRuntimeP
 	return {
 		profileId: profileId.length === 0 ? null : profileId,
 		revision: entry.revision.toString(),
+		...definitionMetadata(value),
 		...(value.observed_parts === undefined
 			? {}
 			: {
@@ -294,6 +301,18 @@ export function runtimeProfileHeaderFromEntry(entry: StateEntry): ActiveRuntimeP
 							? null
 							: boundedInteger(value.degraded_cameras, 'degraded camera count', 0xffff_ffff)
 				})
+	};
+}
+
+function definitionMetadata(
+	value: UnknownRecord
+): Pick<ActiveRuntimeProfile, 'definitionRevision'> {
+	if (value.definition_revision === undefined) return {};
+	return {
+		definitionRevision:
+			value.definition_revision === null
+				? null
+				: revisionText(value.definition_revision, 'active definition revision')
 	};
 }
 
@@ -397,6 +416,7 @@ export function assembleObservedParts(
 		throw new Error('Server returned too many runtime profile camera statuses.');
 	return {
 		revision: first.status.revision,
+		definitionRevision: first.definitionRevision,
 		active_profile_id: first.status.active_profile_id,
 		cameras
 	};

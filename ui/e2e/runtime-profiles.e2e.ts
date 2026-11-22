@@ -54,7 +54,9 @@ async function conflictLifecycleEditors(writer: Locator, reader: Locator) {
 		.nth(1)
 		.selectOption('main');
 	await reader.getByRole('button', { name: 'Save profile changes' }).click();
-	await expect(reader.getByRole('status')).toContainText('Runtime profile changes saved.');
+	await expect(
+		reader.getByRole('status').filter({ hasText: 'Runtime profile changes saved.' })
+	).toBeVisible();
 	await writer.getByRole('button', { name: 'Save profile changes' }).click();
 	await expect(writer.getByRole('alert')).toBeVisible();
 	await expect(writer.getByLabel('Display name')).toHaveValue('My unsaved label');
@@ -74,10 +76,12 @@ test('administrator creates, renames, activates, returns to Base, and deletes a 
 	await section.getByRole('button', { name: 'Create profile' }).click();
 	await section.getByLabel('Display name').fill('Night');
 	await section.getByRole('button', { name: 'Save profile changes' }).click();
-	await expect(section.getByRole('status')).toContainText('Runtime profile changes saved.');
+	await expect(
+		section.getByRole('status').filter({ hasText: 'Runtime profile changes saved.' })
+	).toBeVisible();
 
 	await section.getByRole('button', { name: 'Activate', exact: true }).click();
-	await expect(section.getByRole('status')).toContainText('Activated Night.');
+	await expect(section.getByRole('status').filter({ hasText: 'Activated Night.' })).toBeVisible();
 	await expect.poll(() => control.runtimeProfileWrites.length).toBe(2);
 	expect(control.runtimeProfileWrites[0]).toMatchObject({
 		key: 'registry',
@@ -95,7 +99,9 @@ test('administrator creates, renames, activates, returns to Base, and deletes a 
 	await page.reload();
 	await expect(section).toContainText('Active policy: Night');
 	await section.getByRole('button', { name: 'Select Base' }).click();
-	await expect(section.getByRole('status')).toContainText('Base policy selected.');
+	await expect(
+		section.getByRole('status').filter({ hasText: 'Base policy selected.' })
+	).toBeVisible();
 	await page.reload();
 	await expect(section).toContainText('Active policy: Base');
 	await section.getByRole('button', { name: 'Delete', exact: true }).click();
@@ -164,10 +170,14 @@ test('two Settings clients restore active runtime policy after reconnect and rec
 			.first()
 			.selectOption('true');
 		await profiles.getByRole('button', { name: 'Save profile changes' }).click();
-		await expect(profiles.getByRole('status')).toContainText('Runtime profile changes saved.');
+		await expect(
+			profiles.getByRole('status').filter({ hasText: 'Runtime profile changes saved.' })
+		).toBeVisible();
 		await conflictLifecycleEditors(profiles, other);
 		await profiles.getByRole('button', { name: 'Activate', exact: true }).click();
-		await expect(profiles.getByRole('status')).toContainText('Activated Lifecycle Away.');
+		await expect(
+			profiles.getByRole('status').filter({ hasText: 'Activated Lifecycle Away.' })
+		).toBeVisible();
 		for (const section of [profiles, other]) await expectLifecyclePolicy(section, true);
 		const accepted = await profiles.getByText(/Active policy:/).textContent();
 		await expect(other.getByText(/Active policy:/)).toHaveText(accepted!);
@@ -181,7 +191,9 @@ test('two Settings clients restore active runtime policy after reconnect and rec
 			await expectLifecyclePolicy(section, true);
 		}
 		await profiles.getByRole('button', { name: 'Select Base' }).click();
-		await expect(profiles.getByRole('status')).toContainText('Base policy selected.');
+		await expect(
+			profiles.getByRole('status').filter({ hasText: 'Base policy selected.' })
+		).toBeVisible();
 		for (const section of [profiles, other]) await expectLifecyclePolicy(section, false);
 		const base = await profiles.getByText(/Active policy:/).textContent();
 		await expect(other.getByText(/Active policy:/)).toHaveText(base!);
@@ -210,14 +222,18 @@ test('authorized WebRTC profile activation reaches another connected client', as
 		return fixture.activateFromAnotherClient();
 	});
 	expect(result.activeProfileId).toMatch(/^e2e-[a-f0-9-]+$/);
-	expect(result.observed).toContainEqual({
+	const selected = {
 		profileId: result.activeProfileId,
-		revision: result.activatedRevision
-	});
-	expect(result.readerActive).toEqual({
-		profileId: result.activeProfileId,
-		revision: result.activatedRevision
-	});
+		revision: result.activatedRevision,
+		definitionRevision: expect.stringMatching(/^[0-9]+$/)
+	};
+	expect(result.readerActive).toMatchObject(selected);
+	expect(result.observed).toContainEqual(
+		expect.objectContaining({
+			...selected,
+			definitionRevision: result.readerActive.definitionRevision
+		})
+	);
 });
 
 test('Administrator creates, activates, and removes a profile through Settings', async ({
@@ -231,12 +247,18 @@ test('Administrator creates, activates, and removes a profile through Settings',
 	await profiles.getByRole('button', { name: 'Create profile' }).click();
 	await expect(profiles.getByText('Stable profile ID: e2e-away', { exact: true })).toBeVisible();
 	await profiles.getByRole('button', { name: 'Save profile changes' }).click();
-	await expect(profiles.getByRole('status')).toContainText('Runtime profile changes saved.');
+	await expect(
+		profiles.getByRole('status').filter({ hasText: 'Runtime profile changes saved.' })
+	).toBeVisible();
 	await profiles.getByRole('button', { name: 'Activate' }).click();
-	await expect(profiles.getByRole('status')).toContainText('Activated E2E Away.');
+	await expect(
+		profiles.getByRole('status').filter({ hasText: 'Activated E2E Away.' })
+	).toBeVisible();
 	await expect(profiles.getByText(/Active policy: E2E Away/)).toBeVisible();
 	await profiles.getByRole('button', { name: 'Select Base' }).click();
-	await expect(profiles.getByRole('status')).toContainText('Base policy selected.');
+	await expect(
+		profiles.getByRole('status').filter({ hasText: 'Base policy selected.' })
+	).toBeVisible();
 	await expect(profiles.getByText(/Active policy: Base/)).toBeVisible();
 	await profiles.getByRole('button', { name: 'Delete' }).click();
 	await profiles.getByRole('button', { name: 'Save profile changes' }).click();
@@ -254,12 +276,18 @@ test('Administrator manages runtime profiles on mobile with the keyboard', async
 	await profiles.getByRole('button', { name: 'Create profile' }).press('Enter');
 	await expect(profiles.getByText('Stable profile ID: mobile-away', { exact: true })).toBeVisible();
 	await profiles.getByRole('button', { name: 'Save profile changes' }).press('Enter');
-	await expect(profiles.getByRole('status')).toContainText('Runtime profile changes saved.');
+	await expect(
+		profiles.getByRole('status').filter({ hasText: 'Runtime profile changes saved.' })
+	).toBeVisible();
 	await profiles.getByRole('button', { name: 'Activate' }).press('Space');
-	await expect(profiles.getByRole('status')).toContainText('Activated Mobile Away.');
+	await expect(
+		profiles.getByRole('status').filter({ hasText: 'Activated Mobile Away.' })
+	).toBeVisible();
 	await expect(profiles.getByText(/Active policy: Mobile Away/)).toBeVisible();
 	await profiles.getByRole('button', { name: 'Select Base' }).press('Enter');
-	await expect(profiles.getByRole('status')).toContainText('Base policy selected.');
+	await expect(
+		profiles.getByRole('status').filter({ hasText: 'Base policy selected.' })
+	).toBeVisible();
 	await profiles.getByRole('button', { name: 'Delete' }).click();
 	await expect(profiles.getByRole('option', { name: 'Mobile Away' })).toHaveCount(0);
 	await profiles.getByRole('button', { name: 'Save profile changes' }).click();

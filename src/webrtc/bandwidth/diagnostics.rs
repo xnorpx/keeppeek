@@ -128,7 +128,8 @@ impl ApiMediaRuntime {
 
     pub(in crate::webrtc) fn discard_queued_stream_states(&mut self, track_id: &TrackId) {
         let mut removed_bytes = 0usize;
-        self.control_notifications.retain(|notification| {
+        self.control_notifications.retain(|guarded| {
+            let notification = &guarded.value;
             let remove = matches!(
                 notification.event.as_ref(),
                 Some(crate::api::proto::notification::Event::SubscriptionStreamState(state))

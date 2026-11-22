@@ -146,47 +146,63 @@ describe('RuntimeProfilesControlClient', () => {
 		);
 	});
 
-	it('saves and reads 32 maximum-length IDs and UTF-8 names inside a compact registry', async () => {
-		const profiles = Object.fromEntries(
-			Array.from({ length: 32 }, (_, i) => {
-				const id = 'p'.repeat(126) + String(i).padStart(2, '0');
-				const name = '界'.repeat(26) + String(i).padStart(2, '0');
-				expect(new TextEncoder().encode(name).byteLength).toBe(80);
-				return [id, { id, name, revision: '0', cameras: {} }];
-			})
-		);
-		let stored = entry(
-			'registry',
-			runtimeProfilesRegistrySchema,
-			{ revision: '0', active_profile_id: null, profiles: {} },
-			0n
-		);
-		const put = vi.fn(
-			async (
-				_namespace: string,
-				key: string,
-				input: { schema: string; value: Record<string, unknown> }
-			) => {
-				const { draft_id: _draft, ...value } = input.value;
-				stored = entry(key, input.schema, { ...value, revision: '1' }, 1n);
-				return stored;
+	it.each([false, true])(
+		'saves 32 maximum-length profiles with legacy recorder %s',
+		async (legacy) => {
+			const profiles = Object.fromEntries(
+				Array.from({ length: 32 }, (_, i) => {
+					const id = 'p'.repeat(126) + String(i).padStart(2, '0');
+					const name = '界'.repeat(26) + String(i).padStart(2, '0');
+					expect(new TextEncoder().encode(name).byteLength).toBe(80);
+					return [id, { id, name, revision: '0', cameras: {} }];
+				})
+			);
+			let stored = entry(
+				'registry',
+				runtimeProfilesRegistrySchema,
+				{ revision: '0', active_profile_id: null, profiles: {} },
+				0n
+			);
+			const put = vi.fn(
+				async (
+					_namespace: string,
+					key: string,
+					input: { schema: string; value: Record<string, unknown>; expectedRevision: bigint }
+				) => {
+					if (legacy && input.schema === runtimeProfileCompactRegistrySchema)
+						throw new StateStoreRequestError('Unsupported schema', {
+							namespace: runtimeProfilesNamespace,
+							key,
+							code: StateStoreErrorCode.SCHEMA_INVALID
+						});
+					const { draft_id: _draft, ...value } = input.value;
+					stored = entry(key, input.schema, { ...value, revision: '1' }, 1n);
+					return stored;
+				}
+			);
+			const client = new RuntimeProfilesControlClient({
+				get: async () => stored,
+				put
+			} as unknown as ControlClientStateStore);
+			const accepted = await client.saveRegistry({
+				revision: '0',
+				active_profile_id: null,
+				profiles
+			});
+			expect(stored.schema).toBe(
+				legacy ? runtimeProfilesRegistrySchema : runtimeProfileCompactRegistrySchema
+			);
+			expect(put.mock.calls.map(([, , input]) => input.expectedRevision)).toEqual(
+				legacy ? [0n, 0n] : [0n]
+			);
+			if (legacy)
+				expect(put.mock.calls[0][2].value.draft_id).toBe(put.mock.calls[1][2].value.draft_id);
+			expect(Object.keys(accepted.profiles)).toEqual(Object.keys(profiles));
+			for (const [id, profile] of Object.entries(accepted.profiles)) {
+				expect(profile).toEqual({ ...profiles[id], revision: '1' });
 			}
-		);
-		const client = new RuntimeProfilesControlClient({
-			get: async () => stored,
-			put
-		} as unknown as ControlClientStateStore);
-		const accepted = await client.saveRegistry({
-			revision: '0',
-			active_profile_id: null,
-			profiles
-		});
-		expect(stored.schema).toBe(runtimeProfileCompactRegistrySchema);
-		expect(Object.keys(accepted.profiles)).toEqual(Object.keys(profiles));
-		for (const [id, profile] of Object.entries(accepted.profiles)) {
-			expect(profile).toEqual({ ...profiles[id], revision: '1' });
 		}
-	});
+	);
 
 	it('reports an asynchronous registry watch read failure to its owner', async () => {
 		let notify: (entries: readonly StateEntry[]) => void = () => {};
@@ -392,15 +408,28 @@ function observedPart(index: number, generation = 'a'.repeat(64), revision = 3n)
 	);
 }
 
+function activeHeader(multipart = true): StateEntry {
+	return entry(
+		'active',
+		'keeppeek.runtime-profiles.active.v1',
+		{
+			profile_id: 'away',
+			...(multipart ? { observed_parts: 8, degraded_cameras: 0 } : {})
+		},
+		3n
+	);
+}
+
 describe('runtime profile observations', () => {
 	it('returns Pending when all three bounded reads cross observation generations', async () => {
 		const get = vi.fn(async (_namespace: string, key: string) => {
+			if (key === 'active') return activeHeader();
 			const index = Number(key.split('/')[1]);
 			return observedPart(index, (index === 0 ? 'a' : 'b').repeat(64));
 		});
 		const client = new RuntimeProfilesControlClient({ get } as unknown as ControlClientStateStore);
 		expect(await client.getStatus()).toBeNull();
-		expect(get).toHaveBeenCalledTimes(24);
+		expect(get).toHaveBeenCalledTimes(25);
 	});
 	it('reads the fresh header before picking a status format on reconnect', async () => {
 		const active = entry(
@@ -531,6 +560,7 @@ describe('runtime profile observations', () => {
 		let peak = 0;
 		const stateStore = {
 			get: async (_namespace: string, key: string) => {
+				if (key === 'active') return activeHeader();
 				const index = Number(key.split('/')[1]);
 				const old = calls++ < 8 && index === 0;
 				peak = Math.max(peak, ++outstanding);
@@ -544,6 +574,7 @@ describe('runtime profile observations', () => {
 		);
 		expect(await client.getStatus()).toEqual({
 			revision: '3',
+			definitionRevision: '2',
 			active_profile_id: 'away',
 			cameras: {}
 		});
@@ -555,6 +586,7 @@ describe('runtime profile observations', () => {
 		const listeners = new Map<number, (entries: StateEntry[]) => void>();
 		const close = vi.fn(async () => {});
 		const stateStore = {
+			get: async () => activeHeader(),
 			watch: async (
 				_namespace: string,
 				options: { keyPrefix: string; listener: (entries: StateEntry[]) => void }
@@ -575,19 +607,20 @@ describe('runtime profile observations', () => {
 			client.watchStatus(second)
 		]);
 		expect(listeners.size).toBe(8);
-		expect(first).toHaveBeenCalledTimes(1);
-		expect(second).toHaveBeenCalledTimes(1);
+		expect(first.mock.calls.map(([value]) => value?.revision ?? null)).toEqual([null, '3']);
+		expect(second.mock.calls).toEqual(first.mock.calls);
 		for (let i = 0; i < 7; i++) listeners.get(i)!([observedPart(i, 'b'.repeat(64), 4n)]);
-		expect(first).toHaveBeenCalledTimes(2);
+		expect(first).toHaveBeenCalledTimes(3);
 		expect(second).toHaveBeenLastCalledWith(null);
 		const late = vi.fn();
 		const afterPartial = await client.watchStatus(late);
 		expect(late).toHaveBeenCalledExactlyOnceWith(null);
 		await afterPartial.close();
 		listeners.get(7)!([observedPart(7, 'b'.repeat(64), 4n)]);
-		expect(first).toHaveBeenCalledTimes(3);
+		expect(first).toHaveBeenCalledTimes(4);
 		expect(second).toHaveBeenLastCalledWith({
 			revision: '4',
+			definitionRevision: '2',
 			active_profile_id: 'away',
 			cameras: {}
 		});
@@ -603,6 +636,7 @@ describe('runtime profile observations', () => {
 			return { close };
 		});
 		const client = new RuntimeProfilesControlClient({
+			get: async () => activeHeader(),
 			watch
 		} as unknown as ControlClientStateStore);
 		await expect(client.watchStatus(vi.fn())).rejects.toThrow('watch limit');
@@ -611,32 +645,98 @@ describe('runtime profile observations', () => {
 		expect(close).toHaveBeenCalledTimes(14);
 	});
 
-	it('reads an older recorder through its legacy status after a typed unknown-key response', async () => {
-		const get = async (_namespace: string, key: string) => {
-			if (key !== 'status')
-				throw new StateStoreRequestError('Unknown key', {
-					namespace: runtimeProfilesNamespace,
-					key,
-					code: StateStoreErrorCode.KEY_INVALID
-				});
-			return entry(
-				key,
-				'keeppeek.runtime-profiles.status.v1',
-				{ revision: '5', active_profile_id: null, cameras: {} },
-				5n
-			);
-		};
-		const client = new RuntimeProfilesControlClient({ get } as unknown as ControlClientStateStore);
+	it('uses only the legacy watch slot when the other slots are occupied', async () => {
+		const legacy = entry(
+			'status',
+			'keeppeek.runtime-profiles.status.v1',
+			{ revision: '5', active_profile_id: null, cameras: {} },
+			5n
+		);
+		const get = vi.fn(async (_ns: string, key: string) =>
+			key === 'active' ? activeHeader(false) : legacy
+		);
+		let remaining = 1;
+		const watch = vi.fn(
+			async (
+				_ns: string,
+				options: { keyPrefix: string; listener: (values: StateEntry[]) => void }
+			) => {
+				if (remaining === 0) throw new Error('watch limit');
+				remaining--;
+				expect(options.keyPrefix).toBe('status');
+				options.listener([legacy]);
+				return {
+					close: async () => {
+						remaining++;
+					}
+				};
+			}
+		);
+		const client = new RuntimeProfilesControlClient({
+			get,
+			watch
+		} as unknown as ControlClientStateStore);
 		expect((await client.getStatus())?.revision).toBe('5');
+		const handle = await client.watchStatus(vi.fn());
+		expect(watch).toHaveBeenCalledTimes(1);
+		expect(get.mock.calls.map(([, key]) => key)).toEqual(['active', 'status', 'active']);
+		await handle.close();
+		expect(remaining).toBe(1);
 	});
 
 	it('rejects an invalid part without trying an older data format', async () => {
 		const get = vi.fn(async (_namespace: string, key: string) =>
-			observedPart(Number(key.split('/')[1]), 'bad')
+			key === 'active' ? activeHeader() : observedPart(Number(key.split('/')[1]), 'bad')
 		);
 		const client = new RuntimeProfilesControlClient({ get } as unknown as ControlClientStateStore);
 		await expect(client.getStatus()).rejects.toThrow('observation generation');
 		expect(get.mock.calls.some(([, key]) => key === 'status')).toBe(false);
+	});
+	it('keeps the shell selection when the optional legacy status watch cannot open', async () => {
+		let header: ((entries: StateEntry[]) => void) | undefined;
+		const close = vi.fn(async () => {});
+		const store = {
+			get: async () => activeHeader(false),
+			watch: async (
+				_ns: string,
+				options: { keyPrefix: string; listener: (entries: StateEntry[]) => void }
+			) => {
+				if (options.keyPrefix !== 'active') throw new Error('No watch slots available');
+				header = options.listener;
+				header([activeHeader(false)]);
+				return { close };
+			}
+		};
+		const client = new RuntimeProfilesControlClient(store as unknown as ControlClientStateStore);
+		const render = vi.fn();
+		const shell = await client.watchShellProfile(render);
+		expect(close).not.toHaveBeenCalled();
+		header!([entry('active', 'keeppeek.runtime-profiles.active.v1', { profile_id: 'night' }, 4n)]);
+		expect(render).toHaveBeenLastCalledWith('night', null);
+		await shell.close();
+		expect(close).toHaveBeenCalledTimes(1);
+	});
+	it('withdraws a completed status read before waiting for an initially mixed watch generation', async () => {
+		const store = {
+			get: async (_ns: string, key: string) =>
+				key === 'active' ? activeHeader() : observedPart(Number(key.split('/')[1])),
+			watch: async (
+				_ns: string,
+				options: { keyPrefix: string; listener: (entries: StateEntry[]) => void }
+			) => {
+				const i = Number(options.keyPrefix.split('/')[1]);
+				options.listener([observedPart(i, (i === 0 ? 'b' : 'a').repeat(64))]);
+				return { close: async () => {} };
+			}
+		};
+		const client = new RuntimeProfilesControlClient(store as unknown as ControlClientStateStore);
+		let shown = await client.getStatus();
+		expect(shown?.revision).toBe('3');
+		const watch = await client.watchStatus((value) => {
+			shown = value;
+		});
+		expect(shown).toBeNull();
+		await watch.close();
 	});
 	it('shares the shell header and releases full-fleet watches when the fleet view closes', async () => {
 		const closed: string[] = [];
@@ -664,6 +764,7 @@ describe('runtime profile observations', () => {
 			}
 		);
 		const client = new RuntimeProfilesControlClient({
+			get: async () => activeHeader(),
 			watch
 		} as unknown as ControlClientStateStore);
 		const render = vi.fn();
@@ -678,34 +779,108 @@ describe('runtime profile observations', () => {
 		await shell.close();
 		expect(closed.at(-1)).toBe('active');
 	});
-	it('requires fresh parts after reconnect even when the desired revision stays the same', async () => {
-		const listeners = new Map<number, (entries: StateEntry[]) => void>();
+	it('renegotiates both downgrade and upgrade while the same listener stays mounted', async () => {
+		let multipart = true;
+		const opened: string[] = [];
+		const closed: string[] = [];
+		const snapshots = new Map<string, () => void>();
+		const get = async () => activeHeader(multipart);
 		const watch = async (
-			_namespace: string,
+			_ns: string,
 			options: { keyPrefix: string; listener: (entries: StateEntry[]) => void }
 		) => {
-			const index = Number(options.keyPrefix.split('/')[1]);
-			listeners.set(index, options.listener);
-			options.listener([observedPart(index)]);
-			return { close: async () => {} };
+			const key = options.keyPrefix;
+			opened.push(key);
+			const value =
+				key === 'status'
+					? entry(
+							key,
+							'keeppeek.runtime-profiles.status.v1',
+							{ revision: '3', active_profile_id: 'away', cameras: {} },
+							3n
+						)
+					: observedPart(Number(key.split('/')[1]));
+			snapshots.set(key, () => options.listener([value]));
+			return {
+				close: async () => {
+					closed.push(key);
+				}
+			};
 		};
 		const client = new RuntimeProfilesControlClient({
+			get,
 			watch
 		} as unknown as ControlClientStateStore);
 		const render = vi.fn();
 		const full = await client.watchStatus(render);
-		const update = (index: number) => listeners.get(index)!([observedPart(index, 'b'.repeat(64))]);
-		for (let index = 0; index < 7; index++) update(index);
+		const parts = [...opened];
+		expect(parts).toHaveLength(8);
+		for (const key of parts) snapshots.get(key)!();
+		expect(render.mock.lastCall?.[0]?.definitionRevision).toBe('2');
 		client.handleConnectionClosed();
+		expect(render.mock.lastCall).toEqual([null]);
+		const old = snapshots.get(parts[0])!;
+		multipart = false;
+		await client.handleConnectionOpened();
+		expect(closed).toEqual(parts);
+		expect(opened.slice(8)).toEqual(['status']);
+		old();
+		expect(render.mock.lastCall).toEqual([null]);
+		snapshots.get('status')!();
+		expect(render.mock.lastCall?.[0]?.revision).toBe('3');
+		client.handleConnectionClosed();
+		multipart = true;
+		await client.handleConnectionOpened();
+		expect(closed.slice(8)).toEqual(['status']);
+		expect(opened.slice(9)).toEqual(parts);
+		for (const key of parts.slice(0, 7)) snapshots.get(key)!();
+		expect(render.mock.lastCall).toEqual([null]);
+		snapshots.get(parts[7])!();
+		expect(render.mock.lastCall?.[0]?.definitionRevision).toBe('2');
+		await full.close();
+	});
+
+	it('withdraws a complete snapshot immediately when one watch fails before another event', async () => {
+		let interrupt: (() => void) | undefined;
+		let refuse = false;
+		const get = vi.fn(async () => {
+			if (refuse) throw new Error('permission denied');
+			return activeHeader();
+		});
+		const watch = async (
+			_ns: string,
+			options: {
+				keyPrefix: string;
+				onInterrupted: () => void;
+				listener: (entries: StateEntry[]) => void;
+			}
+		) => {
+			interrupt = options.onInterrupted;
+			options.listener([observedPart(Number(options.keyPrefix.split('/')[1]))]);
+			return { close: async () => {} };
+		};
+		const client = new RuntimeProfilesControlClient({
+			get,
+			watch
+		} as unknown as ControlClientStateStore);
+		const render = vi.fn();
+		const onError = vi.fn();
+		const handle = await client.watchStatus(render, onError);
+		expect(render.mock.lastCall?.[0]?.revision).toBe('3');
+		refuse = true;
+		interrupt!();
+		expect(render.mock.lastCall).toEqual([null]);
 		const late = vi.fn();
-		const second = await client.watchStatus(late);
-		update(7);
-		expect(render).toHaveBeenCalledTimes(2);
-		expect(late).toHaveBeenCalledExactlyOnceWith(null);
-		for (let index = 0; index < 7; index++) update(index);
-		expect(late).toHaveBeenCalledTimes(2);
-		expect(render).toHaveBeenCalledTimes(3);
-		await Promise.all([full.close(), second.close()]);
+		const waiting = client.watchStatus(late);
+		expect(late.mock.lastCall).toEqual([null]);
+		await expect(waiting).rejects.toThrow('permission denied');
+		expect(onError.mock.lastCall?.[0]).toMatchObject({ message: 'permission denied' });
+		await expect(client.watchStatus(vi.fn())).rejects.toThrow('permission denied');
+		refuse = false;
+		const recovered = await client.watchStatus(vi.fn());
+		expect(render.mock.lastCall?.[0]?.revision).toBe('3');
+		await recovered.close();
+		await handle.close();
 	});
 });
 
