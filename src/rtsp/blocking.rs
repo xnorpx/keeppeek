@@ -183,6 +183,13 @@ impl BlockingRtsp {
         self.wait_for_state(ClientState::Playing)
     }
 
+    fn play_reporting_failure(
+        &mut self,
+        report: impl FnOnce(&[retina::client::Stream]),
+    ) -> anyhow::Result<()> {
+        self.play().inspect_err(|_| report(self.streams()))
+    }
+
     fn next_item(
         &mut self,
         shutdown: &Shutdown,
@@ -548,6 +555,7 @@ pub fn probe_rtsp_video(
 }
 
 pub struct RtspLoop {
+    pub(crate) timing_camera_id: Option<uuid::Uuid>,
     pub camera_ip: IpAddr,
     pub camera_name: Option<String>,
     pub camera_brand: Option<String>,
@@ -687,7 +695,10 @@ impl RtspLoop {
                 );
             }
         }
-        driver.play()?;
+        let session = uuid::Uuid::new_v4();
+        driver.play_reporting_failure(|tracks| {
+            self.report_source_timing(tracks, session, "play_failed");
+        })?;
         if let Some(storage) = &self.storage {
             storage.reset_event_recording(&self.camera_ip.to_string());
         }
@@ -718,15 +729,21 @@ impl RtspLoop {
         let mut talkback_session: Option<IsapiTalk> = None;
         let mut talkback_speaker: Option<IsapiSpeaker> = None;
 
-        while !self.shutdown.is_cancelled() {
+        let result = loop {
+            if self.shutdown.is_cancelled() {
+                break Ok(());
+            }
             self.drive_hikvision_talkback(
                 &mut pending_talkback,
                 &mut talkback_session,
                 &mut talkback_speaker,
             );
-            let Some(item) = driver.next_item(&self.shutdown, Some(video_deadline))? else {
-                break;
+            let item = match driver.next_item(&self.shutdown, Some(video_deadline)) {
+                Ok(Some(item)) => item,
+                Ok(None) => break Ok(()),
+                Err(error) => break Err(error),
             };
+            self.report_if_due(stats, previous, last_report, driver.streams(), session);
             match item {
                 CodecItem::VideoFrame(frame) => {
                     video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
@@ -741,7 +758,6 @@ impl RtspLoop {
                     let timestamp = frame.timestamp().elapsed_duration();
                     let data = Bytes::from(frame.into_data());
                     stats.on_video_frame(is_keyframe, data.len());
-                    self.report_if_due(stats, previous, last_report);
                     let frame_codec = match video_meta.encoding {
                         VideoEncoding::H264 => Some(VideoCodec::H264),
                         VideoEncoding::H265 => Some(VideoCodec::H265),
@@ -870,8 +886,9 @@ impl RtspLoop {
                 CodecItem::Rtcp(_) => {}
                 _ => tracing::debug!("ignoring unsupported RTSP codec item"),
             }
-        }
-        Ok(())
+        };
+        self.report_source_timing(driver.streams(), session, "session_end");
+        result
     }
 
     fn drive_hikvision_talkback(
@@ -982,6 +999,8 @@ impl RtspLoop {
         stats: &mut IngressStats,
         previous: &mut IngressSnapshot,
         last_report: &mut Instant,
+        tracks: &[retina::client::Stream],
+        session: uuid::Uuid,
     ) {
         if last_report.elapsed() < REPORT_INTERVAL {
             return;
@@ -989,6 +1008,9 @@ impl RtspLoop {
         *last_report = Instant::now();
         let snapshot = stats.snapshot();
         let rates = snapshot.rates_since(previous);
+        if let Some(timing) = super::timing::SourceTiming::periodic_from_tracks(tracks) {
+            timing.emit(self.timing_camera_id, self.stream, session, "periodic");
+        }
         let mut streams = vec![video_report(
             self.stream,
             &snapshot,
@@ -1018,6 +1040,17 @@ impl RtspLoop {
         log_camera_report(&report);
         self.health.publish(report);
         *previous = snapshot;
+    }
+
+    fn report_source_timing(
+        &self,
+        tracks: &[retina::client::Stream],
+        session: uuid::Uuid,
+        phase: &'static str,
+    ) {
+        if let Some(timing) = super::timing::SourceTiming::from_tracks(tracks) {
+            timing.emit(self.timing_camera_id, self.stream, session, phase);
+        }
     }
 }
 
@@ -1252,6 +1285,71 @@ mod tests {
     }
 
     #[test]
+    fn coalesced_play_and_failed_first_payload_report_the_accepted_rtp_header() {
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = Url::parse(&format!("rtsp://{address}/camera/")).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut input = BufReader::new(tcp.try_clone().unwrap());
+            for method in ["DESCRIBE", "SETUP", "PLAY"] {
+                let mut line = String::new();
+                input.read_line(&mut line).unwrap();
+                assert!(line.starts_with(method), "{line}");
+                let mut seq = String::new();
+                loop {
+                    line.clear();
+                    assert_ne!(input.read_line(&mut line).unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':')
+                        && name.eq_ignore_ascii_case("cseq")
+                    {
+                        seq = value.trim().to_owned();
+                    }
+                }
+                let mut data = format!("RTSP/1.0 200 OK\r\nCSeq: {seq}\r\n").into_bytes();
+                match method {
+                    "DESCRIBE"=>{
+                        let sdp="v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=clock\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:track1\r\n";
+                        data.extend_from_slice(format!("Content-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{sdp}",sdp.len()).as_bytes());
+                    }
+                    "SETUP"=>data.extend_from_slice(b"Session: clock\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=00000009\r\n\r\n"),
+                    _=>{
+                        data.extend_from_slice(format!("Session: clock\r\nRTP-Info: url=rtsp://{address}/camera/track1;seq=1;rtptime=12345\r\n\r\n").as_bytes());
+                        // One complete RTP header followed by an incomplete H.264 aggregation unit.
+                        data.extend_from_slice(&[b'$',0,0,14,0x80,0xe0,0,1,0,0,0x30,0x39,0,0,0,9,24,1]);
+                    }
+                }
+                tcp.write_all(&data).unwrap();
+            }
+        });
+        let mut client = BlockingRtsp::describe(
+            url,
+            Credentials {
+                username: "operator".into(),
+                password: "test".into(),
+            },
+        )
+        .unwrap();
+        client.setup(0, RtspTransport::Tcp).unwrap();
+        let mut reported = None;
+        let result = client.play_reporting_failure(|tracks| reported = tracks[0].rtp_clock());
+        assert!(
+            result.is_err(),
+            "damaged initial video must fail during PLAY"
+        );
+        let evidence = reported.expect("accepted packet evidence at failed PLAY");
+        assert_eq!(evidence.packets, 1);
+        assert_eq!(evidence.clock.first.timestamp(), 12345);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn blocking_client_completes_a_fake_camera_playback() {
         let camera = RtspServer::start().unwrap();
         let mut client = BlockingRtsp::describe(
@@ -1378,6 +1476,62 @@ mod tests {
         assert_eq!(first.timestamp().elapsed(), 0);
         assert_eq!(second.timestamp().elapsed(), 3_000);
         assert!(second.data().len() > 2_000);
+        let timing = super::super::timing::SourceTiming::from_tracks(client.streams()).unwrap();
+        let hub = crate::logging::LogHub::default();
+        hub.set_sensitive_values(["4".to_owned()]);
+        let path =
+            std::env::temp_dir().join(format!("keeppeek-clock-{}.log", uuid::Uuid::new_v4()));
+        let id = uuid::Uuid::parse_str("00112233-4455-4677-8899-aabbccddeeff").unwrap();
+        crate::logging::capture_timing_for_test(
+            hub.clone(),
+            std::fs::File::create(&path).unwrap(),
+            || {
+                timing.emit(
+                    Some(id),
+                    crate::keeppeek::StreamKind::Main,
+                    id,
+                    "session_end",
+                );
+                timing.emit(None, crate::keeppeek::StreamKind::Main, id, "session_end");
+            },
+        );
+        let entries = hub.snapshot(None, 10).entries;
+        let formatted: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(formatted.len(), 2);
+        for entry in &entries {
+            assert!(
+                formatted
+                    .iter()
+                    .any(|event| event["fields"] == serde_json::to_value(&entry.fields).unwrap())
+            );
+            assert_eq!(entry.fields["session_uuid_1"], 0x4455_4677_u32);
+        }
+        let registered = &entries
+            .iter()
+            .find(|entry| entry.fields["camera_registered"] == true)
+            .unwrap()
+            .fields;
+        assert_eq!(registered["camera_uuid_1"], 0x4455_4677_u32);
+        let evidence = &entries
+            .iter()
+            .find(|entry| entry.fields["camera_registered"] == false)
+            .unwrap()
+            .fields;
+        assert!(!evidence.contains_key("camera_uuid_0"));
+        assert_eq!(evidence["kind"], "video");
+        assert_eq!(evidence["clock_rate_hz"], 90_000);
+        assert_eq!(
+            evidence["first_rtp_ticks"],
+            first.timestamp().timestamp() as u32
+        );
+        assert!(evidence["accepted_packets"].as_u64().unwrap() > 2);
+        assert!(!evidence.contains_key("latest_audio_minus_video_play_us"));
         drop(client);
 
         let transcript = camera.finish().unwrap();
@@ -1405,6 +1559,9 @@ mod tests {
             client.next_item(&shutdown, Some(deadline)).unwrap(),
             Some(CodecItem::VideoFrame(_))
         ));
+        let clock = client.streams()[0].rtp_clock().unwrap();
+        assert_eq!(clock.clock.first.clock_rate().get(), 90_000);
+        assert!(clock.packets > 0);
         drop(client);
 
         let transcript = camera.finish().unwrap();
