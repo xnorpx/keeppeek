@@ -9,7 +9,7 @@ use std::{
 
 const BOUNDED_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 
-type WriteGuard = dyn Fn(&mut dyn FnMut() -> io::Result<usize>) -> io::Result<usize> + Send + Sync;
+type WriteGuard = dyn Fn() -> io::Result<()> + Send + Sync;
 
 struct State {
     connection: Option<Connection>,
@@ -81,17 +81,14 @@ impl ResponseAbortHandle {
         Ok(())
     }
 
-    /// Runs each bounded write and flush under the supplied authorization guard.
-    /// The guard must either invoke the operation once or return an error.
+    /// Checks authorization at each bounded write and flush. A revoker must abort
+    /// this handle before publishing the changed authorization so an in-flight write is interrupted.
     ///
     /// # Errors
     /// Returns an error if the writer already started or has already been guarded or closed.
     pub fn guard_writes(
         &self,
-        guard: impl Fn(&mut dyn FnMut() -> io::Result<usize>) -> io::Result<usize>
-        + Send
-        + Sync
-        + 'static,
+        guard: impl Fn() -> io::Result<()> + Send + Sync + 'static,
     ) -> io::Result<()> {
         let mut state = self.state.lock().map_err(|_| poisoned())?;
         if state.started || state.aborted || state.connection.is_none() || state.guard.is_some() {
@@ -104,7 +101,7 @@ impl ResponseAbortHandle {
         Ok(())
     }
 
-    fn guarded(&self, mut operation: impl FnMut() -> io::Result<usize>) -> io::Result<usize> {
+    fn authorize_write(&self) -> io::Result<()> {
         // A guard may synchronously abort this very response. Never call it under the state lock.
         let guard = {
             let state = self.state.lock().map_err(|_| poisoned())?;
@@ -113,11 +110,7 @@ impl ResponseAbortHandle {
             }
             state.guard.clone()
         };
-        if let Some(guard) = guard {
-            guard(&mut operation)
-        } else {
-            operation()
-        }
+        guard.map_or(Ok(()), |authorize| authorize())
     }
 
     /// Shuts down the connection. Other requests sharing this connection also stop.
@@ -241,7 +234,10 @@ impl ResponseWriter {
 impl Write for ResponseWriter {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         self.prepare()?;
-        let result = self.handle.guarded(|| self.writer.write(buffer));
+        let result = self
+            .handle
+            .authorize_write()
+            .and_then(|()| self.writer.write(buffer));
         self.abort_on_error(result)
     }
 
@@ -249,8 +245,8 @@ impl Write for ResponseWriter {
         self.prepare()?;
         let result = self
             .handle
-            .guarded(|| self.writer.flush().map(|()| 0))
-            .map(|_| ());
+            .authorize_write()
+            .and_then(|()| self.writer.flush());
         self.abort_on_error(result)
     }
 }
@@ -366,9 +362,9 @@ mod tests {
             let allowed = Arc::new(AtomicBool::new(true));
             let access = allowed.clone();
             handle
-                .guard_writes(move |write| {
+                .guard_writes(move || {
                     if access.load(Ordering::Acquire) {
-                        write()
+                        Ok(())
                     } else {
                         Err(io::ErrorKind::PermissionDenied.into())
                     }
@@ -394,6 +390,68 @@ mod tests {
                     ) => {}
                 other => panic!("buffered bytes must not reach the peer: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn revocation_can_close_the_socket_while_an_admitted_write_is_waiting() {
+        use std::io::Read as _;
+
+        struct WaitingWriter {
+            socket: Connection,
+            started: mpsc::SyncSender<()>,
+            resume: mpsc::Receiver<()>,
+        }
+        impl Write for WaitingWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.started.send(()).unwrap();
+                self.resume.recv_timeout(Duration::from_secs(3)).unwrap();
+                self.socket.write(bytes)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.socket.flush()
+            }
+        }
+
+        let (mut peer, socket) = pair();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let handle = handle(&socket);
+        let revoked = Arc::new(Mutex::new(false));
+        let authority = revoked.clone();
+        handle
+            .guard_writes(move || {
+                if *authority.lock().unwrap() {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
+                Ok(())
+            })
+            .unwrap();
+        let (started, waiting) = mpsc::sync_channel(1);
+        let (release, resume) = mpsc::sync_channel(1);
+        let mut writer = handle.wrap(Box::new(WaitingWriter {
+            socket,
+            started,
+            resume,
+        }));
+        let thread = std::thread::spawn(move || writer.write_all(b"media"));
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        {
+            let mut privacy = revoked
+                .try_lock()
+                .expect("socket waits must release the privacy gate");
+            assert!(handle.abort().unwrap());
+            *privacy = true;
+        }
+        release.send(()).unwrap();
+        assert!(thread.join().unwrap().is_err());
+        match peer.read(&mut [0; 16]) {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted
+                ) => {}
+            other => panic!("revoked response wrote to the peer: {other:?}"),
         }
     }
 

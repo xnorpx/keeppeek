@@ -160,10 +160,12 @@ impl MediaPermit {
                 ));
             }
             let permit = self.clone();
-            response.guard_writes(move |write| {
+            // The socket stays registered until its final flush. Revocation shuts it down
+            // before publishing the new epoch or alias, including a write already in progress.
+            response.guard_writes(move || {
                 permit
-                    .deliver(write)
-                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?
+                    .deliver(|| ())
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::PermissionDenied))
             })?;
             responses.push((self.camera_id.clone(), response));
             Ok(())
