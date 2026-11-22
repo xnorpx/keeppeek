@@ -6,6 +6,7 @@
 		maxRuntimeProfiles,
 		profileRecordingModes,
 		profileOverrideIsEmpty,
+		type ActiveRuntimeProfile,
 		type CameraProfileOverride,
 		type RuntimeProfileCameras,
 		type RuntimeProfileRegistry,
@@ -24,7 +25,10 @@
 	let activeProfileId = $state<string | null>(null);
 	let activeRevision = $state('0');
 	let runtimeStatus = $state.raw<RuntimeProfileStatus | null>(null);
-	let statusUpdates = 0;
+	let activeDefinitionRevision = $state<string | null>();
+	let activeUpdates = 0;
+	let observationError = $state<string | null>(null);
+	let retryObservation = () => {};
 	let cameraBindings = $state.raw<RuntimeProfileCameras | null>(null);
 	let bindingsForCameras = $state.raw<readonly CameraSettings[] | null>(null);
 	let selectedProfileId = $state('');
@@ -46,10 +50,16 @@
 		new Map(Object.entries(cameraBindings ?? {}).map(([target, source]) => [source, target]))
 	);
 	const cameraBindingsAvailable = $derived(cameraBindings !== null);
-	const activePolicyNeedsReapply = $derived(
+	const currentStatus = $derived(
 		runtimeStatus?.revision === activeRevision &&
 			runtimeStatus.active_profile_id === activeProfileId &&
-			Object.values(runtimeStatus.cameras).some((camera) => camera.state !== 'applied')
+			runtimeStatus.definitionRevision === activeDefinitionRevision
+			? runtimeStatus
+			: null
+	);
+	const activePolicyNeedsReapply = $derived(
+		currentStatus &&
+			Object.values(currentStatus.cameras).some((camera) => camera.state !== 'applied')
 	);
 	const configuredCameraIds = $derived(new Set(Object.keys(cameraBindings ?? {})));
 	const missingProfileTargets = $derived.by(() =>
@@ -67,10 +77,11 @@
 		return next;
 	}
 
-	function acceptActive(active: { profileId: string | null; revision: string }): void {
+	function acceptActive(active: ActiveRuntimeProfile): void {
 		if (BigInt(active.revision) < BigInt(activeRevision)) return;
 		activeProfileId = active.profileId;
 		activeRevision = active.revision;
+		activeDefinitionRevision = active.definitionRevision;
 	}
 
 	function acceptRuntimeStatus(next: RuntimeProfileStatus | null): void {
@@ -78,30 +89,75 @@
 		runtimeStatus = next;
 	}
 
+	function observeStatus(): () => void {
+		let stopped = false;
+		let received = false;
+		let refused = false;
+		let watch: { close: () => Promise<void> } | undefined;
+		runtimeStatus = null;
+		observationError = null;
+		function unavailable(cause: unknown) {
+			runtimeStatus = null;
+			observationError = cause instanceof Error ? cause.message : 'Observations are unavailable.';
+		}
+		void controlClient.runtimeProfiles
+			.watchStatus(
+				(status) => {
+					if (stopped || refused) return;
+					received = true;
+					observationError = null;
+					acceptRuntimeStatus(status);
+				},
+				(cause: unknown) => {
+					if (stopped || refused) return;
+					received = true;
+					unavailable(cause);
+				}
+			)
+			.then((opened) => {
+				if (stopped) void opened.close();
+				else watch = opened;
+			})
+			.catch((cause: unknown) => {
+				if (stopped) return;
+				refused = true;
+				unavailable(cause);
+			});
+		void controlClient.runtimeProfiles
+			.getStatus()
+			.then((status) => {
+				if (!stopped && !received && !refused) acceptRuntimeStatus(status);
+			})
+			.catch((cause: unknown) => {
+				if (!stopped && !received && !refused) unavailable(cause);
+			});
+		return () => {
+			stopped = true;
+			if (watch) void watch.close();
+		};
+	}
+
 	onMount(() => {
 		let registryWatch: { close: () => Promise<void> } | undefined;
 		let activeWatch: { close: () => Promise<void> } | undefined;
-		let statusWatch: { close: () => Promise<void> } | undefined;
+		let stopObserving = observeStatus();
+		retryObservation = () => {
+			stopObserving();
+			stopObserving = observeStatus();
+		};
 		let disposed = false;
 		const registryFailure = (cause: unknown) => {
 			if (disposed) return;
 			registry = null;
 			setError(cause);
 		};
-		void load();
+		void load(false);
 		void controlClient.runtimeProfiles
-			.watchStatus((next) => {
+			.watchActive((next) => {
 				if (disposed) return;
-				statusUpdates++;
-				acceptRuntimeStatus(next);
+				activeUpdates++;
+				acceptActive(next);
 			})
-			.then((watch) => {
-				if (disposed) void watch.close();
-				else statusWatch = watch;
-			})
-			.catch((cause: unknown) => setError(cause));
-		void controlClient.runtimeProfiles
-			.watchActive(acceptActive)
 			.then((watch) => {
 				if (disposed) void watch.close();
 				else activeWatch = watch;
@@ -129,7 +185,7 @@
 			disposed = true;
 			if (registryWatch) void registryWatch.close();
 			if (activeWatch) void activeWatch.close();
-			if (statusWatch) void statusWatch.close();
+			stopObserving();
 		};
 	});
 
@@ -159,17 +215,17 @@
 		};
 	});
 
-	async function load(): Promise<boolean> {
+	async function load(refreshObservation = true): Promise<boolean> {
+		if (refreshObservation) retryObservation();
 		loading = true;
 		error = null;
 		cameraBindings = null;
 		const currentCameras = cameras;
 		try {
+			const observed = activeUpdates;
 			const active = await controlClient.runtimeProfiles.getActive();
-			acceptActive(active);
-			const observedUpdates = statusUpdates;
-			const nextStatus = await controlClient.runtimeProfiles.getStatus();
-			if (observedUpdates === statusUpdates) acceptRuntimeStatus(nextStatus);
+			if (observed === activeUpdates || BigInt(active.revision) > BigInt(activeRevision))
+				acceptActive(active);
 			if (administrator) {
 				const [next, bindings] = await Promise.all([
 					controlClient.runtimeProfiles.getRegistry(),
@@ -328,7 +384,8 @@
 		announcement = null;
 		try {
 			const revision = await controlClient.runtimeProfiles.activate(profileId, activeRevision);
-			acceptActive({ profileId, revision });
+			if (revision !== activeRevision || profileId !== activeProfileId)
+				acceptActive({ profileId, revision });
 			announcement = reapply
 				? 'Active policy reapplied.'
 				: profileId === null
@@ -405,13 +462,13 @@
 				{/if}
 			</div>
 
-			{#if runtimeStatus}
+			{#if currentStatus}
 				<div role="region" class="space-y-2" aria-label="Runtime profile convergence">
 					<p class="text-sm font-medium">
-						Camera application status for revision {runtimeStatus.revision}
+						Camera application status for revision {currentStatus.revision}
 					</p>
 					<ul class="divide-y divide-hairline rounded-sm border border-hairline">
-						{#each Object.values(runtimeStatus.cameras).sort( (left, right) => left.camera_id.localeCompare(right.camera_id) ) as cameraStatus (cameraStatus.camera_id)}
+						{#each Object.values(currentStatus.cameras).sort( (left, right) => left.camera_id.localeCompare(right.camera_id) ) as cameraStatus (cameraStatus.camera_id)}
 							<li class="flex flex-wrap items-center justify-between gap-2 p-3 text-sm">
 								<span class="min-w-0 truncate font-mono"
 									>{cameraStatusLabel(cameraStatus.camera_id)}</span
@@ -438,7 +495,18 @@
 					</ul>
 				</div>
 			{:else}
-				<p role="status" class="text-sm text-text-muted">Camera application status pending.</p>
+				{#if observationError}
+					<p role="status" class="text-sm text-text-muted"
+						>Camera application status unavailable. {observationError}</p
+					>
+					<button
+						type="button"
+						class="min-h-11 rounded-sm border border-hairline-strong bg-raised px-3 text-sm"
+						onclick={() => retryObservation()}>Retry camera status</button
+					>
+				{:else}
+					<p role="status" class="text-sm text-text-muted">Camera application status pending.</p>
+				{/if}
 			{/if}
 
 			{#if administrator && (!cameraBindingsAvailable || !registry)}
