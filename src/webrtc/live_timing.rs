@@ -586,7 +586,7 @@ mod tests {
         ] {
             let t = Instant::now();
             let mut first = Queue::new(camera.clone());
-            let mut second = Queue::new(camera);
+            let mut second = Queue::new(camera.clone());
             first.set_preview(Some(offset));
             second.set_preview(Some(offset));
             first.admit(1, packet(StreamKind::Main, format, t, bytes), t);
@@ -623,7 +623,7 @@ mod tests {
     fn fresh_frames_after_the_poll_snapshot_are_scheduled_and_shared_across_viewers() {
         let camera = Arc::new(CameraTiming::default());
         let mut first = Queue::new(camera.clone());
-        let mut second = Queue::new(camera.clone());
+        let mut second = Queue::new(camera);
         first.set_preview(Some(-120));
         second.set_preview(Some(-120));
         let poll = Instant::now();
