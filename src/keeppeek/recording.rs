@@ -113,7 +113,7 @@ impl KeepPeekLoop {
 
     pub(super) fn camera_runtime_application(
         &self,
-        camera: &Camera,
+        ip: IpAddr,
         policy: crate::profiles::EffectiveCameraPolicy,
         result: Result<RuntimeApplicationState, String>,
     ) -> crate::profiles::CameraRuntimeApplication {
@@ -121,14 +121,14 @@ impl KeepPeekLoop {
             if let Some(reason) = &self.runtime_profile_notification_error
                 && self
                     .runtime_profile_notification_sources
-                    .contains(&camera.config.ip.to_string())
+                    .contains(&ip.to_string())
             {
                 return Err(reason.clone());
             }
             Ok(state)
         });
         crate::profiles::CameraRuntimeApplication {
-            camera_id: self.runtime_profile_camera_ids.camera_id(camera.config.ip),
+            camera_id: self.runtime_profile_camera_ids.camera_id(ip),
             state: result
                 .as_ref()
                 .cloned()
@@ -146,7 +146,7 @@ impl KeepPeekLoop {
         result: Result<RuntimeApplicationState, String>,
     ) {
         let mut application = self.camera_runtime_application(
-            camera,
+            camera.config.ip,
             self.effective_camera_policy(&camera.config),
             result,
         );
