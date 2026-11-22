@@ -25,8 +25,16 @@ struct Evidence {
 
 impl Evidence {
     fn new(allow_download: bool) -> Self {
+        Self::recording(allow_download, 2, 1000)
+    }
+
+    fn recording(allow_download: bool, frames: u32, spacing_ms: u64) -> Self {
         let (root, catalog, manager, mut state, request) =
-            super::super::super::export_storage_tests::setup(16 * 1024 * 1024);
+            super::super::super::export_storage_tests::setup_with_frames(
+                16 * 1024 * 1024,
+                frames,
+                spacing_ms,
+            );
         let path = super::super::super::export_provenance_tests::configured_source(
             &mut state,
             &root,
@@ -79,25 +87,24 @@ impl Evidence {
     }
 
     fn request(&self, mode: Mode, range: Option<&str>) -> Request {
-        let path = if mode == Mode::Stream {
-            "/guest/media"
-        } else {
-            "/guest/download"
-        };
-        let mut headers = vec![(
-            "Cookie".into(),
-            format!("{}={}", super::super::http::COOKIE, self.session),
-        )];
-        if let Some(range) = range {
-            headers.push(("Range".into(), range.into()));
-        }
-        Request::fake_https(
-            "GET",
-            format!("{path}?session={}", self.bound.session_id),
-            headers,
-            Vec::new(),
-        )
+        session_request(mode, range, self.bound.session_id, &self.session)
     }
+}
+
+fn session_request(mode: Mode, range: Option<&str>, id: Uuid, handle: &str) -> Request {
+    let path = if mode == Mode::Stream {
+        "/guest/media"
+    } else {
+        "/guest/download"
+    };
+    let mut headers = vec![(
+        "Cookie".into(),
+        format!("{}={}", super::super::http::COOKIE, handle),
+    )];
+    if let Some(range) = range {
+        headers.push(("Range".into(), range.into()));
+    }
+    Request::fake_https("GET", format!("{path}?session={id}"), headers, Vec::new())
 }
 
 impl Drop for Evidence {
@@ -494,3 +501,6 @@ fn allowed_download_commits_one_bounded_transfer_and_never_consumes_a_view() {
     );
     assert_eq!(f.snapshot().downloads, 1);
 }
+
+#[path = "media_capacity_tests.rs"]
+mod capacity;

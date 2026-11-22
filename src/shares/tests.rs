@@ -484,51 +484,6 @@ fn owner_lock_rejects_aliases_and_releases_after_drop() {
 }
 
 #[test]
-fn restart_preserves_consumption_and_revocation_but_invalidates_sessions() {
-    let mut f = Fixture::new();
-    let (grant, token) = f.grant();
-    let handle = f.session(&token);
-    let pending = f.begin(&handle, Mode::Stream).unwrap();
-    f.commit(&pending).unwrap();
-    let Fixture {
-        store,
-        directory,
-        now,
-        context,
-        intent,
-    } = f;
-    drop(store);
-    let mut reopened = Store::open(&directory.0.join("grants.db"), now.unix_ms).unwrap();
-    assert_eq!(
-        reopened
-            .begin_delivery(&handle, &context, &intent.binding, Mode::Stream, now)
-            .unwrap_err(),
-        Error::Denied
-    );
-    let new_handle = reopened
-        .exchange(&token, &context, now)
-        .unwrap()
-        .handle
-        .into_string();
-    assert_eq!(
-        reopened
-            .begin_delivery(&new_handle, &context, &intent.binding, Mode::Stream, now)
-            .unwrap_err(),
-        Error::Denied
-    );
-    reopened
-        .revoke(grant.id, grant.revision, "withdrawn", now)
-        .unwrap();
-    drop(reopened);
-    let mut reopened = Store::open(&directory.0.join("grants.db"), now.unix_ms).unwrap();
-    assert_eq!(
-        reopened.exchange(&token, &context, now).unwrap_err(),
-        Error::Denied
-    );
-    assert_eq!(reopened.list(&intent.issuer, now).unwrap()[0].views, 1);
-}
-
-#[test]
 fn observed_expiry_cannot_be_reactivated_by_clock_rollback_or_restart() {
     let mut f = Fixture::new();
     let (_, token) = f.grant();
@@ -1282,3 +1237,6 @@ fn nil_source_and_invalid_issuer_generations_never_create_authority() {
 
 #[path = "tests/status.rs"]
 mod status;
+
+#[path = "tests/restart_process.rs"]
+mod restart_process;

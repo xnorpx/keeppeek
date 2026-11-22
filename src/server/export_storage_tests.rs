@@ -144,7 +144,12 @@ fn malformed_export_history_is_preserved_and_disables_creation() {
     catalog.shutdown();
 }
 
-fn write_source(root: &Path, catalog: RecordingCatalogHandle) -> (i64, i64) {
+fn write_source(
+    root: &Path,
+    catalog: RecordingCatalogHandle,
+    frames: u32,
+    spacing_ms: u64,
+) -> (i64, i64) {
     let started = Instant::now();
     let mut writer = crate::storage::medium_term::MediumTermWriter::create_with_catalog(
         root,
@@ -156,8 +161,8 @@ fn write_source(root: &Path, catalog: RecordingCatalogHandle) -> (i64, i64) {
     .unwrap();
     let payload =
         super::tests::fixture_video_keyframe("cc-4k-640x360-h264.mp4", mp4::MediaType::H264);
-    for offset in [0, 1000] {
-        let elapsed = Duration::from_millis(offset);
+    for frame in 0..frames {
+        let elapsed = Duration::from_millis(u64::from(frame) * spacing_ms);
         writer
             .append_one(crate::storage::RecordingFrame {
                 received_at: started + elapsed,
@@ -192,8 +197,27 @@ pub(super) fn setup(
     ServerState,
     proto::CreateExportJob,
 ) {
+    setup_with_frames(limit, 2, 1000)
+}
+
+pub(super) fn setup_with_frames(
+    limit: u64,
+    frames: u32,
+    spacing_ms: u64,
+) -> (
+    PathBuf,
+    RecordingCatalog,
+    Manager,
+    ServerState,
+    proto::CreateExportJob,
+) {
     let (root, catalog, manager) = fixture(limit).unwrap();
-    let (start, end) = write_source(&root.join("recordings"), catalog.handle());
+    let (start, end) = write_source(
+        &root.join("recordings"),
+        catalog.handle(),
+        frames,
+        spacing_ms,
+    );
     let mut state = super::tests::media_test_state();
     state.catalog = Some(catalog.handle());
     state.storage_config.long_term_path = root.join("legacy");
