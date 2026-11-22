@@ -303,7 +303,9 @@ fn final_native_drain_stops_without_progress_and_retains_all_pending_ids() {
         }
         recorder.set_event_store(available);
         let started = Instant::now();
-        let remaining = recorder.drain_retired_native_events();
+        // This part verifies recovery of all IDs. Disk sync may consume a production shutdown window.
+        let remaining =
+            recorder.drain_retired_native_events_until(started + Duration::from_secs(60));
         assert_eq!(
             remaining,
             0,
@@ -335,6 +337,9 @@ fn final_native_drain_checks_deadline_between_backpressured_commits() {
             recorder.drain_retired_native_events_until(Instant::now()),
             3
         );
+        // Finish the durable close before timing publication backpressure. A slow fsync
+        // can legitimately use the entire deadline before the first callback runs.
+        recorder.stage_retired_native_events().unwrap();
         let (sent, published) = mpsc::channel();
         let (_release, blocked) = mpsc::sync_channel::<()>(1);
         let blocked = std::sync::Mutex::new(blocked);

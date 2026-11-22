@@ -13,8 +13,16 @@ type Group<T> = {
 export class SharedProfileWatch<T> {
 	private group?: Group<T>;
 
-	invalidateSnapshot(): void {
-		if (this.group) delete this.group.latest;
+	invalidateSnapshot(pending?: T): void {
+		const group = this.group;
+		if (!group) return;
+		if (pending === undefined) {
+			delete group.latest;
+			return;
+		}
+		if (group.latest === pending) return;
+		group.latest = pending;
+		for (const listener of group.listeners) listener(pending);
 	}
 
 	async subscribe(

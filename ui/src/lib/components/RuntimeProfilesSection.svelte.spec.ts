@@ -53,6 +53,26 @@ function recoveryClient(profileId: string | null, state: 'degraded' | 'pending' 
 }
 
 describe('RuntimeProfilesSection', () => {
+	it('keeps profile management available while observations converge', async () => {
+		const { client, runtimeProfiles, status } = recoveryClient('away');
+		runtimeProfiles.getStatus.mockResolvedValueOnce(null);
+		await render(RuntimeProfilesSectionFixture, {
+			props: { client, cameras: [], administrator: true }
+		});
+		await expect.element(page.getByText('Camera application status pending.')).toBeVisible();
+		expect(runtimeProfiles.getRegistry).toHaveBeenCalledTimes(1);
+		expect(runtimeProfiles.getCameras).toHaveBeenCalledTimes(1);
+		await expect
+			.element(
+				page.getByText('Profile state or camera identities are unavailable.', { exact: false })
+			)
+			.not.toBeInTheDocument();
+		const notify = runtimeProfiles.watchStatus.mock.calls[0]![0];
+		notify(status);
+		await expect.element(page.getByText('Camera application status for revision 3')).toBeVisible();
+		notify(null);
+		await expect.element(page.getByText('Camera application status pending.')).toBeVisible();
+	});
 	it('keeps newer watched active and registry state when initial reads complete late', async () => {
 		const { client, runtimeProfiles, registry, status } = recoveryClient('away');
 		const delayed = Promise.withResolvers<{ profileId: string | null; revision: string }>();

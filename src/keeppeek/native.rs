@@ -227,7 +227,7 @@ impl KeepPeekLoop {
         completed
     }
 
-    fn stage_retired_native_events(&mut self) -> anyhow::Result<()> {
+    pub(super) fn stage_retired_native_events(&mut self) -> anyhow::Result<()> {
         if !self.native_commits.pending.is_empty() {
             return Ok(());
         }
