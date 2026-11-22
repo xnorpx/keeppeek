@@ -591,6 +591,55 @@ fn configured_worker(
 }
 
 #[test]
+fn recoverable_keyframe_gap_preserves_the_event_window_without_a_new_trigger() {
+    let (handle, rx, mut worker, root) = configured_worker("event-keyframe-gap");
+    let start = Instant::now() - Duration::from_millis(150);
+    let source = RecordingStreamIdentity::legacy("camera/main");
+    handle.ingest_stream(source.clone(), key_frame(start));
+    worker.handle_command(rx.try_recv().unwrap());
+    handle.admission.note_event(&handle.tx, "camera", start);
+    worker.handle_command(rx.try_recv().unwrap());
+    worker.drain_event_outputs(start + Duration::from_millis(1));
+    let mut over = key_frame(start + Duration::from_millis(25));
+    let MediaFrame::Video(video) = &mut over.frame else {
+        unreachable!("video fixture")
+    };
+    video.is_keyframe = false;
+    video.data = vec![0_u8; 16 * 1024 * 1024].into();
+    worker.write_event_frame(source.clone(), over);
+    let gap = worker.health.snapshot();
+    assert!(gap.streams.iter().any(|s| {
+        s.last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("keyframe limit"))
+    }));
+    for offset in [50, 100] {
+        let now = start + Duration::from_millis(offset);
+        handle.ingest_stream(source.clone(), key_frame(now));
+        worker.handle_command(rx.try_recv().unwrap());
+        worker.drain_event_outputs(now);
+    }
+    assert!(
+        !worker
+            .health
+            .snapshot()
+            .streams
+            .iter()
+            .any(|s| s.last_error.is_some())
+    );
+    while worker.drain_event_outputs(start + Duration::from_secs(2)) == 32 {}
+    assert!(worker.pipelines.is_empty());
+    let recordings = LongTermStore::new(root.clone())
+        .finalized_segments("camera/main")
+        .unwrap();
+    assert_eq!(recordings.len(), 1);
+    let mp4 = mp4::read_mp4(std::fs::File::open(&recordings[0]).unwrap()).unwrap();
+    assert_eq!(mp4.tracks().values().next().unwrap().sample_count(), 3);
+    drop(mp4);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn writer_failure_clears_replay_without_stopping_another_continuous_camera() {
     let (handle, rx, mut worker, root) = configured_worker("event-writer-failure");
     std::fs::create_dir_all(&root).unwrap();

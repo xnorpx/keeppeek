@@ -124,11 +124,14 @@ fn missing_keyframe_bounds_prepared_and_active_gops_and_recovers_at_the_next_key
             .as_ref()
             .unwrap();
         assert!(current.awaiting_recovery_keyframe());
-        writer.ingest(camera.clone(), sample(key, key.data.clone(), 9));
-        writer.ingest(
-            camera.clone(),
-            sample(predicted, predicted.data.clone(), 10),
-        );
+        let mut resumed = sample(key, key.data.clone(), 9);
+        let mut following = sample(predicted, predicted.data.clone(), 10);
+        if active {
+            resumed.timestamp = Some(Duration::ZERO);
+            following.timestamp = Some(Duration::from_secs(1));
+        }
+        writer.ingest(camera.clone(), resumed);
+        writer.ingest(camera.clone(), following);
         let recovered = writer.pipelines[&camera.storage_key]
             .medium_term
             .as_ref()
@@ -148,11 +151,40 @@ fn missing_keyframe_bounds_prepared_and_active_gops_and_recovers_at_the_next_key
             catalog
                 .handle()
                 .media_fragments_in_range(&camera.storage_key, 0, i64::MAX)?;
-        let during_gap = fragments[0].start_ms + 5_000;
+        let during_gap = fragments[0].start_ms + 3_000;
         assert!(fragments.iter().all(|f| {
             !(f.start_ms..f.start_ms.saturating_add_unsigned(f.duration_ms)).contains(&during_gap)
         }));
+        let recovered_at = fragments.last().unwrap().start_ms - fragments[0].start_ms;
+        if active {
+            assert_eq!(recovered_at, 9_000);
+        } else {
+            assert!(recovered_at.abs_diff(9_000) <= 2);
+        }
     }
+    let oversized = RecordingStreamIdentity::new("oversized-first", "main", "oversized-first");
+    let _viewer = demand.acquire(&oversized.storage_key);
+    writer.config.medium_term_duration = Duration::from_secs(3_600);
+    writer.ingest(
+        oversized.clone(),
+        sample(key, vec![0_u8; 16 * 1024 * 1024].into(), 0),
+    );
+    writer.ingest(oversized.clone(), sample(key, key.data.clone(), 9));
+    writer.ingest(
+        oversized.clone(),
+        sample(predicted, predicted.data.clone(), 10),
+    );
+    writer.finalize_all();
+    let fragments =
+        catalog
+            .handle()
+            .media_fragments_in_range(&oversized.storage_key, 0, i64::MAX)?;
+    assert_eq!(fragments.len(), 1);
+    assert_eq!(
+        fragments[0].start_ms - fragments[0].recording_started_at_ms,
+        9_000
+    );
+    assert_eq!(samples(Path::new(&fragments[0].path)), 2);
     drop(writer);
     catalog.shutdown();
     std::fs::remove_dir_all(root)?;

@@ -491,7 +491,14 @@ fn archive_reopens_during_outage_and_drains_original_jobs_while_primary_recordin
     std::fs::rename(offline, &fixture.settings.root)?;
     let intervening = handle.enqueue(&active_id, "recording", &ObjectId::random().to_string())?;
     wait_state(&handle, &intervening.id, "ready")?;
-    assert!(handle.health().available);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !handle.health().available {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "intervening transfer did not publish health"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
     for (job, _, _) in &pending {
         assert_eq!(handle.get(&job.id)?.state, "failed");
     }

@@ -805,10 +805,7 @@ impl WriterWorker {
         self.pipeline_for(&identity);
         self.health.note_attempt(&key);
         match self.write_frame_to_pipeline(&key, frame, true) {
-            Ok(progress) if progress.wrote => {
-                self.health.note_progress(&key, progress.recorded_duration);
-            }
-            Ok(_) => {}
+            Ok(progress) => progress.report(&self.health, &key),
             Err(error) => {
                 self.health.note_failure(&key, &error.to_string());
                 self.admission.note_writer_failure(&source);

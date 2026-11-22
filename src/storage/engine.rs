@@ -362,6 +362,20 @@ struct CameraPipeline {
 struct WriteProgress {
     wrote: bool,
     recorded_duration: Duration,
+    keyframe_gap: bool,
+}
+
+impl WriteProgress {
+    fn report(self, health: &RecordingHealthRegistry, stream: &str) {
+        if self.keyframe_gap {
+            let error = super::medium_term::keyframe_budget_error();
+            health.note_failure(stream, &error.to_string());
+            tracing::warn!(camera = stream, %error, "recording gap");
+        }
+        if self.wrote {
+            health.note_progress(stream, self.recorded_duration);
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -1050,10 +1064,7 @@ impl WriterWorker {
         if !self.config.is_direct_write() {
             self.health.note_attempt(storage_key);
             match self.flush_camera(storage_key, true) {
-                Ok(progress) if progress.wrote => self
-                    .health
-                    .note_progress(storage_key, progress.recorded_duration),
-                Ok(_) => {}
+                Ok(progress) => progress.report(&self.health, storage_key),
                 Err(error) => {
                     self.health.note_failure(storage_key, &error.to_string());
                     tracing::error!(camera = storage_key, %error, "unable to flush recording before queue gap");
@@ -1267,10 +1278,7 @@ impl WriterWorker {
         if self.config.is_direct_write() {
             self.health.note_attempt(&storage_key);
             match self.direct_write(&storage_key, frame) {
-                Ok(progress) if progress.wrote => self
-                    .health
-                    .note_progress(&storage_key, progress.recorded_duration),
-                Ok(_) => {}
+                Ok(progress) => progress.report(&self.health, &storage_key),
                 Err(error) => {
                     self.health.note_failure(&storage_key, &error.to_string());
                     self.admission.note_writer_failure(&identity.source_id);
@@ -1288,10 +1296,7 @@ impl WriterWorker {
         if needs_flush {
             self.health.note_attempt(&storage_key);
             match self.flush_camera(&storage_key, active) {
-                Ok(progress) if progress.wrote => self
-                    .health
-                    .note_progress(&storage_key, progress.recorded_duration),
-                Ok(_) => {}
+                Ok(progress) => progress.report(&self.health, &storage_key),
                 Err(error) => {
                     self.health.note_failure(&storage_key, &error.to_string());
                     self.admission.note_writer_failure(&identity.source_id);
@@ -1378,9 +1383,9 @@ impl WriterWorker {
 
         let writer = pipeline.medium_term.as_mut().unwrap();
         let recorded_duration = if received_clock {
-            writer.append_received(frame)
+            writer.append_received_bounded(frame)
         } else {
-            writer.append_one(frame)
+            writer.append_bounded(frame)
         };
         let wrote = !writer.awaiting_recovery_keyframe();
 
@@ -1388,9 +1393,11 @@ impl WriterWorker {
             self.move_to_long_term(camera_id, &path, &recording_id)?;
         }
 
+        let recorded_duration = recorded_duration?;
         Ok(WriteProgress {
             wrote,
-            recorded_duration: recorded_duration?,
+            recorded_duration: recorded_duration.unwrap_or_default(),
+            keyframe_gap: recorded_duration.is_none(),
         })
     }
 
@@ -1458,21 +1465,19 @@ impl WriterWorker {
             self.move_to_long_term(camera_id, &path, &recording_id)?;
         }
         let (duration, exceeded) = appended?;
-        if prefix_exceeded || exceeded {
-            return Err(super::medium_term::keyframe_budget_error());
-        }
-
         Ok(WriteProgress {
             wrote,
             recorded_duration: recorded_duration.saturating_add(duration),
+            keyframe_gap: prefix_exceeded || exceeded,
         })
     }
 
     fn flush_all(&mut self) {
         let ids: Vec<String> = self.pipelines.keys().cloned().collect();
         for id in ids {
-            if let Err(e) = self.flush_camera(&id, false) {
-                tracing::error!(camera = %id, error = %e, "flush failed");
+            match self.flush_camera(&id, false) {
+                Ok(progress) => progress.report(&self.health, &id),
+                Err(e) => tracing::error!(camera = %id, error = %e, "flush failed"),
             }
         }
     }
