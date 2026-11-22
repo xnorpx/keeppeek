@@ -58,20 +58,47 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
              WHERE event_id = OLD.id AND source_id = OLD.camera_id;
          END;",
     ).await?;
-    // Older catalogs retained the original bookmark time when an event was revised.
-    // Match both identities and preserve the saved time of deleted events.
-    connection.execute(
-        "UPDATE event_bookmarks SET event_start_ms = (
-             SELECT e.start_time_ms FROM recording_events e
-             WHERE e.id = event_bookmarks.event_id AND e.camera_id = event_bookmarks.source_id
-         ), event_deleted_at_ms = NULL
-         WHERE EXISTS (
-             SELECT 1 FROM recording_events e
-             WHERE e.id = event_bookmarks.event_id AND e.camera_id = event_bookmarks.source_id
-               AND (e.start_time_ms <> event_bookmarks.event_start_ms OR event_bookmarks.event_deleted_at_ms IS NOT NULL)
-         )", (),
-    ).await?;
-    Ok(())
+    migrate_event_times(connection).await
+}
+
+async fn migrate_event_times(connection: &turso::Connection) -> anyhow::Result<()> {
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        let inserted = connection
+            .execute(
+                "INSERT OR IGNORE INTO catalog_schema_migrations(version, applied_at_ms)
+                 VALUES (4, CAST(unixepoch('subsec') * 1000 AS INTEGER))",
+                (),
+            )
+            .await?;
+        if inserted == 0 {
+            return anyhow::Ok(());
+        }
+        // An older catalog kept a moved event's original time. Deleted events keep that time.
+        connection
+            .execute(
+                "UPDATE event_bookmarks SET event_start_ms = (
+                     SELECT e.start_time_ms FROM recording_events e
+                     WHERE e.id = event_bookmarks.event_id AND e.camera_id = event_bookmarks.source_id
+                 ), event_deleted_at_ms = NULL
+                 WHERE EXISTS (
+                     SELECT 1 FROM recording_events e
+                     WHERE e.id = event_bookmarks.event_id AND e.camera_id = event_bookmarks.source_id
+                       AND (e.start_time_ms <> event_bookmarks.event_start_ms OR event_bookmarks.event_deleted_at_ms IS NOT NULL)
+                 )",
+                (),
+            )
+            .await?;
+        Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
 }
 
 pub(super) async fn read(

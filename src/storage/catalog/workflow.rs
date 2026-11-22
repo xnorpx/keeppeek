@@ -1030,86 +1030,117 @@ mod tests {
             query.actor_id = "alice".to_owned();
             assert_eq!(library::list(&connection, &query).await.unwrap().total, 2);
 
-            let token = library::list(&connection, &query)
-                .await
-                .unwrap()
-                .next_page_token;
-            let mut revised = test_event("second", 86_401_000);
-            revised.camera_id = "allowed".into();
-            revised.revision = 2;
-            super::super::insert_event(&connection, revised.clone(), None)
-                .await
-                .unwrap();
-            query.page_token = token;
-            assert!(
-                library::list(&connection, &query)
-                    .await
-                    .unwrap_err()
-                    .to_string()
-                    .contains("reload bookmarks")
-            );
-            query.page_token.clear();
-            assert_eq!(library::list(&connection, &query).await.unwrap().total, 1);
-            query.start_ms = 86_400_000;
-            query.end_ms = 172_800_000;
-            let page = library::list(&connection, &query).await.unwrap();
-            assert_eq!(page.total, 1);
-            assert_eq!(page.states[0].key.event_id, "second");
-            assert_eq!(
-                page.states[0].bookmark.as_ref().unwrap().event_start_ms,
-                86_401_000
-            );
-
-            // Simulate a bookmark persisted by an earlier catalog and repeat startup.
-            connection
-                .execute(
-                    "UPDATE event_bookmarks SET event_start_ms = 1000 WHERE event_id = 'second'",
-                    (),
-                )
-                .await
-                .unwrap();
-            bookmarks::initialize(&connection).await.unwrap();
-            assert_eq!(library::list(&connection, &query).await.unwrap().total, 1);
-            query.start_ms = 0;
-            let token = library::list(&connection, &query)
-                .await
-                .unwrap()
-                .next_page_token;
-            assert!(!token.is_empty());
-            bookmarks::initialize(&connection).await.unwrap();
-            revised.revision = 3;
-            super::super::insert_event(&connection, revised, None)
-                .await
-                .unwrap();
-            query.page_token = token;
-            assert_eq!(
-                library::list(&connection, &query).await.unwrap().states[0]
-                    .key
-                    .event_id,
-                "first"
-            );
-
-            connection
-                .execute("DELETE FROM recording_events WHERE id = 'second'", ())
-                .await
-                .unwrap();
-            // A different camera may later reuse the deleted event ID.
-            let mut unrelated = test_event("second", 1000);
-            unrelated.camera_id = "denied".into();
-            super::super::insert_event(&connection, unrelated, None)
-                .await
-                .unwrap();
-            bookmarks::initialize(&connection).await.unwrap();
-            query.start_ms = 86_400_000;
-            query.page_token.clear();
-            let page = library::list(&connection, &query).await.unwrap();
-            assert_eq!(page.total, 1);
-            assert!(!page.states[0].event_present);
-            assert_eq!(
-                page.states[0].bookmark.as_ref().unwrap().event_start_ms,
-                86_401_000
-            );
+            verify_revised_bookmark_pages(&connection, query).await;
         });
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    async fn verify_revised_bookmark_pages(
+        connection: &turso::Connection,
+        mut query: BookmarkQuery,
+    ) {
+        let token = library::list(connection, &query)
+            .await
+            .unwrap()
+            .next_page_token;
+        let mut revised = test_event("second", 86_401_000);
+        revised.camera_id = "allowed".into();
+        revised.revision = 2;
+        super::super::insert_event(connection, revised, None)
+            .await
+            .unwrap();
+        query.page_token = token;
+        assert!(
+            library::list(connection, &query)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("reload bookmarks")
+        );
+        query.page_token.clear();
+        assert_eq!(library::list(connection, &query).await.unwrap().total, 1);
+        query.start_ms = 86_400_000;
+        query.end_ms = 172_800_000;
+        let page = library::list(connection, &query).await.unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.states[0].key.event_id, "second");
+        assert_eq!(
+            page.states[0].bookmark.as_ref().unwrap().event_start_ms,
+            86_401_000
+        );
+
+        verify_historical_bookmark_repair(connection, &mut query).await;
+        connection
+            .execute("DELETE FROM recording_events WHERE id = 'second'", ())
+            .await
+            .unwrap();
+        // A different camera may later reuse the deleted event ID.
+        let mut unrelated = test_event("second", 1000);
+        unrelated.camera_id = "denied".into();
+        super::super::insert_event(connection, unrelated, None)
+            .await
+            .unwrap();
+        bookmarks::initialize(connection).await.unwrap();
+        query.start_ms = 86_400_000;
+        query.page_token.clear();
+        let page = library::list(connection, &query).await.unwrap();
+        assert_eq!(page.total, 1);
+        assert!(!page.states[0].event_present);
+        assert_eq!(
+            page.states[0].bookmark.as_ref().unwrap().event_start_ms,
+            86_401_000
+        );
+    }
+
+    async fn verify_historical_bookmark_repair(
+        connection: &turso::Connection,
+        query: &mut BookmarkQuery,
+    ) {
+        // Simulate an older catalog, including a page token issued against its stale index.
+        connection
+            .execute_batch(
+                "DELETE FROM catalog_schema_migrations WHERE version = 4;
+             UPDATE event_bookmarks SET event_start_ms = 1000 WHERE event_id = 'second'",
+            )
+            .await
+            .unwrap();
+        query.start_ms = 0;
+        let stale = library::list(connection, query)
+            .await
+            .unwrap()
+            .next_page_token;
+        assert!(!stale.is_empty());
+        bookmarks::initialize(connection).await.unwrap();
+        query.page_token = stale;
+        assert!(
+            library::list(connection, query)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("reload bookmarks")
+        );
+        query.page_token.clear();
+        query.start_ms = 86_400_000;
+        assert_eq!(library::list(connection, query).await.unwrap().total, 1);
+        query.start_ms = 0;
+        let token = library::list(connection, query)
+            .await
+            .unwrap()
+            .next_page_token;
+        assert!(!token.is_empty());
+        bookmarks::initialize(connection).await.unwrap();
+        let mut revised = test_event("second", 86_401_000);
+        revised.camera_id = "allowed".into();
+        revised.revision = 3;
+        super::super::insert_event(connection, revised, None)
+            .await
+            .unwrap();
+        query.page_token = token;
+        assert_eq!(
+            library::list(connection, query).await.unwrap().states[0]
+                .key
+                .event_id,
+            "first"
+        );
     }
 }
