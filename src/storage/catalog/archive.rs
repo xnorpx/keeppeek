@@ -60,7 +60,18 @@ pub struct Job {
     pub verified_ms: Option<i64>,
 }
 
+const REVERIFICATION_FAILURE: &str = "Archive reverification failed; check the target";
+
 impl Job {
+    pub(crate) fn reverification_failed(&self) -> bool {
+        self.state == "ready"
+            && self.kind != "probe"
+            && self.action.is_empty()
+            && self.verified_ms.is_none()
+            && self.pending_deletion().is_none()
+            && self.error.as_deref() == Some(REVERIFICATION_FAILURE)
+    }
+
     pub(crate) fn pending_deletion(&self) -> Option<&deletion::WorkItem> {
         self.deletion
             .as_ref()
@@ -574,12 +585,7 @@ async fn retry(connection: &turso::Connection, id: &str) -> anyhow::Result<Reply
             .await?;
         return Ok(Reply::Job(load(connection, id).await?.map(Box::new)));
     }
-    if job.state == "ready"
-        && job.kind != "probe"
-        && job.action.is_empty()
-        && job.verified_ms.is_none()
-        && job.pending_deletion().is_none()
-    {
+    if job.reverification_failed() {
         connection.execute("UPDATE archive_reverification_retries SET attempts=0,retry_after_ms=0 WHERE job_id=?1", [id]).await?;
         connection
             .execute(

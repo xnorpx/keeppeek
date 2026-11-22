@@ -23,6 +23,7 @@
 		onsaved: (result: SettingsConfigUpdateResponse) => void;
 		oncancel: () => void;
 	} = $props();
+	const retentionHelpId = $props.id();
 	let snapshot = $state.raw(untrack(() => config));
 	let initial = $state(archiveDraft(untrack(() => snapshot.storage.archive)));
 	let draft = $state(archiveDraft(untrack(() => snapshot.storage.archive)));
@@ -136,10 +137,12 @@
 					class="min-h-11 w-full rounded-sm border border-hairline bg-surface px-3 py-2 sm:min-h-0"
 					inputmode="numeric"
 					maxlength="10"
+					aria-label="Archive retention days"
+					aria-describedby={retentionHelpId}
 					bind:value={draft.retentionDays}
 					placeholder="Indefinite"
 				/>
-				<span class="text-xs text-text-muted"
+				<span id={retentionHelpId} class="text-xs text-text-muted"
 					>Age starts when a replica is verified. Leave blank to keep it indefinitely. An
 					Administrator must preview and confirm each deletion batch.</span
 				>

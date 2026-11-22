@@ -193,7 +193,7 @@ pub(super) async fn dispatch(
                     ),
                 )
                 .await?;
-            connection.execute("UPDATE archive_replicas SET error='Archive reverification failed; check the target' WHERE job_id=?1 AND state='ready' AND NOT EXISTS(SELECT 1 FROM archive_verified_at WHERE job_id=?1)",[id.as_str()]).await?;
+            connection.execute("UPDATE archive_replicas SET error=?2 WHERE job_id=?1 AND state='ready' AND NOT EXISTS(SELECT 1 FROM archive_verified_at WHERE job_id=?1)",(id.as_str(), super::REVERIFICATION_FAILURE)).await?;
             Ok(Reply::Done)
         }
         Request::Reverified { job, version } => {

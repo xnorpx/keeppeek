@@ -350,6 +350,7 @@ fn wire_job(
     names: Option<&(String, String)>,
     job: crate::storage::catalog::archive::Job,
 ) -> proto::ArchiveJob {
+    let reverification_failed = job.reverification_failed();
     let deletion_attempts = job.pending_deletion().map(|d| d.attempts);
     let target_id = names
         .filter(|(private, _)| *private == job.binding.id)
@@ -375,7 +376,9 @@ fn wire_job(
         },
         bytes: job.bytes,
         attempts: job.attempts,
-        error_code: if job.error.as_deref() == Some("archive_primary_write_protection_required") {
+        error_code: if reverification_failed {
+            "archive_reverification_failed".into()
+        } else if job.error.as_deref() == Some("archive_primary_write_protection_required") {
             "archive_primary_write_protection_required".into()
         } else if job.error.is_some() {
             "archive_operation_failed".into()

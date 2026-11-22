@@ -385,8 +385,12 @@ fn archive_retention_backoff_retries_are_persisted_and_administrator_can_reset_t
             run(&connection, next()).await?,
             Reply::Job(Some(_))
         ));
+        connection.execute("UPDATE archive_replicas SET error='Archive deletion blocked; check the primary and preview again' WHERE job_id=?1",[id.as_str()]).await?;
+        assert!(!required(&connection, &id).await?.reverification_failed());
+        assert!(retry(&connection, &id).await.is_err());
         run(&connection, Deletion::LegacyFailed(id.clone())).await?;
         assert!(matches!(run(&connection, next()).await?, Reply::Job(None)));
+        assert!(required(&connection, &id).await?.reverification_failed());
         connection
             .execute(
                 "UPDATE archive_reverification_retries SET retry_after_ms=0",

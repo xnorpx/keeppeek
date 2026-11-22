@@ -228,11 +228,13 @@
 								: 'Primary copy retained.'}
 				</p>
 				{#if job.errorCode}<p role="alert" class="text-sm text-destructive">
-						{job.errorCode === 'archive_primary_write_protection_required'
-							? 'Archive retained. The primary needs filesystem-enforced write protection before this archive copy can be removed. On Linux, the primary must have fs-verity and the immutable flag.'
-							: job.action === 'restore'
-								? 'Restore failed. Check the primary disk and retry. The archive copy is retained.'
-								: 'Archive operation failed. Refresh the job and destination status before retrying.'}
+						{job.errorCode === 'archive_reverification_failed'
+							? 'Archive verification failed. Check that the target is available, then retry verification.'
+							: job.errorCode === 'archive_primary_write_protection_required'
+								? 'Archive retained. The primary needs filesystem-enforced write protection before this archive copy can be removed. On Linux, the primary must have fs-verity and the immutable flag.'
+								: job.action === 'restore'
+									? 'Restore failed. Check the primary disk and retry. The archive copy is retained.'
+									: 'Archive operation failed. Refresh the job and destination status before retrying.'}
 					</p>{/if}
 				<div class="flex flex-wrap gap-2">
 					{#if (job.state === 'queued' || job.state === 'copying' || job.action) && job.action !== 'delete' && job.primaryCopy !== ArchivePrimaryCopyState.EVICTING}<Button
@@ -244,7 +246,7 @@
 							aria-label={`Cancel archive job ${job.jobId}`}
 							onclick={() => action('cancel', job)}>Cancel</Button
 						>{/if}
-					{#if job.state === 'failed' || job.state === 'cancelled' || (job.errorCode && job.action)}<Button
+					{#if job.state === 'failed' || job.state === 'cancelled' || (job.errorCode && job.action) || job.errorCode === 'archive_reverification_failed'}<Button
 							class="min-h-11 sm:min-h-0"
 							type="button"
 							size="sm"

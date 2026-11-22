@@ -433,3 +433,51 @@ it('cancels a transfer and retries a failed restore using their existing durable
 		{ case: 'retry', value: { jobId: 'restore' } }
 	]);
 });
+
+it('retries verification of a legacy archive and requires a fresh preview for a blocked deletion', async () => {
+	const control = controller();
+	const legacy = {
+		jobId: 'legacy',
+		objectId: 'legacy-clip',
+		state: 'ready',
+		errorCode: 'archive_reverification_failed'
+	};
+	const blocked = {
+		jobId: 'blocked',
+		objectId: 'protected-clip',
+		state: 'ready',
+		errorCode: 'archive_primary_write_protection_required'
+	};
+	control.archive.mockImplementation(async (request) =>
+		create(ArchiveResultSchema, {
+			result:
+				request.action.case === 'list'
+					? { case: 'jobs', value: { jobs: [legacy, blocked], status: { runtimeAvailable: true } } }
+					: { case: 'job', value: { ...legacy, errorCode: '' } }
+		})
+	);
+	await render(ArchiveSection, {
+		config: fixture(),
+		controller: control,
+		retentionAvailable: true,
+		onsaved: vi.fn()
+	});
+	await expect
+		.element(page.getByRole('button', { name: 'Retry archive job blocked' }))
+		.not.toBeInTheDocument();
+	await expect
+		.element(page.getByRole('button', { name: 'Preview archive deletion protected-clip' }))
+		.toBeVisible();
+	await page.getByRole('button', { name: 'Retry archive job legacy' }).click();
+	expect(control.archive.mock.calls.at(-1)?.[0].action).toMatchObject({
+		case: 'retry',
+		value: { jobId: 'legacy' }
+	});
+	await expect
+		.element(page.getByRole('button', { name: 'Retry archive job legacy' }))
+		.not.toBeInTheDocument();
+	await page.getByRole('button', { name: 'Edit archive settings' }).click();
+	await expect
+		.element(page.getByRole('textbox', { name: 'Archive retention days', exact: true }))
+		.toHaveAccessibleDescription(/Age starts when a replica is verified/);
+});
