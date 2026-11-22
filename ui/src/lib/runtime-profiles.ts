@@ -4,6 +4,7 @@ export const runtimeProfilesNamespace = 'service/runtime-profiles/';
 export const runtimeProfilesRegistryKey = 'registry';
 export const runtimeProfilesActiveKey = 'active';
 export const runtimeProfilesRegistrySchema = 'keeppeek.runtime-profiles.registry.v2';
+export const runtimeProfileSelectSchema = 'keeppeek.runtime-profiles.select.v2';
 export const runtimeProfilesActiveSchema = 'keeppeek.runtime-profiles.active.v1';
 export const runtimeProfilesStatusKey = 'status';
 export const runtimeProfilesStatusSchema = 'keeppeek.runtime-profiles.status.v1';
@@ -42,12 +43,14 @@ export type RuntimeProfile = {
 };
 
 export type RuntimeProfileRegistry = {
+	activation_schema?: typeof runtimeProfileSelectSchema;
 	revision: string;
 	active_profile_id: string | null;
 	profiles: Record<string, RuntimeProfile>;
 };
 
 export type RuntimeProfileManifest = {
+	activation_schema?: typeof runtimeProfileSelectSchema;
 	revision: string;
 	active_profile_id: string | null;
 	profiles: Record<
@@ -185,7 +188,16 @@ export function runtimeProfileManifestFromEntry(entry: StateEntry): RuntimeProfi
 	if (value.observed_parts !== undefined && value.observed_parts !== observedPartCount) {
 		throw new Error('Server returned an unsupported observed part count.');
 	}
+	if (
+		value.activation_schema !== undefined &&
+		value.activation_schema !== runtimeProfileSelectSchema
+	) {
+		throw new Error('Server returned an unsupported runtime profile activation schema.');
+	}
 	return {
+		...(value.activation_schema === undefined
+			? {}
+			: { activation_schema: runtimeProfileSelectSchema }),
 		revision: entry.revision.toString(),
 		active_profile_id: activeProfileId,
 		profiles

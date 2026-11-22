@@ -8,6 +8,7 @@ import {
 	observedPartCount,
 	observedPartFromEntry,
 	type ObservedPart,
+	runtimeProfileSelectSchema,
 	runtimeProfilesActiveKey,
 	runtimeProfilesActiveSchema,
 	runtimeProfilesNamespace,
@@ -199,11 +200,35 @@ export class RuntimeProfilesControlClient {
 		return this.getRegistry();
 	}
 
-	async activate(profileId: string | null, expectedRevision: string): Promise<string> {
+	async activate(
+		profileId: string | null,
+		expectedRevision: string,
+		selection?: RuntimeProfileRegistry
+	): Promise<string> {
+		let schema = runtimeProfilesActiveSchema;
+		let revision = BigInt(expectedRevision);
+		const value: JsonObject = { profile_id: profileId ?? '' };
+		if (profileId !== null) {
+			const displayed =
+				selection ??
+				runtimeProfileManifestFromEntry(
+					await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesRegistryKey)
+				);
+			const definition = displayed.profiles[profileId];
+			if (!definition) throw new Error('The selected runtime profile is unavailable.');
+			if (displayed.activation_schema === runtimeProfileSelectSchema) {
+				schema = runtimeProfileSelectSchema;
+				value.definition_revision = definition.revision;
+			} else {
+				// Older recorders advance the global CAS revision on every definition edit.
+				const displayedRevision = BigInt(displayed.revision);
+				if (displayedRevision < revision) revision = displayedRevision;
+			}
+		}
 		const entry = await this.stateStore.put(runtimeProfilesNamespace, runtimeProfilesActiveKey, {
-			schema: runtimeProfilesActiveSchema,
-			value: { profile_id: profileId ?? '' },
-			expectedRevision: BigInt(expectedRevision)
+			schema,
+			value,
+			expectedRevision: revision
 		});
 		return runtimeProfileFromEntry(entry).revision;
 	}
@@ -384,6 +409,7 @@ export class RuntimeProfilesControlClient {
 			})
 		);
 		return {
+			...(manifest.activation_schema ? { activation_schema: manifest.activation_schema } : {}),
 			revision: manifest.revision,
 			active_profile_id: manifest.active_profile_id,
 			profiles: Object.fromEntries(definitions)

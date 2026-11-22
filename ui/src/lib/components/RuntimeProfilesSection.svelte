@@ -327,7 +327,11 @@
 		error = null;
 		announcement = null;
 		try {
-			const revision = await controlClient.runtimeProfiles.activate(profileId, activeRevision);
+			const revision = await controlClient.runtimeProfiles.activate(
+				profileId,
+				activeRevision,
+				registry
+			);
 			acceptActive({ profileId, revision });
 			announcement = reapply
 				? 'Active policy reapplied.'

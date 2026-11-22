@@ -23,6 +23,7 @@ mod lifecycle_tests;
 
 pub(in crate::server) const NAMESPACE: &str = "service/runtime-profiles/";
 pub(super) const ACTIVE_SCHEMA: &str = "keeppeek.runtime-profiles.active.v1";
+const SELECT_SCHEMA: &str = "keeppeek.runtime-profiles.select.v2";
 pub(super) const REGISTRY_SCHEMA: &str = "keeppeek.runtime-profiles.registry.v2";
 const PROFILE_PART_SCHEMA: &str = "keeppeek.runtime-profiles.part.v1";
 const PROFILE_DRAFT_PART_SCHEMA: &str = "keeppeek.runtime-profiles.draft-part.v1";
@@ -218,7 +219,7 @@ pub(super) fn dispatch(
                     &request.key,
                 ));
             }
-            if request.schema != ACTIVE_SCHEMA {
+            if request.schema != ACTIVE_SCHEMA && request.schema != SELECT_SCHEMA {
                 return Err(registry_error(
                     Error::Invalid(Invalid::Schema),
                     NAMESPACE,
@@ -246,8 +247,9 @@ pub(super) fn dispatch(
             let value = request
                 .value
                 .ok_or_else(|| invalid("profile activation value is required"))?;
-            let profile_id = parse_active_profile_id(&value)
-                .map_err(|error| registry_error(error, NAMESPACE, ACTIVE_KEY))?;
+            let (profile_id, selected_revision) =
+                parse_selection(&value, request.schema == SELECT_SCHEMA)
+                    .map_err(|error| registry_error(error, NAMESPACE, ACTIVE_KEY))?;
             let _guard = super::super::state_store_settings::lock_config(&state.config_update)
                 .map_err(|error| registry_error(error, NAMESPACE, ACTIVE_KEY))?;
             let mut current: Config = config::load_config(config_path).map_err(|error| {
@@ -284,6 +286,15 @@ pub(super) fn dispatch(
                     .profiles
                     .get(profile_id)
                     .expect("profile existence was checked");
+                if selected_revision.is_some_and(|revision| revision != profile.revision) {
+                    return Err(registry_error(
+                        Error::Conflict {
+                            current_revision: current.runtime_profiles.revision,
+                        },
+                        NAMESPACE,
+                        ACTIVE_KEY,
+                    ));
+                }
                 let configured_ids = configured_profile_ids(&identities);
                 if profile
                     .cameras
@@ -516,23 +527,33 @@ fn register_profile_watch(
     })
 }
 
-fn parse_active_profile_id(value: &Struct) -> Result<Option<String>, Error> {
-    if value.fields.len() != 1 {
-        return Err(Error::Invalid(Invalid::Schema));
-    }
-    let profile_id = match value
-        .fields
-        .get("profile_id")
-        .and_then(|value| value.kind.as_ref())
-    {
-        Some(Kind::StringValue(profile_id)) => profile_id,
-        _ => return Err(Error::Invalid(Invalid::Schema)),
+fn parse_selection(
+    value: &Struct,
+    require_definition: bool,
+) -> Result<(Option<String>, Option<u64>), Error> {
+    let invalid = || Error::Invalid(Invalid::Schema);
+    let Some(Kind::StringValue(id)) = value.fields.get("profile_id").and_then(|v| v.kind.as_ref())
+    else {
+        return Err(invalid());
     };
-    if profile_id.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(profile_id.clone()))
+    if require_definition && !id.is_empty() {
+        let Some(Kind::StringValue(text)) = value
+            .fields
+            .get("definition_revision")
+            .and_then(|v| v.kind.as_ref())
+        else {
+            return Err(invalid());
+        };
+        let revision = text.parse::<u64>().map_err(|_| invalid())?;
+        if value.fields.len() != 2 || revision > i64::MAX as u64 || revision.to_string() != *text {
+            return Err(invalid());
+        }
+        return Ok((Some(id.clone()), Some(revision)));
     }
+    if value.fields.len() != 1 {
+        return Err(invalid());
+    }
+    Ok(((!id.is_empty()).then(|| id.clone()), None))
 }
 
 fn put_profile_draft(
@@ -1471,6 +1492,7 @@ fn registry_entry(registry: crate::profiles::ProfileRegistry) -> Result<StoredEn
         "revision": registry.revision.to_string(),
         "active_profile_id": registry.active_profile_id,
         "profiles": profiles,
+        "activation_schema": SELECT_SCHEMA,
     }))
     .map_err(|error| Error::Storage(error.to_string()))?;
     if value.encoded_len() > PROFILE_DOCUMENT_BYTES_MAX {
@@ -2065,6 +2087,62 @@ mod tests {
                 .owns_watch(SessionId::from_u64(20_223), watch_id)
         );
         assert!(state.runtime_profile_status.try_write().is_ok());
+    }
+
+    #[test]
+    fn selection_rejects_a_changed_definition_with_a_current_active_revision() {
+        let fixture = Fixture::new();
+        let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let session = SessionId::from_u64(20_202);
+        let before = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        let manifest = registry_entry(before.clone()).unwrap();
+        assert!(matches!(
+            manifest.value.fields["activation_schema"].kind.as_ref(),
+            Some(Kind::StringValue(schema)) if schema == SELECT_SCHEMA
+        ));
+        let displayed = before.profiles["away"].revision;
+        let mut edit = before.clone();
+        edit.profiles.get_mut("away").unwrap().name = "Updated elsewhere".to_owned();
+        super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_201),
+            &principal,
+            put_registry(&edit, before.revision),
+        )
+        .unwrap();
+        let accepted = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        assert_ne!(accepted.profiles["away"].revision, displayed);
+        let select = |expected: Option<u64>| {
+            let mut command = put_active("away", accepted.revision);
+            let Some(state_store_command::Action::Put(request)) = &mut command.action else {
+                unreachable!()
+            };
+            request.schema = SELECT_SCHEMA.to_owned();
+            if let Some(expected) = expected {
+                request.value.as_mut().unwrap().fields.insert(
+                    "definition_revision".into(),
+                    Value {
+                        kind: Some(Kind::StringValue(expected.to_string())),
+                    },
+                );
+            }
+            super::super::dispatch(&fixture.state, session, &principal, command)
+        };
+        assert!(select(None).is_err());
+        let stale =
+            select(Some(displayed)).expect_err("selection must match the displayed definition");
+        assert_eq!(stale.code, proto::ErrorCode::Rejected);
+        assert_eq!(
+            config::load_config(&fixture.config_path())
+                .unwrap()
+                .runtime_profiles,
+            accepted
+        );
+        select(Some(accepted.profiles["away"].revision)).unwrap();
     }
 
     #[test]

@@ -382,26 +382,41 @@ describe('RuntimeProfilesSection', () => {
 			const retry = page.getByRole('button', { name: 'Reapply active policy' });
 			await expect.element(retry).toBeEnabled();
 			await retry.click();
-			expect(runtimeProfiles.activate).toHaveBeenCalledExactlyOnceWith(id, '3');
+			expect(runtimeProfiles.activate).toHaveBeenCalledExactlyOnceWith(
+				id,
+				'3',
+				expect.objectContaining({ revision: '3' })
+			);
 			await expect.element(page.getByRole('status')).toHaveTextContent('Active policy reapplied.');
 		}
 	);
 
 	it('keeps recovery available after a failed request refreshes the accepted revision', async () => {
-		const { client, runtimeProfiles, status } = recoveryClient('away');
+		const { client, runtimeProfiles, status, registry } = recoveryClient('away');
 		runtimeProfiles.activate.mockRejectedValueOnce(new Error('Activation conflicted.'));
 		await render(RuntimeProfilesSectionFixture, { props: { client, cameras: [] } });
 		const retry = page.getByRole('button', { name: 'Reapply active policy' });
 		await expect.element(retry).toBeEnabled();
 		runtimeProfiles.getActive.mockResolvedValue({ profileId: 'away', revision: '5' });
 		runtimeProfiles.getStatus.mockResolvedValue({ ...status, revision: '5' });
+		runtimeProfiles.getRegistry.mockResolvedValue({ ...registry, revision: '5' });
 		await retry.click();
 		await expect.element(page.getByRole('alert')).toHaveTextContent('Activation conflicted.');
 		await expect.element(retry).toBeEnabled();
 		await retry.click();
 		expect(runtimeProfiles.activate).toHaveBeenCalledTimes(2);
-		expect(runtimeProfiles.activate).toHaveBeenNthCalledWith(1, 'away', '3');
-		expect(runtimeProfiles.activate).toHaveBeenNthCalledWith(2, 'away', '5');
+		expect(runtimeProfiles.activate).toHaveBeenNthCalledWith(
+			1,
+			'away',
+			'3',
+			expect.objectContaining({ revision: '3' })
+		);
+		expect(runtimeProfiles.activate).toHaveBeenNthCalledWith(
+			2,
+			'away',
+			'5',
+			expect.objectContaining({ revision: '5' })
+		);
 	});
 
 	it('does not reapply with unsaved edits', async () => {

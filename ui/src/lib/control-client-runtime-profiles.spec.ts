@@ -3,6 +3,8 @@ import { StateStoreErrorCode, type StateEntry } from './proto/webrtc_pb';
 import { StateStoreRequestError } from './state-store-error';
 import { RuntimeProfilesControlClient } from './control-client-runtime-profiles';
 import {
+	runtimeProfileSelectSchema,
+	runtimeProfilesActiveSchema,
 	runtimeProfilesNamespace,
 	runtimeProfilesRegistrySchema,
 	runtimeProfilesRegistryKey,
@@ -12,6 +14,39 @@ import {
 import type { ControlClientStateStore } from './control-client-state-store';
 
 describe('RuntimeProfilesControlClient', () => {
+	it('pins the displayed definition even after a newer active header arrives', async () => {
+		const put = vi
+			.fn()
+			.mockResolvedValue(entry('active', runtimeProfilesActiveSchema, { profile_id: 'away' }, 9n));
+		const client = new RuntimeProfilesControlClient({ put } as unknown as ControlClientStateStore);
+		const selection = {
+			revision: '6',
+			active_profile_id: null,
+			profiles: { away: { id: 'away', name: 'Away', revision: '3', cameras: {} } }
+		};
+		await client.activate('away', '8', {
+			...selection,
+			activation_schema: runtimeProfileSelectSchema
+		});
+		expect(put).toHaveBeenLastCalledWith(runtimeProfilesNamespace, 'active', {
+			schema: runtimeProfileSelectSchema,
+			value: { profile_id: 'away', definition_revision: '3' },
+			expectedRevision: 8n
+		});
+		await client.activate('away', '8', selection);
+		expect(put).toHaveBeenLastCalledWith(runtimeProfilesNamespace, 'active', {
+			schema: runtimeProfilesActiveSchema,
+			value: { profile_id: 'away' },
+			expectedRevision: 6n
+		});
+		await client.activate(null, '8', selection);
+		expect(put).toHaveBeenLastCalledWith(runtimeProfilesNamespace, 'active', {
+			schema: runtimeProfilesActiveSchema,
+			value: { profile_id: '' },
+			expectedRevision: 8n
+		});
+	});
+
 	it('reports an asynchronous registry watch read failure to its owner', async () => {
 		let notify: (entries: readonly StateEntry[]) => void = () => {};
 		const stateStore = {

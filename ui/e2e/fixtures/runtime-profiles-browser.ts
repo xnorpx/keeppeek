@@ -56,7 +56,7 @@ export async function measureProfileActivations(size: { cameras: number; profile
 			async activate(index: number) {
 				const id = 'qual-' + String(index).padStart(2, '0');
 				const start = now();
-				revision = await api.activate(id, revision);
+				revision = await api.activate(id, revision, { ...registry, revision });
 				const ack = now();
 				await until(() => received.get(revision)?.id === id);
 				return { id, revision, start, ack, watch: received.get(revision)!.time };
@@ -142,7 +142,11 @@ export async function activateFromAnotherClient() {
 		const saved = await writer.runtimeProfiles.saveRegistry(candidate);
 		registrySaved = true;
 		watch = await reader.runtimeProfiles.watchActive((active) => observed.push(active));
-		const activatedRevision = await writer.runtimeProfiles.activate(profileId, saved.revision);
+		const activatedRevision = await writer.runtimeProfiles.activate(
+			profileId,
+			saved.revision,
+			saved
+		);
 		await until(() =>
 			observed.some(
 				(update) => update.profileId === profileId && update.revision === activatedRevision

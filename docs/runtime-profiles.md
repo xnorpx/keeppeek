@@ -294,3 +294,14 @@ Server acknowledgement plus watch publication must be at most 250 ms p95. Connec
 browser desired state must appear within 500 ms p95 with no main-thread task over 50 ms.
 Measure physical convergence separately. Keep #202 open until all nine original criteria
 and their final-build evidence are complete.
+
+
+### Selecting a displayed definition
+
+An Administrator reads the registry manifest and the selected definition before activating
+a named profile. A recorder advertising `keeppeek.runtime-profiles.select.v2` in the
+manifest's `activation_schema` accepts that schema in a StateStore Put to the existing
+`active` key. Supply the active entry's expected revision, the selected `profile_id`
+and the exact displayed `definition_revision` as a decimal string. A conflict requires
+refreshing the selection. Base uses the active revision alone. Older recorders compare
+the shared registry revision, which advances on every definition edit.
