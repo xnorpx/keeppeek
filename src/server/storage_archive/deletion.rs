@@ -5,18 +5,12 @@ use crate::storage::catalog::{
     maintenance::jobs::Nonce,
 };
 
-fn submit(
-    state: &ServerState,
-    handle: &Handle,
-    build: impl FnOnce(Policy) -> Request,
-) -> Result<Plan> {
-    let _configuration = state.config_update.lock().map_err(|_| unavailable())?;
+fn admission_policy(state: &ServerState, handle: &Handle, confirming: bool) -> Result<Policy> {
     let policy = handle.deletion_policy().map_err(operation_failed)?;
-    let request = build(policy.clone());
     if let Some(path) = &state.camera_config_path {
         let config = crate::config::load_config(path).map_err(operation_failed)?;
         let saved = config.storage.archive.as_ref().ok_or_else(unavailable)?;
-        if matches!(&request, Request::Confirm { .. }) {
+        if confirming {
             crate::backup::check_staged_archive_deletion(path, saved).map_err(|_| {
                 ControlCommandError::new(
                     proto::ErrorCode::Rejected,
@@ -29,7 +23,7 @@ fn submit(
             return Err(unavailable());
         }
     }
-    handle.deletion(request).map_err(operation_failed)
+    Ok(policy)
 }
 
 pub(super) fn preview(
@@ -59,18 +53,22 @@ pub(super) fn preview(
         }
         None => return Err(invalid("archive deletion selection is required")),
     };
-    let plan = submit(state, handle, |policy| Request::Preview {
-        actor: principal.id(),
-        policy,
-        selection,
-    })?;
+    let _configuration = state.config_update.lock().map_err(|_| unavailable())?;
+    let policy = admission_policy(state, handle, false)?;
+    let plan = handle
+        .deletion(Request::Preview {
+            actor: principal.id(),
+            policy,
+            selection,
+        })
+        .map_err(operation_failed)?;
     wire(state, plan)
 }
 
 pub(super) fn confirm(
     state: &ServerState,
     principal: &ApiPrincipal,
-    handle: &Handle,
+    handle: Option<&Handle>,
     input: proto::ConfirmArchiveDeletion,
 ) -> Result<proto::ArchiveDeletionPreview> {
     require_job_id(&input.plan_id)?;
@@ -79,19 +77,43 @@ pub(super) fn confirm(
     }
     let nonce = Nonce::parse(&input.confirmation_nonce)
         .map_err(|_| invalid("archive deletion confirmation is invalid"))?;
-    let plan = submit(state, handle, |policy| Request::Confirm {
-        actor: principal.id(),
-        policy,
-        plan: input.plan_id,
-        revision: input.expected_revision,
-        nonce,
-    })?;
+    let _configuration = state.config_update.lock().map_err(|_| unavailable())?;
+    if let Some(catalog) = &state.catalog {
+        use crate::storage::catalog::archive;
+        let replay = Request::ReplayConfirmation {
+            actor: principal.id(),
+            plan: input.plan_id.clone(),
+            revision: input.expected_revision.clone(),
+            nonce: nonce.clone(),
+        };
+        match catalog
+            .archive(archive::Request::Deletion(replay))
+            .map_err(operation_failed)?
+        {
+            archive::Reply::Deletion(plan) => return wire(state, *plan),
+            archive::Reply::Done => {}
+            _ => return Err(unavailable()),
+        }
+    }
+    let handle = handle.ok_or_else(unavailable)?;
+    let policy = admission_policy(state, handle, true)?;
+    let plan = handle
+        .deletion(Request::Confirm {
+            actor: principal.id(),
+            policy,
+            plan: input.plan_id,
+            revision: input.expected_revision,
+            nonce,
+        })
+        .map_err(operation_failed)?;
     wire(state, plan)
 }
 
 fn wire(state: &ServerState, plan: Plan) -> Result<proto::ArchiveDeletionPreview> {
-    let target_id =
-        target_names(state)?.map_or_else(|| "unavailable-target".into(), |(_, public)| public);
+    let target_id = target_names(state)
+        .unwrap_or_default()
+        .filter(|(configured, _)| configured == &plan.target)
+        .map_or_else(|| "unavailable-target".into(), |(_, public)| public);
     let selected = plan.items.iter().filter(|i| {
         matches!(
             i.state.as_str(),

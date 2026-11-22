@@ -145,12 +145,9 @@ pub(super) fn dispatch(
             handle.ok_or_else(unavailable)?,
             request,
         )?),
-        Some(Action::ConfirmDeletion(request)) => Wire::DeletionPreview(deletion::confirm(
-            state,
-            principal,
-            handle.ok_or_else(unavailable)?,
-            request,
-        )?),
+        Some(Action::ConfirmDeletion(request)) => {
+            Wire::DeletionPreview(deletion::confirm(state, principal, handle, request)?)
+        }
         None => return Err(invalid("archive action is required")),
     };
     let result = proto::ArchiveResult {

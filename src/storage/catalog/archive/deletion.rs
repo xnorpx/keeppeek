@@ -62,6 +62,7 @@ struct Snapshot {
 
 #[derive(Debug)]
 pub(crate) struct Plan {
+    pub target: String,
     pub id: String,
     pub revision: String,
     pub nonce: Option<Nonce>,
@@ -88,6 +89,12 @@ pub(crate) enum Request {
     Confirm {
         actor: String,
         policy: Policy,
+        plan: String,
+        revision: String,
+        nonce: Nonce,
+    },
+    ReplayConfirmation {
+        actor: String,
         plan: String,
         revision: String,
         nonce: Nonce,
@@ -131,7 +138,24 @@ pub(super) async fn dispatch(
             plan,
             revision,
             nonce,
-        } => confirm(connection, readers, actor, policy, plan, revision, nonce).await,
+        } => {
+            confirm(
+                connection,
+                readers,
+                actor,
+                Some(policy),
+                plan,
+                revision,
+                nonce,
+            )
+            .await
+        }
+        Request::ReplayConfirmation {
+            actor,
+            plan,
+            revision,
+            nonce,
+        } => confirm(connection, readers, actor, None, plan, revision, nonce).await,
         Request::Claim { job, policy } => {
             execution::claim(connection, readers, &job, &policy).await
         }
@@ -226,11 +250,9 @@ async fn preview(
     for id in ids {
         items.push(eligibility::inspect(connection, readers, &policy, &selection, &id, now).await?);
     }
-    // A retention page without eligible copies has no confirmation to persist.
-    if matches!(selection, Selection::Retention { .. })
-        && !items.iter().any(|item| item.state == "eligible")
-    {
+    if !items.iter().any(|item| item.state == "eligible") {
         return Ok(Reply::Deletion(Box::new(Plan {
+            target: policy.target,
             id: String::new(),
             revision: String::new(),
             nonce: None,
@@ -260,6 +282,7 @@ async fn preview(
     connection.execute("INSERT INTO archive_deletion_plans(id,actor,target_id,revision,nonce_hash,expires_ms,snapshot) VALUES(?1,?2,?3,?4,?5,?6,?7)",
         turso::params![id.as_str(), actor, policy.target, revision.as_str(), nonce.digest(), expires_ms, encoded]).await?;
     Ok(Reply::Deletion(Box::new(Plan {
+        target: policy.target,
         id,
         revision,
         nonce: Some(nonce),
@@ -297,7 +320,7 @@ async fn confirm(
     connection: &turso::Connection,
     readers: &readers::Registry,
     actor: String,
-    policy: Policy,
+    policy: Option<Policy>,
     id: String,
     revision: String,
     nonce: Nonce,
@@ -310,6 +333,9 @@ async fn confirm(
     let mut snapshot = record.snapshot;
     let now = current_unix_time_ms();
     if !record.confirmed {
+        let Some(policy) = policy else {
+            return Ok(Reply::Done);
+        };
         ensure!(
             (record.expires_ms.saturating_sub(PLAN_LIFETIME_MS)..record.expires_ms).contains(&now)
                 && snapshot.policy == policy,
@@ -372,6 +398,7 @@ async fn confirm(
         };
     }
     Ok(Reply::Deletion(Box::new(Plan {
+        target: snapshot.policy.target,
         id,
         revision,
         nonce: None,

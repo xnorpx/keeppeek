@@ -59,6 +59,90 @@ async fn confirm(
     .await
 }
 
+async fn explicit_plan(connection: &turso::Connection) -> anyhow::Result<Plan> {
+    let Reply::Deletion(plan) = run(
+        connection,
+        Deletion::Preview {
+            actor: "admin".into(),
+            policy: policy(None),
+            selection: Selection::Explicit(admission().job_id),
+        },
+    )
+    .await?
+    else {
+        anyhow::bail!("expected explicit deletion preview")
+    };
+    Ok(*plan)
+}
+
+#[test]
+fn ineligible_explicit_previews_preserve_the_global_plan_quota() -> anyhow::Result<()> {
+    pollster::block_on(async {
+        let connection = fixture().await?;
+        ready_for_eviction(&connection).await?;
+        for _ in 0..=128 {
+            let preview = explicit_plan(&connection).await?;
+            assert_eq!(preview.items[0].state, "busy");
+            assert!(
+                preview.id.is_empty() && preview.revision.is_empty() && preview.nonce.is_none()
+            );
+        }
+        let mut rows = connection
+            .query("SELECT COUNT(*) FROM archive_deletion_plans", ())
+            .await?;
+        assert_eq!(rows.next().await?.unwrap().get::<i64>(0)?, 0);
+        drop(rows);
+        connection
+            .execute("UPDATE archive_replicas SET action=''", ())
+            .await?;
+        let eligible = explicit_plan(&connection).await?;
+        assert_eq!(eligible.items[0].state, "eligible");
+        assert!(eligible.nonce.is_some());
+        Ok(())
+    })
+}
+
+#[test]
+fn confirmed_replay_checks_the_receipt_and_never_admits_a_new_batch() -> anyhow::Result<()> {
+    use crate::storage::catalog::maintenance::jobs::Nonce;
+    pollster::block_on(async {
+        let connection = fixture().await?;
+        ready_for_eviction(&connection).await?;
+        connection
+            .execute("UPDATE archive_replicas SET action=''", ())
+            .await?;
+        let plan = explicit_plan(&connection).await?;
+        let nonce = plan.nonce.clone().unwrap();
+        let replay = |actor: &str, revision: &str, nonce: Nonce| Deletion::ReplayConfirmation {
+            actor: actor.into(),
+            plan: plan.id.clone(),
+            revision: revision.into(),
+            nonce,
+        };
+        assert!(matches!(
+            run(&connection, replay("admin", &plan.revision, nonce.clone())).await?,
+            Reply::Done
+        ));
+        confirm(&connection, &plan, policy(None)).await?;
+        let Reply::Deletion(receipt) =
+            run(&connection, replay("admin", &plan.revision, nonce.clone())).await?
+        else {
+            anyhow::bail!("confirmed replay must return its receipt")
+        };
+        assert!(receipt.confirmed && receipt.nonce.is_none());
+        assert_eq!(receipt.target, "cold");
+        assert_eq!(receipt.items[0].state, "queued");
+        for invalid in [
+            replay("another-admin", &plan.revision, nonce.clone()),
+            replay("admin", "another-revision", nonce),
+            replay("admin", &plan.revision, Nonce::generate()),
+        ] {
+            assert!(run(&connection, invalid).await.is_err());
+        }
+        Ok(())
+    })
+}
+
 #[test]
 fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_confirmation()
 -> anyhow::Result<()> {
