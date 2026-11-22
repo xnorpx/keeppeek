@@ -129,7 +129,8 @@ impl DiscoveryBuilder {
         }
 
         let probe = build_probe();
-        let probe_xml = yaserde::ser::to_string(&probe).map_err(Error::Serde)?;
+        let probe_xml =
+            yaserde::ser::to_string(&probe).map_err(|error| Error::Serde(error.to_string()))?;
         debug!(
             "Unicast Probe XML: {}. Since you are using unicast, some devices might not be detected",
             probe_xml
@@ -200,7 +201,8 @@ impl DiscoveryBuilder {
         };
 
         let probe = build_probe();
-        let probe_xml = yaserde::ser::to_string(&probe).map_err(Error::Serde)?;
+        let probe_xml =
+            yaserde::ser::to_string(&probe).map_err(|error| Error::Serde(error.to_string()))?;
         debug!("Probe XML: {probe_xml}");
 
         let socket = UdpSocket::bind(SocketAddr::new(

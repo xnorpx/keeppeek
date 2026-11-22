@@ -386,8 +386,8 @@ jobs:
               cargo test --locked -p keeppeek --lib "${features[@]}" runtime_profile_ \
                 -- "${threads[@]}" 2>&1 | tee rust-test-results.log
               cargo test --locked -p keeppeek --lib "${features[@]}" \
-                volume_roots_reject_windows_devices_and_ambiguous_paths \
-                -- "${threads[@]}" 2>&1 | tee -a rust-test-results.log
+                -- "${threads[@]}" volume_roots_reject_windows_devices_and_ambiguous_paths \
+                acknowledged_retirement_cleans_receipts_and_retries_without_media_deletion 2>&1 | tee -a rust-test-results.log
             else
               cargo test --locked --all --lib --bins --tests "${features[@]}" -- --skip "$DURABLE_STATE_TESTS" "${threads[@]}" "${post_merge_tests[@]}" 2>&1 | tee rust-test-results.log
             fi
@@ -680,6 +680,10 @@ jobs:
         run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Install Chromium
         run: bunx playwright install --with-deps chromium
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        id: python
+        with:
+          python-version-file: examples/object_detection_service/.python-version
       - name: Download shared Playwright binaries and fixtures
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -695,6 +699,7 @@ jobs:
         run: chmod +x target/release/keeppeek target/release/test_camera target/e2e-authentication/keeppeek-authentication-fixture
       - name: Run Playwright shard
         env:
+          KEEPPEEK_PYTHON: ${{ steps.python.outputs.python-path }}
           KEEPPEEK_AUTH_E2E_BINARY: ${{ github.workspace }}/target/e2e-authentication/keeppeek-authentication-fixture
         run: bun run test:e2e:run -- --shard=${{ matrix.shard }}/4
       - name: Upload UI test reports

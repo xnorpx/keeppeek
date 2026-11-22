@@ -11,5 +11,5 @@ ignored = ["yaserde"]
 workspace = true
 
 [dependencies]
-yaserde = "0.12"
-yaserde_derive = "0.12"
+yaserde = { workspace = true }
+yaserde_derive = { workspace = true }

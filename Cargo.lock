@@ -19,7 +19,7 @@ dependencies = [
  "transport",
  "types",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -32,7 +32,7 @@ dependencies = [
  "transport",
  "types",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -69,7 +69,7 @@ version = "0.1.0"
 dependencies = [
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -175,7 +175,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -383,7 +383,7 @@ dependencies = [
  "transport",
  "types",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -426,7 +426,7 @@ dependencies = [
  "t_1",
  "validate",
  "ws_addr",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -682,7 +682,7 @@ dependencies = [
  "io-lifetimes 3.0.1",
  "ipnet",
  "maybe-owned",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "rustix-linux-procfs",
  "windows-sys 0.61.2",
  "winx",
@@ -697,7 +697,7 @@ dependencies = [
  "cap-primitives",
  "io-extras",
  "io-lifetimes 3.0.1",
- "rustix 1.1.5",
+ "rustix 1.1.6",
 ]
 
 [[package]]
@@ -773,26 +773,9 @@ dependencies = [
 
 [[package]]
 name = "chrono"
-version = "0.4.45"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
+version = "0.4.48"
 dependencies = [
- "iana-time-zone",
- "js-sys",
- "num-traits",
- "serde",
- "wasm-bindgen",
- "windows-link 0.2.1",
-]
-
-[[package]]
-name = "chrono-tz"
-version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6139a8597ed92cf816dfb33f5dd6cf0bb93a6adc938f11039f371bc5bcd26c3"
-dependencies = [
- "chrono",
- "phf 0.12.1",
+ "sad-chrono",
 ]
 
 [[package]]
@@ -906,7 +889,7 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -1023,7 +1006,7 @@ dependencies = [
  "transport",
  "types",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -1117,9 +1100,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.2"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
 ]
@@ -1256,7 +1239,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -1270,7 +1253,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -1362,7 +1345,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -1599,7 +1582,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94e7099f6313ecacbe1256e8ff9d617b75d1bcb16a6fddef94866d225a01a14a"
 dependencies = [
  "io-lifetimes 2.0.4",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "windows-sys 0.59.0",
 ]
 
@@ -1609,7 +1592,7 @@ version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e72ed92b67c146290f88e9c89d60ca163ea417a446f61ffd7b72df3e7f1dfd5"
 dependencies = [
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "windows-sys 0.61.2",
 ]
 
@@ -2121,7 +2104,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -2249,12 +2232,12 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 name = "isapi"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "digest_auth",
  "encoding_rs",
  "httparse",
  "mime",
  "rand 0.10.3",
+ "sad-chrono",
  "serde",
  "serde_json",
  "subtle",
@@ -2387,8 +2370,6 @@ dependencies = [
  "bytes",
  "cap-fs-ext",
  "cap-std",
- "chrono",
- "chrono-tz",
  "clap",
  "crossbeam-channel",
  "csv",
@@ -2424,8 +2405,10 @@ dependencies = [
  "retina",
  "rouille",
  "rumqttc",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "rustls",
+ "sad-chrono",
+ "sad-chrono-tz",
  "schema",
  "serde",
  "serde_json",
@@ -2613,7 +2596,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -2627,7 +2610,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -3076,11 +3059,11 @@ version = "0.1.0"
 dependencies = [
  "b_2",
  "base64 0.23.1",
- "chrono",
  "clap",
  "digest_auth",
  "dotenvy",
  "nonzero_ext",
+ "sad-chrono",
  "schema",
  "sha1",
  "test-hikvision",
@@ -3090,7 +3073,7 @@ dependencies = [
  "ureq",
  "url",
  "uuid",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xmltree",
  "xsd-types",
  "yaserde",
@@ -3105,7 +3088,7 @@ dependencies = [
  "common",
  "soap_envelope",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xmlmime",
  "xop",
  "xsd-macro-utils",
@@ -3297,15 +3280,6 @@ dependencies = [
 
 [[package]]
 name = "phf"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
-dependencies = [
- "phf_shared 0.12.1",
-]
-
-[[package]]
-name = "phf"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1562dc717473dbaa4c1f85a36410e03c047b2e7df7f45ee938fbef64ae7fadf"
@@ -3315,12 +3289,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "phf_shared"
-version = "0.12.1"
+name = "phf"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06005508882fb681fd97892ecff4b7fd0fee13ef1aa569f8695dae7ab9099981"
+checksum = "010378780309880b08997fae13be7834dba947d36393bd372f2b1556deb2a2f6"
 dependencies = [
- "siphasher",
+ "phf_shared 0.14.0",
 ]
 
 [[package]]
@@ -3328,6 +3302,15 @@ name = "phf_shared"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266"
+dependencies = [
+ "siphasher",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6fd9027e2d9319be6349febd1db4e8d02aa544921200c9b777720ac34a3aa89"
 dependencies = [
  "siphasher",
 ]
@@ -3364,7 +3347,7 @@ dependencies = [
  "concurrent-queue",
  "hermit-abi",
  "pin-project-lite",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "windows-sys 0.61.2",
 ]
 
@@ -3842,7 +3825,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -3855,7 +3838,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -3912,7 +3895,7 @@ dependencies = [
  "hex-literal",
  "md-5 0.11.0",
  "tracing",
- "xml-rs 1.0.0",
+ "xml-rs",
 ]
 
 [[package]]
@@ -3922,7 +3905,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -3992,7 +3975,6 @@ version = "3.6.2"
 dependencies = [
  "base64 0.23.1",
  "brotli",
- "chrono",
  "deflate",
  "filetime",
  "log",
@@ -4000,6 +3982,7 @@ dependencies = [
  "postgres",
  "rand 0.10.3",
  "rouille-multipart",
+ "sad-chrono",
  "serde",
  "serde_derive",
  "serde_json",
@@ -4041,7 +4024,7 @@ version = "0.1.0"
 dependencies = [
  "onvif-xsd",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -4121,9 +4104,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.5"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags 2.13.1",
  "errno",
@@ -4139,7 +4122,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fc84bf7e9aa16c4f2c758f27412dc9841341e16aa682d9c7ac308fe3ee12056"
 dependencies = [
  "once_cell",
- "rustix 1.1.5",
+ "rustix 1.1.6",
 ]
 
 [[package]]
@@ -4167,9 +4150,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -4188,6 +4171,30 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "sad-chrono"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59944182ae44e540eb6a61059eefb6d437b4bb3a7eff26e75149ed35601b7c5f"
+dependencies = [
+ "iana-time-zone",
+ "js-sys",
+ "num-traits",
+ "serde",
+ "wasm-bindgen",
+ "windows-link 0.100.0",
+]
+
+[[package]]
+name = "sad-chrono-tz"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c2ac9b35fb1721724a4255ecace37d3a7990b01abfbcd0e7249a2c244bf2f66"
+dependencies = [
+ "phf 0.14.0",
+ "sad-chrono",
+]
 
 [[package]]
 name = "safe_arch"
@@ -4270,7 +4277,7 @@ dependencies = [
  "uplink",
  "ws_addr",
  "ws_discovery",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xml_xsd",
  "xmlmime",
  "xop",
@@ -4436,14 +4443,14 @@ dependencies = [
 
 [[package]]
 name = "serde_tokenstream"
-version = "0.2.3"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7c49585c52c01f13c5c2ebb333f14f6885d76daa768d8a037d28017ec538c69"
+checksum = "db95b8acf6eca5bc1bc771a7d7fb1a0d1485bdef0c46eec2f573bbaf4b4118f8"
 dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "syn 2.0.119",
+ "syn 3.0.7",
 ]
 
 [[package]]
@@ -4582,7 +4589,7 @@ name = "soap_envelope"
 version = "0.1.0"
 dependencies = [
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -4829,7 +4836,7 @@ name = "t_1"
 version = "0.1.0"
 dependencies = [
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -4851,7 +4858,7 @@ dependencies = [
  "fastrand",
  "getrandom 0.4.3",
  "once_cell",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "windows-sys 0.61.2",
 ]
 
@@ -4907,7 +4914,7 @@ dependencies = [
  "onvif-xsd",
  "transport",
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-types",
  "yaserde",
  "yaserde_derive",
@@ -5043,9 +5050,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
@@ -5324,7 +5331,7 @@ dependencies = [
  "regex-syntax",
  "roaring",
  "rustc-hash 2.1.3",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "ryu",
  "serde_json",
  "shuttle",
@@ -5478,7 +5485,7 @@ name = "types"
 version = "0.1.0"
 dependencies = [
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -5778,9 +5785,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -5981,6 +5988,12 @@ name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "windows-link"
+version = "0.100.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b39de7c7fe78858b0144c50c3fc000bab3be17d5e9b85b1053871693c7f7415"
 
 [[package]]
 name = "windows-numerics"
@@ -6197,7 +6210,7 @@ name = "ws_addr"
 version = "0.1.0"
 dependencies = [
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -6271,12 +6284,6 @@ checksum = "2f45bb2c13fec6a6cb4c0f76a7e94839e110a14ec803ec2940777a94c347bc52"
 
 [[package]]
 name = "xml-rs"
-version = "0.8.29"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
-
-[[package]]
-name = "xml-rs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3a56132a0d6ecbe77352edc10232f788fc4ceefefff4cab784a98e0e16b6b51"
@@ -6297,7 +6304,7 @@ name = "xmlmime"
 version = "0.1.0"
 dependencies = [
  "validate",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -6340,7 +6347,7 @@ dependencies = [
  "roxmltree",
  "similar",
  "syn 3.0.7",
- "xml-rs 1.0.0",
+ "xml-rs",
  "xsd-macro-utils",
  "xsd-types",
  "yaserde",
@@ -6352,9 +6359,8 @@ name = "xsd-types"
 version = "0.1.0"
 dependencies = [
  "bigdecimal",
- "chrono",
  "num-bigint 0.5.1",
- "xml-rs 1.0.0",
+ "sad-chrono",
  "xsd-macro-utils",
  "yaserde",
  "yaserde_derive",
@@ -6368,19 +6374,19 @@ checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
 
 [[package]]
 name = "yaserde"
-version = "0.12.0"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bfa0d2b420fd005aa9b6f99f9584ebd964e6865d7ca787304cc1a3366c39231"
+checksum = "e9f6b774e7afd9d40002e67140a060951a2ddc494e2faef2498ad55f20c66c82"
 dependencies = [
  "log",
- "xml-rs 0.8.29",
+ "xml",
 ]
 
 [[package]]
 name = "yaserde_derive"
-version = "0.12.0"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f785831c0e09e0f1a83f917054fd59c088f6561db5b2a42c1c3e1687329325f"
+checksum = "26caf626d6f9307024285cd9a9c1ba4b3eb29a9b61d3db632e22e676cf784367"
 dependencies = [
  "heck",
  "log",
@@ -6388,8 +6394,7 @@ dependencies = [
  "quote",
  "serde",
  "serde_tokenstream",
- "syn 2.0.119",
- "xml-rs 0.8.29",
+ "syn 3.0.7",
 ]
 
 [[package]]
@@ -6522,9 +6527,9 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "9.0.4"
+version = "9.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a954114b47a54df49f83d2722814e86b23d4bb1b54a1b90fb7d92b41619ddc22"
+checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
 dependencies = [
  "crc32fast",
  "flate2",

@@ -35,27 +35,7 @@ impl Root {
         self.revalidate()?;
         validate_owner(&self.directory, 0o022)?;
         sync_directory(&self.directory)?;
-        let mut options = file_options();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use cap_std::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        #[cfg(windows)]
-        {
-            use cap_std::fs::OpenOptionsExt;
-            use windows::Win32::{
-                Foundation::{GENERIC_READ, GENERIC_WRITE},
-                Storage::FileSystem::{DELETE, FILE_SHARE_READ, WRITE_OWNER},
-            };
-            options
-                .access_mode(GENERIC_READ.0 | GENERIC_WRITE.0 | DELETE.0 | WRITE_OWNER.0)
-                .share_mode(FILE_SHARE_READ.0);
-        }
-        let file = self.directory.open_with(key, &options)?.into_std();
-        #[cfg(windows)]
-        crate::storage::long_term::inspection::removal::windows::initialize_file_owner(&file)?;
+        let file = create_owned_leaf(&self.directory, key)?;
         let identity = file_identity(&file)?;
         let owned = OwnedFile {
             root: Self {
@@ -419,6 +399,31 @@ pub(super) fn validate_key(key: &str) -> anyhow::Result<()> {
         "invalid object key"
     );
     Ok(())
+}
+
+pub(super) fn create_owned_leaf(directory: &cap_std::fs::Dir, name: &str) -> anyhow::Result<File> {
+    let mut options = file_options();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(windows)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        use windows::Win32::{
+            Foundation::{GENERIC_READ, GENERIC_WRITE},
+            Storage::FileSystem::{DELETE, FILE_SHARE_READ, WRITE_OWNER},
+        };
+        options
+            .access_mode(GENERIC_READ.0 | GENERIC_WRITE.0 | DELETE.0 | WRITE_OWNER.0)
+            .share_mode(FILE_SHARE_READ.0);
+    }
+    let file = directory.open_with(name, &options)?.into_std();
+    #[cfg(windows)]
+    crate::storage::long_term::inspection::removal::windows::initialize_file_owner(&file)?;
+    Ok(file)
 }
 
 pub(super) fn file_options() -> OpenOptions {

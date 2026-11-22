@@ -1,0 +1,16 @@
+[package]
+name = "chrono"
+version = "0.4.48"
+edition = "2024"
+publish = false
+description = "KeepPeek compatibility adapter for transitive chrono 0.4 dependencies"
+
+[features]
+default = ["sad-chrono/default"]
+clock = ["sad-chrono/clock"]
+serde = ["sad-chrono/serde"]
+std = ["sad-chrono/std"]
+wasmbind = ["sad-chrono/wasmbind"]
+
+[dependencies]
+sad-chrono = { version = "0.5.1", default-features = false }
