@@ -292,7 +292,7 @@ fn relocation_journal_fences_retention_and_recovers_owned_stages_after_restart()
             );
         }
         let mut worker = WriterWorker::new(
-            config.clone(),
+            config,
             RecordingDemand::new(Duration::ZERO),
             Some(handle.clone()),
         );
