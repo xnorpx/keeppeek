@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-945d6098.js";
+            window.path_to_searchindex_js = "searchindex-009751a7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -1102,9 +1102,12 @@ below the image. Available stream quality depends on retained media and browser 
 Changing the quality preference is separate from <a href="#digital-zoom-and-pan">digital zoom</a>. Stored
 playback does not provide automatic transcoding for an unsupported codec; retain a compatible
 H.264 stream when your viewing devices need one.</p>
-<p>With the recorded player focused, Left and Right step frames. Space toggles playback; J, K and L
-provide shuttle/pause controls. <code>[</code> and <code>]</code> set export boundaries. Form fields keep their normal
-keyboard behavior, and arrow keys pan a focused digitally zoomed image instead of stepping frames.</p>
+<p>With a recording selected and the player focused, Left and Right pause playback and seek by one
+estimated frame interval when camera health reports a positive configured frame rate. If the rate
+is unavailable, playback and position stay as they were. On variable-rate recordings, successive seeks
+can display the same picture or skip a picture. Space toggles playback. J, K and L control shuttle
+and pause. <code>[</code> and <code>]</code> set export boundaries. Form fields keep their normal keyboard behavior.
+Arrow keys pan a focused digitally zoomed image.</p>
 <h3 id="use-keep-on-a-phone"><a class="header" href="#use-keep-on-a-phone">Use Keep on a phone</a></h3>
 <p>In portrait, Keep keeps a compact camera/date row, the player and a horizontal history timeline
 in the main view. Tap the camera name or date to open <strong>Camera and date</strong>. Search for a camera or
@@ -1537,8 +1540,9 @@ transitions.</p>
 <h2 id="keep-playback-controls"><a class="header" href="#keep-playback-controls">Keep playback controls</a></h2>
 <p>Keep’s play/pause, skip, position, volume, mute, speed, and fullscreen controls remain outside the
 transformed video. Timeline scrubbing still selects recording time, not an image crop. Arrow keys
-pan when the zoomed image has focus; Keep’s normal frame-stepping shortcuts remain available at
-full-frame view or outside the inspection surface.</p>
+pan when the zoomed image has focus. At full-frame view, or outside the inspection surface, the
+player’s arrow shortcuts seek by one estimated frame interval when a recording is selected and
+camera health provides its configured frame rate.</p>
 <p>On a portrait phone, the Digital strip remains above the image while <strong>Playback options</strong> opens
 volume, speed and quality in a separate sheet. Opening that sheet does not replace the recording
 or move its playhead. Its quality choice can request different available media; the Digital strip
