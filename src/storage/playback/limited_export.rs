@@ -80,15 +80,6 @@ pub(crate) fn write<W: Write + Seek>(
             cancelled,
             progress,
         )
-    } else if sources.audio_context.is_empty() {
-        super::export_fragment_ranges_to_writer_with_audio_offset(
-            sources.video_fragments,
-            sources.requested_end_ms,
-            output,
-            offset_ms,
-            cancelled,
-            progress,
-        )
     } else {
         super::export_sources_to_writer(sources, output, offset_ms, None, cancelled, progress)
     }

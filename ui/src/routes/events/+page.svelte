@@ -942,7 +942,8 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent): void {
-		if (event.key !== 'Escape') return;
+		if (event.key !== 'Escape' || event.defaultPrevented) return;
+		if (event.target instanceof Element && event.target.closest('dialog, [role="dialog"]')) return;
 		if (eventContextActions !== null) eventContextActions = null;
 		else if (selectedRecord !== null) closeDetail();
 	}

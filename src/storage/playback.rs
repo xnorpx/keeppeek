@@ -311,7 +311,8 @@ pub(crate) fn export_sources_to_writer<W: Write + Seek>(
 }
 
 /// Writes to a new empty sink; its owner handles durability, publication, and failed-file cleanup.
-pub(crate) fn export_fragment_ranges_to_writer_with_audio_offset<W: Write + Seek>(
+#[cfg(test)]
+fn export_fragment_ranges_to_writer_with_audio_offset<W: Write + Seek>(
     fragments: &[CatalogMediaFragment],
     requested_end_ms: i64,
     output: &mut W,
@@ -796,7 +797,7 @@ fn read_export_sample<R: Read + Seek>(
     let sample_description = source_track.media_config_for_description(description)?;
     let source_bounds = ExportMediaBounds::source_sample(
         recording.recording_started_at_ms,
-        track.config.timescale,
+        source_track.timescale(),
         &sample,
     );
     sample.start_time = start;

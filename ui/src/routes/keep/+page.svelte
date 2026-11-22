@@ -1548,6 +1548,7 @@
 		timestampMs = playheadMs ?? undefined
 	): void {
 		if (nextCameraId === cameraId) return;
+		selectedWorkflowEvent = null;
 		const play = mode === 'export' ? false : playbackIntent();
 		exportSeedEvent = null;
 		exportRangeStartMs = null;

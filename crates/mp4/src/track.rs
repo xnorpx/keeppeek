@@ -924,6 +924,9 @@ impl Mp4Track {
 
     /// Returns timing and sync metadata without reading or allocating the encoded payload.
     pub fn sample_header(&self, sample_id: u32) -> Result<Option<Mp4Sample>> {
+        if sample_id == 0 || sample_id > self.sample_count() {
+            return Ok(None);
+        }
         let (start_time, duration) = match self.sample_time(sample_id) {
             Ok(time) => time,
             Err(Error::EntryInStblNotFound(_, _, _)) => return Ok(None),

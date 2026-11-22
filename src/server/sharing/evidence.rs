@@ -43,7 +43,15 @@ pub(super) fn inspect(
                 unavailable()
             }
         })?;
-    let opened = open_guest(state, &checked.binding)?;
+    let opened = open_bound_artifact(
+        state,
+        &checked.binding,
+        if range.is_some() {
+            missing_range_artifact
+        } else {
+            unavailable
+        },
+    )?;
     if range.is_some() {
         super::super::guest_review::inspect_range_codec(opened.file, checked.binding.bytes)
             .map_err(|error| {
@@ -98,6 +106,14 @@ pub(super) fn preview_binding(
     }
     let binding = binding(&record)?;
     live_evidence(state, &record, binding)
+}
+
+fn missing_range_artifact() -> ControlCommandError {
+    ControlCommandError::new(
+        proto::ErrorCode::Rejected,
+        409,
+        "the completed export file is no longer available",
+    )
 }
 
 fn missing_range_proof() -> ControlCommandError {
@@ -203,6 +219,14 @@ pub(in crate::server) fn open_guest(
     state: &ServerState,
     expected: &ExportBinding,
 ) -> Result<OpenedEvidence, ControlCommandError> {
+    open_bound_artifact(state, expected, unavailable)
+}
+
+fn open_bound_artifact(
+    state: &ServerState,
+    expected: &ExportBinding,
+    missing: fn() -> ControlCommandError,
+) -> Result<OpenedEvidence, ControlCommandError> {
     let record = record(state, &expected.job_id)?;
     if binding(&record)? != *expected {
         return Err(denied());
@@ -211,7 +235,7 @@ pub(in crate::server) fn open_guest(
     let (location, lease) = catalog
         .leased_export(&expected.artifact_id)
         .map_err(|_| unavailable())?
-        .ok_or_else(unavailable)?;
+        .ok_or_else(missing)?;
     if location.bytes != expected.bytes {
         return Err(denied());
     }
@@ -223,7 +247,13 @@ pub(in crate::server) fn open_guest(
         .volume_runtime
         .as_ref()
         .ok_or_else(unavailable)?;
-    let file = manager.open_owned(&location).map_err(|_| unavailable())?;
+    let file = manager.open_owned(&location).map_err(|error| {
+        if error.is::<crate::storage::volumes::root::MissingOwnedLeaf>() {
+            missing()
+        } else {
+            unavailable()
+        }
+    })?;
     Ok(OpenedEvidence { file, lease })
 }
 

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { CameraListItem } from '../src/lib/types';
 import { mockControlPeer } from './fixtures/control-peer';
+import { keepModeDate, mockKeepModes } from './fixtures/keep-modes';
 
 const day = '2026-08-10';
 const dayStartMs = Date.UTC(2026, 7, 10);
@@ -126,4 +127,23 @@ test('switching cameras clears the previous export range while the new recording
 	await expect(panel).toHaveAttribute('data-export-start-ms', String(start - 2_000));
 	await expect(panel).toHaveAttribute('data-export-end-ms', String(start + 40_000));
 	await expect(share).toBeVisible();
+});
+
+test('switching cameras closes the previous camera event drawer immediately', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await mockKeepModes(page, 2, {
+		capabilityIds: ['keeppeek.event-workflow.v1', 'keeppeek.guest-range.v1']
+	});
+	await page.goto(`/keep?camera=front-door&stream=main&date=${keepModeDate}`);
+	await page
+		.getByRole('button', { name: /Person event at/ })
+		.first()
+		.click();
+	const detail = page.getByRole('complementary', { name: 'Event detail' });
+	await expect(detail).toBeVisible();
+	const next = page.getByRole('button', { name: 'Next camera, Camera 2' });
+	await next.focus();
+	await next.press('Enter');
+	await expect(page).toHaveURL(/camera=camera-2/);
+	await expect(detail).toHaveCount(0);
 });

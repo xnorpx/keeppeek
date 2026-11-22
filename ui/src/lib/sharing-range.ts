@@ -17,6 +17,7 @@ export type RangePreparation = {
 	client: Pick<
 		ControlClient,
 		| 'getServerCapabilities'
+		| 'getRecordingCoverage'
 		| 'queryStoredTimeline'
 		| 'getEventWorkflow'
 		| 'listExports'
@@ -41,6 +42,7 @@ const variants = ['main', 'sub'] as const;
 export const missingRangeProof = 'the completed export has no recorded media proof';
 export const incompatibleRangeCodec =
 	'the selected recording could not be verified as browser-compatible';
+const missingArtifact = 'the completed export file is no longer available';
 const correctedAudio =
 	'recorded audio correction prevents verification of the selected source interval';
 const crossedRange = 'the recording cannot be shared within the selected range';
@@ -51,7 +53,10 @@ export function alternateRangeStream(cause: unknown): boolean {
 	);
 }
 export function replaceableRangeArtifact(cause: unknown): boolean {
-	return cause instanceof Error && [missingRangeProof, correctedAudio].includes(cause.message);
+	return (
+		cause instanceof Error &&
+		[missingRangeProof, missingArtifact, correctedAudio].includes(cause.message)
+	);
 }
 
 async function selectedInterval({ target, client }: RangePreparation, signal: AbortSignal) {
@@ -101,6 +106,39 @@ async function selectedInterval({ target, client }: RangePreparation, signal: Ab
 	)
 		throw new RangePreparationError(invalidInterval);
 	return { startMs, endMs };
+}
+
+async function requireDistinctRecording(
+	client: RangePreparation['client'],
+	sourceId: string,
+	startMs: number,
+	endMs: number,
+	rejected: 'main' | 'sub',
+	signal: AbortSignal
+) {
+	let pageToken: string | undefined;
+	do {
+		const coverage = await client.getRecordingCoverage(
+			pageToken ? { pageToken } : { search: sourceId, startMs, endMs, pageSize: 50 },
+			signal
+		);
+		signal.throwIfAborted();
+		const source = coverage.cameras.find((camera) => camera.camera_id === sourceId);
+		if (source) {
+			const original = source.streams.find(
+				(stream) => stream.stream_id === rejected
+			)?.recording_stream_id;
+			const alternate = source.streams.find(
+				(stream) => stream.stream_id === (rejected === 'main' ? 'sub' : 'main')
+			)?.recording_stream_id;
+			if (original && alternate && alternate !== original) return;
+			break;
+		}
+		pageToken = coverage.next_page_token ?? undefined;
+	} while (pageToken);
+	throw new RangePreparationError(
+		'No distinct alternate recording is available in the selected interval.'
+	);
 }
 
 async function retainedStream(
@@ -167,6 +205,8 @@ export async function prepareRangeShare(
 	const { startMs, endMs } = await selectedInterval(preparation, signal);
 	signal.throwIfAborted();
 	const guard = { sourceId, startMs: BigInt(startMs), endMs: BigInt(endMs) };
+	if (excludedStream)
+		await requireDistinctRecording(client, sourceId, startMs, endMs, excludedStream, signal);
 	const jobs = freshExport ? [] : await client.listExports();
 	signal.throwIfAborted();
 	const existing = jobs

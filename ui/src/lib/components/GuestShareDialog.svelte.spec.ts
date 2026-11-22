@@ -96,6 +96,7 @@ describe('creator guest share dialog', () => {
 			createExport: vi.fn().mockResolvedValue({ id: evidence.exportJobId, status: 'ready' }),
 			getEventWorkflow: vi.fn(),
 			getExport: vi.fn(),
+			getRecordingCoverage: vi.fn(),
 			queryStoredTimeline: vi.fn(),
 			searchEventMetadata: vi.fn()
 		};
@@ -146,6 +147,17 @@ describe('creator guest share dialog', () => {
 					{
 						sourceId: target.sourceId,
 						streams: streams.map((streamId) => ({ streamId, contentType: 'video/mp4' }))
+					}
+				]
+			}),
+			getRecordingCoverage: vi.fn().mockResolvedValue({
+				cameras: [
+					{
+						camera_id: target.sourceId,
+						streams: streams.map((stream_id) => ({
+							stream_id,
+							recording_stream_id: target.sourceId + '/' + stream_id
+						}))
 					}
 				]
 			}),
@@ -287,6 +299,7 @@ describe('creator guest share dialog', () => {
 				getServerCapabilities: vi
 					.fn()
 					.mockResolvedValue({ capabilityIds: ['keeppeek.guest-range.v1'] }),
+				getRecordingCoverage: vi.fn(),
 				queryStoredTimeline: vi.fn(),
 
 				listExports: vi.fn().mockResolvedValue(existing ? [old] : []),

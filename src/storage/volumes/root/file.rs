@@ -10,6 +10,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The recorded leaf is absent from its still-valid, bound volume root.
+#[derive(Debug)]
+pub(crate) struct MissingOwnedLeaf;
+
+impl std::fmt::Display for MissingOwnedLeaf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("owned file is missing")
+    }
+}
+
 /// An owned leaf whose parent and file handles remain pinned.
 pub struct OwnedFile {
     root: Root,
@@ -75,7 +85,14 @@ impl Root {
             options.share_mode(FILE_SHARE_READ.0);
         }
         options.write(false);
-        let file = self.directory.open_with(key, &options)?.into_std();
+        let file = match self.directory.open_with(key, &options) {
+            Ok(file) => file.into_std(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.revalidate()?;
+                return Err(anyhow::Error::new(error).context(MissingOwnedLeaf));
+            }
+            Err(error) => return Err(error.into()),
+        };
         anyhow::ensure!(
             file_identity(&file)? == expected_identity,
             "owned file identity changed"

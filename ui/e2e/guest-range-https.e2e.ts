@@ -50,7 +50,9 @@ async function openEventAndBookmark(
 	await expect(selected).toContainText(new Date(start - 500).toISOString());
 	const eventPreviewMs = performance.now() - eventPreviewStart;
 	const eventSelection = await selected.innerText();
-	await dialog.getByRole('button', { name: 'Close guest sharing' }).click();
+	await dialog.getByLabel('Display name').press('Escape');
+	await expect(dialog).toHaveCount(0);
+	await expect(page.getByRole('complementary', { name: 'Event detail' })).toBeVisible();
 	await page.getByRole('button', { name: 'Close event detail', exact: true }).click();
 	await page.getByRole('button', { name: 'Saved bookmarks', exact: true }).click();
 	const library = page.getByRole('dialog', { name: 'Saved bookmarks' });

@@ -1,4 +1,5 @@
 {
+  "missingArtifact": "the completed export file is no longer available",
   "missingProof": "the completed export has no recorded media proof",
   "incompatibleCodec": "the selected recording could not be verified as browser-compatible",
   "correctedAudio": "recorded audio correction prevents verification of the selected source interval",

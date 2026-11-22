@@ -12,13 +12,16 @@ import {
 } from './sharing-range';
 
 it('recognizes each recorder recovery message exactly', () => {
-	const { incompatibleCodec, correctedAudio, crossedRange, missingProof } = recoveryMessages;
+	const { incompatibleCodec, correctedAudio, crossedRange, missingProof, missingArtifact } =
+		recoveryMessages;
 	for (const message of Object.values(recoveryMessages)) {
 		const error = new Error(message);
 		expect(alternateRangeStream(error)).toBe(
 			[incompatibleCodec, correctedAudio, crossedRange].includes(message)
 		);
-		expect(replaceableRangeArtifact(error)).toBe([missingProof, correctedAudio].includes(message));
+		expect(replaceableRangeArtifact(error)).toBe(
+			[missingProof, missingArtifact, correctedAudio].includes(message)
+		);
 	}
 });
 
@@ -45,6 +48,17 @@ function client() {
 		getServerCapabilities: vi
 			.fn()
 			.mockResolvedValue({ capabilityIds: ['keeppeek.guest-range.v1'] }),
+		getRecordingCoverage: vi.fn().mockResolvedValue({
+			cameras: [
+				{
+					camera_id: 'front',
+					streams: ['main', 'sub'].map((stream_id) => ({
+						stream_id,
+						recording_stream_id: 'front/' + stream_id
+					}))
+				}
+			]
+		}),
 		queryStoredTimeline: vi.fn(),
 		getEventWorkflow: vi.fn().mockResolvedValue({
 			states: [
@@ -65,6 +79,64 @@ const signal = () => new AbortController().signal;
 const savedEvent = { id: 'saved', source_id: 'front', start_time_ms: 1000, end_time_ms: 2000 };
 
 describe('recording range sharing', () => {
+	it('skips duplicate preparation when logical streams refer to the same recording', async () => {
+		const recorder = client();
+		recorder.listExports.mockResolvedValue([{ ...ready, streamId: 'main' }]);
+		recorder.getRecordingCoverage.mockResolvedValue({
+			cameras: [
+				{
+					camera_id: 'front',
+					streams: ['main', 'sub'].map((stream_id) => ({
+						stream_id,
+						recording_stream_id: 'front/sub'
+					}))
+				}
+			]
+		});
+		const preview = vi.fn().mockRejectedValue(new Error(recoveryMessages.incompatibleCodec));
+		const range = { client: recorder, target: { ...target, streamId: undefined } };
+		await expect(new RangeSharePreview(preview).load(range, 'reload', signal())).rejects.toThrow(
+			recoveryMessages.incompatibleCodec
+		);
+		expect(preview).toHaveBeenCalledTimes(1);
+		expect(recorder.createExport).not.toHaveBeenCalled();
+	});
+
+	it('offers fresh preparation only after confirmed absence of the selected ready file', async () => {
+		const recorder = client();
+		recorder.listExports.mockResolvedValue([ready]);
+		const evidence = create(ShareEvidenceSchema);
+		const preview = vi
+			.fn()
+			.mockRejectedValueOnce(new Error('storage temporarily unavailable'))
+			.mockRejectedValueOnce(new Error(recoveryMessages.missingArtifact))
+			.mockResolvedValue(evidence);
+		const session = new RangeSharePreview(preview);
+		const range = { client: recorder, target };
+		const temporary = await session
+			.load(range, 'reload', signal())
+			.catch((error: unknown) => error);
+		expect(session.recovery(temporary)).toBeUndefined();
+		const missing = await session.load(range, 'reload', signal()).catch((error: unknown) => error);
+		expect(session.recovery(missing)).toBe('replacement');
+		expect(recorder.createExport).not.toHaveBeenCalled();
+		recorder.createExport.mockResolvedValue({ ...ready, id: 'fresh' });
+		await expect(session.load(range, 'replacement', signal())).resolves.toEqual({
+			evidence,
+			guard
+		});
+		expect(preview.mock.calls).toEqual([
+			[ready.id, guard],
+			[ready.id, guard],
+			['fresh', guard]
+		]);
+		expect(recorder.createExport).toHaveBeenCalledWith({
+			...target,
+			allowPartial: true,
+			guestRangePreparation: true
+		});
+	});
+
 	it('resumes a failed alternate preparation by its own job ID and guard on reload', async () => {
 		const recorder = client();
 		recorder.getServerCapabilities.mockResolvedValue({

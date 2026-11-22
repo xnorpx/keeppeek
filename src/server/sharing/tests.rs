@@ -696,14 +696,35 @@ fn equivalent_source_uuid_spellings_revoke_the_selected_live_grant() {
 
 #[test]
 fn a_missing_owned_artifact_is_unavailable_even_while_its_history_remains_ready() {
-    let fixture = Fixture::new();
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
     let issued = fixture.issue();
     assert_eq!(
         fixture.list(50).grants[0].status,
         proto::ShareGrantStatus::Active as i32
     );
-    let record = current_record(&fixture.state);
+    let preview = || {
+        evidence::preview(
+            &fixture.state,
+            &fixture.principal,
+            "named-export",
+            Some(&range),
+        )
+    };
+    assert!(preview().is_ok());
+    fixture
+        .state
+        .maintenance_active
+        .store(true, Ordering::Release);
+    assert_eq!(preview().err().unwrap().code, proto::ErrorCode::Unavailable);
+    fixture
+        .state
+        .maintenance_active
+        .store(false, Ordering::Release);
     std::fs::remove_file(record.path.unwrap()).unwrap();
+    assert_eq!(
+        preview().err().unwrap().message,
+        guest_range_recovery_messages()["missingArtifact"]
+    );
     assert_eq!(
         current_record(&fixture.state).job.status,
         proto::ExportJobStatus::Ready as i32
