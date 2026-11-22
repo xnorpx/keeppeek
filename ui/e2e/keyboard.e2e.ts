@@ -233,12 +233,16 @@ test('keeps a paused cold seek at its exact frame after the media source changes
 	}
 });
 
-test('controls Keep transport, exact frames, live follow, and export range from the keyboard', async ({
+test('controls Keep transport, estimated seeks, live follow, and export range from the keyboard', async ({
 	page
 }) => {
 	await mockKeepModes(page);
 	await page.goto(`/keep?camera=front-door&stream=main&date=${keepModeDate}`);
 	await waitForKeyboard(page);
+
+	await page.keyboard.press('Shift+/');
+	await expect(page.getByRole('dialog')).toContainText('Seek by one estimated frame interval');
+	await page.keyboard.press('Escape');
 
 	const player = page.locator('[data-keep-player]');
 	const video = player.locator('video');
