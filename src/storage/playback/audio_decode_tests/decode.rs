@@ -59,7 +59,7 @@ fn command(path: &Path, gray: &Path, pcm: &Path) -> Command {
             "-map",
             "0:v:0",
             "-vf",
-            "scale=1:1,format=gray,showinfo",
+            "scale=1:1,format=gray,settb=AVTB,showinfo",
             "-fps_mode",
             "passthrough",
             "-frames:v",
@@ -128,26 +128,24 @@ fn run(mut command: Command, log: &Path) {
 fn frame_times(log: &str) -> Vec<i64> {
     log.split("Parsed_showinfo")
         .skip(1)
-        .filter_map(|entry| {
-            entry
-                .split_whitespace()
-                .find_map(|field| field.strip_prefix("pts_time:"))
-        })
+        // FFmpeg rounds the displayed pts_time. The filter's integer pts counts microseconds.
+        .filter_map(|entry| entry.split_once(" pts:"))
+        .map(|(_, fields)| fields.split_whitespace().next().unwrap())
         .map(|value| {
-            let seconds: f64 = value.parse().unwrap();
-            assert!(seconds.is_finite() && (0.0..=6.0).contains(&seconds));
-            (seconds * 1_000_000.0).round() as i64
+            let microseconds: i64 = value.parse().unwrap();
+            assert!((0..=6_000_000).contains(&microseconds));
+            microseconds
         })
         .collect()
 }
 
 #[test]
 fn frame_times_preserve_entries_split_or_joined_by_console_updates() {
-    let log = "[Parsed_showinfo_2 @ decoder] n: 0 pts_time:0.021333\rframe=1\r\
-               [Parsed_showinfo_2 @ decoder] n: 1 pts_time:0.061333\n\
-               [Parsed_showinfo_2 @ decoder]\noutput status\n n: 2 pts_time:0.101333\n\
+    let log = "[Parsed_showinfo_2 @ decoder] n: 0 pts:  21333 pts_time:0.021333\rframe=1\r\
+               [Parsed_showinfo_2 @ decoder] n: 1 pts:  61333 pts_time:0.061333\n\
+               [Parsed_showinfo_2 @ decoder]\noutput status\n n: 2 pts:1000333 pts_time:1.00033\n\
                [Parsed_showinfo_2 @ decoder] color_range:pc\n";
-    assert_eq!(frame_times(log), vec![21_333, 61_333, 101_333]);
+    assert_eq!(frame_times(log), vec![21_333, 61_333, 1_000_333]);
 }
 
 fn pulses(bytes: &[u8]) -> Vec<i64> {
