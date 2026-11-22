@@ -23,10 +23,16 @@ Changing the quality preference is separate from [digital zoom](./digital-zoom.m
 playback does not provide automatic transcoding for an unsupported codec; retain a compatible
 H.264 stream when your viewing devices need one.
 
-With a recording selected and the player focused, Left and Right pause playback and seek by one
-estimated frame interval when camera health reports a positive configured frame rate. If the rate
-is unavailable, playback and position stay as they were. On variable-rate recordings, successive seeks
-can display the same picture or skip a picture. Space toggles playback. J, K and L control shuttle
+To inspect adjacent pictures in Keep, pause a recording in **Timeline**. Select **Previous recorded
+frame** or **Next recorded frame**, or focus the player and press Left or Right. Each successful
+step displays the selected picture, including pictures that share a timestamp when their order can
+be verified. A gap, a changed recording, or unavailable source timing can prevent a step. The
+player shows the reason and keeps the last displayed picture. Arrow keys pan while the zoomed
+image has focus.
+
+With an older recorder or a browser without exact frame decoding, the focused player's arrows
+pause and seek by an estimated interval when camera health supplies a positive frame rate.
+Variable-rate recording can repeat or skip pictures during approximate seeking. Space toggles playback. J, K and L control shuttle
 and pause. `[` and `]` set export boundaries. Form fields keep their normal keyboard behavior.
 Arrow keys pan a focused digitally zoomed image.
 

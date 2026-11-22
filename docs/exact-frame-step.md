@@ -1,8 +1,8 @@
 # Recorded frame timing
 
-With a selected recording and a valid configured frame rate, Keep's focused-player arrow shortcuts
-currently seek by an estimated frame duration. An unavailable rate leaves playback and position
-unchanged. On the
+On a paused stored-media cursor, exact stepping selects an encoded sample and decodes it in the
+browser. The older-recorder fallback seeks by an estimated frame interval derived from camera
+health. On the
 variable-rate fixture below, picture 2 starts at 80 ms and picture 3 starts at 200 ms.
 Advancing 40 ms from picture 2 lands at 120 ms, still inside picture 2. Two pictures in
 the duplicate-timestamp fixture also share a start time. A timestamp alone cannot select
@@ -55,7 +55,16 @@ Flat MP4 files written by older versions may carry unsigned version-0 compositio
 the writer was given a negative value. Both encodings can have the same bits. The reader follows
 the file version. Qualifying original source timing for those files requires independent evidence.
 
-Exact stepping on recorded camera inputs remains under issue #120. An exact control
-needs a verified recording timing source, a stable recording and sample identity, and
-a decoder that returns the expected picture. Crossing a gap or a codec change requires
-a new epoch. The current shortcuts continue to provide approximate seeking.
+## Paused playback
+
+The initial request uses the displayed picture time. Further steps use the recorder's opaque
+sample token, scoped to that paused cursor and generation. Reopening, seeking or changing the
+source retires the selection. The recorder checks source timing and codec order across adjacent
+fragments and returns an explicit status when the next picture cannot be identified. Keep keeps
+the last picture visible in that case. The decoder starts from a verified random-access sample.
+
+The lookup admits at most 4,096 samples, ten seconds of media and 32 MiB of encoded pictures.
+Fragment timing and byte offsets use an index every 64 explicit entries. A random lookup sums
+at most 63 preceding entries. The reader obtains a fragment or track default by multiplication.
+The browser permits one active request and 32 queued button or keyboard repeats. The initial
+response budget is two seconds and the decode budget is five seconds.
