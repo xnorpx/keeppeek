@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c472e7dd.js";
+            window.path_to_searchindex_js = "searchindex-945d6098.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -474,6 +474,43 @@ page does not turn a running job into a completed download. Download integrity f
 expired artifact requires a fresh job if the original recordings are still available.</p>
 <p>Timestamp burn-in requires a configured re-encoding worker and otherwise fails explicitly. The
 normal export path preserves source frames and timestamps without re-encoding.</p>
+<h3 id="compare-rtsp-source-clocks"><a class="header" href="#compare-rtsp-source-clocks">Compare RTSP source clocks</a></h3>
+<p>When an RTSP camera is streaming, look for <code>camera.rtsp.source_timing</code> or
+<code>RTSP source timing</code> in the recorder’s information-level logs. Match the Main or Sub
+profile and PLAY session. <code>session_uuid_0</code> through <code>session_uuid_3</code> are the UUID’s
+four unsigned 32-bit words, in network order. Convert each word to eight hexadecimal
+digits, join them, then apply the standard UUID grouping. Registered cameras expose
+the four corresponding <code>camera_uuid_*</code> fields for their persisted profile UUID.
+An unregistered camera reports <code>camera_registered=false</code>. Its session can be
+followed in the log, but correlation with a named camera requires registration.</p>
+<p>Failed PLAY attempts with accepted RTP and completed sessions emit final observations at
+info level. For a short live collection, enable <code>keeppeek::rtsp::timing=trace</code> in the
+recorder log filter. The first enabled periodic collection starts one five-minute window
+per recorder process. Reconnecting a camera or toggling the filter does not extend it.
+After the window expires, final observations continue at info level. Each report includes a track only when that media type has a
+single configured track and the recorder has accepted at least one RTP packet. Each track emits its own structured entry.</p>
+<ul>
+<li><code>first_rtp_ticks</code> and <code>latest_rtp_ticks</code> are the original 32-bit packet header
+timestamps. Multiply elapsed ticks by 1,000 and divide by <code>clock_rate_hz</code> to get
+milliseconds. Use the extended fields to calculate elapsed ticks across wrap.</li>
+<li><code>missing_sequence_numbers</code> counts gaps in accepted packet sequence numbers.
+<code>backward_timestamp_steps</code> counts backwards presentation timestamps. Picture
+reordering can produce such a step. Neither counter identifies a clock reset
+by itself.</li>
+<li><code>sender_rtp_ticks</code>, <code>sender_ntp_seconds</code> and <code>sender_ntp_fraction</code> preserve the latest
+matching RTCP sender’s RTP timestamp and both words of its NTP clock. These values
+describe the camera’s clock and can be absent or inaccurate.</li>
+<li><code>latest_audio_minus_video_play_us</code> compares the latest accepted packet
+positions on the camera’s PLAY timeline. A positive value means the last audio
+packet is further along that timeline. Both tracks need a camera-supplied
+PLAY origin. Packet interleaving can change the reading even when playback
+sounds synchronized.</li>
+</ul>
+<p>The readings precede transcoding, recording timeline normalization and configured
+presentation correction. Use the recorded flash/tone preview or a known physical
+event to measure audible sync. These periodic observations live in the recorder
+log and expire with its retention policy. Existing recordings contain their
+stored media timestamps.</p>
 <p>For the availability and safety limits of manual deletion and catalog drift checks,
 see <a href="./recording-maintenance.html">Recording maintenance</a>. The Administrator workflow
 is under qualification; confirmed jobs can remove selected recordings permanently.</p>
