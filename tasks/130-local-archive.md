@@ -45,6 +45,22 @@ or whole-file warmup is added to available local playback.
 Tasks and acceptance criteria remain tracked in #130; this file records implementation
 decisions and verification evidence without marking unobserved issue criteria complete.
 
+## Paced recording qualification after review
+
+The Windows paired trial at `d25b2f43` failed on 2026-11-22. The final archive-enabled
+repetition retained 435 of 450 samples for camera-6. Five repetitions finished, producing
+48 to 119 primary files. Earlier passing measurements at `6a9ebc5` and `66225ac7` do not
+qualify that revision. Its failed trace remains part of [PR #352](https://github.com/xnorpx/keeppeek/pull/352).
+
+After changing rotation to use received media time, `6205851c` retained 10,800 of 10,800
+samples in each mode and produced 48 primary files in every repetition. The eight-camera
+4K H.264 test ran three 30-second windows per mode on Windows 11, using two directories
+on the same NTFS NVMe drive and logical CPUs 6–11. Median per-run primary seek p95 was
+94.932 ms with archive off and 229.660 ms with archive on. Process CPU was 16.016 s
+and 23.656 s respectively. At least 64 further byte-checked primary seeks and 9.867 s
+of progress on every camera coincided with advancing archive verification in each enabled
+run. The issue specifies forward progress and leaves numeric latency and CPU budgets open.
+
 ## Verification map
 
 The current-delivery criteria below map to #130 in their original order. Broader provider,

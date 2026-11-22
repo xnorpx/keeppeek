@@ -208,6 +208,19 @@ Long histories remain bounded: fleet pages contain 25 cameras by default, recent
 at most 256 ranges per stream, and longer periods use deterministic time buckets while retaining
 exact totals.
 
+## Interrupted legacy recording initialization
+
+On Unix, KeepPeek can encounter two different files at the same active recording name
+while recovering a failed header write. The current occupant stays in place. The displaced
+entry and its `.origin` recovery record are retained in the same recording hour under
+`.keeppeek-header-recovery-v1/`. The saved entry has exactly the original active filename.
+When that name is next requested, KeepPeek checks the saved identity. It removes a partial
+file belonging to the failed write or restores a displaced entry to its vacant original name.
+For an older recording, stop writers for that directory and preserve the saved entry under a vacant
+recovery name. Inspect both files before changing either. A staged entry without a valid
+recovery record is left in place. Named storage volumes use their allocation ledger for
+recovery.
+
 ## Review events consistently
 
 Open **Events** to search across authorized cameras. Choose the UTC date and optional start/end

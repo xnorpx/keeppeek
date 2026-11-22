@@ -1,7 +1,14 @@
 //! Keeps the exclusively created legacy file pinned until its MP4 header and catalog entry exist.
 use super::WriterFile;
-use cap_std::fs::{Dir, File, OpenOptions};
-use std::{ffi::OsStr, io, path::Path};
+#[cfg(not(unix))]
+use cap_std::fs::File;
+use cap_std::fs::{Dir, OpenOptions};
+#[cfg(not(unix))]
+use std::ffi::OsStr;
+use std::{io, path::Path};
+
+#[cfg(unix)]
+mod unix;
 
 pub(super) fn legacy<T>(
     path: &Path,
@@ -12,6 +19,8 @@ pub(super) fn legacy<T>(
         cap_std::ambient_authority(),
     )?;
     let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+    #[cfg(unix)]
+    unix::restore_pending(&parent, name)?;
     let mut options = OpenOptions::new();
     options.read(true).write(true).create_new(true);
     let owned = parent.open_with(name, &options)?;
@@ -56,40 +65,7 @@ fn discard(_parent: &Dir, _name: &OsStr, file: File) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn discard(parent: &Dir, name: &OsStr, file: File) -> io::Result<()> {
-    use crate::storage::long_term::inspection::removal::{
-        create_private_directory, unix::rename_to,
-    };
-    use cap_std::fs::MetadataExt;
-    let owned = file.metadata()?;
-    let matches = |entry: &cap_std::fs::Metadata| {
-        entry.is_file() && entry.dev() == owned.dev() && entry.ino() == owned.ino()
-    };
-    match parent.symlink_metadata(name) {
-        Ok(entry) if matches(&entry) => {}
-        Ok(_) => return Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    }
-
-    // POSIX unlink operates on a name. Isolate that entry and compare it to the pinned file
-    // again before unlinking. No operation can overwrite a replacement at the original path.
-    let stage_name = format!(".keeppeek-header-{}", uuid::Uuid::new_v4());
-    let stage_name = OsStr::new(&stage_name);
-    let stage = create_private_directory(parent, stage_name)?;
-    let leaf = OsStr::new("partial");
-    let cleanup = (|| {
-        rename_to(parent, name, &stage, leaf)?;
-        if !matches(&stage.symlink_metadata(leaf)?) {
-            return rename_to(&stage, leaf, parent, name);
-        }
-        stage.remove_file(leaf)
-    })();
-    if stage.entries()?.next().is_none() {
-        parent.remove_dir(stage_name)?;
-    }
-    cleanup
-}
+use unix::discard;
 
 #[cfg(not(any(unix, windows)))]
 fn discard(_parent: &Dir, _name: &OsStr, _file: File) -> io::Result<()> {
@@ -115,6 +91,12 @@ mod tests {
         assert_eq!(result.unwrap_err().to_string(), "injected write failure");
         assert!(!active.exists());
         assert_eq!(fs::read(&unrelated)?, b"keep");
+        #[cfg(unix)]
+        assert_eq!(
+            fs::read_dir(root.join(unix::RECOVERY_DIRECTORY))?.count(),
+            0
+        );
+        #[cfg(windows)]
         assert_eq!(fs::read_dir(&root)?.count(), 1);
         fs::remove_dir_all(root)
     }

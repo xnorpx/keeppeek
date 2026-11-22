@@ -1414,7 +1414,12 @@ impl WriterWorker {
             Instant::now()
                 .checked_sub(self.config.short_term_duration)
                 .map_or_else(Vec::new, |cutoff| {
-                    pipeline.short_term.drain_up_to_last_keyframe_before(cutoff)
+                    if pipeline.medium_term.is_some() {
+                        // An existing writer has the reference keyframe for this buffered prefix.
+                        pipeline.short_term.drain_before(cutoff)
+                    } else {
+                        pipeline.short_term.drain_up_to_last_keyframe_before(cutoff)
+                    }
                 })
         };
 

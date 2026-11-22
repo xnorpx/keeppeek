@@ -12,6 +12,74 @@ const CAMERAS: usize = 8;
 const FPS: u32 = 15;
 const SECONDS: u32 = 30;
 
+fn fixture_sample(template: &RecordingFrame, start: Instant, offset: Duration) -> RecordingFrame {
+    let MediaFrame::Video(video) = &template.frame else {
+        unreachable!("video fixture")
+    };
+    RecordingFrame {
+        received_at: start + offset,
+        timestamp: Some(offset),
+        frame: MediaFrame::Video(VideoFrame {
+            codec: video.codec,
+            width: video.width,
+            height: video.height,
+            is_keyframe: video.is_keyframe,
+            data: video.data.clone(),
+        }),
+    }
+}
+
+#[test]
+fn scheduled_flush_preserves_predictive_frames_with_or_without_prior_viewer_demand()
+-> anyhow::Result<()> {
+    let source = video_fixture(VideoCodec::H264, "640x360");
+    let start = Instant::now() - Duration::from_secs(10);
+    for starts_with_viewer in [false, true] {
+        let (root, catalog, mut config) = named_fixture()?;
+        config.medium_term_duration = Duration::from_secs(60);
+        config.short_term_duration = Duration::from_secs(2);
+        config.flush_interval = Duration::from_secs(60);
+        let camera = RecordingStreamIdentity::new("scheduled", "main", "scheduled");
+        let demand = RecordingDemand::new(Duration::ZERO);
+        let mut viewer = starts_with_viewer.then(|| demand.acquire(&camera.storage_key));
+        let mut worker = WriterWorker::new(config, demand, Some(catalog.handle()));
+        for (index, template) in [0, 1, 2, 3, 0, 1].into_iter().enumerate() {
+            assert_eq!(source[template].is_video_keyframe(), template == 0);
+            worker.ingest(
+                camera.clone(),
+                fixture_sample(
+                    &source[template],
+                    start,
+                    Duration::from_millis(index as u64 * 100),
+                ),
+            );
+            if index == 1 {
+                worker.flush_all(false);
+                drop(viewer.take());
+            }
+        }
+        worker.flush_all(false);
+        worker.flush_all(true);
+        worker.finalize_all();
+        let paths: BTreeSet<_> = catalog
+            .handle()
+            .media_fragments_in_range(&camera.storage_key, 0, i64::MAX)?
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(
+            samples(Path::new(paths.first().unwrap())),
+            6,
+            "initial viewer={starts_with_viewer}"
+        );
+        drop(worker);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root)?;
+    }
+    Ok(())
+}
+
 #[test]
 fn queued_keyframes_rotate_at_media_boundaries_in_direct_and_buffered_writes() -> anyhow::Result<()>
 {
@@ -34,24 +102,11 @@ fn queued_keyframes_rotate_at_media_boundaries_in_direct_and_buffered_writes() -
             Some(catalog.handle()),
         );
         for tick in 0..12 {
-            let MediaFrame::Video(video) = &fixture[(tick % 2) as usize].frame else {
-                unreachable!("video fixture")
-            };
-            assert_eq!(video.is_keyframe, tick % 2 == 0);
-            let offset = Duration::from_millis(tick * 500);
+            let template = &fixture[(tick % 2) as usize];
+            assert_eq!(template.is_video_keyframe(), tick % 2 == 0);
             writer.ingest(
                 camera.clone(),
-                RecordingFrame {
-                    received_at: start + offset,
-                    timestamp: Some(offset),
-                    frame: MediaFrame::Video(VideoFrame {
-                        codec: video.codec,
-                        is_keyframe: video.is_keyframe,
-                        width: video.width,
-                        height: video.height,
-                        data: video.data.clone(),
-                    }),
-                },
+                fixture_sample(template, start, Duration::from_millis(tick * 500)),
             );
         }
         writer.flush_all(true);

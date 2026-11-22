@@ -19,7 +19,12 @@ mod volume_file;
 use volume_file::WriterFile;
 
 const VIDEO_TIMESCALE: u32 = 90_000;
-const PENDING_GOP_BYTES: usize = 16 * 1024 * 1024;
+// Each simultaneous writer can retain one undecoded or uncommitted GOP. This caps eight
+// writers at 128 MiB of charged GOP data, independently of the shared event pre-roll budget.
+// At 16 Mbit/s the 16 MiB allowance lasts less than 8.4 s including sample bookkeeping.
+// Longer GOPs can produce a reported gap. Raising the limit increases memory per writer.
+const PENDING_GOP_MIB: usize = 16;
+const PENDING_GOP_BYTES: usize = PENDING_GOP_MIB * 1_048_576;
 
 pub struct MediumTermWriter {
     state: WriterState,
@@ -805,7 +810,9 @@ impl MediumTermWriter {
 pub(super) fn keyframe_budget_error() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidData,
-        "pending recording reached the 16 MiB keyframe limit; waiting for a video keyframe",
+        format!(
+            "pending recording reached the {PENDING_GOP_MIB} MiB keyframe limit; waiting for a video keyframe"
+        ),
     )
 }
 
