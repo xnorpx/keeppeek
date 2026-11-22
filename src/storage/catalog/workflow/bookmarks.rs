@@ -58,6 +58,19 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
              WHERE event_id = OLD.id AND source_id = OLD.camera_id;
          END;",
     ).await?;
+    // Older catalogs retained the original bookmark time when an event was revised.
+    // Match both identities and preserve the saved time of deleted events.
+    connection.execute(
+        "UPDATE event_bookmarks SET event_start_ms = (
+             SELECT e.start_time_ms FROM recording_events e
+             WHERE e.id = event_bookmarks.event_id AND e.camera_id = event_bookmarks.source_id
+         ), event_deleted_at_ms = NULL
+         WHERE EXISTS (
+             SELECT 1 FROM recording_events e
+             WHERE e.id = event_bookmarks.event_id AND e.camera_id = event_bookmarks.source_id
+               AND (e.start_time_ms <> event_bookmarks.event_start_ms OR event_bookmarks.event_deleted_at_ms IS NOT NULL)
+         )", (),
+    ).await?;
     Ok(())
 }
 
