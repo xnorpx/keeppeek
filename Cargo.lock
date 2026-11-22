@@ -3996,6 +3996,7 @@ dependencies = [
  "deflate",
  "filetime",
  "log",
+ "native-tls",
  "percent-encoding",
  "postgres",
  "rand 0.10.3",

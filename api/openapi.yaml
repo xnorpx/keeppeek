@@ -20,6 +20,182 @@ security:
   - BearerCredential: []
   - BrowserSession: []
 paths:
+  /share:
+    get:
+      operationId: guestReviewPage
+      summary: Load the isolated guest review page
+      security: []
+      description: >-
+        The grant token is a URL fragment and is never sent in an HTTP URL. The
+        page removes it before application initialization and exchanges it once
+        through POST /guest/session. It loads bundled assets without the normal
+        application shell, sign-in bootstrap, logging or WebRTC control client.
+        HTTPS and the exact configured sharing origin are required. Every guest
+        response uses Cache-Control private, no-store, Referrer-Policy no-referrer,
+        X-Content-Type-Options nosniff and frame prohibition. The HTML uses a
+        strict Content-Security-Policy without third-party sources.
+      responses:
+        "200":
+          description: Isolated guest review HTML; no evidence or bearer data is embedded.
+          content:
+            text/html:
+              schema:
+                type: string
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /guest/session:
+    post:
+      operationId: exchangeGuestReviewToken
+      summary: Exchange one guest link for a dedicated review session
+      security: []
+      description: >-
+        Accepts only exact same-origin JSON over the configured HTTPS boundary.
+        The body is bounded to 256 bytes. Tokens contain 256 random bits encoded
+        as 43 base64url characters. Unknown, inactive and revoked tokens produce
+        the same denial. A failed exchange clears any prior guest cookie.
+        Success sets __Host-keeppeek-guest with Secure, HttpOnly, SameSite=Strict,
+        Path=/ and no Domain. The cookie cannot authenticate any ordinary API.
+        The status cookie and receipt last at most five minutes. Media authorization is capped by grant expiry. A terminal receipt grants no media access.
+        No bearer credential, ordinary browser session or local Administrator
+        fallback is accepted. No token is returned, logged or persisted in clear.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  minLength: 43
+                  maxLength: 43
+                  pattern: "^[A-Za-z0-9_-]{43}$"
+      responses:
+        "200":
+          $ref: "#/components/responses/GuestReviewStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/GuestReviewDenied"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          description: The exchange body exceeds 256 bytes.
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+    get:
+      operationId: guestReviewSessionStatus
+      summary: Read only the safe status of the bound guest review
+      security:
+        - GuestReviewSession: []
+      description: >-
+        A reload without a fragment may discover its cookie-bound public session
+        ID once. Subsequent requests supply that same session query parameter.
+        A mismatched cookie and ID never selects another grant. Only a valid
+        previously established guest session may distinguish expired, revoked,
+        limit-reached or unavailable evidence. No unrelated metadata is returned.
+      parameters:
+        - $ref: "#/components/parameters/GuestSessionOptional"
+      responses:
+        "200":
+          $ref: "#/components/responses/GuestReviewStatus"
+        "401":
+          $ref: "#/components/responses/GuestReviewDenied"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+    delete:
+      operationId: endGuestReviewSession
+      summary: End this guest review session and its active transfers
+      security:
+        - GuestReviewSession: []
+      parameters:
+        - $ref: "#/components/parameters/GuestSession"
+      responses:
+        "204":
+          description: The matched session is ended and its guest cookie is cleared.
+        "401":
+          $ref: "#/components/responses/GuestReviewDenied"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /guest/media:
+    get:
+      operationId: guestReviewMedia
+      summary: Stream the single immutable artifact granted to this review
+      security:
+        - GuestReviewSession: []
+      description: >-
+        Requires the cookie and its bound public session ID. Supports one checked
+        bytes range, including suffix and open-ended ranges. Multi-range and
+        overflowing ranges are rejected. Rechecks current grant, issuer, source,
+        privacy, policy, retention and artifact generation. Reserves one view
+        atomically and commits it durably immediately before the first buffered
+        validated bytes are returned. Further seeks in that session reuse the
+        committed view. No implicit retention hold is created. Revocation stops
+        new requests and aborts active network delivery within one second; bytes
+        already delivered cannot be recalled. Responses are bounded sized streams.
+      parameters:
+        - $ref: "#/components/parameters/GuestSession"
+        - $ref: "#/components/parameters/GuestByteRange"
+      responses:
+        "200":
+          $ref: "#/components/responses/GuestMedia"
+        "206":
+          $ref: "#/components/responses/GuestMediaRange"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/GuestReviewDenied"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "416":
+          description: Invalid or unsatisfiable single byte range; no evidence bytes are returned.
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /guest/download:
+    get:
+      operationId: guestReviewDownload
+      summary: Download the granted artifact only when download permission is enabled
+      security:
+        - GuestReviewSession: []
+      description: >-
+        Applies the same evidence, origin, isolation, bounded streaming and active
+        cancellation checks as guest media. Each transfer separately reserves and
+        commits a download immediately before first delivery. A filename or UI
+        control never grants download permission. Content-Disposition is attachment.
+      parameters:
+        - $ref: "#/components/parameters/GuestSession"
+        - $ref: "#/components/parameters/GuestByteRange"
+      responses:
+        "200":
+          $ref: "#/components/responses/GuestMedia"
+        "206":
+          $ref: "#/components/responses/GuestMediaRange"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/GuestReviewDenied"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "416":
+          description: Invalid or unsatisfiable single byte range.
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
   /auth/session:
     get:
       operationId: authenticationSession
@@ -388,6 +564,30 @@ paths:
           $ref: "#/components/responses/Unavailable"
 components:
   parameters:
+    GuestSession:
+      name: session
+      in: query
+      required: true
+      description: Public session UUID bound to the guest cookie; it is not a bearer credential.
+      schema:
+        type: string
+        format: uuid
+    GuestSessionOptional:
+      name: session
+      in: query
+      required: false
+      description: Omitted only for initial cookie-bound reload discovery; later requests must bind it.
+      schema:
+        type: string
+        format: uuid
+    GuestByteRange:
+      name: Range
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 128
+      description: One bytes range only. Suffix and open-ended forms are supported.
     BrowserCsrf:
       name: X-KeepPeek-CSRF
       in: header
@@ -431,6 +631,14 @@ components:
         type: string
         const: gzip
   securitySchemes:
+    GuestReviewSession:
+      type: apiKey
+      in: cookie
+      name: __Host-keeppeek-guest
+      description: >-
+        Dedicated opaque review session, Secure, HttpOnly, SameSite=Strict,
+        host-only, Path=/. Accepted only on /guest routes, with its bound public
+        session ID and exact configured origin. It never becomes a KeepPeek principal.
     BrowserSession:
       type: apiKey
       in: cookie
@@ -450,6 +658,37 @@ components:
         as Administrator without a credential. Forwarded clients are resolved
         only through the exact trusted-proxy contract.
   responses:
+    GuestReviewDenied:
+      description: Generic guest denial; does not distinguish unknown, expired or revoked links.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+    GuestReviewStatus:
+      description: Safe status of this established review only; no token or unrelated source metadata.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GuestReviewSessionStatus"
+    GuestMedia:
+      description: Complete granted MP4 artifact with exact Content-Length and Accept-Ranges bytes.
+      content:
+        video/mp4:
+          schema:
+            type: string
+            format: binary
+    GuestMediaRange:
+      description: A single bounded MP4 range with exact Content-Length and Content-Range.
+      headers:
+        Content-Range:
+          required: true
+          schema:
+            type: string
+      content:
+        video/mp4:
+          schema:
+            type: string
+            format: binary
     AuthenticationRedirect:
       description: >-
         Redirect to the configured identity provider or validated saved return
@@ -524,6 +763,67 @@ components:
           schema:
             $ref: "#/components/schemas/Status"
   schemas:
+    GuestReviewSessionStatus:
+      oneOf:
+        - $ref: "#/components/schemas/GuestReviewReadySession"
+        - $ref: "#/components/schemas/GuestReviewTerminalSession"
+    GuestReviewTerminalSession:
+      description: A handed-off session may inspect its own terminal state without receiving evidence metadata or media authority.
+      type: object
+      additionalProperties: false
+      required: [session_id, status]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [expired, revoked, unavailable, limit_reached]
+    GuestReviewReadySession:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          session_id,
+          status,
+          display_name,
+          start_ms,
+          end_ms,
+          expires_at_ms,
+          can_stream,
+          can_download,
+          bytes,
+          has_gaps,
+        ]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          const: ready
+        display_name:
+          type: string
+          maxLength: 128
+        start_ms:
+          type: integer
+          format: int64
+        end_ms:
+          type: integer
+          format: int64
+        expires_at_ms:
+          type: integer
+          format: int64
+        can_stream:
+          type: boolean
+        can_download:
+          type: boolean
+        bytes:
+          type: integer
+          minimum: 1
+          maximum: 536870912
+        has_gaps:
+          type: boolean
     AuthenticationSession:
       type: object
       additionalProperties: false

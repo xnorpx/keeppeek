@@ -8,6 +8,7 @@ mod audio_timing_tests;
 pub(super) mod creation;
 pub(super) mod download;
 pub(super) mod history;
+pub(super) mod provenance;
 use crate::storage::{
     catalog::{
         locations::{Kind, Object, Reply, Request, export_cleanup::Action},

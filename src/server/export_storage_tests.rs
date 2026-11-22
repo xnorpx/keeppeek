@@ -212,9 +212,13 @@ pub(super) fn setup(
 }
 
 pub(super) fn completed(state: &ServerState) -> proto::ExportJob {
+    completed_for(state, "owner")
+}
+
+fn completed_for(state: &ServerState, requester: &str) -> proto::ExportJob {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let job = export_job(state, "owner", "named-export").unwrap();
+        let job = export_job(state, requester, "named-export").unwrap();
         if job.status != proto::ExportJobStatus::Running as i32 {
             return job;
         }
@@ -1035,4 +1039,47 @@ fn download_persists_managed_history_and_cannot_recreate_missing_history() {
     metadata_catalog.shutdown();
     std::fs::remove_dir_all(root).unwrap();
     std::fs::remove_dir_all(metadata_dir).unwrap();
+}
+
+#[test]
+fn archived_export_preserves_sharing_metadata_and_fences_typed_create_and_retry() {
+    let (root, catalog, manager, mut state, request) = setup(16 * 1024 * 1024);
+    let source_identity = Uuid::new_v4();
+    super::export_provenance_tests::configured_source(&mut state, &root, source_identity);
+    state.export_history_path = Some(Arc::new(root.join("export-history.json")));
+    let principal = ApiPrincipal::local("127.0.0.1".parse().unwrap());
+    export_storage::provenance::create_for_principal(&state, &principal, request.clone()).unwrap();
+    assert_eq!(
+        completed_for(&state, &principal.id()).status,
+        proto::ExportJobStatus::Ready as i32
+    );
+    let original = export_record(&state);
+    assert!(original.verified_media_bounds().is_some());
+    let (worker, _) = archive_completed_export(&root, &catalog, &state);
+    let (archived, _) = export_storage::archive::snapshot(&state, &principal.id(), &request.job_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(archived.source_identity, Some(source_identity));
+    assert_eq!(archived.owner_key, original.owner_key);
+    assert_eq!(
+        serde_json::to_value(&archived.media_proof).unwrap(),
+        serde_json::to_value(&original.media_proof).unwrap()
+    );
+    assert!(archived.job.expires_at.is_none());
+    assert!(archived.path.is_none());
+    state.export_jobs.lock().unwrap().clear();
+    for result in [
+        export_storage::provenance::create_for_principal(&state, &principal, request.clone()),
+        export_storage::provenance::retry_for_principal(&state, &principal, &request.job_id),
+    ] {
+        let error = result.unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+        assert_eq!(error._http_status, 409);
+        assert!(error.message.contains("durable archive copy"));
+        assert!(state.export_jobs.lock().unwrap().is_empty());
+    }
+    worker.shutdown().unwrap();
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
 }

@@ -66,10 +66,10 @@ where
     fn drop(&mut self) {
         let mut remaining_to_read = self.size;
 
+        let mut buf = [0; 8 * 1024];
         while remaining_to_read > 0 {
-            let mut buf = vec![0; remaining_to_read];
-
-            match self.reader.read(&mut buf) {
+            let count = remaining_to_read.min(buf.len());
+            match self.reader.read(&mut buf[..count]) {
                 Err(e) => {
                     self.last_read_signal.send(Err(e)).ok();
                     break;
@@ -127,5 +127,100 @@ mod tests {
         let mut string = String::new();
         org_reader.read_to_string(&mut string).unwrap();
         assert_eq!(string, " world");
+    }
+
+    struct TrackingReader {
+        remaining: usize,
+        max_buffer: usize,
+        calls: usize,
+        fail_on: Option<usize>,
+    }
+
+    impl TrackingReader {
+        const fn new(remaining: usize) -> Self {
+            Self {
+                remaining,
+                max_buffer: 0,
+                calls: 0,
+                fail_on: None,
+            }
+        }
+    }
+
+    impl Read for TrackingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.max_buffer = self.max_buffer.max(buffer.len());
+            self.calls += 1;
+            if self.fail_on == Some(self.calls) {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            let count = self.remaining.min(buffer.len());
+            buffer[..count].fill(42);
+            self.remaining -= count;
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn drop_drains_declared_body_with_at_most_eight_kibibyte_reads() {
+        const BYTES: usize = 128 * 1024;
+        let mut source = TrackingReader::new(BYTES);
+        let (reader, _) = EqualReader::new(&mut source, BYTES);
+        drop(reader);
+        assert_eq!(source.remaining, 0);
+        assert!(
+            source.max_buffer <= 8 * 1024,
+            "requested {} bytes",
+            source.max_buffer
+        );
+        assert!(source.calls >= 16);
+    }
+
+    #[test]
+    fn partial_body_drop_preserves_the_next_message_boundary() {
+        const BYTES: usize = 128 * 1024;
+        let mut bytes = vec![42; BYTES];
+        bytes.extend_from_slice(b"next");
+        let mut source = std::io::Cursor::new(bytes);
+        let (mut reader, _) = EqualReader::new(&mut source, BYTES);
+        let mut prefix = [0; 13];
+        reader.read_exact(&mut prefix).unwrap();
+        assert_eq!(prefix, [42; 13]);
+        drop(reader);
+        assert_eq!(source.position(), u64::try_from(BYTES).unwrap());
+        let mut next = [0; 4];
+        source.read_exact(&mut next).unwrap();
+        assert_eq!(next, *b"next");
+    }
+
+    #[test]
+    fn truncated_body_drop_stops_at_eof_and_reports_completion() {
+        let mut source = TrackingReader::new(16 * 1024);
+        let (reader, completion) = EqualReader::new(&mut source, 128 * 1024);
+        drop(reader);
+        completion
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(source.remaining, 0);
+        assert_eq!(source.calls, 3);
+        assert!(source.max_buffer <= 8 * 1024);
+    }
+
+    #[test]
+    fn body_drop_reports_read_error_without_retrying() {
+        const BYTES: usize = 128 * 1024;
+        let mut source = TrackingReader::new(BYTES);
+        source.fail_on = Some(2);
+        let (reader, completion) = EqualReader::new(&mut source, BYTES);
+        drop(reader);
+        let error = completion
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert_eq!(source.calls, 2);
+        assert_eq!(source.remaining, BYTES - 8 * 1024);
+        assert!(source.max_buffer <= 8 * 1024);
     }
 }

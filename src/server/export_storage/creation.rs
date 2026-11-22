@@ -30,28 +30,46 @@ struct Retry {
     timing: Option<proto::RecordedAudioTiming>,
 }
 
+#[cfg(test)]
 pub(in crate::server) fn retry(
     state: &ServerState,
     requester: &str,
     job_id: &str,
 ) -> Result<proto::ExportJob, ControlCommandError> {
-    let _configuration = state.config_update.try_lock().map_err(|_| {
+    retry_with_owner(state, requester, None, job_id)
+}
+
+pub(super) fn retry_with_owner(
+    state: &ServerState,
+    requester: &str,
+    owner_key: Option<String>,
+    job_id: &str,
+) -> Result<proto::ExportJob, ControlCommandError> {
+    let configuration = configuration_guard(state)?;
+    reject_maintenance(state)?;
+    super::archive::ensure_new_job_id(state, job_id)?;
+    let retry = take_retry(state, requester, job_id)?;
+    let _ = cleanup_export_attempt_artifacts(state, job_id, &retry.artifact);
+    create_locked(
+        state,
+        requester,
+        owner_key,
+        retry.request,
+        TimingSource::Captured(retry.timing),
+        &configuration,
+    )
+}
+
+fn configuration_guard(
+    state: &ServerState,
+) -> Result<std::sync::MutexGuard<'_, ()>, ControlCommandError> {
+    state.config_update.try_lock().map_err(|_| {
         ControlCommandError::new(
             proto::ErrorCode::Rejected,
             409,
             "storage coordination is busy",
         )
-    })?;
-    reject_maintenance(state)?;
-    super::archive::ensure_new_job_id(state, job_id)?;
-    let retry = take_retry(state, requester, job_id)?;
-    let _ = cleanup_export_attempt_artifacts(state, job_id, &retry.artifact);
-    create(
-        state,
-        requester,
-        retry.request,
-        TimingSource::Captured(retry.timing),
-    )
+    })
 }
 
 fn take_retry(
@@ -136,11 +154,34 @@ const fn clear_observation(mut timing: proto::RecordedAudioTiming) -> proto::Rec
     timing
 }
 
+#[cfg(test)]
 pub(in crate::server) fn create(
     state: &ServerState,
     requester: &str,
     request: proto::CreateExportJob,
     timing: TimingSource,
+) -> Result<proto::ExportJob, ControlCommandError> {
+    create_with_owner(state, requester, None, request, timing)
+}
+
+pub(super) fn create_with_owner(
+    state: &ServerState,
+    requester: &str,
+    owner_key: Option<String>,
+    request: proto::CreateExportJob,
+    timing: TimingSource,
+) -> Result<proto::ExportJob, ControlCommandError> {
+    let configuration = configuration_guard(state)?;
+    create_locked(state, requester, owner_key, request, timing, &configuration)
+}
+
+fn create_locked(
+    state: &ServerState,
+    requester: &str,
+    owner_key: Option<String>,
+    request: proto::CreateExportJob,
+    timing: TimingSource,
+    _configuration: &std::sync::MutexGuard<'_, ()>,
 ) -> Result<proto::ExportJob, ControlCommandError> {
     admit(state, &request)?;
     let camera = source(state, &request)?;
@@ -181,7 +222,7 @@ pub(in crate::server) fn create(
         reject_existing_id(&jobs, &request.job_id)?;
     }
     let candidate = prepare(state, request, camera, range, event, timing)?;
-    if let Some(existing) = register(state, requester, &candidate)? {
+    if let Some(existing) = register(state, requester, owner_key, &candidate)? {
         return Ok(existing);
     }
     let job = candidate.job;
@@ -411,6 +452,7 @@ fn job(
 fn register(
     state: &ServerState,
     requester: &str,
+    owner_key: Option<String>,
     candidate: &Candidate,
 ) -> Result<Option<proto::ExportJob>, ControlCommandError> {
     let mut jobs = state
@@ -442,6 +484,12 @@ fn register(
         candidate.request.job_id.clone(),
         ExportJobRecord {
             requester_id: requester.to_owned(),
+            owner_key,
+            source_identity: super::provenance::source_identity(
+                state,
+                &candidate.request.source_id,
+            ),
+            media_proof: None,
             artifact_id: candidate.artifact_id.clone(),
             request: candidate.request.clone(),
             job: candidate.job.clone(),
@@ -474,6 +522,9 @@ mod timing_tests {
         let captured_stream = timing.as_ref().map(|_| "camera/sub".to_owned());
         ExportJobRecord {
             requester_id: "owner".to_owned(),
+            owner_key: None,
+            source_identity: None,
+            media_proof: None,
             artifact_id: Uuid::new_v4().simple().to_string(),
             request: proto::CreateExportJob {
                 job_id: "original".to_owned(),

@@ -14,6 +14,14 @@ export const capabilityActions = {
 		action: 'Create export',
 		capability: 'keeppeek.media-export.v1'
 	},
+	createGuestLink: {
+		action: 'Create guest link',
+		capability: 'keeppeek.guest-review.v1'
+	},
+	manageGuestLinks: {
+		action: 'Manage guest links',
+		capability: 'keeppeek.guest-review.v1'
+	},
 	exportMoment: {
 		action: 'Export this moment',
 		capability: 'keeppeek.media-export.v1'

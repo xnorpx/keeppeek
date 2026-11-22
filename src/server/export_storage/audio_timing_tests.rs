@@ -199,7 +199,8 @@ fn export_neighbors_follow_the_captured_stream_and_resolve_both_boundary_directi
 #[test]
 fn both_worker_paths_apply_the_actual_recorded_stream_snapshot_without_changing_source() {
     for named in [false, true] {
-        let fixture = Fixture::new(named);
+        let mut fixture = Fixture::new(named);
+        fixture.state.export_history_path = Some(Arc::new(fixture.root.join("history.json")));
         let source = std::fs::read(&fixture.source).unwrap();
         let original = first_audio(source.clone());
         create_export_job(&fixture.state, "owner", fixture.request.clone()).unwrap();
@@ -213,7 +214,15 @@ fn both_worker_paths_apply_the_actual_recorded_stream_snapshot_without_changing_
         let timing = ready.recorded_audio.as_ref().unwrap();
         assert_eq!(timing.applied_offset_ms, 250);
         assert_eq!(timing.audio_present, Some(true));
-        let exported = first_audio(download(&fixture.state, &fixture.request.job_id));
+        let bytes = download(&fixture.state, &fixture.request.job_id);
+        let digest = encode_lower_hex(Sha256::digest(&bytes));
+        assert_eq!(ready.sha256.as_deref(), Some(digest.as_str()));
+        set_offsets(&fixture.state, 0, -200);
+        let record = fixture.state.export_jobs.lock().unwrap()[&fixture.request.job_id].clone();
+        assert!(record.verified_media_bounds().is_some());
+        assert_eq!(record.job.recorded_audio.as_ref(), Some(timing));
+        assert_eq!(download(&fixture.state, &fixture.request.job_id), bytes);
+        let exported = first_audio(bytes);
         assert_eq!(exported.start_time, original.start_time + 4_000);
         assert_eq!(exported.bytes, original.bytes);
         assert_eq!(exported.rendering_offset, original.rendering_offset);
