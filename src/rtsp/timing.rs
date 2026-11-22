@@ -40,11 +40,6 @@ fn within_collection_window(start: &OnceLock<Instant>, now: Instant) -> bool {
     now.saturating_duration_since(*start.get_or_init(|| now)) < COLLECTION_WINDOW
 }
 
-pub(super) fn periodic_enabled() -> bool {
-    static START: OnceLock<Instant> = OnceLock::new();
-    tracing::enabled!(tracing::Level::TRACE) && within_collection_window(&START, Instant::now())
-}
-
 // Four exact u32 words survive both JSON and browser number representations.
 const fn uuid_words(uuid: Uuid) -> [u32; 4] {
     let (high, low) = uuid.as_u64_pair();
@@ -57,6 +52,27 @@ const fn uuid_words(uuid: Uuid) -> [u32; 4] {
 }
 
 impl SourceTiming {
+    pub(super) fn periodic_from_tracks(tracks: &[Stream]) -> Option<Self> {
+        static START: OnceLock<Instant> = OnceLock::new();
+        Self::periodic_sample(&START, Instant::now(), || Self::from_tracks(tracks))
+    }
+
+    fn periodic_sample(
+        start: &OnceLock<Instant>,
+        now: Instant,
+        sample: impl FnOnce() -> Option<Self>,
+    ) -> Option<Self> {
+        if !tracing::enabled!(tracing::Level::TRACE)
+            || start
+                .get()
+                .is_some_and(|started| now.saturating_duration_since(*started) >= COLLECTION_WINDOW)
+        {
+            return None;
+        }
+        let timing = sample()?;
+        within_collection_window(start, now).then_some(timing)
+    }
+
     pub(super) fn from_tracks(tracks: &[Stream]) -> Option<Self> {
         let unique = |kind| {
             let mut candidates = tracks.iter().enumerate().filter_map(|(index, track)| {
@@ -185,14 +201,41 @@ mod tests {
     }
 
     #[test]
-    fn recorder_default_filter_keeps_periodic_collection_off() {
+    fn periodic_collection_starts_at_the_first_reportable_rtp_sample() {
         use tracing_subscriber::{EnvFilter, prelude::*};
+        let start = OnceLock::new();
+        let now = Instant::now();
         let subscriber = tracing_subscriber::Registry::default()
             .with(EnvFilter::new(crate::logging::DEFAULT_LOG_FILTER));
-        tracing::subscriber::with_default(subscriber, || assert!(!periodic_enabled()));
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(
+                SourceTiming::periodic_sample(&start, now, || panic!(
+                    "default filter must skip collection"
+                ))
+                .is_none()
+            );
+        });
         let subscriber = tracing_subscriber::Registry::default()
-            .with(EnvFilter::new("warn,keeppeek::rtsp::timing=trace"));
-        tracing::subscriber::with_default(subscriber, || assert!(periodic_enabled()));
+            .with(EnvFilter::new("keeppeek::rtsp::timing=trace"));
+        tracing::subscriber::with_default(subscriber, || {
+            for t in [now, now + COLLECTION_WINDOW, now + 2 * COLLECTION_WINDOW] {
+                assert!(
+                    SourceTiming::periodic_sample(&start, t, || SourceTiming::from_tracks(&[]))
+                        .is_none()
+                );
+                assert!(start.get().is_none());
+            }
+            let first = now + 3 * COLLECTION_WINDOW;
+            let accepted = || SourceTiming::new(Some(track(90_000, None, 100_100)), None);
+            assert!(SourceTiming::periodic_sample(&start, first, accepted).is_some());
+            assert_eq!(start.get(), Some(&first));
+            assert!(
+                SourceTiming::periodic_sample(&start, first + COLLECTION_WINDOW, || panic!(
+                    "expired window must skip collection"
+                ))
+                .is_none()
+            );
+        });
     }
 
     #[test]

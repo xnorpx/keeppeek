@@ -1037,8 +1037,8 @@ impl RtspLoop {
         *last_report = Instant::now();
         let snapshot = stats.snapshot();
         let rates = snapshot.rates_since(previous);
-        if super::timing::periodic_enabled() {
-            self.report_source_timing(tracks, session, "periodic");
+        if let Some(timing) = super::timing::SourceTiming::periodic_from_tracks(tracks) {
+            timing.emit(self.timing_camera_id, self.stream, session, "periodic");
         }
         let mut streams = vec![video_report(
             self.stream,
