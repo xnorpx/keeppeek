@@ -124,15 +124,7 @@ pub(super) fn recover_job(
         }
         return catalog.retire_relocation(job).map_err(io::Error::other);
     }
-    let meta = fs::symlink_metadata(&job.source)?;
-    if !meta.is_file()
-        || crate::storage::catalog::recording_file_identity(&job.source, &meta).as_deref()
-            != Some(&job.source_identity)
-    {
-        return Err(io::Error::other(
-            "recording source changed during relocation",
-        ));
-    }
+    verify_source(job)?;
     if same_entry(&job.source, &job.destination)? {
         return catalog.retire_relocation(job).map_err(io::Error::other);
     }
@@ -155,9 +147,23 @@ pub(super) fn recover_job(
             "recording directories became aliases during publication",
         ));
     }
+    verify_source(job)?;
     fs::remove_file(&job.source)?;
     sync_parent(&job.source)?;
     catalog.retire_relocation(job).map_err(io::Error::other)
+}
+
+fn verify_source(job: &Move) -> io::Result<()> {
+    let meta = fs::symlink_metadata(&job.source)?;
+    if !meta.is_file()
+        || crate::storage::catalog::recording_file_identity(&job.source, &meta).as_deref()
+            != Some(&job.source_identity)
+    {
+        return Err(io::Error::other(
+            "recording source changed during relocation",
+        ));
+    }
+    Ok(())
 }
 
 fn sync_parent(path: &Path) -> io::Result<()> {

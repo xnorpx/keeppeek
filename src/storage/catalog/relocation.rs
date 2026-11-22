@@ -34,6 +34,9 @@ pub(super) async fn initialize(db: &turso::Connection) -> Result<()> {
         WHEN EXISTS(SELECT 1 FROM legacy_recording_relocations WHERE (id=NEW.id AND source!=NEW.path AND destination!=NEW.path)
           OR (id!=NEW.id AND (source=NEW.path OR destination=NEW.path)))
         BEGIN SELECT RAISE(ABORT,'recording location is reserved'); END;
+        CREATE TRIGGER IF NOT EXISTS legacy_relocation_delete BEFORE DELETE ON recording_files
+        WHEN EXISTS(SELECT 1 FROM legacy_recording_relocations WHERE id=OLD.id)
+        BEGIN SELECT RAISE(ABORT,'recording relocation is pending'); END;
         CREATE TRIGGER IF NOT EXISTS legacy_relocation_cleanup BEFORE UPDATE OF cleanup_pending ON recording_files
         WHEN NEW.cleanup_pending=1 AND EXISTS(SELECT 1 FROM legacy_recording_relocations WHERE id=NEW.id)
         BEGIN SELECT RAISE(ABORT,'recording relocation is pending'); END;

@@ -56,6 +56,13 @@ fn cross_filesystem_copy_publishes_exact_bytes_and_preserves_a_conflicting_desti
             0o600
         );
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(verify_existing(&source, &destination).is_err());
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o600)).unwrap();
+    }
     assert_eq!(fs::read(&source).unwrap(), b"first recording");
     assert_eq!(fs::read(&destination).unwrap(), b"first recording");
     copy_and_publish(&source, &destination, &root, uuid::Uuid::new_v4()).unwrap();

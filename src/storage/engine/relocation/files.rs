@@ -128,7 +128,17 @@ fn publish_no_replace(
 pub(super) fn verify_existing(source: &Path, destination: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(destination)?;
     let mut left = File::open(source)?;
-    if !metadata.is_file() || metadata.len() != left.metadata()?.len() {
+    let original = left.metadata()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o777 & !original.permissions().mode() != 0 {
+            return Err(io::Error::other(
+                "existing recording copy has wider permissions",
+            ));
+        }
+    }
+    if !metadata.is_file() || metadata.len() != original.len() {
         return Err(io::Error::other(
             "conflicting finalized recording destination",
         ));
