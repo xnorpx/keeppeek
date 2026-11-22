@@ -296,7 +296,8 @@ export class RuntimeProfilesControlClient {
 					accept(fresh);
 				}
 			}
-			await status;
+			// Legacy camera counts are optional. The selected profile still follows the header.
+			await status?.catch(() => undefined);
 			return { close };
 		} catch (cause) {
 			await close();
@@ -360,6 +361,7 @@ export class RuntimeProfilesControlClient {
 			};
 		}
 
+		emit(null);
 		let published: ObservedPart | undefined;
 		const parts = new Map<number, ObservedPart>();
 		const results = await Promise.allSettled(

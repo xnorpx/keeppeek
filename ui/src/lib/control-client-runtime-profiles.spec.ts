@@ -417,17 +417,17 @@ describe('runtime profile observations', () => {
 			client.watchStatus(second)
 		]);
 		expect(listeners.size).toBe(8);
-		expect(first).toHaveBeenCalledTimes(1);
-		expect(second).toHaveBeenCalledTimes(1);
+		expect(first.mock.calls.map(([value]) => value?.revision ?? null)).toEqual([null, '3']);
+		expect(second.mock.calls).toEqual(first.mock.calls);
 		for (let i = 0; i < 7; i++) listeners.get(i)!([observedPart(i, 'b'.repeat(64), 4n)]);
-		expect(first).toHaveBeenCalledTimes(2);
+		expect(first).toHaveBeenCalledTimes(3);
 		expect(second).toHaveBeenLastCalledWith(null);
 		const late = vi.fn();
 		const afterPartial = await client.watchStatus(late);
 		expect(late).toHaveBeenCalledExactlyOnceWith(null);
 		await afterPartial.close();
 		listeners.get(7)!([observedPart(7, 'b'.repeat(64), 4n)]);
-		expect(first).toHaveBeenCalledTimes(3);
+		expect(first).toHaveBeenCalledTimes(4);
 		expect(second).toHaveBeenLastCalledWith({
 			revision: '4',
 			definitionRevision: '2',
@@ -501,6 +501,52 @@ describe('runtime profile observations', () => {
 		const client = new RuntimeProfilesControlClient({ get } as unknown as ControlClientStateStore);
 		await expect(client.getStatus()).rejects.toThrow('observation generation');
 		expect(get.mock.calls.some(([, key]) => key === 'status')).toBe(false);
+	});
+	it('keeps the shell selection when the optional legacy status watch cannot open', async () => {
+		let header: ((entries: StateEntry[]) => void) | undefined;
+		const close = vi.fn(async () => {});
+		const store = {
+			get: async () => activeHeader(false),
+			watch: async (
+				_ns: string,
+				options: { keyPrefix: string; listener: (entries: StateEntry[]) => void }
+			) => {
+				if (options.keyPrefix !== 'active') throw new Error('No watch slots available');
+				header = options.listener;
+				header([activeHeader(false)]);
+				return { close };
+			}
+		};
+		const client = new RuntimeProfilesControlClient(store as unknown as ControlClientStateStore);
+		const render = vi.fn();
+		const shell = await client.watchShellProfile(render);
+		expect(close).not.toHaveBeenCalled();
+		header!([entry('active', 'keeppeek.runtime-profiles.active.v1', { profile_id: 'night' }, 4n)]);
+		expect(render).toHaveBeenLastCalledWith('night', null);
+		await shell.close();
+		expect(close).toHaveBeenCalledTimes(1);
+	});
+	it('withdraws a completed status read before waiting for an initially mixed watch generation', async () => {
+		const store = {
+			get: async (_ns: string, key: string) =>
+				key === 'active' ? activeHeader() : observedPart(Number(key.split('/')[1])),
+			watch: async (
+				_ns: string,
+				options: { keyPrefix: string; listener: (entries: StateEntry[]) => void }
+			) => {
+				const i = Number(options.keyPrefix.split('/')[1]);
+				options.listener([observedPart(i, (i === 0 ? 'b' : 'a').repeat(64))]);
+				return { close: async () => {} };
+			}
+		};
+		const client = new RuntimeProfilesControlClient(store as unknown as ControlClientStateStore);
+		let shown = await client.getStatus();
+		expect(shown?.revision).toBe('3');
+		const watch = await client.watchStatus((value) => {
+			shown = value;
+		});
+		expect(shown).toBeNull();
+		await watch.close();
 	});
 	it('shares the shell header and releases full-fleet watches when the fleet view closes', async () => {
 		const closed: string[] = [];
@@ -639,6 +685,11 @@ describe('runtime profile observations', () => {
 		expect(late.mock.lastCall).toEqual([null]);
 		await expect(waiting).rejects.toThrow('permission denied');
 		expect(onError.mock.lastCall?.[0]).toMatchObject({ message: 'permission denied' });
+		await expect(client.watchStatus(vi.fn())).rejects.toThrow('permission denied');
+		refuse = false;
+		const recovered = await client.watchStatus(vi.fn());
+		expect(render.mock.lastCall?.[0]?.revision).toBe('3');
+		await recovered.close();
 		await handle.close();
 	});
 });
