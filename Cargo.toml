@@ -226,6 +226,7 @@ str0m = { version = "0.24.1", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+portable-pty = "0.9"
 rustls = { version = "=0.23.46", default-features = false, features = [
   "std",
   "tls12",
