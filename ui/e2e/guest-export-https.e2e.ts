@@ -70,6 +70,119 @@ async function downloadExport(page: Page, link: Locator) {
 	};
 }
 
+type Fixture = Awaited<ReturnType<typeof startAuthenticationFixture>>;
+
+async function createLink(page: Page, fixture: Fixture) {
+	await fixture.command('administrator');
+	await page.goto(fixture.origin);
+	await page.getByRole('button', { name: 'Continue with Fixture sign-in' }).click();
+	await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
+	const start = fixture.guestRecordingStartMs;
+	if (!Number.isSafeInteger(start) || start === null)
+		throw new Error('The fixture must seed a real recording.');
+	await page.goto(`${fixture.origin}/keep?camera=127.0.0.1&stream=main&at=${start}&mode=export`);
+	await page.getByRole('button', { name: 'Create export', exact: true }).click();
+	const panel = page.locator('[data-keep-export]');
+	await expect(panel).toHaveAttribute('data-export-status', 'ready');
+	const administratorDownload = await downloadExport(
+		page,
+		panel.getByRole('button', { name: 'Download', exact: true })
+	);
+	await panel.getByRole('button', { name: 'Create guest link' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Create guest link' });
+	await dialog.getByLabel('Display name').fill('Entrance recording');
+	await dialog.getByLabel('Allow download').check();
+	await dialog.getByRole('button', { name: 'Create guest link' }).click();
+	const url = await dialog.getByLabel('One-time guest link').inputValue();
+	await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+	await page.goto(fixture.origin + '/settings#access');
+	return { url, administratorDownload };
+}
+
+function observePrivateConsole(page: Page, values: string[]) {
+	let disclosed = false;
+	page.on('console', (message) => {
+		disclosed ||= values.some((value) => message.text().includes(value));
+	});
+	return () => expect(disclosed).toBe(false);
+}
+
+async function verifyPrivatePage(page: Page, values: string[], verifyConsole: () => void) {
+	verifyConsole();
+	expect(new URL(page.url()).hash).toBe('');
+	expect(
+		await page.evaluate((secrets) => {
+			const state = JSON.stringify([localStorage, sessionStorage, history.state, location.href]);
+			return secrets.some((value) => state.includes(value));
+		}, values)
+	).toBe(false);
+}
+
+async function playAndSeek(viewer: Page) {
+	const video = viewer.locator('video');
+	await video.evaluate(async (v) => {
+		const media = v as HTMLVideoElement;
+		media.muted = true;
+		await media.play();
+		media.pause();
+		media.currentTime = media.duration / 2;
+	});
+	await expect
+		.poll(() => video.evaluate((v) => (v as HTMLVideoElement).videoWidth))
+		.toBeGreaterThan(0);
+	await expect.poll(() => video.evaluate((v) => !(v as HTMLVideoElement).seeking)).toBe(true);
+}
+
+async function firstDownloadChunk(viewer: Page, expectedBytes: number) {
+	const transfer = await viewer
+		.getByRole('link', { name: 'Download MP4' })
+		.evaluate(async (element, expectedBytes) => {
+			const started = performance.now();
+			const response = await fetch((element as HTMLAnchorElement).href);
+			if (!response.ok || !response.body) throw new Error('Guest download could not be inspected.');
+			const reader = response.body.getReader();
+			let bytes = 0;
+			let firstByteMs: number | null = null;
+			for (;;) {
+				const next = await reader.read();
+				if (next.done) break;
+				if (next.value.byteLength > 0) firstByteMs ??= performance.now() - started;
+				bytes += next.value.byteLength;
+				if (bytes > expectedBytes) {
+					await reader.cancel();
+					throw new Error('Guest download exceeded the evidence size.');
+				}
+			}
+			return { bytes, firstByteMs };
+		}, expectedBytes);
+	expect(transfer.bytes).toBe(expectedBytes);
+	expect(transfer.firstByteMs).not.toBeNull();
+	return transfer.firstByteMs;
+}
+
+async function revoke(page: Page, viewer: Page) {
+	const row = page
+		.getByRole('listitem')
+		.filter({ has: page.getByRole('heading', { name: 'Entrance recording' }) });
+	await row.getByRole('button', { name: 'Revoke link' }).click();
+	const revoke = page.getByRole('dialog', { name: 'Revoke guest access' });
+	await revoke.getByLabel('Reason').fill('Review is complete.');
+	const revokeStart = performance.now();
+	await revoke.getByRole('button', { name: 'Confirm revocation' }).click();
+	await expect(viewer.getByText('The link was revoked. Playback has stopped.')).toBeVisible();
+	await expect(viewer.locator('video')).toHaveCount(0);
+	return performance.now() - revokeStart;
+}
+
+async function openGuest(page: Page, url: string) {
+	const response = await page.goto(url).catch(() => {
+		throw new Error('Could not open the guest link.');
+	});
+	expect(response?.status()).toBe(200);
+	expect(response?.headers()['cache-control']).toContain('no-store');
+	expect(response?.headers()['referrer-policy']).toBe('no-referrer');
+}
+
 test.use({
 	actionTimeout: 15_000,
 	ignoreHTTPSErrors: true,
@@ -86,125 +199,41 @@ test('an Administrator shares a completed export over HTTPS and revokes the gues
 	const fixture = await startAuthenticationFixture(true);
 	const guest = await browser.newContext({ ignoreHTTPSErrors: true });
 	try {
-		await fixture.command('administrator');
-		await page.goto(fixture.origin);
-		await page.getByRole('button', { name: 'Continue with Fixture sign-in' }).click();
-		await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
-		const start = fixture.guestRecordingStartMs;
-		if (!Number.isSafeInteger(start) || start === null)
-			throw new Error('The fixture must seed a real recording.');
-		await page.goto(`${fixture.origin}/keep?camera=127.0.0.1&stream=main&at=${start}&mode=export`);
-		await page.getByRole('button', { name: 'Create export', exact: true }).click();
-		const panel = page.locator('[data-keep-export]');
-		await expect(panel).toHaveAttribute('data-export-status', 'ready');
-		const administratorDownload = await downloadExport(
-			page,
-			panel.getByRole('button', { name: 'Download', exact: true })
-		);
-		await panel.getByRole('button', { name: 'Create guest link' }).click();
-		const dialog = page.getByRole('dialog', { name: 'Create guest link' });
-		await dialog.getByLabel('Display name').fill('Entrance recording');
-		await dialog.getByLabel('Allow download').check();
-		await dialog.getByRole('button', { name: 'Create guest link' }).click();
-		const url = await dialog.getByLabel('One-time guest link').inputValue();
+		const { url, administratorDownload } = await createLink(page, fixture);
 		const token = new URL(url).hash.slice(1);
 		expect(token.length).toBe(43);
 		const verifyNetwork = observeGuestNetwork(guest, fixture.origin, token);
-		await dialog.getByRole('button', { name: 'Close', exact: true }).click();
-		await page.goto(fixture.origin + '/settings#access');
+		const privateValues = [token];
 		const viewer = await guest.newPage();
-		let consoleHasToken = false;
-		viewer.on('console', (message) => {
-			consoleHasToken ||= message.text().includes(token);
-		});
-		const response = await viewer.goto(url).catch(() => {
-			throw new Error('Could not open the one-time guest link.');
-		});
-		expect(response?.status()).toBe(200);
-		expect(response?.headers()['cache-control']).toContain('no-store');
-		expect(response?.headers()['referrer-policy']).toBe('no-referrer');
+		const verifyViewerConsole = observePrivateConsole(viewer, privateValues);
+		await openGuest(viewer, url);
 		await expect(viewer.getByRole('heading', { name: 'Entrance recording' })).toBeVisible();
-		expect(new URL(viewer.url()).hash).toBe('');
 		const cookies = await guest.cookies(fixture.origin);
 		expect(
 			cookies.map(({ name, secure, httpOnly, sameSite }) => ({ name, secure, httpOnly, sameSite }))
 		).toEqual([
 			{ name: '__Host-keeppeek-guest', secure: true, httpOnly: true, sameSite: 'Strict' }
 		]);
-		const video = viewer.locator('video');
-		await video.evaluate(async (v) => {
-			const media = v as HTMLVideoElement;
-			media.muted = true;
-			await media.play();
-			media.pause();
-			media.currentTime = media.duration / 2;
-		});
-		await expect
-			.poll(() => video.evaluate((v) => (v as HTMLVideoElement).videoWidth))
-			.toBeGreaterThan(0);
-		await expect.poll(() => video.evaluate((v) => !(v as HTMLVideoElement).seeking)).toBe(true);
+		privateValues.push(cookies[0].value);
+		await verifyPrivatePage(viewer, privateValues, verifyViewerConsole);
+		await playAndSeek(viewer);
 		const guestDownload = await downloadExport(
 			viewer,
 			viewer.getByRole('link', { name: 'Download MP4' })
 		);
 		expect(guestDownload.sha256).toBe(administratorDownload.sha256);
-		const transfer = await viewer
-			.getByRole('link', { name: 'Download MP4' })
-			.evaluate(async (element, expectedBytes) => {
-				const started = performance.now();
-				const response = await fetch((element as HTMLAnchorElement).href);
-				if (!response.ok || !response.body)
-					throw new Error('Guest download could not be inspected.');
-				const reader = response.body.getReader();
-				let bytes = 0;
-				let firstByteMs: number | null = null;
-				for (;;) {
-					const next = await reader.read();
-					if (next.done) break;
-					if (next.value.byteLength > 0) firstByteMs ??= performance.now() - started;
-					bytes += next.value.byteLength;
-					if (bytes > expectedBytes) {
-						await reader.cancel();
-						throw new Error('Guest download exceeded the evidence size.');
-					}
-				}
-				return { bytes, firstByteMs };
-			}, guestDownload.bytes);
-		expect(transfer.bytes).toBe(guestDownload.bytes);
-		expect(transfer.firstByteMs).not.toBeNull();
-		const row = page
-			.getByRole('listitem')
-			.filter({ has: page.getByRole('heading', { name: 'Entrance recording' }) });
-		await row.getByRole('button', { name: 'Revoke link' }).click();
-		const revoke = page.getByRole('dialog', { name: 'Revoke guest access' });
-		await revoke.getByLabel('Reason').fill('Review is complete.');
-		const revokeStart = performance.now();
-		await revoke.getByRole('button', { name: 'Confirm revocation' }).click();
-		await expect(viewer.getByText('The link was revoked. Playback has stopped.')).toBeVisible();
-		await expect(video).toHaveCount(0);
-		const revokedUiMs = performance.now() - revokeStart;
-		const privateValues = [token, cookies[0].value];
-		expect(consoleHasToken).toBe(false);
-		expect(
-			await viewer.evaluate((values) => {
-				const storage = JSON.stringify([
-					localStorage,
-					sessionStorage,
-					history.state,
-					location.href
-				]);
-				return values.some((value) => storage.includes(value));
-			}, privateValues)
-		).toBe(false);
+		const firstByteMs = await firstDownloadChunk(viewer, guestDownload.bytes);
+		const revokedUiMs = await revoke(page, viewer);
+		await verifyPrivatePage(viewer, privateValues, verifyViewerConsole);
 		await guest.clearCookies();
 		const reopened = await guest.newPage();
-		await reopened.goto(url).catch(() => {
-			throw new Error('Could not reopen the revoked link.');
-		});
+		const verifyReopenedConsole = observePrivateConsole(reopened, privateValues);
+		await openGuest(reopened, url);
 		await expect(
 			reopened.getByRole('heading', { name: 'This link is unavailable.' })
 		).toBeVisible();
 		await expect(reopened.locator('video')).toHaveCount(0);
+		await verifyPrivatePage(reopened, privateValues, verifyReopenedConsole);
 		await verifyNetwork();
 		const audit = JSON.stringify(await fixture.audit());
 		expect(privateValues.some((value) => audit.includes(value))).toBe(false);
@@ -214,7 +243,7 @@ test('an Administrator shares a completed export over HTTPS and revokes the gues
 				bytes: guestDownload.bytes,
 				administratorDownloadMs: administratorDownload.elapsedMs,
 				guestDownloadMs: guestDownload.elapsedMs,
-				guestDownloadFirstByteMs: transfer.firstByteMs,
+				guestDownloadFirstByteMs: firstByteMs,
 				guestRevokedUiMs: revokedUiMs
 			})
 		});

@@ -112,13 +112,6 @@ impl Database {
             return Err(Error::Storage);
         }
         validate_restored(&records, persisted)?;
-        let cutoff = now_ms.saturating_sub(AUDIT_RETENTION_MS);
-        if !records.iter().any(|record| {
-            record.intent.expires_at_ms <= cutoff
-                || record.revoked_at_ms.is_some_and(|time| time <= cutoff)
-        }) {
-            return self.observe(now_ms);
-        }
         // Downtime can leave every retained grant due for deletion at once.
         let maximum = i64::try_from(records.len()).map_err(|_| Error::Storage)?;
         self.transaction(now_ms, |database| {
