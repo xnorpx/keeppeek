@@ -173,6 +173,7 @@
 	let exportRangeStartMs: number | null = $state(null);
 	let exportRangeEndMs: number | null = $state(null);
 	let exportSeedEvent = $state.raw<RecordingEvent | null>(null);
+	const exportKey = $derived(exportSelectionKey(cameraId, selected, exportSeedEvent));
 	let exportReturnHref = $state<string | null>(null);
 	let configuredFrameRates = $state.raw<ReadonlyMap<string, number>>(new Map());
 	let coldSeekTimestampMs: number | null = $state(null);
@@ -193,7 +194,7 @@
 	let keyFrameUnsubscribe: (() => void) | null = null;
 	let scrubbing = $state(false);
 	let scrubTargetMs: number | null = null;
-	let scrubPump: Promise<void> | null = null;
+	let scrubPump: { version: number; done: Promise<void> } | null = null;
 	let scrubVersion = 0;
 	let scrubPlayIntent = false;
 	let scrubOpenController: AbortController | null = null;
@@ -1060,22 +1061,26 @@
 		scrubTargetMs = timestampMs;
 		playheadMs = timestampMs;
 		showNearestCachedPreview(timestampMs);
-		if (!scrubPump) {
-			const version = scrubVersion;
-			scrubPump = drainTimelineScrub(version)
-				.catch((cause) => {
-					if (version !== scrubVersion) return;
-					clearColdSeek();
-					playerError = storedPlaybackError(cause);
-				})
-				.finally(() => {
-					scrubPump = null;
-					if (scrubTargetMs !== null) {
-						void queueTimelineScrub(scrubTargetMs);
-					}
-				});
-		}
-		return scrubPump;
+		const version = scrubVersion;
+		if (scrubPump?.version === version) return scrubPump.done;
+		const previous = scrubPump;
+		const drain = previous
+			? previous.done.then(() => drainTimelineScrub(version))
+			: drainTimelineScrub(version);
+		const done = drain
+			.catch((cause) => {
+				if (version !== scrubVersion) return;
+				clearColdSeek();
+				playerError = storedPlaybackError(cause);
+			})
+			.finally(() => {
+				if (scrubPump?.version !== version) return;
+				scrubPump = null;
+				if (version === scrubVersion && scrubTargetMs !== null)
+					void queueTimelineScrub(scrubTargetMs);
+			});
+		scrubPump = { version, done };
+		return done;
 	}
 
 	async function drainTimelineScrub(version: number): Promise<void> {
@@ -1187,7 +1192,7 @@
 	async function finishTimelineScrub(timestampMs: number): Promise<void> {
 		const version = scrubVersion;
 		await queueTimelineScrub(timestampMs);
-		await scrubPump;
+		await scrubPump?.done;
 		if (version !== scrubVersion) return;
 		const playback = storedPlayback;
 		if (!playback) {
@@ -2654,7 +2659,7 @@
 			/>
 		{:else if mode === 'export'}
 			<div class="space-y-3">
-				{#key exportSelectionKey(cameraId, selected, exportSeedEvent)}
+				{#key exportKey}
 					<KeepExportPanel
 						sourceId={cameraId}
 						sourceName={selectedCamera?.name ?? cameraId}

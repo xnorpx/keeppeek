@@ -319,6 +319,28 @@ it('tracks the retained cursor across cold seeks and ignores a replaced cursor c
 	}
 });
 
+it('waits for a cancelled scrub before seeking and committing a new drag', async () => {
+	const { first, mount, dispose } = keepFixture();
+	const pending = Promise.withResolvers<void>();
+	first.playback.enterScrub.mockReturnValueOnce(pending.promise);
+	try {
+		await mount();
+		const cancel = beginDrag();
+		await vi.waitFor(() => expect(first.playback.enterScrub).toHaveBeenCalledOnce());
+		cancel('pointercancel');
+		const finish = beginDrag();
+		finish();
+		expect(first.playback.seek).not.toHaveBeenCalled();
+		pending.resolve();
+		await vi.waitFor(() => expect(first.playback.seek).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(first.playback.commitPlayback).toHaveBeenCalledTimes(2));
+		expect(first.playback.enterScrub).toHaveBeenCalledTimes(2);
+	} finally {
+		pending.resolve();
+		dispose();
+	}
+});
+
 it.each(['pointerup', 'pointercancel'] as const)(
 	'reopens archive notices and retry after Close then %s',
 	async (endEvent) => {
