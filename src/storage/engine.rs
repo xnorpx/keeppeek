@@ -1378,18 +1378,19 @@ impl WriterWorker {
 
         let writer = pipeline.medium_term.as_mut().unwrap();
         let recorded_duration = if received_clock {
-            writer.append_received(frame)?
+            writer.append_received(frame)
         } else {
-            writer.append_one(frame)?
+            writer.append_one(frame)
         };
+        let wrote = !writer.awaiting_recovery_keyframe();
 
         if let Some((path, recording_id)) = rotated {
             self.move_to_long_term(camera_id, &path, &recording_id)?;
         }
 
         Ok(WriteProgress {
-            wrote: true,
-            recorded_duration,
+            wrote,
+            recorded_duration: recorded_duration?,
         })
     }
 
@@ -1419,13 +1420,14 @@ impl WriterWorker {
             .is_none_or(|writer| writer.elapsed() >= self.config.medium_term_duration);
         let mut rotated = None;
         let mut recorded_duration = Duration::ZERO;
+        let mut prefix_exceeded = false;
         if needs_segment
             && let Some(index) = frames.iter().position(RecordingFrame::is_video_keyframe)
         {
             if index > 0 {
                 let next = frames.split_off(index);
                 if let Some(writer) = &mut pipeline.medium_term {
-                    recorded_duration = writer.append_batch(frames)?;
+                    (recorded_duration, prefix_exceeded) = writer.append_bounded_batch(frames)?;
                 }
                 frames = next;
             }
@@ -1450,14 +1452,19 @@ impl WriterWorker {
         let Some(writer) = &mut pipeline.medium_term else {
             return Ok(WriteProgress::default());
         };
-        recorded_duration = recorded_duration.saturating_add(writer.append_batch(frames)?);
+        let appended = writer.append_bounded_batch(frames);
+        let wrote = !writer.awaiting_recovery_keyframe();
         if let Some((path, recording_id)) = rotated {
             self.move_to_long_term(camera_id, &path, &recording_id)?;
         }
+        let (duration, exceeded) = appended?;
+        if prefix_exceeded || exceeded {
+            return Err(super::medium_term::keyframe_budget_error());
+        }
 
         Ok(WriteProgress {
-            wrote: true,
-            recorded_duration,
+            wrote,
+            recorded_duration: recorded_duration.saturating_add(duration),
         })
     }
 

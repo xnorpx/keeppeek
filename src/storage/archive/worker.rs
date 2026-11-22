@@ -524,23 +524,17 @@ fn dispatch(context: &Context, scan: &mut Scan, command: Command) {
     match command {
         Command::Wake => scan.wake(),
         Command::Probe { deadline } => {
-            let was_available = context
-                .shared
-                .health
-                .lock()
-                .is_ok_and(|health| health.available);
             let result = context.probe(deadline);
             if result.is_err() {
                 context.health(
                     false,
                     Some("Archive probe failed; check the target and retry"),
                 );
+            } else {
+                // Revisit earlier outage failures even if another transfer restored health.
+                scan.next_periodic = Instant::now();
             }
             if let Ok(mut health) = context.shared.health.lock() {
-                if !was_available && health.available {
-                    // Revisit outage failures on the next pass without interrupting this page.
-                    scan.next_periodic = Instant::now();
-                }
                 health.probe_pending = false;
             }
             scan.wake();

@@ -544,6 +544,10 @@ Effective media paths come from named owners, and catalog paths come from the me
 Use named-volume move controls for stored objects and the confirmed metadata restart workflow
 for the catalog. The general storage editor displays these paths read-only.
 
+Each recording writer can hold up to 16 MiB of encoded media and frame metadata between video
+keyframes. If a camera exceeds this limit, KeepPeek commits the decodable prefix, reports the
+gap in recording health and resumes at the next usable video keyframe.
+
 These values are policy defaults, not a capacity guarantee. Storage budgets and free-space thresholds
 must suit the actual disks and camera bitrates. A configuration ZIP preserves the target's existing
 storage paths on apply; it does not move a recording archive. See

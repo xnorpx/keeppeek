@@ -19,6 +19,7 @@ mod volume_file;
 use volume_file::WriterFile;
 
 const VIDEO_TIMESCALE: u32 = 90_000;
+const PENDING_GOP_BYTES: usize = 16 * 1024 * 1024;
 
 pub struct MediumTermWriter {
     state: WriterState,
@@ -34,6 +35,8 @@ pub struct MediumTermWriter {
     frames_written: u64,
     bytes_written: u64,
     recorded_duration: Duration,
+    // None after an oversized GOP until a new video keyframe resumes this stream.
+    pending_gop_bytes: Option<usize>,
     write_buffer_bytes: usize,
     reservation: Option<Reservation>,
     named_volume: bool,
@@ -180,6 +183,7 @@ impl MediumTermWriter {
             frames_written: 0,
             bytes_written: 0,
             recorded_duration: Duration::ZERO,
+            pending_gop_bytes: Some(0),
             write_buffer_bytes,
             reservation,
             named_volume,
@@ -187,25 +191,70 @@ impl MediumTermWriter {
     }
 
     pub fn append_batch(&mut self, frames: Vec<RecordingFrame>) -> std::io::Result<Duration> {
-        let mut recorded_duration = Duration::ZERO;
-        for rf in frames {
-            recorded_duration = recorded_duration.saturating_add(self.append_one(rf)?);
+        let (recorded_duration, exceeded) = self.append_bounded_batch(frames)?;
+        if exceeded {
+            return Err(keyframe_budget_error());
         }
         Ok(recorded_duration)
     }
 
+    pub(super) fn append_bounded_batch(
+        &mut self,
+        frames: Vec<RecordingFrame>,
+    ) -> std::io::Result<(Duration, bool)> {
+        let mut recorded_duration = Duration::ZERO;
+        let mut exceeded = false;
+        for rf in frames {
+            if let Some(duration) = self.append_bounded(rf)? {
+                recorded_duration = recorded_duration.saturating_add(duration);
+            } else {
+                // A later keyframe in this same drained batch can start a new fragment.
+                exceeded = true;
+            }
+        }
+        Ok((recorded_duration, exceeded))
+    }
+
     pub fn append_one(&mut self, rf: RecordingFrame) -> std::io::Result<Duration> {
+        self.append_bounded(rf)?.ok_or_else(keyframe_budget_error)
+    }
+
+    pub(super) const fn awaiting_recovery_keyframe(&self) -> bool {
+        self.pending_gop_bytes.is_none()
+    }
+
+    fn append_bounded(&mut self, rf: RecordingFrame) -> std::io::Result<Option<Duration>> {
+        let keyframe = rf.is_video_keyframe();
+        let previous_bytes = if keyframe {
+            0
+        } else if matches!(self.state, WriterState::WaitingForKeyframe) {
+            return Ok(Some(Duration::ZERO));
+        } else if let Some(bytes) = self.pending_gop_bytes {
+            bytes
+        } else {
+            return Ok(Some(Duration::ZERO));
+        };
+        // Charge frame metadata as well, so tiny or empty payloads cannot grow an unbounded Vec.
+        let bytes = previous_bytes
+            .saturating_add(rf.byte_len())
+            .saturating_add(size_of::<RecordingFrame>());
+        if bytes > PENDING_GOP_BYTES {
+            if self.pending_gop_bytes.take().is_none() {
+                return Ok(Some(Duration::ZERO));
+            }
+            self.flush_before_keyframe_gap()?;
+            return Ok(None);
+        }
+        self.pending_gop_bytes = Some(bytes);
         let previous_duration = self.recorded_duration;
         if matches!(self.state, WriterState::WaitingForKeyframe) {
-            if rf.frame.is_video_keyframe() {
-                self.segment_origin = Some(rf.received_at);
-                self.camera_timestamp_origin = rf.timestamp;
-                self.state = WriterState::Preparing(vec![rf]);
-            }
-            return Ok(Duration::ZERO);
+            self.segment_origin = Some(rf.received_at);
+            self.camera_timestamp_origin = rf.timestamp;
+            self.state = WriterState::Preparing(vec![rf]);
+            return Ok(Some(Duration::ZERO));
         }
 
-        if matches!(self.state, WriterState::Preparing(_)) && rf.frame.is_video_keyframe() {
+        if matches!(self.state, WriterState::Preparing(_)) && keyframe {
             self.activate_prepared()?;
         }
         match &mut self.state {
@@ -217,7 +266,29 @@ impl MediumTermWriter {
                 ));
             }
         }
-        Ok(self.recorded_duration.saturating_sub(previous_duration))
+        Ok(Some(
+            self.recorded_duration.saturating_sub(previous_duration),
+        ))
+    }
+
+    fn flush_before_keyframe_gap(&mut self) -> std::io::Result<()> {
+        self.activate_prepared()?;
+        if let WriterState::Active(active) = &mut self.state
+            && let Some(fragment) = active.writer.flush_fragment().map_err(mp4_err)?
+        {
+            let start = active.fragment_start_dts.take().ok_or_else(|| {
+                std::io::Error::other("active MP4 fragment has no start timestamp")
+            })?;
+            let end = active
+                .last_video_dts
+                .take()
+                .unwrap_or(start)
+                .saturating_add(u64::from(active.last_video_duration));
+            active.last_video_duration = 0;
+            active.next_audio_dts = None;
+            self.insert_catalog_fragment(fragment, start, end)?;
+        }
+        Ok(())
     }
 
     pub(super) fn append_received(
@@ -595,6 +666,9 @@ impl MediumTermWriter {
     }
 
     pub(super) fn discard_pending(&mut self) -> std::io::Result<()> {
+        if let Some(bytes) = &mut self.pending_gop_bytes {
+            *bytes = 0;
+        }
         match &mut self.state {
             WriterState::Active(active) => {
                 active.writer.discard_pending_samples();
@@ -659,6 +733,13 @@ impl MediumTermWriter {
     pub fn elapsed(&self) -> Duration {
         self.started_at.elapsed()
     }
+}
+
+pub(super) fn keyframe_budget_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "pending recording reached the 16 MiB keyframe limit; waiting for a video keyframe",
+    )
 }
 
 pub(super) fn required_video_media_config(video: &VideoFrame) -> std::io::Result<mp4::MediaConfig> {

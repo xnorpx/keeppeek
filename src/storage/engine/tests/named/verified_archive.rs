@@ -53,6 +53,113 @@ fn buffered_rotation_keeps_inter_frames_until_the_next_keyframe() -> anyhow::Res
 }
 
 #[test]
+fn missing_keyframe_bounds_prepared_and_active_gops_and_recovers_at_the_next_keyframe()
+-> anyhow::Result<()> {
+    let (root, catalog, manager) = runtime::tests::fixture(64 * MEBIBYTE_BYTES)?;
+    let mut config = storage_config("no-next-keyframe");
+    config.volume_runtime = Some(Arc::new(manager));
+    config.medium_term_path = root.join("primary");
+    config.long_term_path = root.join("primary");
+    config.recording_catalog_path = root.join("catalog.db");
+    config.short_term_duration = Duration::from_secs(2);
+    config.flush_interval = Duration::from_secs(60);
+    let demand = RecordingDemand::new(Duration::ZERO);
+    let mut writer = WriterWorker::new(config, demand.clone(), Some(catalog.handle()));
+    let gop = video_fixture(VideoCodec::H264, "640x360");
+    let (MediaFrame::Video(key), MediaFrame::Video(predicted)) = (&gop[0].frame, &gop[1].frame)
+    else {
+        unreachable!("video fixture");
+    };
+    assert!(key.is_keyframe && !predicted.is_keyframe);
+    // A length-prefixed H.264 filler NAL makes two ordinary samples exceed the 16 MiB bound.
+    let mut filled = predicted.data.to_vec();
+    let filler_size = 9_u32 * 1024 * 1024;
+    filled.extend(filler_size.to_be_bytes());
+    filled.push(0x0c);
+    filled.resize(filled.len() + filler_size as usize - 2, 0xff);
+    filled.push(0x80);
+    let filled = bytes::Bytes::from(filled);
+    let start = Instant::now() - Duration::from_secs(15);
+    let sample = |video: &VideoFrame, data, second| RecordingFrame {
+        received_at: start + Duration::from_secs(second),
+        timestamp: Some(Duration::from_secs(second)),
+        frame: MediaFrame::Video(VideoFrame {
+            codec: video.codec,
+            width: video.width,
+            height: video.height,
+            is_keyframe: video.is_keyframe,
+            data,
+        }),
+    };
+    for (source, active) in [("first-gop", false), ("later-gop", true)] {
+        let camera = RecordingStreamIdentity::new(source, "main", source);
+        let _viewer = demand.acquire(&camera.storage_key);
+        writer.config.medium_term_duration = Duration::from_secs(3_600);
+        writer.ingest(camera.clone(), sample(key, key.data.clone(), 0));
+        if active {
+            writer.ingest(camera.clone(), sample(key, key.data.clone(), 1));
+        }
+        let current = &writer.pipelines[&camera.storage_key].medium_term;
+        let first_path = current.as_ref().unwrap().active_path().to_owned();
+        if !active {
+            writer.config.medium_term_duration = Duration::ZERO;
+        }
+        writer.ingest(camera.clone(), sample(predicted, filled.clone(), 2));
+        writer.ingest(camera.clone(), sample(predicted, filled.clone(), 3));
+        writer.ingest(camera.clone(), sample(predicted, predicted.data.clone(), 4));
+        let snapshot = writer.health.snapshot();
+        let health = snapshot
+            .streams
+            .iter()
+            .find(|s| s.stream_id == camera.storage_key)
+            .unwrap();
+        assert!(
+            health
+                .last_error
+                .as_deref()
+                .is_some_and(|reason| reason.contains("keyframe limit"))
+        );
+        let current = writer.pipelines[&camera.storage_key]
+            .medium_term
+            .as_ref()
+            .unwrap();
+        assert!(current.awaiting_recovery_keyframe());
+        writer.ingest(camera.clone(), sample(key, key.data.clone(), 9));
+        writer.ingest(
+            camera.clone(),
+            sample(predicted, predicted.data.clone(), 10),
+        );
+        let recovered = writer.pipelines[&camera.storage_key]
+            .medium_term
+            .as_ref()
+            .unwrap();
+        assert!(!recovered.awaiting_recovery_keyframe());
+        let second_path = recovered.active_path().to_owned();
+        writer.finalize_all();
+        if active {
+            assert_eq!(first_path, second_path);
+            assert_eq!(samples(&second_path), 5);
+        } else {
+            assert_ne!(first_path, second_path);
+            assert_eq!(samples(&first_path), 2);
+            assert_eq!(samples(&second_path), 2);
+        }
+        let fragments =
+            catalog
+                .handle()
+                .media_fragments_in_range(&camera.storage_key, 0, i64::MAX)?;
+        let during_gap = fragments[0].start_ms + 5_000;
+        assert!(fragments.iter().all(|f| {
+            !(f.start_ms..f.start_ms.saturating_add_unsigned(f.duration_ms)).contains(&during_gap)
+        }));
+    }
+    drop(writer);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 #[ignore = "paced local disk qualification; run alone with --ignored --nocapture"]
 fn verified_archive_under_paced_recording_and_review() -> anyhow::Result<()> {
     let frames = video_fixture(VideoCodec::H264, "3840x2160");

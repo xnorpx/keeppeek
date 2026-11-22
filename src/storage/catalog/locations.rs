@@ -37,7 +37,7 @@ impl fmt::Display for StaleCapacity {
 
 impl std::error::Error for StaleCapacity {}
 
-pub(super) async fn check_capacity(
+pub(super) async fn ensure_fresh_observation(
     connection: &turso::Connection,
     capacity: &Capacity,
 ) -> anyhow::Result<()> {
@@ -59,7 +59,7 @@ pub(super) async fn reserve_archive_restore(
     operation: &str,
     capacity: &Capacity,
 ) -> anyhow::Result<()> {
-    check_capacity(connection, capacity).await?;
+    ensure_fresh_observation(connection, capacity).await?;
     let mut rows=connection.query("SELECT object_id,volume_id,generation,relative_key,bytes,state FROM storage_volume_allocations WHERE operation=?1 AND kind='recording'",[operation]).await?;
     let row = rows
         .next()
@@ -806,7 +806,7 @@ async fn reserve(connection: &turso::Connection, allocation: &Allocation) -> any
         return Ok(reply);
     }
     let capacity = &allocation.capacity;
-    check_capacity(connection, capacity).await?;
+    ensure_fresh_observation(connection, capacity).await?;
     let destination_path = admission(connection, allocation, true).await?;
     connection.execute("INSERT INTO storage_volume_allocations (operation, kind, object_id, volume_id, generation, relative_key, bytes, intent_bytes, state, destination_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'reserved', ?8)", turso::params![allocation.operation.clone(), allocation.object.kind.as_str(), allocation.object.id.clone(), allocation.volume.clone(), to_i64(allocation.generation, "volume generation")?, allocation.relative_key.clone(), to_i64(allocation.bytes, "allocation bytes")?, destination_path]).await?;
     bump_revision(connection).await?;

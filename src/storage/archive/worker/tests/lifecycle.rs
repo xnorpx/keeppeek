@@ -474,7 +474,7 @@ fn archive_reopens_during_outage_and_drains_original_jobs_while_primary_recordin
     let worker = Worker::start(fixture.settings.clone(), fixture.catalog.handle())?;
     let handle = worker.handle();
     assert!(!wait_probe(&handle)?.available);
-    let (_, active_path) = fixture.recording("side")?;
+    let (active_id, active_path) = fixture.recording("side")?;
     let primary = mp4::read_mp4(std::fs::File::open(&active_path)?)?;
     assert!(
         primary
@@ -489,6 +489,12 @@ fn archive_reopens_during_outage_and_drains_original_jobs_while_primary_recordin
         assert_eq!(&std::fs::read(path)?, original);
     }
     std::fs::rename(offline, &fixture.settings.root)?;
+    let intervening = handle.enqueue(&active_id, "recording", &ObjectId::random().to_string())?;
+    wait_state(&handle, &intervening.id, "ready")?;
+    assert!(handle.health().available);
+    for (job, _, _) in &pending {
+        assert_eq!(handle.get(&job.id)?.state, "failed");
+    }
     wait_available(&handle)?;
     for (job, path, original) in &pending {
         let ready = wait_state(&handle, &job.id, "ready")?;
@@ -504,7 +510,7 @@ fn archive_reopens_during_outage_and_drains_original_jobs_while_primary_recordin
             .iter()
             .filter(|job| job.kind == "recording")
             .count(),
-        pending.len()
+        pending.len() + 1
     );
     assert_eq!(
         std::fs::read(fixture.settings.root.join("unrelated.txt"))?,
