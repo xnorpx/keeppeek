@@ -1,19 +1,26 @@
 use super::*;
 
 pub(super) fn evidence(value: &ValidatedEvidence) -> proto::ShareEvidence {
-    let binding = &value.binding;
+    evidence_summary(&value.binding, &value.camera_name, value.has_gaps)
+}
+
+fn evidence_summary(
+    binding: &crate::shares::ExportBinding,
+    camera_name: &str,
+    has_gaps: bool,
+) -> proto::ShareEvidence {
     proto::ShareEvidence {
         export_job_id: binding.job_id.clone(),
         artifact_id: binding.artifact_id.clone(),
         sha256: encode_lower_hex(binding.sha256),
         source_id: binding.source_id.clone(),
         source_identity: binding.source_identity.to_string(),
-        camera_name: value.camera_name.clone(),
+        camera_name: camera_name.into(),
         start_ms: binding.start_ms,
         end_ms: binding.end_ms,
         bytes: binding.bytes,
         available_until_ms: binding.available_until_ms,
-        has_gaps: value.has_gaps,
+        has_gaps,
     }
 }
 
@@ -58,12 +65,10 @@ pub(super) fn grant(state: &ServerState, value: GrantSummary, now_ms: i64) -> pr
         .ok()
         .and_then(|evidence| open_guest(state, &evidence.binding).ok().map(|_| evidence));
     let status = status(&value, now_ms, current.is_some());
-    let fallback = ValidatedEvidence {
-        binding: value.intent.binding.clone(),
-        camera_name: "Unavailable camera".into(),
-        has_gaps: true,
-    };
-    let evidence = evidence(current.as_ref().unwrap_or(&fallback));
+    let evidence = current.as_ref().map_or_else(
+        || evidence_summary(&value.intent.binding, "Unavailable camera", true),
+        evidence,
+    );
     proto::ShareGrant {
         grant_id: value.id.to_string(),
         revision: value.revision,
