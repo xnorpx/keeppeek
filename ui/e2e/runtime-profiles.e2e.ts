@@ -113,8 +113,17 @@ test('administrator creates, renames, activates, returns to Base, and deletes a 
 		value: { profile_id: 'away' }
 	});
 
+	const previousWatches = control.runtimeProfileWatchKeys.length;
 	await page.reload();
 	await expect(section).toContainText('Active policy: Night');
+	await expect(section.getByRole('region', { name: 'Runtime profile convergence' })).toContainText(
+		'Camera application status for revision 3'
+	);
+	const watched = control.runtimeProfileWatchKeys.slice(previousWatches);
+	expect(watched.filter((key) => key.startsWith('observed/')).sort()).toEqual(
+		Array.from({ length: 8 }, (_, index) => `observed/${index}`)
+	);
+	expect(watched).not.toContain('status');
 	await section.getByRole('button', { name: 'Select Base' }).click();
 	await expect(
 		section.getByRole('status').filter({ hasText: 'Base policy selected.' })
