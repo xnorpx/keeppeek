@@ -601,7 +601,7 @@ fn recoverable_keyframe_gap_preserves_the_event_window_without_a_new_trigger() {
     worker.handle_command(rx.try_recv().unwrap());
     worker.drain_event_outputs(start + Duration::from_millis(1));
     let mut over = key_frame(start + Duration::from_millis(25));
-    let MediaFrame::Video(video) = &mut over.frame else {
+    let crate::storage::MediaFrame::Video(video) = &mut over.frame else {
         unreachable!("video fixture")
     };
     video.is_keyframe = false;
