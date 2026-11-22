@@ -23,9 +23,11 @@ Changing the quality preference is separate from [digital zoom](./digital-zoom.m
 playback does not provide automatic transcoding for an unsupported codec; retain a compatible
 H.264 stream when your viewing devices need one.
 
-With the recorded player focused, Left and Right step frames. Space toggles playback; J, K and L
-provide shuttle/pause controls. `[` and `]` set export boundaries. Form fields keep their normal
-keyboard behavior, and arrow keys pan a focused digitally zoomed image instead of stepping frames.
+With the recorded player focused, Left and Right pause playback and seek by one estimated frame
+interval using the camera's configured frame rate. On variable-rate recordings, successive seeks
+can display the same picture or skip a picture. Space toggles playback. J, K and L control shuttle
+and pause. `[` and `]` set export boundaries. Form fields keep their normal keyboard behavior.
+Arrow keys pan a focused digitally zoomed image.
 
 ### Use Keep on a phone
 

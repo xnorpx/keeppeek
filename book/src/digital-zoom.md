@@ -45,8 +45,8 @@ transitions.
 
 Keep's play/pause, skip, position, volume, mute, speed, and fullscreen controls remain outside the
 transformed video. Timeline scrubbing still selects recording time, not an image crop. Arrow keys
-pan when the zoomed image has focus; Keep's normal frame-stepping shortcuts remain available at
-full-frame view or outside the inspection surface.
+pan when the zoomed image has focus. At full-frame view, or outside the inspection surface, the
+player's arrow shortcuts seek by one estimated frame interval.
 
 On a portrait phone, the Digital strip remains above the image while **Playback options** opens
 volume, speed and quality in a separate sheet. Opening that sheet does not replace the recording
