@@ -44,6 +44,7 @@ const MANAGED_CAMERA_KEYS: &[&str] = &[
     "event_pre_recording_duration_secs",
     "event_recording_stream",
     "recorded_audio",
+    "live_audio",
 ];
 const RUNTIME_PROFILE_IDENTITY_SCHEMA: &str = "identity_schema";
 const RUNTIME_PROFILE_IDENTITY_SCHEMA_VERSION: i64 = 1;
@@ -2371,6 +2372,7 @@ fn cameras_from_table(
             let mut config: CameraConfig = resolved.try_into()?;
             config.events.validate(config.ip)?;
             config.recorded_audio.validate()?;
+            config.live_audio.validate()?;
             config.name = Some(cam_name.clone());
             if config.username.is_empty() {
                 config.username.clone_from(&defaults.username);
@@ -2746,6 +2748,7 @@ pub fn set_camera_manufacturer(
 
 pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<String> {
     config.recorded_audio.validate()?;
+    config.live_audio.validate()?;
     validate_event_recording_policy(
         config.recording_mode,
         config.event_pre_recording_duration_secs,
@@ -2827,7 +2830,7 @@ fn merge_camera_fields(
                 continue;
             }
             // This numeric table is a replacement. Omitted stream keys restore inheritance.
-            let value = if key == "recorded_audio" {
+            let value = if matches!(key.as_str(), "recorded_audio" | "live_audio") {
                 value
             } else {
                 preserve_secret_reference(original.get(&key), value, secrets)?
@@ -5279,6 +5282,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
 
         assert_eq!(upsert_camera(&path, &config).unwrap(), "existing");

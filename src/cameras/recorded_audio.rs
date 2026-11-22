@@ -1,14 +1,19 @@
-//! Recorded-audio settings preserve explicit zero and per-stream inheritance.
+//! Live and recorded presentation settings preserve explicit zero and per-stream inheritance.
 
 use serde::{Deserialize, Serialize};
 
 /// Maximum absolute recorded-audio correction, in milliseconds.
 pub const MAX_RECORDED_AUDIO_OFFSET_MS: i32 = 5_000;
 
-/// Positive offsets delay audio without changing the stored source recording.
+/// Maximum absolute live listener correction, in milliseconds.
+pub const MAX_LIVE_AUDIO_OFFSET_MS: i32 = 200;
+pub type RecordedAudioSettings = AudioOffsetSettings<MAX_RECORDED_AUDIO_OFFSET_MS>;
+pub type LiveAudioSettings = AudioOffsetSettings<MAX_LIVE_AUDIO_OFFSET_MS>;
+
+/// Signed presentation corrections. Absent profile overrides inherit the camera default.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct RecordedAudioSettings {
+#[serde(deny_unknown_fields)]
+pub struct AudioOffsetSettings<const LIMIT_MS: i32> {
     /// An absent camera default resolves to zero.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_offset_ms: Option<i32>,
@@ -20,7 +25,7 @@ pub struct RecordedAudioSettings {
     pub sub_offset_ms: Option<i32>,
 }
 
-impl RecordedAudioSettings {
+impl<const LIMIT_MS: i32> AudioOffsetSettings<LIMIT_MS> {
     pub const fn is_default(&self) -> bool {
         self.default_offset_ms.is_none()
             && self.main_offset_ms.is_none()
@@ -38,8 +43,8 @@ impl RecordedAudioSettings {
         .flatten()
         {
             anyhow::ensure!(
-                (-MAX_RECORDED_AUDIO_OFFSET_MS..=MAX_RECORDED_AUDIO_OFFSET_MS).contains(&value),
-                "recorded audio offset must be between -5000 and 5000 milliseconds"
+                (-LIMIT_MS..=LIMIT_MS).contains(&value),
+                "audio offset must be between -{LIMIT_MS} and {LIMIT_MS} milliseconds"
             );
         }
         Ok(())
@@ -50,7 +55,7 @@ impl RecordedAudioSettings {
         let stream_offset = match stream_id {
             "main" => self.main_offset_ms,
             "sub" => self.sub_offset_ms,
-            _ => anyhow::bail!("recorded audio correction requires a main or sub stream"),
+            _ => anyhow::bail!("audio correction requires a main or sub stream"),
         };
         Ok(stream_offset.or(self.default_offset_ms).unwrap_or_default())
     }
