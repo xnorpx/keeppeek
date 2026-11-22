@@ -159,6 +159,12 @@ impl MediaPermit {
                     "guest response privacy capacity reached",
                 ));
             }
+            let permit = self.clone();
+            response.guard_writes(move |write| {
+                permit
+                    .deliver(write)
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?
+            })?;
             responses.push((self.camera_id.clone(), response));
             Ok(())
         })

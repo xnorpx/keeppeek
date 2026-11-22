@@ -45,7 +45,8 @@ impl ApiEventQueue {
             ..Default::default()
         };
         drain_api_session_commands(&self.receiver, &mut media);
-        media.control_notifications
+        media
+            .control_notifications
             .into_iter()
             .filter_map(|notification| notification.deliver(Clone::clone))
             .collect()

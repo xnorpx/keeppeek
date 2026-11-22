@@ -170,6 +170,22 @@ impl Store {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = source_ids.clone();
         drop(current);
+        let suppressed = Self::suppress_pending_deliveries(&mut state, &source_ids, now_ms);
+        drop(state);
+        if suppressed != 0 {
+            decrement_counter(
+                &self.metrics.pending_deliveries,
+                u64::try_from(suppressed).unwrap_or(u64::MAX),
+            );
+        }
+        Ok(suppressed)
+    }
+
+    fn suppress_pending_deliveries(
+        state: &mut RuntimeState,
+        source_ids: &BTreeSet<String>,
+        now_ms: i64,
+    ) -> usize {
         let suppressed = state
             .outbox
             .iter()
@@ -204,14 +220,7 @@ impl Store {
                 next_eligible_at_ms: None,
             });
         }
-        drop(state);
-        if !suppressed.is_empty() {
-            decrement_counter(
-                &self.metrics.pending_deliveries,
-                u64::try_from(suppressed.len()).unwrap_or(u64::MAX),
-            );
-        }
-        Ok(suppressed.len())
+        suppressed.len()
     }
 
     fn normalize_operational_interval(

@@ -1004,7 +1004,7 @@ fn repaired_camera_restart_confirms_privacy_against_the_new_observation() {
 }
 
 #[test]
-fn recovered_camera_confirmation_releases_only_the_original_configuration() {
+fn recovered_camera_confirms_the_current_configuration_before_releasing_privacy() {
     let lifecycle = Lifecycle::new(false);
     lifecycle.activate("away", 0);
     lifecycle.activate("", 1);
@@ -1054,20 +1054,9 @@ fn recovered_camera_confirmation_releases_only_the_original_configuration() {
         .flatten()
         .next()
         .unwrap();
-    camera.username = "edited-after-submission".into();
+    camera.recorded_audio.default_offset_ms = Some(50);
     config::upsert_camera(&path, &camera).unwrap();
     hold();
     state.confirm_recovered_profile(2);
-    wait(&|| {
-        lifecycle
-            .application()
-            .reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("configuration changed"))
-    });
-    assert!(private());
-    assert_eq!(
-        lifecycle.application().state,
-        RuntimeApplicationState::Degraded
-    );
+    wait(&|| !private() && lifecycle.application().state == RuntimeApplicationState::Applied);
 }

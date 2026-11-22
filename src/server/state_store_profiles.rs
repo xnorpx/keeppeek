@@ -361,7 +361,7 @@ fn dispatch_command(
                 registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
             })?;
             let identities =
-                crate::keeppeek::CameraProfileIds::new(camera_ids.clone()).map_err(|error| {
+                crate::keeppeek::CameraProfileIds::new(camera_ids).map_err(|error| {
                     registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
                 })?;
             if let Some(profile_id) = profile_id.as_ref() {
@@ -454,7 +454,7 @@ fn dispatch_command(
                 current.runtime_profiles.clone();
             mark_runtime_status_pending(state, &current.runtime_profiles);
             publish_status_event(state, now_ms());
-            application::schedule(state, &current.runtime_profiles, camera_ids);
+            application::schedule(state, &current.runtime_profiles);
             let audit_target = current.runtime_profiles.active_profile_id.clone();
             let entry = {
                 let status = state
@@ -1168,10 +1168,9 @@ fn put_registry(
             REGISTRY_KEY,
         ));
     }
-    let identities =
-        crate::keeppeek::CameraProfileIds::new(camera_ids.clone()).map_err(|error| {
-            registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
-        })?;
+    let identities = crate::keeppeek::CameraProfileIds::new(camera_ids).map_err(|error| {
+        registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
+    })?;
     let configured_ids = configured_profile_ids(&identities);
     candidate
         .validate_targets(&configured_ids, &previous_registry)
@@ -1262,7 +1261,7 @@ fn put_registry(
         .unwrap_or_else(std::sync::PoisonError::into_inner) = candidate.clone();
     mark_runtime_status_pending(state, &candidate);
     publish_status_event(state, now_ms());
-    application::schedule(state, &candidate, camera_ids);
+    application::schedule(state, &candidate);
 
     record_profile_audit(
         state,
@@ -2657,39 +2656,29 @@ mod tests {
     }
 
     #[test]
-    fn camera_identity_change_reports_a_recoverable_failure_for_the_current_selection() {
+    fn queued_selection_submits_the_camera_inventory_present_when_the_worker_runs() {
         let fixture = Fixture::new();
-        let existing = fixture.add_camera(&camera_config("192.0.2.16".parse().unwrap()));
-        let runtime = crate::keeppeek::KeepPeekLoop::new(crate::shutdown::Shutdown::new(), None);
+        fixture.add_camera(&camera_config("192.0.2.16".parse().unwrap()));
+        let shutdown = crate::shutdown::Shutdown::new();
+        let mut runtime = crate::keeppeek::KeepPeekLoop::new(shutdown.clone(), None);
         let state = fixture.state.clone().with_camera_runtime(runtime.control());
         let path = fixture.config_path();
         let config = config::load_config(&path).unwrap();
-        let ids = config.camera_profile_identities().unwrap();
+        let (sent, observed) = std::sync::mpsc::channel();
+        runtime.set_runtime_profile_status_publisher(move || {
+            let _ = sent.send(());
+        });
         {
             let _guard = state.config_update.lock().unwrap();
-            mark_runtime_status_pending(&state, &config.runtime_profiles);
-            application::schedule(&state, &config.runtime_profiles, ids);
+            application::schedule(&state, &config.runtime_profiles);
             fixture.add_camera(&camera_config("192.0.2.17".parse().unwrap()));
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let status = state.runtime_profile_status.read().unwrap();
-            if let Some(observed) = status.cameras.get(&existing)
-                && observed.state == crate::profiles::RuntimeApplicationState::Degraded
-                && observed
-                    .reason
-                    .as_deref()
-                    .is_some_and(|reason| reason.contains("Reapply"))
-            {
-                break;
-            }
-            drop(status);
-            assert!(
-                Instant::now() < deadline,
-                "identity changes must leave a retryable outcome"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        let worker = std::thread::spawn(move || runtime.run());
+        let acknowledgement = observed.recv_timeout(Duration::from_secs(5));
+        shutdown.cancel();
+        worker.join().unwrap();
+        acknowledgement
+            .expect("the current selection must reach the recorder after the camera edit");
     }
 
     #[test]
@@ -2965,23 +2954,21 @@ mod tests {
     }
 
     #[test]
-    fn camera_identity_refresh_supersedes_outstanding_application_but_rejects_unsubmitted_work() {
+    fn camera_identity_refreshes_the_submission_and_supersedes_its_previous_fence() {
         let fixture = Fixture::new();
         fixture.add_camera(&camera_config("192.0.2.23".parse().unwrap()));
         let config = config::load_config(&fixture.config_path()).unwrap();
-        let ids = config.camera_profile_identities().unwrap();
-        let current = |submitted| {
-            application::current_identities(
-                &fixture.state,
-                &config.runtime_profiles,
-                &ids,
-                submitted,
-            )
+        let current = || {
+            application::current_submission(&fixture.state, &config.runtime_profiles)
+                .unwrap()
+                .unwrap()
         };
-        let (_, before) = current(None).unwrap().unwrap();
-        fixture.add_camera(&camera_config("192.0.2.24".parse().unwrap()));
-        assert!(current(Some(before)).unwrap().is_none());
-        assert!(current(None).is_err());
+        let (_, before) = current();
+        let new_ip = "192.0.2.24".parse().unwrap();
+        let added = fixture.add_camera(&camera_config(new_ip));
+        let (ids, after) = current();
+        assert_ne!(before, after);
+        assert_eq!(ids.camera_id(new_ip), added);
     }
 
     #[test]
