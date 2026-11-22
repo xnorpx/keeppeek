@@ -3,7 +3,9 @@ use crate::profiles::RuntimeProfileStatus;
 
 pub(super) const PART_COUNT: usize =
     crate::profiles::MAX_PROFILE_TARGETS.div_ceil(PROFILE_PART_TARGETS);
-const MAX_OBSERVED_CAMERAS: usize = 2 * crate::profiles::MAX_PROFILE_TARGETS;
+// Eight documents can represent 256 configured cameras plus every retained missing
+// target in a 127-camera profile, within the existing per-session watch budget.
+const MAX_OBSERVED_CAMERAS: usize = 256 + crate::profiles::MAX_PROFILE_TARGETS;
 const COMPACT_PART_SCHEMA: &str = "keeppeek.runtime-profiles.observed.v2";
 const PART_SCHEMA: &str = "keeppeek.runtime-profiles.observed.v1";
 
@@ -96,24 +98,7 @@ pub(in crate::server) fn part_entry(
         },
     );
     if entry.value.encoded_len() > PROFILE_DOCUMENT_BYTES_MAX {
-        use crate::profiles::FieldSource::Profile;
-        let mut rows = serde_json::Map::new();
-        for (id, camera) in cameras {
-            let policy = &camera.policy;
-            let flags = u8::from(policy.available)
-                | u8::from(policy.privacy_enforced) << 1
-                | u8::from(policy.notifications_enabled) << 2
-                | u8::from(policy.available_source == Profile) << 3
-                | u8::from(policy.recording_mode_source == Profile) << 4
-                | u8::from(policy.privacy_source == Profile) << 5
-                | u8::from(policy.notifications_source == Profile) << 6;
-            rows.insert(
-                id,
-                serde_json::json!([camera.state, policy.recording_mode, flags, camera.reason]),
-            );
-        }
-        let compact = super::super::super::peek_layouts::json_to_struct(rows.into())
-            .map_err(|error| Error::Storage(error.to_string()))?;
+        let compact = compact_rows(cameras)?;
         entry.value.fields.insert(
             "cameras".to_owned(),
             Value {
@@ -123,6 +108,40 @@ pub(in crate::server) fn part_entry(
         entry.schema = COMPACT_PART_SCHEMA.to_owned();
     }
     bounded(entry)
+}
+
+fn compact_rows(
+    cameras: BTreeMap<String, crate::profiles::CameraRuntimeApplication>,
+) -> Result<Struct, Error> {
+    use crate::profiles::FieldSource::Profile;
+    // At most 48 maximum-length IDs must fit a 16 KiB protobuf document.
+    let reason_bytes = if cameras.len() > 40 {
+        24
+    } else if cameras.len() > 32 {
+        64
+    } else {
+        96
+    };
+    let mut rows = serde_json::Map::new();
+    for (id, mut camera) in cameras {
+        if let Some(reason) = &mut camera.reason {
+            reason.truncate(reason.floor_char_boundary(reason_bytes));
+        }
+        let policy = &camera.policy;
+        let flags = u8::from(policy.available)
+            | u8::from(policy.privacy_enforced) << 1
+            | u8::from(policy.notifications_enabled) << 2
+            | u8::from(policy.available_source == Profile) << 3
+            | u8::from(policy.recording_mode_source == Profile) << 4
+            | u8::from(policy.privacy_source == Profile) << 5
+            | u8::from(policy.notifications_source == Profile) << 6;
+        rows.insert(
+            id,
+            serde_json::json!([camera.state, policy.recording_mode, flags, camera.reason]),
+        );
+    }
+    super::super::super::peek_layouts::json_to_struct(rows.into())
+        .map_err(|error| Error::Storage(error.to_string()))
 }
 
 pub(super) fn bounded(entry: StoredEntry) -> Result<StoredEntry, Error> {
@@ -197,21 +216,48 @@ pub(in crate::server) fn filter_status_rows(
     }
 }
 
-pub(super) fn degraded_camera_ids(
+#[derive(Clone, Debug, Default)]
+pub(in crate::server) struct ObservedCameraStates {
+    degraded: BTreeSet<String>,
+    pending: BTreeSet<String>,
+}
+
+impl ObservedCameraStates {
+    pub(in crate::server) fn count(&self, visible: Option<&BTreeSet<String>>) -> Option<usize> {
+        match visible {
+            Some(ids) if self.pending.is_disjoint(ids) => {
+                Some(self.degraded.intersection(ids).count())
+            }
+            None if self.pending.is_empty() => Some(self.degraded.len()),
+            _ => None,
+        }
+    }
+}
+
+pub(super) fn observed_camera_states(
     registry: &crate::profiles::ProfileRegistry,
     status: &RuntimeProfileStatus,
-) -> Option<BTreeSet<String>> {
-    (registry.revision == status.revision && registry.active_profile_id == status.active_profile_id)
-        .then(|| {
-            status
-                .cameras
-                .iter()
-                .filter(|(_, camera)| {
-                    camera.state == crate::profiles::RuntimeApplicationState::Degraded
-                })
-                .map(|(id, _)| id.clone())
-                .collect()
-        })
+) -> Option<ObservedCameraStates> {
+    if registry.revision != status.revision
+        || registry.active_profile_id != status.active_profile_id
+        || registry.active_definition_revision() != status.definition_revision
+    {
+        return None;
+    }
+    let mut states = ObservedCameraStates::default();
+    for (id, camera) in &status.cameras {
+        use crate::profiles::RuntimeApplicationState;
+        match camera.state {
+            RuntimeApplicationState::Pending => {
+                states.pending.insert(id.clone());
+            }
+            RuntimeApplicationState::Degraded => {
+                states.degraded.insert(id.clone());
+            }
+            RuntimeApplicationState::Applied => {}
+        }
+    }
+    Some(states)
 }
 
 pub(super) fn header_snapshot(
@@ -226,7 +272,7 @@ pub(super) fn header_snapshot(
         state,
         Some(principal),
         identities,
-        degraded_camera_ids(registry, status).as_ref(),
+        observed_camera_states(registry, status).as_ref(),
         &mut entry,
     );
     entry
@@ -236,16 +282,16 @@ pub(in crate::server) fn set_header_count(
     state: &ServerState,
     principal: Option<&ApiPrincipal>,
     identities: Option<&crate::keeppeek::CameraProfileIds>,
-    degraded: Option<&BTreeSet<String>>,
+    observations: Option<&ObservedCameraStates>,
     entry: &mut StoredEntry,
 ) {
-    let count = degraded.and_then(|ids| {
+    let count = observations.and_then(|states| {
         let principal = principal?;
         if principal.role == AccessRole::Administrator {
-            Some(ids.len())
+            states.count(None)
         } else {
             visible_profile_camera_ids(state, principal, identities)
-                .map(|visible| ids.intersection(&visible).count())
+                .and_then(|visible| states.count(Some(&visible)))
         }
     });
     write_header_count(count, entry);
