@@ -13360,6 +13360,26 @@ mod tests {
         profiles::{CameraProfileOverride, RuntimeProfile},
     };
 
+    fn spawn_router_query_worker(
+        mut router: crate::runtime::Router,
+    ) -> std::thread::JoinHandle<usize> {
+        std::thread::spawn(move || {
+            // A wakeup can be empty, and request setup can precede the actual router query.
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(
+                    !remaining.is_zero(),
+                    "test request never reached the router"
+                );
+                let handled = router.wait_and_drain(Some(remaining)).unwrap();
+                if handled != 0 {
+                    return handled;
+                }
+            }
+        })
+    }
+
     #[test]
     fn persisted_active_profile_privacy_is_restored_into_the_server_media_gate() {
         let camera_identity = uuid::Uuid::new_v4().to_string();
@@ -14262,13 +14282,12 @@ mod tests {
             WebRtc::new(),
         )
         .with_health_registry(registry);
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_worker =
-            std::thread::spawn(move || router.wait_and_drain(Some(Duration::from_secs(2))));
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_worker = spawn_router_query_worker(router);
 
         let health = server_health(&router_tx, &state);
 
-        assert_eq!(router_worker.join().unwrap().unwrap(), 1);
+        assert_eq!(router_worker.join().unwrap(), 1);
         assert_eq!(health.totals.ingress_fps, 15.0);
         assert_eq!(health.totals.ingress_bitrate_bps, 512_000);
         assert_eq!(health.totals.frames, 100);
@@ -14377,7 +14396,7 @@ mod tests {
             std::thread::spawn(move || router.wait_and_drain(Some(Duration::from_secs(30))));
 
         let mut health = server_health(&router_tx, &state);
-        assert_eq!(router_worker.join().unwrap().unwrap(), 1);
+        assert_eq!(router_worker.join().unwrap(), 1);
         assert_eq!(health.cameras[0].state, CameraHealthState::Starting);
         assert_eq!(health.cameras[0].reason, CameraHealthReason::Starting);
         assert_eq!(health.totals.connected_cameras, 1);
@@ -21513,10 +21532,8 @@ mod tests {
         )
         .unwrap();
         let state = ServerState::empty().with_camera_config_path(config_path.clone());
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let handler = ServerControlHandler::new(state, router_tx);
         let response = handler
             .handle(proto::Request {
@@ -21655,10 +21672,8 @@ mod tests {
         )
         .unwrap();
         let state = ServerState::empty().with_camera_config_path(config_path.clone());
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let handler = ServerControlHandler::new(state, router_tx);
         let response = handler
             .handle(proto::Request {
@@ -22029,10 +22044,8 @@ mod tests {
     #[test]
     fn data_channel_health_get_returns_typed_snapshot() {
         let state = ServerState::empty();
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = ServerControlHandler::new(state, router_tx)
             .handle(proto::Request {
                 request_id: 88,
@@ -22837,10 +22850,8 @@ mod tests {
     #[test]
     fn health_command_returns_runtime_and_resource_sections() {
         let state = ServerState::empty();
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = ServerControlHandler::new(state, router_tx)
             .handle(proto::Request {
                 request_id: 95,
@@ -22892,10 +22903,8 @@ mod tests {
         state.upsert_camera(camera_entry(&config, None));
         state.health.events.record_kind(config.ip, "digital_input");
         assert!(state.health.snapshot().is_empty());
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let request = Request::fake_http("GET", "/metrics", Vec::new(), Vec::new());
         let response = handle_request(&request, &router_tx, &state);
         assert_eq!(response.status_code, 200);
@@ -22913,10 +22922,8 @@ mod tests {
     #[test]
     fn metrics_route_returns_prometheus_text_exposition() {
         let state = ServerState::empty();
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let request = Request::fake_http("GET", "/metrics", Vec::new(), Vec::new());
 
         let response = handle_request(&request, &router_tx, &state);
@@ -23020,10 +23027,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = handle_request(&request, &router_tx, &state);
         assert_eq!(response.status_code, 200);
         assert_eq!(router_thread.join().unwrap(), 1);
@@ -23034,10 +23039,8 @@ mod tests {
         assert_eq!(first["cameras"][0]["streams"][0]["coverage_percent"], 0.0);
         let token = first["next_page_token"].as_str().unwrap();
 
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let metrics = handle_request(
             &Request::fake_http("GET", "/metrics", Vec::new(), Vec::new()),
             &router_tx,
@@ -23058,10 +23061,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = handle_request(&request, &router_tx, &state);
         assert_eq!(response.status_code, 200);
         assert_eq!(router_thread.join().unwrap(), 1);
@@ -23092,10 +23093,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = handle_request(&request, &router_tx, &state);
         assert_eq!(response.status_code, 409);
         assert_eq!(router_thread.join().unwrap(), 1);
@@ -23133,10 +23132,8 @@ mod tests {
             RecordingDemand::new(Duration::ZERO),
             WebRtc::new(),
         );
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = ServerControlHandler::new(state, router_tx)
             .handle(proto::Request {
                 request_id: 97,
@@ -23230,9 +23227,7 @@ mod tests {
             .expect("configured camera streams must be advertised while starting");
         assert_eq!(stored_source.streams.len(), 2);
 
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let router_thread = spawn_router_query_worker(router);
         let settings = handler
             .handle(proto::Request {
                 request_id: 89,
@@ -23478,9 +23473,7 @@ mod tests {
             .expect("configured camera streams must be advertised");
         assert_eq!(stored.streams.len(), 2);
 
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let router_thread = spawn_router_query_worker(router);
         let health = handler
             .handle(proto::Request {
                 request_id: 103,
@@ -23675,10 +23668,8 @@ mod tests {
         let config_path = directory.join("config.toml");
         crate::config::write_private_file(&config_path, b"[cameras]\n").unwrap();
         let state = ServerState::empty().with_camera_config_path(config_path.clone());
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
 
         let saved_response = save_camera_settings(
             CameraSettingsUpdate {
@@ -23722,10 +23713,8 @@ mod tests {
             Some("rtsp://192.0.2.77:8554/live/sub")
         );
 
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = ServerControlHandler::new(state.clone(), router_tx)
             .handle(proto::Request {
                 request_id: 91,
@@ -23758,10 +23747,8 @@ mod tests {
         );
         assert_eq!(router_thread.join().unwrap(), 1);
 
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         save_camera_settings(
             CameraSettingsUpdate {
                 display_name: Some(Some("Updated Manual Gate".to_owned())),
@@ -23783,10 +23770,8 @@ mod tests {
             Some("rtsp://192.0.2.77:8554/live/main")
         );
 
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         save_camera_settings(
             CameraSettingsUpdate {
                 main_rtsp_url: Some(None),
@@ -23929,10 +23914,8 @@ mod tests {
                 toml::Value::String("reo-proto".to_owned()),
             );
         crate::config::write_configuration_table(&config_path, &current).unwrap();
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
 
         let saved = save_camera_settings(
             CameraSettingsUpdate {
@@ -23967,10 +23950,8 @@ mod tests {
         let path = directory.join("config.toml");
         crate::config::write_private_file(&path, b"[camera_defaults]\nusername='operator'\npassword='password'\nevent_pre_recording_duration_secs=12\nevent_recording_stream='sub'\n[cameras]\n").unwrap();
         let state = ServerState::empty().with_camera_config_path(path.clone());
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let saved = save_camera_settings(
             CameraSettingsUpdate {
                 recording_mode: Some(CameraRecordingMode::EventOnly),
