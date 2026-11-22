@@ -1,6 +1,5 @@
 use super::*;
 use crate::server::{self, guest_review::registry::tests::Harness, proto};
-use std::time::Instant;
 
 struct Transfer {
     reader: Box<dyn Read + Send>,
@@ -127,7 +126,7 @@ fn resident_bytes(system: &mut sysinfo::System) -> u64 {
 fn qualify(frames: u32, spacing_ms: u64) {
     let fixture = Evidence::recording(true, frames, spacing_ms);
     let expected = &fixture.grant.intent.binding;
-    let mut system = sysinfo::System::new();
+    let mut system = sysinfo::System::new().unwrap();
     let idle = resident_bytes(&mut system);
     let (authenticated, administrator_rss) =
         record_administrator_download(&fixture, expected, &mut system);
