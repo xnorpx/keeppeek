@@ -12442,7 +12442,15 @@ fn save_runtime_settings(
         }
     }
     if let Some(settings) = settings.storage.archive.as_ref() {
-        storage_archive::validate_claim_recovery(state, Some(settings))?;
+        let resolved =
+            config::validate_archive_configuration(config_path, settings).map_err(|_| {
+                ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "archive settings are invalid",
+                )
+            })?;
+        storage_archive::validate_claim_recovery(state, Some(&resolved))?;
     }
     storage_volumes::settings::validate_removals(
         state,

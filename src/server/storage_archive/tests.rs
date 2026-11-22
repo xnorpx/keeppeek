@@ -96,7 +96,13 @@ fn archive_wire_configuration_keeps_private_references_and_rejects_invalid_limit
         retention_days: Some(30),
         ..wire.clone()
     };
-    assert_eq!(from_wire(&path, finite).unwrap().retention_days, Some(30));
+    let private = from_wire(&path, finite).unwrap();
+    assert_eq!(private.retention_days, Some(30));
+    assert_eq!(private.target_id, "{secret:TARGET}");
+    assert_eq!(private.root, Path::new("{secret:ROOT}"));
+    let effective = crate::config::validate_archive_configuration(&path, &private).unwrap();
+    assert_eq!(effective.target_id, "local-archive");
+    assert_eq!(effective.root, directory.join("archive"));
     let mut saved = crate::config::load_configuration_table(&path).unwrap();
     saved
         .get_mut("storage")

@@ -486,6 +486,7 @@ impl Context {
                 .as_ref()
                 .filter(|settings| settings.enabled)
                 .ok_or_else(|| anyhow::anyhow!("archive is disabled in saved configuration"))?;
+            crate::backup::check_staged_archive_deletion(path, saved)?;
             Policy::from_settings(saved)?
         } else {
             Policy::from_settings(&self.settings)?

@@ -12,14 +12,24 @@ fn submit(
 ) -> Result<Plan> {
     let _configuration = state.config_update.lock().map_err(|_| unavailable())?;
     let policy = handle.deletion_policy().map_err(operation_failed)?;
+    let request = build(policy.clone());
     if let Some(path) = &state.camera_config_path {
         let config = crate::config::load_config(path).map_err(operation_failed)?;
         let saved = config.storage.archive.as_ref().ok_or_else(unavailable)?;
+        if matches!(&request, Request::Confirm { .. }) {
+            crate::backup::check_staged_archive_deletion(path, saved).map_err(|_| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Rejected,
+                    409,
+                    "pending restore prevents archive deletion confirmation",
+                )
+            })?;
+        }
         if Policy::from_settings(saved).map_err(operation_failed)? != policy {
             return Err(unavailable());
         }
     }
-    handle.deletion(build(policy)).map_err(operation_failed)
+    handle.deletion(request).map_err(operation_failed)
 }
 
 pub(super) fn preview(

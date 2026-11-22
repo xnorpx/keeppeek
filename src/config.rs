@@ -1993,7 +1993,7 @@ pub(crate) fn validate_volume_configuration(
 pub(crate) fn validate_archive_configuration(
     path: &Path,
     settings: &crate::storage::archive::settings::Settings,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<crate::storage::archive::settings::Settings> {
     let mut candidate = load_configuration_table(path)?;
     let storage = candidate
         .entry("storage")
@@ -2001,7 +2001,10 @@ pub(crate) fn validate_archive_configuration(
         .as_table_mut()
         .ok_or_else(|| anyhow::anyhow!("storage is not a configuration table"))?;
     storage.insert("archive".into(), toml::Value::try_from(settings)?);
-    validate_configuration_table(path, &candidate)
+    validated_configuration_table(path, &candidate)?
+        .storage
+        .archive
+        .ok_or_else(|| anyhow::anyhow!("validated archive settings are missing"))
 }
 
 fn merge_preserving_secret_references(existing: &mut toml::Value, next: toml::Value) {
