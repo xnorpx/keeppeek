@@ -265,7 +265,7 @@ test('preserves an export range while job creation fails closed', async ({ page 
 	const gate = page
 		.locator('[data-capability-gate][data-capability="keeppeek.media-export.v1"]')
 		.filter({ hasText: 'Create export' });
-	await expect(gate).toContainText('Server update required Â· keeppeek.media-export.v1');
+	await expect(gate).toContainText('Server update required · keeppeek.media-export.v1');
 	await expect(fromInput).toHaveValue('06:20:00');
 	await expect(page.getByRole('checkbox', { name: /burn in timestamp/i })).toBeChecked();
 	expect(noncanonicalRequests).toEqual([]);
@@ -292,7 +292,7 @@ test('shows Board 29 running progress and cancels without offering a partial fil
 		'aria-valuenow',
 		'62'
 	);
-	await expect(page.getByText('62% Â· 74 MB OF 118 MB')).toBeVisible();
+	await expect(page.getByText('62% · 74 MB OF 118 MB')).toBeVisible();
 	await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 	await expect(panel).toHaveAttribute('data-export-status', 'cancelled');
 	await expect(page.getByText('No partial file was kept.')).toBeVisible();
@@ -325,7 +325,7 @@ test('polls a running export to ready and downloads checksum-verified WebRTC byt
 	await expect(panel).toHaveAttribute('data-export-status', 'running');
 	await expect(panel).toHaveAttribute('data-export-status', 'ready');
 	await expect(page.getByText('Your file is ready')).toBeVisible();
-	await expect(page.locator('[data-export-checksum]')).toContainText('Â· Â· Â·');
+	await expect(page.locator('[data-export-checksum]')).toContainText('· · ·');
 	await expect(page.getByText(/preceding keyframe/)).toBeVisible();
 
 	const downloadPromise = page.waitForEvent('download');
@@ -366,7 +366,7 @@ test('names every missing range before exporting what exists', async ({ page }) 
 	await expect(panel).toHaveAttribute('data-export-status', 'partial');
 	await expect(page.getByText('1m 30s of 2m 0s you asked for')).toBeVisible();
 	await expect(page.locator('[data-export-missing-range]')).toHaveText(
-		'NOTHING WAS RECORDED 06:21:00 â†’ 06:21:30'
+		'NOTHING WAS RECORDED 06:21:00 → 06:21:30'
 	);
 	await page.getByRole('button', { name: 'Export what exists' }).click();
 	await expect(panel).toHaveAttribute('data-export-status', 'ready');
