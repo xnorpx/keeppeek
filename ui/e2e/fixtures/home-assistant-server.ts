@@ -245,11 +245,8 @@ async function prepareArchiveFixture(
 	return { archiveRoot, seededAtMs, seededObjectId, seededObjectBytes };
 }
 
-async function privateArchiveDirectory(root: string, directory: string) {
-	if (resolve(root) !== resolve(directory, 'fourth-tier-archive'))
-		throw new Error('Archive directory must be the generated fixture child.');
-	await mkdir(root, { mode: 0o700 });
-	if (process.platform !== 'win32') return;
+async function archiveAclEvidence(root: string, script: string, maxBuffer: number) {
+	// Windows PowerShell cannot load the PowerShell 7 modules inherited from the CI shell.
 	const { stdout } = await promisify(execFile)(
 		'powershell.exe',
 		[
@@ -257,6 +254,27 @@ async function privateArchiveDirectory(root: string, directory: string) {
 			'-NonInteractive',
 			'-Command',
 			`$ErrorActionPreference = 'Stop'
+$env:PSModulePath = [System.IO.Path]::Combine($PSHOME, 'Modules')
+${script}`
+		],
+		{
+			env: { ...process.env, KEEPPEEK_ARCHIVE_FIXTURE_ROOT: root },
+			windowsHide: true,
+			timeout: 10_000,
+			maxBuffer
+		}
+	);
+	return stdout;
+}
+
+async function privateArchiveDirectory(root: string, directory: string) {
+	if (resolve(root) !== resolve(directory, 'fourth-tier-archive'))
+		throw new Error('Archive directory must be the generated fixture child.');
+	await mkdir(root, { mode: 0o700 });
+	if (process.platform !== 'win32') return;
+	const evidence = await archiveAclEvidence(
+		root,
+		`
 $archiveBefore = Get-Acl -LiteralPath $env:KEEPPEEK_ARCHIVE_FIXTURE_ROOT
 $archiveOwner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $archiveAcl = [System.Security.AccessControl.DirectorySecurity]::new()
@@ -264,37 +282,21 @@ $archiveAcl.SetOwner($archiveOwner)
 $archiveAcl.SetAccessRuleProtection($true, $false)
 $archiveAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($archiveOwner, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
 Set-Acl -LiteralPath $env:KEEPPEEK_ARCHIVE_FIXTURE_ROOT -AclObject $archiveAcl
-@{before = $archiveBefore.Sddl; after = (Get-Acl -LiteralPath $env:KEEPPEEK_ARCHIVE_FIXTURE_ROOT).Sddl} | ConvertTo-Json`
-		],
-		{
-			env: { ...process.env, KEEPPEEK_ARCHIVE_FIXTURE_ROOT: root },
-			windowsHide: true,
-			timeout: 10_000,
-			maxBuffer: 16_384
-		}
+@{before = $archiveBefore.Sddl; after = (Get-Acl -LiteralPath $env:KEEPPEEK_ARCHIVE_FIXTURE_ROOT).Sddl} | ConvertTo-Json`,
+		16_384
 	);
-	await writeFile(resolve(directory, 'archive-directory-acl.json'), stdout);
+	await writeFile(resolve(directory, 'archive-directory-acl.json'), evidence);
 }
 
 async function preserveFixture(server: ChildProcess, directory: string, destination: string) {
 	await stop(server);
 	if (process.platform === 'win32') {
-		const { stdout } = await promisify(execFile)(
-			'powershell.exe',
-			[
-				'-NoProfile',
-				'-NonInteractive',
-				'-Command',
-				`Get-ChildItem -LiteralPath $env:KEEPPEEK_ARCHIVE_FIXTURE_ROOT -Directory -Recurse | ForEach-Object { $fixtureAcl = Get-Acl -LiteralPath $_.FullName; @{path = $_.FullName; owner = $fixtureAcl.Owner; sddl = $fixtureAcl.Sddl; protected = $fixtureAcl.AreAccessRulesProtected} } | ConvertTo-Json`
-			],
-			{
-				env: { ...process.env, KEEPPEEK_ARCHIVE_FIXTURE_ROOT: directory },
-				windowsHide: true,
-				timeout: 10_000,
-				maxBuffer: 65_536
-			}
+		const evidence = await archiveAclEvidence(
+			directory,
+			`Get-ChildItem -LiteralPath $env:KEEPPEEK_ARCHIVE_FIXTURE_ROOT -Directory -Recurse | ForEach-Object { $fixtureAcl = Get-Acl -LiteralPath $_.FullName; @{path = $_.FullName; owner = $fixtureAcl.Owner; sddl = $fixtureAcl.Sddl; protected = $fixtureAcl.AreAccessRulesProtected} } | ConvertTo-Json`,
+			65_536
 		);
-		await writeFile(resolve(directory, 'fixture-directory-acls.json'), stdout);
+		await writeFile(resolve(directory, 'fixture-directory-acls.json'), evidence);
 	}
 	await cp(directory, destination, {
 		recursive: true,
