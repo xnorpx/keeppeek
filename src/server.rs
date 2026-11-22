@@ -4637,6 +4637,7 @@ fn encode_stored_media_keyframe(
         .chunks(DATA_MESSAGE_CHUNK_BYTES)
         .enumerate()
         .map(|(chunk_index, chunk)| OutboundDataMessage {
+            permit: None,
             target: DataChannelTarget::Reliable,
             group: format!("stored:{}", request.stored_media_id),
             message: proto::Message {
@@ -4941,6 +4942,7 @@ fn append_initialization_messages(
     let chunk_count = protobuf_chunk_count(payload.len())?;
     for (chunk_index, chunk) in payload.chunks(DATA_MESSAGE_CHUNK_BYTES).enumerate() {
         messages.push(OutboundDataMessage {
+            permit: None,
             target: DataChannelTarget::Reliable,
             group: format!("stored:{stored_media_id}"),
             message: proto::Message {
@@ -4980,6 +4982,7 @@ fn append_fragment_messages(
     let chunk_count = protobuf_chunk_count(payload.len())?;
     for (chunk_index, chunk) in payload.chunks(DATA_MESSAGE_CHUNK_BYTES).enumerate() {
         messages.push(OutboundDataMessage {
+            permit: None,
             target,
             group: format!("stored:{stored_media_id}"),
             message: proto::Message {
@@ -6542,6 +6545,7 @@ fn event_search_message(
     message: proto::event_search_message::Message,
 ) -> OutboundDataMessage {
     OutboundDataMessage {
+        permit: None,
         target,
         group: group.to_owned(),
         message: proto::Message {
@@ -6875,6 +6879,7 @@ fn query_stored_media_timeline(
         })?;
         for (chunk_index, chunk) in payload.chunks(DATA_MESSAGE_CHUNK_BYTES).enumerate() {
             data_messages.push(OutboundDataMessage {
+                permit: None,
                 target,
                 group: format!("query:{}", query.query_id),
                 message: proto::Message {
@@ -7193,6 +7198,7 @@ fn stored_query_message(
     message: proto::stored_media_query_message::Message,
 ) -> OutboundDataMessage {
     OutboundDataMessage {
+        permit: None,
         target,
         group: format!(
             "query:{}",

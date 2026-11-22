@@ -519,15 +519,11 @@ pub(super) fn publish_images(
     image: Option<Arc<[u8]>>,
     additional: &[(String, Arc<[u8]>)],
 ) {
-    if state
-        .privacy
-        .decision(&event.source_id, chrono::Utc::now())
-        .map_or(true, |decision| decision.0)
-    {
+    let Some(permit) = state.privacy.media_permit(event.source_id.as_str().into()) else {
         return;
-    }
+    };
     for delivery in state.event_subscriptions.deliveries(event) {
-        publish_delivery(state, event, image.as_ref(), additional, delivery);
+        publish_delivery(state, event, image.as_ref(), additional, delivery, &permit);
     }
 }
 
@@ -538,13 +534,9 @@ pub(super) fn publish_native_images(
     image: Option<Arc<[u8]>>,
     additional: &[(String, Arc<[u8]>)],
 ) {
-    if state
-        .privacy
-        .decision(&event.source_id, chrono::Utc::now())
-        .map_or(true, |decision| decision.0)
-    {
+    let Some(permit) = state.privacy.media_permit(event.source_id.as_str().into()) else {
         return;
-    }
+    };
     let Ok(ip) = camera.ip.parse() else {
         return;
     };
@@ -600,7 +592,7 @@ pub(super) fn publish_native_images(
                 .as_ref()
                 .is_none_or(|snapshot| snapshot_has_event(snapshot, event))
         {
-            publish_delivery(state, event, image.as_ref(), additional, delivery);
+            publish_delivery(state, event, image.as_ref(), additional, delivery, &permit);
         }
     }
 }
@@ -670,6 +662,7 @@ fn publish_delivery(
     image: Option<&Arc<[u8]>>,
     additional: &[(String, Arc<[u8]>)],
     delivery: Delivery,
+    permit: &crate::privacy::MediaPermit,
 ) {
     let mut delivered_event = event.clone();
     delivered_event.subscription_id = Some(delivery.subscription_id.clone());
@@ -679,6 +672,7 @@ fn publish_delivery(
     let queued = state.webrtc.try_enqueue_api_event(
         delivery.session_id,
         crate::webrtc::OutboundEventDelivery {
+            permit: Some(permit.clone()),
             event: delivered_event,
             attachment_target: delivery
                 .attachment_target

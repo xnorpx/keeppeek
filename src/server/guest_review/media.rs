@@ -87,6 +87,14 @@ fn admission(
         )
     })?;
     let guard = guard.bind(&bound, context).map_err(io_failure)?;
+    let permit = checked.permit;
+    permit
+        .protect_response(
+            request
+                .response_abort_handle()
+                .ok_or_else(|| failure(503))?,
+        )
+        .map_err(io_failure)?;
     let ticket = sharing::with_guest_store(state, context, |store, clock| {
         store.begin_delivery(handle, context, &checked.binding, mode, clock)
     })
@@ -95,6 +103,7 @@ fn admission(
         .network_access
         .classify(request.remote_addr().ip(), request.headers());
     let owner = Delivery {
+        permit,
         state: state.clone(),
         ticket: Some(ticket),
         committed: false,
@@ -213,7 +222,10 @@ impl MediaReader {
         sharing::validate_guest(&self.owner.state, &self.grant).map_err(|_| denied())?;
         self.owner.deliver(&self.grant.intent.binding)?;
         self.guard.check()?;
-        output[..length].copy_from_slice(bytes);
+        self.owner
+            .permit
+            .deliver(|| output[..length].copy_from_slice(bytes))
+            .ok_or_else(denied)?;
         self.file.consume(length);
         self.remaining -= length;
         Ok(length)
@@ -233,6 +245,7 @@ impl Read for MediaReader {
 }
 
 struct Delivery {
+    permit: crate::privacy::MediaPermit,
     state: ServerState,
     ticket: Option<Ticket>,
     committed: bool,

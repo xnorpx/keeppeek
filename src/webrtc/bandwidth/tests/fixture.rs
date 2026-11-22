@@ -299,7 +299,14 @@ impl SharedFixture {
         self.media.refresh_bandwidth(&mut self.rtc, now);
         let mut streams = Vec::new();
         for track in &mut self.media.tracks {
-            let result = drive_track_runtime(&mut self.rtc, &mut track.runtime, true, now).unwrap();
+            let result = drive_track_runtime(
+                &mut self.rtc,
+                &mut track.runtime,
+                true,
+                now,
+                &mut self.media.permits,
+            )
+            .unwrap();
             assert!(result.data_messages.is_empty());
             assert!(result.notifications.is_empty());
             if let Some(stream) = result.applied_stream {

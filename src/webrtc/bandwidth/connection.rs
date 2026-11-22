@@ -73,6 +73,7 @@ mod tests {
             .control_notifications
             .back()
             .unwrap()
+            .value
             .event
             .as_ref()
             .unwrap();

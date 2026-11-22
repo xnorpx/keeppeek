@@ -7,7 +7,7 @@ use crate::{
     },
     keeppeek::StreamKind,
     media_time::duration_to_ticks,
-    privacy::{MediaPermit, PrivacyRegistry},
+    privacy::{MediaPermit, PrivacyRegistry, TransportPermits},
     storage::{RecordingDemand, RecordingDemandGuard, VideoCodec, nal},
 };
 use bytes::Bytes;
@@ -45,6 +45,8 @@ use str0m::{
 mod bandwidth;
 mod session_registry;
 mod subscriptions;
+#[cfg(test)]
+mod transport_privacy_tests;
 
 #[cfg(test)]
 pub(crate) mod test_queue;
@@ -262,12 +264,14 @@ pub(crate) enum DataChannelTarget {
 
 #[derive(Debug)]
 pub(crate) struct OutboundDataMessage {
+    pub(crate) permit: Option<MediaPermit>,
     pub(crate) target: DataChannelTarget,
     pub(crate) group: String,
     pub(crate) message: crate::api::proto::Message,
 }
 
 pub(crate) struct OutboundEventDelivery {
+    pub(crate) permit: Option<MediaPermit>,
     pub(crate) event: crate::api::proto::Event,
     pub(crate) attachment_target: Option<DataChannelTarget>,
     pub(crate) attachment_bytes: Option<Arc<[u8]>>,
@@ -421,6 +425,7 @@ struct MediaFrame {
 
 #[derive(Debug)]
 struct MediaFrameData {
+    permit: Option<MediaPermit>,
     avcc: Bytes,
     annexb: OnceLock<Arc<[u8]>>,
     h264_profile_level_id: OnceLock<Option<u32>>,
@@ -430,6 +435,7 @@ impl MediaFrameData {
     const fn new(avcc: Bytes) -> Self {
         Self {
             avcc,
+            permit: None,
             annexb: OnceLock::new(),
             h264_profile_level_id: OnceLock::new(),
         }
@@ -899,6 +905,7 @@ impl TrackDelivery {
 
 #[derive(Default)]
 struct ApiMediaRuntime {
+    permits: TransportPermits,
     bandwidth: bandwidth::SessionBandwidth,
     available_video_mids: Vec<Mid>,
     available_audio_mids: Vec<Mid>,
@@ -906,7 +913,7 @@ struct ApiMediaRuntime {
     audio_tracks: Vec<ApiAudioTrack>,
     outbound: VecDeque<QueuedApiData>,
     outbound_bytes: usize,
-    control_notifications: VecDeque<crate::api::proto::Notification>,
+    control_notifications: VecDeque<GuardedMedia<crate::api::proto::Notification>>,
     control_notification_bytes: usize,
 }
 
@@ -999,7 +1006,7 @@ impl ApiMediaRuntime {
                 group: message.group,
                 payload: GuardedMedia {
                     value: payload,
-                    permit: permit.cloned(),
+                    permit: message.permit.or_else(|| permit.cloned()),
                 },
             }));
         }
@@ -1029,7 +1036,7 @@ impl ApiMediaRuntime {
                 group: message.group,
                 payload: GuardedMedia {
                     value: payload,
-                    permit: None,
+                    permit: message.permit,
                 },
             }));
     }
@@ -1067,7 +1074,8 @@ impl ApiMediaRuntime {
         });
         self.outbound_bytes = self.outbound_bytes.saturating_sub(removed_bytes);
         let mut removed_notification_bytes = 0usize;
-        self.control_notifications.retain(|notification| {
+        self.control_notifications.retain(|guarded| {
+            let notification = &guarded.value;
             let remove = matches!(
                 notification.event.as_ref(),
                 Some(crate::api::proto::notification::Event::LiveEvent(event))
@@ -1086,6 +1094,7 @@ impl ApiMediaRuntime {
 
     fn enqueue_event(&mut self, delivery: OutboundEventDelivery) -> anyhow::Result<()> {
         let OutboundEventDelivery {
+            permit,
             event,
             attachment_target,
             attachment_bytes,
@@ -1119,12 +1128,15 @@ impl ApiMediaRuntime {
             event: Some(crate::api::proto::notification::Event::LiveEvent(event)),
         };
         let notification_bytes = self.validate_control_notification(&notification)?;
-        self.enqueue(data_messages)?;
+        self.enqueue_with_permit(data_messages, permit.as_ref())?;
         self.control_notification_bytes = self
             .control_notification_bytes
             .checked_add(notification_bytes)
             .expect("validated control notification byte sum must fit");
-        self.control_notifications.push_back(notification);
+        self.control_notifications.push_back(GuardedMedia {
+            value: notification,
+            permit,
+        });
         Ok(())
     }
 
@@ -1181,6 +1193,7 @@ impl ApiMediaRuntime {
     ) -> anyhow::Result<Vec<OutboundDataMessage>> {
         let chunk_count = u32::try_from(bytes.len().div_ceil(API_EVENT_ATTACHMENT_CHUNK_BYTES))?;
         Ok(bytes.chunks(API_EVENT_ATTACHMENT_CHUNK_BYTES).enumerate().map(|(chunk_index, payload)| OutboundDataMessage {
+            permit: None,
             target,
             group: group.to_owned(),
             message: crate::api::proto::Message {
@@ -1227,7 +1240,10 @@ impl ApiMediaRuntime {
             .control_notification_bytes
             .checked_add(notification_bytes)
             .expect("validated control notification byte sum must fit");
-        self.control_notifications.push_back(notification);
+        self.control_notifications.push_back(GuardedMedia {
+            value: notification,
+            permit: None,
+        });
         Ok(())
     }
 
@@ -1256,6 +1272,9 @@ impl ApiMediaRuntime {
                     Ok(channel.write(true, payload)?)
                 })
                 .transpose()?;
+            if wrote == Some(true) {
+                self.permits.remember(message.payload.permit.as_ref())?;
+            }
             if wrote == Some(false) {
                 self.outbound.push_front(QueuedApiData::Message(message));
                 break;
@@ -1278,11 +1297,15 @@ impl ApiMediaRuntime {
         while let Some(notification) = self.control_notifications.pop_front() {
             let payload = ControlEnvelope {
                 message: Some(control_envelope::Message::Notification(
-                    notification.clone(),
+                    notification.value.clone(),
                 )),
             }
             .encode_to_vec();
-            if !write(&payload)? {
+            let wrote = notification.deliver(|_| write(&payload)).transpose()?;
+            if wrote == Some(true) {
+                self.permits.remember(notification.permit.as_ref())?;
+            }
+            if wrote == Some(false) {
                 self.control_notifications.push_front(notification);
                 break;
             }
@@ -2492,7 +2515,7 @@ impl Publisher {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        if let Some(privacy) = privacy {
+        let permit = if let Some(privacy) = privacy {
             let (active, epoch) = privacy
                 .decision_for_ip(source.camera_ip, chrono::Utc::now())
                 .unwrap_or((true, u64::MAX));
@@ -2509,7 +2532,13 @@ impl Publisher {
                 }
                 return;
             }
-        }
+            let Some(permit) = privacy.media_permit(source.camera_ip.to_string().into()) else {
+                return;
+            };
+            Some(permit)
+        } else {
+            None
+        };
         self.inner.published_frames.fetch_add(1, Ordering::Relaxed);
         let frame_bytes = avcc.len();
         self.inner
@@ -2520,7 +2549,10 @@ impl Publisher {
             is_keyframe,
             received_at,
             timestamp,
-            data: Arc::new(MediaFrameData::new(avcc)),
+            data: Arc::new(MediaFrameData {
+                permit,
+                ..MediaFrameData::new(avcc)
+            }),
         };
         if is_keyframe && source.stream == StreamKind::Sub {
             let mut previews = self
@@ -3558,7 +3590,8 @@ fn drive_api_session(
         let mut media_data_messages = Vec::new();
         let mut control_notifications = Vec::new();
         for track in &mut media.tracks {
-            let result = drive_track_runtime(rtc, &mut track.runtime, connected, now)?;
+            let result =
+                drive_track_runtime(rtc, &mut track.runtime, connected, now, &mut media.permits)?;
             wrote_media |= result.wrote_media;
             media_data_messages.extend(result.data_messages);
             control_notifications.extend(result.notifications);
@@ -3566,12 +3599,13 @@ fn drive_api_session(
                 applied_streams.push((track.runtime.track_id.clone(), stream));
             }
         }
-        if !media_data_messages.is_empty() {
-            media.enqueue(media_data_messages)?;
+        for batch in media_data_messages {
+            media.enqueue_with_permit(batch.value, batch.permit.as_ref())?;
         }
         let mut audio_batches = Vec::new();
         for track in &mut media.audio_tracks {
-            let result = drive_audio_track_runtime(rtc, &mut track.runtime, connected)?;
+            let result =
+                drive_audio_track_runtime(rtc, &mut track.runtime, connected, &mut media.permits)?;
             wrote_media |= result.wrote_media;
             audio_batches.extend(result.data_messages);
         }
@@ -3675,6 +3709,7 @@ fn drive_audio_track_runtime(
     rtc: &mut Rtc,
     track: &mut AudioTrackRuntime,
     connected: bool,
+    permits: &mut TransportPermits,
 ) -> anyhow::Result<AudioTrackDriveResult> {
     let mut wrote_media = false;
     let mut data_messages = Vec::new();
@@ -3687,6 +3722,9 @@ fn drive_audio_track_runtime(
             .transpose()?
         {
             wrote_media |= wrote;
+            if wrote && track.delivery.mid().is_some() {
+                permits.remember(frame.permit.as_ref())?;
+            }
             if !messages.is_empty() {
                 data_messages.push(GuardedMedia {
                     value: messages,
@@ -3765,7 +3803,7 @@ fn drain_api_session_commands(data_rx: &Receiver<ApiSessionCommand>, media: &mut
 struct TrackDriveResult {
     wrote_media: bool,
     applied_stream: Option<StreamKind>,
-    data_messages: Vec<OutboundDataMessage>,
+    data_messages: Vec<GuardedMedia<Vec<OutboundDataMessage>>>,
     notifications: Vec<crate::api::proto::Notification>,
 }
 
@@ -3774,6 +3812,7 @@ fn drive_track_runtime(
     track: &mut TrackRuntime,
     connected: bool,
     now: Instant,
+    permits: &mut TransportPermits,
 ) -> anyhow::Result<TrackDriveResult> {
     let mut wrote_media = false;
     let mut applied_stream = None;
@@ -3803,15 +3842,25 @@ fn drive_track_runtime(
             track.subscription.discard_queued_frames(&track.rx);
             track.last_frame_sequence = None;
             track.recovering_queue_gap = false;
-            let (wrote_frame, messages) =
-                write_track_frame(rtc, &mut track.delivery, &keyframe, &mut track.media_clock)?;
+            let (wrote_frame, messages) = write_track_frame(
+                rtc,
+                &mut track.delivery,
+                &keyframe,
+                &mut track.media_clock,
+                permits,
+            )?;
             if wrote_frame {
                 if let Some(notification) = track.delivery.take_configuration_notification() {
                     notifications.push(notification);
                 }
                 track.keyframe_gate.mark_written(FrameOrigin::Cached);
                 wrote_media = true;
-                data_messages.extend(messages);
+                if !messages.is_empty() {
+                    data_messages.push(GuardedMedia {
+                        value: messages,
+                        permit: keyframe.data.permit.clone(),
+                    });
+                }
             }
         }
     }
@@ -3858,7 +3907,13 @@ fn drive_track_runtime(
             .keyframe_gate
             .allows(FrameOrigin::Live, frame.is_keyframe);
         let (wrote_frame, messages) = if connected && frame_allowed {
-            write_track_frame(rtc, &mut track.delivery, &frame, &mut track.media_clock)?
+            write_track_frame(
+                rtc,
+                &mut track.delivery,
+                &frame,
+                &mut track.media_clock,
+                permits,
+            )?
         } else {
             (false, Vec::new())
         };
@@ -3870,7 +3925,12 @@ fn drive_track_runtime(
             track.recovering_queue_gap = false;
             track.subscription.record_written_frame();
             wrote_media = true;
-            data_messages.extend(messages);
+            if !messages.is_empty() {
+                data_messages.push(GuardedMedia {
+                    value: messages,
+                    permit: frame.data.permit.clone(),
+                });
+            }
             applied_stream = applied_stream.or(switched_stream);
         } else if connected && track.recovering_queue_gap && !frame_allowed {
             track.subscription.record_discarded_frames(1);
@@ -3902,14 +3962,21 @@ fn write_track_frame(
     delivery: &mut TrackDelivery,
     frame: &MediaFrame,
     media_clock: &mut MediaClock,
+    permits: &mut TransportPermits,
 ) -> anyhow::Result<(bool, Vec<OutboundDataMessage>)> {
     match delivery {
         TrackDelivery::Rtp(mid) => Ok((
-            write_frame(rtc, Some(*mid), frame, media_clock)?,
+            write_frame(rtc, Some(*mid), frame, media_clock, permits)?,
             Vec::new(),
         )),
         TrackDelivery::ReliableData(binding) => {
-            let messages = encode_media_data_frame(binding, frame)?;
+            let messages = match &frame.data.permit {
+                Some(permit) => permit
+                    .deliver(|| encode_media_data_frame(binding, frame))
+                    .transpose()?
+                    .unwrap_or_default(),
+                None => encode_media_data_frame(binding, frame)?,
+            };
             Ok((!messages.is_empty(), messages))
         }
     }
@@ -3988,6 +4055,7 @@ fn encode_audio_data_frame(
         .chunks(API_MEDIA_FRAME_CHUNK_BYTES)
         .enumerate()
         .map(|(fragment_index, payload)| OutboundDataMessage {
+            permit: None,
             target: DataChannelTarget::Reliable,
             group: binding.stream_binding_id.clone(),
             message: crate::api::proto::Message {
@@ -4035,6 +4103,7 @@ fn encode_media_data_frame(
         .chunks(API_MEDIA_FRAME_CHUNK_BYTES)
         .enumerate()
         .map(|(fragment_index, payload)| OutboundDataMessage {
+            permit: None,
             target: DataChannelTarget::Reliable,
             group: binding.stream_binding_id.clone(),
             message: crate::api::proto::Message {
@@ -4145,6 +4214,16 @@ fn protobuf_timestamp(source_time: SystemTime) -> prost_types::Timestamp {
     }
 }
 
+fn send_datagram(
+    permits: &TransportPermits,
+    socket: &UdpSocket,
+    bytes: &[u8],
+    destination: SocketAddr,
+) -> anyhow::Result<()> {
+    permits.send(|| socket.send_to(bytes, destination))?;
+    Ok(())
+}
+
 fn drain_api_outputs(
     rtc: &mut Rtc,
     socket: &UdpSocket,
@@ -4165,7 +4244,12 @@ fn drain_api_outputs(
                 return Ok(deadline);
             }
             Output::Transmit(transmit) => {
-                socket.send_to(&transmit.contents, transmit.destination)?;
+                send_datagram(
+                    &media.permits,
+                    socket,
+                    &transmit.contents,
+                    transmit.destination,
+                )?;
             }
             Output::Event(event) if terminal_session_event(&event) => {
                 anyhow::bail!("WebRTC transport ended")
@@ -4530,6 +4614,7 @@ fn drive_session(
     let mut connected = false;
     let mut keyframe_gate = KeyframeGate::new();
     let mut media_clock = MediaClock::default();
+    let mut permits = TransportPermits::default();
     let mut last_frame_sequence = None;
     let mut recovering_queue_gap = false;
     let mut received_source_frame = false;
@@ -4538,8 +4623,14 @@ fn drive_session(
     let mut configured_desired_bitrate = None;
     let mut next_desired_bitrate_refresh = Instant::now();
     let mut peer_destinations = HashMap::new();
-    let mut next_timeout =
-        drain_outputs(rtc, socket, &mut video_mid, &mut connected, subscription)?;
+    let mut next_timeout = drain_outputs(
+        rtc,
+        socket,
+        &mut video_mid,
+        &mut connected,
+        subscription,
+        &permits,
+    )?;
 
     'session: loop {
         if shutdown.load(Ordering::Acquire) {
@@ -4581,11 +4672,18 @@ fn drive_session(
                 subscription.discard_queued_frames(rx);
                 last_frame_sequence = None;
                 recovering_queue_gap = false;
-                let wrote_frame = write_frame(rtc, video_mid, &keyframe, &mut media_clock)?;
+                let wrote_frame =
+                    write_frame(rtc, video_mid, &keyframe, &mut media_clock, &mut permits)?;
                 if wrote_frame {
                     keyframe_gate.mark_written(FrameOrigin::Cached);
-                    next_timeout =
-                        drain_outputs(rtc, socket, &mut video_mid, &mut connected, subscription)?;
+                    next_timeout = drain_outputs(
+                        rtc,
+                        socket,
+                        &mut video_mid,
+                        &mut connected,
+                        subscription,
+                        &permits,
+                    )?;
                 }
             }
         }
@@ -4624,7 +4722,7 @@ fn drive_session(
                     let frame_allowed = keyframe_gate.allows(FrameOrigin::Live, frame.is_keyframe);
                     let wrote_frame = connected
                         && frame_allowed
-                        && write_frame(rtc, video_mid, &frame, &mut media_clock)?;
+                        && write_frame(rtc, video_mid, &frame, &mut media_clock, &mut permits)?;
                     if wrote_frame {
                         keyframe_gate.mark_written(FrameOrigin::Live);
                         recovering_queue_gap = false;
@@ -4635,6 +4733,7 @@ fn drive_session(
                             &mut video_mid,
                             &mut connected,
                             subscription,
+                            &permits,
                         )?;
                     } else if connected && recovering_queue_gap && !frame_allowed {
                         subscription.record_discarded_frames(1);
@@ -4687,6 +4786,7 @@ fn drive_session(
                             &mut video_mid,
                             &mut connected,
                             subscription,
+                            &permits,
                         )?;
                     }
                     Err(error) if error.kind() == ErrorKind::WouldBlock => break,
@@ -4699,8 +4799,14 @@ fn drive_session(
         let now = Instant::now();
         if next_timeout <= now {
             rtc.handle_input(Input::Timeout(now))?;
-            next_timeout =
-                drain_outputs(rtc, socket, &mut video_mid, &mut connected, subscription)?;
+            next_timeout = drain_outputs(
+                rtc,
+                socket,
+                &mut video_mid,
+                &mut connected,
+                subscription,
+                &permits,
+            )?;
         }
     }
 
@@ -4726,12 +4832,13 @@ fn drain_outputs(
     video_mid: &mut Option<Mid>,
     connected: &mut bool,
     subscription: &SourceSubscription,
+    permits: &TransportPermits,
 ) -> anyhow::Result<Instant> {
     loop {
         match rtc.poll_output()? {
             Output::Timeout(deadline) => return Ok(deadline),
             Output::Transmit(transmit) => {
-                socket.send_to(&transmit.contents, transmit.destination)?;
+                send_datagram(permits, socket, &transmit.contents, transmit.destination)?;
             }
             Output::Event(event) if terminal_session_event(&event) => {
                 anyhow::bail!("WebRTC transport ended")
@@ -5153,6 +5260,26 @@ fn write_frame(
     video_mid: Option<Mid>,
     frame: &MediaFrame,
     media_clock: &mut MediaClock,
+    permits: &mut TransportPermits,
+) -> anyhow::Result<bool> {
+    let wrote = match &frame.data.permit {
+        Some(permit) => permit
+            .deliver(|| write_permitted_frame(rtc, video_mid, frame, media_clock))
+            .transpose()?
+            .unwrap_or(false),
+        None => write_permitted_frame(rtc, video_mid, frame, media_clock)?,
+    };
+    if wrote {
+        permits.remember(frame.data.permit.as_ref())?;
+    }
+    Ok(wrote)
+}
+
+fn write_permitted_frame(
+    rtc: &mut Rtc,
+    video_mid: Option<Mid>,
+    frame: &MediaFrame,
+    media_clock: &mut MediaClock,
 ) -> anyhow::Result<bool> {
     let Some(mid) = video_mid else {
         return Ok(false);
@@ -5434,6 +5561,7 @@ mod tests {
         ] {
             tx.send(ApiSessionCommand::Data {
                 message: Box::new(OutboundDataMessage {
+                    permit: None,
                     target: DataChannelTarget::Reliable,
                     group: group.to_owned(),
                     message: crate::api::proto::Message::default(),
@@ -5451,6 +5579,7 @@ mod tests {
         assert!(media.outbound.is_empty());
         tx.send(ApiSessionCommand::Data {
             message: Box::new(OutboundDataMessage {
+                permit: None,
                 target: DataChannelTarget::Reliable,
                 group: "event-search-query:active".to_owned(),
                 message: crate::api::proto::Message::default(),
@@ -5483,6 +5612,7 @@ mod tests {
         let (tx, rx) = bounded(2);
         tx.send(ApiSessionCommand::Data {
             message: Box::new(OutboundDataMessage {
+                permit: None,
                 target: DataChannelTarget::Reliable,
                 group: "event-search-media:waiting".to_owned(),
                 message: crate::api::proto::Message::default(),
@@ -6293,7 +6423,10 @@ mod tests {
 
         drain_api_session_commands(&receiver, &mut media);
 
-        assert_eq!(media.control_notifications.pop_front(), Some(notification));
+        assert_eq!(
+            media.control_notifications.pop_front().map(|n| n.value),
+            Some(notification)
+        );
     }
 
     #[test]
@@ -6319,6 +6452,7 @@ mod tests {
 
         media
             .enqueue_event(OutboundEventDelivery {
+                permit: None,
                 event: event.clone(),
                 attachment_target: Some(DataChannelTarget::Reliable),
                 attachment_bytes: Some(Arc::from(payload.clone())),
@@ -6328,7 +6462,7 @@ mod tests {
             .unwrap();
 
         assert!(matches!(
-            media.control_notifications.front(),
+            media.control_notifications.front().map(|n|&n.value),
             Some(crate::api::proto::Notification {
                 event: Some(crate::api::proto::notification::Event::LiveEvent(delivered))
             }) if delivered == &event
@@ -6395,6 +6529,7 @@ mod tests {
         };
         media
             .enqueue_event(OutboundEventDelivery {
+                permit: None,
                 event,
                 attachment_target: Some(DataChannelTarget::Reliable),
                 attachment_bytes: Some(Arc::from(payloads[0].clone())),
@@ -6474,6 +6609,7 @@ mod tests {
         let mut media = ApiMediaRuntime::default();
         media
             .enqueue_event(OutboundEventDelivery {
+                permit: None,
                 event: crate::api::proto::Event {
                     event_id: "event-1".to_owned(),
                     revision: 1,
@@ -6577,6 +6713,7 @@ mod tests {
             .send(ApiSessionCommand::Notification(Box::default()))
             .unwrap();
         let delivery = || OutboundEventDelivery {
+            permit: None,
             event: crate::api::proto::Event {
                 event_id: "event-1".to_owned(),
                 revision: 1,
@@ -6655,6 +6792,7 @@ mod tests {
                 .try_enqueue_api_event(
                     session_id,
                     OutboundEventDelivery {
+                        permit: None,
                         event: crate::api::proto::Event {
                             event_id: "event-1".to_owned(),
                             revision: 1,
@@ -6690,6 +6828,7 @@ mod tests {
         sender
             .send(ApiSessionCommand::Event {
                 delivery: Box::new(OutboundEventDelivery {
+                    permit: None,
                     event: crate::api::proto::Event::default(),
                     attachment_target: None,
                     attachment_bytes: None,
@@ -7090,6 +7229,7 @@ mod tests {
         for group in ["stored:playback", "other"] {
             media
                 .enqueue(vec![OutboundDataMessage {
+                    permit: None,
                     target: DataChannelTarget::Reliable,
                     group: group.into(),
                     message: crate::api::proto::Message::default(),
@@ -7192,6 +7332,7 @@ mod tests {
             "test response",
         ));
         dispatch.data_messages.push(OutboundDataMessage {
+            permit: None,
             target: DataChannelTarget::Reliable,
             group: "test-data".to_owned(),
             message: crate::api::proto::Message::default(),
@@ -7299,6 +7440,7 @@ mod tests {
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
         };
         let mut media = ApiMediaRuntime {
+            permits: TransportPermits::default(),
             bandwidth: bandwidth::SessionBandwidth::default(),
             available_video_mids: vec![Mid::from("video_0")],
             available_audio_mids: Vec::new(),
@@ -7357,7 +7499,7 @@ mod tests {
             1
         );
         assert!(matches!(
-            media.control_notifications.pop_front(),
+            media.control_notifications.pop_front().map(|n|n.value),
             Some(crate::api::proto::Notification {
                 event: Some(
                     crate::api::proto::notification::Event::SubscriptionStreamState(
@@ -7834,9 +7976,10 @@ mod tests {
             })),
         };
         publish();
-        let encoded = drive_audio_track_runtime(&mut rtc, &mut track, true).unwrap();
-        assert!(encoded.wrote_media);
         let mut media = ApiMediaRuntime::default();
+        let encoded =
+            drive_audio_track_runtime(&mut rtc, &mut track, true, &mut media.permits).unwrap();
+        assert!(encoded.wrote_media);
         for batch in encoded.data_messages {
             media
                 .enqueue_with_permit(batch.value, batch.permit.as_ref())
@@ -7857,7 +8000,8 @@ mod tests {
             .replace_profile_overrides(Default::default())
             .unwrap();
         assert_eq!(first.deliver(|_| true), None);
-        let stale = drive_audio_track_runtime(&mut rtc, &mut track, true).unwrap();
+        let stale =
+            drive_audio_track_runtime(&mut rtc, &mut track, true, &mut media.permits).unwrap();
         assert!(!stale.wrote_media);
         assert!(stale.data_messages.is_empty());
         // An unopened SCTP channel cannot accept a write. The stale chunk must be

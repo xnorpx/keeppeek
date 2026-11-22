@@ -79,6 +79,7 @@ fn shared_feedback_actual_target_keyframe_must_remain_compatible_with_the_mid() 
             &mut fixture.media.tracks[0].runtime,
             true,
             now,
+            &mut TransportPermits::default(),
         )
         .unwrap();
         assert_eq!(fixture.active_stream(0), StreamKind::Sub);
@@ -106,6 +107,7 @@ fn shared_feedback_actual_target_keyframe_must_remain_compatible_with_the_mid() 
             &mut fixture.media.tracks[0].runtime,
             true,
             now,
+            &mut TransportPermits::default(),
         )
         .unwrap();
         assert!(

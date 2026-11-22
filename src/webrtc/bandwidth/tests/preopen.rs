@@ -27,7 +27,12 @@ fn shared_feedback_pre_sctp_drain_preserves_updates_until_control_opens() {
     );
     handshake.observe_initial_feedback();
     handshake.assert_pre_sctp();
-    let queued = handshake.media.control_notifications.clone();
+    let queued = handshake
+        .media
+        .control_notifications
+        .iter()
+        .map(|n| n.value.clone())
+        .collect::<Vec<_>>();
     let queued_bytes = handshake.media.control_notification_bytes;
     assert!(!queued.is_empty(), "{}", handshake.diagnostics());
     assert!(queued_bytes > 0);
@@ -35,7 +40,15 @@ fn shared_feedback_pre_sctp_drain_preserves_updates_until_control_opens() {
         .drain_server()
         .expect("initial bandwidth feedback must not terminate a pre-SCTP API session");
     handshake.assert_pre_sctp();
-    assert_eq!(handshake.media.control_notifications, queued);
+    assert_eq!(
+        handshake
+            .media
+            .control_notifications
+            .iter()
+            .map(|n| n.value.clone())
+            .collect::<Vec<_>>(),
+        queued
+    );
     assert_eq!(handshake.media.control_notification_bytes, queued_bytes);
     handshake.receive_initial_notifications();
     assert!(handshake.connected);
