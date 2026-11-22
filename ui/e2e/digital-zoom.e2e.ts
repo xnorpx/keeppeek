@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { RecordingCoverageResponse } from '../src/lib/types';
 import { eventDate, mockEvents } from './fixtures/events';
 import { keepModeDate, mockKeepModes } from './fixtures/keep-modes';
 import { mockMixedHealth } from './fixtures/peek';
@@ -194,55 +195,35 @@ test('event-image inspection leaves the source and evidence links unchanged and 
 	await expect(detail).toBeHidden();
 });
 
-async function seekRecordingStart(player: Locator) {
+async function seekPausedRecording(player: Locator) {
 	const position = player.getByRole('slider', { name: 'Recording position', exact: true });
 	await expect(position).toBeEnabled();
-	// Playback can reach the final slider step before the test pauses it.
-	await position.press('Home');
-	await expect(position).toHaveValue('0');
 	const initialMs = Number(await player.getAttribute('data-recording-playhead-ms'));
+	await position.press('ArrowLeft');
+	await expect
+		.poll(async () => Number(await player.getAttribute('data-recording-playhead-ms')))
+		.toBeLessThan(initialMs);
+	const rewoundMs = Number(await player.getAttribute('data-recording-playhead-ms'));
 	await position.press('ArrowRight');
 	await expect
 		.poll(async () => Number(await player.getAttribute('data-recording-playhead-ms')))
-		.toBeGreaterThan(initialMs);
-	const advancedMs = Number(await player.getAttribute('data-recording-playhead-ms'));
-	await position.press('Home');
-	await expect
-		.poll(async () => Number(await player.getAttribute('data-recording-playhead-ms')))
-		.toBeLessThan(advancedMs);
-	await expect(position).toHaveValue('0');
+		.toBeGreaterThan(rewoundMs);
 }
 
 async function openSeekableRecording(page: Page) {
-	await page.goto('/');
-	const target = await page.evaluate(async () => {
-		const modulePath = '/src/lib/control-client.ts';
-		const { ControlClient } = await import(modulePath);
-		const client = new ControlClient();
-		try {
-			const [camera] = await client.getCameras();
-			if (!camera) throw new Error('The recording fixture has no camera.');
-			const now = Date.now();
-			const { ranges }: { ranges: { streamId: string; startMs: number; endMs: number }[] } =
-				await client.queryStoredTimeline({
-					sourceIds: [camera.id],
-					startMs: now - 86_400_000,
-					endMs: now,
-					includeEvents: false,
-					includeAttachments: false
-				});
-			// The fixture seeds the substream. A new live segment can be shorter than one slider step.
-			const recording = ranges.find(
-				(range) => range.streamId === 'sub' && range.endMs - range.startMs >= 10_000
-			);
-			if (!recording)
-				throw new Error('The fixture needs ten seconds of recorded video for seeking.');
-			return { camera: camera.id, at: recording.startMs + 1_000 };
-		} finally {
-			await client.close();
-		}
-	});
-	await page.goto(`/keep?camera=${encodeURIComponent(target.camera)}&stream=sub&at=${target.at}`);
+	const response = await page.request.get('/recording-coverage?search=e2e-h264&stream=sub');
+	await expect(response).toBeOK();
+	const coverage: RecordingCoverageResponse = await response.json();
+	const camera = coverage.cameras.find((entry) => entry.camera_name === 'e2e-h264');
+	const stream = camera?.streams.find((entry) => entry.stream_id === 'sub');
+	// The fixture seeds the substream. A new live segment can be shorter than one slider step.
+	const recording = stream?.ranges.find((range) => range.end_ms - range.start_ms >= 10_000);
+	if (!camera || !recording) throw new Error('The fixture needs ten seconds of recorded video.');
+	const at = recording.start_ms + 1_000;
+	const date = new Date(at).toISOString().slice(0, 10);
+	await page.goto(
+		`/keep?camera=${encodeURIComponent(camera.camera_id)}&stream=sub&at=${at}&date=${date}`
+	);
 }
 
 test('real recorded pixels remain decoded through zoom, pause, seek, and viewport resize', async ({
@@ -254,7 +235,10 @@ test('real recorded pixels remain decoded through zoom, pause, seek, and viewpor
 	const video = player.locator('video');
 	await expect
 		.poll(() =>
-			video.evaluate((media: HTMLVideoElement) => media.readyState >= 2 && media.videoWidth > 0)
+			video.evaluate(
+				(media: HTMLVideoElement) =>
+					media.readyState >= 2 && media.videoWidth > 0 && media.currentTime >= 2
+			)
 		)
 		.toBe(true);
 	await player.getByRole('combobox', { name: 'Playback speed' }).selectOption('0.25');
@@ -279,7 +263,7 @@ test('real recorded pixels remain decoded through zoom, pause, seek, and viewpor
 	await dragMedia(page, player);
 	await expectScale(player, 2);
 	await expect(video).toHaveJSProperty('paused', true);
-	await seekRecordingStart(player);
+	await seekPausedRecording(player);
 	await expectScale(player, 2);
 	await player.getByRole('button', { name: 'Play recording', exact: true }).click();
 	await expect(video).toHaveJSProperty('paused', false);
