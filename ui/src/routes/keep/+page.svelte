@@ -316,7 +316,7 @@
 	);
 	let olderDate = $derived(dateIndex >= 0 ? (dates[dateIndex + 1] ?? null) : null);
 	let newerDate = $derived(dateIndex > 0 ? (dates[dateIndex - 1] ?? null) : null);
-	let frameDurationSeconds = $derived.by(() => {
+	let estimatedFrameIntervalSeconds = $derived.by(() => {
 		const frameRate = configuredFrameRates.get(`${cameraId}:${stream}`);
 		return frameRate && frameRate > 0 ? 1 / frameRate : null;
 	});
@@ -2179,10 +2179,10 @@
 		setPlaying(true);
 	}
 
-	function stepFrame(direction: -1 | 1): void {
-		if (!selected || frameDurationSeconds === null) return;
+	function seekEstimatedFrameInterval(direction: -1 | 1): void {
+		if (!selected || estimatedFrameIntervalSeconds === null) return;
 		pauseTransport();
-		skip(direction * frameDurationSeconds);
+		skip(direction * estimatedFrameIntervalSeconds);
 	}
 
 	function jumpToLive(): void {
@@ -2216,8 +2216,8 @@
 		else if (event.key === ' ' && !event.repeat) toggleTransport();
 		else if (event.key === '[') setExportBoundary('start');
 		else if (event.key === ']') setExportBoundary('end');
-		else if (event.key === 'ArrowLeft' && playerFocused) stepFrame(-1);
-		else if (event.key === 'ArrowRight' && playerFocused) stepFrame(1);
+		else if (event.key === 'ArrowLeft' && playerFocused) seekEstimatedFrameInterval(-1);
+		else if (event.key === 'ArrowRight' && playerFocused) seekEstimatedFrameInterval(1);
 		else if (event.key === 'Home' && playerFocused) jumpToLive();
 		else return;
 		event.preventDefault();
