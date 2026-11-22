@@ -200,6 +200,7 @@ it('previews each retention page independently and retries the same confirmation
 	const config = fixture();
 	config.storage.archive!.retentionDays = 30;
 	const control = controller();
+	const response = Promise.withResolvers<void>();
 	let confirmations = 0;
 	control.archive.mockImplementation(async (request) => {
 		if (request.action.case === 'list')
@@ -210,13 +211,16 @@ it('previews each retention page independently and retries the same confirmation
 			request.action.case === 'previewDeletion' &&
 			request.action.value.selection.case === 'retentionPage' &&
 			request.action.value.selection.value.afterJobId === 'next';
-		if (request.action.case === 'confirmDeletion' && confirmations++ === 0)
+		if (request.action.case === 'confirmDeletion' && confirmations++ === 0) {
+			await response.promise;
 			throw new Error('Lost confirmation reply');
+		}
 		const confirmed = request.action.case === 'confirmDeletion';
 		return create(ArchiveResultSchema, {
 			result: {
 				case: 'deletionPreview',
 				value: {
+					targetId: 'local-archive',
 					planId: second ? 'p2' : 'p1',
 					revision: 'rev',
 					confirmationNonce: confirmed ? '' : 'nonce',
@@ -260,14 +264,19 @@ it('previews each retention page independently and retries the same confirmation
 		.toBeVisible();
 	expect(dialog.element().scrollWidth).toBeLessThanOrEqual(dialog.element().clientWidth);
 	const confirm = dialog.getByRole('button', { name: 'Confirm archive deletion' });
+	const close = dialog.getByRole('button', { name: 'Close', exact: true });
 	await confirm.click();
+	await expect.element(close).toBeDisabled();
+	await userEvent.keyboard('{Escape}');
+	await expect.element(dialog).toBeVisible();
+	response.resolve();
 	await expect.element(dialog.getByRole('alert')).toHaveTextContent('Lost confirmation reply');
+	await expect.element(close).toHaveFocus();
 	await confirm.click();
 	await expect
-		.element(
-			dialog.getByText('Batch confirmed. Refresh archive jobs to follow progress.', { exact: true })
-		)
-		.toBeVisible();
+		.element(dialog.getByRole('status'))
+		.toHaveTextContent('Batch confirmed. Refresh archive jobs to follow progress.');
+	await expect.element(close).toHaveFocus();
 	const requests = control.archive.mock.calls.flatMap(([r]) =>
 		r.action.case === 'confirmDeletion' ? [r.action.value] : []
 	);
@@ -278,6 +287,10 @@ it('previews each retention page independently and retries the same confirmation
 		.element(dialog.getByText('Preservation hold or maintenance · 10 bytes', { exact: true }))
 		.toBeVisible();
 	await expect.element(confirm).not.toBeInTheDocument();
+	await expect.element(close).toHaveFocus();
+	await expect
+		.element(dialog.getByRole('status'))
+		.toHaveTextContent('Target local-archive · 0 selected · 0 bytes');
 });
 it('queues and reconciles a real selection, then confirms eviction and restores the primary', async () => {
 	const control = controller();

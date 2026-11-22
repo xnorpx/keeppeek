@@ -66,7 +66,11 @@ fn indexes(fragments: &[CatalogMediaFragment]) -> Vec<Index> {
         .collect()
 }
 
-fn wait_job(handle: &Handle, id: &str, accepted: impl Fn(&Job) -> bool) -> anyhow::Result<Job> {
+pub(super) fn wait_job(
+    handle: &Handle,
+    id: &str,
+    accepted: impl Fn(&Job) -> bool,
+) -> anyhow::Result<Job> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let job = handle.get(id)?;

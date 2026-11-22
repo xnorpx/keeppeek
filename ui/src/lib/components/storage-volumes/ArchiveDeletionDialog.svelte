@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { create } from '@bufbuild/protobuf';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import type { ArchiveController } from '$lib/archive';
 	import {
@@ -52,6 +52,12 @@
 			alive = false;
 		};
 	});
+	async function finishRequest() {
+		if (!alive) return;
+		loading = false;
+		await tick();
+		if (alive) closeButton?.focus();
+	}
 	async function preview(scope: Selection) {
 		if (loading || disabled) return;
 		selected = scope;
@@ -73,7 +79,7 @@
 			if (alive)
 				error = cause instanceof Error ? cause.message : 'Could not preview archive deletion.';
 		} finally {
-			if (alive) loading = false;
+			await finishRequest();
 		}
 	}
 	async function confirm() {
@@ -100,7 +106,7 @@
 			if (alive)
 				error = cause instanceof Error ? cause.message : 'Could not confirm archive deletion.';
 		} finally {
-			if (alive) loading = false;
+			await finishRequest();
 		}
 	}
 </script>
@@ -108,21 +114,30 @@
 <dialog
 	bind:this={dialog}
 	{onclose}
+	oncancel={(event) => {
+		if (loading) event.preventDefault();
+	}}
+	onkeydown={(event) => {
+		if (event.key === 'Escape') event.stopPropagation();
+	}}
 	aria-labelledby={`${id}-title`}
 	class="m-auto max-h-[85dvh] w-[calc(100%-2rem)] max-w-lg space-y-4 overflow-auto rounded-md border border-hairline-strong bg-surface p-5 text-foreground shadow-xl backdrop:bg-black/55"
 >
 	<h2 id={`${id}-title`} class="text-lg-plus font-semibold">Archive deletion preview</h2>
-	{#if loading}<p role="status">Checking archive deletion…</p>{/if}
+	<p role="status" class="text-sm break-words">
+		{#if loading}Checking archive deletion…{:else if plan?.confirmed}Batch confirmed. Refresh
+			archive jobs to follow progress.{:else if plan}Target {plan.targetId} · {plan.selectedCount} selected
+			· {plan.selectedBytes.toString()} bytes{/if}
+	</p>
 	{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
 	{#if plan}
-		<p class="text-sm break-words"
-			>Target {plan.targetId} · {plan.selectedCount} selected · {plan.selectedBytes.toString()} bytes</p
-		>
-		<p class="text-sm"
-			>{plan.confirmed
-				? 'Batch confirmed. Refresh archive jobs to follow progress.'
-				: 'Confirming queues removal of the selected archive copies. Each primary copy is verified again before removal. If the filesystem cannot protect the primary from writes, KeepPeek retains both copies.'}</p
-		>
+		{#if !plan.confirmed}
+			<p class="text-sm"
+				>Confirming queues removal of the selected archive copies. Each primary copy is verified
+				again before removal. If the filesystem cannot protect the primary from writes, KeepPeek
+				retains both copies.</p
+			>
+		{/if}
 		{#if !plan.confirmed && plan.selectedCount > 0}
 			<p class="text-sm"
 				>After removal, KeepPeek permanently excludes these objects from automatic archiving and the
@@ -150,6 +165,7 @@
 			variant="outline"
 			class="min-h-11 sm:min-h-0"
 			bind:ref={closeButton}
+			disabled={loading}
 			onclick={() => dialog.close()}>Close</Button
 		>
 		{#if error}<Button

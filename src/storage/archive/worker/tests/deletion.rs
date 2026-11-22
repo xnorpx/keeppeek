@@ -78,6 +78,76 @@ fn retire_fixture_copy(context: &Context, job: &Job) -> anyhow::Result<bool> {
 }
 
 #[test]
+fn archive_retention_worker_reverifies_legacy_media_before_assigning_an_age() -> anyhow::Result<()>
+{
+    for corrupt in [false, true] {
+        let fixture = Fixture::new()?;
+        let (id, primary) = fixture.recording("camera")?;
+        let original = std::fs::read(&primary)?;
+        let job = copy(&fixture, &id)?;
+        let target = job.binding.root.join(format!("{}.mp4", job.object_id));
+        if corrupt {
+            let mut damaged = original.clone();
+            damaged[0] ^= 1;
+            std::fs::write(&target, damaged)?;
+        }
+        let mut fixture = fixture.reopen_with(|path| {
+            pollster::block_on(async {
+                let database = turso::Builder::new_local(path.to_str().unwrap())
+                    .experimental_generated_columns(true)
+                    .build()
+                    .await?;
+                let changed = database
+                    .connect()?
+                    .execute(
+                        "DELETE FROM archive_verified_at WHERE job_id=?1",
+                        [job.id.as_str()],
+                    )
+                    .await?;
+                assert_eq!(changed, 1);
+                Ok(())
+            })
+        })?;
+        fixture.settings.retention_days = Some(1);
+        let page = || {
+            preview(
+                &fixture,
+                Selection::Retention {
+                    after: String::new(),
+                    limit: 16,
+                },
+            )
+        };
+        assert_eq!(page()?.items[0].state, "verification_date_unknown");
+        let worker = Worker::start(fixture.settings.clone(), fixture.catalog.handle())?;
+        let observed = super::lifecycle::wait_job(&worker.handle(), &job.id, |job| {
+            job.verified_ms.is_some() || job.error.is_some()
+        })?;
+        worker.shutdown()?;
+        let after = page()?;
+        assert_eq!(after.items.len(), 1);
+        assert_eq!(after.items[0].verified_ms, observed.verified_ms);
+        if corrupt {
+            assert!(observed.verified_ms.is_none());
+            assert_eq!(
+                observed.error.as_deref(),
+                Some("Archive reverification failed; check the target")
+            );
+            assert_eq!(after.items[0].state, "verification_date_unknown");
+            assert_ne!(std::fs::read(target)?, original);
+        } else {
+            assert!(observed.verified_ms.is_some_and(|ms| ms > 0));
+            assert!(observed.error.is_none());
+            assert_eq!(after.items[0].state, "retained");
+            assert_eq!(std::fs::read(target)?, original);
+        }
+        assert_eq!(std::fs::read(primary)?, original);
+        fixture.close()?;
+    }
+    Ok(())
+}
+
+#[test]
 fn archive_retention_confirmation_covers_only_the_displayed_page() -> anyhow::Result<()> {
     let mut fixture = Fixture::new()?;
     fixture.settings.retention_days = Some(1);
