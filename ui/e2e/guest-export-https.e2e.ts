@@ -38,8 +38,12 @@ function observeGuestNetwork(context: BrowserContext, origin: string, privateVal
 		if (routes.includes(path)) paths.add(path);
 		else problems.add('unexpected guest endpoint');
 		const headers = response.headers();
+		const directives = new Set(
+			headers['cache-control']?.split(',').map((directive) => directive.trim().toLowerCase())
+		);
 		if (
-			headers['cache-control'] !== 'private, no-store' ||
+			!directives.has('private') ||
+			!directives.has('no-store') ||
 			headers['referrer-policy'] !== 'no-referrer' ||
 			headers['x-content-type-options'] !== 'nosniff' ||
 			headers['x-frame-options'] !== 'DENY' ||
@@ -126,7 +130,17 @@ async function verifyPrivatePage(page: Page, values: string[], verifyConsole: ()
 	expect(new URL(page.url()).hash).toBe('');
 	expect(
 		await page.evaluate((secrets) => {
-			const state = JSON.stringify([localStorage, sessionStorage, history.state, location.href]);
+			const entries = (storage: Storage) =>
+				Array.from({ length: storage.length }, (_, index) => {
+					const key = storage.key(index);
+					return key === null ? [] : [key, storage.getItem(key)];
+				});
+			const state = JSON.stringify([
+				entries(localStorage),
+				entries(sessionStorage),
+				history.state,
+				location.href
+			]);
 			return secrets.some((value) => state.includes(value));
 		}, values)
 	).toBe(false);

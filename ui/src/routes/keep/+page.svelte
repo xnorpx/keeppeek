@@ -2737,7 +2737,7 @@
 							</span>
 						{:else if selected}
 							<div class="flex aspect-video items-center justify-center text-sm text-zinc-400">
-								Loading recordingâ€¦
+								Loading recording…
 							</div>
 						{:else if playbackExplicitlyClosed}
 							<div
@@ -2747,7 +2747,7 @@
 							</div>
 						{:else if playbackStartupPhase === 'opening'}
 							<div class="flex aspect-video items-center justify-center text-sm text-text-muted">
-								Loading recordingâ€¦
+								Loading recording…
 							</div>
 						{:else}
 							<div class="flex aspect-video items-center justify-center text-sm text-zinc-400">
@@ -2805,7 +2805,7 @@
 							class="min-h-11 justify-start text-xs"
 							disabled={scrubbing || audioPreviewBusy}
 							onclick={openRecordedAudioPreview}
-							>Recorded audio preview{recordedAudio.preview ? ' Â· Active' : ''}</Button
+								>Recorded audio preview{recordedAudio.preview ? ' · Active' : ''}</Button
 						>
 					{/if}
 				</section>
