@@ -114,7 +114,7 @@ existing pull request is enough; do not open a second Discussion or duplicate pu
 
 ## Development environment
 
-Repository development uses stable Rust, Bun `1.4.0`, and Python `3.12`. The pinned Bun and Python
+Repository development uses stable Rust, Bun `1.4.4`, and Python `3.12`. The pinned Bun and Python
 versions live in `ui/.bun-version` and `examples/object_detection_service/.python-version`.
 
 Formatting and validation require the Python packages in
