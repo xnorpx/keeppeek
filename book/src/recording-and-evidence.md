@@ -344,3 +344,25 @@ For the detailed coverage model and export lifecycle, see the
 [event presentation](https://github.com/xnorpx/keeppeek/blob/main/docs/event-presentation.md),
 and [evidence export](https://github.com/xnorpx/keeppeek/blob/main/docs/evidence-exports.md)
 references.
+
+## Calibrating live audio
+
+Open the camera’s Audio synchronization settings and select Live audio. Use a clearly
+visible sound, such as one clap, on the Main or Sub stream you want to calibrate.
+If the sound arrives early, try a positive offset to delay audio. If it arrives late,
+try a negative offset to delay video. The preview shows the added video latency before
+you apply it. Choose **Apply preview** to test in this viewer, or **Reset preview** to
+return to saved timing. Listening for several repetitions helps distinguish a persistent
+offset from variable network or browser jitter.
+
+Save a camera default or override each stream separately. Whole-millisecond offsets range
+from −200 through +200. An explicit zero disables correction on that stream. Inherit
+uses the camera default. Recorded playback and exports use the separate recorded setting.
+Changing live timing leaves the original recording and its timestamps intact.
+
+Live diagnostics show saved and applied timing independently of browser jitter-buffer delay.
+Source health includes held bytes, held encoded video frames, and capacity or expiry drops.
+A rising drop count means the server could not hold every frame within its time or memory
+budget. These measurements end at the server listener handoff. Camera capture latency,
+external transcoder buffering, loudspeaker latency and physical alignment require
+separate measurements.

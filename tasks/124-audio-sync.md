@@ -266,3 +266,23 @@ seek figures measure the local stored-fragment write path. Browser latency,
 concurrent ingest, worker memory, CPU utilization, release-build throughput and
 hardware calibration still require qualification. The issue has no approved
 numeric performance budget for this comparison.
+
+## Live listener correction
+
+The owner approved a signed live offset of −200 through +200 ms per camera profile.
+A positive value holds encoded audio, and a negative value holds encoded video. The
+camera settings show the added video latency before preview or save. Each stream
+inherits the camera default or overrides it, including explicit zero. The viewer can
+apply or reset a preview on paired audio and video subscriptions independently of
+saved timing, stored playback, exports and other sessions.
+
+The listener queue enforces 250 ms maximum age, 256 KiB shared audio and 2 MiB or
+128 encoded frames shared video per camera/profile. Source health exposes occupancy
+and expiry/capacity counters. A generation check preserves the age and lifecycle
+limits when serialized media waits for its local reliable-data channel. Original
+camera timestamps and recording writers remain upstream of presentation adjustment.
+
+The synthetic tests exercise both signs and zero, independent profiles, aggregate
+budgets across viewers, stream switching, source resets, bounded holding and the
+settings revision contract. Physical lip-sync, external transcoder delay, camera
+firmware coverage and stable production-load latency remain open under #124.
