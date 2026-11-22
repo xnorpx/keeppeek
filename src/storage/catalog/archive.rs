@@ -586,7 +586,9 @@ async fn retry(connection: &turso::Connection, id: &str) -> anyhow::Result<Reply
         return Ok(Reply::Job(load(connection, id).await?.map(Box::new)));
     }
     if job.reverification_failed() {
-        connection.execute("UPDATE archive_reverification_retries SET attempts=0,retry_after_ms=0 WHERE job_id=?1", [id]).await?;
+        // A zeroed row is the durable Administrator request, including when retention is indefinite.
+        connection.execute("INSERT INTO archive_reverification_retries(job_id,attempts,retry_after_ms) VALUES(?1,0,0)
+             ON CONFLICT(job_id) DO UPDATE SET attempts=0,retry_after_ms=0", [id]).await?;
         connection
             .execute(
                 "UPDATE archive_replicas SET error=NULL WHERE job_id=?1",

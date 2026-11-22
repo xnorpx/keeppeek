@@ -440,11 +440,14 @@ impl Context {
                     );
                     return result;
                 }
-                Request::Deletion(
+                // The target is reachable and this row now has durable backoff. Other
+                // unverified copies may proceed on the next bounded scheduling pass.
+                self.catalog.archive(Request::Deletion(
                     crate::storage::catalog::archive::deletion::Request::LegacyFailed(
                         job.id.clone(),
                     ),
-                )
+                ))?;
+                return Ok(());
             } else if job.cancelled {
                 Request::CleanupFailed(job.id.clone())
             } else if job.action.is_empty() {
@@ -530,10 +533,7 @@ impl Context {
             if outcome == transfer::ProbeOutcome::Unchanged {
                 return Ok(());
             }
-        } else if job.state == "ready"
-            && job.verified_ms.is_none()
-            && self.settings.retention_days.is_some()
-        {
+        } else if job.state == "ready" && job.verified_ms.is_none() {
             super::operations::reverify_legacy(&self.catalog, job, work)?;
         } else {
             // An offline target must not exhaust the transfer retry budget.
@@ -762,10 +762,14 @@ impl Scan {
             if (attempts < context.settings.maximum_attempts || probe_cleanup || job.cancelled)
                 && (!failed || self.include_failed)
             {
-                let _ = context.process(
+                let retiring = job.pending_deletion().is_some();
+                let result = context.process(
                     job,
                     Instant::now() + Duration::from_secs(context.settings.operation_timeout_secs),
                 );
+                // Each durable deletion checkpoint gets a fresh, bounded turn. Let new work
+                // progress between turns; only failures consume the configured retry count.
+                self.rescan |= retiring && result.is_ok();
             }
             return Ok(true);
         }
@@ -791,23 +795,22 @@ impl Scan {
         // before spending another potentially long operation deadline on legacy media.
         if self.legacy_active {
             self.legacy_active = false;
-            if context.settings.retention_days.is_some() {
-                use crate::storage::catalog::archive::deletion::Request as Deletion;
-                let Reply::Job(job) =
-                    context
-                        .catalog
-                        .archive(Request::Deletion(Deletion::NextLegacy {
-                            target: context.settings.target_id.clone(),
-                            maximum_attempts: context.settings.maximum_attempts,
-                        }))?
-                else {
-                    anyhow::bail!("invalid archive reverification reply")
-                };
-                if let Some(job) = job {
-                    let deadline = Instant::now()
-                        + Duration::from_secs(context.settings.operation_timeout_secs);
-                    self.rescan |= context.process(*job, deadline).is_ok();
-                }
+            use crate::storage::catalog::archive::deletion::Request as Deletion;
+            let Reply::Job(job) =
+                context
+                    .catalog
+                    .archive(Request::Deletion(Deletion::NextLegacy {
+                        target: context.settings.target_id.clone(),
+                        maximum_attempts: context.settings.maximum_attempts,
+                        include_unrequested: context.settings.retention_days.is_some(),
+                    }))?
+            else {
+                anyhow::bail!("invalid archive reverification reply")
+            };
+            if let Some(job) = job {
+                let deadline =
+                    Instant::now() + Duration::from_secs(context.settings.operation_timeout_secs);
+                self.rescan |= context.process(*job, deadline).is_ok();
             }
             return Ok(true);
         }

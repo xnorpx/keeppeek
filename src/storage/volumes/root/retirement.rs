@@ -45,6 +45,7 @@ struct Retirement<'a> {
     directory: Dir,
     receipt: Receipt,
     deadline: Instant,
+    intent_created: bool,
 }
 
 impl Root {
@@ -135,6 +136,26 @@ impl Root {
             deadline,
         )?
         .finish_checked(recheck)
+    }
+
+    /// Advance one durable archive checkpoint within this scheduling turn's deadline.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn advance_archive_retirement<G>(
+        &self,
+        key: &str,
+        identity: &str,
+        bytes: u64,
+        digest: [u8; 32],
+        operation: &str,
+        deadline: Instant,
+        survivor: impl FnOnce() -> anyhow::Result<G>,
+    ) -> anyhow::Result<bool> {
+        let retirement =
+            Retirement::prepare(self, key, identity, bytes, digest, operation, deadline)?;
+        if retirement.intent_created {
+            return Ok(false);
+        }
+        retirement.advance(true, survivor)
     }
 
     /// Removes retirement receipts only after the catalog has durably completed this job.
@@ -247,20 +268,21 @@ impl<'a> Retirement<'a> {
             root: root.identity.directory.clone(),
             quarantine: observed.directory,
         };
-        let retirement = Self {
+        let mut retirement = Self {
             root,
             lock,
             staging,
             directory,
             receipt,
             deadline: deadline.min(Instant::now() + Duration::from_secs(3_600)),
+            intent_created: false,
         };
         retirement.revalidate()?;
-        retirement.prepare_intent()?;
+        retirement.intent_created = retirement.prepare_intent()?;
         Ok(retirement)
     }
 
-    fn prepare_intent(&self) -> anyhow::Result<()> {
+    fn prepare_intent(&self) -> anyhow::Result<bool> {
         match read_receipt(&self.directory, INTENT)? {
             Some(existing) => {
                 anyhow::ensure!(existing == self.receipt, "retirement intent changed");
@@ -274,9 +296,10 @@ impl<'a> Retirement<'a> {
                 self.verify(&mut source)?;
                 self.revalidate()?;
                 write_receipt(&self.directory, INTENT, &self.receipt)?;
+                return Ok(true);
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     #[cfg(test)]
@@ -285,6 +308,14 @@ impl<'a> Retirement<'a> {
     }
 
     fn finish_checked<G>(&self, recheck: impl FnOnce() -> anyhow::Result<G>) -> anyhow::Result<()> {
+        self.advance(false, recheck).map(|_| ())
+    }
+
+    fn advance<G>(
+        &self,
+        yield_after_checkpoint: bool,
+        recheck: impl FnOnce() -> anyhow::Result<G>,
+    ) -> anyhow::Result<bool> {
         self.revalidate()?;
         let completed_staging = read_receipt(&self.directory, STAGED)?;
         if let Some(receipt) = &completed_staging {
@@ -300,7 +331,7 @@ impl<'a> Retirement<'a> {
                     "retirement source reappeared"
                 );
                 self.sync()?;
-                return Ok(());
+                return Ok(true);
             }
             let mut source = open_removal(&self.root.directory, &self.receipt.key)?;
             self.verify(&mut source)?;
@@ -313,6 +344,9 @@ impl<'a> Retirement<'a> {
                 &source,
             )?;
             self.sync()?;
+            if yield_after_checkpoint {
+                return Ok(false);
+            }
         }
         anyhow::ensure!(
             absent(&self.root.directory, &self.receipt.key)?,
@@ -325,6 +359,9 @@ impl<'a> Retirement<'a> {
         if completed_staging.is_none() {
             self.sync()?;
             write_receipt(&self.directory, STAGED, &self.receipt)?;
+            if yield_after_checkpoint {
+                return Ok(false);
+            }
         }
         let _survivor = recheck()?;
         // The primary check can read the entire recording. Validate the final namespace
@@ -336,7 +373,8 @@ impl<'a> Retirement<'a> {
             absent(&self.directory, LEAF)? && absent(&self.root.directory, &self.receipt.key)?,
             "retirement namespace changed"
         );
-        self.sync()
+        self.sync()?;
+        Ok(true)
     }
 
     fn verify(&self, file: &mut File) -> anyhow::Result<()> {

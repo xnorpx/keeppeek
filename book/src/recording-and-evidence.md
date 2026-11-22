@@ -172,6 +172,12 @@ retention days are configured. Review the target, object IDs and byte count.
 Each additional page needs its own confirmation. Leaving retention days blank
 keeps copies indefinitely. Expiry alone performs no deletion.
 
+The worker first verifies both complete copies within one configured operation timeout before it
+claims the job. Subsequent turns record the retirement intent, quarantine the archive, and record
+staging in separate durable steps. Removing the staged file requires a fresh check of its bytes
+and the protected primary in the same turn. A restart resumes from the last durable step.
+Set the timeout long enough to read both full copies at the storage devices' sustained speed.
+
 Windows holds a read handle that excludes writers through archive removal. On Linux,
 the surviving primary requires fs-verity and the immutable inode flag. An ordinary mutable Linux file,
 macOS and other server platforms retain both copies. After the job reaches `acknowledged`, a Linux

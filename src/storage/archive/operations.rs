@@ -191,31 +191,33 @@ pub(super) fn remove_replica(
             );
             Ok(primary)
         };
-        let prepared = if intent.phase == "queued" {
-            // A missing, changed or corrupt version must never acquire a catalog deletion fence.
+        if intent.phase == "queued" {
+            // The catalog fence is acquired only after both complete hashes fit one
+            // configured turn. Keep the independently protected primary pinned through claim.
             verify_version(&target, &version, job.digest, work)?;
-            let primary = verify_primary()?;
+            let _primary = verify_primary()?;
             work.check()?;
             claim()?;
-            Some(primary)
-        } else {
-            None
-        };
-        work.check()?;
-        target.delete_while_primary_is_verified(&version, job.digest, operation, work, || {
-            // A completed durable removal has no file left to unlink. Its receipt can be
-            // reconciled after a restart even if the primary has since gone offline.
-            let primary = if let Some(primary) = prepared {
-                primary
-            } else {
+            return Ok(());
+        }
+        let complete = target.delete_while_primary_is_verified(
+            &version,
+            job.digest,
+            operation,
+            work,
+            || {
+                // A receipt for an already removed version reconciles without another unlink.
+                // Otherwise retain the exact protected primary across the final namespace change.
                 let primary = verify_primary()?;
                 claim()?;
-                primary
-            };
-            work.check()?;
-            primary.validate_archive_survivor()?;
-            Ok(primary)
-        })?;
+                work.check()?;
+                primary.validate_archive_survivor()?;
+                Ok(primary)
+            },
+        )?;
+        if !complete {
+            return Ok(());
+        }
         catalog.archive(Request::Deletion(Deletion::Retired(job.id.clone())))?;
     }
     target.acknowledge_delete(&version, job.digest, operation, work)?;

@@ -56,6 +56,18 @@ fn retire_fixture_copy(context: &Context, job: &Job) -> anyhow::Result<bool> {
     let result = context.process(pending, Instant::now() + Duration::from_secs(15));
     if cfg!(windows) {
         result?;
+        // The initial verification only claims the job. Restart the turn after each
+        // durable filesystem checkpoint and observe at most two full hashes per turn.
+        for expected_complete in [false, false, false, true] {
+            let pending = context.catalog.archive_job(&job.id)?;
+            assert_eq!(pending.deletion.as_ref().unwrap().phase, "claimed");
+            context.process(pending, Instant::now() + Duration::from_secs(15))?;
+            let current = context.catalog.archive_job(&job.id)?;
+            assert_eq!(
+                current.deletion.unwrap().phase == "acknowledged",
+                expected_complete
+            );
+        }
         return Ok(true);
     }
     // These freshly written test files have no filesystem-enforced Unix write protection.
@@ -84,71 +96,84 @@ fn retire_fixture_copy(context: &Context, job: &Job) -> anyhow::Result<bool> {
 #[test]
 fn archive_retention_worker_reverifies_legacy_media_before_assigning_an_age() -> anyhow::Result<()>
 {
-    for corrupt in [false, true] {
-        let fixture = Fixture::new()?;
-        let (id, primary) = fixture.recording("camera")?;
-        let original = std::fs::read(&primary)?;
-        let job = copy(&fixture, &id)?;
-        let target = job.binding.root.join(format!("{}.mp4", job.object_id));
-        if corrupt {
-            let mut damaged = original.clone();
-            damaged[0] ^= 1;
-            std::fs::write(&target, damaged)?;
-        }
-        let mut fixture = fixture.reopen_with(|path| {
-            pollster::block_on(async {
-                let database = turso::Builder::new_local(path.to_str().unwrap())
-                    .experimental_generated_columns(true)
-                    .build()
-                    .await?;
-                let changed = database
-                    .connect()?
-                    .execute(
-                        "DELETE FROM archive_verified_at WHERE job_id=?1",
-                        [job.id.as_str()],
-                    )
-                    .await?;
-                assert_eq!(changed, 1);
-                Ok(())
-            })
-        })?;
-        fixture.settings.retention_days = Some(1);
-        let page = || {
-            preview(
-                &fixture,
-                Selection::Retention {
-                    after: String::new(),
-                    limit: 16,
-                },
-            )
-        };
-        assert_eq!(page()?.items[0].state, "verification_date_unknown");
-        let worker = Worker::start(fixture.settings.clone(), fixture.catalog.handle())?;
-        let observed = super::lifecycle::wait_job(&worker.handle(), &job.id, |job| {
-            job.verified_ms.is_some() || job.error.is_some()
-        })?;
-        worker.shutdown()?;
-        let after = page()?;
-        assert_eq!(after.items.len(), 1);
-        assert_eq!(after.items[0].verified_ms, observed.verified_ms);
-        if corrupt {
-            assert!(observed.verified_ms.is_none());
-            assert_eq!(
-                observed.error.as_deref(),
-                Some("Archive reverification failed; check the target")
-            );
-            assert_eq!(after.items[0].state, "verification_date_unknown");
-            assert_ne!(std::fs::read(target)?, original);
-        } else {
-            assert!(observed.verified_ms.is_some_and(|ms| ms > 0));
-            assert!(observed.error.is_none());
-            assert_eq!(after.items[0].state, "retained");
-            assert_eq!(std::fs::read(target)?, original);
-        }
-        assert_eq!(std::fs::read(primary)?, original);
-        fixture.close()?;
+    let fixture = Fixture::new()?;
+    let mut jobs = Vec::new();
+    for camera in ["camera-a", "camera-b"] {
+        let (id, primary) = fixture.recording(camera)?;
+        jobs.push((copy(&fixture, &id)?, primary));
     }
-    Ok(())
+    jobs.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+    let [(damaged, primary), (healthy, _)] = jobs.as_slice() else {
+        unreachable!()
+    };
+    let target = damaged
+        .binding
+        .root
+        .join(format!("{}.mp4", damaged.object_id));
+    let original = std::fs::read(primary)?;
+    let mut corrupt = original.clone();
+    corrupt[0] ^= 1;
+    std::fs::write(&target, &corrupt)?;
+    let mut fixture = fixture.reopen_with(|path| {
+        pollster::block_on(async {
+            let database = turso::Builder::new_local(path.to_str().unwrap())
+                .experimental_generated_columns(true)
+                .build()
+                .await?;
+            let changed = database
+                .connect()?
+                .execute("DELETE FROM archive_verified_at", ())
+                .await?;
+            assert_eq!(changed, 2);
+            Ok(())
+        })
+    })?;
+    fixture.settings.retention_days = Some(1);
+    let selection = || Selection::Retention {
+        after: String::new(),
+        limit: 16,
+    };
+    let before = preview(&fixture, selection())?;
+    assert_eq!(before.items.len(), 2);
+    assert!(
+        before
+            .items
+            .iter()
+            .all(|item| item.state == "verification_date_unknown")
+    );
+
+    let worker = Worker::start(fixture.settings.clone(), fixture.catalog.handle())?;
+    let handle = worker.handle();
+    let failed = super::lifecycle::wait_job(&handle, &damaged.id, Job::reverification_failed)?;
+    assert!(failed.verified_ms.is_none());
+    // An unread, higher-ID copy must finish before the ordinary periodic scan, even
+    // though the lower-ID copy failed its digest on exactly this bound target.
+    let ready = super::lifecycle::wait_job(&handle, &healthy.id, |job| job.verified_ms.is_some())?;
+    worker.shutdown()?;
+    assert!(ready.verified_ms.is_some_and(|ms| ms > 0));
+    let after = preview(&fixture, selection())?;
+    assert_eq!(after.items[0].state, "verification_date_unknown");
+    assert_eq!(after.items[1].state, "retained");
+    assert_eq!(std::fs::read(&target)?, corrupt);
+
+    // A durable explicit retry survives restart even after the operator selects
+    // indefinite retention. No automatic expiry or deletion is requested.
+    std::fs::write(&target, &original)?;
+    fixture
+        .catalog
+        .handle()
+        .archive(Request::Retry(damaged.id.clone()))?;
+    fixture.settings.retention_days = None;
+    let fixture = fixture.reopen()?;
+    let worker = Worker::start(fixture.settings.clone(), fixture.catalog.handle())?;
+    let repaired = super::lifecycle::wait_job(&worker.handle(), &damaged.id, |job| {
+        job.verified_ms.is_some()
+    })?;
+    worker.shutdown()?;
+    assert!(repaired.error.is_none() && repaired.deletion.is_none());
+    assert_eq!(std::fs::read(target)?, original);
+    assert_eq!(std::fs::read(primary)?, original);
+    fixture.close()
 }
 
 #[test]
@@ -434,6 +459,14 @@ fn archive_deletion_reconciles_a_lost_retirement_acknowledgement_after_restart()
         confirm(&fixture, &plan, "admin")?.items[0].state,
         "acknowledged"
     );
+    // The acknowledgement committed even if its caller observed a timeout.
+    fixture
+        .catalog
+        .handle()
+        .archive(Request::Deletion(Deletion::Failed(job.id.clone())))?;
+    let replay = handle.get(&job.id)?;
+    assert!(replay.error.is_none());
+    assert_eq!(replay.deletion.unwrap().phase, "acknowledged");
     assert_eq!(std::fs::read(path)?, original);
     drop(handle);
     worker.shutdown()?;

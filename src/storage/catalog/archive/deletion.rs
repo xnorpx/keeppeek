@@ -105,6 +105,7 @@ pub(crate) enum Request {
     NextLegacy {
         target: String,
         maximum_attempts: u32,
+        include_unrequested: bool,
     },
     LegacyFailed(String),
     Reverified {
@@ -151,6 +152,7 @@ pub(super) async fn dispatch(
         Request::NextLegacy {
             target,
             maximum_attempts,
+            include_unrequested,
         } => {
             ensure!(
                 (1..=ATTEMPTS_MAX).contains(&maximum_attempts),
@@ -162,8 +164,9 @@ pub(super) async fn dispatch(
                 AND NOT EXISTS(SELECT 1 FROM archive_verified_at v WHERE v.job_id=a.job_id AND v.version=a.version)
                 AND NOT EXISTS(SELECT 1 FROM archive_deletion_items d WHERE d.job_id=a.job_id AND d.phase IN('queued','claimed','retired'))
                 AND COALESCE(r.attempts,0)<?2 AND COALESCE(r.retry_after_ms,0)<=?3
-                ORDER BY CASE WHEN r.attempts=0 THEN 0 ELSE 1 END,a.job_id LIMIT 1",
-                turso::params![target, i64::from(maximum_attempts), current_unix_time_ms()]).await?;
+                AND (?4=1 OR (r.attempts=0 AND r.retry_after_ms=0))
+                ORDER BY CASE WHEN COALESCE(r.attempts,0)=0 THEN 0 ELSE 1 END,a.job_id LIMIT 1",
+                turso::params![target, i64::from(maximum_attempts), current_unix_time_ms(), i64::from(include_unrequested)]).await?;
             let id = rows
                 .next()
                 .await?

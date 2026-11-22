@@ -326,6 +326,7 @@ fn archive_retention_keeps_legacy_ready_replicas_until_a_new_verified_observatio
             &connection,
             Deletion::NextLegacy {
                 target: "cold".into(),
+                include_unrequested: true,
                 maximum_attempts: 1,
             },
         )
@@ -377,19 +378,27 @@ fn archive_retention_backoff_retries_are_persisted_and_administrator_can_reset_t
             )
             .await?;
         let id = admission().job_id;
-        let next = || Deletion::NextLegacy {
+        let next = |include_unrequested| Deletion::NextLegacy {
             target: "cold".into(),
+            include_unrequested,
             maximum_attempts: 1,
         };
         assert!(matches!(
-            run(&connection, next()).await?,
+            run(&connection, next(true)).await?,
             Reply::Job(Some(_))
+        ));
+        assert!(matches!(
+            run(&connection, next(false)).await?,
+            Reply::Job(None)
         ));
         connection.execute("UPDATE archive_replicas SET error='Archive deletion blocked; check the primary and preview again' WHERE job_id=?1",[id.as_str()]).await?;
         assert!(!required(&connection, &id).await?.reverification_failed());
         assert!(retry(&connection, &id).await.is_err());
         run(&connection, Deletion::LegacyFailed(id.clone())).await?;
-        assert!(matches!(run(&connection, next()).await?, Reply::Job(None)));
+        assert!(matches!(
+            run(&connection, next(true)).await?,
+            Reply::Job(None)
+        ));
         assert!(required(&connection, &id).await?.reverification_failed());
         connection
             .execute(
@@ -397,10 +406,13 @@ fn archive_retention_backoff_retries_are_persisted_and_administrator_can_reset_t
                 (),
             )
             .await?;
-        assert!(matches!(run(&connection, next()).await?, Reply::Job(None)));
+        assert!(matches!(
+            run(&connection, next(true)).await?,
+            Reply::Job(None)
+        ));
         super::super::retry(&connection, &id).await?;
         assert!(matches!(
-            run(&connection, next()).await?,
+            run(&connection, next(false)).await?,
             Reply::Job(Some(_))
         ));
         Ok(())

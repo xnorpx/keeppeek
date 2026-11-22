@@ -128,7 +128,8 @@ pub(super) async fn blocked(
 
 pub(super) async fn failed(connection: &turso::Connection, id: &str) -> anyhow::Result<Reply> {
     connection.execute("UPDATE archive_deletion_items SET attempts=attempts+1 WHERE job_id=?1 AND phase IN('claimed','retired') AND attempts<4294967295",[id]).await?;
-    connection.execute("UPDATE archive_replicas SET error='Archive deletion interrupted; reconcile the confirmed job' WHERE job_id=?1 AND state IN('deleting','deleted')",[id]).await?;
+    connection.execute("UPDATE archive_replicas SET error='Archive deletion interrupted; reconcile the confirmed job' WHERE job_id=?1 AND state IN('deleting','deleted')
+        AND EXISTS(SELECT 1 FROM archive_deletion_items WHERE job_id=?1 AND phase IN('claimed','retired'))",[id]).await?;
     Ok(Reply::Done)
 }
 

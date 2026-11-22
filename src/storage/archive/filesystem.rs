@@ -71,10 +71,10 @@ impl FilesystemArchiveTarget {
         operation: ObjectId,
         work: &Work<'_>,
         recheck: impl FnOnce() -> anyhow::Result<G>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         work.check()?;
         version.validate()?;
-        self.root.retire_owned_while(
+        let complete = self.root.advance_archive_retirement(
             &format!("{}.mp4", version.object),
             &version.token,
             version.bytes,
@@ -83,7 +83,8 @@ impl FilesystemArchiveTarget {
             work.deadline,
             recheck,
         )?;
-        work.check()
+        work.check()?;
+        Ok(complete)
     }
 
     pub(super) fn delete_key(
