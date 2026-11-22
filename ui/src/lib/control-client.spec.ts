@@ -197,6 +197,7 @@ class FakeDataChannel {
 	storedTimelineQueries: QueryStoredMediaTimeline[] = [];
 	cancelledTimelineQueryIds: string[] = [];
 	eventSearchQueries: QueryEvents[] = [];
+	eventSearchRefusals: string[] = [];
 	exportRecordedAudio?: import('./proto/webrtc_pb').RecordedAudioTiming;
 
 	send(data: ArrayBuffer | ArrayBufferView): void {
@@ -372,6 +373,28 @@ class FakeDataChannel {
 			const action = command.value.action;
 			if (action.case === 'query') {
 				this.eventSearchQueries.push(action.value);
+				const refusal = this.eventSearchRefusals.shift();
+				if (refusal) {
+					const reply = create(ControlEnvelopeSchema, {
+						message: {
+							case: 'response',
+							value: create(ResponseSchema, {
+								requestId: request.message.value.requestId,
+								result: {
+									case: 'error',
+									value: create(ErrorSchema, { code: ErrorCode.REJECTED, message: refusal })
+								}
+							})
+						}
+					});
+					queueMicrotask(() =>
+						this.onmessage?.({
+							data: toBinary(ControlEnvelopeSchema, reply).buffer
+						} as MessageEvent)
+					);
+					return;
+				}
+
 				const sourceId =
 					action.value.search.case === 'metadata'
 						? (action.value.search.value.sourceIds[0] ?? 'front-door')
@@ -2671,6 +2694,41 @@ describe('ControlClient', () => {
 			nalLengthSize: 4
 		});
 		expect([...media.payload]).toEqual([1, 2, 3]);
+	});
+
+	it('allows the latest event query to recover while cancelled searches drain', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'search-capacity',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+		await client.connect();
+		const channel = FakePeerConnection.latest!.channels.find(
+			(item) => item.label === 'control-channel'
+		)!;
+		const options = { sourceIds: ['front-door'], streamId: 'main', startMs: 1, endMs: 5000 };
+		const capacity = 'event search task limit is reached';
+		channel.eventSearchRefusals.push(capacity, capacity);
+		const page = await client.searchEventMetadata(options);
+		expect(page.hits.map((hit) => hit.eventId)).toContain('event-42');
+		expect(channel.eventSearchQueries).toHaveLength(3);
+		expect(new Set(channel.eventSearchQueries.map((query) => query.queryId)).size).toBe(1);
+		channel.eventSearchRefusals.push('permission denied');
+		await expect(client.searchEventMetadata(options)).rejects.toThrow('permission denied');
+		expect(channel.eventSearchQueries).toHaveLength(4);
+
+		channel.eventSearchRefusals.push(capacity);
+		const controller = new AbortController();
+		const pending = client.searchEventMetadata({ ...options, signal: controller.signal });
+		await vi.waitFor(() => expect(channel.eventSearchQueries).toHaveLength(5), { interval: 1 });
+		controller.abort();
+		await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+		expect(channel.eventSearchQueries).toHaveLength(5);
+		channel.eventSearchRefusals.push(...Array<string>(6).fill(capacity));
+		await expect(client.searchEventMetadata(options)).rejects.toThrow(capacity);
+		expect(channel.eventSearchQueries).toHaveLength(11);
+		await client.close();
 	});
 
 	it('encodes metadata filters and decodes a rich bounded event page', async () => {

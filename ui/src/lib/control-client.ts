@@ -86,6 +86,7 @@ import {
 	EventAttachmentDescriptorSchema,
 	EventExportSeedSchema,
 	EventImageAvailability as ProtoEventImageAvailability,
+	ErrorCode,
 	EventImageFilter as ProtoEventImageFilter,
 	EventMetadataSearchSchema,
 	EventOrigin,
@@ -224,6 +225,8 @@ type CapabilityListener = (capabilityIds: readonly string[]) => void;
 type AccessStateListener = (state: AccessConnectionState) => void;
 
 export type PtzPreset = { id: number; name: string };
+
+class EventSearchCapacityError extends Error {}
 
 export class NotificationConflictError extends Error {
 	constructor(
@@ -986,6 +989,19 @@ export class ControlClient {
 		);
 	}
 
+	private async admitEventSearch(command: Request['command'], signal?: AbortSignal) {
+		const delays = [60, 120, 240, 480, 960];
+		for (let attempt = 0; ; attempt++) {
+			try {
+				return await this.request(command, controlTimeoutMs, signal);
+			} catch (cause) {
+				const delay = delays[attempt];
+				if (!(cause instanceof EventSearchCapacityError) || delay === undefined) throw cause;
+				await waitForEventSearchSlot(delay, signal);
+			}
+		}
+	}
+
 	private async runEventSearch(
 		signal: AbortSignal | undefined,
 		query: (queryId: string) => QueryEvents
@@ -1025,7 +1041,10 @@ export class ControlClient {
 					value: query(queryId)
 				}
 			});
-			const result = await this.request({ case: 'eventSearchCommand', value: command });
+			const result = await this.admitEventSearch(
+				{ case: 'eventSearchCommand', value: command },
+				signal
+			);
 			if (
 				result.case !== 'eventSearchDelivery' ||
 				result.value.queryId !== queryId ||
@@ -2325,6 +2344,15 @@ export class ControlClient {
 			channel.send(toBinary(ControlEnvelopeSchema, envelope));
 			const reply = await response;
 			if (reply.result.case === 'error') {
+				// The existing recorder uses REJECTED for both an occupied search slot and a duplicate ID.
+				if (
+					command.case === 'eventSearchCommand' &&
+					command.value.action.case === 'query' &&
+					reply.result.value.code === ErrorCode.REJECTED &&
+					reply.result.value.message === 'event search task limit is reached'
+				) {
+					throw new EventSearchCapacityError(reply.result.value.message);
+				}
 				const stateStoreError = decodeStateStoreRequestError(reply.result.value);
 				if (stateStoreError) throw stateStoreError;
 				const configurationError = decodeConfigurationRequestError(reply.result.value);
@@ -3989,6 +4017,21 @@ function recordingDayWindow(date: string): { startMs: number; endMs: number } {
 		throw new Error('Recording date is invalid.');
 	}
 	return { startMs, endMs: startMs + 86_400_000 };
+}
+
+function waitForEventSearchSlot(delayMs: number, signal?: AbortSignal): Promise<void> {
+	signal?.throwIfAborted();
+	return new Promise((resolve, reject) => {
+		const abort = () => {
+			clearTimeout(timer);
+			reject(timelineAbortError());
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener('abort', abort);
+			resolve();
+		}, delayMs);
+		signal?.addEventListener('abort', abort, { once: true });
+	});
 }
 
 function timelineAbortError(): DOMException {
