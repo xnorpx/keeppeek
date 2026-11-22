@@ -1400,8 +1400,6 @@ impl WriterWorker {
     ) -> std::io::Result<WriteProgress> {
         let pipeline = self.pipelines.get_mut(camera_id).unwrap();
         pipeline.last_flush = Instant::now();
-        let mut progress = WriteProgress::default();
-
         let mut frames = if publish_all {
             pipeline.short_term.drain_all()
         } else {
@@ -1412,88 +1410,55 @@ impl WriterWorker {
                 })
         };
         if frames.is_empty() {
-            return Ok(progress);
+            return Ok(WriteProgress::default());
         }
 
-        let needs_rotation = pipeline
+        let needs_segment = pipeline
             .medium_term
             .as_ref()
-            .is_some_and(|w| w.elapsed() >= self.config.medium_term_duration);
-
+            .is_none_or(|writer| writer.elapsed() >= self.config.medium_term_duration);
         let mut rotated = None;
-
-        if needs_rotation {
-            if let Some(kf_idx) = frames.iter().position(|f| f.is_video_keyframe()) {
-                if kf_idx > 0 {
-                    let remainder = frames.split_off(kf_idx);
-                    let recorded_duration = pipeline
-                        .medium_term
-                        .as_mut()
-                        .unwrap()
-                        .append_batch(frames)?;
-                    progress.wrote = true;
-                    progress.recorded_duration =
-                        progress.recorded_duration.saturating_add(recorded_duration);
-                    frames = remainder;
+        let mut recorded_duration = Duration::ZERO;
+        if needs_segment
+            && let Some(index) = frames.iter().position(RecordingFrame::is_video_keyframe)
+        {
+            if index > 0 {
+                let next = frames.split_off(index);
+                if let Some(writer) = &mut pipeline.medium_term {
+                    recorded_duration = writer.append_batch(frames)?;
                 }
-            } else {
-                let recorded_duration = pipeline
-                    .medium_term
-                    .as_mut()
-                    .unwrap()
-                    .append_batch(frames)?;
-                progress.wrote = true;
-                progress.recorded_duration =
-                    progress.recorded_duration.saturating_add(recorded_duration);
-                frames = Vec::new();
+                frames = next;
             }
-
-            let old = pipeline.medium_term.take().unwrap();
-            let recording_id = old.recording_id().to_owned();
-            rotated = Some((old.finalize()?, recording_id));
-        }
-
-        if !frames.is_empty() && pipeline.medium_term.is_none() {
-            if let Some(keyframe_index) = frames.iter().position(RecordingFrame::is_video_keyframe)
-            {
-                if keyframe_index > 0 {
-                    frames = frames.split_off(keyframe_index);
-                }
-                let started_at = frames[0].received_at;
-                let writer = create_medium_term_writer(
-                    &self.config,
-                    self.catalog.as_ref(),
-                    &pipeline.identity,
-                    started_at,
-                    self.safety.recording_paused(),
-                )?;
-                tracing::info!(
-                    camera = camera_id,
-                    path = %writer.active_path().display(),
-                    "new medium-term segment started",
-                );
-                pipeline.medium_term = Some(writer);
-            } else {
-                frames.clear();
+            if let Some(old) = pipeline.medium_term.take() {
+                let recording_id = old.recording_id().to_owned();
+                rotated = Some((old.finalize()?, recording_id));
             }
+            let writer = create_medium_term_writer(
+                &self.config,
+                self.catalog.as_ref(),
+                &pipeline.identity,
+                frames[0].received_at,
+                self.safety.recording_paused(),
+            )?;
+            tracing::info!(
+                camera = camera_id,
+                path = %writer.active_path().display(),
+                "new medium-term segment started"
+            );
+            pipeline.medium_term = Some(writer);
         }
-
-        if !frames.is_empty() {
-            let recorded_duration = pipeline
-                .medium_term
-                .as_mut()
-                .unwrap()
-                .append_batch(frames)?;
-            progress.wrote = true;
-            progress.recorded_duration =
-                progress.recorded_duration.saturating_add(recorded_duration);
-        }
-
+        let Some(writer) = &mut pipeline.medium_term else {
+            return Ok(WriteProgress::default());
+        };
+        recorded_duration = recorded_duration.saturating_add(writer.append_batch(frames)?);
         if let Some((path, recording_id)) = rotated {
             self.move_to_long_term(camera_id, &path, &recording_id)?;
         }
 
-        Ok(progress)
+        Ok(WriteProgress {
+            wrote: true,
+            recorded_duration,
+        })
     }
 
     fn flush_all(&mut self) {

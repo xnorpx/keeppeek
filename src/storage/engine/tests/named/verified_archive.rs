@@ -1,0 +1,451 @@
+//! Compares the same paced multi-camera workload with and without local verified transfers.
+
+use super::*;
+use crate::storage::{archive, test_media::video_fixture};
+use anyhow::{Context as _, ensure};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    thread,
+};
+
+const CAMERAS: usize = 8;
+const FPS: u32 = 15;
+const SECONDS: u32 = 30;
+
+#[test]
+fn buffered_rotation_keeps_inter_frames_until_the_next_keyframe() -> anyhow::Result<()> {
+    let (root, catalog, mut config) = named_fixture()?;
+    config.flush_interval = Duration::from_secs(60);
+    let demand = RecordingDemand::new(Duration::ZERO);
+    let _viewer = demand.acquire("front/main");
+    let mut writer = WriterWorker::new(config, demand, Some(catalog.handle()));
+    let camera = RecordingStreamIdentity::new("front", "main", "front");
+    let mut gop = video_fixture(VideoCodec::H264, "640x360").into_iter();
+    writer.ingest(camera.clone(), gop.next().unwrap());
+    let active = writer.pipelines[&camera.storage_key]
+        .medium_term
+        .as_ref()
+        .unwrap();
+    let first = active.active_path().to_owned();
+    writer.config.medium_term_duration = Duration::ZERO;
+    for frame in gop.by_ref().take(2) {
+        assert!(!frame.is_video_keyframe());
+        writer.ingest(camera.clone(), frame);
+    }
+    writer.ingest(
+        camera.clone(),
+        gop.find(RecordingFrame::is_video_keyframe).unwrap(),
+    );
+    let next = writer.pipelines[&camera.storage_key]
+        .medium_term
+        .as_ref()
+        .unwrap()
+        .active_path()
+        .to_owned();
+    assert_ne!(first, next);
+    writer.finalize_all();
+    assert_eq!(samples(&first), 3);
+    assert_eq!(samples(&next), 1);
+    drop(writer);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "paced local disk qualification; run alone with --ignored --nocapture"]
+fn verified_archive_under_paced_recording_and_review() -> anyhow::Result<()> {
+    let frames = video_fixture(VideoCodec::H264, "3840x2160");
+    assert!(frames[0].is_video_keyframe());
+    assert_eq!(
+        frames
+            .iter()
+            .take(FPS as usize)
+            .filter(|frame| frame.is_video_keyframe())
+            .count(),
+        1
+    );
+    for run in 0..3 {
+        for enabled in [run % 2 == 1, run % 2 == 0] {
+            qualify(&frames, enabled, run + 1)?;
+        }
+    }
+    Ok(())
+}
+
+fn qualify(frames: &[RecordingFrame], enabled: bool, run: usize) -> anyhow::Result<()> {
+    let (root, catalog, manager) = runtime::tests::fixture(256 * MEBIBYTE_BYTES)?;
+    let result = run_fixture(&root, catalog.handle(), manager, frames, enabled);
+    catalog.shutdown();
+    let cleanup = std::fs::remove_dir_all(root);
+    let mut report = result?;
+    cleanup?;
+    report["run"] = run.into();
+    println!("{report}");
+    Ok(())
+}
+
+fn run_fixture(
+    root: &Path,
+    catalog_handle: RecordingCatalogHandle,
+    manager: runtime::Manager,
+    frames: &[RecordingFrame],
+    enabled: bool,
+) -> anyhow::Result<serde_json::Value> {
+    let mut config = storage_config("verified-archive");
+    config.volume_runtime = Some(Arc::new(manager));
+    config.medium_term_path = root.join("primary");
+    config.long_term_path = root.join("primary");
+    config.recording_catalog_path = root.join("catalog.db");
+    config.medium_term_duration = Duration::from_secs(5);
+    config.short_term_duration = Duration::from_secs(2);
+    config.flush_interval = Duration::from_millis(250);
+    let target = root.join("verified");
+    runtime::tests::create_root(&target)?;
+    let worker = if enabled {
+        Some(start_archive(target, catalog_handle.clone())?)
+    } else {
+        None
+    };
+    let archive = worker.as_ref().map(archive::Worker::handle);
+    config.archive_runtime.clone_from(&archive);
+    let engine = StorageEngine::start_with_catalog(config, catalog_handle.clone());
+    let storage = engine.handle();
+    let cameras: Vec<_> = (0..CAMERAS)
+        .map(|id| {
+            let source = format!("camera-{id}");
+            storage.configure_camera_recording(&source, CameraRecordingMode::Main, Duration::ZERO);
+            RecordingStreamIdentity::new(&source, "main", &source)
+        })
+        .collect();
+    let _viewers: Vec<_> = cameras
+        .iter()
+        .map(|camera| engine.demand().acquire(camera.storage_key.clone()))
+        .collect();
+    let start = Instant::now();
+    let mut report = thread::scope(|scope| -> anyhow::Result<_> {
+        let producer = scope.spawn(|| ingest(&storage, &cameras, frames, start));
+        let mut report = observe(
+            &engine,
+            &catalog_handle,
+            archive.as_ref(),
+            &frames[1],
+            start,
+            || producer.is_finished(),
+        )?;
+        let (ingest_us, lateness_us) = producer
+            .join()
+            .map_err(|_| anyhow::anyhow!("recording producer panicked"))?;
+        report["ingest_us"] = quantiles(ingest_us);
+        report["frame_deadline_lateness_us"] = quantiles(lateness_us);
+        Ok(report)
+    })?;
+    engine.shutdown();
+    let recordings = check_recordings(&catalog_handle, &cameras)?;
+    if let Some(handle) = archive {
+        wait_for_replicas(&handle, &recordings)?;
+    }
+    report["archive"] = enabled.into();
+    report["primary_recordings"] = recordings.len().into();
+    if let Some(worker) = worker {
+        worker.shutdown()?;
+    }
+    Ok(report)
+}
+
+fn wait_for_replicas(
+    handle: &archive::Handle,
+    recordings: &BTreeSet<String>,
+) -> anyhow::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let jobs = archive_jobs(handle)?;
+        ensure!(
+            jobs.iter().all(|j| j.state != "failed"),
+            "archive job failed"
+        );
+        let ready: BTreeSet<_> = jobs
+            .iter()
+            .filter(|j| j.state == "ready")
+            .map(|j| j.recording_id.clone())
+            .collect();
+        if ready == *recordings {
+            ensure!(
+                jobs.len() == recordings.len(),
+                "unexpected extra archive job"
+            );
+            return Ok(());
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "archive finished {} of {} recordings",
+            ready.len(),
+            recordings.len()
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn start_archive(
+    root: PathBuf,
+    catalog: RecordingCatalogHandle,
+) -> anyhow::Result<archive::Worker> {
+    let settings = archive::settings::Settings {
+        target_id: "local".into(),
+        root,
+        enabled: true,
+        automatic: true,
+        source_ids: vec![],
+        minimum_age_secs: 0,
+        evict_after_archive: false,
+        maximum_object_bytes: 8 * MEBIBYTE_BYTES,
+        maximum_pending_count: 64,
+        maximum_pending_bytes: 128 * MEBIBYTE_BYTES,
+        maximum_attempts: 3,
+        operation_timeout_secs: 30,
+    };
+    archive::Worker::start(settings, catalog)
+}
+
+#[derive(Clone, serde::Serialize)]
+struct Progress {
+    ready: usize,
+    writer_ms: BTreeMap<String, u64>,
+    completed_seeks: usize,
+}
+
+fn observe(
+    engine: &StorageEngine,
+    catalog: &RecordingCatalogHandle,
+    archive: Option<&archive::Handle>,
+    expected: &RecordingFrame,
+    start: Instant,
+    finished: impl Fn() -> bool,
+) -> anyhow::Result<serde_json::Value> {
+    let mut meter = drain_performance::ProcessMeter::new();
+    let cpu_before = meter.sample();
+    let mut review_us = Vec::new();
+    let (mut ready, mut ready_bytes) = (0, 0);
+    let (mut first, mut last) = (None, None);
+    for tick in 1..SECONDS * 4 {
+        let due = start + Duration::from_millis(u64::from(tick) * 250);
+        thread::sleep(due.saturating_duration_since(Instant::now()));
+        if finished() {
+            break;
+        }
+        let sample = Instant::now();
+        if review_primary(catalog, expected)? {
+            review_us.push(sample.elapsed().as_secs_f64() * 1e6);
+        }
+        if let Some(handle) = archive {
+            let (count, bytes) = verified(handle)?;
+            if count > ready && !finished() {
+                let streams = engine.health().snapshot().streams;
+                if streams.len() == CAMERAS {
+                    let writer_ms = streams
+                        .into_iter()
+                        .map(|s| (s.stream_id, s.recorded_duration_ms))
+                        .collect();
+                    let observed = Progress {
+                        ready: count,
+                        writer_ms,
+                        completed_seeks: review_us.len(),
+                    };
+                    first.get_or_insert_with(|| observed.clone());
+                    last = Some(observed);
+                }
+            }
+            (ready, ready_bytes) = (count, bytes);
+        }
+        meter.sample();
+    }
+    let window = start.elapsed();
+    check_progress(
+        engine,
+        review_us.len(),
+        archive.is_some(),
+        first.as_ref(),
+        last.as_ref(),
+    )?;
+    Ok(serde_json::json!({
+        "camera_count": CAMERAS,
+        "samples_per_camera": FPS * SECONDS,
+        "window_seconds": window.as_secs_f64(),
+        "primary_seek_us": quantiles(review_us),
+        "ready_during_ingest": ready,
+        "first_overlap": first,
+        "last_overlap": last,
+        "verified_bytes_during_ingest": ready_bytes,
+        "verified_mib_per_second_over_window": ready_bytes as f64 / MEBIBYTE_BYTES as f64 / window.as_secs_f64(),
+        "process_cpu_ms": meter.sample() - cpu_before,
+        "sampled_peak_process_rss_bytes": meter.resident,
+    }))
+}
+
+fn check_progress(
+    engine: &StorageEngine,
+    seeks: usize,
+    enabled: bool,
+    first: Option<&Progress>,
+    last: Option<&Progress>,
+) -> anyhow::Result<()> {
+    let streams = engine.health().snapshot().streams;
+    ensure!(
+        streams.len() == CAMERAS
+            && streams
+                .iter()
+                .all(|stream| stream.last_failure_at_ms.is_none()
+                    && stream.recorded_duration_ms >= 1000),
+        "writers did not make healthy progress: {streams:?}"
+    );
+    ensure!(seeks > 0, "no primary sample was reviewed during ingest");
+    if enabled {
+        let first = first.context("no verified replica observed during ingest")?;
+        let last = last.context("no verified replica observed during ingest")?;
+        ensure!(
+            last.ready > first.ready && last.completed_seeks > first.completed_seeks,
+            "verified replicas and primary seeks must both advance during ingest"
+        );
+        for (id, before) in &first.writer_ms {
+            ensure!(
+                last.writer_ms
+                    .get(id)
+                    .is_some_and(|after| *after >= before + 1000),
+                "no sustained writer progress on {id} between archive checkpoints"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn ingest(
+    storage: &StorageHandle,
+    cameras: &[RecordingStreamIdentity],
+    frames: &[RecordingFrame],
+    start: Instant,
+) -> (Vec<f64>, Vec<f64>) {
+    let mut ingest_us = Vec::new();
+    let mut lateness = Vec::new();
+    for index in 0..FPS * SECONDS {
+        let offset = Duration::from_secs_f64(f64::from(index) / f64::from(FPS));
+        let due = start + offset;
+        thread::sleep(due.saturating_duration_since(Instant::now()));
+        lateness.push(due.elapsed().as_secs_f64() * 1e6);
+        let MediaFrame::Video(video) = &frames[(index % FPS) as usize].frame else {
+            unreachable!("video fixture")
+        };
+        for camera in cameras {
+            let frame = RecordingFrame {
+                received_at: due,
+                timestamp: Some(offset),
+                frame: MediaFrame::Video(VideoFrame {
+                    codec: video.codec,
+                    width: video.width,
+                    height: video.height,
+                    is_keyframe: video.is_keyframe,
+                    data: video.data.clone(),
+                }),
+            };
+            let now = Instant::now();
+            storage.ingest_stream(camera.clone(), frame);
+            ingest_us.push(now.elapsed().as_secs_f64() * 1e6);
+        }
+    }
+    (ingest_us, lateness)
+}
+
+fn review_primary(
+    catalog: &RecordingCatalogHandle,
+    expected: &RecordingFrame,
+) -> anyhow::Result<bool> {
+    let (fragments, _lease) =
+        catalog.leased_media_fragments_in_range("camera-0/main", 0, i64::MAX)?;
+    let Some(first) = fragments.first() else {
+        return Ok(false);
+    };
+    let Reply::Location(Some(_)) = catalog.volume_location(Request::Lookup(Object {
+        kind: Kind::Recording,
+        id: first.recording_id.clone(),
+    }))?
+    else {
+        return Ok(false);
+    };
+    let mut reader = mp4::read_mp4(File::open(&first.path)?)?;
+    let track = *reader.tracks().keys().next().context("no video track")?;
+    let sample = reader
+        .read_sample(track, 2)?
+        .context("no second video frame")?;
+    let MediaFrame::Video(video) = &expected.frame else {
+        unreachable!("video fixture")
+    };
+    ensure!(
+        sample.bytes == video.data,
+        "primary seek returned a different frame"
+    );
+    Ok(true)
+}
+
+fn archive_jobs(
+    handle: &archive::Handle,
+) -> anyhow::Result<Vec<crate::storage::catalog::archive::Job>> {
+    let mut jobs = Vec::new();
+    // At most one new recording per emitted keyframe.
+    for _ in 0..=(CAMERAS * SECONDS as usize) / 64 {
+        let after = jobs
+            .last()
+            .map_or("", |j: &crate::storage::catalog::archive::Job| {
+                j.id.as_str()
+            });
+        let page = handle.list(after, 64)?;
+        let done = page.len() < 64;
+        jobs.extend(page);
+        if done {
+            return Ok(jobs);
+        }
+    }
+    anyhow::bail!("archive created more jobs than the camera workload permits")
+}
+
+fn verified(handle: &archive::Handle) -> anyhow::Result<(usize, u64)> {
+    let jobs = archive_jobs(handle)?;
+    ensure!(
+        jobs.iter().all(|job| job.state != "failed"),
+        "archive job failed"
+    );
+    Ok(jobs
+        .iter()
+        .filter(|job| job.state == "ready")
+        .fold((0, 0), |(count, bytes), job| (count + 1, bytes + job.bytes)))
+}
+
+fn check_recordings(
+    catalog: &RecordingCatalogHandle,
+    cameras: &[RecordingStreamIdentity],
+) -> anyhow::Result<BTreeSet<String>> {
+    let mut recordings = BTreeSet::new();
+    for camera in cameras {
+        let (fragments, _lease) =
+            catalog.leased_media_fragments_in_range(&camera.storage_key, 0, i64::MAX)?;
+        let paths: BTreeMap<_, _> = fragments
+            .into_iter()
+            .map(|f| (f.recording_id, f.path))
+            .collect();
+        let recorded_samples: u32 = paths.values().map(|path| samples(Path::new(path))).sum();
+        ensure!(
+            recorded_samples == FPS * SECONDS,
+            "{} retained {recorded_samples} samples",
+            camera.storage_key
+        );
+        recordings.extend(paths.into_keys());
+    }
+    Ok(recordings)
+}
+
+fn quantiles(mut values: Vec<f64>) -> serde_json::Value {
+    values.sort_by(f64::total_cmp);
+    serde_json::json!({
+        "n": values.len(),
+        "p50": values[values.len().div_ceil(2) - 1],
+        "p95": values[(values.len() * 95).div_ceil(100) - 1],
+    })
+}
