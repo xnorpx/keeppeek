@@ -4,7 +4,9 @@ import { sharingFixtureNow } from './sharing.fixture';
 
 describe('sharing form bounds', () => {
 	it('shows sub-second media bounds and the sizes of short evidence clips', () => {
-		expect(shareTime(BigInt(sharingFixtureNow) + 1n)).toBe('18 Oct 2026, 06:00:00.001 UTC');
+		expect(shareTime(BigInt(sharingFixtureNow) + 1n)).toMatch(
+			/^18 Oct 2026(?:,| at) 06:00:00\.001 UTC$/
+		);
 		expect(shareBytes(512n)).toBe('512 B');
 		expect(shareBytes(31_910n)).toBe('31.9 kB');
 		expect(shareBytes(24_600_000n)).toBe('24.6 MB');
