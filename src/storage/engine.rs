@@ -1858,6 +1858,7 @@ mod tests {
                 "front/sub",
                 &source,
                 "source",
+                &std::sync::atomic::AtomicBool::new(false),
             )
             .unwrap();
             assert_eq!(relocated, archive.join(relative));
