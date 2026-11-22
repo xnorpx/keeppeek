@@ -632,6 +632,11 @@ impl Mp4Track {
         ))
     }
 
+    pub(crate) fn source_rtp_time(&self, sample_id: u32) -> Option<SourceRtpTime> {
+        let (traf, index) = self.find_traf_idx_and_sample_idx(sample_id)?;
+        self.trafs[traf].source_timing.sample(index)
+    }
+
     /// return `(traf_idx, sample_idx_in_trun)`
     fn find_traf_idx_and_sample_idx(&self, sample_id: u32) -> Option<(usize, usize)> {
         if self.traf_sample_counts.is_empty() || sample_id == 0 {

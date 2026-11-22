@@ -428,7 +428,7 @@ impl MediumTermWriter {
                 let data_len = video.data.len();
                 active
                     .writer
-                    .write_sample_with_description(
+                    .write_sample_with_source_timing(
                         active.video_track,
                         active.video_sample_description_index,
                         mp4::Mp4Sample {
@@ -438,6 +438,7 @@ impl MediumTermWriter {
                             is_sync: video.is_keyframe,
                             bytes: video.data,
                         },
+                        rf.source_rtp,
                     )
                     .map_err(mp4_err)?;
                 active.last_video_dts = Some(dts);
@@ -480,8 +481,9 @@ impl MediumTermWriter {
 
                 active
                     .writer
-                    .write_sample(
+                    .write_sample_with_source_timing(
                         track,
+                        1,
                         mp4::Mp4Sample {
                             start_time: dts,
                             duration: sample_duration,
@@ -489,6 +491,7 @@ impl MediumTermWriter {
                             is_sync: true,
                             bytes: audio.data.slice(audio.data.len() - raw_aac.len()..),
                         },
+                        rf.source_rtp,
                     )
                     .map_err(mp4_err)?;
                 active.next_audio_dts = Some(dts + u64::from(sample_duration));
@@ -958,6 +961,7 @@ mod tests {
 
     fn video_frame(received_at: Instant, timestamp: Duration) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at,
             timestamp: Some(timestamp),
             frame: MediaFrame::Video(VideoFrame {
@@ -982,7 +986,19 @@ mod tests {
         let end = start + Duration::from_millis(100);
         let mut buffers = PreRecordBuffers::new(1024, 1024);
         buffers.configure("camera", "main", Duration::from_secs(2));
-        let first = video_frame(start, Duration::ZERO);
+        let video_clock = mp4::SourceRtpPacket {
+            session_id: [9; 16],
+            clock_rate: 90_000.try_into().unwrap(),
+            timestamp: 4_294_967_313,
+            discontinuity: true,
+        };
+        let audio_clock = mp4::SourceRtpPacket {
+            clock_rate: 16_000.try_into().unwrap(),
+            timestamp: -2,
+            ..video_clock
+        };
+        let mut first = video_frame(start, Duration::ZERO);
+        first.source_rtp = Some(video_clock);
         let video_bytes = first.byte_len();
         buffers.push("camera", "main", first, start);
         let audio_data = Bytes::from_static(&[0xff, 0xf1, 0x4c, 0x40, 0, 0, 0, 0xaa]);
@@ -991,6 +1007,7 @@ mod tests {
             "camera",
             "main",
             RecordingFrame {
+                source_rtp: Some(audio_clock),
                 received_at: start,
                 timestamp: Some(Duration::ZERO),
                 frame: MediaFrame::Audio(AudioFrame {
@@ -1027,6 +1044,15 @@ mod tests {
         assert_eq!(buffers.bytes(), 0);
         let parsed = mp4::read_mp4(File::open(path).unwrap()).unwrap();
         assert_eq!(parsed.tracks().len(), 2);
+        assert_eq!(
+            parsed.source_rtp_time(1, 1).unwrap().unwrap().timestamp,
+            video_clock.timestamp
+        );
+        assert_eq!(parsed.source_rtp_time(1, 2).unwrap(), None);
+        assert_eq!(
+            parsed.source_rtp_time(2, 1).unwrap().unwrap().timestamp,
+            audio_clock.timestamp
+        );
         drop(parsed);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1043,6 +1069,7 @@ mod tests {
         for received_ms in [10, 70] {
             writer
                 .append_received(RecordingFrame {
+                    source_rtp: None,
                     received_at: start + Duration::from_millis(received_ms),
                     timestamp: Some(Duration::ZERO),
                     frame: MediaFrame::Audio(AudioFrame {
@@ -1082,6 +1109,7 @@ mod tests {
 
     fn incomplete_video_frame(received_at: Instant, timestamp: Duration) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at,
             timestamp: Some(timestamp),
             frame: MediaFrame::Video(VideoFrame {
@@ -1285,6 +1313,7 @@ mod tests {
             .unwrap();
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(80),
                 timestamp: Some(Duration::from_millis(80)),
                 frame: MediaFrame::Video(VideoFrame {
@@ -1332,6 +1361,7 @@ mod tests {
         for offset_ms in [0, 40] {
             writer
                 .append_one(RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: MediaFrame::Video(VideoFrame {
@@ -1346,6 +1376,7 @@ mod tests {
         }
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(80),
                 timestamp: Some(Duration::from_millis(80)),
                 frame: MediaFrame::Video(VideoFrame {
@@ -1462,6 +1493,7 @@ mod tests {
         for offset_ms in [0, 1_000] {
             writer
                 .append_one(RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: MediaFrame::Video(VideoFrame {
@@ -1519,6 +1551,7 @@ mod tests {
         let frames = [
             video_frame(started_at, Duration::ZERO),
             RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(41),
                 timestamp: Some(Duration::from_millis(41)),
                 frame: MediaFrame::Video(VideoFrame {
@@ -1530,6 +1563,7 @@ mod tests {
                 }),
             },
             RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(97),
                 timestamp: Some(Duration::from_millis(97)),
                 frame: MediaFrame::Video(VideoFrame {
@@ -1608,6 +1642,7 @@ mod tests {
         ] {
             writer
                 .append_one(RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: MediaFrame::Video(VideoFrame {
@@ -1659,6 +1694,7 @@ mod tests {
         for offset_ms in [0, 40] {
             writer
                 .append_one(RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: MediaFrame::Video(VideoFrame {
@@ -1673,6 +1709,7 @@ mod tests {
         }
         let error = writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(80),
                 timestamp: Some(Duration::from_millis(80)),
                 frame: MediaFrame::Video(VideoFrame {
@@ -1733,6 +1770,7 @@ mod tests {
             .unwrap();
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(10),
                 timestamp: Some(Duration::from_millis(10)),
                 frame: MediaFrame::Audio(AudioFrame {
@@ -1745,6 +1783,7 @@ mod tests {
             .unwrap();
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(80),
                 timestamp: None,
                 frame: MediaFrame::Audio(AudioFrame {
@@ -1757,6 +1796,7 @@ mod tests {
             .unwrap();
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(100),
                 timestamp: Some(Duration::from_millis(100)),
                 frame: MediaFrame::Audio(AudioFrame {

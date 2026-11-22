@@ -18709,6 +18709,7 @@ mod tests {
         for offset_ms in [0, 1_000] {
             writer
                 .append_one(crate::storage::RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {
@@ -19482,6 +19483,7 @@ mod tests {
         for offset_ms in [0, 1_000] {
             writer
                 .append_one(crate::storage::RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {
@@ -20063,6 +20065,7 @@ mod tests {
             payload.extend_from_slice(&sample.bytes);
             writer
                 .append_one(crate::storage::RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + elapsed,
                     timestamp: Some(elapsed),
                     frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {

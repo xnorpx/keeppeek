@@ -56,6 +56,19 @@ struct UdpSockets {
     rtcp: UdpSocket,
 }
 
+fn original_rtp_time(
+    session: uuid::Uuid,
+    packet: retina::Timestamp,
+    discontinuity: bool,
+) -> mp4::SourceRtpPacket {
+    mp4::SourceRtpPacket {
+        session_id: *session.as_bytes(),
+        clock_rate: packet.clock_rate(),
+        timestamp: packet.timestamp(),
+        discontinuity,
+    }
+}
+
 struct VideoContinuity {
     awaiting_random_access: bool,
 }
@@ -724,6 +737,8 @@ impl RtspLoop {
             video_meta.framerate,
         );
         let mut video_continuity = VideoContinuity::new();
+        let mut video_discontinuity = true;
+        let mut audio_discontinuity = true;
         let mut video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
         let mut pending_talkback = None;
         let mut talkback_session: Option<IsapiTalk> = None;
@@ -748,6 +763,7 @@ impl RtspLoop {
                 CodecItem::VideoFrame(frame) => {
                     video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
                     let loss = frame.loss();
+                    video_discontinuity |= loss > 0;
                     if loss > 0 {
                         stats.dropped_frames = stats.dropped_frames.wrapping_add(u64::from(loss));
                     }
@@ -755,7 +771,8 @@ impl RtspLoop {
                     if !video_continuity.accepts(loss, is_keyframe) {
                         continue;
                     }
-                    let timestamp = frame.timestamp().elapsed_duration();
+                    let packet_timestamp = frame.timestamp();
+                    let timestamp = packet_timestamp.elapsed_duration();
                     let data = Bytes::from(frame.into_data());
                     stats.on_video_frame(is_keyframe, data.len());
                     let frame_codec = match video_meta.encoding {
@@ -795,6 +812,11 @@ impl RtspLoop {
                                     &self.storage_label(),
                                 ),
                                 RecordingFrame {
+                                    source_rtp: Some(original_rtp_time(
+                                        session,
+                                        packet_timestamp,
+                                        std::mem::take(&mut video_discontinuity),
+                                    )),
                                     received_at,
                                     timestamp,
                                     frame,
@@ -805,6 +827,8 @@ impl RtspLoop {
                 }
                 CodecItem::AudioFrame(frame) => {
                     if let Some(audio_meta) = &self.audio_meta {
+                        let packet_timestamp = frame.packet_timestamp();
+                        audio_discontinuity |= frame.loss() > 0;
                         let timestamp = frame.timestamp().elapsed_duration();
                         let duration = frame.duration();
                         let data = frame.data().to_vec();
@@ -858,6 +882,11 @@ impl RtspLoop {
                                         &self.storage_label(),
                                     ),
                                     RecordingFrame {
+                                        source_rtp: Some(original_rtp_time(
+                                            session,
+                                            packet_timestamp,
+                                            std::mem::take(&mut audio_discontinuity),
+                                        )),
                                         received_at: Instant::now(),
                                         timestamp,
                                         frame,
@@ -1532,6 +1561,65 @@ mod tests {
         );
         assert!(evidence["accepted_packets"].as_u64().unwrap() > 2);
         assert!(!evidence.contains_key("latest_audio_minus_video_play_us"));
+        // Persist the two depacketized access units under a deliberately different MP4 clock.
+        let config = Mp4Config {
+            major_brand: "iso6".parse().unwrap(),
+            minor_version: 1,
+            compatible_brands: vec![],
+            timescale: 1_000,
+        };
+        let track = TrackConfig {
+            track_type: TrackType::Video,
+            timescale: 1_000,
+            language: "und".into(),
+            media_conf: MediaConfig::AvcConfig(AvcConfig {
+                width: 1920,
+                height: 1080,
+                seq_param_set: vec![],
+                pic_param_set: vec![],
+            }),
+        };
+        let mut recording = mp4::FragmentedMp4Writer::write_start(
+            std::io::Cursor::new(Vec::new()),
+            &config,
+            &[track],
+        )
+        .unwrap();
+        for (i, frame) in [&first, &second].into_iter().enumerate() {
+            let measured = super::original_rtp_time(id, frame.timestamp(), i == 0);
+            recording
+                .write_sample_with_source_timing(
+                    1,
+                    1,
+                    Mp4Sample {
+                        start_time: 500 + i as u64 * 32,
+                        duration: 32,
+                        rendering_offset: 0,
+                        is_sync: frame.is_random_access_point(),
+                        bytes: Bytes::copy_from_slice(frame.data()),
+                    },
+                    Some(measured),
+                )
+                .unwrap();
+        }
+        recording.flush_fragment().unwrap();
+        let bytes = recording.into_writer().into_inner();
+        let mut reopened =
+            mp4::Mp4Reader::read_header(std::io::Cursor::new(&bytes), bytes.len() as u64).unwrap();
+        let initial = reopened.source_rtp_time(1, 1).unwrap().unwrap();
+        let next = reopened.source_rtp_time(1, 2).unwrap().unwrap();
+        assert_eq!(initial.session_id, *id.as_bytes());
+        assert_eq!(
+            initial.timestamp as u32,
+            evidence["first_rtp_ticks"].as_u64().unwrap() as u32
+        );
+        assert_eq!(next.timestamp - initial.timestamp, 3000);
+        assert_eq!(initial.anchor.presentation_time, 500);
+        assert_eq!(initial.anchor, next.anchor);
+        assert_eq!(
+            reopened.read_sample(1, 2).unwrap().unwrap().bytes.as_ref(),
+            second.data()
+        );
         drop(client);
 
         let transcript = camera.finish().unwrap();

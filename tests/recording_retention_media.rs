@@ -141,6 +141,7 @@ fn frame(
     };
     data.extend_from_slice(&sample.bytes);
     RecordingFrame {
+        source_rtp: None,
         received_at: start + timestamp,
         timestamp: Some(timestamp),
         frame: MediaFrame::Video(VideoFrame {

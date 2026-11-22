@@ -312,3 +312,17 @@ session-level comparison only. A targeted `keeppeek::rtsp::timing=trace` filter
 opts into a single five-minute recorder-wide periodic collection. Final reports
 remain enabled at info after the window. The two-sink test uses the numeric
 secret `4` and checks that both identities retain their original values.
+
+### Original packet timing in new recordings
+
+The recorder carries measured RTSP packet timestamps through pre-record buffering
+and writes them alongside each stored AAC or H.264/H.265 access unit. The MP4
+reader exposes the original extended clock, rate, session, discontinuity and a
+stable track presentation anchor. The replay test reopens a two-track recording
+and checks source clocks independent of its normalized timestamps. The aggregate
+AAC fixture checks that a single packet's distinct presentation times retain its
+actual shared source clock. Fragment fixtures exercise wrapping and backward
+timestamps, missing evidence, partial-file recovery and restoring an epoch after
+discarding unpublished samples. Historical recordings have no per-sample evidence.
+
+The format and lookup contract are documented in the [MP4 crate guide](../crates/mp4/README.md#keeppeek-recording-source-clocks).

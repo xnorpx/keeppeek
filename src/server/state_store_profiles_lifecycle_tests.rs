@@ -294,6 +294,7 @@ fn always_private_schedule() -> crate::privacy::PrivacySchedule {
 
 fn keyframe(received_at: Instant) -> RecordingFrame {
     RecordingFrame {
+        source_rtp: None,
         received_at,
         timestamp: None,
         frame: MediaFrame::Video(VideoFrame {

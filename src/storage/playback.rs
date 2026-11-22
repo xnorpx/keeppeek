@@ -1888,6 +1888,7 @@ mod tests {
         for offset_ms in [0, 1_000] {
             writer
                 .append_one(RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: MediaFrame::Video(VideoFrame {
@@ -1922,6 +1923,7 @@ mod tests {
         ]);
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at,
                 timestamp: Some(Duration::ZERO),
                 frame: MediaFrame::Video(VideoFrame {
@@ -1936,6 +1938,7 @@ mod tests {
         for offset_ms in [10, 30, 90] {
             writer
                 .append_one(RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: MediaFrame::Audio(AudioFrame {
@@ -1949,6 +1952,7 @@ mod tests {
         }
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(100),
                 timestamp: Some(Duration::from_millis(100)),
                 frame: MediaFrame::Video(VideoFrame {

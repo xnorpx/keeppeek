@@ -5,6 +5,8 @@ pub struct RecordingFrame {
     pub received_at: Instant,
     /// Zero-based monotonic media timestamp from the camera protocol.
     pub timestamp: Option<Duration>,
+    /// Original packet evidence, measured independently of the normalized media timeline.
+    pub source_rtp: Option<mp4::SourceRtpPacket>,
     pub frame: MediaFrame,
 }
 
