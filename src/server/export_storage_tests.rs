@@ -1173,6 +1173,21 @@ fn export_publication_replays_identical_evidence_after_an_unconfirmed_ack() -> a
 }
 
 #[test]
+fn export_publication_skips_the_catalog_when_already_cancelled() {
+    let mut calls = 0;
+    let error = super::export_storage::confirm_publication(
+        || {
+            calls += 1;
+            Ok(())
+        },
+        || true,
+    )
+    .unwrap_err();
+    assert_eq!(calls, 0);
+    assert_eq!(error.to_string(), "export cancelled");
+}
+
+#[test]
 fn export_publication_stops_on_cancellation_hard_errors_or_a_second_lost_ack() {
     use crate::storage::catalog::locations::UnconfirmedOutcome;
     use std::cell::Cell;

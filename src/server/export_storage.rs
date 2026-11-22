@@ -333,6 +333,7 @@ pub(super) fn confirm_publication(
         Err(error) if error.is::<crate::storage::catalog::locations::UnconfirmedOutcome>() => {
             // The first attempt may have committed. Replaying the identical evidence is idempotent.
             anyhow::ensure!(!cancelled(), "export cancelled");
+            tracing::warn!("retrying export publication after a missing catalog acknowledgement");
             publish()
         }
         result => result,
