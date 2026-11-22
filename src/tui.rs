@@ -1,4 +1,6 @@
 //! Foreground-only, read-only terminal dashboard.
+#[cfg(test)]
+mod benchmark;
 mod mode;
 mod render;
 mod snapshot;
