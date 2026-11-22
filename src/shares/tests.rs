@@ -1241,20 +1241,53 @@ mod status;
 #[path = "tests/restart_process.rs"]
 mod restart_process;
 
-/// Capture tiny fixture diagnostics and bound a stalled recorder child during tests.
+fn read_child_diagnostics(mut pipe: impl std::io::Read) -> Vec<u8> {
+    use std::io::Read;
+
+    let mut prefix = Vec::new();
+    pipe.by_ref()
+        .take(32 * 1024)
+        .read_to_end(&mut prefix)
+        .unwrap();
+    std::io::copy(&mut pipe, &mut std::io::sink()).unwrap();
+    prefix
+}
+
 fn wait_for_child(mut child: std::process::Child) -> std::process::Output {
+    let stdout = child.stdout.take().expect("fixture stdout is piped");
+    let stderr = child.stderr.take().expect("fixture stderr is piped");
+    let stdout = std::thread::spawn(move || read_child_diagnostics(stdout));
+    let stderr = std::thread::spawn(move || read_child_diagnostics(stderr));
     let deadline = Instant::now() + Duration::from_secs(30);
-    while child.try_wait().unwrap().is_none() {
+    let (status, timed_out) = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break (status, false);
+        }
         if Instant::now() >= deadline {
             let _ = child.kill();
-            let output = child.wait_with_output().unwrap();
-            panic!(
-                "recorder child exceeded 30 seconds; stdout: {}; stderr: {}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
+            break (child.wait().unwrap(), true);
         }
         std::thread::sleep(Duration::from_millis(10));
-    }
-    child.wait_with_output().unwrap()
+    };
+    let output = std::process::Output {
+        status,
+        stdout: stdout.join().unwrap(),
+        stderr: stderr.join().unwrap(),
+    };
+    assert!(
+        !timed_out,
+        "recorder child exceeded 30 seconds; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+#[test]
+fn fixture_diagnostics_drain_the_entire_stream_but_retain_a_bounded_prefix() {
+    let bytes = vec![b'x'; 96 * 1024];
+    let mut reader = std::io::Cursor::new(&bytes);
+    let prefix = read_child_diagnostics(&mut reader);
+    assert_eq!(prefix, bytes[..32 * 1024]);
+    assert_eq!(reader.position(), bytes.len() as u64);
 }

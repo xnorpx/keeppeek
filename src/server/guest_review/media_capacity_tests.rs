@@ -155,6 +155,8 @@ fn qualify(frames: u32, spacing_ms: u64, export_timeout: Duration) {
     let mut harness = Harness::with_writer_timeout(Duration::from_secs(90));
     let mut readers = Vec::with_capacity(8);
     let mut first_us = Vec::with_capacity(8);
+    // This group interval includes the seven additional grants, eight harness connections and RSS samples.
+    // The drain timer below measures the remaining media delivery after all readers are ready.
     let started = Instant::now();
     for index in 0..8 {
         let (bound, handle) = if index == 0 {
