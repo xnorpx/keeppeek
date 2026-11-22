@@ -235,3 +235,34 @@ Live correction and its reviewed latency budget, original capture-clock provenan
 broader reconnect/hardware testing and repeated before/after performance qualification
 remain open. This recorded increment does not close #124 or claim physical lip-sync
 or browser audio-device latency qualification.
+
+## Recorded file measurements on 2026-11-21
+
+Commit `0500298bae57cb07c0baa6a1c1479a7cb5744495` includes a paired measurement
+of the disabled (0 ms) and corrected (+200 ms) paths on the same build. The
+Windows 11 x64 host (build 26200) used a Ryzen 5 5600G, 16 GiB of installed RAM,
+an NVMe SSD and the unoptimized Rust 1.99.0 test profile. Other build work was
+active on the host. Run from the repository root:
+
+```sh
+cargo +1.99.0 test --locked -p keeppeek --lib measure_recorded_audio_file_operations -- --ignored --nocapture
+```
+
+The workload uses the checked-in H.264/AAC flash and tone fixture, stored as four
+fragments in a single recording. One warmup per case precedes 30 measured pairs
+with alternating offset order. Each sample times file processing and output up
+to completion, including remuxing on corrected playback. Seek starts at the
+second fragment. A final hash check verifies that the source recording is intact.
+The table reports nearest-rank p50 and p95 wall time in milliseconds.
+
+| Operation                 | 0 ms p50 | +200 ms p50 | p50 delta | 0 ms p95 | +200 ms p95 |
+| ------------------------- | -------: | ----------: | --------: | -------: | ----------: |
+| Four-fragment file export |   16.707 |      16.282 |    -0.425 |   20.178 |      19.356 |
+| Four-fragment playback    |    0.719 |      21.413 |   +20.694 |    1.378 |      25.382 |
+| Three-fragment seek       |    0.623 |      16.768 |   +16.145 |    1.430 |      20.732 |
+
+The export outputs were 20,276 and 20,132 bytes, respectively. The playback and
+seek figures measure the local stored-fragment write path. Browser latency,
+concurrent ingest, worker memory, CPU utilization, release-build throughput and
+hardware calibration still require qualification. The issue has no approved
+numeric performance budget for this comparison.
