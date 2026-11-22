@@ -164,7 +164,7 @@ profile privacy before media workers start; the schedule boundary still wins ove
 
 All persisted revision and generation fields are decimal strings in `0..=i64::MAX` to
 preserve exact values through protobuf `Struct`, JavaScript, and the existing TOML adapter.
-Names are limited to 80 UTF-8 bytes, profile IDs to 1â€“128 ASCII bytes (`A-Z`, `a-z`, `0-9`,
+Names are limited to 80 UTF-8 bytes, profile IDs to 1–128 ASCII bytes (`A-Z`, `a-z`, `0-9`,
 `._-`), and camera IDs to 256 bytes. Profile IDs `.` and `..` are invalid. Use the valid
 namespace `service/runtime-profiles/`; an unqualified namespace is rejected by the existing
 state store. Reject control characters, unknown fields, unknown write schemas, duplicate cameras,
@@ -178,14 +178,14 @@ fields. Current recording modes also include `event-only`, added after the issue
 The complete field classification must still resolve each candidate explicitly; omitting it or
 routing event modes through the legacy admission map would misrepresent current recording behavior.
 
-| Document             | Fields and limits                                                                                                                                                                                                          |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `registry`           | Up to 32 summaries: ID, name, definition revision, target count. No camera overrides.                                                                                                                                      |
-| Profile manifest     | ID, name, generation, expected prior definition revision, target count, and up to eight part hashes.                                                                                                                       |
-| Definition part      | Generation, part index, and at most 16 camera overrides. Each override contains camera ID and optional availability, recording mode, privacy, and notification suppression fields.                                         |
-| Draft parts          | At most four Administrator-owned drafts and 8 MiB total staged data. Each draft holds at most 256 parts of at most 16 camera overrides each. Drafts expire after two minutes and are never persisted as accepted profiles. |
-| `active`             | Base or profile ID, definition generation, desired generation, and expected observed-part count.                                                                                                                           |
-| Eight observed parts | Up to 48 visible cameras per part (383 total), desired revision, application state, effective policy, field provenance, and a reason of at most 96 bytes. Compact parts with 33–40 rows allow 64 reason bytes, and parts with 41–48 rows allow 24.                                                                              |
+| Document             | Fields and limits                                                                                                                                                                                                                                  |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `registry`           | Up to 32 summaries: ID, name, definition revision, target count. No camera overrides.                                                                                                                                                              |
+| Profile manifest     | ID, name, generation, expected prior definition revision, target count, and up to eight part hashes.                                                                                                                                               |
+| Definition part      | Generation, part index, and at most 16 camera overrides. Each override contains camera ID and optional availability, recording mode, privacy, and notification suppression fields.                                                                 |
+| Draft parts          | At most four Administrator-owned drafts and 8 MiB total staged data. Each draft holds at most 256 parts of at most 16 camera overrides each. Drafts expire after two minutes and are never persisted as accepted profiles.                         |
+| `active`             | Base or profile ID, definition generation, desired generation, and expected observed-part count.                                                                                                                                                   |
+| Eight observed parts | Up to 48 visible cameras per part (383 total), desired revision, application state, effective policy, field provenance, and a reason of at most 96 bytes. Compact parts with 33–40 rows allow 64 reason bytes, and parts with 41–48 rows allow 24. |
 
 Retain current and previous definition parts, one current manifest per profile, and the
 bounded draft area. The upper bound is 544 definition entries + 72 draft entries + 10
