@@ -130,15 +130,12 @@ test('switching cameras clears the previous export range while the new recording
 });
 
 test('switching cameras closes the previous camera event drawer immediately', async ({ page }) => {
-	await page.setViewportSize({ width: 390, height: 844 });
+	await page.setViewportSize({ width: 1440, height: 900 });
 	await mockKeepModes(page, 2, {
 		capabilityIds: ['keeppeek.event-workflow.v1', 'keeppeek.guest-range.v1']
 	});
-	await page.goto(`/keep?camera=front-door&stream=main&date=${keepModeDate}`);
-	await page
-		.getByRole('button', { name: /Person event at/ })
-		.first()
-		.click();
+	await page.goto(`/keep?camera=front-door&stream=main&date=${keepModeDate}&mode=stories`);
+	await page.getByRole('button', { name: /Review story at/ }).click();
 	const detail = page.getByRole('complementary', { name: 'Event detail' });
 	await expect(detail).toBeVisible();
 	const next = page.getByRole('button', { name: 'Next camera, Camera 2' });
