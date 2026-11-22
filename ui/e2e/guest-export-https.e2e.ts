@@ -80,7 +80,7 @@ async function createLink(page: Page, fixture: Fixture) {
 	const start = fixture.guestRecordingStartMs;
 	if (!Number.isSafeInteger(start) || start === null)
 		throw new Error('The fixture must seed a real recording.');
-	await page.goto(`${fixture.origin}/keep?camera=127.0.0.1&stream=main&at=${start}&mode=export`);
+	await page.goto(`${fixture.origin}/keep?camera=127.0.0.1&stream=sub&at=${start}&mode=export`);
 	await page.getByRole('button', { name: 'Create export', exact: true }).click();
 	const panel = page.locator('[data-keep-export]');
 	await expect(panel).toHaveAttribute('data-export-status', 'ready');
