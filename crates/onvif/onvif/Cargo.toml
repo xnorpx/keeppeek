@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 base64 = "0.23"
-chrono = "0.4"
+chrono = { package = "sad-chrono", version = "0.5.1" }
 digest_auth = "0.3"
 nonzero_ext = "0.3"
 schema = { path = "../schema", features = [
