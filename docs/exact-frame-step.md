@@ -12,8 +12,9 @@ between them.
 presentation time and duration in track ticks. On a parsed track it reads the sample
 tables without reading encoded media bytes. The presentation time is the decode time
 plus the composition offset. Version 0 offsets are unsigned and version 1 offsets are
-signed. Presentation time can precede zero. The sample ordinal breaks ties within one
-track and timing epoch. Exact timing lookup rejects hybrid tracks containing both initial
+signed. Presentation time can precede zero. Within one track and timing epoch, the ordinal identifies a sample even when timestamps
+coincide. A decoder supplies the presentation order of those pictures. In the duplicate fixture,
+reference picture 11 is decoded first and displayed after B picture 10 at the same 640 ms. Exact timing lookup rejects hybrid tracks containing both initial
 sample-table entries and later fragments. The MP4 reader reports an unsupported layout
 when one track fragment contains multiple runs. Both cases require a complete ordinal index
 before their timestamps can identify adjacent pictures.
@@ -28,7 +29,7 @@ IDs decoded from FFmpeg's raw pixels.
 | ------------- | ------------------------------------------------------ |
 | Constant rate | 0, 40, 80, 120, 160, 200, 240, 280, 320, 360, 400, 440 |
 | Variable rate | 0, 40, 80, 200, 240, 280, 400, 440, 480, 600, 640, 680 |
-| Duplicate PTS | 0, 40, 40, 200, 240, 280, 400, 440, 480, 600, 640, 680 |
+| Duplicate PTS | 0, 40, 40, 200, 240, 280, 400, 440, 480, 600, 640, 640 |
 
 Run `cargo test --locked -p mp4 --test exact_frame_timing` with FFmpeg and FFprobe on
 the path. The binary fixtures total less than 7 KiB. Regenerate them with
