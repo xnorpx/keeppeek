@@ -736,9 +736,10 @@ describe('LivePeer', () => {
 			.mockResolvedValueOnce({ session_id: 'first', answer: { type: 'answer', sdp: 'v=0' } })
 			.mockResolvedValueOnce({ session_id: 'replacement', answer: { type: 'answer', sdp: 'v=0' } });
 		api.deleteSession.mockResolvedValue(undefined);
+		FakeDataChannel.audioVariants = ['main', 'sub'];
 		const peer = new LivePeer();
 		const plans = [
-			{ cameraId: 'front-door', quality: 'auto' },
+			{ cameraId: 'front-door', quality: 'auto', variantId: 'sub', liveAudioPreviewOffsetMs: -80 },
 			{ cameraId: 'garage', quality: 'low' }
 		] as const;
 		await peer.configure([...plans]);
@@ -757,6 +758,14 @@ describe('LivePeer', () => {
 		expect(peer.track('garage')?.subscribed).toBe(false);
 		const fresh = FakePeerConnection.latest!;
 		expect(fresh).not.toBe(old);
+		expect(
+			fresh.channels[0].subscriptions
+				.filter((subscription) => subscription.liveAudioPreviewOffsetMs === -80)
+				.map((subscription) => [subscription.kind, subscription.variantId])
+		).toEqual([
+			[MediaKind.VIDEO, 'sub'],
+			[MediaKind.AUDIO, 'sub']
+		]);
 		expect(fresh.channels[0].commands).not.toContain('cameraControlCommand');
 		await peer.playChime('front-door', 'bell');
 		expect(fresh.channels[0].commands.filter((c) => c === 'cameraControlCommand')).toHaveLength(1);
