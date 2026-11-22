@@ -26,6 +26,13 @@ const VIDEO_TIMESCALE: u32 = 90_000;
 const PENDING_GOP_MIB: usize = 16;
 const PENDING_GOP_BYTES: usize = PENDING_GOP_MIB * 1_048_576;
 
+#[derive(Default)]
+pub(super) struct WriteProgress {
+    pub(super) accepted: bool,
+    pub(super) recorded_duration: Duration,
+    pub(super) keyframe_gap: bool,
+}
+
 pub struct MediumTermWriter {
     state: WriterState,
     path: PathBuf,
@@ -204,9 +211,9 @@ impl MediumTermWriter {
         let mut recorded_duration = Duration::ZERO;
         let mut exceeded = false;
         for rf in frames {
-            let (duration, gap) = self.append_bounded(rf)?;
-            recorded_duration = recorded_duration.saturating_add(duration);
-            exceeded |= gap;
+            let progress = self.append_bounded(rf)?;
+            recorded_duration = recorded_duration.saturating_add(progress.recorded_duration);
+            exceeded |= progress.keyframe_gap;
         }
         if exceeded {
             return Err(keyframe_budget_error());
@@ -215,21 +222,19 @@ impl MediumTermWriter {
     }
 
     pub fn append_one(&mut self, rf: RecordingFrame) -> std::io::Result<Duration> {
-        let (duration, exceeded) = self.append_bounded(rf)?;
-        if exceeded {
+        let progress = self.append_bounded(rf)?;
+        if progress.keyframe_gap {
             return Err(keyframe_budget_error());
         }
-        Ok(duration)
+        Ok(progress.recorded_duration)
     }
 
+    #[cfg(test)]
     pub(super) const fn awaiting_recovery_keyframe(&self) -> bool {
         self.pending_gop_bytes.is_none()
     }
 
-    pub(super) fn append_bounded(
-        &mut self,
-        rf: RecordingFrame,
-    ) -> std::io::Result<(Duration, bool)> {
+    pub(super) fn append_bounded(&mut self, rf: RecordingFrame) -> std::io::Result<WriteProgress> {
         let previous_duration = self.recorded_duration;
         let keyframe = rf.is_video_keyframe();
         if keyframe && self.segment_origin.is_none() {
@@ -239,25 +244,34 @@ impl MediumTermWriter {
         let previous_bytes = if keyframe {
             0
         } else if matches!(self.state, WriterState::WaitingForKeyframe) {
-            return Ok((Duration::ZERO, false));
+            return Ok(WriteProgress::default());
         } else if let Some(bytes) = self.pending_gop_bytes {
             bytes
         } else {
-            return Ok((Duration::ZERO, false));
+            return Ok(WriteProgress::default());
         };
+        // Audio the muxer cannot use consumes no fragment memory and cannot signal writer progress.
+        if let MediaFrame::Audio(audio) = &rf.frame
+            && (audio.codec != AudioCodec::Aac
+                || adts::strip_adts(&audio.data).0.is_empty()
+                || matches!(&self.state, WriterState::Active(active) if active.audio_track.is_none()))
+        {
+            return Ok(WriteProgress::default());
+        }
         // Charge frame metadata as well, so tiny or empty payloads cannot grow an unbounded Vec.
         let bytes = previous_bytes
             .saturating_add(rf.byte_len())
             .saturating_add(size_of::<RecordingFrame>());
         if bytes > PENDING_GOP_BYTES {
             if self.pending_gop_bytes.take().is_none() {
-                return Ok((Duration::ZERO, false));
+                return Ok(WriteProgress::default());
             }
             self.flush_before_keyframe_gap(&rf)?;
-            return Ok((
-                self.recorded_duration.saturating_sub(previous_duration),
-                true,
-            ));
+            return Ok(WriteProgress {
+                accepted: false,
+                recorded_duration: self.recorded_duration.saturating_sub(previous_duration),
+                keyframe_gap: true,
+            });
         }
         // A frame error can leave the old fragment pending. Only a successful new keyframe
         // admits dependent frames, so failed boundaries cannot reset the previous GOP's budget.
@@ -279,10 +293,11 @@ impl MediumTermWriter {
             }
         }
         self.pending_gop_bytes = Some(bytes);
-        Ok((
-            self.recorded_duration.saturating_sub(previous_duration),
-            false,
-        ))
+        Ok(WriteProgress {
+            accepted: true,
+            recorded_duration: self.recorded_duration.saturating_sub(previous_duration),
+            keyframe_gap: false,
+        })
     }
 
     fn elapsed_at(&self, received: Instant) -> Duration {
@@ -340,17 +355,17 @@ impl MediumTermWriter {
 
     #[cfg(test)]
     pub(super) fn append_received(&mut self, frame: RecordingFrame) -> std::io::Result<Duration> {
-        let (duration, exceeded) = self.append_received_bounded(frame)?;
-        if exceeded {
+        let progress = self.append_received_bounded(frame)?;
+        if progress.keyframe_gap {
             return Err(keyframe_budget_error());
         }
-        Ok(duration)
+        Ok(progress.recorded_duration)
     }
 
     pub(super) fn append_received_bounded(
         &mut self,
         mut frame: RecordingFrame,
-    ) -> std::io::Result<(Duration, bool)> {
+    ) -> std::io::Result<WriteProgress> {
         let origin = self.segment_origin.unwrap_or(frame.received_at);
         let elapsed = frame
             .received_at
@@ -1600,6 +1615,54 @@ mod tests {
         assert_eq!(video.sample_description_index(3).unwrap(), 1);
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn append_reports_progress_only_for_frames_it_buffers_or_writes() -> anyhow::Result<()> {
+        let dir = std::env::temp_dir().join(format!("keeppeek-progress-{}", uuid::Uuid::new_v4()));
+        let start = Instant::now();
+        let mut writer = MediumTermWriter::create(&dir, "camera/main", start, 8192)?;
+        let key = |ms| video_frame(start + Duration::from_millis(ms), Duration::from_millis(ms));
+        let mut predictive = key(0);
+        let MediaFrame::Video(video) = &mut predictive.frame else {
+            unreachable!()
+        };
+        video.is_keyframe = false;
+        assert!(!writer.append_bounded(predictive)?.accepted);
+        assert!(writer.append_bounded(key(40))?.accepted);
+        let audio = |codec, data| RecordingFrame {
+            received_at: start + Duration::from_millis(120),
+            timestamp: None,
+            frame: MediaFrame::Audio(AudioFrame {
+                codec,
+                sample_rate: 16_000,
+                duration: Duration::from_millis(20),
+                data,
+            }),
+        };
+        assert!(
+            !writer
+                .append_bounded(audio(AudioCodec::G711Alaw, Bytes::from_static(&[1])))?
+                .accepted
+        );
+        assert!(
+            !writer
+                .append_bounded(audio(AudioCodec::Aac, Bytes::new()))?
+                .accepted
+        );
+        assert!(writer.append_bounded(key(80))?.accepted);
+        // The prepared stream had no AAC track. Late audio must not consume its GOP budget.
+        let charged = writer.pending_gop_bytes;
+        let ignored =
+            writer.append_received_bounded(audio(AudioCodec::Aac, Bytes::from_static(&[1])))?;
+        assert!(!ignored.accepted && !ignored.keyframe_gap && ignored.recorded_duration.is_zero());
+        assert_eq!(writer.pending_gop_bytes, charged);
+        let path = writer.finalize()?;
+        let reader = mp4::read_mp4(File::open(path)?)?;
+        assert_eq!(reader.tracks().values().next().unwrap().sample_count(), 2);
+        drop(reader);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
     }
 
     #[test]

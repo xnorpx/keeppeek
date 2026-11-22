@@ -14,7 +14,7 @@ use crate::{
         health::RecordingHealthRegistry,
         identity::RecordingStreamIdentity,
         long_term::LongTermStore,
-        medium_term::MediumTermWriter,
+        medium_term::{MediumTermWriter, WriteProgress},
         recording_policy::{AdmissionDecision, CameraRecordingPolicy},
         safety::{
             FilesystemCapacity, StorageCleanupReason, StorageCleanupTrigger,
@@ -358,16 +358,9 @@ struct CameraPipeline {
     last_flush: Instant,
 }
 
-#[derive(Default)]
-struct WriteProgress {
-    wrote: bool,
-    recorded_duration: Duration,
-    keyframe_gap: bool,
-}
-
 impl WriteProgress {
     fn report(self, health: &RecordingHealthRegistry, stream: &str) {
-        if self.wrote || !self.recorded_duration.is_zero() {
+        if self.accepted || !self.recorded_duration.is_zero() {
             health.note_progress(stream, self.recorded_duration);
         }
         if self.keyframe_gap {
@@ -1384,23 +1377,17 @@ impl WriterWorker {
         }
 
         let writer = pipeline.medium_term.as_mut().unwrap();
-        let recorded_duration = if received_clock {
+        let progress = if received_clock {
             writer.append_received_bounded(frame)
         } else {
             writer.append_bounded(frame)
         };
-        let wrote = !writer.awaiting_recovery_keyframe();
 
         if let Some((path, recording_id)) = rotated {
             self.move_to_long_term(camera_id, &path, &recording_id)?;
         }
 
-        let (recorded_duration, keyframe_gap) = recorded_duration?;
-        Ok(WriteProgress {
-            wrote,
-            recorded_duration,
-            keyframe_gap,
-        })
+        progress
     }
 
     fn flush_camera(
@@ -1440,7 +1427,7 @@ impl WriterWorker {
                     continue;
                 }
             };
-            progress.wrote |= written.wrote;
+            progress.accepted |= written.accepted;
             progress.recorded_duration = progress
                 .recorded_duration
                 .saturating_add(written.recorded_duration);
@@ -1799,7 +1786,7 @@ mod tests {
 
         let progress = worker.flush_camera(&identity.storage_key, false).unwrap();
 
-        assert!(!progress.wrote);
+        assert!(!progress.accepted);
     }
 
     #[test]
