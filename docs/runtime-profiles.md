@@ -175,7 +175,7 @@ profile privacy before media workers start; the schedule boundary still wins ove
 
 All persisted revision and generation fields are decimal strings in `0..=i64::MAX` to
 preserve exact values through protobuf `Struct`, JavaScript, and the existing TOML adapter.
-Names are limited to 80 UTF-8 bytes, profile IDs to 1â€“128 ASCII bytes (`A-Z`, `a-z`, `0-9`,
+Names are limited to 80 UTF-8 bytes, profile IDs to 1–128 ASCII bytes (`A-Z`, `a-z`, `0-9`,
 `._-`), and camera IDs to 256 bytes. Profile IDs `.` and `..` are invalid. Use the valid
 namespace `service/runtime-profiles/`; an unqualified namespace is rejected by the existing
 state store. Reject control characters, unknown fields, unknown write schemas, duplicate cameras,

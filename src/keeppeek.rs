@@ -2503,13 +2503,14 @@ mod tests {
     #[test]
     fn startup_observations_include_configured_and_missing_targets_before_any_worker_starts() {
         let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
-        let camera = runtime_rtsp_camera("127.0.0.1:8554".parse().unwrap());
+        let mut camera = runtime_rtsp_camera("127.0.0.1:8554".parse().unwrap());
+        camera.config.ip = "127.0.0.2".parse().unwrap();
         recorder.set_runtime_profiles(missing_target_profiles());
         recorder.seed_profile_observations(&HashMap::from([(camera.config.ip, camera)]));
         let status = recorder.runtime_profile_status.read().unwrap();
         assert_eq!(status.cameras.len(), 2);
         assert_eq!(
-            status.cameras["127.0.0.1"].state,
+            status.cameras["127.0.0.2"].state,
             crate::profiles::RuntimeApplicationState::Pending
         );
         assert_eq!(
