@@ -16,7 +16,7 @@
 	};
 	let { helpId, onpreview, appliedPreview, previewRequested }: Props = $props();
 	let error = $state<string | null>(null);
-	let status = $state<string | null>(null);
+	let completedPreview = $state<number | null>();
 	let errorSummary = $state<HTMLParagraphElement>();
 	let previewStream = $state<'main' | 'sub'>('main');
 	let previewInput = $state('0');
@@ -31,11 +31,11 @@
 	async function preview(offset: number | null) {
 		if (previewing) return;
 		previewing = true;
-		status = null;
+		completedPreview = undefined;
 		error = null;
 		try {
 			await onpreview(previewStream, offset);
-			status = offset === null ? 'Saved live timing restored.' : 'Preview applied to this viewer.';
+			completedPreview = offset;
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Live preview failed.';
 			await tick();
@@ -112,4 +112,8 @@
 		{error}
 	</p>
 {/if}
-{#if status}<p class="text-xs text-healthy" role="status">{status}</p>{/if}
+{#if completedPreview === null && appliedPreview === undefined}
+	<p class="text-xs text-healthy" role="status">Saved live timing restored.</p>
+{:else if appliedPreview !== undefined && completedPreview === appliedPreview}
+	<p class="text-xs text-healthy" role="status">Preview applied to this viewer.</p>
+{/if}

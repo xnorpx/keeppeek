@@ -210,10 +210,18 @@
 									stream === 'main' ? 'main' : 'sub'
 								)}
 								{#if offset < 0}
-									<p class="text-warning text-xs leading-5"
-										>{stream === 'main' ? 'Main' : 'Sub'} video will play {Math.abs(offset)} ms later
-										after saving.</p
-									>
+									{@const name = stream === 'main' ? 'Main' : 'Sub'}
+									{@const savedOffset = effectiveRecordedAudioOffset(
+										saved.settings,
+										stream === 'main' ? 'main' : 'sub'
+									)}
+									<p class="text-warning text-xs leading-5">
+										{#if offset === savedOffset}
+											{name} video plays {Math.abs(offset)} ms later with saved timing.
+										{:else}
+											{name} video will play {Math.abs(offset)} ms later after saving.
+										{/if}
+									</p>
 								{/if}
 							{/each}
 						{/if}</div

@@ -89,6 +89,27 @@ describe('recorded-audio camera settings', () => {
 		expect(onsave).toHaveBeenCalledExactlyOnceWith({ default_offset_ms: -100 }, 'revision-one');
 	});
 
+	it('describes each saved negative offset in the present tense until that stream changes', async () => {
+		await render(RecordedAudioSettings, {
+			props: {
+				camera: camera({ live_audio: { main_offset_ms: -80, sub_offset_ms: -40 } }),
+				kind: 'live',
+				onsave: vi.fn()
+			}
+		});
+		const main = page.getByText('Main video plays 80 ms later with saved timing.');
+		await expect.element(main).toBeVisible();
+		await expect
+			.element(page.getByText('Sub video plays 40 ms later with saved timing.'))
+			.toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Save live timing' })).toBeDisabled();
+		await page.getByRole('textbox', { name: 'Sub stream offset (ms)' }).fill('-60');
+		await expect.element(main).toBeVisible();
+		await expect
+			.element(page.getByText('Sub video will play 60 ms later after saving.'))
+			.toBeVisible();
+	});
+
 	it('saves only the full timing object and captured revision, preserving explicit zero', async () => {
 		const onsave = vi.fn(async () =>
 			camera({
@@ -184,7 +205,7 @@ describe('recorded-audio camera settings', () => {
 			.fn()
 			.mockResolvedValueOnce(undefined)
 			.mockRejectedValueOnce(new Error('Camera busy'));
-		await render(RecordedAudioSettings, {
+		const view = await render(RecordedAudioSettings, {
 			props: {
 				camera: camera({ live_audio: {} }),
 				kind: 'live',
@@ -196,7 +217,14 @@ describe('recorded-audio camera settings', () => {
 		const reset = page.getByRole('button', { name: 'Reset preview' });
 		await expect.element(reset).toBeEnabled();
 		await page.getByRole('button', { name: 'Apply preview' }).click();
-		await expect.element(page.getByText('Preview applied to this viewer.')).toBeVisible();
+		const applied = page.getByText('Preview applied to this viewer.');
+		await expect.element(applied).not.toBeInTheDocument();
+		await view.rerender({ appliedPreview: 0 });
+		await expect.element(applied).toBeVisible();
+		await view.rerender({ appliedPreview: undefined, previewRequested: false });
+		await expect.element(applied).not.toBeInTheDocument();
+		await expect.element(reset).toBeDisabled();
+		await view.rerender({ previewRequested: true });
 		await reset.click();
 		await expect.element(page.getByText('Camera busy')).toBeVisible();
 		await expect.element(page.getByText('Preview applied to this viewer.')).not.toBeInTheDocument();
