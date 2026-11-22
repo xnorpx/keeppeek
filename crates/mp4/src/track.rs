@@ -13,6 +13,7 @@ use crate::{
         stts::SttsEntry,
         traf::TrafBox,
         trak::TrakBox,
+        trun::TrunBox,
         tx3g::Tx3gBox,
         vmhd::VmhdBox,
         vp09::Vp09Box,
@@ -25,6 +26,35 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     time::Duration,
 };
+
+/// One ctts or trun box can encode either unsigned or signed 32-bit offsets.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum CompositionRange {
+    #[default]
+    Either,
+    Signed,
+    Unsigned,
+}
+
+impl CompositionRange {
+    pub fn including(self, offset: i64) -> Result<Self> {
+        match (i32::try_from(offset), u32::try_from(offset), self) {
+            (Ok(_), Ok(_), mode) => Ok(mode),
+            (Ok(_), Err(_), Self::Either | Self::Signed) => Ok(Self::Signed),
+            (Err(_), Ok(_), Self::Either | Self::Unsigned) => Ok(Self::Unsigned),
+            _ => Err(Error::InvalidData(
+                "composition offsets cannot share a 32-bit box version",
+            )),
+        }
+    }
+
+    pub const fn version(self) -> u8 {
+        match self {
+            Self::Signed => 1,
+            Self::Either | Self::Unsigned => 0,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackConfig {
@@ -785,13 +815,20 @@ impl Mp4Track {
                     .unwrap_or(self.default_sample_duration);
                 let mut duration = default_duration;
                 if let Some(trun) = &traf.trun {
-                    for j in 0..sample_idx {
-                        start_time +=
-                            trun.sample_durations
-                                .get(j)
-                                .copied()
-                                .unwrap_or(default_duration) as u64;
-                    }
+                    let elapsed = if trun.flags & TrunBox::FLAG_SAMPLE_DURATION == 0 {
+                        u64::from(default_duration)
+                            * u64::try_from(sample_idx)
+                                .map_err(|_| Error::InvalidData("invalid fragment sample index"))?
+                    } else {
+                        let durations = trun
+                            .sample_durations
+                            .get(..sample_idx)
+                            .ok_or(Error::InvalidData("missing fragment sample durations"))?;
+                        durations.iter().map(|&value| u64::from(value)).sum()
+                    };
+                    start_time = start_time
+                        .checked_add(elapsed)
+                        .ok_or(Error::InvalidData("fragment sample time overflow"))?;
                     duration = trun
                         .sample_durations
                         .get(sample_idx)
@@ -828,24 +865,59 @@ impl Mp4Track {
         }
     }
 
-    fn sample_rendering_offset(&self, sample_id: u32) -> i32 {
-        if !self.trafs.is_empty() {
-            if let Some((traf_idx, sample_idx)) = self.find_traf_idx_and_sample_idx(sample_id)
-                && let Some(trun) = &self.trafs[traf_idx].trun
-                && let Some(cts) = trun.sample_cts.get(sample_idx)
-            {
-                return *cts as i32;
+    fn composition_offset(&self, sample_id: u32) -> Result<i64> {
+        let (version, bits) = if self.trafs.is_empty() {
+            let Some(ctts) = &self.trak.mdia.minf.stbl.ctts else {
+                return Ok(0);
+            };
+            let (index, _) = self.ctts_index(sample_id)?;
+            (
+                ctts.version,
+                u32::from_be_bytes(ctts.entries[index].sample_offset.to_be_bytes()),
+            )
+        } else {
+            let (traf_index, sample_index) = self
+                .find_traf_idx_and_sample_idx(sample_id)
+                .ok_or_else(|| {
+                    Error::EntryInTrunNotFound(self.track_id(), BoxType::TrunBox, sample_id)
+                })?;
+            let trun = self.trafs[traf_index]
+                .trun
+                .as_ref()
+                .ok_or_else(|| Error::BoxInTrafNotFound(self.track_id(), BoxType::TrunBox))?;
+            if trun.flags & TrunBox::FLAG_SAMPLE_CTS == 0 {
+                return Ok(0);
             }
-            return 0;
+            let bits = *trun.sample_cts.get(sample_index).ok_or_else(|| {
+                Error::EntryInTrunNotFound(self.track_id(), BoxType::TrunBox, sample_id)
+            })?;
+            (trun.version, bits)
+        };
+        match version {
+            0 => Ok(i64::from(bits)),
+            1 => Ok(i64::from(i32::from_be_bytes(bits.to_be_bytes()))),
+            _ => Err(Error::InvalidData("unsupported composition-time version")),
         }
+    }
 
-        if let Some(ref ctts) = self.trak.mdia.minf.stbl.ctts
-            && let Ok((ctts_index, _)) = self.ctts_index(sample_id)
-        {
-            let ctts_entry = ctts.entries.get(ctts_index).unwrap();
-            return ctts_entry.sample_offset;
+    /// Looks up one-based sample timing without reading or allocating encoded sample data.
+    pub fn sample_timing(&self, sample_id: u32) -> Result<Option<Mp4SampleTiming>> {
+        if !self.trafs.is_empty() && self.trak.mdia.minf.stbl.stsz.sample_count > 0 {
+            return Err(Error::InvalidData(
+                "exact timing of hybrid sample-table and fragmented tracks is unsupported",
+            ));
         }
-        0
+        if sample_id == 0 || sample_id > self.sample_count() {
+            return Ok(None);
+        }
+        let (decode_time, duration) = self.sample_time(sample_id)?;
+        let presentation_time =
+            i128::from(decode_time) + i128::from(self.composition_offset(sample_id)?);
+        Ok(Some(Mp4SampleTiming {
+            decode_time,
+            duration,
+            presentation_time,
+        }))
     }
 
     pub(crate) fn is_sync_sample(&self, sample_id: u32) -> bool {
@@ -932,7 +1004,7 @@ impl Mp4Track {
             Err(Error::EntryInStblNotFound(_, _, _)) => return Ok(None),
             Err(err) => return Err(err),
         };
-        let rendering_offset = self.sample_rendering_offset(sample_id);
+        let rendering_offset = self.composition_offset(sample_id)?;
         let is_sync = self.is_sync_sample(sample_id);
 
         Ok(Some(Mp4Sample {
@@ -1025,6 +1097,7 @@ pub struct Mp4TrackWriter {
     is_fixed_sample_size: bool,
     chunk_samples: u32,
     chunk_duration: u32,
+    composition_range: CompositionRange,
     chunk_buffer: BytesMut,
 
     samples_per_chunk: u32,
@@ -1092,6 +1165,7 @@ impl Mp4TrackWriter {
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             trak,
+            composition_range: CompositionRange::default(),
             chunk_buffer: BytesMut::new(),
             sample_id: 1,
             duration_per_chunk: timescale, // 1 second
@@ -1167,6 +1241,7 @@ impl Mp4TrackWriter {
             self.trak.mdia.minf.stbl.ctts.as_mut().unwrap()
         };
 
+        ctts.version = self.composition_range.version();
         if let Some(ref mut entry) = ctts.entries.last_mut()
             && entry.sample_offset == offset
         {
@@ -1222,12 +1297,13 @@ impl Mp4TrackWriter {
         sample: &Mp4Sample,
         movie_timescale: u32,
     ) -> Result<u64> {
+        self.composition_range = self.composition_range.including(sample.rendering_offset)?;
         self.chunk_buffer.extend_from_slice(&sample.bytes);
         self.chunk_samples += 1;
         self.chunk_duration += sample.duration;
         self.update_sample_sizes(sample.bytes.len() as u32);
         self.update_sample_times(sample.duration);
-        self.update_rendering_offsets(sample.rendering_offset);
+        self.update_rendering_offsets(sample.rendering_offset as i32);
         self.update_sync_samples(sample.is_sync);
         if self.is_chunk_full() {
             self.write_chunk(writer)?;
