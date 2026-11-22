@@ -3068,10 +3068,12 @@ async fn ensure_column(
             return Ok(false);
         }
     }
+    drop(rows);
     connection
-        .execute_batch(format!(
-            "ALTER TABLE {table} ADD COLUMN {column} {declaration}"
-        ))
+        .execute(
+            format!("ALTER TABLE {table} ADD COLUMN {column} {declaration}"),
+            (),
+        )
         .await?;
     Ok(true)
 }
