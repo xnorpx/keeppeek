@@ -2424,6 +2424,7 @@ export class ControlClient {
 	}
 
 	private async connectNow(): Promise<void> {
+		const generation = this.#transportGeneration;
 		const credential = this.#accessKey;
 		const peer = new RTCPeerConnection();
 		this.#peer = peer;
@@ -2457,7 +2458,7 @@ export class ControlClient {
 			if (sessionId !== null) {
 				await deleteSession(sessionId, credential).catch(() => undefined);
 			}
-			this.publishConnectionError(error);
+			if (generation === this.#transportGeneration) this.publishConnectionError(error);
 			throw error;
 		} finally {
 			opening.close();
@@ -2494,9 +2495,7 @@ export class ControlClient {
 		reliable.onmessage = (event) => {
 			if (peer === this.#peer) this.receiveData(event);
 		};
-		reliable.onclose = () => {
-			if (peer === this.#peer) this.failData('WebRTC reliable data channel closed.');
-		};
+		reliable.onclose = () => this.controlTransportLost(peer);
 		peer.onconnectionstatechange = () => {
 			if (['failed', 'disconnected', 'closed'].includes(peer.connectionState))
 				this.controlTransportLost(peer);
@@ -2512,6 +2511,17 @@ export class ControlClient {
 		const credential = this.#accessKey;
 		const connecting = this.#connecting;
 		const generation = ++this.#transportGeneration;
+		if (previous && this.#sessionId !== null) {
+			this.#previousSession = this.#sessionId;
+			// Playback listeners must capture their cursor and preview before transport errors reach them.
+			this.publishAccessState({
+				status: 'checking',
+				session: previous,
+				cameraSourceIds: access.cameraSourceIds,
+				message: null
+			});
+			if (generation !== this.#transportGeneration || peer !== this.#peer) return;
+		}
 		const sessionId = this.releaseTransport(!previous);
 		if (!previous || sessionId === null) {
 			if (sessionId !== null) void deleteSession(sessionId, credential).catch(() => undefined);
@@ -2519,13 +2529,6 @@ export class ControlClient {
 				this.publishConnectionError(new ApiRequestError(401, 'Sign in again to continue.'));
 			return;
 		}
-		this.#previousSession = sessionId;
-		this.publishAccessState({
-			status: 'checking',
-			session: previous,
-			cameraSourceIds: access.cameraSourceIds,
-			message: null
-		});
 		// Session creation checks the current credential and capabilities restore all active watches.
 		void (async () => {
 			await connecting?.catch(() => undefined);
@@ -3035,14 +3038,20 @@ export class ControlClient {
 	}
 
 	private publishConnectionError(error: unknown): void {
-		if (
-			error instanceof ApiRequestError &&
-			[401, 403].includes(error.status) &&
-			this.#previousSession
-		) {
-			const refused = this.#previousSession;
+		const access = this.#accessState;
+		if (access.status === 'checking' && access.session) {
+			const previous = this.#previousSession;
 			this.#previousSession = undefined;
-			void deleteSession(refused, this.#accessKey).catch(() => undefined);
+			if (previous) void deleteSession(previous, this.#accessKey).catch(() => undefined);
+			this.#accessKey = null;
+			this.publishAccessState({
+				status: access.session.local ? 'error' : 'sign-in-required',
+				session: null,
+				message: access.session.local
+					? 'The recorder connection was interrupted. Retry to reconnect.'
+					: 'The recorder connection was interrupted. Sign in again to reconnect.'
+			});
+			return;
 		}
 		if (error instanceof ApiRequestError && error.status === 401) {
 			const hadCredential = this.#accessKey !== null;
