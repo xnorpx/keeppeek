@@ -1857,6 +1857,16 @@ impl ServerControlHandler {
         required_role: AccessRole,
         operation: &'static str,
     ) -> Result<ApiPrincipal, (ControlCommandError, bool)> {
+        self.check_api_session(session_id, required_role, operation, true)
+    }
+
+    fn check_api_session(
+        &self,
+        session_id: SessionId,
+        required_role: AccessRole,
+        operation: &'static str,
+        client_activity: bool,
+    ) -> Result<ApiPrincipal, (ControlCommandError, bool)> {
         if session_id.as_u64() == 0 {
             return Ok(ApiPrincipal::local(IpAddr::V4(Ipv4Addr::LOCALHOST)));
         }
@@ -1889,6 +1899,9 @@ impl ServerControlHandler {
             let classification = session.classification;
             drop(sessions);
             return Err(self.insufficient_api_role(&principal, classification, operation, now_ms));
+        }
+        if !client_activity {
+            return Ok(session.principal.clone());
         }
         session.last_activity = now_at;
         session.last_activity_at_ms = now_ms;
@@ -14815,6 +14828,11 @@ mod tests {
         let next: CreateResponse =
             serde_json::from_reader(GzDecoder::new(body.as_slice())).unwrap();
         let next_id = SessionId::from_u64(next.session_id.parse().unwrap());
+        assert!(
+            test_control_handler(state.clone())
+                .initial_capabilities(next_id)
+                .is_some()
+        );
         let record = state.api_session_owners.lock().unwrap()[&next_id].clone();
         assert_eq!(
             record.absolute_expires_at_ms,
