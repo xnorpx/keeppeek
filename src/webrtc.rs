@@ -7928,8 +7928,11 @@ mod tests {
         use crate::api::proto::{audio_message, message};
         use crate::cameras::LiveAudioSettings;
         let session = test_background_control();
-        let publisher = Publisher {
-            inner: session.inner.clone(),
+        let webrtc = WebRtc {
+            live: Publisher {
+                inner: session.inner.clone(),
+            },
+            recording_demand: None,
         };
         let source = Source {
             camera_ip: Ipv4Addr::LOCALHOST.into(),
@@ -7941,7 +7944,7 @@ mod tests {
         let mut presentations = Vec::new();
         let initial = Instant::now() + Duration::from_millis(1);
         for (index, delay) in [0_u64, 0, 80, 80, 0].into_iter().enumerate() {
-            publisher.configure_live_audio(
+            webrtc.configure_live_audio(
                 source.camera_ip,
                 LiveAudioSettings {
                     default_offset_ms: Some(delay as i32),
@@ -7949,7 +7952,7 @@ mod tests {
                 },
             );
             let received = initial + Duration::from_millis(index as u64 * 20);
-            publisher.publish_audio(
+            webrtc.live.publish_audio(
                 source,
                 WebRtcAudioFrame {
                     codec: WebRtcAudioCodec::Aac,
