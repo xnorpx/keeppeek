@@ -166,6 +166,7 @@ fn export_neighbors_follow_the_captured_stream_and_resolve_both_boundary_directi
         cancel: Arc::new(AtomicBool::new(false)),
         file_name: "neighbors.mp4".into(),
         audio_offset_ms: 200,
+        maximum_bytes: None,
         recording_stream_id: Some("front-door/sub".into()),
     };
     for (index, offset) in [(1, 200), (0, -200)] {
