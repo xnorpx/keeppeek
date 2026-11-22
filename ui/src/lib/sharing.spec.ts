@@ -30,6 +30,6 @@ describe('sharing form bounds', () => {
 		const formatted = shareTime(BigInt(sharingFixtureNow));
 		expect(formatted).toContain('18 Oct 2026');
 		expect(formatted).toContain('06:00:00');
-		expect(formatted).toEndWith('UTC');
+		expect(formatted).toMatch(/UTC$/);
 	});
 });
