@@ -276,7 +276,10 @@ fn deferred_recovery_requires_fenced_privacy_confirmation_after_recording_ack() 
     let application =
         recorder.runtime_profile_status.read().unwrap().cameras[&ip.to_string()].clone();
     assert_eq!(application.state, RuntimeApplicationState::Degraded);
-    assert!(application.reason.unwrap().contains("reapply"));
+    assert_eq!(
+        application.reason.as_deref(),
+        Some(crate::profiles::PENDING_PRIVACY_CONFIRMATION)
+    );
     assert!(
         privacy
             .decision(&ip.to_string(), chrono::Utc::now())
