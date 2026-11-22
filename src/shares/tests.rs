@@ -1285,3 +1285,21 @@ mod retention;
 
 #[path = "tests/status.rs"]
 mod status;
+
+/// Capture tiny fixture diagnostics and bound a stalled recorder child during tests.
+fn wait_for_child(mut child: std::process::Child) -> std::process::Output {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "recorder child exceeded 30 seconds; stdout: {}; stderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    child.wait_with_output().unwrap()
+}

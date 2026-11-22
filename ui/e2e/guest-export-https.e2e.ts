@@ -100,11 +100,21 @@ async function createLink(page: Page, fixture: Fixture) {
 }
 
 function observePrivateConsole(page: Page, values: string[]) {
-	let disclosed = false;
-	page.on('console', (message) => {
-		disclosed ||= values.some((value) => message.text().includes(value));
-	});
-	return () => expect(disclosed).toBe(false);
+	const entries: string[] = [];
+	let overflow = false;
+	function record(text: string) {
+		if (entries.length >= 128 || text.length > 8192) {
+			overflow = true;
+			return;
+		}
+		entries.push(text);
+	}
+	page.on('console', (message) => record(message.text()));
+	page.on('pageerror', (error) => record(error.stack ?? error.message));
+	return () => {
+		expect(overflow).toBe(false);
+		expect(entries.some((entry) => values.some((value) => entry.includes(value)))).toBe(false);
+	};
 }
 
 async function verifyPrivatePage(page: Page, values: string[], verifyConsole: () => void) {
@@ -165,10 +175,10 @@ async function revoke(page: Page, viewer: Page) {
 		.getByRole('listitem')
 		.filter({ has: page.getByRole('heading', { name: 'Entrance recording' }) });
 	await row.getByRole('button', { name: 'Revoke link' }).click();
-	const revoke = page.getByRole('dialog', { name: 'Revoke guest access' });
-	await revoke.getByLabel('Reason').fill('Review is complete.');
+	const dialog = page.getByRole('dialog', { name: 'Revoke guest access' });
+	await dialog.getByLabel('Reason').fill('Review is complete.');
 	const revokeStart = performance.now();
-	await revoke.getByRole('button', { name: 'Confirm revocation' }).click();
+	await dialog.getByRole('button', { name: 'Confirm revocation' }).click();
 	await expect(viewer.getByText('The link was revoked. Playback has stopped.')).toBeVisible();
 	await expect(viewer.locator('video')).toHaveCount(0);
 	return performance.now() - revokeStart;

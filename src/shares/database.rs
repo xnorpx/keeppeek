@@ -317,7 +317,7 @@ impl Database {
     }
 
     pub fn prune(&self, now_ms: i64) -> Result<u64, Error> {
-        self.prune_up_to(now_ms, 256)
+        self.prune_up_to(now_ms, i64::from(AUDIT_PURGE_BATCH))
     }
 
     fn prune_up_to(&self, now_ms: i64, maximum: i64) -> Result<u64, Error> {

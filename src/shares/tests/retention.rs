@@ -46,15 +46,18 @@ fn verify_reopen(revoked: bool, count: usize) {
         store, directory, ..
     } = fixture;
     drop(store);
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
         .env("KEEPPEEK_TEST_AUDIT_REOPEN", directory.0.join("grants.db"))
         .env(
             "KEEPPEEK_TEST_AUDIT_CLOCK",
             (cutoff + super::super::model::AUDIT_RETENTION_MS).to_string(),
         )
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
+    let output = wait_for_child(child);
     assert!(
         output.status.success(),
         "audit reopen child failed: {}",
