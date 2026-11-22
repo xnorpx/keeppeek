@@ -89,6 +89,26 @@ pub struct FragmentedMetadataUsage {
     pub pending_moof_bytes: u64,
 }
 
+impl FragmentedMetadataUsage {
+    const MOOF_HEADER_BYTES_MAX: u64 = 32;
+    const TRACK_TABLE_HEADER_BYTES_MAX: u64 = 160;
+    /// Duration, size, flags and composition offset can each consume one u32.
+    pub const SAMPLE_TABLE_ENTRY_BYTES_MAX: u64 = 4 * std::mem::size_of::<u32>() as u64;
+
+    /// Conservative usage after one access unit, including a possible new fragment and event.
+    pub const fn with_next_sample(self) -> Self {
+        let moof_bytes = Self::MOOF_HEADER_BYTES_MAX
+            + Self::TRACK_TABLE_HEADER_BYTES_MAX
+            + Self::SAMPLE_TABLE_ENTRY_BYTES_MAX;
+        Self {
+            bytes: self.bytes + moof_bytes + source_rtp::NEXT_SAMPLE_BYTES_MAX,
+            boxes: self.boxes + 3, // moof, mdat and emsg
+            fragments: self.fragments.saturating_add(1),
+            pending_moof_bytes: self.pending_moof_bytes + moof_bytes,
+        }
+    }
+}
+
 impl<W> FragmentedMp4Writer<W> {
     /// Returns the flushed `ftyp`/`moov` initialization range.
     pub const fn initialization(&self) -> Mp4ByteRange {
@@ -105,7 +125,7 @@ impl<W> FragmentedMp4Writer<W> {
             pending_moof_bytes: 0,
         };
         if self.has_pending_samples() {
-            usage.pending_moof_bytes = 32;
+            usage.pending_moof_bytes = FragmentedMetadataUsage::MOOF_HEADER_BYTES_MAX;
             usage.boxes += 2;
             usage.fragments += 1;
         }
@@ -115,7 +135,8 @@ impl<W> FragmentedMp4Writer<W> {
                 continue;
             }
             // tfhd/tfdt/trun plus all four optional u32 table entries per sample.
-            usage.pending_moof_bytes += 160 + 16 * count;
+            usage.pending_moof_bytes += FragmentedMetadataUsage::TRACK_TABLE_HEADER_BYTES_MAX
+                + FragmentedMetadataUsage::SAMPLE_TABLE_ENTRY_BYTES_MAX * count;
             let (event_bytes, event_count) = track.source_timing.event_budget();
             usage.bytes += event_bytes;
             usage.boxes += event_count;

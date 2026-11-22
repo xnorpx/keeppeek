@@ -98,3 +98,61 @@ fn epoch_churn_preserves_the_prefix_before_the_hard_limit_and_resumes_at_a_keyfr
     assert!((60_001..110_000).contains(&files[1].1));
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn buffered_receive_times_bound_segments_even_when_their_relocation_fails() {
+    let dir = std::env::temp_dir().join(format!("keeppeek-aged-batch-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut worker = worker_in(&dir);
+    let unavailable = dir.join("occupied");
+    std::fs::write(&unavailable, b"not a directory").unwrap();
+    worker.config.long_term_path = unavailable;
+    worker.config.medium_term_duration = Duration::from_secs(60);
+    worker.config.short_term_duration = Duration::from_secs(240);
+    let identity = RecordingStreamIdentity::legacy("camera");
+    let buffer = &mut worker.pipeline_for(&identity).short_term;
+    let start = Instant::now() - Duration::from_secs(300);
+    for seconds in [0, 30, 60, 90, 120, 150] {
+        buffer.push(key_frame(start + Duration::from_secs(seconds)));
+    }
+    worker.shutdown_flush();
+    worker.finalize_all();
+    assert_eq!(recovered_counts(&dir), [(2, 2); 3]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn health_includes_interframes_admitted_when_the_first_gop_activates() {
+    for limit in [Duration::from_millis(100), Duration::from_secs(60)] {
+        let dir =
+            std::env::temp_dir().join(format!("keeppeek-gop-health-{}", uuid::Uuid::new_v4()));
+        let mut worker = worker_in(&dir);
+        worker.config.medium_term_duration = limit;
+        let identity = RecordingStreamIdentity::legacy("camera");
+        worker.pipeline_for(&identity);
+        let start = Instant::now() - Duration::from_secs(2);
+        for millis in [0, 40, 80] {
+            let at = start + Duration::from_millis(millis);
+            let mut frame = if millis == 0 {
+                key_frame(at)
+            } else {
+                inter_frame()
+            };
+            frame.received_at = at;
+            assert!(
+                worker
+                    .direct_write("camera", frame)
+                    .unwrap()
+                    .recorded_duration
+                    .is_zero()
+            );
+        }
+        let activated = worker
+            .direct_write("camera", key_frame(start + Duration::from_millis(120)))
+            .unwrap();
+        assert!(activated.wrote);
+        assert!(activated.recorded_duration >= Duration::from_millis(80));
+        worker.finalize_all();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

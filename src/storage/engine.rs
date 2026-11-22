@@ -1342,17 +1342,21 @@ impl WriterWorker {
         frame: RecordingFrame,
         received_clock: bool,
     ) -> std::io::Result<WriteProgress> {
+        let mut activated = Duration::ZERO;
         if frame.is_video_keyframe()
             && let Some(pipeline) = self.pipelines.get_mut(camera_id)
             && let Some(writer) = &mut pipeline.medium_term
         {
             // The initial GOP can still be buffered for audio codec discovery.
-            writer.activate_prepared()?;
-            if writer.needs_rotation(self.config.medium_term_duration) {
+            activated = writer.activate_prepared()?;
+            if writer.needs_rotation(frame.received_at, self.config.medium_term_duration) {
                 let old = pipeline.medium_term.take().unwrap();
                 let recording_id = old.recording_id().to_owned();
                 let path = old.finalize()?;
-                self.move_to_long_term(camera_id, &path, &recording_id)?;
+                if let Err(error) = self.move_to_long_term(camera_id, &path, &recording_id) {
+                    tracing::error!(camera = camera_id, %recording_id, %error,
+                        "could not complete finalized recording relocation; continuing capture");
+                }
             }
         }
 
@@ -1385,8 +1389,8 @@ impl WriterWorker {
         };
 
         Ok(WriteProgress {
-            wrote: !writer.recovery_limit_reached,
-            recorded_duration,
+            wrote: !activated.is_zero() || !writer.recovery_limit_reached,
+            recorded_duration: activated.saturating_add(recorded_duration),
         })
     }
 

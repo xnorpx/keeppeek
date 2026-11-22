@@ -210,7 +210,9 @@ impl MediumTermWriter {
         }
 
         // Limit codec discovery to the largest GOP that could fit its sample table in one moof.
-        const PREPARATION_FRAMES_MAX: usize = super::RECORDING_BOX_BYTES_MAX as usize / 16;
+        const PREPARATION_FRAMES_MAX: usize = (super::RECORDING_BOX_BYTES_MAX
+            / mp4::FragmentedMetadataUsage::SAMPLE_TABLE_ENTRY_BYTES_MAX)
+            as usize;
         if matches!(&self.state, WriterState::Preparing(frames)
             if rf.frame.is_video_keyframe() || frames.len() >= PREPARATION_FRAMES_MAX)
         {
@@ -257,21 +259,22 @@ impl MediumTermWriter {
         self.append_one(frame)
     }
 
-    pub(super) fn activate_prepared(&mut self) -> std::io::Result<()> {
+    pub(super) fn activate_prepared(&mut self) -> std::io::Result<Duration> {
         if !matches!(self.state, WriterState::Preparing(_)) {
-            return Ok(());
+            return Ok(Duration::ZERO);
         }
         let state = std::mem::replace(&mut self.state, WriterState::WaitingForKeyframe);
         let WriterState::Preparing(frames) = state else {
             self.state = state;
-            return Ok(());
+            return Ok(Duration::ZERO);
         };
+        let before = self.recorded_duration;
         let active = self.init_mp4(&frames)?;
         self.state = WriterState::Active(Box::new(active));
         for frame in frames {
             self.write_frame(frame)?;
         }
-        Ok(())
+        Ok(self.recorded_duration.saturating_sub(before))
     }
 
     fn init_mp4(&mut self, frames: &[RecordingFrame]) -> std::io::Result<ActiveWriter> {
@@ -686,8 +689,10 @@ impl MediumTermWriter {
     }
 
     /// Leave room for the final GOP when approaching the bounded recovery scanner's limits.
-    pub(super) fn needs_rotation(&self, duration: Duration) -> bool {
-        if self.recovery_limit_reached || self.elapsed() >= duration {
+    pub(super) fn needs_rotation(&self, received_at: Instant, duration: Duration) -> bool {
+        if self.recovery_limit_reached
+            || received_at.saturating_duration_since(self.started_at) >= duration
+        {
             return true;
         }
         let WriterState::Active(active) = &self.state else {
@@ -706,13 +711,11 @@ impl MediumTermWriter {
 /// A keyframe may flush the previous moof/mdat then start a new pair, a track table,
 /// and one source event with a UUID header and a fresh discontinuity anchor.
 const fn recording_can_append_sample(usage: mp4::FragmentedMetadataUsage) -> bool {
-    const NEW_MOOF_AND_TRACK_BYTES: u64 = 32 + 160 + 16;
-    const NEW_CLOCK_EVENT_BYTES: u64 = 192 + 28 + 72;
-    usage.bytes + NEW_MOOF_AND_TRACK_BYTES + NEW_CLOCK_EVENT_BYTES
-        <= super::RECORDING_METADATA_BYTES_MAX
-        && usage.boxes + 3 <= super::RECORDING_BOX_COUNT_MAX as u64
-        && (usage.fragments as usize) < super::RECORDING_FRAGMENT_COUNT_MAX
-        && usage.pending_moof_bytes + NEW_MOOF_AND_TRACK_BYTES <= super::RECORDING_BOX_BYTES_MAX
+    let next = usage.with_next_sample();
+    next.bytes <= super::RECORDING_METADATA_BYTES_MAX
+        && next.boxes <= super::RECORDING_BOX_COUNT_MAX as u64
+        && next.fragments as usize <= super::RECORDING_FRAGMENT_COUNT_MAX
+        && next.pending_moof_bytes <= super::RECORDING_BOX_BYTES_MAX
 }
 
 pub(super) fn required_video_media_config(video: &VideoFrame) -> std::io::Result<mp4::MediaConfig> {
