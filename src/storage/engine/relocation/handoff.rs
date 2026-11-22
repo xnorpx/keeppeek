@@ -19,29 +19,8 @@ pub(in crate::storage::engine) fn move_recording(
     stop: &AtomicBool,
 ) -> io::Result<PathBuf> {
     check_running(stop)?;
-    if config.volume_runtime.is_some() {
-        use crate::storage::catalog::locations::{Kind, Object, Reply, Request};
-        if let Some(catalog) = catalog
-            && matches!(
-                catalog
-                    .volume_location(Request::Lookup(Object {
-                        kind: Kind::Recording,
-                        id: recording_id.to_owned()
-                    }))
-                    .map_err(std::io::Error::other)?,
-                Reply::Location(Some(_))
-            )
-        {
-            if let Some(mover) = &config.volume_mover {
-                mover.scan().map_err(std::io::Error::other)?;
-            }
-            if let Some(archive) = &config.archive_runtime
-                && let Err(error) = archive.scan()
-            {
-                tracing::warn!(%error,"archive wakeup deferred; finalized recording remains available locally");
-            }
-            return Ok(path.to_path_buf());
-        }
+    if wake_managed_volume(config, catalog, recording_id)? {
+        return Ok(path.to_owned());
     }
     if config.medium_term_path == config.long_term_path {
         return Ok(path.to_owned());
@@ -103,6 +82,38 @@ pub(in crate::storage::engine) fn move_recording(
     Ok(destination)
 }
 
+fn wake_managed_volume(
+    config: &StorageConfig,
+    catalog: Option<&RecordingCatalogHandle>,
+    recording_id: &str,
+) -> io::Result<bool> {
+    if config.volume_runtime.is_some() {
+        use crate::storage::catalog::locations::{Kind, Object, Reply, Request};
+        if let Some(catalog) = catalog
+            && matches!(
+                catalog
+                    .volume_location(Request::Lookup(Object {
+                        kind: Kind::Recording,
+                        id: recording_id.to_owned()
+                    }))
+                    .map_err(std::io::Error::other)?,
+                Reply::Location(Some(_))
+            )
+        {
+            if let Some(mover) = &config.volume_mover {
+                mover.scan().map_err(std::io::Error::other)?;
+            }
+            if let Some(archive) = &config.archive_runtime
+                && let Err(error) = archive.scan()
+            {
+                tracing::warn!(%error,"archive wakeup deferred; finalized recording remains available locally");
+            }
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(super) fn recover_job(
     catalog: &RecordingCatalogHandle,
     job: &Move,
@@ -110,21 +121,7 @@ pub(super) fn recover_job(
 ) -> io::Result<()> {
     check_running(stop)?;
     let _attempt = Attempt::acquire(job.staged)?;
-    // The catalog reserved these endpoints before publication. Complete that original
-    // handoff across a configuration change without deriving a third path from new roots.
-    let depth = Path::new(&job.stream).components().count() + 3;
-    let source_root = job.source.ancestors().nth(depth);
-    let destination_root = job.destination.ancestors().nth(depth);
-    if !source_root
-        .zip(destination_root)
-        .is_some_and(|(source, destination)| {
-            legacy_stream(source, &job.source).as_deref() == Some(&job.stream)
-                && job.source.strip_prefix(source).ok()
-                    == job.destination.strip_prefix(destination).ok()
-        })
-    {
-        return Err(io::Error::other("invalid recording relocation endpoints"));
-    }
+    validate_reserved_paths(job)?;
     let staged = job.destination.with_file_name(staged_name(job.staged));
     // The UUID was reserved by the catalog before even one media byte could be written.
     remove_stage(&staged)?;
@@ -175,6 +172,28 @@ pub(super) fn recover_job(
     fs::remove_file(&job.source)?;
     sync_parent(&job.source)?;
     catalog.retire_relocation(job).map_err(io::Error::other)
+}
+
+fn validate_reserved_paths(job: &Move) -> io::Result<()> {
+    // The catalog reserved these endpoints before publication. Complete that original
+    // handoff across a configuration change without deriving a third path from new roots.
+    let depth = Path::new(&job.stream).components().count() + 3;
+    let source_root = job.source.ancestors().nth(depth);
+    let destination_root = job.destination.ancestors().nth(depth);
+    if !Path::new(&job.stream)
+        .components()
+        .all(|part| matches!(part, std::path::Component::Normal(_)))
+        || !source_root
+            .zip(destination_root)
+            .is_some_and(|(source, destination)| {
+                legacy_stream(source, &job.source).as_deref() == Some(&job.stream)
+                    && job.source.strip_prefix(source).ok()
+                        == job.destination.strip_prefix(destination).ok()
+            })
+    {
+        return Err(io::Error::other("invalid recording relocation endpoints"));
+    }
+    Ok(())
 }
 
 fn verify_source(job: &Move) -> io::Result<()> {
