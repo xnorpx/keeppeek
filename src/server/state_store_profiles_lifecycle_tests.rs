@@ -132,7 +132,7 @@ impl Lifecycle {
         runtime.set_privacy_registry(privacy);
         let recovery = state.clone();
         runtime.set_recovered_profile_publisher(move |revision| {
-            recovery.confirm_recovered_profile(revision)
+            recovery.confirm_recovered_profile(revision);
         });
         let publisher = state.clone();
         runtime.set_runtime_profile_status_publisher(move || {
@@ -928,6 +928,70 @@ fn legacy_status_rejects_oversize_get_and_watch_with_typed_error() {
         assert_eq!(detail.code(), proto::StateStoreErrorCode::ValueTooLarge);
         assert_eq!(detail.key, STATUS_KEY);
     }
+}
+
+pub(super) fn with_applied_base(run: impl FnOnce(&ServerState, &Path, &str)) {
+    let lifecycle = Lifecycle::new(false);
+    lifecycle.activate("away", 0);
+    lifecycle.assert_applied(1, Some("away"), CameraRecordingMode::Main);
+    lifecycle.activate("", 1);
+    lifecycle.assert_applied(2, None, CameraRecordingMode::Sub);
+    run(
+        &lifecycle.state,
+        &lifecycle.directory.join("config.toml"),
+        &lifecycle.source,
+    );
+}
+
+#[test]
+fn repaired_camera_restart_confirms_privacy_against_the_new_observation() {
+    let lifecycle = Lifecycle::new(false);
+    lifecycle.activate("away", 0);
+    lifecycle.assert_applied(1, Some("away"), CameraRecordingMode::Main);
+    let state = &lifecycle.state;
+    let path = lifecycle.directory.join("config.toml");
+    let mut before = crate::server::refresh_runtime_profile_camera_ids(state, &path).unwrap();
+    for observation in &mut before.applications {
+        observation.state = RuntimeApplicationState::Degraded;
+    }
+    state
+        .privacy
+        .replace_profile_overrides(BTreeMap::from([(lifecycle.source.clone(), true)]))
+        .unwrap();
+    before.apply(state, None).unwrap();
+    assert!(
+        state
+            .privacy
+            .decision(&lifecycle.source, chrono::Utc::now())
+            .unwrap()
+            .0
+    );
+    let configured = config::load_config(&path)
+        .unwrap()
+        .camera_configurations()
+        .unwrap();
+    let camera = crate::cameras::configured_cameras(&configured)
+        .into_values()
+        .next()
+        .unwrap();
+    state
+        .camera_runtime
+        .as_ref()
+        .unwrap()
+        .restart_camera(camera)
+        .unwrap();
+    before.confirm_after_start(state, &path).unwrap();
+    assert!(
+        !state
+            .privacy
+            .decision(&lifecycle.source, chrono::Utc::now())
+            .unwrap()
+            .0
+    );
+    let mut camera = configured.into_values().flatten().next().unwrap();
+    camera.username = "subsequent-edit".into();
+    config::upsert_camera(&path, &camera).unwrap();
+    assert!(before.confirm_after_start(state, &path).is_err());
 }
 
 #[test]

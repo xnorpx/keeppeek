@@ -101,6 +101,7 @@ export class LivePeer {
 	#reliableChannel: RTCDataChannel | null = null;
 	#unreliableChannel: RTCDataChannel | null = null;
 	#talkbackTransceiver: RTCRtpTransceiver | null = null;
+	#peerLifetime = new AbortController();
 	#talkbackTrack: MediaStreamTrack | null = null;
 	#cameraByMid: Record<string, string> = {};
 	#audioCameraByMid: Record<string, string> = {};
@@ -161,10 +162,19 @@ export class LivePeer {
 			}
 			cameraIds[plan.cameraId] = true;
 		}
-		this.cancelRecovery();
+		const recovering = this.#recoveryAttempts > 0;
+		if (this.#recoveryTimer !== undefined) clearTimeout(this.#recoveryTimer);
+		this.#recoveryTimer = undefined;
 		this.#desiredPlans = nextPlans;
 		return this.enqueue(async () => {
-			if (this.#desiredPlans === nextPlans) await this.configureNow(nextPlans);
+			if (this.#desiredPlans !== nextPlans) return;
+			try {
+				await this.configureNow(nextPlans);
+				if (this.#peer || !nextPlans.some((plan) => plan.active)) this.cancelRecovery();
+			} catch (error) {
+				if (recovering && !this.isAccessDenied(error)) this.scheduleRecovery();
+				throw error;
+			}
 		});
 	}
 
@@ -176,19 +186,22 @@ export class LivePeer {
 
 	startTalkback(target: TalkbackTargetSelection): Promise<void> {
 		return this.enqueueCommand(async () => {
-			if (this.#talkbackTransceiver === null) {
+			const transceiver = this.#talkbackTransceiver;
+			const signal = this.#peerLifetime.signal;
+			if (transceiver === null) {
 				throw new Error('Talkback is unavailable until the live session is connected.');
 			}
 			if (this.talkbackActive) return;
 			this.talkbackError = null;
-			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			const stream = await acquireTalkbackMicrophone(signal);
 			const track = stream.getAudioTracks()[0];
 			if (!track) {
 				stream.getTracks().forEach((item) => item.stop());
 				throw new Error('The microphone did not provide an audio track.');
 			}
 			try {
-				await this.#talkbackTransceiver.sender.replaceTrack(track);
+				await transceiver.sender.replaceTrack(track);
+				signal.throwIfAborted();
 				await this.request({
 					case: 'talkbackCommand',
 					value: create(TalkbackCommandSchema, {
@@ -198,11 +211,12 @@ export class LivePeer {
 						}
 					})
 				});
+				signal.throwIfAborted();
 				this.#talkbackTrack = track;
 				this.talkbackActive = true;
 			} catch (error) {
-				await this.#talkbackTransceiver?.sender.replaceTrack(null);
 				stream.getTracks().forEach((item) => item.stop());
+				await transceiver.sender.replaceTrack(null).catch(() => undefined);
 				this.talkbackError = error instanceof Error ? error.message : 'Talkback could not start.';
 				throw error;
 			}
@@ -285,10 +299,22 @@ export class LivePeer {
 	private enqueueCommand(task: () => Promise<void>): Promise<void> {
 		const owner = this.#peer;
 		return this.enqueue(async () => {
-			if (!owner || owner !== this.#peer)
-				throw new Error('The live connection changed. Send the command again if needed.');
-			await task();
+			try {
+				if (!owner) throw new Error('Connect to live view before sending this command.');
+				if (owner !== this.#peer)
+					throw new Error('The live connection changed. Send the command again if needed.');
+				await task();
+			} catch (error) {
+				const message = error instanceof Error ? error.message : 'The live command failed.';
+				this.error = message;
+				this.talkbackError = message;
+				throw error;
+			}
 		});
+	}
+
+	private isAccessDenied(error: unknown): boolean {
+		return error instanceof ApiRequestError && [401, 403].includes(error.status);
 	}
 
 	private cancelRecovery(): void {
@@ -327,7 +353,7 @@ export class LivePeer {
 				await this.configureNow(this.#desiredPlans);
 				if (this.#peer) this.#recoveryAttempts = 0;
 			}).catch((error) => {
-				if (error instanceof ApiRequestError && [401, 403].includes(error.status)) return;
+				if (this.isAccessDenied(error)) return;
 				this.scheduleRecovery();
 			});
 		}, delay);
@@ -978,6 +1004,10 @@ export class LivePeer {
 	}
 
 	private releaseLocalResources(): string | null {
+		this.#peerLifetime.abort(
+			new Error('The live connection changed. Send the command again if needed.')
+		);
+		this.#peerLifetime = new AbortController();
 		const peer = this.#peer;
 		const sessionToken = this.#sessionToken;
 		this.#peer = null;
@@ -1103,5 +1133,23 @@ function waitForIceGathering(peer: RTCPeerConnection): Promise<void> {
 		};
 		peer.addEventListener('icegatheringstatechange', changed);
 		changed();
+	});
+}
+
+function acquireTalkbackMicrophone(signal: AbortSignal): Promise<MediaStream> {
+	return new Promise((resolve, reject) => {
+		const abort = () => reject(signal.reason);
+		if (signal.aborted) {
+			abort();
+			return;
+		}
+		signal.addEventListener('abort', abort, { once: true });
+		navigator.mediaDevices
+			.getUserMedia({ audio: true })
+			.then((stream) => {
+				if (signal.aborted) stream.getTracks().forEach((track) => track.stop());
+				else resolve(stream);
+			}, reject)
+			.finally(() => signal.removeEventListener('abort', abort));
 	});
 }

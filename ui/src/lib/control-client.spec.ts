@@ -1925,6 +1925,33 @@ describe('ControlClient', () => {
 		expect(api.deleteSession).toHaveBeenLastCalledWith('session-42', accessKey);
 	});
 
+	it.each([true, false])(
+		'checks the current bearer before restoring a retired control peer (authorized=%s)',
+		async (authorized) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			const response = { session_id: 'first', answer: { type: 'answer', sdp: 'v=0' } };
+			api.createSession.mockResolvedValueOnce(response);
+			if (authorized)
+				api.createSession.mockResolvedValueOnce({ ...response, session_id: 'replacement' });
+			else api.createSession.mockRejectedValueOnce(new api.ApiRequestError(401, 'revoked'));
+			api.deleteSession.mockResolvedValue(undefined);
+			const client = new ControlClient();
+			const states: string[] = [];
+			client.onAccessState((s) => states.push(s.status));
+			await client.signIn('retained-bearer');
+			FakePeerConnection.latest!.channels[0].close();
+			await vi.waitFor(() =>
+				expect(states.at(-1)).toBe(authorized ? 'authenticated' : 'sign-in-required')
+			);
+			expect(api.createSession).toHaveBeenCalledTimes(2);
+			expect(api.createSession).toHaveBeenLastCalledWith(
+				expect.objectContaining({ type: 'offer' }),
+				'retained-bearer'
+			);
+			await client.close();
+		}
+	);
+
 	it('clears a rejected bearer and publishes token-free sign-in state', async () => {
 		vi.useFakeTimers();
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);

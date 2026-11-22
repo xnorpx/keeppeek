@@ -1,4 +1,6 @@
-use chrono::{DateTime, Datelike, Duration, NaiveDateTime, NaiveTime, TimeZone, Utc, Weekday};
+use chrono::{
+    DateTime, Datelike, Duration, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc, Weekday,
+};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -26,22 +28,87 @@ pub struct PrivacyGate {
     responses: Mutex<Vec<(Arc<str>, rouille::ResponseAbortHandle)>>,
 }
 
+/// Local minute lookup compiled at configuration time. Seven bits represent Monday through Sunday.
+#[derive(Clone, Debug)]
+struct CompiledSchedule {
+    enabled: bool,
+    zone: Tz,
+    weekdays: Box<[u8; 1440]>,
+    temporary_override: Option<(DateTime<Utc>, DateTime<Utc>)>,
+}
+
+impl CompiledSchedule {
+    fn new(schedule: &PrivacySchedule) -> anyhow::Result<Self> {
+        schedule.validate()?;
+        let mut weekdays = Box::new([0; 1440]);
+        for window in &schedule.windows {
+            let start = parse_time(&window.start)?.num_seconds_from_midnight() as usize / 60;
+            let end = parse_time(&window.end)?.num_seconds_from_midnight() as usize / 60;
+            let days = window
+                .weekdays
+                .iter()
+                .fold(0u8, |bits, day| bits | (1 << (day - 1)));
+            if start < end {
+                for minute in &mut weekdays[start..end] {
+                    *minute |= days;
+                }
+            } else {
+                for minute in &mut weekdays[start..] {
+                    *minute |= days;
+                }
+                let next_days = ((days << 1) & 127) | (days >> 6);
+                for minute in &mut weekdays[..end] {
+                    *minute |= next_days;
+                }
+            }
+        }
+        let temporary_override = schedule
+            .temporary_override
+            .as_ref()
+            .map(|o| -> anyhow::Result<_> {
+                Ok((
+                    parse_override_time(&o.accepted_at)?,
+                    parse_override_time(&o.expires_at)?,
+                ))
+            })
+            .transpose()?;
+        Ok(Self {
+            enabled: schedule.enabled,
+            zone: schedule.timezone.parse()?,
+            weekdays,
+            temporary_override,
+        })
+    }
+
+    fn active(&self, instant: DateTime<Utc>) -> bool {
+        if !self.enabled
+            || self
+                .temporary_override
+                .is_some_and(|(start, end)| instant >= start && instant < end)
+        {
+            return false;
+        }
+        let local = instant.with_timezone(&self.zone);
+        let minute = local.time().num_seconds_from_midnight() as usize / 60;
+        self.weekdays[minute] & (1 << local.weekday().num_days_from_monday()) != 0
+    }
+}
+
 #[derive(Debug, Default)]
 struct PrivacyState {
+    compiled: BTreeMap<String, CompiledSchedule>,
     schedules: BTreeMap<String, PrivacySchedule>,
     profile_overrides: BTreeMap<String, bool>,
     gates: BTreeMap<String, std::sync::Arc<PrivacyGate>>,
 }
 
 impl PrivacyState {
-    fn active(&self, id: &str, instant: DateTime<Utc>) -> anyhow::Result<bool> {
-        Ok(self.profile_overrides.get(id).copied().unwrap_or(false)
+    fn active(&self, id: &str, instant: DateTime<Utc>) -> bool {
+        self.profile_overrides.get(id).copied().unwrap_or(false)
             || self
-                .schedules
+                .compiled
                 .get(id)
-                .map(|schedule| schedule.is_active_unchecked(instant))
-                .transpose()?
-                .unwrap_or(false))
+                .is_some_and(|schedule| schedule.active(instant))
     }
 }
 
@@ -64,7 +131,7 @@ impl MediaPermit {
         alias_generation: u64,
     ) -> Option<Self> {
         let gate = state.gates.get(id)?;
-        let active = state.active(id, Utc::now()).unwrap_or(true);
+        let active = state.active(id, Utc::now());
         let epoch = gate.set_active(active);
         (!active).then(|| Self {
             registry: registry.clone(),
@@ -126,7 +193,7 @@ impl MediaPermit {
             .transition
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let active = state.active(id, Utc::now()).unwrap_or(true);
+        let active = state.active(id, Utc::now());
         let epoch = gate.set_active_locked(active);
         (!active && epoch == self.epoch).then(write)
     }
@@ -204,7 +271,7 @@ impl TransportPermits {
                         .is_some_and(|gate| Arc::ptr_eq(gate, &permit.gate)),
                     "RTC media privacy identity changed"
                 );
-                let active = state.active(id, now).unwrap_or(true);
+                let active = state.active(id, now);
                 let epoch = permit.gate.set_active_locked(active);
                 anyhow::ensure!(
                     !active && epoch == permit.epoch,
@@ -258,11 +325,12 @@ impl PrivacyRegistry {
         if schedules.len() > 127 {
             anyhow::bail!("privacy registry cannot contain more than 127 cameras");
         }
+        let mut compiled = BTreeMap::new();
         for (camera_id, schedule) in &schedules {
             if camera_id.trim().is_empty() || camera_id.len() > 256 {
                 anyhow::bail!("privacy camera keys must contain 1 to 256 bytes");
             }
-            schedule.validate()?;
+            compiled.insert(camera_id.clone(), CompiledSchedule::new(schedule)?);
         }
         let gates = schedules
             .keys()
@@ -271,6 +339,7 @@ impl PrivacyRegistry {
         Ok(Self {
             state: Arc::new(RwLock::new(PrivacyState {
                 schedules,
+                compiled,
                 profile_overrides: BTreeMap::new(),
                 gates,
             })),
@@ -293,10 +362,12 @@ impl PrivacyRegistry {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.schedules = replacement_state.schedules.clone();
+        state.compiled = replacement_state.compiled.clone();
         let PrivacyState {
             schedules,
             profile_overrides,
             gates,
+            ..
         } = &mut *state;
         gates.retain(|id, gate| {
             schedules.contains_key(id)
@@ -311,7 +382,7 @@ impl PrivacyRegistry {
         }
         let now = Utc::now();
         for (id, gate) in &state.gates {
-            gate.set_active(state.active(id, now).unwrap_or(true));
+            gate.set_active(state.active(id, now));
         }
         Ok(())
     }
@@ -352,12 +423,9 @@ impl PrivacyRegistry {
         for camera_id in affected {
             let profile_active = overrides.get(&camera_id).copied().unwrap_or(false);
             let scheduled_active = state
-                .schedules
+                .compiled
                 .get(&camera_id)
-                .map(|schedule| schedule.is_active_unchecked(now))
-                .transpose()
-                .map(|scheduled| scheduled.unwrap_or(false))
-                .unwrap_or(true);
+                .is_some_and(|schedule| schedule.active(now));
             if let Some(gate) = state.gates.get(&camera_id) {
                 gate.set_active(profile_active || scheduled_active);
             }
@@ -414,7 +482,7 @@ impl PrivacyRegistry {
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let active = state.active(&configured_id, instant)?;
+        let active = state.active(&configured_id, instant);
         if !active && !state.gates.contains_key(&configured_id) {
             return Ok((false, 0));
         }
@@ -447,6 +515,7 @@ impl PrivacyRegistry {
                     gates,
                     schedules,
                     profile_overrides,
+                    ..
                 } = &mut *state;
                 gates.retain(|key, gate| {
                     schedules.contains_key(key)
@@ -842,6 +911,117 @@ const fn weekday_number(day: Weekday) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiled_weekly_decisions_match_the_schedule_at_dst_and_override_boundaries() {
+        let mut policy = schedule(PrivacyWindow {
+            weekdays: vec![6, 7],
+            start: "22:30".into(),
+            end: "03:30".into(),
+        });
+        policy.windows.push(PrivacyWindow {
+            weekdays: vec![1, 3],
+            start: "10:15".into(),
+            end: "12:45".into(),
+        });
+        policy.temporary_override = Some(PrivacyOverride {
+            actor: "operator".into(),
+            reason: "service".into(),
+            accepted_at: "2026-11-01T08:59:59.500Z".into(),
+            expires_at: "2026-11-01T09:02:03.500Z".into(),
+        });
+        let compiled = CompiledSchedule::new(&policy).unwrap();
+        for start in ["2026-03-06T00:00:00Z", "2026-10-30T00:00:00Z"] {
+            let start = parse_override_time(start).unwrap();
+            for minute in 0..(8 * 24 * 60) {
+                let instant = start + Duration::minutes(minute);
+                assert_eq!(
+                    compiled.active(instant),
+                    policy.is_active_unchecked(instant).unwrap(),
+                    "{instant}"
+                );
+            }
+        }
+        for instant in [
+            "2026-11-01T08:59:59.499Z",
+            "2026-11-01T08:59:59.500Z",
+            "2026-11-01T09:02:03.499Z",
+            "2026-11-01T09:02:03.500Z",
+        ] {
+            let instant = parse_override_time(instant).unwrap();
+            assert_eq!(
+                compiled.active(instant),
+                policy.is_active_unchecked(instant).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "fleet privacy transport throughput measurement"]
+    fn measure_compiled_privacy_schedules_at_the_loopback_udp_handoff() {
+        use std::net::UdpSocket;
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let destination = socket.local_addr().unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut packet = [0_u8; 1200];
+        let day = weekday_number(Utc::now().weekday());
+        let mut policy = schedule(PrivacyWindow {
+            weekdays: vec![day % 7 + 1],
+            start: "10:00".into(),
+            end: "10:01".into(),
+        });
+        policy.timezone = "UTC".into();
+        policy.windows = vec![policy.windows[0].clone(); 64];
+        for cameras in [1, 32, 127] {
+            let schedules: BTreeMap<_, _> = (0..cameras)
+                .map(|i| (format!("camera-{i}"), policy.clone()))
+                .collect();
+            let registry = Arc::new(PrivacyRegistry::new(schedules).unwrap());
+            let mut permits = TransportPermits::default();
+            for i in 0..cameras {
+                let permit = registry
+                    .media_permit(Arc::from(format!("camera-{i}")))
+                    .unwrap();
+                permits.remember(Some(&permit)).unwrap();
+            }
+            for compiled in [false, true] {
+                let started = std::time::Instant::now();
+                let mut latencies = Vec::with_capacity(512);
+                for _ in 0..512 {
+                    let begin = std::time::Instant::now();
+                    let send = || socket.send_to(&packet, destination);
+                    if compiled {
+                        assert_eq!(permits.send(send).unwrap(), packet.len());
+                    } else {
+                        let aliases = registry.aliases.read().unwrap();
+                        let state = registry.state.read().unwrap();
+                        lock_transport_gates(&permits.permits, || {
+                            let now = Utc::now();
+                            for p in &permits.permits {
+                                let (id, generation) = resolve_alias(&aliases, &p.camera_id);
+                                assert_eq!(generation, p.alias_generation);
+                                assert!(Arc::ptr_eq(&state.gates[id], &p.gate));
+                                let active = state.schedules[id].is_active_unchecked(now).unwrap();
+                                assert_eq!(p.gate.set_active_locked(active), p.epoch);
+                                assert!(!active);
+                            }
+                            assert_eq!(send().unwrap(), packet.len());
+                        });
+                    }
+                    latencies.push(begin.elapsed().as_nanos());
+                    assert_eq!(socket.recv_from(&mut packet).unwrap().0, 1200);
+                }
+                latencies.sort_unstable();
+                println!(
+                    "privacy_udp cameras={cameras} compiled={compiled} packets=512 p95_ns={} packets_per_second={:.0}",
+                    latencies[486],
+                    512.0 / started.elapsed().as_secs_f64()
+                );
+            }
+        }
+    }
 
     #[test]
     fn gate_rejects_stale_and_private_media_epochs() {

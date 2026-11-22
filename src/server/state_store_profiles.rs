@@ -13,7 +13,9 @@ use std::{
 };
 #[path = "state_store_profiles_application.rs"]
 mod application;
-pub(in crate::server) use application::{ProfileApplicationQueue, apply_confirmed_privacy};
+pub(in crate::server) use application::{
+    ProfileApplicationQueue, apply_confirmed_privacy, camera_fingerprint,
+};
 #[path = "state_store_profiles_identity.rs"]
 mod identity;
 #[path = "state_store_profiles_observed.rs"]
