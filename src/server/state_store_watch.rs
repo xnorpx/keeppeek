@@ -7,7 +7,8 @@
 //! order even when mutations race.
 //!
 //! Lock order: the store registry lock always precedes the watch lock. The
-//! sweeper and ack/unwatch paths take only the watch lock. Transport enqueue
+//! profile status read guard precedes the inventory projection guard, which precedes
+//! the watch lock. The sweeper and ack/unwatch paths take only the watch lock. Transport enqueue
 //! never calls back into either lock.
 //!
 //! A watch ends with an explicit `StateStoreWatchClosed` signal carrying one
