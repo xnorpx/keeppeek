@@ -15,7 +15,9 @@ pub(super) fn camera_profile_configuration(
     (configuration, identities)
 }
 
-pub(super) fn camera_profile_ids(state: &ServerState) -> anyhow::Result<CameraProfileIds> {
+pub(in crate::server) fn camera_profile_ids(
+    state: &ServerState,
+) -> anyhow::Result<CameraProfileIds> {
     let identities = state
         .camera_config_path
         .as_deref()
