@@ -12,6 +12,7 @@ import {
 } from './fixtures/keep-modes';
 import { eventDate, mockEvents } from './fixtures/events';
 import { mockControlPeer } from './fixtures/control-peer';
+import { openSeekableRecording } from './fixtures/seeded-recording';
 
 test.describe.configure({ mode: 'default' });
 
@@ -467,7 +468,7 @@ test('real H.264 playback reopens the copied clock in a fresh session within one
 }, testInfo) => {
 	test.setTimeout(45_000);
 	await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
-	await page.goto('/keep?stream=main');
+	await openSeekableRecording(page);
 	await waitForRecordedFrame(page);
 	const video = page.locator('video');
 	await video.evaluate((element) => {
