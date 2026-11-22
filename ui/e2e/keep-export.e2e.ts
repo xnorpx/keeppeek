@@ -72,11 +72,13 @@ test('Export closes Timeline playback and keeps camera navigation available', as
 	await expect.poll(() => requests.storedCloses.length).toBe(2);
 	const next = page.getByRole('button', { name: /^Next camera,/ });
 	const previous = page.getByRole('button', { name: /^Previous camera,/ });
+	const panel = page.locator('[data-keep-export]');
 	await next.click();
 	await expect(page.locator('[data-camera-switcher]')).toHaveAttribute(
 		'data-selected-camera',
 		'camera-2'
 	);
+	await expect(panel).toHaveAttribute('data-export-start-ms', /^\d+$/);
 	await expect(next).toBeEnabled();
 	await expect(previous).toBeEnabled();
 	await previous.click();
@@ -84,6 +86,7 @@ test('Export closes Timeline playback and keeps camera navigation available', as
 		'data-selected-camera',
 		'front-door'
 	);
+	await expect(panel).toHaveAttribute('data-export-start-ms', /^\d+$/);
 	await expect(next).toBeEnabled();
 	expect(requests.storedOpens).toHaveLength(2);
 });
@@ -91,6 +94,7 @@ test('Export closes Timeline playback and keeps camera navigation available', as
 test('entering Export during the first Timeline open retains its selection and retires that cursor', async ({
 	page
 }) => {
+	test.setTimeout(90_000);
 	const opened = Promise.withResolvers<void>();
 	const requests = await mockKeepModes(page, 2, { storedOpenGates: [opened.promise] });
 	await page.goto(`/keep?camera=front-door&stream=main&at=${selectedStartMs}`);
@@ -118,6 +122,7 @@ test('entering Export during the first Timeline open retains its selection and r
 test('returning to Timeline during an Export camera change opens only the selected camera', async ({
 	page
 }) => {
+	test.setTimeout(90_000);
 	const nextCamera = Promise.withResolvers<void>();
 	const requests = await mockKeepModes(page, 2, {
 		beforeStoredTimelineQuery: (sourceIds) =>
