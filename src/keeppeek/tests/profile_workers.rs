@@ -228,7 +228,7 @@ fn privacy_suspension_keeps_the_saved_camera_until_base_starts_it_behind_the_gat
     })).unwrap();
     recorder.set_runtime_profiles(private.clone());
     let mut workers = CameraWorkers::new();
-    workers.configuration = Some(camera.config.clone());
+    workers.configuration = Some(camera.config);
     recorder.camera_workers.insert(ip, workers);
     let response = recorder.control().submit_privacy_stop(ip).unwrap();
     recorder.handle_commands();

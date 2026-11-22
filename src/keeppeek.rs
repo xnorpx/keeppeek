@@ -3216,7 +3216,7 @@ mod tests {
         let cancelled = stopping.wait_timeout(Duration::from_secs(5));
         let outcome = result.recv_timeout(CAMERA_STOP_BUDGET + Duration::from_secs(2));
         let replacement = if matches!(outcome, Ok(Err(_))) {
-            Some(control.start_camera(camera.clone()))
+            Some(control.start_camera(camera))
         } else {
             None
         };
