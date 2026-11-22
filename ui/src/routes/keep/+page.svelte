@@ -585,9 +585,16 @@
 	}
 
 	async function loadRouteEvent(route: KeepRoute, version: number): Promise<void> {
-		if (!route.eventId || route.timestampMs === null || !cameraId) return;
-		const event = await resolveExportSeedEvent(route.eventId, cameraId, route.timestampMs);
-		if (version !== routeVersion) return;
+		const sourceId = cameraId;
+		if (
+			!route.eventId ||
+			route.timestampMs === null ||
+			!sourceId ||
+			(route.cameraId && route.cameraId !== sourceId)
+		)
+			return;
+		const event = await resolveExportSeedEvent(route.eventId, sourceId, route.timestampMs);
+		if (version !== routeVersion || sourceId !== cameraId) return;
 		exportSeedEvent = event;
 		if (event && mode === 'export') {
 			const range = createEventExportRange(event, selectedBitrateKbps);
@@ -1533,8 +1540,12 @@
 		timestampMs = playheadMs ?? undefined
 	): void {
 		if (nextCameraId === cameraId) return;
-		const play = playbackIntent();
-		beginCameraSwitch(direction);
+		const play = mode === 'export' ? false : playbackIntent();
+		exportSeedEvent = null;
+		exportRangeStartMs = null;
+		exportRangeEndMs = null;
+		if (mode === 'export') void selectSegment(null);
+		else beginCameraSwitch(direction);
 		timelineRepository.deactivate();
 		cameraId = nextCameraId;
 		void loadRecordings(selectedDate || undefined, timestampMs, play, null, {
@@ -1562,9 +1573,15 @@
 	function switchMode(nextMode: KeepMode): void {
 		if (nextMode === mode) return;
 		mode = nextMode;
-		if (selected && (nextMode === 'export' || (nextMode === 'timeline' && !storedPlayback))) {
-			const offset = ((playheadMs ?? selected.start_time_ms) - selected.start_time_ms) / 1000;
-			void selectSegment(selected, offset);
+		if (nextMode === 'export' || (nextMode === 'timeline' && selected && !storedPlayback)) {
+			const target = retryPlaybackTarget;
+			if (target?.cameraId === cameraId && target.segment.date === selectedDate) {
+				const offset =
+					selected?.url === target.segment.url && playheadMs !== null
+						? (playheadMs - target.segment.start_time_ms) / 1000
+						: target.offsetSeconds;
+				void selectSegment(target.segment, offset);
+			} else void selectSegment(null);
 		}
 		updateUrl();
 	}
@@ -1682,11 +1699,12 @@
 			clearPlaybackStartupTimer();
 			detachPlaybackObservers();
 			playbackStartupPhase = 'idle';
-			await closeStoredPlayback();
 			selected = null;
 			playheadMs = null;
 			playing = false;
+			pendingPlay = false;
 			releaseSecondaryLoads();
+			await closeStoredPlayback();
 			return;
 		}
 		const requestedTimestampMs =
@@ -1713,6 +1731,7 @@
 			selected = segment;
 			playheadMs = requestedTimestampMs;
 			playing = false;
+			pendingPlay = false;
 			playerError = null;
 			playbackStartupPhase = 'idle';
 			releaseSecondaryLoads();
@@ -2718,7 +2737,7 @@
 							</span>
 						{:else if selected}
 							<div class="flex aspect-video items-center justify-center text-sm text-zinc-400">
-								Loading recording…
+								Loading recordingâ€¦
 							</div>
 						{:else if playbackExplicitlyClosed}
 							<div
@@ -2728,7 +2747,7 @@
 							</div>
 						{:else if playbackStartupPhase === 'opening'}
 							<div class="flex aspect-video items-center justify-center text-sm text-text-muted">
-								Loading recording…
+								Loading recordingâ€¦
 							</div>
 						{:else}
 							<div class="flex aspect-video items-center justify-center text-sm text-zinc-400">
@@ -2786,7 +2805,7 @@
 							class="min-h-11 justify-start text-xs"
 							disabled={scrubbing || audioPreviewBusy}
 							onclick={openRecordedAudioPreview}
-							>Recorded audio preview{recordedAudio.preview ? ' · Active' : ''}</Button
+							>Recorded audio preview{recordedAudio.preview ? ' Â· Active' : ''}</Button
 						>
 					{/if}
 				</section>

@@ -88,6 +88,62 @@ test('Export closes Timeline playback and keeps camera navigation available', as
 	expect(requests.storedOpens).toHaveLength(2);
 });
 
+test('entering Export during the first Timeline open retains its selection and retires that cursor', async ({
+	page
+}) => {
+	const opened = Promise.withResolvers<void>();
+	const requests = await mockKeepModes(page, 2, { storedOpenGates: [opened.promise] });
+	await page.goto(`/keep?camera=front-door&stream=main&at=${selectedStartMs}`);
+	await expect.poll(() => requests.storedOpens.length, { timeout: 45_000 }).toBe(1);
+	const initial = requests.storedOpens[0]!;
+	try {
+		await page.getByRole('button', { name: 'Export', exact: true }).click();
+		await expect(page.locator('[data-keep-export]')).toHaveAttribute(
+			'data-export-start-ms',
+			/[0-9]+/
+		);
+	} finally {
+		opened.resolve();
+	}
+	await expect.poll(() => requests.storedCloses).toContain(initial.storedMediaId);
+	await page.getByRole('button', { name: 'Timeline', exact: true }).click();
+	await expect.poll(() => requests.storedOpens.length).toBe(2);
+	expect(requests.storedOpens[1]).toMatchObject({
+		sourceId: 'front-door',
+		timestampMs: selectedStartMs
+	});
+	await expect(page.getByRole('button', { name: 'Play recording', exact: true })).toBeVisible();
+});
+
+test('returning to Timeline during an Export camera change opens only the selected camera', async ({
+	page
+}) => {
+	const nextCamera = Promise.withResolvers<void>();
+	const requests = await mockKeepModes(page, 2, {
+		beforeStoredTimelineQuery: (sourceIds) =>
+			sourceIds.includes('camera-2') ? nextCamera.promise : undefined
+	});
+	await page.goto(`/keep?camera=front-door&stream=main&at=${selectedStartMs}&mode=export`);
+	const panel = page.locator('[data-keep-export]');
+	await expect(panel).toHaveAttribute('data-export-start-ms', /[0-9]+/, { timeout: 45_000 });
+	try {
+		await page.getByRole('button', { name: /^Next camera,/ }).click();
+		await expect(page.locator('[data-camera-switcher]')).toHaveAttribute(
+			'data-selected-camera',
+			'camera-2'
+		);
+		await expect(panel).toHaveCount(0);
+		await page.getByRole('button', { name: 'Timeline', exact: true }).click();
+		expect(requests.storedOpens).toHaveLength(0);
+	} finally {
+		nextCamera.resolve();
+	}
+	await expect
+		.poll(() => requests.storedOpens.map(({ sourceId }) => sourceId))
+		.toEqual(['camera-2']);
+	await expect(page.getByRole('button', { name: 'Play recording', exact: true })).toBeVisible();
+});
+
 test('preserves an export range while job creation fails closed', async ({ page }) => {
 	await mockKeepModes(page);
 	const noncanonicalRequests = observeNoncanonicalControlRequests(page);
