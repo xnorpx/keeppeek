@@ -647,6 +647,36 @@ impl KeepPeekLoop {
     }
 
     /// Profile 0 is treated as Main, all others as Sub.
+    /// Seed the inventory before the HTTP listener can expose the first observation snapshot.
+    pub(crate) fn seed_profile_observations(&self, cameras: &HashMap<IpAddr, Camera>) {
+        let mut applications = BTreeMap::new();
+        for camera in cameras.values() {
+            let id = self.runtime_profile_camera_ids.camera_id(camera.config.ip);
+            applications.insert(
+                id.clone(),
+                crate::profiles::CameraRuntimeApplication {
+                    camera_id: id,
+                    policy: self.effective_camera_policy(&camera.config),
+                    state: crate::profiles::RuntimeApplicationState::Pending,
+                    reason: None,
+                },
+            );
+        }
+        let configured = applications.keys().cloned().collect();
+        for missing in self
+            .runtime_profiles
+            .missing_camera_applications(&configured)
+        {
+            applications.insert(missing.camera_id.clone(), missing);
+        }
+        let mut status = self
+            .runtime_profile_status
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        status.set_selection(&self.runtime_profiles);
+        status.cameras = applications;
+    }
+
     pub fn add_cameras(&mut self, cameras: &HashMap<IpAddr, Camera>) -> anyhow::Result<()> {
         let publisher = self.runtime_profile_status_publisher.take();
         let mut pending = Vec::with_capacity(cameras.len());
@@ -2467,6 +2497,28 @@ mod tests {
         assert!(!recorder.camera_workers.contains_key(&camera.config.ip));
         assert_eq!(*recorder.runtime_profile_status.read().unwrap(), status);
         assert_eq!(recorder.runtime_profiles.revision, 3);
+    }
+
+    #[test]
+    fn startup_observations_include_configured_and_missing_targets_before_any_worker_starts() {
+        let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+        let camera = runtime_rtsp_camera("127.0.0.1:8554".parse().unwrap());
+        recorder.set_runtime_profiles(missing_target_profiles());
+        recorder.seed_profile_observations(&HashMap::from([(camera.config.ip, camera)]));
+        let status = recorder.runtime_profile_status.read().unwrap();
+        assert_eq!(status.cameras.len(), 2);
+        assert_eq!(
+            status.cameras["127.0.0.1"].state,
+            crate::profiles::RuntimeApplicationState::Pending
+        );
+        assert_eq!(
+            status
+                .cameras
+                .values()
+                .filter(|app| app.state == crate::profiles::RuntimeApplicationState::Degraded)
+                .count(),
+            1
+        );
     }
 
     #[test]

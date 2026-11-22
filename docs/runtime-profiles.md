@@ -196,7 +196,7 @@ routing event modes through the legacy admission map would misrepresent current 
 | Definition part      | Generation, part index, and at most 16 camera overrides. Each override contains camera ID and optional availability, recording mode, privacy, and notification suppression fields.                                         |
 | Draft parts          | At most four Administrator-owned drafts and 8 MiB total staged data. Each draft holds at most 256 parts of at most 16 camera overrides each. Drafts expire after two minutes and are never persisted as accepted profiles. |
 | `active`             | Base or profile ID, definition generation, desired generation, and expected observed-part count.                                                                                                                           |
-| Eight observed parts | Up to 32 visible cameras per part, desired revision, application state, effective policy, field provenance, and a reason of at most 96 bytes.                                                                              |
+| Eight observed parts | Up to 48 visible cameras per part (383 total), desired revision, application state, effective policy, field provenance, and a reason of at most 96 bytes. Compact parts with 33–40 rows allow 64 reason bytes, and parts with 41–48 rows allow 24.                                                                              |
 
 Retain current and previous definition parts, one current manifest per profile, and the
 bounded draft area. The upper bound is 544 definition entries + 72 draft entries + 10
@@ -211,9 +211,9 @@ change as workers converge at the same desired revision. An empty watch prefix r
 `KEY_INVALID`. Existing clients can read or watch the legacy `status` projection while
 it fits 16 KiB. A larger legacy projection returns `VALUE_TOO_LARGE` on Get or initial Watch.
 
-A 127-camera fleet and up to 127 retained missing targets use the same eight observed keys.
+Up to 256 configured cameras and 127 retained missing targets use the same eight observed keys.
 The recorder filters to the viewer's permitted cameras before hashing or assigning rows to a
-part. The ordinary fleet uses 16 rows per part. A larger union uses up to 32. When a part's
+part. The ordinary fleet uses 16 rows per part. A larger union uses up to 48. When a part's
 full form exceeds 16 KiB, `keeppeek.runtime-profiles.observed.v2` encodes each camera as
 `[state, recording_mode, flags, reason]` under its camera ID. In ascending bit order, flags
 carry availability, privacy, notifications and the four profile-provenance flags for

@@ -495,7 +495,7 @@ describe('runtime profile observations', () => {
 			);
 		}
 	});
-	it('assembles compact and expanded observations across the full 254-camera union', () => {
+	it('assembles compact and expanded observations across the full 383-camera union', () => {
 		const compact = (index: number, count: number, flags = 85) => {
 			const part = observedPart(index);
 			return {
@@ -505,7 +505,7 @@ describe('runtime profile observations', () => {
 					...part.value,
 					cameras: Object.fromEntries(
 						Array.from({ length: count }, (_, i) => [
-							String(index * 32 + i),
+							String(index * 48 + i),
 							['degraded', 'both', flags, 'unavailable']
 						])
 					)
@@ -515,11 +515,11 @@ describe('runtime profile observations', () => {
 		const parts = new Map(
 			Array.from({ length: 8 }, (_, i) => [
 				i,
-				observedPartFromEntry(compact(i, i === 7 ? 30 : 32), i)
+				observedPartFromEntry(compact(i, i === 7 ? 47 : 48), i)
 			])
 		);
 		const result = assembleObservedParts(parts)!;
-		expect(Object.keys(result.cameras)).toHaveLength(254);
+		expect(Object.keys(result.cameras)).toHaveLength(383);
 		expect(result.cameras['253']).toEqual({
 			camera_id: '253',
 			state: 'degraded',
@@ -542,16 +542,16 @@ describe('runtime profile observations', () => {
 					...observedPart(0),
 					value: {
 						...observedPart(0).value,
-						cameras: Object.fromEntries(Object.entries(result.cameras).slice(0, 32))
+						cameras: Object.fromEntries(Object.entries(result.cameras).slice(0, 48))
 					}
 				},
 				0
 			)
 		);
 		expect(assembleObservedParts(parts)).toEqual(result);
-		parts.set(7, observedPartFromEntry(compact(7, 31), 7));
+		parts.set(7, observedPartFromEntry(compact(7, 48), 7));
 		expect(() => assembleObservedParts(parts)).toThrow('too many');
-		expect(() => observedPartFromEntry(compact(0, 33), 0)).toThrow('too many');
+		expect(() => observedPartFromEntry(compact(0, 49), 0)).toThrow('too many');
 		expect(() => observedPartFromEntry(compact(0, 1, 128), 0)).toThrow('flags');
 	});
 	it('retries a mixed generation and bounds parallel reads', async () => {
@@ -838,6 +838,40 @@ describe('runtime profile observations', () => {
 		snapshots.get(parts[7])!();
 		expect(render.mock.lastCall?.[0]?.definitionRevision).toBe('2');
 		await full.close();
+	});
+
+	it('withdraws an interrupted shell header and retries a failed opening for a new subscriber', async () => {
+		let interrupt: (() => void) | undefined;
+		let refuse = false;
+		const header = activeHeader();
+		const watch = vi.fn(
+			async (
+				_ns: string,
+				options: { listener: (entries: StateEntry[]) => void; onInterrupted: () => void }
+			) => {
+				if (refuse) throw new Error('unavailable');
+				interrupt = options.onInterrupted;
+				options.listener([header]);
+				return { close: async () => {} };
+			}
+		);
+		const client = new RuntimeProfilesControlClient({
+			watch,
+			get: async () => header
+		} as unknown as ControlClientStateStore);
+		const first = vi.fn();
+		const existing = await client.watchShellProfile(first);
+		refuse = true;
+		interrupt!();
+		expect(first).toHaveBeenLastCalledWith(null, null);
+		await vi.waitFor(() => expect(watch).toHaveBeenCalledTimes(2));
+		refuse = false;
+		header.value = { ...header.value, profile_id: 'replacement', degraded_cameras: 2 };
+		const next = vi.fn();
+		const replacement = await client.watchShellProfile(next);
+		expect(next.mock.calls).toEqual([['replacement', 2]]);
+		expect(first).toHaveBeenLastCalledWith('replacement', 2);
+		await Promise.all([existing.close(), replacement.close()]);
 	});
 
 	it('withdraws a complete snapshot immediately when one watch fails before another event', async () => {

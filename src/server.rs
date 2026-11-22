@@ -9122,6 +9122,7 @@ impl ServerState {
     fn activate_camera_entry(&self, entry: CameraEntry) {
         let config = entry.configuration.clone();
         self.upsert_camera(entry);
+        self.publish_runtime_profile_status();
         self.enrich_camera_metadata_in_background(vec![config]);
     }
 

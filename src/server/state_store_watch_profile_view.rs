@@ -89,13 +89,18 @@ impl SessionView {
             } => self
                 .observed_entry(status, administrator.as_ref(), &event.key)
                 .map_or(WatchEventKind::ResnapshotRequired, WatchEventKind::Put),
-            WatchEventKind::ProfileHeader { entry, degraded } => {
-                let count = degraded.as_ref().and_then(|ids| match &self.visibility {
-                    Visibility::Administrator => Some(ids.len()),
-                    Visibility::Restricted(visible) => visible
-                        .as_ref()
-                        .map(|visible| ids.intersection(visible).count()),
-                });
+            WatchEventKind::ProfileHeader {
+                entry,
+                observations,
+            } => {
+                let count = observations
+                    .as_ref()
+                    .and_then(|states| match &self.visibility {
+                        Visibility::Administrator => states.count(None),
+                        Visibility::Restricted(visible) => visible
+                            .as_ref()
+                            .and_then(|visible| states.count(Some(visible))),
+                    });
                 let mut entry = entry.clone();
                 profiles::observed::write_header_count(count, &mut entry);
                 WatchEventKind::Put(entry)

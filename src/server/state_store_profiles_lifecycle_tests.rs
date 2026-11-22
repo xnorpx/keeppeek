@@ -847,9 +847,9 @@ fn observed_parts_cover_all_degraded_cameras_and_fit_document_and_snapshot_budge
 
 #[test]
 fn observed_parts_cover_configured_and_retained_missing_targets_at_the_union_limit() {
-    for missing in [1, 127] {
+    for extra in [1, 127, 200, 256] {
         let mut status = maximum_degraded_status();
-        for index in 0..missing {
+        for index in 0..extra {
             let mut camera = status.cameras.values().next().unwrap().clone();
             camera.camera_id = format!("{}-{index:03}", "m".repeat(252));
             status.cameras.insert(camera.camera_id.clone(), camera);
@@ -862,7 +862,7 @@ fn observed_parts_cover_configured_and_retained_missing_targets_at_the_union_lim
             assert!(part.value.encoded_len() <= PROFILE_DOCUMENT_BYTES_MAX);
             let value = super::super::super::peek_layouts::struct_to_json(part.value);
             let cameras = value["cameras"].as_object().unwrap();
-            assert!(cameras.len() <= 32);
+            assert!(cameras.len() <= 48);
             for (id, payload) in cameras {
                 assert!(seen.insert(id.clone()));
                 if part.schema.ends_with(".v2") {
@@ -871,12 +871,21 @@ fn observed_parts_cover_configured_and_retained_missing_targets_at_the_union_lim
                     assert_eq!(payload[0], "degraded");
                     assert_eq!(payload[1], "off");
                     assert_eq!(payload[2].as_f64(), Some(123.0));
-                    assert_eq!(payload[3].as_str().unwrap().len(), 96);
+                    assert_eq!(
+                        payload[3].as_str().unwrap().len(),
+                        if cameras.len() > 40 {
+                            24
+                        } else if cameras.len() > 32 {
+                            64
+                        } else {
+                            96
+                        }
+                    );
                 }
             }
         }
         assert_eq!(seen, status.cameras.keys().cloned().collect());
-        if missing == 127 {
+        if extra >= 127 {
             assert!(compact_count > 0);
         }
     }

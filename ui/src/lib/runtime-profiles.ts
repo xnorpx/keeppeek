@@ -17,7 +17,7 @@ export const maxRuntimeProfiles = 32;
 export const maxProfileCameras = 127;
 export const maxRuntimeProfilePartCameras = 16;
 export const observedPartCount = Math.ceil(maxProfileCameras / maxRuntimeProfilePartCameras);
-const maxObservedCameras = 2 * maxProfileCameras;
+const maxObservedCameras = 256 + maxProfileCameras;
 const maxObservedPartCameras = Math.ceil(maxObservedCameras / observedPartCount);
 
 export const profileRecordingModes = [

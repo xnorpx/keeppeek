@@ -1574,7 +1574,7 @@ pub(in crate::server) fn publish_status_event(state: &ServerState, updated_ms: u
                     revision: registry.revision,
                     kind: WatchEventKind::ProfileHeader {
                         entry: active_entry(&registry),
-                        degraded: observed::degraded_camera_ids(&registry, &shared_status),
+                        observations: observed::observed_camera_states(&registry, &shared_status),
                     },
                 };
             }
@@ -3556,6 +3556,50 @@ mod tests {
     }
 
     #[test]
+    fn adding_a_live_inventory_entry_refreshes_an_existing_camera_scoped_watch() {
+        let fixture = Fixture::new();
+        let state = &fixture.state;
+        let ip = "127.0.0.31";
+        let definition = camera_config(ip.parse().unwrap());
+        let id = fixture.add_camera(&definition);
+        state
+            .cameras
+            .write()
+            .unwrap()
+            .retain(|camera| camera.configuration.ip != definition.ip);
+        let registry = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        update_runtime_status(state, &registry, None, None, true);
+        let session = SessionId::from_u64(20_279);
+        let principal = bind_scoped_viewer(state, session, ip);
+        let mut pump = state.webrtc.stage_api_session_pump(session);
+        let result = super::super::dispatch(
+            state,
+            session,
+            &principal,
+            watch_profile_key("inventory", "observed/0"),
+        )
+        .unwrap();
+        let control_ok::Result::StateStoreResult(proto::StateStoreResult {
+            result: Some(state_store_result::Result::Watch(snapshot)),
+            ..
+        }) = result
+        else {
+            panic!("watch snapshot");
+        };
+        assert!(status_camera_ids(&snapshot.entries[0]).is_empty());
+        state.activate_camera_entry(crate::server::camera_entry(&definition, None));
+        let Some(proto::notification::Event::StateStoreWatchUpdate(update)) =
+            single_watch_notification(pump())
+        else {
+            panic!("inventory change must update the open watch");
+        };
+        let entry = update.entry.expect("one projected observation");
+        assert_eq!(status_camera_ids(&entry), vec![id]);
+    }
+
+    #[test]
     fn scoped_viewer_receives_the_same_profile_camera_ids_in_snapshots_and_updates() {
         assert_scoped_status_projection(STATUS_KEY);
         assert_scoped_status_projection("observed/0");
@@ -3718,7 +3762,7 @@ mod tests {
             state,
             Some(&principal),
             None,
-            Some(&BTreeSet::new()),
+            Some(&observed::ObservedCameraStates::default()),
             &mut unknown,
         );
         assert!(header(&proto_entry(&unknown))["degraded_cameras"].is_null());
