@@ -1706,7 +1706,7 @@ Each batch requires an explicit Administrator confirmation. A recording with
 an evicted primary requires successful restore first. A completed export with
 an expired or unavailable primary retains its archive copy.
 Windows holds a read handle that excludes writers through archive removal. On Linux,
-the surviving primary must already have fs-verity enabled. On a filesystem without
+the surviving primary must already have fs-verity enabled and the immutable inode flag set. On a filesystem without
 enforced write protection, KeepPeek keeps both copies and reports the blocked deletion. The job reports
 `archive_primary_write_protection_required` when this prevents removal.
 The catalog retains an acknowledged deletion tombstone for that recording or export.

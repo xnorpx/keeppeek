@@ -229,7 +229,7 @@
 				</p>
 				{#if job.errorCode}<p role="alert" class="text-sm text-destructive">
 						{job.errorCode === 'archive_primary_write_protection_required'
-							? 'Archive retained. The primary needs filesystem-enforced write protection before this archive copy can be removed.'
+							? 'Archive retained. The primary needs filesystem-enforced write protection before this archive copy can be removed. On Linux, the primary must have fs-verity and the immutable flag.'
 							: job.action === 'restore'
 								? 'Restore failed. Check the primary disk and retry. The archive copy is retained.'
 								: 'Archive operation failed. Refresh the job and destination status before retrying.'}

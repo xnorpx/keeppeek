@@ -356,10 +356,12 @@ impl OwnedFile {
         #[cfg(target_os = "linux")]
         {
             use rustix::fs::{AtFlags, StatxAttributes, StatxFlags, statx};
+            // Verity rejects writable descriptors. Immutable additionally protects the
+            // verified name against rename and unlink while the archive is retired.
             let sealed = statx(&self.file, "", AtFlags::EMPTY_PATH, StatxFlags::empty()).is_ok_and(
                 |status| {
                     (status.stx_attributes & status.stx_attributes_mask)
-                        .contains(StatxAttributes::VERITY)
+                        .contains(StatxAttributes::VERITY | StatxAttributes::IMMUTABLE)
                 },
             );
             anyhow::ensure!(sealed, super::ArchiveSurvivorUnprotected);
