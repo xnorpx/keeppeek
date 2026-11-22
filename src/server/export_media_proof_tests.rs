@@ -133,6 +133,27 @@ fn previous_history_rewrite_preserves_completed_proof_and_requires_new_source_ev
         restore(&history).media_proof.unwrap().version,
         SOURCE_BOUNDS_PROOF_VERSION
     );
+    // A previous recorder can deserialize the output-only proof even when a
+    // fractional source timestamp extends beyond the presentation boundary.
+    assert!(
+        history["jobs"][0]["media_proof"]
+            .get("source_bounds")
+            .is_none()
+    );
+    let mut different = history.clone();
+    let earlier = original_bounds.start_ms - 1;
+    different["jobs"][0]["source_bounds_proof"]["source_bounds"]["start_ms"] = earlier.into();
+    let restored = restore(&different);
+    assert_eq!(restored.verified_media_bounds(), Some(original_bounds));
+    assert_eq!(
+        restored
+            .media_proof
+            .unwrap()
+            .source_bounds
+            .unwrap()
+            .start_ms,
+        earlier
+    );
     let mut changed = history.clone();
     changed["jobs"][0]["source_bounds_proof"]["sha256"] = serde_json::json!("0".repeat(64));
     assert_eq!(restore(&changed).media_proof.unwrap().version, 1);

@@ -370,13 +370,17 @@ fn closing_the_initiating_session_cancels_pending_grant_creation() {
 }
 
 #[test]
-fn a_maximum_interval_reports_a_crossed_source_edge_before_the_general_duration_limit() {
+fn maximum_completed_export_remains_shareable_when_source_audio_crosses_a_guarded_edge() {
     let (fixture, mut record, mut range) = selected_export(VideoCodec::H264);
     range.end_ms = range.start_ms + crate::shares::MAX_MEDIA_DURATION_MS;
     record.request.end_time = Some(millis_timestamp(range.end_ms));
     let proof = record.media_proof.as_mut().unwrap();
-    proof.bounds.start_ms = range.start_ms - 1;
+    proof.bounds.start_ms = range.start_ms;
     proof.bounds.end_ms = range.end_ms;
+    proof.source_bounds = Some(crate::storage::playback::ExportMediaBounds {
+        start_ms: range.start_ms - 1,
+        end_ms: range.end_ms,
+    });
     fixture
         .state
         .export_jobs
@@ -395,7 +399,9 @@ fn a_maximum_interval_reports_a_crossed_source_edge_before_the_general_duration_
         preview(Some(&range)).err().unwrap().message,
         guest_range_recovery_messages()["crossedRange"]
     );
-    assert!(preview(None).is_err());
+    let completed = preview(None).unwrap();
+    assert_eq!(completed.binding.start_ms, range.start_ms);
+    assert_eq!(completed.binding.end_ms, range.end_ms);
 }
 
 #[test]

@@ -19,8 +19,8 @@ mod audio_timing;
 mod envelope;
 pub(crate) mod limited_export;
 pub(crate) mod recorded;
-use envelope::ExportEnvelope;
 pub use envelope::ExportMediaBounds;
+use envelope::{ExportEnvelope, ObservedBounds};
 
 #[derive(Clone)]
 struct PlaybackTrack {
@@ -35,6 +35,7 @@ pub struct ExportArtifact {
     pub delivered_end_ms: i64,
     pub bytes: u64,
     pub media_bounds: Option<ExportMediaBounds>,
+    pub source_bounds: Option<ExportMediaBounds>,
     pub audio_timing: AudioTimingEvidence,
 }
 
@@ -141,6 +142,7 @@ struct ExportProgress {
     audio_timing: AudioTimingEvidence,
     pending_audio_end: HashMap<u32, u64>,
     envelope: ExportEnvelope,
+    source_bounds: ObservedBounds,
 }
 
 #[derive(Clone, Copy)]
@@ -296,18 +298,11 @@ pub(crate) fn export_sources_to_writer<W: Write + Seek>(
         audio_offset_ms,
         windows: &plan.windows,
     };
-    let (bytes, audio_timing, media_bounds) =
-        write_export_recordings(&plan.recordings, selection, output, &cancelled, &progress)?;
+    let artifact = write_export_recordings(&plan, selection, output, &cancelled, &progress)?;
     if cancelled() {
         bail!("export was cancelled");
     }
-    Ok(ExportArtifact {
-        aligned_start_ms: plan.aligned_start_ms,
-        delivered_end_ms: plan.delivered_end_ms,
-        bytes,
-        audio_timing,
-        media_bounds,
-    })
+    Ok(artifact)
 }
 
 /// Writes to a new empty sink; its owner handles durability, publication, and failed-file cleanup.
@@ -490,12 +485,13 @@ fn sort_export_recordings(recordings: &mut [ExportRecording], contextual: bool) 
 }
 
 fn write_export_recordings<W: Write + Seek>(
-    recordings: &[ExportRecording],
+    plan: &ExportPlan,
     selection: ExportSelection<'_>,
     output: &mut W,
     cancelled: &impl Fn() -> bool,
     report_progress: &impl Fn(u64),
-) -> anyhow::Result<(u64, AudioTimingEvidence, Option<ExportMediaBounds>)> {
+) -> anyhow::Result<ExportArtifact> {
+    let recordings = &plan.recordings;
     let first = recordings
         .iter()
         .find(|recording| !recording.intervals.is_empty())
@@ -518,6 +514,7 @@ fn write_export_recordings<W: Write + Seek>(
         audio_timing: AudioTimingEvidence::default(),
         pending_audio_end: HashMap::new(),
         envelope: ExportEnvelope::new(selection.aligned_start_ms),
+        source_bounds: ObservedBounds::default(),
     };
     let callbacks = ExportContext {
         cancelled,
@@ -553,11 +550,14 @@ fn write_export_recordings<W: Write + Seek>(
     progress.envelope.flush();
     let output = writer.into_writer();
     output.flush()?;
-    Ok((
-        output.seek(std::io::SeekFrom::End(0))?,
-        progress.audio_timing,
-        progress.envelope.bounds(),
-    ))
+    Ok(ExportArtifact {
+        aligned_start_ms: plan.aligned_start_ms,
+        delivered_end_ms: plan.delivered_end_ms,
+        bytes: output.seek(std::io::SeekFrom::End(0))?,
+        audio_timing: progress.audio_timing,
+        media_bounds: progress.envelope.bounds(),
+        source_bounds: progress.source_bounds.bounds(),
+    })
 }
 
 fn export_mp4_configuration(
@@ -993,7 +993,7 @@ fn append_export_sample<W: Write + Seek>(
     let audio_end =
         corrected_export_audio_end(&sample, progress, callbacks.selection.audio_offset_ms)?;
     if callbacks.selection.audio_offset_ms == 0 {
-        progress.envelope.include_bounds(sample.source_bounds);
+        progress.source_bounds.include(sample.source_bounds);
     }
     let description_index =
         writer.add_sample_description(sample.track_id, sample.sample_description)?;

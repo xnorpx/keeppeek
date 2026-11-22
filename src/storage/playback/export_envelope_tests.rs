@@ -89,7 +89,7 @@ fn export(fragments: &[CatalogMediaFragment], end_ms: i64) -> (ExportArtifact, C
 }
 
 #[test]
-fn zero_offset_audio_preserves_the_original_fractional_source_bounds() {
+fn two_minute_output_preserves_separate_fractional_audio_source_bounds() {
     let mut aac = audio();
     aac.timescale = 44_100;
     let mp4::MediaConfig::AacConfig(config) = &mut aac.media_conf else {
@@ -98,16 +98,29 @@ fn zero_offset_audio_preserves_the_original_fractional_source_bounds() {
     config.freq_index = mp4::SampleFreqIndex::Freq44100;
     let input = source(
         &[video(), aac],
-        vec![(1, sample(18_810, 900, 0)), (2, sample(9_216, 1_024, 0))],
+        vec![
+            (1, sample(18_810, 10_800_000, 0)),
+            (2, sample(9_216, 1_024, 0)),
+        ],
     );
     let mut retained = fragment(&input, "source-clock", 1_000_000);
     retained.start_ms = 1_000_209;
-    let (artifact, _) = export(&[retained], 1_000_300);
+    retained.duration_ms = 120_000;
+    let (artifact, output) = export(&[retained], 1_120_209);
+    let mut reader = mp4::Mp4Reader::read_header(output, artifact.bytes).unwrap();
+    assert_eq!(reader.read_sample(2, 1).unwrap().unwrap().start_time, 0);
     assert_eq!(
         artifact.media_bounds,
         Some(ExportMediaBounds {
+            start_ms: 1_000_209,
+            end_ms: 1_120_209
+        })
+    );
+    assert_eq!(
+        artifact.source_bounds,
+        Some(ExportMediaBounds {
             start_ms: 1_000_208,
-            end_ms: 1_000_233
+            end_ms: 1_120_209
         })
     );
     std::fs::remove_file(input).unwrap();
@@ -124,7 +137,7 @@ fn audio_source_bounds_use_the_media_clock_independent_of_its_codec_frequency() 
     let retained = fragment(&input, "source-clock", 1_000_000);
     let (artifact, _) = export(&[retained], 1_001_000);
     assert_eq!(
-        artifact.media_bounds,
+        artifact.source_bounds,
         Some(ExportMediaBounds {
             start_ms: 1_000_000,
             end_ms: 1_000_600

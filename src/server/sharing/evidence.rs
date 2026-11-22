@@ -132,22 +132,25 @@ fn check_range(
     {
         return Err(invalid("select a recording interval of up to two minutes"));
     }
-    // Corrected audio may come from neighboring source times. This proof describes
-    // the output presentation timeline, so it cannot authorize those samples.
     recorded_audio::require_uncorrected_for_range(record.job.recorded_audio.as_ref())?;
-    let bounds = record
+    let proof = record
         .media_proof
         .as_ref()
         .filter(|proof| proof.matches(record))
-        .ok_or_else(denied)?
-        .bounds;
+        .ok_or_else(denied)?;
+    let source = proof
+        .source_bounds
+        .filter(|bounds| bounds.start_ms < bounds.end_ms)
+        .ok_or_else(missing_range_proof)?;
     if selected.source_id != current_source
         || selected.source_id != record.job.source_id
         || selected.start_ms
             != required_timestamp_ms(record.request.start_time.as_ref(), "export start")?
         || selected.end_ms != required_timestamp_ms(record.request.end_time.as_ref(), "export end")?
-        || bounds.start_ms < selected.start_ms
-        || bounds.end_ms > selected.end_ms
+        || source.start_ms < selected.start_ms
+        || source.end_ms > selected.end_ms
+        || proof.bounds.start_ms < selected.start_ms
+        || proof.bounds.end_ms > selected.end_ms
     {
         return Err(ControlCommandError::new(
             proto::ErrorCode::Rejected,

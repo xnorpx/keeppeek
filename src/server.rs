@@ -4008,6 +4008,7 @@ fn complete_export_record(
         sha256: record.job.sha256.clone()?,
         bytes: artifact.bytes,
         bounds: artifact.media_bounds?,
+        source_bounds: artifact.source_bounds,
     };
     proof.matches(record).then_some(proof)
 }
@@ -8191,8 +8192,8 @@ struct ExportJobRecord {
     downloaded_at_ms: Option<i64>,
 }
 
-// V1 records muxed output timing. V2 also includes the original source extent for unshifted samples.
-const SOURCE_BOUNDS_PROOF_VERSION: u32 = 2;
+// V1 carries output timing. V3 additionally binds a separate original source extent.
+const SOURCE_BOUNDS_PROOF_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -8202,6 +8203,8 @@ struct ExportMediaProof {
     sha256: String,
     bytes: u64,
     bounds: crate::storage::playback::ExportMediaBounds,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_bounds: Option<crate::storage::playback::ExportMediaBounds>,
 }
 
 impl ExportMediaProof {
@@ -8276,6 +8279,7 @@ impl PersistedExportJobRecord {
             media_proof: record.media_proof.clone().map(|mut proof| {
                 if proof.version == SOURCE_BOUNDS_PROOF_VERSION {
                     proof.version = 1;
+                    proof.source_bounds = None;
                 }
                 proof
             }),
@@ -8365,10 +8369,12 @@ impl PersistedExportJobRecord {
             && base.version == 1
             && source.version == SOURCE_BOUNDS_PROOF_VERSION
         {
+            let source_bounds = source.source_bounds.take();
             source.version = 1;
             // An orphaned or mismatched companion cannot promote a different generation.
             if &source == base {
                 source.version = SOURCE_BOUNDS_PROOF_VERSION;
+                source.source_bounds = source_bounds;
                 record.media_proof = Some(source);
             }
         }

@@ -1705,12 +1705,12 @@ Fresh range jobs set `CreateExportJob.guest_range_preparation` to true only afte
 this capability. The recorder checks encoded sample sizes before reading payloads and limits output writes to 512 MiB. It discards any incomplete file
 and excludes unrestricted running jobs from deduplication with bounded jobs. Omitting or
 clearing the field retains ordinary export behavior.
-Range proof retains the outward-rounded source extents of unshifted samples as well as the
-output presentation envelope. A completed export with an older output-only proof remains
+The completed-export duration uses the output presentation envelope. Range proof separately
+records the outward-rounded original source extents of the emitted, unshifted samples. A completed export with an older output-only proof remains
 available to completed-export clients and requires fresh preparation for an exact range.
 The guard names the selected source and exact half-open Unix millisecond interval, up to two minutes.
 The recorder verifies that the export request named this source and interval, that the current camera
-has the captured identity, and that the measured media envelope fits wholly inside the selection.
+has the captured identity, and that both the source and output extents fit wholly inside the selection.
 Range previews and grant creation also verify the retained MP4 uses the guest viewer's supported
 H.264 video and optional AAC audio. Codec preroll or a final sample extending past an edge makes
 the range unavailable. A nonzero applied recorded-audio offset also prevents guarded sharing:
