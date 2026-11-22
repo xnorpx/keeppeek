@@ -622,9 +622,18 @@ pub enum MediaConfig {
 pub struct Mp4Sample {
     pub start_time: u64,
     pub duration: u32,
-    pub rendering_offset: i32,
+    /// Composition offset in track ticks (unsigned in version 0, signed in version 1).
+    pub rendering_offset: i64,
     pub is_sync: bool,
     pub bytes: Bytes,
+}
+
+/// File-local media timestamps for one sample, in the track's timescale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mp4SampleTiming {
+    pub decode_time: u64,
+    pub presentation_time: i128,
+    pub duration: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
