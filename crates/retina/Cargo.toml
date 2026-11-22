@@ -44,7 +44,7 @@ mp4 = { path = "../mp4" }
 pretty-hex = "0.4.2"
 sdp-types = "0.3.2"
 smallvec = { version = "1.15.2", features = ["union"] }
-url = "2.5.8"
+url = "2.5.9"
 
 [dev-dependencies]
 mylog = { git = "https://github.com/scottlamb/mylog" }

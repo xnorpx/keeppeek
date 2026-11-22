@@ -51,7 +51,7 @@ serde_json = { version = "1.0.151", default-features = false, features = [
 ] }
 subtle = { version = "2.6.1", default-features = false }
 ureq = { version = "=3.5.2", default-features = false }
-url = { version = "2.5.8", default-features = false, features = ["std"] }
+url = { version = "2.5.9", default-features = false, features = ["std"] }
 xml = { version = "1.4.0", default-features = false }
 yaserde = "0.13.2"
 yaserde_derive = "0.13.2"
@@ -182,7 +182,7 @@ tracing = { version = "0.1.44" }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 turso = { version = "=0.8.3", default-features = false }
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
-url = { version = "2.5.8" }
+url = { version = "2.5.9" }
 sysinfo = "0.40.4"
 quick-xml = { version = "0.42.0", features = ["serialize"] }
 prost = "0.14"
