@@ -319,8 +319,22 @@ fn publish_owned(
         anyhow::ensure!(!cancelled(), "export cancelled");
         Ok(())
     })?;
-    anyhow::ensure!(!cancelled(), "export cancelled");
     let checksum = encode_lower_hex(evidence.digest);
-    file.publish(evidence)?;
+    confirm_publication(|| file.publish(evidence.clone()), cancelled)?;
     Ok((artifact, checksum))
+}
+
+pub(super) fn confirm_publication(
+    mut publish: impl FnMut() -> anyhow::Result<()>,
+    cancelled: impl Fn() -> bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(!cancelled(), "export cancelled");
+    match publish() {
+        Err(error) if error.is::<crate::storage::catalog::locations::UnconfirmedOutcome>() => {
+            // The first attempt may have committed. Replaying the identical evidence is idempotent.
+            anyhow::ensure!(!cancelled(), "export cancelled");
+            publish()
+        }
+        result => result,
+    }
 }

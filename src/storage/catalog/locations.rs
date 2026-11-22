@@ -81,6 +81,18 @@ impl fmt::Display for FatalTransaction {
 
 impl std::error::Error for FatalTransaction {}
 
+/// The caller did not receive a definitive acknowledgement of the volume operation.
+#[derive(Debug)]
+pub(crate) struct UnconfirmedOutcome;
+
+impl fmt::Display for UnconfirmedOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("volume catalog outcome unknown; retry operation")
+    }
+}
+
+impl std::error::Error for UnconfirmedOutcome {}
+
 /// A pinned root identity. Changing its spelling or identity requires a new volume ID.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Binding {
@@ -289,7 +301,7 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("volume catalog unavailable"))?;
         response
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| anyhow::anyhow!("volume catalog outcome unknown; retry operation"))?
+            .map_err(|_| UnconfirmedOutcome)?
     }
 
     /// Returns the revision to fence a subsequent filesystem capacity probe.

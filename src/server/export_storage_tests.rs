@@ -1127,3 +1127,77 @@ fn archived_export_preserves_sharing_metadata_and_fences_typed_create_and_retry(
     drop(manager);
     catalog.shutdown();
 }
+
+#[test]
+fn export_publication_replays_identical_evidence_after_an_unconfirmed_ack() -> anyhow::Result<()> {
+    use crate::storage::catalog::locations::UnconfirmedOutcome;
+    use std::io::Write as _;
+
+    let (_, catalog, manager) = fixture(128)?;
+    for committed in [false, true] {
+        let object = Object {
+            kind: Kind::Export,
+            id: Uuid::new_v4().simple().to_string(),
+        };
+        let mut file = manager
+            .reserve(VolumeRole::Export, "camera", &[], object.clone(), 8)?
+            .unwrap()
+            .open()?;
+        file.write_all(b"export")?;
+        let evidence = file.evidence()?;
+        let mut calls = 0;
+        super::export_storage::confirm_publication(
+            || {
+                calls += 1;
+                if calls == 1 {
+                    if committed {
+                        file.publish(evidence.clone())?;
+                    }
+                    return Err(UnconfirmedOutcome.into());
+                }
+                file.publish(evidence.clone())
+            },
+            || false,
+        )?;
+        assert_eq!(calls, 2);
+        let Reply::Location(Some(found)) =
+            catalog.handle().volume_location(Request::Lookup(object))?
+        else {
+            panic!("expected one published export");
+        };
+        assert_eq!(found.bytes, 6);
+        assert_eq!(found.digest, evidence.digest);
+    }
+    catalog.shutdown();
+    Ok(())
+}
+
+#[test]
+fn export_publication_stops_on_cancellation_hard_errors_or_a_second_lost_ack() {
+    use crate::storage::catalog::locations::UnconfirmedOutcome;
+    use std::cell::Cell;
+
+    for (cancel_after_first, unconfirmed, expected_calls) in
+        [(true, true, 1), (false, false, 1), (false, true, 2)]
+    {
+        let calls = Cell::new(0);
+        let error = super::export_storage::confirm_publication(
+            || {
+                calls.set(calls.get() + 1);
+                if unconfirmed {
+                    Err(UnconfirmedOutcome.into())
+                } else {
+                    anyhow::bail!("publication refused")
+                }
+            },
+            || cancel_after_first && calls.get() > 0,
+        )
+        .unwrap_err();
+        assert_eq!(calls.get(), expected_calls);
+        if cancel_after_first {
+            assert_eq!(error.to_string(), "export cancelled");
+        } else {
+            assert_eq!(error.is::<UnconfirmedOutcome>(), unconfirmed);
+        }
+    }
+}
