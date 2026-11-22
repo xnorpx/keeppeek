@@ -41,6 +41,9 @@ pub struct Settings {
     pub minimum_age_secs: u64,
     #[serde(default)]
     pub evict_after_archive: bool,
+    /// Number of days from durable replica verification before a retention preview may select it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_days: Option<u32>,
     #[serde(default = "default_maximum_object_bytes")]
     pub maximum_object_bytes: u64,
     #[serde(default = "default_maximum_pending_count")]
@@ -62,6 +65,10 @@ impl Settings {
         VolumeId::parse(&self.target_id)?;
         super::super::volumes::validation::comparison_root(&self.root)?;
         self.validate_sources()?;
+        ensure!(
+            self.retention_days != Some(0),
+            "archive retention days must be positive"
+        );
         ensure!(
             self.minimum_age_secs <= AGE_SECS_MAX,
             "archive minimum age exceeds ten years"
@@ -220,7 +227,27 @@ mod tests {
         assert!(!settings.enabled);
         assert!(!settings.automatic);
         assert!(!settings.evict_after_archive);
+        assert_eq!(settings.retention_days, None);
         assert!(settings.maximum_object_bytes <= settings.maximum_pending_bytes);
+    }
+
+    #[test]
+    fn archive_retention_requires_positive_days_and_preserves_indefinite_configuration() {
+        let mut settings = fixture();
+        assert!(
+            !toml::to_string(&settings)
+                .unwrap()
+                .contains("retention_days")
+        );
+        settings.retention_days = Some(0);
+        assert!(settings.validate().is_err());
+        settings.retention_days = Some(30);
+        settings.validate().unwrap();
+        let saved = toml::to_string(&settings).unwrap();
+        assert_eq!(
+            toml::from_str::<Settings>(&saved).unwrap().retention_days,
+            Some(30)
+        );
     }
 
     #[test]

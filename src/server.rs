@@ -598,6 +598,12 @@ fn sensitive_administrator_operation(
             Some(proto::archive_command::Action::Retry(_)) => Some("archive_retry"),
             Some(proto::archive_command::Action::Restore(_)) => Some("archive_restore"),
             Some(proto::archive_command::Action::Evict(_)) => Some("archive_primary_eviction"),
+            Some(proto::archive_command::Action::PreviewDeletion(_)) => {
+                Some("archive_deletion_preview")
+            }
+            Some(proto::archive_command::Action::ConfirmDeletion(_)) => {
+                Some("archive_deletion_confirm")
+            }
             _ => None,
         },
         Some(control_request::Command::StateStoreCommand(command)) => match &command.action {
@@ -1385,6 +1391,7 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
     if event_search_catalog(state).is_ok() {
         if state.camera_config_path.is_some() {
             capability_ids.push("keeppeek.local-archive.v1".to_owned());
+            capability_ids.push("keeppeek.local-archive-retention.v1".to_owned());
         }
         capability_ids.push("keeppeek.event-workflow.v1".to_owned());
         if cfg!(any(unix, windows)) {

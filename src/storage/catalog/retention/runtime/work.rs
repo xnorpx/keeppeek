@@ -108,7 +108,7 @@ async fn pending_file(connection: &turso::Connection, generation: i64) -> Result
             "SELECT id FROM recording_files INDEXED BY recording_retention_pending_generation
             WHERE retention_pending=1 AND retention_generation<=?1 AND cleanup_pending=0
                 AND NOT EXISTS(SELECT 1 FROM storage_recording_retirements WHERE recording_id=recording_files.id AND complete=0)
-                AND NOT EXISTS(SELECT 1 FROM archive_replicas WHERE kind='recording' AND recording_id=recording_files.id AND local_evicted=2)
+                AND NOT EXISTS(SELECT 1 FROM archive_replicas WHERE kind='recording' AND recording_id=recording_files.id AND (local_evicted=2 OR state='deleting'))
             ORDER BY retention_generation,id LIMIT 1",
             [generation],
         )
@@ -142,7 +142,8 @@ async fn claims_pending(connection: &turso::Connection) -> Result<bool> {
     let mut rows = connection
         .query(
             "SELECT 1 FROM archive_replicas INDEXED BY archive_replicas_pending_eviction
-         WHERE kind='recording' AND local_evicted=2 LIMIT 1",
+         WHERE kind='recording' AND local_evicted=2
+         UNION ALL SELECT 1 FROM archive_replicas INDEXED BY archive_deletion_claimed WHERE kind='recording' AND state='deleting' LIMIT 1",
             (),
         )
         .await?;

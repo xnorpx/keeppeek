@@ -58,7 +58,12 @@ async function presentedFrame(video: Locator, previousSource = '') {
 export async function measureArchivePlayback(
 	page: Page,
 	moment: number,
-	storage: 'local' | 'archive-initial' | 'archive-repeat' | 'local-restored'
+	storage:
+		| 'local'
+		| 'archive-initial'
+		| 'archive-repeat'
+		| 'local-restored'
+		| 'local-after-archive-deletion'
 ) {
 	await page.goto(
 		`/keep?camera=${encodeURIComponent(cardSourceIds[0])}&stream=sub&at=${moment}&date=${new Date(moment).toISOString().slice(0, 10)}`

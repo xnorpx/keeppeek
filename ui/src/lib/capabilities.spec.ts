@@ -12,6 +12,7 @@ describe('server capability contract', () => {
 		expect(serverCapabilityIds).toEqual([
 			'keeppeek.recorded-audio.v1',
 			'keeppeek.local-archive.v1',
+			'keeppeek.local-archive-retention.v1',
 			'keeppeek.recording.pre-roll.v1',
 			'keeppeek.recording-maintenance.v1',
 			'keeppeek.event-workflow.v1',

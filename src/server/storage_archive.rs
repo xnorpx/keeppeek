@@ -11,6 +11,7 @@ use std::path::Path;
 
 type Result<T> = std::result::Result<T, ControlCommandError>;
 
+mod deletion;
 #[cfg(test)]
 mod tests;
 
@@ -19,6 +20,18 @@ pub(super) fn from_wire(path: &Path, value: proto::ArchiveSettings) -> anyhow::R
         value.source_ids.len() <= 127,
         "archive source selector limit exceeded"
     );
+    anyhow::ensure!(
+        !(value.clear_retention_days && value.retention_days.is_some()),
+        "archive retention update is ambiguous"
+    );
+    let retention_days = if value.retention_days.is_none() && !value.clear_retention_days {
+        crate::config::load_config(path)?
+            .storage
+            .archive
+            .and_then(|settings| settings.retention_days)
+    } else {
+        value.retention_days
+    };
     let settings = Settings {
         target_id: value.target_id,
         root: value.root.into(),
@@ -27,6 +40,7 @@ pub(super) fn from_wire(path: &Path, value: proto::ArchiveSettings) -> anyhow::R
         source_ids: value.source_ids,
         minimum_age_secs: value.minimum_age_secs,
         evict_after_archive: value.evict_after_archive,
+        retention_days,
         maximum_object_bytes: value.maximum_object_bytes,
         maximum_pending_count: value.maximum_pending_count,
         maximum_pending_bytes: value.maximum_pending_bytes,
@@ -47,6 +61,8 @@ pub(super) fn to_wire(value: Settings) -> proto::ArchiveSettings {
         source_ids: value.source_ids,
         minimum_age_secs: value.minimum_age_secs,
         evict_after_archive: value.evict_after_archive,
+        retention_days: value.retention_days,
+        clear_retention_days: false,
         maximum_object_bytes: value.maximum_object_bytes,
         maximum_pending_count: value.maximum_pending_count,
         maximum_pending_bytes: value.maximum_pending_bytes,
@@ -110,6 +126,18 @@ pub(super) fn dispatch(
             Wire::Job(change(state, handle, &request.job_id, "restore")?)
         }
         Some(Action::Evict(request)) => Wire::Job(change(state, handle, &request.job_id, "evict")?),
+        Some(Action::PreviewDeletion(request)) => Wire::DeletionPreview(deletion::preview(
+            state,
+            principal,
+            handle.ok_or_else(unavailable)?,
+            request,
+        )?),
+        Some(Action::ConfirmDeletion(request)) => Wire::DeletionPreview(deletion::confirm(
+            state,
+            principal,
+            handle.ok_or_else(unavailable)?,
+            request,
+        )?),
         None => return Err(invalid("archive action is required")),
     };
     let result = proto::ArchiveResult {
@@ -309,6 +337,7 @@ fn wire_job(
     names: Option<&(String, String)>,
     job: crate::storage::catalog::archive::Job,
 ) -> proto::ArchiveJob {
+    let deletion_attempts = job.pending_deletion().map(|d| d.attempts);
     let target_id = names
         .filter(|(private, _)| *private == job.binding.id)
         .map_or_else(|| "unavailable-target".into(), |(_, public)| public.clone());
@@ -326,7 +355,9 @@ fn wire_job(
         },
         target_id,
         state: match job.state.as_str() {
-            "queued" | "copying" | "ready" | "failed" | "cancelled" | "deleted" => job.state,
+            "queued" | "copying" | "ready" | "failed" | "cancelled" | "deleting" | "deleted" => {
+                job.state
+            }
             _ => "unavailable".into(),
         },
         bytes: job.bytes,
@@ -342,11 +373,15 @@ fn wire_job(
             2 => proto::ArchivePrimaryCopyState::Evicting as i32,
             _ => proto::ArchivePrimaryCopyState::Unspecified as i32,
         },
-        action: match job.action.as_str() {
-            "restore" | "evict" => job.action,
-            _ => String::new(),
+        action: if deletion_attempts.is_some() {
+            "delete".into()
+        } else {
+            match job.action.as_str() {
+                "restore" | "evict" => job.action,
+                _ => String::new(),
+            }
         },
-        action_attempts: job.action_attempts,
+        action_attempts: deletion_attempts.unwrap_or(job.action_attempts),
     }
 }
 

@@ -8,12 +8,17 @@ pub(super) async fn dispatch(
     request: Request,
 ) -> anyhow::Result<Reply> {
     match request {
+        Request::Deletion(request) => deletion::dispatch(connection, registry, request).await,
         Request::Bind(binding) => bind(connection, &binding).await,
         Request::Enqueue(admission) => enqueue(connection, &admission).await,
         Request::Get(id) => Ok(Reply::Job(load(connection, &id).await?.map(Box::new))),
         Request::FindExport(id) => find_export(connection, &id).await,
         Request::List { after, limit } => page(connection, &after, limit).await,
-        Request::Pending { after, limit } => pending(connection, &after, limit).await,
+        Request::Pending {
+            after,
+            limit,
+            reverify_legacy,
+        } => pending(connection, &after, limit, reverify_legacy).await,
         Request::Candidates {
             after,
             before_ms,

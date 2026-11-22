@@ -279,6 +279,13 @@ async function restorePrimary(
 	const job = archive.getByRole('article').first();
 	const baseline = await continuitySnapshot(live, fixture.url);
 	await expect(job).toContainText('Primary evicted; archive retained.');
+	await job
+		.getByRole('button', { name: `Preview archive deletion ${fixture.seededObjectId}` })
+		.click();
+	const blocked = page.getByRole('dialog', { name: 'Archive deletion preview' });
+	await expect(blocked).toContainText('Restore the primary copy first');
+	await expect(blocked.getByRole('button', { name: 'Confirm archive deletion' })).toHaveCount(0);
+	await blocked.getByRole('button', { name: 'Close', exact: true }).click();
 	await job.getByRole('button', { name: `Restore primary ${fixture.seededObjectId}` }).click();
 	const startedAt = performance.now();
 	await page
@@ -361,6 +368,21 @@ test('local archive survives restart and plays evicted media before restoring it
 		await restorePrimary(page, live, fixture, info, evidence);
 		evidence.timings.push(
 			await measureArchivePlayback(page, fixture.seededAtMs + 5000, 'local-restored')
+		);
+		await page.goto('/settings#storage');
+		const job = archive.getByRole('article').first();
+		await job
+			.getByRole('button', { name: `Preview archive deletion ${fixture.seededObjectId}` })
+			.click();
+		const deletion = page.getByRole('dialog', { name: 'Archive deletion preview' });
+		await expect(deletion).toContainText('1 selected');
+		await expect(deletion).toContainText(fixture.seededObjectId);
+		await deletion.getByRole('button', { name: 'Confirm archive deletion' }).click();
+		await expect(deletion).toContainText('Batch confirmed');
+		await deletion.getByRole('button', { name: 'Close', exact: true }).click();
+		await refreshUntil(archive, job, '· deleted');
+		evidence.timings.push(
+			await measureArchivePlayback(page, fixture.seededAtMs + 5000, 'local-after-archive-deletion')
 		);
 	} finally {
 		try {

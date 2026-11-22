@@ -10,10 +10,19 @@ mod performance;
 type Index = (String, i64, u64, i64, u64, u64, u64, u64, u64);
 
 impl Fixture {
-    fn reopen(self) -> anyhow::Result<Self> {
+    pub(super) fn reopen(self) -> anyhow::Result<Self> {
+        self.reopen_with(|_| Ok(()))
+    }
+
+    pub(super) fn reopen_with(
+        self,
+        prepare: impl FnOnce(&std::path::Path) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Self> {
         drop(self.manager);
         self.catalog.shutdown();
-        let catalog = RecordingCatalog::open(&self.path.join("catalog.db"))?;
+        let path = self.path.join("catalog.db");
+        prepare(&path)?;
+        let catalog = RecordingCatalog::open(&path)?;
         let manager = Manager::new(configuration(self.path.join("primary"))?, catalog.handle())?;
         Ok(Self {
             path: self.path,

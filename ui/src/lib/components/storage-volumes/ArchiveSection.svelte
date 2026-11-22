@@ -14,15 +14,18 @@
 	import ArchiveDraftEditor from './ArchiveDraftEditor.svelte';
 	import ArchiveCopy from './ArchiveCopy.svelte';
 	import ArchiveActionDialog from './ArchiveActionDialog.svelte';
+	import ArchiveDeletionDialog from './ArchiveDeletionDialog.svelte';
 	let {
 		config,
 		controller,
 		onsaved,
+		retentionAvailable = false,
 		disabled = false
 	}: {
 		config: SanitizedConfig;
 		controller: ArchiveController;
 		onsaved: (result: SettingsConfigUpdateResponse) => void;
+		retentionAvailable?: boolean;
 		disabled?: boolean;
 	} = $props();
 	let jobs = $state<ArchiveJob[]>([]);
@@ -33,6 +36,7 @@
 	let error = $state('');
 	let message = $state('');
 	let confirmation = $state<{ kind: 'evict' | 'restore'; job: ArchiveJob } | null>(null);
+	let deletion = $state<{ jobId: string } | { after: string } | null>(null);
 	let alive = true;
 	onMount(() => {
 		void refresh();
@@ -150,10 +154,23 @@
 		disabled={disabled || busy || !status?.runtimeAvailable || status?.probePending}
 		onclick={probe}>Test archive destination</Button
 	>
+	{#if retentionAvailable && config.storage.archive?.retentionDays}
+		<Button
+			type="button"
+			size="sm"
+			variant="outline"
+			class="min-h-11 sm:min-h-0"
+			disabled={disabled || busy || editing || !status?.runtimeAvailable}
+			onclick={() => (deletion = { after: '' })}
+		>
+			Preview expired archive copies
+		</Button>
+	{/if}
 	{#if message}<p role="status" class="text-sm break-words">{message}</p>{/if}
 	{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
 	{#if editing}<ArchiveDraftEditor
 			{config}
+			{retentionAvailable}
 			{controller}
 			oncancel={() => {
 				editing = false;
@@ -202,11 +219,13 @@
 					</dl>
 				</details>
 				<p class="text-xs text-text-muted">
-					{job.primaryCopy === ArchivePrimaryCopyState.EVICTED
-						? 'Primary evicted; archive retained.'
-						: job.primaryCopy === ArchivePrimaryCopyState.EVICTING
-							? 'Primary eviction is reconciling. Cancellation is unavailable.'
-							: 'Primary copy retained.'}
+					{job.kind === StorageObjectKind.EXPORT
+						? 'Deletion checks the retained primary export.'
+						: job.primaryCopy === ArchivePrimaryCopyState.EVICTED
+							? 'Primary evicted; archive retained.'
+							: job.primaryCopy === ArchivePrimaryCopyState.EVICTING
+								? 'Primary eviction is reconciling. Cancellation is unavailable.'
+								: 'Primary copy retained.'}
 				</p>
 				{#if job.errorCode}<p role="alert" class="text-sm text-destructive">
 						{job.action === 'restore'
@@ -214,7 +233,7 @@
 							: 'Archive operation failed. Refresh the job and destination status before retrying.'}
 					</p>{/if}
 				<div class="flex flex-wrap gap-2">
-					{#if (job.state === 'queued' || job.state === 'copying' || job.action) && job.primaryCopy !== ArchivePrimaryCopyState.EVICTING}<Button
+					{#if (job.state === 'queued' || job.state === 'copying' || job.action) && job.action !== 'delete' && job.primaryCopy !== ArchivePrimaryCopyState.EVICTING}<Button
 							class="min-h-11 sm:min-h-0"
 							type="button"
 							size="sm"
@@ -234,7 +253,16 @@
 							>{job.state === 'cancelled' ? 'Retry / finish cleanup' : 'Retry'}</Button
 						>{/if}
 					{#if job.state === 'ready' && !job.action}
-						{#if job.primaryCopy === ArchivePrimaryCopyState.EVICTED}<Button
+						{#if retentionAvailable}<Button
+								type="button"
+								size="sm"
+								variant="outline"
+								class="min-h-11 sm:min-h-0"
+								disabled={disabled || busy || !status?.runtimeAvailable}
+								aria-label={`Preview archive deletion ${job.objectId}`}
+								onclick={() => (deletion = { jobId: job.jobId })}>Preview archive deletion</Button
+							>{/if}
+						{#if job.kind === StorageObjectKind.RECORDING && job.primaryCopy === ArchivePrimaryCopyState.EVICTED}<Button
 								class="min-h-11 sm:min-h-0"
 								type="button"
 								size="sm"
@@ -245,7 +273,7 @@
 									error = '';
 									confirmation = { kind: 'restore', job };
 								}}>Restore primary</Button
-							>{:else if job.primaryCopy === ArchivePrimaryCopyState.PRESENT}<Button
+							>{:else if job.kind === StorageObjectKind.RECORDING && job.primaryCopy === ArchivePrimaryCopyState.PRESENT}<Button
 								class="min-h-11 sm:min-h-0"
 								type="button"
 								size="sm"
@@ -273,6 +301,17 @@
 			onclick={() => refresh(next)}>Next archive page</Button
 		>{/if}
 </section>
+{#if deletion}
+	<ArchiveDeletionDialog
+		{controller}
+		selection={deletion}
+		{disabled}
+		onclose={() => {
+			deletion = null;
+			void refresh();
+		}}
+	/>
+{/if}
 <ArchiveActionDialog
 	request={confirmation}
 	busy={busy || disabled}

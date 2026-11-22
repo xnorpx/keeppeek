@@ -323,7 +323,7 @@ impl OwnedFile {
         self.inspect_until(Instant::now() + Duration::from_secs(60), &mut |_| Ok(()))
     }
 
-    fn inspect_until(
+    pub(crate) fn inspect_until(
         &mut self,
         deadline: Instant,
         progress: &mut impl FnMut(u64) -> anyhow::Result<()>,

@@ -757,6 +757,11 @@ operation_timeout_secs = 120
 maximum_attempts = 3
 ```
 
+Optional `retention_days` is a positive whole number of days since durable archive
+verification. Omit it to retain copies indefinitely. Setting a period makes copies
+eligible for an Administrator's deletion preview. Deletion starts only after
+confirmation of a specific batch and independent verification of the surviving primary.
+
 | Field                    | Type          | Default          | Validation and meaning                                                                                                                                             |
 | ------------------------ | ------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `target_id`              | `String`      | Required         | Stable ID with 1–64 lowercase ASCII letters, digits, hyphens or underscores; `legacy-` is reserved.                                                                |

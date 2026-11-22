@@ -195,6 +195,90 @@ it('preserves a conflicting dirty draft, references and original CAS revision du
 		confirm.mockRestore();
 	}
 });
+
+it('previews each retention page independently and retries the same confirmation after a lost reply', async () => {
+	const config = fixture();
+	config.storage.archive!.retentionDays = 30;
+	const control = controller();
+	let confirmations = 0;
+	control.archive.mockImplementation(async (request) => {
+		if (request.action.case === 'list')
+			return create(ArchiveResultSchema, {
+				result: { case: 'jobs', value: { status: { runtimeAvailable: true, online: true } } }
+			});
+		const second =
+			request.action.case === 'previewDeletion' &&
+			request.action.value.selection.case === 'retentionPage' &&
+			request.action.value.selection.value.afterJobId === 'next';
+		if (request.action.case === 'confirmDeletion' && confirmations++ === 0)
+			throw new Error('Lost confirmation reply');
+		const confirmed = request.action.case === 'confirmDeletion';
+		return create(ArchiveResultSchema, {
+			result: {
+				case: 'deletionPreview',
+				value: {
+					planId: second ? 'p2' : 'p1',
+					revision: 'rev',
+					confirmationNonce: confirmed ? '' : 'nonce',
+					nextAfterJobId: second ? '' : 'next',
+					selectedCount: second ? 0 : 1,
+					selectedBytes: second ? 0n : 10n,
+					confirmed,
+					items: [
+						{
+							jobId: second ? 'two' : 'one',
+							objectId: second ? 'protected' : 'footage',
+							kind: StorageObjectKind.RECORDING,
+							bytes: 10n,
+							state: second ? 'preservation_hold' : confirmed ? 'queued' : 'eligible'
+						}
+					]
+				}
+			}
+		});
+	});
+	await page.viewport(320, 844);
+	await render(ArchiveSection, {
+		config,
+		controller: control,
+		retentionAvailable: true,
+		onsaved: vi.fn()
+	});
+	await page.getByRole('button', { name: 'Preview expired archive copies' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Archive deletion preview' });
+	await expect
+		.element(dialog.getByText('Eligible for deletion · 10 bytes', { exact: true }))
+		.toBeVisible();
+	await expect.element(dialog.getByRole('button', { name: 'Close', exact: true })).toHaveFocus();
+	await expect
+		.element(
+			dialog.getByText(
+				'After removal, KeepPeek permanently excludes these objects from automatic archiving and the manual copy picker.',
+				{ exact: true }
+			)
+		)
+		.toBeVisible();
+	expect(dialog.element().scrollWidth).toBeLessThanOrEqual(dialog.element().clientWidth);
+	const confirm = dialog.getByRole('button', { name: 'Confirm archive deletion' });
+	await confirm.click();
+	await expect.element(dialog.getByRole('alert')).toHaveTextContent('Lost confirmation reply');
+	await confirm.click();
+	await expect
+		.element(
+			dialog.getByText('Batch confirmed. Refresh archive jobs to follow progress.', { exact: true })
+		)
+		.toBeVisible();
+	const requests = control.archive.mock.calls.flatMap(([r]) =>
+		r.action.case === 'confirmDeletion' ? [r.action.value] : []
+	);
+	expect(requests).toHaveLength(2);
+	expect(requests[0]).toEqual(requests[1]);
+	await dialog.getByRole('button', { name: 'Preview next page' }).click();
+	await expect
+		.element(dialog.getByText('Preservation hold or maintenance · 10 bytes', { exact: true }))
+		.toBeVisible();
+	await expect.element(confirm).not.toBeInTheDocument();
+});
 it('queues and reconciles a real selection, then confirms eviction and restores the primary', async () => {
 	const control = controller();
 	const job = {

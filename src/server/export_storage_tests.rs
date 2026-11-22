@@ -568,6 +568,7 @@ fn archive_completed_export(
         source_ids: vec![],
         minimum_age_secs: 0,
         evict_after_archive: false,
+        retention_days: None,
         maximum_object_bytes: 4 * 1024 * 1024 * 1024,
         maximum_pending_count: 256,
         maximum_pending_bytes: 64 * 1024 * 1024 * 1024,
@@ -689,6 +690,29 @@ fn archived_export_download_survives_expiry_history_prune_and_source_retirement(
             .unwrap()
     );
     assert!(!record.path.as_ref().unwrap().exists());
+    {
+        use crate::storage::catalog::archive::deletion::{Request, Selection};
+        let handle = worker.handle();
+        let preview = handle
+            .deletion(Request::Preview {
+                actor: "admin".into(),
+                policy: handle.deletion_policy().unwrap(),
+                selection: Selection::Explicit(archive_job_id.clone()),
+            })
+            .unwrap();
+        assert_eq!(preview.items[0].state, "primary_unavailable");
+        assert!(
+            handle
+                .deletion(Request::Confirm {
+                    actor: "admin".into(),
+                    policy: handle.deletion_policy().unwrap(),
+                    plan: preview.id,
+                    revision: preview.revision,
+                    nonce: preview.nonce.unwrap()
+                })
+                .is_err()
+        );
+    }
     let (result, messages) = download_export(&state, "owner", request.clone()).unwrap();
     assert_eq!(result.job.unwrap().job_id, "named-export");
     assert_eq!(downloaded_bytes(messages), original);
@@ -719,6 +743,54 @@ fn archived_export_download_survives_expiry_history_prune_and_source_retirement(
     drop(state);
     drop(manager);
     catalog.shutdown();
+}
+
+#[test]
+fn archive_deletion_removes_redundant_export_and_preserves_primary_download() {
+    use crate::storage::catalog::archive::deletion::{Request, Selection};
+    let (root, catalog, manager, state) = completed_named_export();
+    let record = export_record(&state);
+    let original = std::fs::read(record.path.as_ref().unwrap()).unwrap();
+    let (worker, id) = archive_completed_export(&root, &catalog, &state);
+    let handle = worker.handle();
+    let plan = handle
+        .deletion(Request::Preview {
+            actor: "admin".into(),
+            policy: handle.deletion_policy().unwrap(),
+            selection: Selection::Explicit(id.clone()),
+        })
+        .unwrap();
+    assert_eq!(plan.items[0].state, "eligible");
+    handle
+        .deletion(Request::Confirm {
+            actor: "admin".into(),
+            policy: handle.deletion_policy().unwrap(),
+            plan: plan.id,
+            revision: plan.revision,
+            nonce: plan.nonce.unwrap(),
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while handle.get(&id).unwrap().state != "deleted" {
+        assert!(
+            Instant::now() < deadline,
+            "redundant export deletion did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let request = proto::DownloadExport {
+        job_id: "named-export".into(),
+        channel: proto::DataChannelKind::ReliableData as i32,
+    };
+    let (_, messages) = download_export(&state, "owner", request).unwrap();
+    assert_eq!(downloaded_bytes(messages), original);
+    assert_eq!(std::fs::read(record.path.unwrap()).unwrap(), original);
+    drop(handle);
+    worker.shutdown().unwrap();
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

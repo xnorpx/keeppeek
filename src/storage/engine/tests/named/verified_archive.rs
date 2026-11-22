@@ -455,6 +455,7 @@ fn start_archive(
         source_ids: vec![],
         minimum_age_secs: 0,
         evict_after_archive: false,
+        retention_days: None,
         maximum_object_bytes: 8 * MEBIBYTE_BYTES,
         maximum_pending_count: 64,
         maximum_pending_bytes: 128 * MEBIBYTE_BYTES,

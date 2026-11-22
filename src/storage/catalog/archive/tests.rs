@@ -1,5 +1,7 @@
 use super::*;
 
+mod deletion;
+
 async fn fixture() -> anyhow::Result<turso::Connection> {
     let database = turso::Builder::new_local(":memory:")
         .experimental_generated_columns(true)

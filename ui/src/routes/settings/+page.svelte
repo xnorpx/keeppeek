@@ -530,6 +530,7 @@
 					{#if capabilities.supports('keeppeek.local-archive.v1')}
 						<ArchiveSection
 							{config}
+							retentionAvailable={capabilities.supports('keeppeek.local-archive-retention.v1')}
 							controller={controlClient}
 							disabled={savingRuntimeSettings || runtimeEditor !== null}
 							onsaved={(result) => {

@@ -136,6 +136,71 @@ fn verify_archive(job: &Job, work: &Work<'_>) -> anyhow::Result<()> {
     verify_version(&target, &version, job.digest, work)
 }
 
+pub(super) fn reverify_legacy(
+    catalog: &RecordingCatalogHandle,
+    job: &Job,
+    work: &Work<'_>,
+) -> anyhow::Result<()> {
+    verify_archive(job, work)?;
+    let version = job
+        .version
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("archive version is missing"))?;
+    catalog.archive(Request::Deletion(
+        crate::storage::catalog::archive::deletion::Request::Reverified {
+            job: job.id.clone(),
+            version,
+        },
+    ))?;
+    Ok(())
+}
+
+pub(super) fn remove_replica(
+    catalog: &RecordingCatalogHandle,
+    job: &Job,
+    settings: &super::settings::Settings,
+    work: &Work<'_>,
+) -> anyhow::Result<()> {
+    use crate::storage::catalog::archive::deletion::{Policy, Request as Deletion};
+    let intent = job
+        .deletion
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("archive deletion lacks confirmation"))?;
+    let target = FilesystemArchiveTarget::open(&job.binding.root, &job.binding.identity)?;
+    let version = Version::new(
+        ObjectId::parse(&job.object_id)?,
+        job.version
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("archive version unavailable"))?,
+        job.bytes,
+    )?;
+    let operation = ObjectId::parse(&intent.operation)?;
+    if intent.phase != "retired" {
+        let mut primary = source_root(job)?.open_owned(
+            &job.source_relative_key,
+            &job.source_identity,
+            job.bytes,
+        )?;
+        let (bytes, identity, digest) =
+            primary.inspect_until(work.deadline, &mut |_| work.check())?;
+        anyhow::ensure!(
+            bytes == job.bytes && identity == job.source_identity && digest == job.digest,
+            "independent primary verification failed"
+        );
+        catalog.archive(Request::Deletion(Deletion::Claim {
+            job: job.id.clone(),
+            policy: Policy::from_settings(settings)?,
+        }))?;
+        work.check()?;
+        primary.revalidate()?;
+        target.delete(&version, job.digest, operation, work)?;
+        catalog.archive(Request::Deletion(Deletion::Retired(job.id.clone())))?;
+    }
+    target.acknowledge_delete(&version, job.digest, operation, work)?;
+    catalog.archive(Request::Deletion(Deletion::Acknowledged(job.id.clone())))?;
+    Ok(())
+}
+
 fn restore(
     catalog: &RecordingCatalogHandle,
     job: &Job,

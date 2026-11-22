@@ -49,6 +49,57 @@ CREATE TABLE IF NOT EXISTS archive_replicas (
     UNIQUE(kind,recording_id)
 );
 CREATE INDEX IF NOT EXISTS archive_replicas_state ON archive_replicas(state,job_id);
+-- Earlier catalogs did not timestamp verified replicas. A missing observation has no age.
+CREATE TABLE IF NOT EXISTS archive_verified_at (
+    job_id TEXT PRIMARY KEY REFERENCES archive_replicas(job_id) ON DELETE CASCADE,
+    version TEXT NOT NULL,
+    verified_ms INTEGER NOT NULL CHECK(verified_ms>0)
+);
+CREATE TABLE IF NOT EXISTS archive_deletion_plans (
+    id TEXT PRIMARY KEY,
+    actor TEXT NOT NULL,
+    target_id TEXT NOT NULL REFERENCES archive_bindings(id),
+    revision TEXT NOT NULL,
+    nonce_hash TEXT NOT NULL CHECK(length(nonce_hash)=64),
+    expires_ms INTEGER NOT NULL,
+    confirmed_ms INTEGER,
+    snapshot TEXT NOT NULL CHECK(length(snapshot)<=65536)
+);
+CREATE INDEX IF NOT EXISTS archive_deletion_plans_expiry ON archive_deletion_plans(expires_ms);
+CREATE TABLE IF NOT EXISTS archive_deletion_items (
+    job_id TEXT PRIMARY KEY REFERENCES archive_replicas(job_id),
+    plan_id TEXT NOT NULL REFERENCES archive_deletion_plans(id) ON DELETE CASCADE,
+    operation TEXT NOT NULL UNIQUE,
+    phase TEXT NOT NULL CHECK(phase IN('queued','claimed','retired','acknowledged','blocked')),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts>=0)
+);
+CREATE INDEX IF NOT EXISTS archive_deletion_items_plan ON archive_deletion_items(plan_id);
+CREATE INDEX IF NOT EXISTS archive_deletion_claimed ON archive_replicas(kind,recording_id) WHERE state='deleting';
+CREATE TRIGGER IF NOT EXISTS archive_deletion_fence_primary
+BEFORE UPDATE OF state,file_identity,digest,bytes,destination_path ON storage_volume_allocations
+WHEN EXISTS(SELECT 1 FROM archive_replicas WHERE kind=OLD.kind AND recording_id=OLD.object_id AND state='deleting')
+BEGIN SELECT RAISE(ABORT,'archive deletion protects the verified primary'); END;
+CREATE TRIGGER IF NOT EXISTS archive_deletion_fence_export_cleanup
+BEFORE INSERT ON storage_export_cleanup
+WHEN EXISTS(SELECT 1 FROM archive_replicas WHERE kind='export' AND recording_id=NEW.object_id AND state='deleting')
+BEGIN SELECT RAISE(ABORT,'archive deletion protects the verified primary'); END;
+CREATE TRIGGER IF NOT EXISTS archive_deletion_fence_recording
+BEFORE UPDATE OF protected,cleanup_pending,retention_pending ON recording_files
+WHEN (NEW.protected!=OLD.protected OR NEW.cleanup_pending!=OLD.cleanup_pending OR NEW.retention_pending!=OLD.retention_pending)
+  AND EXISTS(SELECT 1 FROM archive_replicas WHERE kind='recording' AND recording_id=OLD.id AND state='deleting')
+BEGIN SELECT RAISE(ABORT,'archive deletion is in progress'); END;
+CREATE TRIGGER IF NOT EXISTS archive_deletion_fence_hold_insert
+BEFORE INSERT ON recording_retention_decisions
+WHEN EXISTS(SELECT 1 FROM archive_replicas WHERE kind='recording' AND recording_id=NEW.recording_id AND state='deleting')
+BEGIN SELECT RAISE(ABORT,'archive deletion is in progress'); END;
+CREATE TRIGGER IF NOT EXISTS archive_deletion_fence_hold_update
+BEFORE UPDATE OF policy_revision,policy_fingerprint,event_revision,deadline_ms,matching_rules_json,reason_json ON recording_retention_decisions
+WHEN EXISTS(SELECT 1 FROM archive_replicas WHERE kind='recording' AND recording_id=NEW.recording_id AND state='deleting')
+BEGIN SELECT RAISE(ABORT,'archive deletion is in progress'); END;
+CREATE TRIGGER IF NOT EXISTS archive_deletion_fence_maintenance
+BEFORE INSERT ON recording_maintenance_claims
+WHEN EXISTS(SELECT 1 FROM archive_replicas WHERE kind='recording' AND recording_id=NEW.recording_id AND state='deleting')
+BEGIN SELECT RAISE(ABORT,'archive deletion protects the verified primary'); END;
 CREATE INDEX IF NOT EXISTS archive_replicas_pending_eviction
     ON archive_replicas(recording_id) WHERE kind='recording' AND local_evicted=2;
 CREATE INDEX IF NOT EXISTS archive_transfer_reservations

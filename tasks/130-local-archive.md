@@ -61,6 +61,28 @@ and 23.656 s respectively. At least 64 further byte-checked primary seeks and 9.
 of progress on every camera coincided with advancing archive verification in each enabled
 run. The issue specifies forward progress and leaves numeric latency and CPU budgets open.
 
+## Operator-confirmed archive retention
+
+The local filesystem target keeps verified copies indefinitely by default. An Administrator
+may configure an age in days or select one copy explicitly, review a preview and confirm
+that batch. Each age-based page contains at most 16 copies and needs its own confirmation.
+The age starts at durable independent verification. Existing manifests with no recorded
+verification time become eligible only after a new complete readback and the configured age.
+
+The preview lists retained bytes, eligibility and any holds, readers or required restores.
+Confirmation is bound to the Administrator, the previewed object versions and the current
+policy. A worker checks the pinned primary's bytes before retiring a redundant archive copy.
+An archive-only recording must first complete a successful primary restore. The durable
+retirement receipt supports recovery after an interrupted acknowledgement. A tombstone
+prevents the automatic copy worker from recreating a copy the Administrator just retired.
+The same object is also excluded from the manual copy picker. The confirmation dialog
+discloses both restrictions before an Administrator authorizes removal.
+
+This implements #130's local destination-retention and manual-deletion controls for
+redundant copies. The source recording and primary export remain available after a successful
+archive deletion. An expired export with no retained, verifiable primary remains protected.
+Remote provider retention, managed export restore and disaster-recovery import remain open.
+
 ## Verification map
 
 The current-delivery criteria below map to #130 in their original order. Broader provider,

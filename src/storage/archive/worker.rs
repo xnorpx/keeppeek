@@ -106,6 +106,27 @@ impl std::fmt::Debug for Worker {
 }
 
 impl Handle {
+    pub(crate) fn deletion_policy(
+        &self,
+    ) -> anyhow::Result<crate::storage::catalog::archive::deletion::Policy> {
+        self.enabled()?;
+        crate::storage::catalog::archive::deletion::Policy::from_settings(&self.settings)
+    }
+
+    pub(crate) fn deletion(
+        &self,
+        request: crate::storage::catalog::archive::deletion::Request,
+    ) -> anyhow::Result<crate::storage::catalog::archive::deletion::Plan> {
+        self.enabled()?;
+        let Reply::Deletion(plan) = self.catalog.archive(Request::Deletion(request))? else {
+            anyhow::bail!("invalid archive deletion reply")
+        };
+        if plan.confirmed {
+            self.scan()?;
+        }
+        Ok(*plan)
+    }
+
     pub(crate) fn target_id(&self) -> &str {
         &self.settings.target_id
     }
@@ -352,7 +373,31 @@ impl Context {
             *active = None;
         }
         if result.is_err() && !cancellation() {
-            let request = if job.cancelled {
+            let request = if job.pending_deletion().is_some() {
+                use crate::storage::catalog::archive::deletion::Request as Deletion;
+                // A lost reply may already have persisted a filesystem claim. Re-read before releasing it.
+                let phase = self
+                    .catalog
+                    .archive_job(&job.id)
+                    .ok()
+                    .and_then(|current| current.deletion)
+                    .map(|d| d.phase);
+                if phase.as_deref() == Some("queued") {
+                    Request::Deletion(Deletion::Blocked(job.id.clone()))
+                } else {
+                    Request::Deletion(Deletion::Failed(job.id.clone()))
+                }
+            } else if job.state == "ready"
+                && job.action.is_empty()
+                && job.kind != "probe"
+                && job.verified_ms.is_none()
+            {
+                Request::Deletion(
+                    crate::storage::catalog::archive::deletion::Request::LegacyFailed(
+                        job.id.clone(),
+                    ),
+                )
+            } else if job.cancelled {
                 Request::CleanupFailed(job.id.clone())
             } else if job.action.is_empty() {
                 Request::Fail(job.id.clone())
@@ -379,7 +424,9 @@ impl Context {
             job.binding.id == self.settings.target_id && job.binding.root == self.settings.root,
             "archive job target is no longer configured"
         );
-        if job.cancelled {
+        if job.pending_deletion().is_some() {
+            super::operations::remove_replica(&self.catalog, job, &self.settings, work)?;
+        } else if job.cancelled {
             return cleanup::execute(&self.catalog, job, work);
         } else if !job.action.is_empty() {
             let Reply::Job(Some(started)) = self.catalog.archive(Request::StartAction {
@@ -401,6 +448,11 @@ impl Context {
             if outcome == transfer::ProbeOutcome::Unchanged {
                 return Ok(());
             }
+        } else if job.state == "ready"
+            && job.verified_ms.is_none()
+            && self.settings.retention_days.is_some()
+        {
+            super::operations::reverify_legacy(&self.catalog, job, work)?;
         } else {
             // An offline target must not exhaust the transfer retry budget.
             drop(FilesystemArchiveTarget::open(
@@ -610,16 +662,28 @@ impl Scan {
             self.bound = true;
         }
         if let Some(job) = self.pending.pop_front() {
-            let attempts = if job.action.is_empty() {
+            let attempts = if let Some(intent) = job.pending_deletion() {
+                intent.attempts
+            } else if job.action.is_empty() {
                 job.attempts
             } else {
                 job.action_attempts
             };
             let probe_cleanup =
                 job.kind == "probe" && matches!(job.state.as_str(), "ready" | "deleted");
+            let historical = job.state == "ready"
+                && job.kind != "probe"
+                && job.verified_ms.is_none()
+                && job.action.is_empty()
+                && job.pending_deletion().is_none()
+                && context.settings.retention_days.is_some();
             let failed = job.state == "failed"
-                || ((!job.action.is_empty() || job.cancelled) && job.error.is_some());
-            if (attempts < context.settings.maximum_attempts || probe_cleanup || job.cancelled)
+                || ((!job.action.is_empty() || job.cancelled || job.pending_deletion().is_some())
+                    && job.error.is_some());
+            if (attempts < context.settings.maximum_attempts
+                || probe_cleanup
+                || historical
+                || job.cancelled)
                 && (!failed || self.include_failed)
             {
                 let _ = context.process(
@@ -633,6 +697,7 @@ impl Scan {
             let Reply::Jobs(jobs) = context.catalog.archive(Request::Pending {
                 after: self.after.clone(),
                 limit: PAGE_SIZE,
+                reverify_legacy: context.settings.retention_days.is_some() && self.include_failed,
             })?
             else {
                 anyhow::bail!("invalid archive pending reply");

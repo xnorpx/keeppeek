@@ -1668,6 +1668,44 @@ access and seeking may be slower. Timeline metadata remains indexed after primar
 eviction, and direct local archive playback does not require a full restore first.
 Existing waiting, error, seek-generation, and cancellation behavior still applies.
 
+### Archive expiry and confirmed deletion
+
+`keeppeek.local-archive-retention.v1` advertises these additional controls.
+
+`ArchiveSettings.retention_days` (13) is an optional positive number of days
+since durable verification. A new configuration defaults to indefinite retention.
+An update that omits this field preserves the existing policy. Send
+`clear_retention_days` (14) to return to indefinite retention. Setting both
+fields is invalid. A legacy ready replica without a timestamp stays ineligible
+for age-based removal until the local worker completes a fresh verified readback.
+
+`ArchiveCommand.preview_deletion` (9) accepts a single explicit `job_id`, or
+`retention_page` with an exclusive job cursor and a limit of 1–16 (default 16).
+The age-based selection requires a configured retention period. Each page is
+independent. `ArchiveResult.deletion_preview` (4) reports the target alias,
+job and object IDs, byte counts, known verification times and eligibility.
+The result includes the selected count and bytes and the next cursor.
+An explicit job selection is available with indefinite retention.
+
+`ArchiveCommand.confirm_deletion` (10) requires the same Administrator,
+plan ID, revision and confirmation nonce within ten minutes. The server
+rechecks the selected versions, primary catalog ownership, retention policy
+and active readers. A matching repeat confirmation returns the existing batch
+for the reconciliation period of 30 days. Clients can retry a lost response
+with exactly the same values. Confirmation queues work for the archive
+worker. The worker opens the pinned primary, checks its full SHA-256, fences
+retirement and removes only the authorized archive version using a durable receipt.
+
+Item states include `eligible`, `retained`, `verification_date_unknown`,
+`restore_required`, `primary_unavailable`, `active_reader`, `preservation_hold`
+and `busy`. Confirmed items progress through `queued`, `claimed`, `retired`
+and `acknowledged`. An item blocked before claiming requires a new preview.
+Each batch requires an explicit Administrator confirmation. A recording with
+an evicted primary requires successful restore first. A completed export with
+an expired or unavailable primary retains its archive copy.
+The catalog retains an acknowledged deletion tombstone for that recording or export.
+Both automatic admission and the manual copy picker exclude its object identity.
+
 ## Guest evidence review
 
 `keeppeek.guest-review.v1` advertises `ShareCommand` (request tag 31) and

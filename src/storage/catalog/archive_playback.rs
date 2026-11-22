@@ -139,7 +139,7 @@ pub(super) async fn preserves_index(
 ) -> anyhow::Result<bool> {
     let mut rows = connection
         .query(
-            "SELECT 1 FROM archive_replicas WHERE kind='recording' AND recording_id=?1 AND (state='ready' OR local_evicted!=0)",
+            "SELECT 1 FROM archive_replicas WHERE kind='recording' AND recording_id=?1 AND (state IN('ready','deleting') OR local_evicted!=0)",
             [recording_id],
         )
         .await?;

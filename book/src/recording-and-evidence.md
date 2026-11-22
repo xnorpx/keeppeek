@@ -161,6 +161,25 @@ the required archive ranges directly, without a full restore or an artificial de
 waiting, failure, seek, and cancellation controls still apply.
 
 **Restore primary** queues a verified transfer back to the original primary destination.
+
+**Preview archive deletion** shows whether the selected archive copy can be removed.
+**Preview expired archive copies** shows one page of up to 16 jobs when archive
+retention days are configured. Review the target, object IDs and byte count.
+**Confirm archive deletion** authorizes only the selected copies on that page.
+Each additional page needs its own confirmation. Leaving retention days blank
+keeps copies indefinitely. Expiry alone performs no deletion.
+
+KeepPeek records each acknowledged deletion in the catalog. The retained primary remains
+available. The automatic archive worker and manual copy picker permanently exclude that
+recording or export while this catalog is in use.
+
+An evicted recording needs a successful **Restore primary** first. An expired
+export whose primary was already retired remains available through its authorized
+archive download. KeepPeek preserves that archive copy. Holds, active readers,
+changed media and unavailable primary storage also prevent removal. Refresh
+archive jobs to see progress. A blocked preview can be repeated after the
+condition clears.
+
 Cancellation stops cancellable copy or restore work and cleans up partial staging.
 **Retry / finish cleanup** retains the cancelled copy's job identity. Copying resumes only after
 cleanup is acknowledged and current source evidence is validated. Refresh to distinguish pending
