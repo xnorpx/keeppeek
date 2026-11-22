@@ -39,6 +39,12 @@ const profilePartFetchConcurrency = 4;
 const registryReadRetries = 2;
 const observedIndices = Array.from({ length: observedPartCount }, (_, index) => index);
 
+type PreparedProfile = {
+	profile: RuntimeProfileRegistry['profiles'][string];
+	partCount: number;
+	digest: string;
+};
+
 export class RuntimeProfilesControlClient {
 	private readonly activeWatch = new SharedProfileWatch<ActiveRuntimeProfile | null>();
 	private readonly statusWatch = new SharedProfileWatch<RuntimeProfileStatus | null>();
@@ -136,7 +142,17 @@ export class RuntimeProfilesControlClient {
 				currentRevision: BigInt(current.revision)
 			});
 		}
-		const summaries = await mapBounded(
+		const summaries = await this.prepareDefinitions(registry, current);
+		await this.stageDraft(draftId, summaries);
+		await this.commitRegistry(draftId, registry, summaries);
+		return this.getRegistry();
+	}
+
+	private prepareDefinitions(
+		registry: RuntimeProfileRegistry,
+		current: RuntimeProfileManifest
+	): Promise<PreparedProfile[]> {
+		return mapBounded(
 			Object.values(registry.profiles),
 			profilePartFetchConcurrency,
 			async (candidate) => {
@@ -154,6 +170,9 @@ export class RuntimeProfilesControlClient {
 				};
 			}
 		);
+	}
+
+	private async stageDraft(draftId: string, summaries: PreparedProfile[]): Promise<void> {
 		const partWrites = summaries.flatMap(({ profile, partCount, digest }) => {
 			const cameraEntries = Object.entries(profile.cameras).sort(([left], [right]) =>
 				left < right ? -1 : left > right ? 1 : 0
@@ -195,6 +214,13 @@ export class RuntimeProfilesControlClient {
 				value: value as JsonObject
 			})
 		);
+	}
+
+	private async commitRegistry(
+		draftId: string,
+		registry: RuntimeProfileRegistry,
+		summaries: PreparedProfile[]
+	): Promise<void> {
 		const value = {
 			draft_id: draftId,
 			revision: registry.revision,
@@ -248,7 +274,6 @@ export class RuntimeProfilesControlClient {
 		} else {
 			await put(runtimeProfilesRegistrySchema, value as JsonObject);
 		}
-		return this.getRegistry();
 	}
 
 	async activate(

@@ -525,7 +525,10 @@
 						camera.privacy?.active !== previous?.privacy?.active ||
 						(camera.state === 'offline') !== (previous?.state === 'offline')
 					);
-				}) || cameraHealthById.size !== health.cameras.length;
+				}) ||
+				cameraHealthById.size !== health.cameras.length ||
+				(livePeer.sessionId !== null &&
+					livePlans.some((plan) => plan.active && !livePeer.track(plan.cameraId)?.subscribed));
 			if (!peekViewState.updateHealth(generation, health)) return;
 			publishShellHealth(health);
 			if (componentActive && needsReconcile) scheduleLivePlanReconcile();

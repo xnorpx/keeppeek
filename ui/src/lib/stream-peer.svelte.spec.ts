@@ -145,6 +145,7 @@ class FakeDataChannel {
 class FakePeerConnection {
 	static latest: FakePeerConnection | null = null;
 	static failRemoteDescription = false;
+	static holdNextControlOpen = false;
 
 	readonly channels: FakeDataChannel[] = [];
 	readonly transceivers: RTCRtpTransceiver[] = [];
@@ -184,7 +185,11 @@ class FakePeerConnection {
 	}
 
 	async setRemoteDescription(): Promise<void> {
-		for (const channel of this.channels) channel.open();
+		const holdControl = FakePeerConnection.holdNextControlOpen;
+		FakePeerConnection.holdNextControlOpen = false;
+		for (const channel of this.channels) {
+			if (!holdControl || channel.label !== 'control-channel') channel.open();
+		}
 		if (FakePeerConnection.failRemoteDescription) {
 			throw new Error('remote description rejected');
 		}
@@ -209,6 +214,7 @@ afterEach(() => {
 	FakeDataChannel.subscriptionQuality = undefined;
 	FakeDataChannel.selectedVariant = null;
 	FakePeerConnection.failRemoteDescription = false;
+	FakePeerConnection.holdNextControlOpen = false;
 	FakePeerConnection.latest = null;
 });
 
@@ -553,8 +559,56 @@ describe('LivePeer', () => {
 	it('publishes live command errors before connecting', async () => {
 		const peer = new LivePeer();
 		await expect(peer.playChime('front-door', 'bell')).rejects.toThrow(/connect to live view/i);
-		expect(peer.error).toBe(peer.talkbackError);
-		expect(peer.error).toMatch(/connect to live view/i);
+		expect(peer.error).toBeNull();
+		expect(peer.talkbackError).toMatch(/connect to live view/i);
+	});
+
+	it('recovers immediately if the signaled control channel is retired before opening', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		FakePeerConnection.holdNextControlOpen = true;
+		const response = { session_id: 'opening', answer: { type: 'answer', sdp: 'v=0' } };
+		api.createSession
+			.mockResolvedValueOnce(response)
+			.mockResolvedValueOnce({ ...response, session_id: 'restored' });
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		const opening = expect(
+			peer.configure([{ cameraId: 'front-door', quality: 'low' }])
+		).rejects.toThrow(/closed before opening/);
+		await vi.waitFor(() => expect(peer.sessionId).toBe('opening'));
+		FakePeerConnection.latest!.channels[0].close();
+		await opening;
+		await vi.waitFor(() => expect(peer.track('front-door')?.subscribed).toBe(true));
+		expect(peer.sessionId).toBe('restored');
+		await peer.close();
+	});
+
+	it('bounds repeated replacements which open successfully and then immediately close', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'flapping',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		const plans = [{ cameraId: 'front-door', quality: 'low' as const }];
+		await peer.configure(plans);
+		vi.useFakeTimers();
+		try {
+			for (const delay of [0, 750, 2000]) {
+				FakePeerConnection.latest!.channels[0].close();
+				await vi.advanceTimersByTimeAsync(delay);
+				await peer.configure(plans);
+				expect(peer.sessionId).toBe('flapping');
+			}
+			FakePeerConnection.latest!.channels[0].close();
+			await vi.runAllTimersAsync();
+			expect(api.createSession).toHaveBeenCalledTimes(4);
+			expect(peer.error).toMatch(/reopen/i);
+		} finally {
+			vi.useRealTimers();
+			await peer.close();
+		}
 	});
 
 	it.each([403, 503])(

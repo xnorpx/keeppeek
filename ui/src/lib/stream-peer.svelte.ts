@@ -122,6 +122,7 @@ export class LivePeer {
 	#desiredPlans: LivePeerPlan[] = [];
 	#recoveryTimer?: ReturnType<typeof setTimeout>;
 	#recoveryAttempts = 0;
+	#healthySince?: { peer: RTCPeerConnection; at: number };
 	#operation: Promise<void> = Promise.resolve();
 	#closeScheduled = false;
 	#holds = 0;
@@ -170,7 +171,8 @@ export class LivePeer {
 			if (this.#desiredPlans !== nextPlans) return;
 			try {
 				await this.configureNow(nextPlans);
-				if (this.#peer || !nextPlans.some((plan) => plan.active)) this.cancelRecovery();
+				if (!nextPlans.some((plan) => plan.active)) this.cancelRecovery();
+				else this.markTransportHealthy();
 			} catch (error) {
 				if (recovering && !this.isAccessDenied(error)) this.scheduleRecovery();
 				throw error;
@@ -306,7 +308,6 @@ export class LivePeer {
 				await task();
 			} catch (error) {
 				const message = error instanceof Error ? error.message : 'The live command failed.';
-				this.error = message;
 				this.talkbackError = message;
 				throw error;
 			}
@@ -321,10 +322,21 @@ export class LivePeer {
 		if (this.#recoveryTimer !== undefined) clearTimeout(this.#recoveryTimer);
 		this.#recoveryTimer = undefined;
 		this.#recoveryAttempts = 0;
+		this.#healthySince = undefined;
+	}
+
+	private markTransportHealthy(): void {
+		if (this.#peer && this.#healthySince?.peer !== this.#peer)
+			this.#healthySince = { peer: this.#peer, at: performance.now() };
 	}
 
 	private transportLost(owner: RTCPeerConnection): void {
 		if (owner !== this.#peer) return;
+		// A replacement must survive a full wall health refresh before it earns a
+		// fresh retry budget. Rapid successful handshakes still count as failures.
+		if (this.#healthySince?.peer === owner && performance.now() - this.#healthySince.at >= 5000)
+			this.#recoveryAttempts = 0;
+		this.#healthySince = undefined;
 		const token = this.releaseLocalResources();
 		if (token !== null)
 			void this.#sessionTransport
@@ -351,7 +363,7 @@ export class LivePeer {
 			void this.enqueue(async () => {
 				if (this.#peer || !this.#desiredPlans.some((plan) => plan.active)) return;
 				await this.configureNow(this.#desiredPlans);
-				if (this.#peer) this.#recoveryAttempts = 0;
+				this.markTransportHealthy();
 			}).catch((error) => {
 				if (this.isAccessDenied(error)) return;
 				this.scheduleRecovery();
@@ -1106,18 +1118,28 @@ function talkbackTarget(selection: TalkbackTargetSelection): TalkbackTarget {
 
 function waitForDataChannel(channel: RTCDataChannel): Promise<void> {
 	if (channel.readyState === 'open') return Promise.resolve();
+	const closed = () => new Error(`WebRTC ${channel.label} channel closed before opening.`);
+	if (channel.readyState === 'closing' || channel.readyState === 'closed')
+		return Promise.reject(closed());
 	return new Promise((resolve, reject) => {
+		const previousClose = channel.onclose;
 		const timeout = setTimeout(
-			() => reject(new Error(`WebRTC ${channel.label} channel did not open.`)),
+			() => finish(new Error(`WebRTC ${channel.label} channel did not open.`)),
 			controlTimeoutMs
 		);
-		channel.onopen = () => {
+		const finish = (error?: Error) => {
 			clearTimeout(timeout);
-			resolve();
+			channel.onopen = null;
+			channel.onerror = null;
+			channel.onclose = previousClose;
+			if (error) reject(error);
+			else resolve();
 		};
-		channel.onerror = () => {
-			clearTimeout(timeout);
-			reject(new Error(`WebRTC ${channel.label} channel failed.`));
+		channel.onopen = () => finish();
+		channel.onerror = () => finish(new Error(`WebRTC ${channel.label} channel failed.`));
+		channel.onclose = (event) => {
+			finish(closed());
+			previousClose?.call(channel, event);
 		};
 	});
 }
