@@ -126,7 +126,7 @@ fn native_close_rejects_invalid_times_and_search_revision_exhaustion_atomically(
                 .await
                 .unwrap_err()
                 .to_string()
-                .contains("end precedes its start")
+                .contains("event alpha end 999 ms precedes its start 1000 ms")
         );
         assert_eq!(stored(&connection).await?, before);
         assert_eq!(maximum_search_revision(&connection).await?, first);

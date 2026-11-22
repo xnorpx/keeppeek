@@ -25,7 +25,8 @@ pub(super) async fn apply(
             .map(|mut event| -> anyhow::Result<_> {
                 anyhow::ensure!(
                     *end >= event.start_time_ms,
-                    "event was not found or its end precedes its start"
+                    "event {id} end {end} ms precedes its start {} ms",
+                    event.start_time_ms
                 );
                 event.revision = event
                     .revision
@@ -49,10 +50,10 @@ async fn persist(
     events: &[Option<TimelineEvent>],
 ) -> anyhow::Result<()> {
     let mut revision = maximum_search_revision(connection).await?;
-    let mut ids = Vec::new();
+    let mut ids = Vec::with_capacity(events.len());
     let mut end_times = String::from("CASE id");
     let mut revisions = String::from("CASE id");
-    let mut values = Vec::new();
+    let mut values = Vec::with_capacity(3 * events.len());
     for event in events.iter().flatten() {
         revision = revision
             .checked_add(1)
