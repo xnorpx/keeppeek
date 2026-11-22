@@ -527,6 +527,14 @@ fn register_profile_watch(
         NAMESPACE,
         &request.watch_id,
     )?;
+    let lifecycle = state
+        .api_session_owners
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&session_id)
+        .map_or_else(std::sync::Arc::default, |session| {
+            std::sync::Arc::clone(&session.lifecycle)
+        });
     message.snapshot_revision = state
         .state_store_watches
         .register_snapshot(
@@ -534,7 +542,7 @@ fn register_profile_watch(
             NAMESPACE.to_owned(),
             entry.key.clone(),
             request.watch_id.clone(),
-            Some(&entry),
+            Some((&entry, lifecycle)),
         )
         .map_err(|error| registry_error(error, NAMESPACE, &request.watch_id))?;
     Ok(proto::StateStoreResult {
@@ -2951,6 +2959,7 @@ mod tests {
 
         let session = SessionId::from_u64(20_273);
         let principal = bind_scoped_viewer(state, session, visible_ip);
+        let mut administrator = connected_profile_status_watch(state, 20_274);
         let mut pump = state.webrtc.stage_api_session_pump(session);
         let registry_watch = proto::StateStoreCommand {
             action: Some(state_store_command::Action::Watch(proto::WatchState {
@@ -2982,6 +2991,10 @@ mod tests {
             .unwrap()
             .reason = Some("hidden worker changed".into());
         publish_status_event(state, 2);
+        assert!(matches!(
+            single_watch_notification(administrator()),
+            Some(proto::notification::Event::StateStoreWatchUpdate(_))
+        ));
         assert!(
             pump().is_empty(),
             "hidden-only changes must not generate viewer traffic"
@@ -2995,6 +3008,26 @@ mod tests {
             panic!("expected scoped entry")
         };
         assert_eq!(unchanged, snapshot.entries[0]);
+        let rewatch = || {
+            let control_ok::Result::StateStoreResult(result) = super::super::dispatch(
+                state,
+                session,
+                &principal,
+                watch_profile_key("viewer", key),
+            )
+            .unwrap() else {
+                panic!("watch result expected")
+            };
+            let Some(state_store_result::Result::Watch(snapshot)) = result.result else {
+                panic!("watch snapshot expected");
+            };
+            snapshot
+        };
+        assert_eq!(
+            rewatch(),
+            snapshot,
+            "a hidden-only change cannot advance the viewer cursor"
+        );
         state
             .runtime_profile_status
             .write()
@@ -3009,9 +3042,11 @@ mod tests {
         else {
             panic!("watch update expected")
         };
-        assert!(update.revision > snapshot.snapshot_revision);
+        assert_eq!(update.revision, snapshot.snapshot_revision + 1);
         assert_eq!(update.watch_sequence, 1);
         assert_eq!(status_camera_ids(&update.entry.unwrap()), [visible_id]);
+        assert_eq!(rewatch().snapshot_revision, update.revision);
+
         let (owner_id, _) = principal.credential_binding().unwrap();
         state.access_manager.revoke_credential(owner_id, 4).unwrap();
         publish_status_event(state, 5);

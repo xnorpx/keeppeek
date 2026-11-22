@@ -275,7 +275,7 @@ export function runtimeProfileHeaderFromEntry(entry: StateEntry): ActiveRuntimeP
 					degradedCameras:
 						value.degraded_cameras === null
 							? null
-							: boundedInteger(value.degraded_cameras, 'degraded camera count', maxObservedCameras)
+							: boundedInteger(value.degraded_cameras, 'degraded camera count', 0xffff_ffff)
 				})
 	};
 }

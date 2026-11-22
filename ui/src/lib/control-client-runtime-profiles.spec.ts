@@ -233,7 +233,7 @@ describe('runtime profile observations', () => {
 		const active = entry(
 			'active',
 			'keeppeek.runtime-profiles.active.v1',
-			{ profile_id: 'away', observed_parts: 8, degraded_cameras: 1 },
+			{ profile_id: 'away', observed_parts: 8, degraded_cameras: 300 },
 			3n
 		);
 		const watch = vi.fn(
@@ -257,8 +257,28 @@ describe('runtime profile observations', () => {
 		const shell = await client.watchShellProfile(render);
 		expect(get).toHaveBeenCalledExactlyOnceWith(runtimeProfilesNamespace, 'active');
 		expect(watch).toHaveBeenCalledTimes(1);
-		expect(render).toHaveBeenCalledExactlyOnceWith('away', 1);
+		expect(render).toHaveBeenCalledExactlyOnceWith('away', 300);
+		expect(await client.getActive()).toEqual({ profileId: 'away', revision: '3' });
 		await Promise.all([shell.close(), retained.close()]);
+	});
+	it('validates the whole-fleet degraded count as an unsigned 32-bit value', () => {
+		const header = (count: unknown) =>
+			entry(
+				'active',
+				'keeppeek.runtime-profiles.active.v1',
+				{
+					profile_id: '',
+					observed_parts: 8,
+					degraded_cameras: count
+				},
+				1n
+			);
+		for (const count of [null, 0, 254, 255, 0xffff_ffff]) {
+			expect(runtimeProfileHeaderFromEntry(header(count)).degradedCameras).toBe(count);
+		}
+		for (const count of [-1, 1.5, '255', 0x1_0000_0000]) {
+			expect(() => runtimeProfileHeaderFromEntry(header(count))).toThrow('degraded camera count');
+		}
 	});
 	it('validates the observation count on active headers', () => {
 		for (const count of [0, 7, 9, '8']) {

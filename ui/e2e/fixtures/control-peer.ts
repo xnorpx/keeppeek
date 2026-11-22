@@ -413,6 +413,7 @@ export type MockControlPeerOptions = {
 	cameraSettingsSequence?: readonly (readonly CameraSettings[])[];
 	cameraConfigurationRevision?: string;
 	runtimeConfiguration?: SanitizedConfig;
+	runtimeProfileDegradedCameras?: number;
 	metadataPendingVolumeId?: string;
 	health?: HealthFixture;
 	healthSequence?: readonly HealthFixture[];
@@ -963,7 +964,12 @@ export async function mockControlPeer(
 	let peekLayoutRevision = options.peekLayoutRevision ?? 1n;
 	const runtimeProfileValues: Record<string, JsonObject> = {
 		registry: { revision: '1', active_profile_id: null, profiles: {} },
-		active: { profile_id: '', definition_revision: null, observed_parts: 8, degraded_cameras: 0 },
+		active: {
+			profile_id: '',
+			definition_revision: null,
+			observed_parts: 8,
+			degraded_cameras: options.runtimeProfileDegradedCameras ?? 0
+		},
 		status: { revision: '1', active_profile_id: null, cameras: {} },
 		cameras: { cameras: {} }
 	};
