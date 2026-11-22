@@ -117,6 +117,26 @@ fn revoke_and_observe(fixture: &Evidence, mut transfer: Transfer) -> Duration {
     elapsed
 }
 
+fn drain_readers(readers: &mut [Transfer], expected_bytes: u64) {
+    let mut buffer = [0u8; 65_536];
+    loop {
+        let mut progress = false;
+        for reader in &mut *readers {
+            let count = reader.reader.read(&mut buffer).unwrap();
+            reader.count = reader.count.checked_add(count).unwrap();
+            assert!(
+                reader.count as u64 <= expected_bytes,
+                "guest reader delivered more than the immutable file"
+            );
+            reader.digest.update(&buffer[..count]);
+            progress |= count > 0;
+        }
+        if !progress {
+            break;
+        }
+    }
+}
+
 fn resident_bytes(system: &mut sysinfo::System) -> u64 {
     let pid = sysinfo::Pid::from_u32(std::process::id());
     system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
@@ -150,19 +170,7 @@ fn qualify(frames: u32, spacing_ms: u64) {
     }
     let revoke = revoke_and_observe(&fixture, readers.pop().unwrap());
     let drain = Instant::now();
-    let mut buffer = [0u8; 65_536];
-    loop {
-        let mut progress = false;
-        for reader in &mut readers {
-            let count = reader.reader.read(&mut buffer).unwrap();
-            reader.digest.update(&buffer[..count]);
-            reader.count += count;
-            progress |= count > 0;
-        }
-        if !progress {
-            break;
-        }
-    }
+    drain_readers(&mut readers, expected.bytes);
     let drain_elapsed = drain.elapsed();
     let elapsed = started.elapsed();
     for reader in readers {

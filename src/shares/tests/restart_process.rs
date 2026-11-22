@@ -39,6 +39,14 @@ fn verify_after_restart(path: &Path, phase: &str) {
             .unwrap_err(),
         Error::Denied
     );
+    for mode in [Mode::Stream, Mode::Download] {
+        assert_eq!(
+            store
+                .begin_delivery(&client.session, &context, &grant.intent.binding, mode, now)
+                .unwrap_err(),
+            Error::Denied
+        );
+    }
     match phase {
         "after-use" => {
             assert!(grant.revoked_at_ms.is_none());
@@ -53,6 +61,10 @@ fn verify_after_restart(path: &Path, phase: &str) {
                     .unwrap_err(),
                 Error::Denied
             );
+            let download = store
+                .begin_delivery(&new, &context, &grant.intent.binding, Mode::Download, now)
+                .unwrap();
+            store.finish(download);
             store
                 .revoke(grant.id, grant.revision, "withdrawn", now)
                 .unwrap();
@@ -79,6 +91,7 @@ fn restart_preserves_consumption_and_revocation_but_invalidates_sessions() {
         return;
     }
     let mut fixture = Fixture::new();
+    fixture.intent.allow_download = true;
     let (grant, token) = fixture.grant();
     let handle = fixture.session(&token);
     let pending = fixture.begin(&handle, Mode::Stream).unwrap();
