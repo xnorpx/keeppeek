@@ -107,6 +107,13 @@ impl RuntimeProfileStatus {
 }
 
 impl ProfileRegistry {
+    pub(crate) fn active_camera_override(&self, camera_id: &str) -> Option<&CameraProfileOverride> {
+        self.active_profile_id
+            .as_ref()
+            .and_then(|id| self.profiles.get(id))
+            .and_then(|profile| profile.cameras.get(camera_id))
+    }
+
     pub(crate) fn active_definition_revision(&self) -> Option<u64> {
         self.active_profile_id
             .as_ref()
@@ -246,6 +253,18 @@ pub fn validate_profile(profile: &RuntimeProfile) -> Result<()> {
     Ok(())
 }
 
+/// Recording selection to restore after temporary privacy or availability restrictions clear.
+pub(crate) fn configured_recording_mode(
+    base: CameraRecordingMode,
+    profile: Option<&CameraProfileOverride>,
+) -> (CameraRecordingMode, FieldSource) {
+    match (base, profile.and_then(|p| p.recording_mode)) {
+        (CameraRecordingMode::Off, _) => (CameraRecordingMode::Off, FieldSource::Base),
+        (_, Some(mode)) => (mode, FieldSource::Profile),
+        (_, None) => (base, FieldSource::Base),
+    }
+}
+
 pub fn resolve_camera_policy(
     base: &BaseCameraPolicy,
     profile: Option<&CameraProfileOverride>,
@@ -273,19 +292,13 @@ pub fn resolve_camera_policy(
         (false, FieldSource::Base)
     };
 
-    let profile_recording_mode = profile.and_then(|overrides| overrides.recording_mode);
-    let (recording_mode, recording_mode_source) = if base.recording_mode == CameraRecordingMode::Off
-    {
-        (CameraRecordingMode::Off, FieldSource::Base)
-    } else if privacy_enforced {
-        (CameraRecordingMode::Off, privacy_source)
-    } else if !available {
-        (CameraRecordingMode::Off, available_source)
-    } else if let Some(mode) = profile_recording_mode {
-        (mode, FieldSource::Profile)
-    } else {
-        (base.recording_mode, FieldSource::Base)
-    };
+    let (recording_mode, recording_mode_source) =
+        match (base.recording_mode, privacy_enforced, available) {
+            (CameraRecordingMode::Off, _, _) => (CameraRecordingMode::Off, FieldSource::Base),
+            (_, true, _) => (CameraRecordingMode::Off, privacy_source),
+            (_, _, false) => (CameraRecordingMode::Off, available_source),
+            _ => configured_recording_mode(base.recording_mode, profile),
+        };
 
     let profile_suppression = profile.and_then(|overrides| overrides.notifications_suppressed);
     let (notifications_enabled, notifications_source) = if !base.notifications_enabled {

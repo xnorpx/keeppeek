@@ -422,13 +422,14 @@ impl InactiveCamera {
     fn after_privacy_stop(
         config: &crate::cameras::CameraConfig,
         application: Option<&crate::profiles::CameraRuntimeApplication>,
+        configured_mode: crate::cameras::CameraRecordingMode,
     ) -> Self {
         let mut camera = Self::from_config(config);
         if matches!(camera.reason, InactiveCameraReason::AwaitingStart)
             && let Some(row) = application
             && row.state == crate::profiles::RuntimeApplicationState::Applied
         {
-            camera.reason = InactiveCameraReason::PrivacyPaused(row.policy.recording_mode);
+            camera.reason = InactiveCameraReason::PrivacyPaused(configured_mode);
         }
         camera
     }
@@ -436,6 +437,7 @@ impl InactiveCamera {
     fn application_state(
         &self,
         policy: &crate::profiles::EffectiveCameraPolicy,
+        configured_mode: crate::cameras::CameraRecordingMode,
     ) -> Result<crate::profiles::RuntimeApplicationState, String> {
         use crate::profiles::RuntimeApplicationState;
         match self.reason {
@@ -443,7 +445,7 @@ impl InactiveCamera {
                 Err("camera credentials are not configured".into())
             }
             InactiveCameraReason::PrivacyPaused(acknowledged_mode)
-                if acknowledged_mode == policy.recording_mode
+                if acknowledged_mode == configured_mode
                     && (policy.privacy_enforced || !policy.available) =>
             {
                 Ok(RuntimeApplicationState::Applied)
@@ -683,7 +685,12 @@ impl KeepPeekLoop {
             .missing_camera_applications(&configured_ids);
         for (&ip, camera) in &self.inactive_configurations {
             let policy = self.profile_policy_for(ip, camera.recording_mode);
-            let state = camera.application_state(&policy);
+            let id = self.runtime_profile_camera_ids.camera_id(ip);
+            let (configured_mode, _) = crate::profiles::configured_recording_mode(
+                camera.recording_mode,
+                self.runtime_profiles.active_camera_override(&id),
+            );
+            let state = camera.application_state(&policy, configured_mode);
             observations.push(self.camera_runtime_application(ip, policy, state));
         }
         observations
@@ -865,14 +872,7 @@ impl KeepPeekLoop {
         };
         let profile = self
             .runtime_profiles
-            .active_profile_id
-            .as_ref()
-            .and_then(|profile_id| self.runtime_profiles.profiles.get(profile_id))
-            .and_then(|profile| {
-                profile
-                    .cameras
-                    .get(&self.runtime_profile_camera_ids.camera_id(ip))
-            });
+            .active_camera_override(&self.runtime_profile_camera_ids.camera_id(ip));
         crate::profiles::resolve_camera_policy(&base, profile)
     }
 
@@ -1870,6 +1870,11 @@ impl KeepPeekLoop {
                                     InactiveCamera::after_privacy_stop(
                                         &camera.config,
                                         status.cameras.get(&id),
+                                        crate::profiles::configured_recording_mode(
+                                            camera.config.recording_mode,
+                                            self.runtime_profiles.active_camera_override(&id),
+                                        )
+                                        .0,
                                     ),
                                 );
                             }
@@ -1937,11 +1942,7 @@ fn effective_recording_mode(
     camera: &crate::cameras::CameraConfig,
     camera_id: &str,
 ) -> crate::cameras::CameraRecordingMode {
-    let overlay = profiles
-        .active_profile_id
-        .as_ref()
-        .and_then(|profile_id| profiles.profiles.get(profile_id))
-        .and_then(|profile| profile.cameras.get(camera_id));
+    let overlay = profiles.active_camera_override(camera_id);
     crate::profiles::resolve_camera_policy(
         &crate::profiles::BaseCameraPolicy {
             available: true,
@@ -2314,6 +2315,9 @@ mod tests {
         };
         assert_eq!(status.read().unwrap().cameras[&id].state, Pending);
         start_and_acknowledge(&mut recorder);
+        let acknowledged_mode = status.read().unwrap().cameras[&id].policy.recording_mode;
+        assert_eq!(acknowledged_mode, camera.config.recording_mode);
+        assert_ne!(acknowledged_mode, crate::cameras::CameraRecordingMode::Off);
         let privacy = active_privacy_schedule(&id);
         assert!(privacy.decision(&id, chrono::Utc::now()).unwrap().0);
         recorder.set_privacy_registry(privacy.clone());
@@ -2340,6 +2344,10 @@ mod tests {
             let view = status.read().unwrap();
             assert_eq!(view.cameras[&id].state, Applied);
             assert!(view.cameras[&id].policy.privacy_enforced);
+            assert_eq!(
+                view.cameras[&id].policy.recording_mode,
+                crate::cameras::CameraRecordingMode::Off
+            );
             assert_eq!(view.cameras[&other.ip.to_string()].state, Degraded);
             assert!(!recorder.camera_workers.contains_key(&ip));
         }
