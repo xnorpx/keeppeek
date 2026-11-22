@@ -210,10 +210,10 @@ async fn check_retired_copy_selection(connection: &turso::Connection) -> anyhow:
     connection.execute_batch(
         "INSERT INTO recording_files(id,stream_id,started_at_ms,ended_at_ms,path,init_offset,init_len,
              finalized,finalized_at_ms,file_identity,file_bytes)
-         SELECT 'z-eligible',stream_id,1,2,'/hot/later.mp4',0,1,1,2,'later-file',4 FROM recording_files WHERE id='recording';
+         SELECT 'z-eligible',stream_id,1,2,'/hot/cccccccc-cccc-4ccc-8ccc-cccccccccccc.mp4',0,1,1,2,'later-file',4 FROM recording_files WHERE id='recording';
          INSERT INTO storage_volume_allocations(operation,kind,object_id,volume_id,generation,
              relative_key,destination_path,bytes,intent_bytes,materialized_bytes,state,file_identity,digest,location_revision)
-         SELECT 'later-source',kind,'z-eligible',volume_id,generation,'later.mp4','/hot/later.mp4',4,4,4,'published','later-file',zeroblob(32),1
+         SELECT 'later-source',kind,'z-eligible',volume_id,generation,'cccccccc-cccc-4ccc-8ccc-cccccccccccc.mp4','/hot/cccccccc-cccc-4ccc-8ccc-cccccccccccc.mp4',4,4,4,'published','later-file',zeroblob(32),1
          FROM storage_volume_allocations WHERE operation='source-operation';"
     ).await?;
     let query = |filtered, after: Option<&str>| {

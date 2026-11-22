@@ -23,7 +23,6 @@ impl std::fmt::Display for ArchiveSurvivorUnprotected {
 impl std::error::Error for ArchiveSurvivorUnprotected {}
 
 /// An opened directory and the identity that a binding must retain.
-
 pub struct Root {
     path: PathBuf,
     directory: Dir,
