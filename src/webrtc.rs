@@ -7963,6 +7963,12 @@ mod tests {
                     }])
                     .unwrap();
             }
+            if kind == MediaKind::Video {
+                media.tracks[0]
+                    .runtime
+                    .keyframe_gate
+                    .mark_written(FrameOrigin::Live);
+            }
             request.live_audio_preview_offset_ms = Some(200);
             let second = media.subscribe(&session, &request, plan.clone()).unwrap();
             assert_eq!(second.live_audio.unwrap().applied_offset_ms, 200);
@@ -7989,6 +7995,7 @@ mod tests {
                 assert_eq!(first.delivery, second.delivery);
                 assert!(media.available_video_mids.is_empty());
                 assert_eq!(media.tracks.len(), 1);
+                assert!(media.tracks[0].runtime.keyframe_gate.has_live_gop());
                 media.unsubscribe(&session, &[id.to_owned()]);
             } else {
                 assert_ne!(first.delivery, second.delivery);

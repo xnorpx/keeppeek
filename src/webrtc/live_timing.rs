@@ -4,7 +4,6 @@ use super::{StreamKind, WebRtcAudioCodec};
 use crate::{api::proto, cameras::LiveAudioSettings, storage::VideoCodec};
 use std::{
     collections::{HashMap, VecDeque},
-    mem::size_of,
     sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
@@ -171,7 +170,7 @@ impl Reservation {
         } else {
             MAX_VIDEO_BYTES
         };
-        let entry_bytes = size_of::<Held<T>>();
+        let entry_bytes = std::mem::size_of::<Held<T>>();
         let first = !usage.payloads.contains_key(&key);
         let charge = if first {
             key.bytes.saturating_add(entry_bytes)
@@ -590,8 +589,16 @@ mod tests {
     fn multiple_viewers_share_per_stream_caps_and_return_reservations_on_drop() {
         let camera = Arc::new(CameraTiming::default());
         for (format, offset, bytes) in [
-            (AUDIO, 200, MAX_AUDIO_BYTES - size_of::<Held<i32>>()),
-            (VIDEO, -200, MAX_VIDEO_BYTES - size_of::<Held<i32>>()),
+            (
+                AUDIO,
+                200,
+                MAX_AUDIO_BYTES - std::mem::size_of::<Held<i32>>(),
+            ),
+            (
+                VIDEO,
+                -200,
+                MAX_VIDEO_BYTES - std::mem::size_of::<Held<i32>>(),
+            ),
         ] {
             let t = Instant::now();
             let mut first = Queue::new(camera.clone());

@@ -104,6 +104,10 @@
 	});
 	type LivePreview = { cameraId: string; stream: 'main' | 'sub'; offset: number };
 	let livePreview = $state.raw<LivePreview | null>(null);
+	$effect(() => {
+		if (livePreview && livePeer.track(livePreview.cameraId)?.restoredSavedTiming)
+			livePreview = null;
+	});
 	function cameraPlan(id: string, preview: LivePreview | null) {
 		return {
 			cameraId: id,
@@ -117,7 +121,16 @@
 		previewAvailable && camera !== null ? [cameraPlan(camera.id, livePreview)] : []
 	);
 	async function previewLiveAudio(stream: 'main' | 'sub', offset: number | null) {
-		if (!previewAvailable || !camera) throw new Error('The live camera is unavailable.');
+		if (!camera) throw new Error('The live camera is unavailable.');
+		if (
+			offset === null &&
+			(!previewAvailable || !livePeer.sessionId || !livePeer.track(camera.id)?.subscribed)
+		) {
+			livePeer.cancelDisconnectedPreview(camera.id);
+			livePreview = null;
+			return;
+		}
+		if (!previewAvailable) throw new Error('The live camera is unavailable.');
 		const id = camera.id;
 		const previous = livePreview;
 		const candidate = offset === null ? null : { cameraId: id, stream, offset };
@@ -672,7 +685,10 @@
 										camera={cameraSettings}
 										disabled={savingConfiguration || savingPrivacy || savingRecordedAudio}
 										appliedPreview={livePeer.track(cameraSettings.id)?.liveAudioPreviewOffsetMs}
-										onpreview={previewAvailable ? previewLiveAudio : undefined}
+										previewRequested={livePreview?.cameraId === cameraSettings.id}
+										onpreview={previewAvailable || livePreview?.cameraId === cameraSettings.id
+											? previewLiveAudio
+											: undefined}
 										onsave={(settings, revision) =>
 											saveRecordedAudio(settings, revision, 'live_audio')}
 									/>
@@ -1209,7 +1225,10 @@
 											camera={cameraSettings}
 											disabled={savingConfiguration || savingPrivacy || savingRecordedAudio}
 											appliedPreview={livePeer.track(cameraSettings.id)?.liveAudioPreviewOffsetMs}
-											onpreview={previewAvailable ? previewLiveAudio : undefined}
+											previewRequested={livePreview?.cameraId === cameraSettings.id}
+											onpreview={previewAvailable || livePreview?.cameraId === cameraSettings.id
+												? previewLiveAudio
+												: undefined}
 											onsave={(settings, revision) =>
 												saveRecordedAudio(settings, revision, 'live_audio')}
 										/>

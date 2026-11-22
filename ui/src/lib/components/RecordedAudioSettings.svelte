@@ -14,6 +14,7 @@
 		kind?: 'recorded' | 'live';
 		onpreview?: (stream: 'main' | 'sub', offset: number | null) => Promise<void>;
 		appliedPreview?: number;
+		previewRequested?: boolean;
 		disabled?: boolean;
 		onsave: (settings: RecordedAudioSettings, revision: string) => Promise<CameraSettings>;
 	};
@@ -25,7 +26,8 @@
 		onsave,
 		kind = 'recorded',
 		onpreview,
-		appliedPreview
+		appliedPreview,
+		previewRequested = false
 	}: Props = $props();
 	const live = $derived(kind === 'live');
 	let previewStream = $state<'main' | 'sub'>('main');
@@ -41,6 +43,7 @@
 	async function preview(offset: number | null) {
 		if (!onpreview || previewing) return;
 		previewing = true;
+		status = null;
 		error = null;
 		try {
 			await onpreview(previewStream, offset);
@@ -66,6 +69,16 @@
 	let status = $state<string | null>(null);
 	let errorSummary = $state<HTMLParagraphElement>();
 	let dirty = $derived(JSON.stringify(draft) !== JSON.stringify(draftFrom(saved.settings)));
+	$effect(() => {
+		const current = camera;
+		const revision = current.configuration_revision ?? '';
+		untrack(() => {
+			if (!saving && !dirty && revision !== saved.revision) {
+				saved = snapshot(current);
+				draft = draftFrom(saved.settings);
+			}
+		});
+	});
 	let parsed = $derived.by(() => {
 		try {
 			const settings: RecordedAudioSettings = {};
@@ -290,7 +303,7 @@
 							<Button
 								type="button"
 								variant="outline"
-								disabled={previewing || appliedPreview === undefined}
+								disabled={previewing || (appliedPreview === undefined && !previewRequested)}
 								onclick={() => preview(null)}>Reset preview</Button
 							>
 						</div>

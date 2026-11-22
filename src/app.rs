@@ -489,7 +489,7 @@ fn with_camera_events(state: ServerState, keeppeek: &mut KeepPeekLoop) -> Server
     keeppeek.set_event_publisher(move |event| publisher.publish_camera_event(event));
     let recovery = state.clone();
     keeppeek.set_recovered_profile_publisher(move |revision| {
-        recovery.confirm_recovered_profile(revision)
+        recovery.confirm_recovered_profile(revision);
     });
     let status_publisher = state.clone();
     keeppeek.set_runtime_profile_status_publisher(move || {

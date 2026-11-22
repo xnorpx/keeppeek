@@ -48,11 +48,10 @@ impl ApiMediaRuntime {
         if runtime
             .timing
             .set_preview(request.live_audio_preview_offset_ms)
+            && let Some(retired) = runtime.delivery.retire_binding(&request.subscription_id)
         {
             runtime.keyframe_gate.wait_for_live_keyframe();
-            if let Some(retired) = runtime.delivery.retire_binding(&request.subscription_id) {
-                self.cancel_group(&retired);
-            }
+            self.cancel_group(&retired);
         }
         self.bandwidth.dirty = true;
         session

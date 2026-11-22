@@ -166,6 +166,42 @@ describe('recorded-audio camera settings', () => {
 		expect(onsave).toHaveBeenCalledExactlyOnceWith({}, 'revision-one');
 	});
 
+	it('uses the latest clean revision after a sibling save', async () => {
+		const next = camera({ configuration_revision: 'revision-two' });
+		const onsave = vi.fn(async () => next);
+		const view = await render(RecordedAudioSettings, { props: { camera: camera(), onsave } });
+		await view.rerender({ camera: next });
+		await page.getByRole('textbox', { name: 'Camera default offset (ms)' }).fill('320');
+		await page.getByRole('button', { name: 'Save recorded timing' }).click();
+		expect(onsave).toHaveBeenCalledWith(
+			{ default_offset_ms: 320, main_offset_ms: 0 },
+			'revision-two'
+		);
+	});
+
+	it('keeps Reset available for a pending preview and clears old success feedback on failure', async () => {
+		const onpreview = vi
+			.fn()
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error('Camera busy'));
+		await render(RecordedAudioSettings, {
+			props: {
+				camera: camera({ live_audio: {} }),
+				kind: 'live',
+				previewRequested: true,
+				onpreview,
+				onsave: vi.fn()
+			}
+		});
+		const reset = page.getByRole('button', { name: 'Reset preview' });
+		await expect.element(reset).toBeEnabled();
+		await page.getByRole('button', { name: 'Apply preview' }).click();
+		await expect.element(page.getByText('Preview applied to this viewer.')).toBeVisible();
+		await reset.click();
+		await expect.element(page.getByText('Camera busy')).toBeVisible();
+		await expect.element(page.getByText('Preview applied to this viewer.')).not.toBeInTheDocument();
+	});
+
 	it('does not offer saves for an older server that omits timing support', async () => {
 		const onsave = vi.fn();
 		const view = await render(RecordedAudioSettings, {
