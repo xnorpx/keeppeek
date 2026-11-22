@@ -221,30 +221,40 @@ test('witnesses a paused replacement recording before later assertions attach', 
 	await page.goto(new URL('/recorded-frame-witness', baseURL).href);
 	const video = page.locator('video');
 	await countFrameRegistrations(video);
-    const sources: string[] = [];
-    try {
-        for (const time of [0, 1]) {
-            const source = await video.evaluate(async () => URL.createObjectURL(await (await fetch('/witness.mp4')).blob()));
-            sources.push(source);
-            await video.evaluate((element, { source, time }) => {
-                const video = element as HTMLVideoElement;
-                video.addEventListener('loadedmetadata', () => {video.currentTime = time;}, { once: true });
-                video.src = source;
-            }, {source, time});
-            await checkPausedFrame(video, source, time);
-            await expect(video).toHaveAttribute('data-initial-registrations', '1');
-            if (time === 1) {
-                const sought = await seekAfterContinuousPlayback(video);
-                await checkPausedFrame(video, source, sought);
-            }
-        }
-    } finally {
-        await video.evaluate((element, sources) => {
-            const video = element as HTMLVideoElement;
-            video.removeAttribute('src');
-            video.load();
-            for (const source of sources) URL.revokeObjectURL(source);
-        }, sources);
-    }
-
+	const sources: string[] = [];
+	try {
+		for (const time of [0, 1]) {
+			const source = await video.evaluate(async () =>
+				URL.createObjectURL(await (await fetch('/witness.mp4')).blob())
+			);
+			sources.push(source);
+			await video.evaluate(
+				(element, { source, time }) => {
+					const video = element as HTMLVideoElement;
+					video.addEventListener(
+						'loadedmetadata',
+						() => {
+							video.currentTime = time;
+						},
+						{ once: true }
+					);
+					video.src = source;
+				},
+				{ source, time }
+			);
+			await checkPausedFrame(video, source, time);
+			await expect(video).toHaveAttribute('data-initial-registrations', '1');
+			if (time === 1) {
+				const sought = await seekAfterContinuousPlayback(video);
+				await checkPausedFrame(video, source, sought);
+			}
+		}
+	} finally {
+		await video.evaluate((element, sources) => {
+			const video = element as HTMLVideoElement;
+			video.removeAttribute('src');
+			video.load();
+			for (const source of sources) URL.revokeObjectURL(source);
+		}, sources);
+	}
 });
