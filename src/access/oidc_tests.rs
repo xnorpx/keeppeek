@@ -293,7 +293,7 @@ fn oidc_rejects_hmac_algorithm_confusion_using_public_key_bytes() {
     let public = URL_SAFE_NO_PAD
         .decode(value["x"].as_str().unwrap())
         .unwrap();
-    let key = EncodingKey::from_secret(&public);
+    let key = EncodingKey::from_secret(&public).unwrap();
     let mut header = Header::new(Algorithm::HS256);
     header.kid = jwk.common.key_id.clone();
     let mut payload = claims();

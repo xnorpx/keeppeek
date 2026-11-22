@@ -294,10 +294,9 @@
 			aria-label="Deterministic log preview"
 		>
 			{#if visibleLogLines.length > 0}
-				<pre
-					class="font-mono text-[11px] leading-[19px] whitespace-pre text-text-muted">{visibleLogLines.join(
-						'\n'
-					)}</pre>
+				<pre class="font-mono text-[11px] leading-[19px] whitespace-pre text-text-muted"
+					>{visibleLogLines.join('\n')}</pre
+				>
 			{:else}
 				<p class="text-xs leading-5 text-text-muted">
 					No embedded log evidence. Open the live viewer for server and browser logs.

@@ -787,8 +787,7 @@
 				<ol class="grid grid-cols-5 gap-1" aria-label="Add camera progress">
 					{#each cameraWizardSteps as step, index (step)}
 						<li class="min-w-0">
-							<div
-								class="h-1 rounded-full {index <= stepIndex ? 'bg-primary' : 'bg-hairline'}"
+							<div class="h-1 rounded-full {index <= stepIndex ? 'bg-primary' : 'bg-hairline'}"
 							></div>
 							<p
 								class="mt-1 truncate text-center font-mono text-2xs {index === stepIndex
