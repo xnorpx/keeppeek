@@ -405,8 +405,8 @@ fn deadline_finalization_clamps_the_last_mp4_video_sample() {
     }
     let path = writer
         .finalize_before(start + Duration::from_millis(250))
-        .unwrap()
-        .unwrap();
+        .expect("finalize the three-keyframe event fixture")
+        .expect("the accepted keyframes must publish a segment before the deadline");
     let mut media = mp4::read_mp4(std::fs::File::open(path).unwrap()).unwrap();
     let track = *media.tracks().keys().next().unwrap();
     assert_eq!(media.tracks()[&track].sample_count(), 3);

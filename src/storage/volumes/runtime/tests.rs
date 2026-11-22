@@ -26,7 +26,10 @@ pub fn fixture(limit: u64) -> anyhow::Result<(PathBuf, RecordingCatalog, Manager
 
 pub fn create_root(path: &Path) -> anyhow::Result<()> {
     std::fs::create_dir(path)?;
-    protect_created_root(path)
+    protect_created_root(path).inspect_err(|_| {
+        // Exclusive creation succeeded. Remove only an empty fixture directory on failure.
+        let _ = std::fs::remove_dir(path);
+    })
 }
 
 pub fn protect_created_root(path: &Path) -> anyhow::Result<()> {
