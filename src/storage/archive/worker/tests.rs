@@ -456,6 +456,8 @@ fn finish_scan(scan: &mut Scan, context: &Context) -> anyhow::Result<()> {
 #[test]
 fn archive_resamples_capacity_after_a_primary_write_changes_the_ledger() -> anyhow::Result<()> {
     let fixture = Fixture::new()?;
+    use anyhow::Context as _;
+
     let (recording, _) = fixture.recording("front")?;
     let context = fixture.context();
     context.bind()?;
@@ -477,10 +479,13 @@ fn archive_resamples_capacity_after_a_primary_write_changes_the_ledger() -> anyh
         if observations == 1 {
             fixture.recording("rear")?;
         }
-        context.catalog.archive(Request::ReserveTransfer {
-            id: job.id.clone(),
-            capacity,
-        })
+        context
+            .catalog
+            .archive(Request::ReserveTransfer {
+                id: job.id.clone(),
+                capacity,
+            })
+            .context("reserving an archive transfer at its destination")
     })?;
     assert_eq!(observations, 2);
     assert_eq!(context.catalog.archive_job(&job.id)?.attempts, 1);
@@ -488,10 +493,13 @@ fn archive_resamples_capacity_after_a_primary_write_changes_the_ledger() -> anyh
     let changed_root = context.catalog.with_fresh_capacity(&root, |mut capacity| {
         calls += 1;
         capacity.root_identity = "different-root".into();
-        context.catalog.archive(Request::ReserveTransfer {
-            id: job.id.clone(),
-            capacity,
-        })
+        context
+            .catalog
+            .archive(Request::ReserveTransfer {
+                id: job.id.clone(),
+                capacity,
+            })
+            .context("reserving an archive transfer at its destination")
     });
     assert!(changed_root.is_err());
     assert_eq!(calls, 1, "identity rejection must not be retried");
