@@ -335,6 +335,46 @@ expired artifact requires a fresh job if the original recordings are still avail
 Timestamp burn-in requires a configured re-encoding worker and otherwise fails explicitly. The
 normal export path preserves source frames and timestamps without re-encoding.
 
+### Compare RTSP source clocks
+
+When an RTSP camera is streaming, look for `camera.rtsp.source_timing` or
+`RTSP source timing` in the recorder’s information-level logs. Match the Main or Sub
+profile and PLAY session. `session_uuid_0` through `session_uuid_3` are the UUID’s
+four unsigned 32-bit words, in network order. Convert each word to eight hexadecimal
+digits, join them, then apply the standard UUID grouping. Registered cameras expose
+the four corresponding `camera_uuid_*` fields for their persisted profile UUID.
+An unregistered camera reports `camera_registered=false`. Its session can be
+followed in the log, but correlation with a named camera requires registration.
+
+Failed PLAY attempts with accepted RTP and completed sessions emit final observations at
+info level. For a short live collection, enable `keeppeek::rtsp::timing=trace` in the
+recorder log filter. The first enabled periodic collection starts one five-minute window
+per recorder process. Reconnecting a camera or toggling the filter does not extend it.
+After the window expires, final observations continue at info level. Each report includes a track only when that media type has a
+single configured track and the recorder has accepted at least one RTP packet. Each track emits its own structured entry.
+
+- `first_rtp_ticks` and `latest_rtp_ticks` are the original 32-bit packet header
+  timestamps. Multiply elapsed ticks by 1,000 and divide by `clock_rate_hz` to get
+  milliseconds. Use the extended fields to calculate elapsed ticks across wrap.
+- `missing_sequence_numbers` counts gaps in accepted packet sequence numbers.
+  `backward_timestamp_steps` counts backwards presentation timestamps. Picture
+  reordering can produce such a step. Neither counter identifies a clock reset
+  by itself.
+- `sender_rtp_ticks`, `sender_ntp_seconds` and `sender_ntp_fraction` preserve the latest
+  matching RTCP sender's RTP timestamp and both words of its NTP clock. These values
+  describe the camera's clock and can be absent or inaccurate.
+- `latest_audio_minus_video_play_us` compares the latest accepted packet
+  positions on the camera's PLAY timeline. A positive value means the last audio
+  packet is further along that timeline. Both tracks need a camera-supplied
+  PLAY origin. Packet interleaving can change the reading even when playback
+  sounds synchronized.
+
+The readings precede transcoding, recording timeline normalization and configured
+presentation correction. Use the recorded flash/tone preview or a known physical
+event to measure audible sync. These periodic observations live in the recorder
+log and expire with its retention policy. Existing recordings contain their
+stored media timestamps.
+
 For the availability and safety limits of manual deletion and catalog drift checks,
 see [Recording maintenance](./recording-maintenance.md). The Administrator workflow
 is under qualification; confirmed jobs can remove selected recordings permanently.
