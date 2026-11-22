@@ -88,3 +88,6 @@ async fn persist(
     anyhow::ensure!(state_rows == 1, "missing event search revision");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
