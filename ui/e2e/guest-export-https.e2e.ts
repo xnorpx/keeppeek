@@ -1,7 +1,59 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { startAuthenticationFixture } from './fixtures/external-authentication-server';
+
+function observeGuestNetwork(context: BrowserContext, origin: string, token: string) {
+	const paths = new Set<string>();
+	const checks: Promise<void>[] = [];
+	const problems = new Set<string>();
+	context.on('request', (request) => {
+		if (checks.length >= 512) {
+			problems.add('guest request observation limit exceeded');
+			return;
+		}
+		const destination = new URL(request.url());
+		if (destination.origin !== origin) problems.add('third-party request');
+		if ((destination.pathname + destination.search).includes(token))
+			problems.add('token in request URL');
+		checks.push(
+			request.allHeaders().then(
+				(headers) => {
+					if (headers.referer?.includes(token)) problems.add('token in referrer');
+				},
+				() => {
+					problems.add('unreadable request headers');
+				}
+			)
+		);
+	});
+	context.on('response', (response) => {
+		const path = new URL(response.url()).pathname;
+		if (path !== '/share' && !path.startsWith('/guest/')) return;
+		paths.add(path);
+		const headers = response.headers();
+		if (
+			headers['cache-control'] !== 'private, no-store' ||
+			headers['referrer-policy'] !== 'no-referrer' ||
+			headers['x-content-type-options'] !== 'nosniff' ||
+			headers['x-frame-options'] !== 'DENY' ||
+			headers['cross-origin-resource-policy'] !== 'same-origin' ||
+			!headers['content-security-policy']?.includes("frame-ancestors 'none'")
+		) {
+			problems.add('missing guest response protection');
+		}
+	});
+	return async () => {
+		await Promise.all(checks);
+		expect([...problems]).toEqual([]);
+		expect([...paths].sort()).toEqual([
+			'/guest/download',
+			'/guest/media',
+			'/guest/session',
+			'/share'
+		]);
+	};
+}
 
 async function downloadExport(page: Page, link: Locator) {
 	const started = performance.now();
@@ -55,9 +107,16 @@ test('an Administrator shares a completed export over HTTPS and revokes the gues
 		await dialog.getByLabel('Allow download').check();
 		await dialog.getByRole('button', { name: 'Create guest link' }).click();
 		const url = await dialog.getByLabel('One-time guest link').inputValue();
+		const token = new URL(url).hash.slice(1);
+		expect(token.length).toBe(43);
+		const verifyNetwork = observeGuestNetwork(guest, fixture.origin, token);
 		await dialog.getByRole('button', { name: 'Close', exact: true }).click();
 		await page.goto(fixture.origin + '/settings#access');
 		const viewer = await guest.newPage();
+		let consoleHasToken = false;
+		viewer.on('console', (message) => {
+			consoleHasToken ||= message.text().includes(token);
+		});
 		const response = await viewer.goto(url).catch(() => {
 			throw new Error('Could not open the one-time guest link.');
 		});
@@ -66,6 +125,12 @@ test('an Administrator shares a completed export over HTTPS and revokes the gues
 		expect(response?.headers()['referrer-policy']).toBe('no-referrer');
 		await expect(viewer.getByRole('heading', { name: 'Entrance recording' })).toBeVisible();
 		expect(new URL(viewer.url()).hash).toBe('');
+		const cookies = await guest.cookies(fixture.origin);
+		expect(
+			cookies.map(({ name, secure, httpOnly, sameSite }) => ({ name, secure, httpOnly, sameSite }))
+		).toEqual([
+			{ name: '__Host-keeppeek-guest', secure: true, httpOnly: true, sameSite: 'Strict' }
+		]);
 		const video = viewer.locator('video');
 		await video.evaluate(async (v) => {
 			const media = v as HTMLVideoElement;
@@ -83,6 +148,30 @@ test('an Administrator shares a completed export over HTTPS and revokes the gues
 			viewer.getByRole('link', { name: 'Download MP4' })
 		);
 		expect(guestDownload.sha256).toBe(administratorDownload.sha256);
+		const transfer = await viewer
+			.getByRole('link', { name: 'Download MP4' })
+			.evaluate(async (element, expectedBytes) => {
+				const started = performance.now();
+				const response = await fetch((element as HTMLAnchorElement).href);
+				if (!response.ok || !response.body)
+					throw new Error('Guest download could not be inspected.');
+				const reader = response.body.getReader();
+				let bytes = 0;
+				let firstByteMs: number | null = null;
+				for (;;) {
+					const next = await reader.read();
+					if (next.done) break;
+					if (next.value.byteLength > 0) firstByteMs ??= performance.now() - started;
+					bytes += next.value.byteLength;
+					if (bytes > expectedBytes) {
+						await reader.cancel();
+						throw new Error('Guest download exceeded the evidence size.');
+					}
+				}
+				return { bytes, firstByteMs };
+			}, guestDownload.bytes);
+		expect(transfer.bytes).toBe(guestDownload.bytes);
+		expect(transfer.firstByteMs).not.toBeNull();
 		const row = page
 			.getByRole('listitem')
 			.filter({ has: page.getByRole('heading', { name: 'Entrance recording' }) });
@@ -93,13 +182,40 @@ test('an Administrator shares a completed export over HTTPS and revokes the gues
 		await revoke.getByRole('button', { name: 'Confirm revocation' }).click();
 		await expect(viewer.getByText('The link was revoked. Playback has stopped.')).toBeVisible();
 		await expect(video).toHaveCount(0);
+		const revokedUiMs = performance.now() - revokeStart;
+		const privateValues = [token, cookies[0].value];
+		expect(consoleHasToken).toBe(false);
+		expect(
+			await viewer.evaluate((values) => {
+				const storage = JSON.stringify([
+					localStorage,
+					sessionStorage,
+					history.state,
+					location.href
+				]);
+				return values.some((value) => storage.includes(value));
+			}, privateValues)
+		).toBe(false);
+		await guest.clearCookies();
+		const reopened = await guest.newPage();
+		await reopened.goto(url).catch(() => {
+			throw new Error('Could not reopen the revoked link.');
+		});
+		await expect(
+			reopened.getByRole('heading', { name: 'This link is unavailable.' })
+		).toBeVisible();
+		await expect(reopened.locator('video')).toHaveCount(0);
+		await verifyNetwork();
+		const audit = JSON.stringify(await fixture.audit());
+		expect(privateValues.some((value) => audit.includes(value))).toBe(false);
 		await testInfo.attach('guest-export-timings', {
 			contentType: 'application/json',
 			body: JSON.stringify({
 				bytes: guestDownload.bytes,
 				administratorDownloadMs: administratorDownload.elapsedMs,
 				guestDownloadMs: guestDownload.elapsedMs,
-				guestRevokedUiMs: performance.now() - revokeStart
+				guestDownloadFirstByteMs: transfer.firstByteMs,
+				guestRevokedUiMs: revokedUiMs
 			})
 		});
 	} finally {
