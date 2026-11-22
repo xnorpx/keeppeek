@@ -286,3 +286,33 @@ The synthetic tests exercise both signs and zero, independent profiles, aggregat
 budgets across viewers, stream switching, source resets, bounded holding and the
 settings revision contract. Physical lip-sync, external transcoder delay, camera
 firmware coverage and stable production-load latency remain open under #124.
+
+### Server listener queue measurements on 2026-11-22
+
+The Windows 11 Pro x64 host (build 26200, AMD Ryzen 5 5600G, 16 GiB RAM) ran the
+Rust 1.100.0 unoptimized test profile while other builds were active. The source
+at commit `284b65d81d926a6075155c830b92e3f694b58d9b` was measured with:
+
+```sh
+cargo +1.100.0 test --locked -p keeppeek --lib measure_live_listener_timing -- --ignored --nocapture
+```
+
+Each in-memory replay advances a simulated 20 ms clock, admits 5,000 512-byte
+audio units and 2,500 32,768-byte video units, then drains both tracks. All
+7,500 units were released in every case. One warmup per offset preceded 30
+measured repetitions with alternating order. Values below are nearest-rank
+p50/p95 elapsed milliseconds for the full replay. Byte peaks are encoded
+payload occupancy during startup at the stable packet rate.
+
+| Offset  | p50 ms | p95 ms | p50 delta vs 0 ms | p95 delta vs 0 ms | Peak held audio bytes | Peak held video bytes |
+| ------- | -----: | -----: | ----------------: | ----------------: | --------------------: | --------------------: |
+| 0 ms    |  1.530 |  2.267 |                 0 |                 0 |                     0 |                     0 |
+| +120 ms |  5.133 |  6.263 |            +3.603 |            +3.996 |                 3,072 |                     0 |
+| −120 ms |  3.397 |  4.957 |            +1.867 |            +2.689 |                     0 |                98,304 |
+
+The separate paired-event fixture introduces 120 ms of synthetic audio lead or
+lag and verifies identical client-handoff deadlines after applying the matching
+offset, including variable packet size and gaps. The approved server bounds are
+250 ms age, 256 KiB audio and 2 MiB/128 frames video per stream. The timing
+numbers compare disabled and enabled queue processing in this build. They do not
+measure capture-to-speaker latency, end-to-end ingest throughput or production CPU.
