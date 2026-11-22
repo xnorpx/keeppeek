@@ -114,129 +114,174 @@ fn report_superseded_recovery(state: &ServerState, registry: &ProfileRegistry) {
     publish_status_event(state, now_ms());
 }
 
+type ProfileReply =
+    anyhow::Result<std::sync::mpsc::Receiver<crate::keeppeek::ProfileApplicationResult>>;
+
 fn run(state: &ServerState) {
+    while let Some((desired, submitted_config, response)) = submit_next(state) {
+        let result = await_application(state, desired.registry.revision, response);
+        finish_application(state, &desired, submitted_config, result);
+    }
+}
+
+fn submit_next(state: &ServerState) -> Option<(Desired, [u8; 32], ProfileReply)> {
     loop {
-        let (desired, submitted_config, response) = {
-            // Serialize submission with camera edits. Never wait on the recorder under this lock.
-            let _guard = state
-                .config_update
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut queue = state
-                .profile_application
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            queue.stalled_revision = None;
-            let Some(desired) = queue.next.take() else {
-                queue.running = false;
-                return;
-            };
-            drop(queue);
-            let (identities, submitted_config) = match current_identities(
-                state,
-                &desired.registry,
-                &desired.camera_ids,
-                desired.expected_config,
-            ) {
-                Ok(Some(ids)) => ids,
-                Ok(None) if desired.expected_config.is_some() => {
-                    report_superseded_recovery(state, &desired.registry);
-                    continue;
-                }
-                Ok(None) => continue,
-                Err(error) => {
-                    report_failure(state, &desired.registry, &error.to_string());
-                    continue;
-                }
-            };
-            // A deferred worker may finish before this command's reply reaches the application thread.
-            // Install its exact registry, identities, and configuration fence before submission.
-            state
-                .profile_application
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .recoverable = Some(Desired {
-                expected_config: Some(submitted_config),
-                ..desired.clone()
-            });
-            let runtime = state
-                .camera_runtime
-                .as_ref()
-                .expect("application worker requires camera runtime");
-            let response =
-                runtime.submit_runtime_profiles(desired.registry.clone(), Some(identities));
-            (desired, submitted_config, response)
-        };
-        let result = response.and_then(|response| {
-            match response.recv_timeout(crate::keeppeek::CAMERA_CONTROL_TIMEOUT) {
-                Ok(result) => result,
-                Err(RecvTimeoutError::Disconnected) => {
-                    anyhow::bail!("Camera runtime stopped before replying")
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    {
-                        let _guard = state
-                            .config_update
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let mut queue = state
-                            .profile_application
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        queue.stalled_revision = Some(
-                            queue
-                                .next
-                                .as_ref()
-                                .map_or(desired.registry.revision, |next| next.registry.revision),
-                        );
-                        drop(queue);
-                        publish_status_event(state, now_ms());
-                    }
-                    // Keep only one command in flight. A late reply can recover; a new desired
-                    // selection replaces the queued selection even while the recorder is stalled.
-                    response
-                        .recv()
-                        .map_err(|_| anyhow::anyhow!("Camera runtime stopped before replying"))?
-                }
-            }
-        });
+        // Serialize submission with camera edits. Never wait on the recorder under this lock.
         let _guard = state
             .config_update
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut queue = state
+            .profile_application
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        queue.stalled_revision = None;
+        let Some(desired) = queue.next.take() else {
+            queue.running = false;
+            return None;
+        };
+        drop(queue);
+        let (identities, submitted_config) = match current_identities(
+            state,
+            &desired.registry,
+            &desired.camera_ids,
+            desired.expected_config,
+        ) {
+            Ok(Some(ids)) => ids,
+            Ok(None) if desired.expected_config.is_some() => {
+                report_superseded_recovery(state, &desired.registry);
+                continue;
+            }
+            Ok(None) => continue,
+            Err(error) => {
+                report_failure(state, &desired.registry, &error.to_string());
+                continue;
+            }
+        };
+        // A deferred worker may finish before this command's reply reaches the application thread.
+        // Install its exact registry, identities, and configuration fence before submission.
         state
             .profile_application
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .stalled_revision = None;
-        match current_identities(
-            state,
-            &desired.registry,
-            &desired.camera_ids,
-            Some(submitted_config),
-        ) {
-            Ok(Some((ids, _))) => {
-                let result = result.and_then(|applications| {
-                    apply_confirmed_privacy(state, &desired.registry, &ids, &applications, None)?;
-                    Ok(applications)
-                });
-                match result {
-                    Ok(applications) => {
-                        update_runtime_status(
-                            state,
-                            &desired.registry,
-                            Some(applications),
-                            None,
-                            false,
-                        );
-                        publish_status_event(state, now_ms());
-                    }
-                    Err(error) => report_failure(state, &desired.registry, &error.to_string()),
-                }
+            .recoverable = Some(Desired {
+            expected_config: Some(submitted_config),
+            ..desired.clone()
+        });
+        let runtime = state
+            .camera_runtime
+            .as_ref()
+            .expect("application worker requires camera runtime");
+        let response = runtime.submit_runtime_profiles(desired.registry.clone(), Some(identities));
+        return Some((desired, submitted_config, response));
+    }
+}
+
+fn await_application(
+    state: &ServerState,
+    revision: u64,
+    response: ProfileReply,
+) -> crate::keeppeek::ProfileApplicationResult {
+    response.and_then(|response| {
+        match response.recv_timeout(crate::keeppeek::CAMERA_CONTROL_TIMEOUT) {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Disconnected) => {
+                anyhow::bail!("Camera runtime stopped before replying")
             }
-            Ok(None) => publish_status_event(state, now_ms()),
-            Err(error) => report_failure(state, &desired.registry, &error.to_string()),
+            Err(RecvTimeoutError::Timeout) => {
+                {
+                    let _guard = state
+                        .config_update
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut queue = state
+                        .profile_application
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    queue.stalled_revision = Some(
+                        queue
+                            .next
+                            .as_ref()
+                            .map_or(revision, |next| next.registry.revision),
+                    );
+                    drop(queue);
+                    publish_status_event(state, now_ms());
+                }
+                // Keep only one command in flight. A late reply can recover; a new desired
+                // selection replaces the queued selection even while the recorder is stalled.
+                response
+                    .recv()
+                    .map_err(|_| anyhow::anyhow!("Camera runtime stopped before replying"))?
+            }
         }
+    })
+}
+
+fn finish_application(
+    state: &ServerState,
+    desired: &Desired,
+    submitted_config: [u8; 32],
+    result: crate::keeppeek::ProfileApplicationResult,
+) {
+    let _guard = state
+        .config_update
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    state
+        .profile_application
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .stalled_revision = None;
+    match current_identities(
+        state,
+        &desired.registry,
+        &desired.camera_ids,
+        Some(submitted_config),
+    ) {
+        Ok(Some((ids, _))) => {
+            let result = result.and_then(|applications| {
+                apply_confirmed_privacy(state, &desired.registry, &ids, &applications, None)?;
+                Ok(applications)
+            });
+            match result {
+                Ok(applications) => {
+                    update_runtime_status(
+                        state,
+                        &desired.registry,
+                        Some(applications),
+                        None,
+                        false,
+                    );
+                    publish_status_event(state, now_ms());
+                }
+                Err(error) => report_failure(state, &desired.registry, &error.to_string()),
+            }
+        }
+        Ok(None) => reconcile_superseded(state, desired),
+        Err(error) => report_failure(state, &desired.registry, &error.to_string()),
+    }
+}
+
+// This is called under config_update. A settings edit may update the camera file without
+// publishing a recorder observation. Obtain a fresh acknowledgement before releasing privacy.
+fn reconcile_superseded(state: &ServerState, desired: &Desired) {
+    if desired.expected_config.is_some() {
+        report_superseded_recovery(state, &desired.registry);
+        return;
+    }
+    let Some(path) = &state.camera_config_path else {
+        return;
+    };
+    let config = match config::load_config(path) {
+        Ok(config) => config,
+        Err(error) => return report_failure(state, &desired.registry, &error.to_string()),
+    };
+    if config.runtime_profiles != desired.registry {
+        return;
+    }
+    match config.camera_profile_identities() {
+        Ok(ids) => schedule(state, &desired.registry, ids),
+        Err(error) => report_failure(state, &desired.registry, &error.to_string()),
     }
 }
 
@@ -280,7 +325,7 @@ pub(super) fn current_identities(
     )))
 }
 
-pub(super) fn camera_fingerprint(config: &Config) -> anyhow::Result<[u8; 32]> {
+pub(in crate::server) fn camera_fingerprint(config: &Config) -> anyhow::Result<[u8; 32]> {
     use sha2::Digest as _;
     let cameras: BTreeMap<_, _> = config.camera_configurations()?.into_iter().collect();
     Ok(sha2::Sha256::digest(serde_json::to_vec(&cameras)?).into())
@@ -353,6 +398,46 @@ pub(in crate::server) fn apply_confirmed_privacy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_edit_between_submission_and_base_acknowledgement_resubmits_before_releasing_privacy() {
+        super::super::lifecycle_tests::with_applied_base(|state, path, source| {
+            let original = config::load_config(path).unwrap();
+            let fingerprint = camera_fingerprint(&original).unwrap();
+            let desired = Desired {
+                registry: original.runtime_profiles.clone(),
+                camera_ids: original.camera_profile_identities().unwrap(),
+                expected_config: None,
+            };
+            let mut camera = original
+                .camera_configurations()
+                .unwrap()
+                .into_values()
+                .flatten()
+                .next()
+                .unwrap();
+            camera.recorded_audio.default_offset_ms = Some(50);
+            config::upsert_camera(path, &camera).unwrap();
+            state
+                .privacy
+                .replace_profile_overrides(BTreeMap::from([(source.to_owned(), true)]))
+                .unwrap();
+            finish_application(state, &desired, fingerprint, Ok(Vec::new()));
+            let deadline = Instant::now() + Duration::from_secs(6);
+            while state
+                .privacy
+                .decision(source, chrono::Utc::now())
+                .unwrap()
+                .0
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "fresh camera acknowledgement did not release privacy"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+    }
 
     #[test]
     fn delayed_acknowledgment_projects_a_timeout_without_replacing_the_recorder_observation() {

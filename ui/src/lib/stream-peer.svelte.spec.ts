@@ -864,6 +864,68 @@ describe('LivePeer', () => {
 		}
 	);
 
+	it('retries the latest plan when its replacement signaling attempt fails during recovery', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		const response = { session_id: 'first', answer: { type: 'answer', sdp: 'v=0' } };
+		api.createSession
+			.mockResolvedValueOnce(response)
+			.mockRejectedValueOnce(new ApiRequestError(503, 'temporarily unavailable'))
+			.mockRejectedValueOnce(new ApiRequestError(503, 'still unavailable'))
+			.mockResolvedValueOnce({ ...response, session_id: 'restored' });
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		await peer.configure([{ cameraId: 'front-door', quality: 'low' }]);
+		vi.useFakeTimers();
+		try {
+			FakePeerConnection.latest!.channels[0].close();
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(peer.configure([{ cameraId: 'front-door', quality: 'high' }])).rejects.toThrow(
+				'still unavailable'
+			);
+			await vi.runAllTimersAsync();
+			expect(peer.sessionId).toBe('restored');
+			expect(peer.track('front-door')?.requestedQuality).toBe('high');
+		} finally {
+			vi.useRealTimers();
+			await peer.close();
+		}
+	});
+
+	it('recovers while the old microphone prompt is open and stops a late microphone stream', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		let answer!: (stream: MediaStream) => void;
+		const microphone = vi.spyOn(navigator.mediaDevices, 'getUserMedia').mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					answer = resolve;
+				})
+		);
+		const response = { session_id: 'first', answer: { type: 'answer', sdp: 'v=0' } };
+		api.createSession
+			.mockResolvedValueOnce(response)
+			.mockResolvedValueOnce({ ...response, session_id: 'restored' });
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		await peer.configure([{ cameraId: 'front-door', quality: 'low' }]);
+		const command = peer.startTalkback({ all: true }).catch((error: Error) => error);
+		await vi.waitFor(() => expect(microphone).toHaveBeenCalledOnce());
+		FakePeerConnection.latest!.channels[0].close();
+		expect(await command).toMatchObject({ message: expect.stringMatching(/connection changed/i) });
+		await vi.waitFor(() => expect(peer.sessionId).toBe('restored'));
+		const stop = vi.fn();
+		answer({ getTracks: () => [{ stop }] } as unknown as MediaStream);
+		await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+		expect(peer.talkbackActive).toBe(false);
+		await peer.close();
+	});
+
+	it('publishes live command errors before connecting', async () => {
+		const peer = new LivePeer();
+		await expect(peer.playChime('front-door', 'bell')).rejects.toThrow(/connect to live view/i);
+		expect(peer.error).toBe(peer.talkbackError);
+		expect(peer.error).toMatch(/connect to live view/i);
+	});
+
 	it.each([403, 503])(
 		'rechecks authorization and bounds retries after signaling fails with %i',
 		async (status) => {

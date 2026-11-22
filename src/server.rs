@@ -9143,6 +9143,7 @@ impl ServerState {
     fn activate_camera_entry(&self, entry: CameraEntry) {
         let config = entry.configuration.clone();
         self.upsert_camera(entry);
+        self.publish_runtime_profile_status();
         self.enrich_camera_metadata_in_background(vec![config]);
     }
 
@@ -13001,7 +13002,7 @@ fn start_runtime_camera(
         tracing::warn!(ip = %config.ip, %error, "discovered camera endpoints could not be persisted");
         return None;
     }
-    let profile_privacy = match refresh_runtime_profile_camera_ids(state, config_path) {
+    let before_start = match refresh_runtime_profile_camera_ids(state, config_path) {
         Ok(profile_privacy) => profile_privacy,
         Err(error) => {
             tracing::warn!(ip = %config.ip, %error, "camera profile identity could not be applied live");
@@ -13026,7 +13027,7 @@ fn start_runtime_camera(
         tracing::warn!(ip = %config.ip, %error, "camera configuration could not be applied live");
         return None;
     }
-    if let Err(error) = profile_privacy.apply(state, None) {
+    if let Err(error) = before_start.confirm_after_start(state, config_path) {
         tracing::warn!(ip = %config.ip, %error, "camera profile privacy could not finish its transition");
         return None;
     }
@@ -13034,12 +13035,37 @@ fn start_runtime_camera(
 }
 
 struct RuntimeCameraProfileRefresh {
+    fingerprint: [u8; 32],
     registry: crate::profiles::ProfileRegistry,
     ids: crate::keeppeek::CameraProfileIds,
     applications: Vec<crate::profiles::CameraRuntimeApplication>,
 }
 
 impl RuntimeCameraProfileRefresh {
+    fn confirm_after_start(&self, state: &ServerState, path: &Path) -> anyhow::Result<()> {
+        let config = config::load_config(path)?;
+        anyhow::ensure!(
+            config.runtime_profiles == self.registry
+                && state_store::profiles::camera_fingerprint(&config)? == self.fingerprint,
+            "camera or profile configuration changed during restart"
+        );
+        let runtime = state
+            .camera_runtime
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("camera runtime is unavailable"))?;
+        let observations = runtime.set_runtime_profiles_with_camera_ids(
+            self.registry.clone(),
+            config.camera_profile_identities()?,
+        )?;
+        state_store::profiles::apply_confirmed_privacy(
+            state,
+            &self.registry,
+            &self.ids,
+            &observations,
+            None,
+        )
+    }
+
     fn apply(&self, state: &ServerState, stopped: Option<IpAddr>) -> anyhow::Result<()> {
         state_store::profiles::apply_confirmed_privacy(
             state,
@@ -13079,6 +13105,7 @@ fn refresh_runtime_profile_camera_ids(
         Vec::new()
     };
     Ok(RuntimeCameraProfileRefresh {
+        fingerprint: state_store::profiles::camera_fingerprint(&configuration)?,
         registry: configuration.runtime_profiles,
         ids: profile_camera_ids,
         applications,

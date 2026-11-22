@@ -41,7 +41,7 @@ export class SharedProfileWatch<T> {
 			});
 	}
 
-	pause(pending: T): void {
+	pause(pending?: T): void {
 		const group = this.group;
 		if (!group) return;
 		if (!group.paused) this.retire(group);

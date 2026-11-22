@@ -90,7 +90,7 @@ pub(super) enum WatchEventKind {
     },
     ProfileHeader {
         entry: StoredEntry,
-        degraded: Option<std::collections::BTreeSet<String>>,
+        observations: Option<profiles::observed::ObservedCameraStates>,
     },
 }
 

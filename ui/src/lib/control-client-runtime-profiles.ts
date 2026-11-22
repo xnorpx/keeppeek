@@ -50,12 +50,12 @@ export class RuntimeProfilesControlClient {
 	handleConnectionClosed(): void {
 		this.connectionGeneration++;
 		for (const disconnect of this.shellDisconnectListeners) disconnect();
-		this.activeWatch.invalidateSnapshot();
+		this.activeWatch.pause();
 		this.statusWatch.pause(null);
 	}
 
-	handleConnectionOpened(): Promise<void> {
-		return this.statusWatch.resume();
+	async handleConnectionOpened(): Promise<void> {
+		await Promise.all([this.activeWatch.resume(), this.statusWatch.resume()]);
 	}
 
 	async getCameras(): Promise<RuntimeProfileCameras> {
@@ -314,72 +314,68 @@ export class RuntimeProfilesControlClient {
 	private watchHeader(
 		listener: (header: ActiveRuntimeProfile) => void
 	): Promise<ProfileSubscription> {
-		return this.activeWatch.subscribe(listener, (emit) =>
-			this.watch(runtimeProfilesActiveKey, (entry) => emit(runtimeProfileHeaderFromEntry(entry)))
-		);
+		return this.activeWatch.subscribe(listener, async (emit) => {
+			let retired = false;
+			const generation = this.connectionGeneration;
+			const watch = await this.watch(
+				runtimeProfilesActiveKey,
+				(entry) => emit(runtimeProfileHeaderFromEntry(entry)),
+				() => {
+					if (retired || generation !== this.connectionGeneration) return;
+					retired = true;
+					this.activeWatch.pause();
+					for (const disconnect of this.shellDisconnectListeners) disconnect();
+					void this.activeWatch.resume();
+				}
+			);
+			return {
+				close: async () => {
+					retired = true;
+					await watch.close();
+				}
+			};
+		});
 	}
 
 	async watchShellProfile(
 		listener: (profileId: string | null, degraded: number | null) => void
 	): Promise<ProfileSubscription> {
 		let header: ActiveRuntimeProfile | undefined;
-		let legacy: RuntimeProfileStatus | null = null;
-		let status: Promise<ProfileSubscription> | undefined;
-		let epoch = 0;
 		let closed = false;
-		const notify = () => {
-			if (!header || closed) return;
+		const legacy = this.legacyShellStatus(() => {
+			if (header && !closed) notify(header);
+		});
+		const notify = (active: ActiveRuntimeProfile) => {
+			const status = legacy.value();
 			const matches =
-				legacy &&
-				legacy.revision === header.revision &&
-				legacy.active_profile_id === header.profileId &&
-				legacy.definitionRevision === header.definitionRevision;
+				status &&
+				status.revision === active.revision &&
+				status.active_profile_id === active.profileId &&
+				status.definitionRevision === active.definitionRevision;
 			const count =
-				header.degradedCameras === undefined && matches && legacy
-					? Object.values(legacy.cameras).filter((camera) => camera.state === 'degraded').length
-					: (header.degradedCameras ?? null);
-			listener(header.profileId, count);
-		};
-		const releaseLegacy = async () => {
-			epoch++;
-			legacy = null;
-			const previous = status;
-			status = undefined;
-			if (previous) await (await previous.catch(() => undefined))?.close();
+				active.degradedCameras === undefined && matches
+					? Object.values(status.cameras).filter((camera) => camera.state === 'degraded').length
+					: (active.degradedCameras ?? null);
+			listener(active.profileId, count);
 		};
 		const disconnected = () => {
-			if (header) listener(header.profileId, null);
+			if (header) listener(null, null);
 			header = undefined;
-			void releaseLegacy();
+			void legacy.release();
 		};
 		const accept = (next: ActiveRuntimeProfile) => {
 			if (closed) return;
 			header = next;
-			if (next.degradedCameras !== undefined) {
-				if (status) void releaseLegacy();
-			} else if (!status) {
-				const current = epoch;
-				status = this.watchStatus((value) => {
-					if (epoch !== current || closed) return;
-					legacy = value;
-					notify();
-				});
-				void status.catch(() => {
-					if (epoch === current) {
-						status = undefined;
-						legacy = null;
-						notify();
-					}
-				});
-			}
-			notify();
+			if (next.degradedCameras === undefined) legacy.open();
+			else void legacy.release();
+			notify(next);
 		};
 		this.shellDisconnectListeners.add(disconnected);
 		let active: ProfileSubscription | undefined;
 		const close = async () => {
 			closed = true;
 			this.shellDisconnectListeners.delete(disconnected);
-			await Promise.all([active?.close(), releaseLegacy()]);
+			await Promise.all([active?.close(), legacy.release()]);
 		};
 		try {
 			active = await this.watchHeader(accept);
@@ -395,12 +391,44 @@ export class RuntimeProfilesControlClient {
 				}
 			}
 			// Legacy camera counts are optional. The selected profile still follows the header.
-			await status?.catch(() => undefined);
+			await legacy.ready();
 			return { close };
 		} catch (cause) {
 			await close();
 			throw cause;
 		}
+	}
+
+	private legacyShellStatus(notify: () => void) {
+		let status: RuntimeProfileStatus | null = null;
+		let opening: Promise<ProfileSubscription> | undefined;
+		let epoch = 0;
+		return {
+			value: () => status,
+			ready: () => opening?.catch(() => undefined),
+			release: async () => {
+				epoch++;
+				status = null;
+				const previous = opening;
+				opening = undefined;
+				if (previous) await (await previous.catch(() => undefined))?.close();
+			},
+			open: () => {
+				if (opening) return;
+				const generation = epoch;
+				opening = this.watchStatus((value) => {
+					if (generation !== epoch) return;
+					status = value;
+					notify();
+				});
+				void opening.catch(() => {
+					if (epoch !== generation) return;
+					opening = undefined;
+					status = null;
+					notify();
+				});
+			}
+		};
 	}
 
 	async watchRegistry(

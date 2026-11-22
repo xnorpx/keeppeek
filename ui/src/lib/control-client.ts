@@ -492,6 +492,7 @@ export class ControlClient {
 	#unreliableChannel: RTCDataChannel | null = null;
 	#sessionId: string | null = null;
 	#connecting: Promise<void> | null = null;
+	#transportGeneration = 0;
 	#nextRequestId = 1n;
 	#pending = new Map<bigint, PendingRequest>();
 	#timelinePending = new Map<string, TimelinePending>();
@@ -2406,6 +2407,7 @@ export class ControlClient {
 	}
 
 	private async connectNow(): Promise<void> {
+		const credential = this.#accessKey;
 		const peer = new RTCPeerConnection();
 		this.#peer = peer;
 		const control = peer.createDataChannel('control-channel', {
@@ -2446,40 +2448,50 @@ export class ControlClient {
 				resolve(new Error('WebRTC control channel failed.'));
 			};
 		});
-		control.onmessage = (event) => this.receive(event);
-		reliable.onmessage = (event) => this.receiveData(event);
-		control.onclose = () => {
-			if (peer !== this.#peer) return;
-			const accessKey = this.#accessKey;
-			const sessionId = this.releaseTransport(false);
-			this.handleUnexpectedAccessDisconnect();
-			if (sessionId !== null) {
-				void deleteSession(sessionId, accessKey).catch(() => undefined);
-			}
+		control.onmessage = (event) => {
+			if (peer === this.#peer) this.receive(event);
 		};
-		reliable.onclose = () => this.failData('WebRTC reliable data channel closed.');
-		peer.onconnectionstatechange = () => {
-			if (
-				peer === this.#peer &&
-				['failed', 'disconnected', 'closed'].includes(peer.connectionState)
-			) {
-				const accessKey = this.#accessKey;
-				const sessionId = this.releaseTransport(false);
-				this.handleUnexpectedAccessDisconnect();
-				if (sessionId !== null) {
-					void deleteSession(sessionId, accessKey).catch(() => undefined);
+		reliable.onmessage = (event) => {
+			if (peer === this.#peer) this.receiveData(event);
+		};
+		const lost = () => {
+			if (peer !== this.#peer) return;
+			const authorized = this.#accessState.status === 'authenticated';
+			const credential = this.#accessKey;
+			const connecting = this.#connecting;
+			const generation = this.#transportGeneration;
+			const sessionId = this.releaseTransport(false);
+			if (sessionId !== null) void deleteSession(sessionId, credential).catch(() => undefined);
+			if (!authorized) return;
+			this.publishAccessState({ status: 'checking', session: null, message: null });
+			// Session creation checks the current credential and capabilities restore all active watches.
+			void (async () => {
+				await connecting?.catch(() => undefined);
+				if (generation !== this.#transportGeneration || credential !== this.#accessKey) return;
+				try {
+					await this.getServerCapabilities();
+				} catch (error) {
+					if (generation === this.#transportGeneration && this.#accessState.status === 'checking')
+						this.publishConnectionError(error);
 				}
-			}
+			})();
+		};
+		control.onclose = lost;
+		reliable.onclose = () => {
+			if (peer === this.#peer) this.failData('WebRTC reliable data channel closed.');
+		};
+		peer.onconnectionstatechange = () => {
+			if (['failed', 'disconnected', 'closed'].includes(peer.connectionState)) lost();
 		};
 
 		try {
 			const offer = await peer.createOffer();
 			await peer.setLocalDescription(offer);
 			if (!peer.localDescription) throw new Error('WebRTC offer is unavailable.');
-			const session = await createSession(peer.localDescription, this.#accessKey);
+			const session = await createSession(peer.localDescription, credential);
 			if (peer !== this.#peer) {
-				await deleteSession(session.session_id, this.#accessKey);
-				return;
+				await deleteSession(session.session_id, credential);
+				throw new Error('The control connection changed during setup.');
 			}
 			this.#sessionId = session.session_id;
 			await peer.setRemoteDescription({
@@ -2491,9 +2503,10 @@ export class ControlClient {
 				if (openingError) throw openingError;
 			}
 		} catch (error) {
-			const sessionId = this.release();
+			if (peer !== this.#peer) throw error;
+			const sessionId = this.releaseTransport(true);
 			if (sessionId !== null) {
-				await deleteSession(sessionId, this.#accessKey).catch(() => undefined);
+				await deleteSession(sessionId, credential).catch(() => undefined);
 			}
 			this.publishConnectionError(error);
 			throw error;
@@ -3021,19 +3034,8 @@ export class ControlClient {
 		}
 	}
 
-	private handleUnexpectedAccessDisconnect(): void {
-		const remote = this.#accessState.session?.local === false || this.#accessKey !== null;
-		if (remote) this.#accessKey = null;
-		this.publishAccessState({
-			status: remote ? 'sign-in-required' : 'error',
-			session: null,
-			message: remote
-				? 'The remote session expired, was revoked, or disconnected.'
-				: 'The local session disconnected.'
-		});
-	}
-
 	private release(): string | null {
+		this.#transportGeneration++;
 		return this.releaseTransport(true);
 	}
 

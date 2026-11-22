@@ -518,8 +518,17 @@
 		const generation = peekViewState.generation;
 		try {
 			const health = await controlClient.getHealth();
+			const needsReconcile =
+				health.cameras.some((camera) => {
+					const previous = cameraHealthById.get(camera.id);
+					return (
+						camera.privacy?.active !== previous?.privacy?.active ||
+						(camera.state === 'offline') !== (previous?.state === 'offline')
+					);
+				}) || cameraHealthById.size !== health.cameras.length;
 			if (!peekViewState.updateHealth(generation, health)) return;
 			publishShellHealth(health);
+			if (componentActive && needsReconcile) scheduleLivePlanReconcile();
 		} catch {
 			// Retain the last authoritative snapshot until a later refresh succeeds.
 		} finally {

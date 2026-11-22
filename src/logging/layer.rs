@@ -4,16 +4,27 @@ use serde_json::Value;
 use tracing::{Event, Subscriber, field::Visit};
 use tracing_subscriber::{Layer, layer::Context};
 
-use super::{LogHub, LogLevel};
+use super::{LogHub, LogLevel, RedactingDestination, RedactingMakeWriter, source_timing_event};
 
 #[derive(Clone)]
 pub struct LogCaptureLayer {
     hub: LogHub,
+    timing_output: Option<RedactingDestination>,
 }
 
 impl LogCaptureLayer {
     pub const fn new(hub: LogHub) -> Self {
-        Self { hub }
+        Self {
+            hub,
+            timing_output: None,
+        }
+    }
+
+    pub(super) fn with_formatted_timing(writer: RedactingMakeWriter) -> Self {
+        Self {
+            hub: writer.hub,
+            timing_output: Some(writer.destination),
+        }
     }
 }
 
@@ -28,7 +39,7 @@ where
         let message = visitor
             .message
             .unwrap_or_else(|| metadata.name().to_owned());
-        self.hub.record(
+        let entry = self.hub.record(
             LogLevel::from(metadata.level()),
             metadata.target(),
             message,
@@ -36,6 +47,15 @@ where
             metadata.file(),
             metadata.line(),
         );
+        // Field-level redaction preserves measured numbers even when the same digits
+        // occur in an operator secret. Serialize the already sanitized captured record.
+        if source_timing_event(metadata)
+            && let Some(output) = &self.timing_output
+            && let Ok(mut line) = serde_json::to_vec(&entry)
+        {
+            line.push(b'\n');
+            output.write(&line);
+        }
     }
 }
 
