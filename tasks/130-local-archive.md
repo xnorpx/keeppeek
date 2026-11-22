@@ -61,6 +61,13 @@ and 23.656 s respectively. At least 64 further byte-checked primary seeks and 9.
 of progress on every camera coincided with advancing archive verification in each enabled
 run. The issue specifies forward progress and leaves numeric latency and CPU budgets open.
 
+To repeat the paced qualification with physically separate primary and archive drives, set
+`TEMP` and `TMP` on Windows (or `TMPDIR` on Unix) to a private primary fixture directory,
+and `KEEPPEEK_TEST_ARCHIVE_PARENT` to an existing absolute directory on the other volume.
+The test exclusively creates and cleans a new child per repetition. With the variable
+unset it uses a child of the primary fixture. Record the actual volume identities with the
+results because distinct directories may still share the same physical device.
+
 ## Verification map
 
 The current-delivery criteria below map to #130 in their original order. Broader provider,

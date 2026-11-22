@@ -390,12 +390,35 @@ fn verified_archive_under_paced_recording_and_review() -> anyhow::Result<()> {
 }
 
 fn qualify(frames: &[RecordingFrame], enabled: bool, run: usize) -> anyhow::Result<()> {
+    let archive_parent = std::env::var_os("KEEPPEEK_TEST_ARCHIVE_PARENT").map(PathBuf::from);
+    if let Some(parent) = &archive_parent {
+        ensure!(
+            parent.is_absolute() && parent.is_dir(),
+            "archive fixture parent must be an existing absolute directory"
+        );
+    }
     let (root, catalog, manager) = runtime::tests::fixture(256 * MEBIBYTE_BYTES)?;
-    let result = run_fixture(&root, catalog.handle(), manager, frames, enabled);
+    let target = archive_parent.as_ref().map_or_else(
+        || root.join("verified"),
+        |parent| parent.join(format!("keeppeek-archive-trial-{}", uuid::Uuid::new_v4())),
+    );
+    // A failed exclusive creation must never authorize cleanup of an existing directory.
+    let created = std::fs::create_dir(&target);
+    let external_target = created.is_ok() && archive_parent.is_some();
+    let result = created
+        .map_err(anyhow::Error::from)
+        .and_then(|()| run_fixture(&root, &target, catalog.handle(), manager, frames, enabled));
     catalog.shutdown();
+    let target_cleanup = if external_target {
+        std::fs::remove_dir_all(&target)
+    } else {
+        Ok(())
+    };
     let cleanup = std::fs::remove_dir_all(root);
     let mut report = result?;
+    target_cleanup?;
     cleanup?;
+    report["archive_parent_override"] = archive_parent.is_some().into();
     report["run"] = run.into();
     println!("{report}");
     Ok(())
@@ -403,6 +426,7 @@ fn qualify(frames: &[RecordingFrame], enabled: bool, run: usize) -> anyhow::Resu
 
 fn run_fixture(
     root: &Path,
+    target: &Path,
     catalog_handle: RecordingCatalogHandle,
     manager: runtime::Manager,
     frames: &[RecordingFrame],
@@ -416,10 +440,9 @@ fn run_fixture(
     config.medium_term_duration = Duration::from_secs(5);
     config.short_term_duration = Duration::from_secs(2);
     config.flush_interval = Duration::from_millis(250);
-    let target = root.join("verified");
-    runtime::tests::create_root(&target)?;
+    runtime::tests::create_root(target)?;
     let worker = if enabled {
-        Some(start_archive(target, catalog_handle.clone())?)
+        Some(start_archive(target.to_path_buf(), catalog_handle.clone())?)
     } else {
         None
     };
