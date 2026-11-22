@@ -2452,6 +2452,7 @@ mod tests {
             target_id: None,
             result: "success",
             client_classification: crate::access::ClientClassificationReason::DirectLocal,
+            profile: None,
         });
         manager.flush_audit(true).unwrap();
         assert_eq!(target_revision(&config_path).unwrap(), initial);

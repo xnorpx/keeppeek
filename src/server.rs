@@ -9230,6 +9230,7 @@ fn record_access_audit(
         target_id,
         result,
         client_classification: classification,
+        profile: None,
     });
 }
 

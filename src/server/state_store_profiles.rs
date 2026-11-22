@@ -1,5 +1,9 @@
 use super::*;
-use crate::{access::ClientClassificationReason, config, config::Config};
+use crate::{
+    access::{ClientClassificationReason, NewAccessAuditEvent, ProfileAuditDetails},
+    config,
+    config::Config,
+};
 use prost_types::{Value, value::Kind};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -25,6 +29,7 @@ pub(in crate::server) const NAMESPACE: &str = "service/runtime-profiles/";
 pub(super) const ACTIVE_SCHEMA: &str = "keeppeek.runtime-profiles.active.v1";
 const SELECT_SCHEMA: &str = "keeppeek.runtime-profiles.select.v2";
 pub(super) const REGISTRY_SCHEMA: &str = "keeppeek.runtime-profiles.registry.v2";
+const COMPACT_REGISTRY_SCHEMA: &str = "keeppeek.runtime-profiles.registry.v3";
 const PROFILE_PART_SCHEMA: &str = "keeppeek.runtime-profiles.part.v1";
 const PROFILE_DRAFT_PART_SCHEMA: &str = "keeppeek.runtime-profiles.draft-part.v1";
 pub(in crate::server) const STATUS_SCHEMA: &str = "keeppeek.runtime-profiles.status.v1";
@@ -122,6 +127,83 @@ pub(super) fn dispatch(
     principal: &ApiPrincipal,
     command: proto::StateStoreCommand,
 ) -> Result<control_ok::Result, ControlCommandError> {
+    let mutation = match command.action.as_ref() {
+        Some(state_store_command::Action::Put(request)) if request.key == ACTIVE_KEY => {
+            Some("runtime_profile_activated")
+        }
+        Some(state_store_command::Action::Put(request)) if request.key == REGISTRY_KEY => {
+            Some("runtime_profile_registry_updated")
+        }
+        Some(state_store_command::Action::Put(_)) => Some("runtime_profile_draft_write"),
+        Some(state_store_command::Action::Delete(_)) => Some("runtime_profile_delete"),
+        _ => None,
+    };
+    let outcome = dispatch_command(state, session_id, principal, command);
+    if let (Some(action), Err(error)) = (mutation, &outcome) {
+        let revision = state
+            .runtime_profiles
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .revision;
+        // Rejected requests may contain arbitrary text. Only record trusted state and a fixed outcome.
+        let result = match error._http_status {
+            401 | 403 => "denied",
+            409 => "conflict",
+            500.. => "failed",
+            _ => "rejected",
+        };
+        record_profile_audit(
+            state,
+            session_id,
+            principal,
+            action,
+            None,
+            result,
+            ProfileAuditDetails {
+                registry_revision: revision,
+                definition_revision: None,
+                override_target_count: None,
+            },
+        );
+    }
+    outcome
+}
+
+fn record_profile_audit(
+    state: &ServerState,
+    session_id: SessionId,
+    principal: &ApiPrincipal,
+    action: &str,
+    target: Option<&str>,
+    result: &str,
+    profile: ProfileAuditDetails,
+) {
+    let classification = state
+        .api_session_owners
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&session_id)
+        .map_or(ClientClassificationReason::UnknownSession, |session| {
+            session.classification.reason
+        });
+    state.access_manager.record_audit(NewAccessAuditEvent {
+        timestamp_ms: i64::try_from(now_ms()).unwrap_or(i64::MAX),
+        principal_id: Some(&principal.id()),
+        role: Some(principal.role),
+        action,
+        target_id: target,
+        result,
+        client_classification: classification,
+        profile: Some(profile),
+    });
+}
+
+fn dispatch_command(
+    state: &ServerState,
+    session_id: SessionId,
+    principal: &ApiPrincipal,
+    command: proto::StateStoreCommand,
+) -> Result<control_ok::Result, ControlCommandError> {
     let Some(config_path) = state.camera_config_path.as_deref() else {
         return Err(registry_error(
             Error::Storage("runtime profile settings are unavailable".to_owned()),
@@ -209,7 +291,7 @@ pub(super) fn dispatch(
         Some(state_store_command::Action::Put(request))
             if request.namespace == NAMESPACE && request.key.starts_with("drafts/") =>
         {
-            return put_profile_draft(state, principal, request);
+            return put_profile_draft(state, session_id, principal, request);
         }
         Some(state_store_command::Action::Put(request)) => {
             if request.namespace != NAMESPACE || request.key != ACTIVE_KEY {
@@ -381,23 +463,21 @@ pub(super) fn dispatch(
                     &status,
                 )
             };
-            let classification = state
-                .api_session_owners
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&session_id)
-                .map_or(ClientClassificationReason::UnknownSession, |session| {
-                    session.classification.reason
-                });
-            super::super::record_access_audit(
+            let selected = audit_target
+                .as_ref()
+                .and_then(|id| current.runtime_profiles.profiles.get(id));
+            record_profile_audit(
                 state,
-                i64::try_from(now_ms()).unwrap_or(i64::MAX),
-                Some(&principal.id()),
-                Some(principal.role),
+                session_id,
+                principal,
                 "runtime_profile_activated",
                 Some(audit_target.as_deref().unwrap_or("base")),
                 "accepted",
-                classification,
+                ProfileAuditDetails {
+                    registry_revision: current.runtime_profiles.revision,
+                    definition_revision: selected.map(|p| p.revision),
+                    override_target_count: Some(selected.map_or(0, |p| p.cameras.len())),
+                },
             );
             entry_result(entry)
         }
@@ -558,6 +638,7 @@ fn parse_selection(
 
 fn put_profile_draft(
     state: &ServerState,
+    session_id: SessionId,
     principal: &ApiPrincipal,
     request: proto::PutState,
 ) -> Result<control_ok::Result, ControlCommandError> {
@@ -692,6 +773,25 @@ fn put_profile_draft(
         .parts
         .insert((part.profile_id.clone(), part.part_index), part.clone());
     drafts.bytes += bytes;
+    drop(drafts);
+    let revision = state
+        .runtime_profiles
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .revision;
+    record_profile_audit(
+        state,
+        session_id,
+        principal,
+        "runtime_profile_draft_write",
+        None,
+        "staged",
+        ProfileAuditDetails {
+            registry_revision: revision,
+            definition_revision: Some(part.generation),
+            override_target_count: Some(part.cameras.len()),
+        },
+    );
     Ok(control_ok::Result::StateStoreResult(entry_result(
         profile_draft_entry(&draft_id, &part, &principal.id()),
     )))
@@ -920,7 +1020,7 @@ fn put_registry(
     principal: &ApiPrincipal,
     request: proto::PutState,
 ) -> Result<control_ok::Result, ControlCommandError> {
-    if request.schema != REGISTRY_SCHEMA {
+    if request.schema != REGISTRY_SCHEMA && request.schema != COMPACT_REGISTRY_SCHEMA {
         return Err(registry_error(
             Error::Invalid(Invalid::Schema),
             NAMESPACE,
@@ -983,6 +1083,10 @@ fn put_registry(
         ));
     }
     let mut registry_value = super::super::peek_layouts::struct_to_json(value);
+    if request.schema == COMPACT_REGISTRY_SCHEMA {
+        expand_compact_draft(&mut registry_value)
+            .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?;
+    }
     let (mut candidate, draft_id, draft_profiles) = if registry_value.get("draft_id").is_some() {
         let staged = staged_registry_candidate(state, &principal.id(), registry_value)
             .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?;
@@ -1110,24 +1214,48 @@ fn put_registry(
     publish_status_event(state, now_ms());
     application::schedule(state, &candidate, camera_ids);
 
-    let classification = state
-        .api_session_owners
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&session_id)
-        .map_or(ClientClassificationReason::UnknownSession, |session| {
-            session.classification.reason
-        });
-    super::super::record_access_audit(
+    record_profile_audit(
         state,
-        i64::try_from(now_ms()).unwrap_or(i64::MAX),
-        Some(&principal.id()),
-        Some(principal.role),
+        session_id,
+        principal,
         "runtime_profile_registry_updated",
         None,
         "accepted",
-        classification,
+        ProfileAuditDetails {
+            registry_revision: candidate.revision,
+            definition_revision: None,
+            override_target_count: None,
+        },
     );
+    let ids: BTreeSet<_> = previous_registry
+        .profiles
+        .keys()
+        .chain(candidate.profiles.keys())
+        .collect();
+    for id in ids {
+        let (action, definition) = match (
+            previous_registry.profiles.get(id),
+            candidate.profiles.get(id),
+        ) {
+            (None, Some(created)) => ("runtime_profile_created", created),
+            (Some(removed), None) => ("runtime_profile_deleted", removed),
+            (Some(old), Some(updated)) if old != updated => ("runtime_profile_edited", updated),
+            _ => continue,
+        };
+        record_profile_audit(
+            state,
+            session_id,
+            principal,
+            action,
+            Some(id),
+            "accepted",
+            ProfileAuditDetails {
+                registry_revision: candidate.revision,
+                definition_revision: Some(definition.revision),
+                override_target_count: Some(definition.cameras.len()),
+            },
+        );
+    }
     publish_events(
         state,
         Some(WatchEvent {
@@ -1470,6 +1598,59 @@ pub(in crate::server) fn visible_profile_camera_ids(
         .collect()
 }
 
+fn expand_compact_draft(value: &mut serde_json::Value) -> Result<(), Error> {
+    let invalid = || Error::Invalid(Invalid::Schema);
+    if value.get("draft_id").is_none() {
+        return Err(invalid());
+    }
+    let profiles = value
+        .get_mut("profiles")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(invalid)?;
+    if profiles.len() > crate::profiles::MAX_PROFILES {
+        return Err(invalid());
+    }
+    for (id, metadata) in profiles {
+        let fields = metadata.as_object_mut().ok_or_else(invalid)?;
+        if fields.contains_key("id") {
+            return Err(invalid());
+        }
+        fields.insert("id".into(), serde_json::Value::String(id.clone()));
+    }
+    Ok(())
+}
+
+fn bounded_registry_schema(value: &mut Struct) -> Result<&'static str, Error> {
+    if value.encoded_len() <= PROFILE_DOCUMENT_BYTES_MAX {
+        return Ok(REGISTRY_SCHEMA);
+    }
+    // Preserve every previously readable v2 summary, including ones near the wire limit.
+    let advertisement = value.fields.remove("activation_schema");
+    if value.encoded_len() <= PROFILE_DOCUMENT_BYTES_MAX {
+        return Ok(REGISTRY_SCHEMA);
+    }
+    if let Some(field) = advertisement {
+        value.fields.insert("activation_schema".into(), field);
+    }
+    let Some(Kind::StructValue(profiles)) = value
+        .fields
+        .get_mut("profiles")
+        .and_then(|v| v.kind.as_mut())
+    else {
+        return Err(Error::Invalid(Invalid::Schema));
+    };
+    for metadata in profiles.fields.values_mut() {
+        let Some(Kind::StructValue(fields)) = metadata.kind.as_mut() else {
+            return Err(Error::Invalid(Invalid::Schema));
+        };
+        fields.fields.remove("id");
+    }
+    if value.encoded_len() > PROFILE_DOCUMENT_BYTES_MAX {
+        return Err(Error::Invalid(Invalid::ValueTooLarge));
+    }
+    Ok(COMPACT_REGISTRY_SCHEMA)
+}
+
 fn registry_entry(registry: crate::profiles::ProfileRegistry) -> Result<StoredEntry, Error> {
     let profiles = registry
         .profiles
@@ -1488,20 +1669,18 @@ fn registry_entry(registry: crate::profiles::ProfileRegistry) -> Result<StoredEn
             ))
         })
         .collect::<Result<BTreeMap<_, _>, Error>>()?;
-    let value = super::super::peek_layouts::json_to_struct(serde_json::json!({
+    let mut value = super::super::peek_layouts::json_to_struct(serde_json::json!({
         "revision": registry.revision.to_string(),
         "active_profile_id": registry.active_profile_id,
         "profiles": profiles,
         "activation_schema": SELECT_SCHEMA,
     }))
     .map_err(|error| Error::Storage(error.to_string()))?;
-    if value.encoded_len() > PROFILE_DOCUMENT_BYTES_MAX {
-        return Err(Error::Invalid(Invalid::ValueTooLarge));
-    }
+    let schema = bounded_registry_schema(&mut value)?;
     Ok(StoredEntry {
         namespace: NAMESPACE.to_owned(),
         key: REGISTRY_KEY.to_owned(),
-        schema: REGISTRY_SCHEMA.to_owned(),
+        schema: schema.to_owned(),
         value,
         revision: registry.revision,
         updated_ms: 0,
@@ -1820,7 +1999,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut profiles = BTreeMap::new();
         for profile_index in 0..32 {
-            let id = format!("profile-{profile_index:02}");
+            let id = format!("{}{profile_index:02}", "p".repeat(126));
             let cameras = camera_ids
                 .iter()
                 .map(|camera_id| {
@@ -1839,7 +2018,7 @@ mod tests {
                 id.clone(),
                 RuntimeProfile {
                     id,
-                    name: format!("Profile {profile_index:02}"),
+                    name: format!("{}{profile_index:02}", "界".repeat(26)),
                     revision: 1,
                     cameras,
                 },
@@ -1953,18 +2132,19 @@ mod tests {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        let value = super::super::super::peek_layouts::json_to_struct(serde_json::json!({
+        let mut value = super::super::super::peek_layouts::json_to_struct(serde_json::json!({
             "draft_id": draft_id,
             "revision": registry.revision.to_string(),
             "active_profile_id": registry.active_profile_id,
             "profiles": profiles,
         }))
         .unwrap();
+        let schema = bounded_registry_schema(&mut value).unwrap();
         proto::StateStoreCommand {
             action: Some(state_store_command::Action::Put(proto::PutState {
                 namespace: NAMESPACE.to_owned(),
                 key: REGISTRY_KEY.to_owned(),
-                schema: REGISTRY_SCHEMA.to_owned(),
+                schema: schema.to_owned(),
                 value: Some(value),
                 expected_revision: Some(expected_revision),
                 ttl: None,
@@ -2143,6 +2323,81 @@ mod tests {
             accepted
         );
         select(Some(accepted.profiles["away"].revision)).unwrap();
+    }
+
+    #[test]
+    fn profile_audit_records_accepted_revisions_and_counts_without_request_text() {
+        let fixture = Fixture::new();
+        let admin = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let session = SessionId::from_u64(20_204);
+        let mut registry = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        let before = registry.profiles["away"].revision;
+        let targets = registry.profiles["away"].cameras.len();
+        let display_name = "Private operator display name";
+        registry.profiles.get_mut("away").unwrap().name = display_name.into();
+        super::super::dispatch(
+            &fixture.state,
+            session,
+            &admin,
+            put_registry(&registry, registry.revision),
+        )
+        .unwrap();
+        super::super::dispatch(
+            &fixture.state,
+            session,
+            &admin,
+            put_active("away", registry.revision + 1),
+        )
+        .unwrap();
+        let mut user = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        user.role = AccessRole::User;
+        let rejected_value = "synthetic confidential request field";
+        assert!(
+            super::super::dispatch(
+                &fixture.state,
+                session,
+                &user,
+                put_active(rejected_value, 0)
+            )
+            .is_err()
+        );
+        assert!(
+            super::super::dispatch(
+                &fixture.state,
+                session,
+                &admin,
+                put_active(rejected_value, 0)
+            )
+            .is_err()
+        );
+        let audit = fixture.state.access_manager.list_audit(16);
+        for (action, revision) in [
+            ("runtime_profile_edited", registry.revision + 1),
+            ("runtime_profile_activated", registry.revision + 2),
+        ] {
+            let event = audit
+                .iter()
+                .find(|e| e.action == action && e.result == "accepted")
+                .unwrap();
+            assert_eq!(event.target_id.as_deref(), Some("away"));
+            let fields = event.profile.unwrap();
+            assert_eq!(fields.registry_revision, revision);
+            assert_eq!(fields.definition_revision, Some(before + 1));
+            assert_eq!(fields.override_target_count, Some(targets));
+        }
+        for result in ["denied", "conflict"] {
+            let event = audit.iter().find(|e| e.result == result).unwrap();
+            assert_eq!(event.target_id, None);
+            assert_eq!(
+                event.profile.unwrap().registry_revision,
+                registry.revision + 2
+            );
+        }
+        let serialized = serde_json::to_string(&audit).unwrap();
+        assert!(!serialized.contains(display_name));
+        assert!(!serialized.contains(rejected_value));
     }
 
     #[test]
@@ -3272,6 +3527,20 @@ mod tests {
             }
         }
 
+        let mut widest = registry.clone();
+        widest.revision = i64::MAX as u64;
+        widest.active_profile_id = widest.profiles.keys().next().cloned();
+        for profile in widest.profiles.values_mut() {
+            profile.revision = i64::MAX as u64;
+        }
+        let compact = registry_entry(widest).unwrap();
+        assert_eq!(compact.schema, COMPACT_REGISTRY_SCHEMA);
+        println!(
+            "maximum-id-and-name registry bytes={}",
+            compact.value.encoded_len()
+        );
+        assert!(proto_entry(&compact).encoded_len() <= 16 * 1024);
+
         let before = config::load_config(&fixture.config_path())
             .unwrap()
             .runtime_profiles;
@@ -3349,6 +3618,22 @@ mod tests {
                 .runtime_profiles,
             expected
         );
+        let control_ok::Result::StateStoreResult(watch) = super::super::dispatch(
+            &fixture.state,
+            SessionId::from_u64(20_211),
+            &admin,
+            watch_profile_key("max-registry", REGISTRY_KEY),
+        )
+        .unwrap() else {
+            panic!("expected registry snapshot")
+        };
+        let Some(state_store_result::Result::Watch(snapshot)) = watch.result else {
+            panic!("expected registry watch")
+        };
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(snapshot.entries[0].schema, COMPACT_REGISTRY_SCHEMA);
+        println!("maximum-ID registry watch bytes={}", snapshot.encoded_len());
+        assert!(snapshot.encoded_len() <= 48 * 1024);
         let drafts = fixture
             .state
             .runtime_profile_drafts
@@ -3416,7 +3701,7 @@ mod tests {
     fn users_cannot_create_profile_drafts() {
         let fixture = Fixture::new();
         let (registry, _) = full_registry();
-        let profile = registry.profiles.get("profile-00").unwrap();
+        let profile = registry.profiles.values().next().unwrap();
         let mut principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
         principal.role = AccessRole::User;
 

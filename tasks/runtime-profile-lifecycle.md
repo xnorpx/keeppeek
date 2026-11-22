@@ -128,3 +128,32 @@ cargo test --lib runtime_profile_recording_health_poll_scale -- --nocapture
 cargo test --lib profile_identity_index_records_owned_string_capacity_for_127_sources -- --nocapture
 cargo test --lib observed_parts_cover_all_degraded -- --nocapture
 ```
+
+## Release activation and convergence fixture
+
+The Windows release fixture configured 127 camera identities and 32 sparse profiles, with
+two loopback media producers. An authorized WebRTC client issued 30 sequential activations.
+A second Chromium page observed the accepted revision in the rendered Settings UI.
+Timing began with the outgoing activation. The acknowledgment and watch column uses the
+later of the durable response and watch event for each revision. A separate measurement
+waited for all camera observations to settle.
+
+| Measurement in milliseconds          | Baseline median | Baseline p95 | Baseline max | Async median | Async p95 | Async max |
+| ------------------------------------ | --------------: | -----------: | -----------: | -----------: | --------: | --------: |
+| Durable acknowledgment and watch     |           202.0 |        358.3 |        377.1 |         26.3 |      27.4 |      27.9 |
+| Desired revision in Settings         |           229.7 |        384.0 |        411.2 |         23.8 |      34.6 |      34.6 |
+| Recorder-observed camera convergence |           237.8 |        397.8 |        414.2 |        264.3 |     482.2 |     487.6 |
+
+The baseline used commit `47d479a5a00b`. The asynchronous worker run used
+`12cb6e7adcb1`. Both used Windows build 26200, a Ryzen 5 5600G, an NTFS NVMe volume
+and Chromium 159.0.8154.6. Acknowledgment and UI p95 fell by 330.9 ms and 349.4 ms.
+Recorder-observed convergence p95 rose by 84.4 ms. In each run, all 3,810 camera
+observations settled without a pending or degraded target. Neither run recorded a UI
+task over 50 ms. These results cover the configured loopback fixture. Physical-camera
+recovery and field qualification remain open.
+
+From `ui/`, run `bun run perf:runtime-profiles` with the built release recorder
+and test camera in `KEEPPEEK_PROFILE_RELEASE_DIR`. The Playwright report includes the
+binary SHA-256, individual activation and watch timestamps, DOM observations, long tasks
+and per-selection convergence results. A run with `KEEPPEEK_PROFILE_SMOKE=1` exercises
+the harness at reduced scale.

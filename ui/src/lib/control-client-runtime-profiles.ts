@@ -1,4 +1,5 @@
-import type { JsonObject } from '@bufbuild/protobuf';
+import { fromJson, toBinary, type JsonObject } from '@bufbuild/protobuf';
+import { StructSchema } from '@bufbuild/protobuf/wkt';
 import { StateStoreErrorCode, type StateEntry } from './proto/webrtc_pb';
 import { StateStoreRequestError } from './state-store-error';
 import { SharedProfileWatch, type ProfileSubscription } from './runtime-profile-shared-watch';
@@ -13,6 +14,7 @@ import {
 	runtimeProfilesActiveSchema,
 	runtimeProfilesNamespace,
 	runtimeProfilesRegistryKey,
+	runtimeProfileCompactRegistrySchema,
 	runtimeProfilesRegistrySchema,
 	runtimeProfilesStatusKey,
 	runtimeProfileDraftPartSchema,
@@ -119,19 +121,40 @@ export class RuntimeProfilesControlClient {
 
 	async saveRegistry(registry: RuntimeProfileRegistry): Promise<RuntimeProfileRegistry> {
 		const draftId = crypto.randomUUID();
-		const profiles = Object.fromEntries(
-			Object.entries(registry.profiles).map(([id, profile]) => [
-				id,
-				{ ...profile, revision: nextRevision(profile.revision) }
-			])
+		const current = runtimeProfileManifestFromEntry(
+			await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesRegistryKey)
 		);
-		const candidate = { ...registry, profiles };
-		const summaries = await Promise.all(
-			Object.values(profiles).map(async (profile) => ({
-				profile,
-				partCount: Math.ceil(Object.keys(profile.cameras).length / maxRuntimeProfilePartCameras),
-				digest: await digestProfile(profile)
-			}))
+		if (
+			current.revision !== registry.revision ||
+			Object.values(registry.profiles).some((candidate) => {
+				const previous = current.profiles[candidate.id];
+				return previous && previous.revision !== candidate.revision;
+			})
+		) {
+			throw new StateStoreRequestError('Runtime profiles changed before saving.', {
+				namespace: runtimeProfilesNamespace,
+				key: runtimeProfilesRegistryKey,
+				code: StateStoreErrorCode.CONFLICT,
+				currentRevision: BigInt(current.revision)
+			});
+		}
+		const summaries = await mapBounded(
+			Object.values(registry.profiles),
+			profilePartFetchConcurrency,
+			async (candidate) => {
+				const previous = current.profiles[candidate.id];
+				let profile = { ...candidate, revision: previous?.revision ?? '1' };
+				let digest = await digestProfile(profile);
+				if (previous && digest !== previous.digest) {
+					profile = { ...candidate, revision: nextRevision(previous.revision) };
+					digest = await digestProfile(profile);
+				}
+				return {
+					profile,
+					partCount: Math.ceil(Object.keys(profile.cameras).length / maxRuntimeProfilePartCameras),
+					digest
+				};
+			}
 		);
 		const partWrites = summaries.flatMap(({ profile, partCount, digest }) => {
 			const cameraEntries = Object.entries(profile.cameras).sort(([left], [right]) =>
@@ -176,8 +199,8 @@ export class RuntimeProfilesControlClient {
 		);
 		const value = {
 			draft_id: draftId,
-			revision: candidate.revision,
-			active_profile_id: candidate.active_profile_id,
+			revision: registry.revision,
+			active_profile_id: registry.active_profile_id,
 			profiles: Object.fromEntries(
 				summaries.map(({ profile, partCount, digest }) => [
 					profile.id,
@@ -192,10 +215,23 @@ export class RuntimeProfilesControlClient {
 				])
 			)
 		};
+		const compact =
+			toBinary(StructSchema, fromJson(StructSchema, value as JsonObject)).byteLength > 16 * 1024;
+		const payload = compact
+			? {
+					...value,
+					profiles: Object.fromEntries(
+						Object.entries(value.profiles).map(([id, { id: _duplicateId, ...fields }]) => [
+							id,
+							fields
+						])
+					)
+				}
+			: value;
 		await this.stateStore.put(runtimeProfilesNamespace, runtimeProfilesRegistryKey, {
-			schema: runtimeProfilesRegistrySchema,
-			value: value as JsonObject,
-			expectedRevision: BigInt(candidate.revision)
+			schema: compact ? runtimeProfileCompactRegistrySchema : runtimeProfilesRegistrySchema,
+			value: payload as JsonObject,
+			expectedRevision: BigInt(registry.revision)
 		});
 		return this.getRegistry();
 	}

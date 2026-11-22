@@ -3,6 +3,7 @@ import { StateStoreErrorCode, type StateEntry } from './proto/webrtc_pb';
 import { StateStoreRequestError } from './state-store-error';
 import { RuntimeProfilesControlClient } from './control-client-runtime-profiles';
 import {
+	runtimeProfileCompactRegistrySchema,
 	runtimeProfileSelectSchema,
 	runtimeProfilesActiveSchema,
 	runtimeProfilesNamespace,
@@ -45,6 +46,105 @@ describe('RuntimeProfilesControlClient', () => {
 			value: { profile_id: '' },
 			expectedRevision: 8n
 		});
+	});
+
+	it('preserves an untouched definition revision when a different profile is edited', async () => {
+		const first = await profile('home', 0, '3');
+		const second = await profile('away', 0, '4');
+		const manifest = {
+			revision: '8',
+			active_profile_id: null,
+			profiles: Object.fromEntries(
+				[first, second].map(({ definition, digest }) => [
+					definition.id,
+					{
+						id: definition.id,
+						name: definition.name,
+						revision: definition.revision,
+						digest,
+						target_count: 0,
+						part_count: 0
+					}
+				])
+			)
+		};
+		const put = vi
+			.fn()
+			.mockResolvedValue(entry('registry', runtimeProfilesRegistrySchema, manifest, 8n));
+		const get = vi
+			.fn()
+			.mockResolvedValue(entry('registry', runtimeProfilesRegistrySchema, manifest, 8n));
+		const client = new RuntimeProfilesControlClient({
+			put,
+			get
+		} as unknown as ControlClientStateStore);
+		await expect(
+			client.saveRegistry({
+				...manifest,
+				profiles: { home: { ...first.definition, revision: '2' } }
+			})
+		).rejects.toMatchObject({ code: StateStoreErrorCode.CONFLICT, currentRevision: 8n });
+		expect(put).not.toHaveBeenCalled();
+		await client.saveRegistry({
+			...manifest,
+			profiles: { home: first.definition, away: { ...second.definition, name: 'Edited' } }
+		});
+		expect(put).toHaveBeenCalledExactlyOnceWith(
+			runtimeProfilesNamespace,
+			'registry',
+			expect.objectContaining({
+				expectedRevision: 8n,
+				value: expect.objectContaining({
+					profiles: expect.objectContaining({
+						home: expect.objectContaining({ revision: '3', digest: first.digest }),
+						away: expect.objectContaining({ revision: '5' })
+					})
+				})
+			})
+		);
+	});
+
+	it('saves and reads 32 maximum-length IDs and UTF-8 names inside a compact registry', async () => {
+		const profiles = Object.fromEntries(
+			Array.from({ length: 32 }, (_, i) => {
+				const id = 'p'.repeat(126) + String(i).padStart(2, '0');
+				return [
+					id,
+					{ id, name: '界'.repeat(26) + String(i).padStart(2, '0'), revision: '0', cameras: {} }
+				];
+			})
+		);
+		let stored = entry(
+			'registry',
+			runtimeProfilesRegistrySchema,
+			{ revision: '0', active_profile_id: null, profiles: {} },
+			0n
+		);
+		const put = vi.fn(
+			async (
+				_namespace: string,
+				key: string,
+				input: { schema: string; value: Record<string, unknown> }
+			) => {
+				const { draft_id: _draft, ...value } = input.value;
+				stored = entry(key, input.schema, { ...value, revision: '1' }, 1n);
+				return stored;
+			}
+		);
+		const client = new RuntimeProfilesControlClient({
+			get: async () => stored,
+			put
+		} as unknown as ControlClientStateStore);
+		const accepted = await client.saveRegistry({
+			revision: '0',
+			active_profile_id: null,
+			profiles
+		});
+		expect(stored.schema).toBe(runtimeProfileCompactRegistrySchema);
+		expect(Object.keys(accepted.profiles)).toEqual(Object.keys(profiles));
+		for (const [id, profile] of Object.entries(accepted.profiles)) {
+			expect(profile).toEqual({ ...profiles[id], revision: '1' });
+		}
 	});
 
 	it('reports an asynchronous registry watch read failure to its owner', async () => {

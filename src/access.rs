@@ -481,6 +481,13 @@ impl AuthenticationFailure {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ProfileAuditDetails {
+    pub(crate) registry_revision: u64,
+    pub(crate) definition_revision: Option<u64>,
+    pub(crate) override_target_count: Option<usize>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct AccessAuditEvent {
     pub(crate) id: Uuid,
@@ -491,6 +498,8 @@ pub struct AccessAuditEvent {
     pub(crate) target_id: Option<String>,
     pub(crate) result: String,
     pub(crate) client_classification: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) profile: Option<ProfileAuditDetails>,
 }
 
 pub struct NewAccessAuditEvent<'a> {
@@ -501,6 +510,7 @@ pub struct NewAccessAuditEvent<'a> {
     pub(crate) target_id: Option<&'a str>,
     pub(crate) result: &'a str,
     pub(crate) client_classification: ClientClassificationReason,
+    pub(crate) profile: Option<ProfileAuditDetails>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1027,6 +1037,7 @@ impl AccessManager {
                 .map(|value| bounded_field(value, MAX_AUDIT_FIELD_BYTES)),
             result: bounded_field(record.result, MAX_AUDIT_FIELD_BYTES),
             client_classification: record.client_classification.as_str().to_owned(),
+            profile: record.profile,
         };
         let mut state = self
             .state
@@ -1043,6 +1054,9 @@ impl AccessManager {
             principal_id = record.principal_id.unwrap_or(""),
             target_id = record.target_id.unwrap_or(""),
             client_classification = record.client_classification.as_str(),
+            registry_revision = record.profile.map(|p| p.registry_revision),
+            definition_revision = record.profile.and_then(|p| p.definition_revision),
+            override_target_count = record.profile.and_then(|p| p.override_target_count),
         );
     }
 
@@ -1583,6 +1597,7 @@ mod tests {
             target_id: Some(&issued.metadata.id.to_string()),
             result: "success",
             client_classification: ClientClassificationReason::DirectLocal,
+            profile: None,
         });
         reopened.flush_audit(true).unwrap();
         let reopened = AccessManager::open(&config_path, initial).unwrap();

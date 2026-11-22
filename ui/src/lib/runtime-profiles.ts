@@ -3,6 +3,7 @@ import type { StateEntry } from './proto/webrtc_pb';
 export const runtimeProfilesNamespace = 'service/runtime-profiles/';
 export const runtimeProfilesRegistryKey = 'registry';
 export const runtimeProfilesActiveKey = 'active';
+export const runtimeProfileCompactRegistrySchema = 'keeppeek.runtime-profiles.registry.v3';
 export const runtimeProfilesRegistrySchema = 'keeppeek.runtime-profiles.registry.v2';
 export const runtimeProfileSelectSchema = 'keeppeek.runtime-profiles.select.v2';
 export const runtimeProfilesActiveSchema = 'keeppeek.runtime-profiles.active.v1';
@@ -144,7 +145,8 @@ export function runtimeProfileManifestFromEntry(entry: StateEntry): RuntimeProfi
 	if (
 		entry.namespace !== runtimeProfilesNamespace ||
 		entry.key !== runtimeProfilesRegistryKey ||
-		entry.schema !== runtimeProfilesRegistrySchema
+		(entry.schema !== runtimeProfilesRegistrySchema &&
+			entry.schema !== runtimeProfileCompactRegistrySchema)
 	) {
 		throw new Error('Server returned unexpected runtime profile registry metadata.');
 	}
@@ -154,10 +156,13 @@ export function runtimeProfileManifestFromEntry(entry: StateEntry): RuntimeProfi
 	if (profileEntries.length > maxRuntimeProfiles) {
 		throw new Error('Server returned too many runtime profiles.');
 	}
-	const profiles: RuntimeProfileManifest['profiles'] = {};
+	const profiles: RuntimeProfileManifest['profiles'] = Object.create(null);
 	for (const [key, rawProfile] of profileEntries) {
 		const profile = record(rawProfile, 'runtime profile');
-		const id = boundedText(profile.id, 'runtime profile ID', 128);
+		const compact = entry.schema === runtimeProfileCompactRegistrySchema;
+		if (compact && Object.hasOwn(profile, 'id'))
+			throw new Error('Compact runtime profiles must use the registry key as their ID.');
+		const id = boundedText(compact ? key : profile.id, 'runtime profile ID', 128);
 		if (key !== id) throw new Error('Server returned mismatched runtime profile IDs.');
 		profiles[id] = {
 			id,

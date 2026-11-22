@@ -295,7 +295,6 @@ browser desired state must appear within 500 ms p95 with no main-thread task ove
 Measure physical convergence separately. Keep #202 open until all nine original criteria
 and their final-build evidence are complete.
 
-
 ### Selecting a displayed definition
 
 An Administrator reads the registry manifest and the selected definition before activating
@@ -305,3 +304,23 @@ manifest's `activation_schema` accepts that schema in a StateStore Put to the ex
 and the exact displayed `definition_revision` as a decimal string. A conflict requires
 refreshing the selection. Base uses the active revision alone. Older recorders compare
 the shared registry revision, which advances on every definition edit.
+
+### Audit evidence
+
+The recorder's structured `access_audit` log includes the accepted registry revision for
+profile changes. For each created, edited, deleted, or selected definition it also includes
+the machine ID, definition revision and number of explicit camera overrides. A deletion
+records the last accepted definition. Selecting Base records zero explicit overrides.
+Rejected writes record the current registry revision and a bounded outcome. Display names,
+request bodies and per-camera settings are omitted. The existing access-audit list retains
+its standard action, target and result fields.
+
+### Registry capacity
+
+A registry summary that would exceed 16 KiB uses the compact
+`keeppeek.runtime-profiles.registry.v3` schema. Each map key supplies the profile ID once.
+All names, definition revisions, part counts, target counts and digests are preserved.
+For large staged commits, the Administrator uses the same compact metadata with the existing
+StateStore Put. The server reconstructs each ID and validates all staged parts before
+persisting the registry. Smaller registries continue to use the v2 representation.
+Saving an edit preserves the definition revisions of profiles whose content is unchanged.
