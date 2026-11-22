@@ -392,5 +392,5 @@ conversation from an occupied space.
    statistics measure different points in the path. An unmeasured point stays unavailable.
 
 | Build, device, firmware and profile | Codec, transport and transcoder | Playback path and output | Raw skew and spread (ms) | Applied offset (ms) | Added video latency (ms) | Residual and spread (ms) | Queue peak and drops | Result after reconnect or seek |
-| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |
-| Pending physical measurement | | | | | | | | |
+| ----------------------------------- | ------------------------------- | ------------------------ | -----------------------: | ------------------: | -----------------------: | -----------------------: | -------------------- | ------------------------------ |
+| Pending physical measurement        |                                 |                          |                          |                     |                          |                          |                      |                                |
