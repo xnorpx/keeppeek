@@ -7807,7 +7807,7 @@ mod tests {
                     received_at: Instant::now(),
                     data: Bytes::from_static(b"synthetic audio"),
                 },
-            )
+            );
         };
         publish();
         let first = rx.try_recv().unwrap();
