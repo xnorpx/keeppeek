@@ -40,7 +40,7 @@ pub struct MediumTermWriter {
     frames_written: u64,
     bytes_written: u64,
     recorded_duration: Duration,
-    // None after an oversized GOP until a new video keyframe resumes this stream.
+    // None after a rejected frame until a new video keyframe resumes this stream.
     pending_gop_bytes: Option<usize>,
     // Once the camera clock is discontinuous, advance from the committed boundary on receipt time.
     gap_clock: Option<(Instant, u64)>,
@@ -259,24 +259,26 @@ impl MediumTermWriter {
                 true,
             ));
         }
-        self.pending_gop_bytes = Some(bytes);
+        // A frame error can leave the old fragment pending. Only a successful new keyframe
+        // admits dependent frames, so failed boundaries cannot reset the previous GOP's budget.
+        self.pending_gop_bytes = None;
         if matches!(self.state, WriterState::WaitingForKeyframe) {
             self.state = WriterState::Preparing(vec![rf]);
-            return Ok((Duration::ZERO, false));
-        }
-
-        if matches!(self.state, WriterState::Preparing(_)) && keyframe {
-            self.activate_prepared()?;
-        }
-        match &mut self.state {
-            WriterState::Preparing(frames) => frames.push(rf),
-            WriterState::Active(_) => self.write_frame(rf)?,
-            WriterState::WaitingForKeyframe => {
-                return Err(std::io::Error::other(
-                    "fragmented MP4 writer lost its prepared state",
-                ));
+        } else {
+            if matches!(self.state, WriterState::Preparing(_)) && keyframe {
+                self.activate_prepared()?;
+            }
+            match &mut self.state {
+                WriterState::Preparing(frames) => frames.push(rf),
+                WriterState::Active(_) => self.write_frame(rf)?,
+                WriterState::WaitingForKeyframe => {
+                    return Err(std::io::Error::other(
+                        "fragmented MP4 writer lost its prepared state",
+                    ));
+                }
             }
         }
+        self.pending_gop_bytes = Some(bytes);
         Ok((
             self.recorded_duration.saturating_sub(previous_duration),
             false,
@@ -489,7 +491,6 @@ impl MediumTermWriter {
             return Ok(());
         };
 
-        let mut completed_fragment = None;
         match rf.frame {
             MediaFrame::Video(video) => {
                 let camera_dts = timestamp_ticks_or_fallback(
@@ -510,10 +511,14 @@ impl MediumTermWriter {
                         .writer
                         .flush_fragment_before_sample(active.video_track, dts)
                         .map_err(mp4_err)?;
-                    completed_fragment =
-                        fragment.map(|fragment| (fragment, fragment_start_dts, dts));
-                    active.fragment_start_dts = Some(dts);
+                    active.fragment_start_dts = None;
+                    if let Some(fragment) = fragment {
+                        self.insert_catalog_fragment(fragment, fragment_start_dts, dts)?;
+                    }
                 }
+                let WriterState::Active(active) = &mut self.state else {
+                    unreachable!("indexing a flushed fragment keeps its writer active");
+                };
                 if video.is_keyframe {
                     if let Some(media_config) = video_media_config(&video)? {
                         active.video_sample_description_index = active
@@ -548,7 +553,6 @@ impl MediumTermWriter {
                         ));
                     }
                 }
-                active.fragment_start_dts.get_or_insert(dts);
                 let duration = active
                     .last_video_dts
                     .and_then(|last| u32::try_from(dts - last).ok())
@@ -569,6 +573,7 @@ impl MediumTermWriter {
                         },
                     )
                     .map_err(mp4_err)?;
+                active.fragment_start_dts.get_or_insert(dts);
                 active.last_video_dts = Some(dts);
                 active.last_video_duration = duration;
                 self.recorded_duration = self
@@ -626,9 +631,6 @@ impl MediumTermWriter {
                 self.frames_written += 1;
                 self.bytes_written += raw_aac.len() as u64;
             }
-        }
-        if let Some((fragment, start_dts, end_dts)) = completed_fragment {
-            self.insert_catalog_fragment(fragment, start_dts, end_dts)?;
         }
         Ok(())
     }
@@ -1598,6 +1600,100 @@ mod tests {
         assert_eq!(video.sample_description_index(3).unwrap(), 1);
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_gop_boundary_blocks_predictive_frames_until_a_successful_keyframe()
+    -> anyhow::Result<()> {
+        let dir = std::env::temp_dir().join(format!("keeppeek-boundary-{}", uuid::Uuid::new_v4()));
+        let start = Instant::now();
+        let mut writer = MediumTermWriter::create(&dir, "camera/main", start, 8192)?;
+        let key = |ms| video_frame(start + Duration::from_millis(ms), Duration::from_millis(ms));
+        let mut encoded = vec![0; 9 * 1024 * 1024];
+        let nalu_size = u32::try_from(encoded.len() - 4)?;
+        encoded[..4].copy_from_slice(&nalu_size.to_be_bytes());
+        encoded[4] = 0x41;
+        let payload = Bytes::from(encoded);
+        let predictive = |ms| {
+            let mut frame = key(ms);
+            let MediaFrame::Video(video) = &mut frame.frame else {
+                unreachable!()
+            };
+            video.is_keyframe = false;
+            video.data = payload.clone();
+            frame
+        };
+        writer.append_one(key(0))?;
+        writer.append_one(key(40))?;
+        writer.append_one(predictive(80))?;
+        let accepted = writer.bytes_written();
+        for ms in [100, 120] {
+            // This gap cannot fit the previous sample's 32-bit MP4 duration. Its 9 MiB
+            // predictive frame remains pending after both failed attempts to close the GOP.
+            let mut rejected = key(ms);
+            rejected.timestamp = Some(Duration::from_secs(100_000));
+            assert!(writer.append_one(rejected).is_err());
+            assert!(writer.awaiting_recovery_keyframe());
+            assert_eq!(writer.append_one(predictive(ms + 1))?, Duration::ZERO);
+            assert_eq!(writer.bytes_written(), accepted);
+        }
+        writer.append_one(key(160))?;
+        let path = writer.finalize()?;
+        let mut reader = mp4::read_mp4(File::open(path)?)?;
+        let (&id, track) = reader.tracks().iter().next().unwrap();
+        assert_eq!(track.sample_count(), 4);
+        let times = (1..=track.sample_count())
+            .map(|sample| reader.read_sample(id, sample).unwrap().unwrap().start_time)
+            .collect::<Vec<_>>();
+        assert_eq!(times, [0, 3600, 7200, 14400]);
+        drop(reader);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_boundary_keyframe_keeps_its_preceding_fragment_indexed() -> anyhow::Result<()> {
+        let dir = std::env::temp_dir().join(format!("keeppeek-boundary-{}", uuid::Uuid::new_v4()));
+        let catalog = RecordingCatalog::open(&dir.join("recordings.db"))?;
+        let handle = catalog.handle();
+        let start = Instant::now();
+        let mut writer = MediumTermWriter::create_with_catalog(
+            &dir,
+            "camera/main",
+            start,
+            8192,
+            handle.clone(),
+        )?;
+        let key = |ms| video_frame(start + Duration::from_millis(ms), Duration::from_millis(ms));
+        writer.append_one(key(0))?;
+        writer.append_one(key(40))?;
+        let mut bad = key(80);
+        let MediaFrame::Video(video) = &mut bad.frame else {
+            unreachable!()
+        };
+        video.data = Bytes::from_static(&[0, 0, 0, 8, 0x67, 0x42, 0, 0x1f, 0xe5, 0x88, 0x68, 0x40]);
+        assert_eq!(
+            writer.append_one(bad).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        writer.append_one(key(120))?;
+        let path = writer.finalize()?;
+        let fragments = handle.media_fragments_in_range("camera/main", 0, i64::MAX)?;
+        assert_eq!(fragments.len(), 3);
+        let first = fragments[0].start_ms;
+        assert_eq!(
+            fragments
+                .iter()
+                .map(|f| (f.start_ms - first, f.duration_ms))
+                .collect::<Vec<_>>(),
+            [(0, 40), (40, 40), (120, 80)]
+        );
+        let reader = mp4::read_mp4(File::open(path)?)?;
+        assert_eq!(reader.tracks().values().next().unwrap().sample_count(), 3);
+        drop(reader);
+        catalog.shutdown();
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
     }
 
     #[test]
