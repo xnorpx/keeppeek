@@ -6,9 +6,15 @@ const HEIGHT: usize = 32;
 /// Reads the four luma markers in each presented fixture picture.
 pub fn decoded_picture_ids(path: &Path) -> Vec<u8> {
     let output = Command::new("ffmpeg")
-        .args(["-v", "error", "-threads", "1", "-i"])
+        .args(["-v", "error", "-xerror", "-threads", "1", "-i"])
         .arg(path)
         .args([
+            // The raw pixel pipe has no timestamps. Give its muxer a unique counter
+            // after decoding so genuine duplicate source PTS do not cause output errors.
+            "-vf",
+            "settb=1/30,setpts=N",
+            "-enc_time_base",
+            "1:30",
             "-fps_mode",
             "passthrough",
             "-pix_fmt",
@@ -20,7 +26,7 @@ pub fn decoded_picture_ids(path: &Path) -> Vec<u8> {
         .output()
         .unwrap();
     assert!(
-        output.status.success(),
+        output.status.success() && output.stderr.is_empty(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
