@@ -373,6 +373,7 @@ struct StreamEntry {
     kind: StreamKind,
     stats: IngressStats,
     prev: IngressSnapshot,
+    audio_codec: Option<AudioEncoding>,
     meta: VideoMeta,
     timestamps: SessionTimestampNormalizer,
     media_deadline: Option<Instant>,
@@ -381,6 +382,7 @@ struct StreamEntry {
 fn reset_stream_bindings(streams: &mut [StreamEntry]) {
     for entry in streams {
         entry.stream_id = None;
+        entry.audio_codec = None;
         entry.timestamps.begin_session();
         entry.media_deadline = None;
         entry.prev = entry.stats.snapshot();
@@ -413,6 +415,7 @@ fn bind_stream_entry(
         kind,
         stats,
         prev,
+        audio_codec: None,
         meta: expected_meta,
         timestamps: SessionTimestampNormalizer::new(),
         media_deadline: Some(now + MEDIA_IDLE_TIMEOUT),
@@ -635,7 +638,6 @@ impl ReolinkLoop {
         let mut sub_framerates = Vec::new();
         let mut active_ids: Vec<u32> = Vec::new();
         let mut last_report = Instant::now();
-        let mut audio_codec: Option<String> = None;
         let mut pending_snapshots = VecDeque::<Vec<String>>::new();
         let mut snapshot_in_flight = false;
         let mut event_gate = events::Gate::default();
@@ -1023,18 +1025,13 @@ impl ReolinkLoop {
                                 }
                                 other => (AudioEncoding::Unknown(format!("{other:?}")), None),
                             };
-                            if audio_codec.is_none() {
-                                tracing::info!(
-                                    ip = %self.camera_ip,
-                                    codec = %encoding,
-                                    "first audio frame received"
-                                );
-                            }
-                            audio_codec = Some(encoding.to_string());
-
                             if let Some(entry) =
                                 streams.iter_mut().find(|entry| entry.kind == audio_stream)
                             {
+                                if entry.audio_codec.is_none() {
+                                    tracing::info!(ip = %self.camera_ip, codec = %encoding, "first audio frame received");
+                                }
+                                entry.audio_codec = Some(encoding);
                                 entry.stats.on_audio_frame(data.len());
                             }
                             if let Some(fc) = frame_codec {
@@ -1272,6 +1269,7 @@ impl ReolinkLoop {
                 last_report = Instant::now();
                 tracing::debug!(ip = %self.camera_ip, stats = ?session.stats(), "baichuan session stats");
                 let mut stream_reports = Vec::new();
+                let mut local_sub_audio = None;
                 for entry in streams.iter_mut() {
                     let snap = entry.stats.snapshot();
                     let rates = snap.rates_since(&entry.prev);
@@ -1294,14 +1292,26 @@ impl ReolinkLoop {
                         entry.stats.height,
                         entry.stats.expected_fps,
                     ));
-                    if entry.kind == StreamKind::Main
-                        && let Some(audio) = audio_report(&snap, &rates, audio_codec.as_deref())
-                    {
-                        stream_reports.push(audio);
+                    if let Some(mut audio) = audio_report(
+                        &snap,
+                        &rates,
+                        entry
+                            .audio_codec
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .as_deref(),
+                    ) {
+                        match entry.kind {
+                            StreamKind::Main => stream_reports.push(audio),
+                            StreamKind::Sub => {
+                                audio.kind = "audio_sub".into();
+                                local_sub_audio = Some(audio);
+                            }
+                        }
                     }
                     entry.prev = snap;
                 }
-                let report = CameraReport {
+                let mut report = CameraReport {
                     ip: self.camera_ip,
                     name: self.camera_name.clone(),
                     brand: self.camera_brand.clone(),
@@ -1309,6 +1319,7 @@ impl ReolinkLoop {
                     streams: stream_reports,
                 };
                 log_camera_report(&report);
+                report.streams.extend(local_sub_audio);
                 self.health.publish(report);
             }
         }

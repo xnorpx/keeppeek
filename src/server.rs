@@ -11529,6 +11529,21 @@ fn server_health(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
 ) -> ServerHealthResponse {
+    collect_server_health(router_tx, state, HealthRegistry::snapshot)
+}
+
+pub(crate) fn dashboard_health(
+    router_tx: &FacadeSender<RouterMessage>,
+    state: &ServerState,
+) -> ServerHealthResponse {
+    collect_server_health(router_tx, state, HealthRegistry::local_stream_snapshot)
+}
+
+fn collect_server_health(
+    router_tx: &FacadeSender<RouterMessage>,
+    state: &ServerState,
+    ingress_snapshot: impl FnOnce(&HealthRegistry) -> Vec<crate::stats::CameraHealthReport>,
+) -> ServerHealthResponse {
     let uptime_seconds = state.started_at.elapsed().as_secs();
     let system = state
         .system
@@ -11580,9 +11595,7 @@ fn server_health(
             HashMap::new()
         }
     };
-    let mut ingress = state
-        .health
-        .snapshot()
+    let mut ingress = ingress_snapshot(&state.health)
         .into_iter()
         .map(|report| (report.ip, report))
         .collect::<HashMap<_, _>>();
