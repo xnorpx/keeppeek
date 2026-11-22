@@ -1,6 +1,8 @@
 # Recorded frame timing
 
-Keep's focused-player arrow shortcuts currently seek by an estimated frame duration. On the
+With a selected recording and a valid configured frame rate, Keep's focused-player arrow shortcuts
+currently seek by an estimated frame duration. An unavailable rate leaves playback and position
+unchanged. On the
 variable-rate fixture below, picture 2 starts at 80 ms and picture 3 starts at 200 ms.
 Advancing 40 ms from picture 2 lands at 120 ms, still inside picture 2. Two pictures in
 the duplicate-timestamp fixture also share a start time. A timestamp alone cannot select
