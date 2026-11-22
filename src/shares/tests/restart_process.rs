@@ -113,7 +113,7 @@ fn restart_preserves_consumption_and_revocation_but_invalidates_sessions() {
             .spawn()
             .unwrap();
         serde_json::to_writer(child.stdin.take().unwrap(), &client).unwrap();
-        let result = child.wait_with_output().unwrap();
+        let result = wait_for_child(child);
         assert!(
             result.status.success(),
             "{phase} failed: {}",
