@@ -52,7 +52,8 @@ fn measure_accepted_rtp_packets() {
         }
     }
     nanos_per_packet.sort_by(f64::total_cmp);
-    println!(
+    crate::testutil::init_logging();
+    log::info!(
         "8192 RTP packets, 30 runs: median {:.3} ns/packet, p95 {:.3} ns/packet",
         (nanos_per_packet[14] + nanos_per_packet[15]) / 2.0,
         nanos_per_packet[28]
