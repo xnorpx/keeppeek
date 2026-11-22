@@ -13,7 +13,7 @@ use std::{
 };
 #[path = "state_store_profiles_application.rs"]
 mod application;
-pub(in crate::server) use application::ProfileApplicationQueue;
+pub(in crate::server) use application::{ProfileApplicationQueue, confirmed_privacy};
 #[path = "state_store_profiles_identity.rs"]
 mod identity;
 #[path = "state_store_profiles_observed.rs"]
@@ -329,7 +329,7 @@ fn dispatch_command(
             let value = request
                 .value
                 .ok_or_else(|| invalid("profile activation value is required"))?;
-            let (profile_id, selected_revision) =
+            let (profile_id, selected_definition) =
                 parse_selection(&value, request.schema == SELECT_SCHEMA)
                     .map_err(|error| registry_error(error, NAMESPACE, ACTIVE_KEY))?;
             let _guard = super::super::state_store_settings::lock_config(&state.config_update)
@@ -368,14 +368,18 @@ fn dispatch_command(
                     .profiles
                     .get(profile_id)
                     .expect("profile existence was checked");
-                if selected_revision.is_some_and(|revision| revision != profile.revision) {
-                    return Err(registry_error(
-                        Error::Conflict {
-                            current_revision: current.runtime_profiles.revision,
-                        },
-                        NAMESPACE,
-                        ACTIVE_KEY,
-                    ));
+                if let Some(pin) = selected_definition {
+                    let actual = profile_digest(profile)
+                        .map_err(|error| registry_error(error, NAMESPACE, ACTIVE_KEY))?;
+                    if pin.revision != profile.revision || pin.digest != actual {
+                        return Err(registry_error(
+                            Error::Conflict {
+                                current_revision: current.runtime_profiles.revision,
+                            },
+                            NAMESPACE,
+                            ACTIVE_KEY,
+                        ));
+                    }
                 }
                 let configured_ids = configured_profile_ids(&identities);
                 if profile
@@ -593,6 +597,14 @@ fn register_profile_watch(
         NAMESPACE,
         &request.watch_id,
     )?;
+    let lifecycle = state
+        .api_session_owners
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&session_id)
+        .map_or_else(std::sync::Arc::default, |session| {
+            std::sync::Arc::clone(&session.lifecycle)
+        });
     message.snapshot_revision = state
         .state_store_watches
         .register_snapshot(
@@ -600,7 +612,7 @@ fn register_profile_watch(
             NAMESPACE.to_owned(),
             entry.key.clone(),
             request.watch_id.clone(),
-            Some(&entry),
+            Some((&entry, lifecycle)),
         )
         .map_err(|error| registry_error(error, NAMESPACE, &request.watch_id))?;
     Ok(proto::StateStoreResult {
@@ -608,10 +620,15 @@ fn register_profile_watch(
     })
 }
 
+struct DefinitionPin<'a> {
+    revision: u64,
+    digest: &'a str,
+}
+
 fn parse_selection(
     value: &Struct,
     require_definition: bool,
-) -> Result<(Option<String>, Option<u64>), Error> {
+) -> Result<(Option<String>, Option<DefinitionPin<'_>>), Error> {
     let invalid = || Error::Invalid(Invalid::Schema);
     let Some(Kind::StringValue(id)) = value.fields.get("profile_id").and_then(|v| v.kind.as_ref())
     else {
@@ -626,10 +643,21 @@ fn parse_selection(
             return Err(invalid());
         };
         let revision = text.parse::<u64>().map_err(|_| invalid())?;
-        if value.fields.len() != 2 || revision > i64::MAX as u64 || revision.to_string() != *text {
+        let Some(Kind::StringValue(digest)) = value
+            .fields
+            .get("definition_digest")
+            .and_then(|v| v.kind.as_ref())
+        else {
+            return Err(invalid());
+        };
+        if !is_profile_digest(digest)
+            || value.fields.len() != 3
+            || revision > i64::MAX as u64
+            || revision.to_string() != *text
+        {
             return Err(invalid());
         }
-        return Ok((Some(id.clone()), Some(revision)));
+        return Ok((Some(id.clone()), Some(DefinitionPin { revision, digest })));
     }
     if value.fields.len() != 1 {
         return Err(invalid());
@@ -760,6 +788,7 @@ fn put_profile_draft(
             &request.key,
         ));
     }
+    let first_part = existing.is_none();
     let draft = drafts
         .drafts
         .entry(draft_id.clone())
@@ -775,24 +804,26 @@ fn put_profile_draft(
         .insert((part.profile_id.clone(), part.part_index), part.clone());
     drafts.bytes += bytes;
     drop(drafts);
-    let revision = state
-        .runtime_profiles
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .revision;
-    record_profile_audit(
-        state,
-        session_id,
-        principal,
-        "runtime_profile_draft_write",
-        None,
-        "staged",
-        ProfileAuditDetails {
-            registry_revision: revision,
-            definition_revision: Some(part.generation),
-            override_target_count: Some(part.cameras.len()),
-        },
-    );
+    if first_part {
+        let revision = state
+            .runtime_profiles
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .revision;
+        record_profile_audit(
+            state,
+            session_id,
+            principal,
+            "runtime_profile_draft_write",
+            None,
+            "staged",
+            ProfileAuditDetails {
+                registry_revision: revision,
+                definition_revision: None,
+                override_target_count: None,
+            },
+        );
+    }
     Ok(control_ok::Result::StateStoreResult(entry_result(
         profile_draft_entry(&draft_id, &part, &principal.id()),
     )))
@@ -2303,13 +2334,19 @@ mod tests {
             .unwrap()
             .runtime_profiles;
         assert_ne!(accepted.profiles["away"].revision, displayed);
-        let select = |expected: Option<u64>| {
+        let select = |expected: Option<u64>, digest: String| {
             let mut command = put_active("away", accepted.revision);
             let Some(state_store_command::Action::Put(request)) = &mut command.action else {
                 unreachable!()
             };
             request.schema = SELECT_SCHEMA.to_owned();
             if let Some(expected) = expected {
+                request.value.as_mut().unwrap().fields.insert(
+                    "definition_digest".into(),
+                    Value {
+                        kind: Some(Kind::StringValue(digest)),
+                    },
+                );
                 request.value.as_mut().unwrap().fields.insert(
                     "definition_revision".into(),
                     Value {
@@ -2319,9 +2356,12 @@ mod tests {
             }
             super::super::dispatch(&fixture.state, session, &principal, command)
         };
-        assert!(select(None).is_err());
-        let stale =
-            select(Some(displayed)).expect_err("selection must match the displayed definition");
+        assert!(select(None, String::new()).is_err());
+        let stale = select(
+            Some(displayed),
+            profile_digest(&before.profiles["away"]).unwrap(),
+        )
+        .expect_err("selection must match the displayed definition");
         assert_eq!(stale.code, proto::ErrorCode::Rejected);
         assert_eq!(
             config::load_config(&fixture.config_path())
@@ -2329,7 +2369,65 @@ mod tests {
                 .runtime_profiles,
             accepted
         );
-        select(Some(accepted.profiles["away"].revision)).unwrap();
+        let current = &accepted.profiles["away"];
+        assert!(
+            select(
+                Some(current.revision),
+                profile_digest(&before.profiles["away"]).unwrap()
+            )
+            .is_err()
+        );
+        select(Some(current.revision), profile_digest(current).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn delayed_selection_rejects_another_definition_after_delete_and_recreate() {
+        let fixture = Fixture::new();
+        let admin = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let session = SessionId::from_u64(20_285);
+        let load = || {
+            config::load_config(&fixture.config_path())
+                .unwrap()
+                .runtime_profiles
+        };
+        let save = |registry: &crate::profiles::ProfileRegistry| {
+            super::super::dispatch(
+                &fixture.state,
+                session,
+                &admin,
+                put_registry(registry, registry.revision),
+            )
+            .unwrap();
+            load()
+        };
+        let mut registry = load();
+        let mut definition = RuntimeProfile {
+            id: "lobby".into(),
+            name: "Lobby".into(),
+            revision: 0,
+            cameras: BTreeMap::new(),
+        };
+        registry
+            .profiles
+            .insert(definition.id.clone(), definition.clone());
+        registry = save(&registry);
+        let seen = registry.profiles["lobby"].clone();
+        registry.profiles.remove("lobby");
+        registry = save(&registry);
+        definition.name = "Changed while settings was open".into();
+        registry.profiles.insert(definition.id.clone(), definition);
+        registry = save(&registry);
+        assert_eq!(seen.revision, registry.profiles["lobby"].revision);
+        let mut command = put_active("lobby", registry.revision);
+        let Some(state_store_command::Action::Put(request)) = &mut command.action else {
+            unreachable!()
+        };
+        request.schema = SELECT_SCHEMA.into();
+        request.value = Some(super::super::super::peek_layouts::json_to_struct(serde_json::json!({
+            "profile_id":"lobby","definition_revision":seen.revision.to_string(),"definition_digest":profile_digest(&seen).unwrap()
+        })).unwrap());
+        assert!(super::super::dispatch(&fixture.state, session, &admin, command).is_err());
+        assert_eq!(load(), registry);
     }
 
     #[test]
@@ -2379,7 +2477,25 @@ mod tests {
             )
             .is_err()
         );
+        for _ in 0..10 {
+            assert!(
+                super::super::dispatch(
+                    &fixture.state,
+                    session,
+                    &user,
+                    put_active(rejected_value, 0)
+                )
+                .is_err()
+            );
+        }
         let audit = fixture.state.access_manager.list_audit(16);
+        assert_eq!(
+            audit
+                .iter()
+                .filter(|event| event.result == "denied")
+                .count(),
+            1
+        );
         for (action, revision) in [
             ("runtime_profile_edited", registry.revision + 1),
             ("runtime_profile_activated", registry.revision + 2),
@@ -2515,6 +2631,71 @@ mod tests {
         );
         shutdown.cancel();
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn camera_identity_change_reports_a_recoverable_failure_for_the_current_selection() {
+        let fixture = Fixture::new();
+        let existing = fixture.add_camera(&camera_config("192.0.2.16".parse().unwrap()));
+        let runtime = crate::keeppeek::KeepPeekLoop::new(crate::shutdown::Shutdown::new(), None);
+        let state = fixture.state.clone().with_camera_runtime(runtime.control());
+        let path = fixture.config_path();
+        let config = config::load_config(&path).unwrap();
+        let ids = config.camera_profile_identities().unwrap();
+        {
+            let _guard = state.config_update.lock().unwrap();
+            mark_runtime_status_pending(&state, &config.runtime_profiles);
+            application::schedule(&state, &config.runtime_profiles, ids);
+            fixture.add_camera(&camera_config("192.0.2.17".parse().unwrap()));
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = state.runtime_profile_status.read().unwrap();
+            if let Some(observed) = status.cameras.get(&existing)
+                && observed.state == crate::profiles::RuntimeApplicationState::Degraded
+                && observed
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("Reapply"))
+            {
+                break;
+            }
+            drop(status);
+            assert!(
+                Instant::now() < deadline,
+                "identity changes must leave a retryable outcome"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn removal_preserves_another_sources_unconfirmed_privacy_deny() {
+        let fixture = Fixture::new();
+        let ip = "192.0.2.18".parse().unwrap();
+        let other = "192.0.2.19";
+        fixture.add_camera(&camera_config(ip));
+        fixture.add_camera(&camera_config(other.parse().unwrap()));
+        let path = fixture.config_path();
+        let registry = config::load_config(&path).unwrap().runtime_profiles;
+        update_runtime_status(
+            &fixture.state,
+            &registry,
+            None,
+            Some("Worker unavailable".into()),
+            false,
+        );
+        let held = BTreeMap::from([(ip.to_string(), true), (other.to_owned(), true)]);
+        fixture
+            .state
+            .privacy
+            .replace_profile_overrides(held)
+            .unwrap();
+        config::remove_camera(&path, ip).unwrap();
+        super::super::super::reconcile_removed_camera(&fixture.state, &path, ip).unwrap();
+        let remaining = fixture.state.privacy.profile_overrides_snapshot();
+        assert_eq!(remaining.get(other), Some(&true));
+        assert!(!remaining.contains_key(&ip.to_string()));
     }
 
     #[test]
@@ -3293,6 +3474,7 @@ mod tests {
 
         let session = SessionId::from_u64(20_273);
         let principal = bind_scoped_viewer(state, session, visible_ip);
+        let mut administrator = connected_profile_status_watch(state, 20_274);
         let mut pump = state.webrtc.stage_api_session_pump(session);
         let registry_watch = proto::StateStoreCommand {
             action: Some(state_store_command::Action::Watch(proto::WatchState {
@@ -3324,6 +3506,10 @@ mod tests {
             .unwrap()
             .reason = Some("hidden worker changed".into());
         publish_status_event(state, 2);
+        assert!(matches!(
+            single_watch_notification(administrator()),
+            Some(proto::notification::Event::StateStoreWatchUpdate(_))
+        ));
         assert!(
             pump().is_empty(),
             "hidden-only changes must not generate viewer traffic"
@@ -3337,6 +3523,26 @@ mod tests {
             panic!("expected scoped entry")
         };
         assert_eq!(unchanged, snapshot.entries[0]);
+        let rewatch = || {
+            let control_ok::Result::StateStoreResult(result) = super::super::dispatch(
+                state,
+                session,
+                &principal,
+                watch_profile_key("viewer", key),
+            )
+            .unwrap() else {
+                panic!("watch result expected")
+            };
+            let Some(state_store_result::Result::Watch(snapshot)) = result.result else {
+                panic!("watch snapshot expected");
+            };
+            snapshot
+        };
+        assert_eq!(
+            rewatch(),
+            snapshot,
+            "a hidden-only change cannot advance the viewer cursor"
+        );
         state
             .runtime_profile_status
             .write()
@@ -3351,9 +3557,11 @@ mod tests {
         else {
             panic!("watch update expected")
         };
-        assert!(update.revision > snapshot.snapshot_revision);
+        assert_eq!(update.revision, snapshot.snapshot_revision + 1);
         assert_eq!(update.watch_sequence, 1);
         assert_eq!(status_camera_ids(&update.entry.unwrap()), [visible_id]);
+        assert_eq!(rewatch().snapshot_revision, update.revision);
+
         let (owner_id, _) = principal.credential_binding().unwrap();
         state.access_manager.revoke_credential(owner_id, 4).unwrap();
         publish_status_event(state, 5);
@@ -3644,6 +3852,16 @@ mod tests {
             }
         }
 
+        assert_eq!(
+            fixture
+                .state
+                .access_manager
+                .list_audit(200)
+                .iter()
+                .filter(|entry| entry.action == "runtime_profile_draft_write")
+                .count(),
+            1
+        );
         let result = super::super::dispatch(
             &fixture.state,
             SessionId::from_u64(20_211),

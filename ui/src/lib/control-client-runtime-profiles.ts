@@ -129,7 +129,7 @@ export class RuntimeProfilesControlClient {
 			current.revision !== registry.revision ||
 			Object.values(registry.profiles).some((candidate) => {
 				const previous = current.profiles[candidate.id];
-				return previous && previous.revision !== candidate.revision;
+				return previous && candidate.revision !== '0' && previous.revision !== candidate.revision;
 			})
 		) {
 			throw new StateStoreRequestError('Runtime profiles changed before saving.', {
@@ -243,7 +243,7 @@ export class RuntimeProfilesControlClient {
 		selection?: RuntimeProfileRegistry
 	): Promise<string> {
 		let schema = runtimeProfilesActiveSchema;
-		let revision = BigInt(expectedRevision);
+		const revision = BigInt(expectedRevision);
 		const value: JsonObject = { profile_id: profileId ?? '' };
 		if (profileId !== null) {
 			const displayed =
@@ -253,13 +253,24 @@ export class RuntimeProfilesControlClient {
 				);
 			const definition = displayed.profiles[profileId];
 			if (!definition) throw new Error('The selected runtime profile is unavailable.');
+			const digest = 'digest' in definition ? definition.digest : await digestProfile(definition);
 			if (displayed.activation_schema === runtimeProfileSelectSchema) {
 				schema = runtimeProfileSelectSchema;
 				value.definition_revision = definition.revision;
-			} else {
-				// Older recorders advance the global CAS revision on every definition edit.
-				const displayedRevision = BigInt(displayed.revision);
-				if (displayedRevision < revision) revision = displayedRevision;
+				value.definition_digest = digest;
+			} else if (selection) {
+				const latest = runtimeProfileManifestFromEntry(
+					await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesRegistryKey)
+				);
+				const current = latest.profiles[profileId];
+				if (current?.digest !== digest || current.revision !== definition.revision) {
+					throw new StateStoreRequestError('The selected profile changed before activation.', {
+						namespace: runtimeProfilesNamespace,
+						key: runtimeProfilesActiveKey,
+						code: StateStoreErrorCode.CONFLICT,
+						currentRevision: BigInt(latest.revision)
+					});
+				}
 			}
 		}
 		const entry = await this.stateStore.put(runtimeProfilesNamespace, runtimeProfilesActiveKey, {

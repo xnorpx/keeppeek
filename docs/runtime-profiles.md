@@ -315,9 +315,11 @@ An Administrator reads the registry manifest and the selected definition before 
 a named profile. A recorder advertising `keeppeek.runtime-profiles.select.v2` in the
 manifest's `activation_schema` accepts that schema in a StateStore Put to the existing
 `active` key. Supply the active entry's expected revision, the selected `profile_id`
-and the exact displayed `definition_revision` as a decimal string. A conflict requires
+and the displayed `definition_revision` as a decimal string, plus its SHA-256 `definition_digest`.
+The recorder checks both against the current definition, including after deletion and recreation. A conflict requires
 refreshing the selection. Base uses the active revision alone. Older recorders compare
-the shared registry revision, which advances on every definition edit.
+the shared registry revision. Settings re-reads the selected digest before sending a legacy request
+with the active revision the operator has observed.
 
 ### Audit evidence
 
@@ -327,7 +329,10 @@ the machine ID, definition revision and number of explicit camera overrides. A d
 records the last accepted definition. Selecting Base records zero explicit overrides.
 Rejected writes record the current registry revision and a bounded outcome. Display names,
 request bodies and per-camera settings are omitted. The existing access-audit list retains
-its standard action, target and result fields.
+its standard action, target and result fields. The first part of a draft records its staging start.
+The final commit records the accepted definitions. The list keeps up to 64 transient profile
+outcomes and combines equivalent outcomes for an actor within one minute. Individual rejected
+requests still appear in the structured trace.
 
 ### Registry capacity
 

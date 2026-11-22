@@ -18,31 +18,53 @@ import {
 import type { ControlClientStateStore } from './control-client-state-store';
 
 describe('RuntimeProfilesControlClient', () => {
-	it('pins the displayed definition even after a newer active header arrives', async () => {
-		const put = vi
-			.fn()
-			.mockResolvedValue(entry('active', runtimeProfilesActiveSchema, { profile_id: 'away' }, 9n));
-		const client = new RuntimeProfilesControlClient({ put } as unknown as ControlClientStateStore);
+	it('pins the displayed definition across active updates and detects recreated profiles', async () => {
+		const original = await profile('away', 0, '3');
 		const selection = {
 			revision: '6',
 			active_profile_id: null,
-			profiles: { away: { id: 'away', name: 'Away', revision: '3', cameras: {} } }
+			profiles: { away: original.definition }
 		};
+		const summary = {
+			id: 'away',
+			name: original.definition.name,
+			revision: '3',
+			target_count: 0,
+			part_count: 0,
+			digest: original.digest
+		};
+		const manifest = { revision: '8', active_profile_id: null, profiles: { away: summary } };
+		const get = vi
+			.fn()
+			.mockResolvedValue(entry('registry', runtimeProfilesRegistrySchema, manifest, 8n));
+		const put = vi
+			.fn()
+			.mockResolvedValue(entry('active', runtimeProfilesActiveSchema, { profile_id: 'away' }, 9n));
+		const client = new RuntimeProfilesControlClient({
+			put,
+			get
+		} as unknown as ControlClientStateStore);
 		await client.activate('away', '8', {
 			...selection,
 			activation_schema: runtimeProfileSelectSchema
 		});
 		expect(put).toHaveBeenLastCalledWith(runtimeProfilesNamespace, 'active', {
 			schema: runtimeProfileSelectSchema,
-			value: { profile_id: 'away', definition_revision: '3' },
+			value: { profile_id: 'away', definition_revision: '3', definition_digest: original.digest },
 			expectedRevision: 8n
 		});
 		await client.activate('away', '8', selection);
 		expect(put).toHaveBeenLastCalledWith(runtimeProfilesNamespace, 'active', {
 			schema: runtimeProfilesActiveSchema,
 			value: { profile_id: 'away' },
-			expectedRevision: 6n
+			expectedRevision: 8n
 		});
+		const recreated = { ...manifest, profiles: { away: { ...summary, digest: '0'.repeat(64) } } };
+		get.mockResolvedValue(entry('registry', runtimeProfilesRegistrySchema, recreated, 8n));
+		await expect(client.activate('away', '8', selection)).rejects.toMatchObject({
+			code: StateStoreErrorCode.CONFLICT
+		});
+		expect(put).toHaveBeenCalledTimes(2);
 		await client.activate(null, '8', selection);
 		expect(put).toHaveBeenLastCalledWith(runtimeProfilesNamespace, 'active', {
 			schema: runtimeProfilesActiveSchema,
@@ -105,16 +127,32 @@ describe('RuntimeProfilesControlClient', () => {
 				})
 			})
 		);
+		put.mockClear();
+		await client.saveRegistry({
+			...manifest,
+			profiles: { home: { ...first.definition, name: 'Recreated', revision: '0' } }
+		});
+		expect(put).toHaveBeenCalledWith(
+			runtimeProfilesNamespace,
+			'registry',
+			expect.objectContaining({
+				expectedRevision: 8n,
+				value: expect.objectContaining({
+					profiles: expect.objectContaining({
+						home: expect.objectContaining({ revision: '4', name: 'Recreated' })
+					})
+				})
+			})
+		);
 	});
 
 	it('saves and reads 32 maximum-length IDs and UTF-8 names inside a compact registry', async () => {
 		const profiles = Object.fromEntries(
 			Array.from({ length: 32 }, (_, i) => {
 				const id = 'p'.repeat(126) + String(i).padStart(2, '0');
-				return [
-					id,
-					{ id, name: 'ç•Œ'.repeat(26) + String(i).padStart(2, '0'), revision: '0', cameras: {} }
-				];
+				const name = '界'.repeat(26) + String(i).padStart(2, '0');
+				expect(new TextEncoder().encode(name).byteLength).toBe(80);
+				return [id, { id, name, revision: '0', cameras: {} }];
 			})
 		);
 		let stored = entry(
@@ -368,7 +406,7 @@ describe('runtime profile observations', () => {
 		const active = entry(
 			'active',
 			'keeppeek.runtime-profiles.active.v1',
-			{ profile_id: 'away', observed_parts: 8, degraded_cameras: 1 },
+			{ profile_id: 'away', observed_parts: 8, degraded_cameras: 300 },
 			3n
 		);
 		const watch = vi.fn(
@@ -392,8 +430,28 @@ describe('runtime profile observations', () => {
 		const shell = await client.watchShellProfile(render);
 		expect(get).toHaveBeenCalledExactlyOnceWith(runtimeProfilesNamespace, 'active');
 		expect(watch).toHaveBeenCalledTimes(1);
-		expect(render).toHaveBeenCalledExactlyOnceWith('away', 1);
+		expect(render).toHaveBeenCalledExactlyOnceWith('away', 300);
+		expect(await client.getActive()).toEqual({ profileId: 'away', revision: '3' });
 		await Promise.all([shell.close(), retained.close()]);
+	});
+	it('validates the whole-fleet degraded count as an unsigned 32-bit value', () => {
+		const header = (count: unknown) =>
+			entry(
+				'active',
+				'keeppeek.runtime-profiles.active.v1',
+				{
+					profile_id: '',
+					observed_parts: 8,
+					degraded_cameras: count
+				},
+				1n
+			);
+		for (const count of [null, 0, 254, 255, 0xffff_ffff]) {
+			expect(runtimeProfileHeaderFromEntry(header(count)).degradedCameras).toBe(count);
+		}
+		for (const count of [-1, 1.5, '255', 0x1_0000_0000]) {
+			expect(() => runtimeProfileHeaderFromEntry(header(count))).toThrow('degraded camera count');
+		}
 	});
 	it('validates the observation count on active headers', () => {
 		for (const count of [0, 7, 9, '8']) {

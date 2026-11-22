@@ -66,12 +66,17 @@ export async function measureProfileActivations(size: { cameras: number; profile
 				let status = await api.getStatus();
 				while (
 					performance.now() < deadline &&
-					(status.revision !== revision ||
+					(status === null ||
+						status.revision !== revision ||
 						Object.values(status.cameras).some((camera) => camera.state === 'pending'))
 				) {
 					await new Promise((resolve) => setTimeout(resolve, 100));
 					status = await api.getStatus();
 				}
+				if (status === null)
+					throw new Error(
+						'The recorder did not publish a complete observation before the convergence deadline.'
+					);
 				const cameras = Object.values(status.cameras);
 				return {
 					revision: status.revision,

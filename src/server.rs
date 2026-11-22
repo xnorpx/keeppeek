@@ -12980,10 +12980,20 @@ fn refresh_runtime_profile_camera_ids(
     state
         .privacy
         .replace_profile_overrides(restrictive_privacy)?;
-    if let Some(runtime) = &state.camera_runtime {
-        runtime.set_runtime_profiles_with_camera_ids(configuration.runtime_profiles, identities)?;
-    }
-    Ok(next_privacy)
+    let applications = if let Some(runtime) = &state.camera_runtime {
+        runtime.set_runtime_profiles_with_camera_ids(
+            configuration.runtime_profiles.clone(),
+            identities,
+        )?
+    } else {
+        Vec::new()
+    };
+    state_store::profiles::confirmed_privacy(
+        state,
+        &configuration.runtime_profiles,
+        &profile_camera_ids,
+        &applications,
+    )
 }
 
 fn runtime_camera_groups(config_path: &Path, camera_ip: IpAddr) -> Option<Vec<String>> {
@@ -13071,13 +13081,16 @@ fn reconcile_removed_camera(
             )
         })?;
     }
-    let profile_privacy = refresh_runtime_profile_camera_ids(state, config_path).map_err(|_| {
-        ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            "camera was removed but profile identity reconciliation could not be confirmed",
-        )
-    })?;
+    let mut profile_privacy =
+        refresh_runtime_profile_camera_ids(state, config_path).map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "camera was removed but profile identity reconciliation could not be confirmed",
+            )
+        })?;
+    // The removed source has completed its stop; other cameras retain unconfirmed denies.
+    profile_privacy.remove(&ip.to_string());
     state
         .privacy
         .replace_profile_overrides(profile_privacy)

@@ -15,10 +15,10 @@
 //! expiries are unrecoverable, so every watch ends rather than risk a silent
 //! gap. A session that disappears takes its watches with it on cleanup.
 
-use super::ServerState;
 use super::state_store::{
     Error, Invalid, NamespaceLayout, StoredEntry, authorize_read, profiles, validate_namespace,
 };
+use super::{ServerState, session_lifecycle::Lifecycle};
 use crate::{
     access::AccessRole,
     api::proto::{self, notification},
@@ -27,29 +27,19 @@ use crate::{
 use prost::Message as _;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::{Arc, Mutex, atomic::Ordering};
+
+#[path = "state_store_watch_profile_view.rs"]
+mod profile_view;
 
 pub(super) const MAX_WATCHES_PER_SESSION: usize = 64;
 pub(super) const MAX_WATCHES_TOTAL: usize = 1_024;
 pub(super) const MAX_IN_FLIGHT_UPDATES: usize = 32;
 pub(super) const ACK_TIMEOUT_MS: u64 = 30_000;
 
+#[derive(Default)]
 pub(super) struct WatchRegistry {
-    // Read and advance the namespace cursor while holding the watch mutex.
-    profile_revision: AtomicU64,
     inner: Mutex<HashMap<(SessionId, String), Watch>>,
-}
-
-impl Default for WatchRegistry {
-    fn default() -> Self {
-        Self {
-            profile_revision: AtomicU64::new(0),
-            inner: Mutex::new(HashMap::new()),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -59,6 +49,7 @@ struct Watch {
     namespace: String,
     key_prefix: String,
     profile_fingerprint: Option<[u8; 32]>,
+    profile_session: Option<Arc<Lifecycle>>,
     delivered: u64,
     applied: u64,
     unacked: VecDeque<PendingUpdate>,
@@ -178,7 +169,7 @@ impl WatchRegistry {
         namespace: String,
         key_prefix: String,
         watch_id: String,
-        profile: Option<&StoredEntry>,
+        profile: Option<(&StoredEntry, Arc<Lifecycle>)>,
     ) -> Result<u64, Error> {
         let mut watches = self.lock();
         if !watches.contains_key(&(session_id, watch_id.clone())) {
@@ -190,8 +181,9 @@ impl WatchRegistry {
                 return Err(Error::Invalid(Invalid::WatchLimitExceeded));
             }
         }
-        let cursor = profile.map_or(0, |entry| {
-            self.profile_revision
+        let cursor = profile.as_ref().map_or(0, |(entry, session)| {
+            session
+                .profile_watch_revision
                 .fetch_max(entry.revision, Ordering::Relaxed)
                 .max(entry.revision)
         });
@@ -202,7 +194,10 @@ impl WatchRegistry {
                 watch_id,
                 namespace,
                 key_prefix,
-                profile_fingerprint: profile.map(profile_fingerprint),
+                profile_fingerprint: profile
+                    .as_ref()
+                    .map(|(entry, _)| profile_fingerprint(entry)),
+                profile_session: profile.map(|(_, session)| session),
                 delivered: 0,
                 applied: 0,
                 unacked: VecDeque::new(),
@@ -282,17 +277,19 @@ impl WatchRegistry {
         enqueue: impl Fn(SessionId, proto::Notification) -> EnqueueOutcome,
     ) -> Vec<(SessionId, proto::Notification)> {
         // Configuration reads may touch disk. Never run them under the global watch lock.
-        let needs_identities = events.iter().any(|e| {
-            is_profile_status_event(e) || matches!(e.kind, WatchEventKind::ProfileHeader { .. })
-        }) && state
-            .api_session_owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .any(|owner| owner.principal.role != AccessRole::Administrator);
+        let has_profiles = events.iter().any(profile_view::needs_projection);
+        let needs_identities = has_profiles
+            && state
+                .api_session_owners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .values()
+                .any(|owner| owner.principal.role != AccessRole::Administrator);
         let identities = needs_identities
             .then(|| profiles::camera_profile_ids(state).ok())
             .flatten();
+        let prepared =
+            has_profiles.then(|| profile_view::prepare(self, state, events, identities.as_ref()));
         let mut sent = Vec::new();
         let mut watches = self.lock();
         let mut closed: Vec<(Watch, CloseReason)> = Vec::new();
@@ -307,19 +304,8 @@ impl WatchRegistry {
                 )
             }));
         }
-        for event in events {
-            let revision = if event.namespace == profiles::NAMESPACE {
-                let next = self
-                    .profile_revision
-                    .load(Ordering::Relaxed)
-                    .max(event.revision)
-                    .checked_add(1)
-                    .expect("profile watch revision space exhausted");
-                self.profile_revision.store(next, Ordering::Relaxed);
-                next
-            } else {
-                event.revision
-            };
+        for (index, event) in events.iter().enumerate() {
+            let mut visible_revisions = HashMap::new();
             let layout = validate_namespace(&event.namespace).ok();
             let mut terminate: Vec<((SessionId, String), Option<CloseReason>)> = Vec::new();
             for (key, watch) in watches.iter_mut() {
@@ -330,10 +316,24 @@ impl WatchRegistry {
                     terminate.push((key.clone(), Some(CloseReason::AuthorizationRevoked)));
                     continue;
                 }
-                let mut projected_event =
-                    project_event_for_watch(state, watch.session_id, event, identities.as_ref());
+                let mut projected_event = if profile_view::needs_projection(event) {
+                    prepared
+                        .as_ref()
+                        .and_then(|entries| entries.get(&(watch.session_id, index)))
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            // A watch registered after the preparation snapshot still gets a scoped update.
+                            profile_view::SessionView::new(
+                                state,
+                                watch.session_id,
+                                identities.as_ref(),
+                            )
+                            .project(event)
+                        })
+                } else {
+                    event.clone()
+                };
                 if event.namespace == profiles::NAMESPACE {
-                    projected_event.revision = revision;
                     if let WatchEventKind::Put(entry) = &projected_event.kind {
                         let fingerprint = profile_fingerprint(entry);
                         if watch.profile_fingerprint == Some(fingerprint) {
@@ -341,13 +341,30 @@ impl WatchRegistry {
                         }
                         watch.profile_fingerprint = Some(fingerprint);
                     }
+                    if let Some(session) = &watch.profile_session {
+                        projected_event.revision = *visible_revisions
+                            .entry(watch.session_id)
+                            .or_insert_with(|| {
+                                // The watch lock serializes a session's snapshots and visible publications.
+                                let next = session
+                                    .profile_watch_revision
+                                    .load(Ordering::Relaxed)
+                                    .max(event.revision)
+                                    .checked_add(1)
+                                    .expect("profile watch revision space exhausted");
+                                session
+                                    .profile_watch_revision
+                                    .store(next, Ordering::Relaxed);
+                                next
+                            });
+                    }
                 }
                 watch.delivered += 1;
                 let sequence = watch.delivered;
                 watch.unacked.push_back(PendingUpdate {
                     sequence,
                     #[cfg(test)]
-                    revision,
+                    revision: projected_event.revision,
                     sent_ms: now_ms,
                 });
                 if watch.unacked.len() > MAX_IN_FLIGHT_UPDATES {
@@ -524,68 +541,6 @@ fn profile_fingerprint(entry: &StoredEntry) -> [u8; 32] {
         .into()
 }
 
-fn project_event_for_watch(
-    state: &ServerState,
-    session_id: SessionId,
-    event: &WatchEvent,
-    identities: Option<&crate::keeppeek::CameraProfileIds>,
-) -> WatchEvent {
-    if !is_profile_status_event(event)
-        && !matches!(event.kind, WatchEventKind::ProfileHeader { .. })
-    {
-        return event.clone();
-    }
-    let principal = state
-        .api_session_owners
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&session_id)
-        .map(|session| session.principal.clone());
-    let kind = match &event.kind {
-        WatchEventKind::ProfileObservation {
-            status,
-            administrator,
-        } => {
-            let entry = principal.as_ref().and_then(|principal| {
-                if principal.role == AccessRole::Administrator {
-                    administrator.clone().filter(|entry| {
-                        entry.value.encoded_len() <= profiles::PROFILE_DOCUMENT_BYTES_MAX
-                    })
-                } else {
-                    let visible =
-                        profiles::visible_profile_camera_ids(state, principal, identities)?;
-                    let projected = profiles::observed::scoped_status(status, &visible);
-                    profiles::observed::entry_for_key(&projected, &event.key).ok()
-                }
-            });
-            entry.map_or(WatchEventKind::ResnapshotRequired, WatchEventKind::Put)
-        }
-        WatchEventKind::ProfileHeader { entry, degraded } => {
-            let mut entry = entry.clone();
-            profiles::observed::set_header_count(
-                state,
-                principal.as_ref(),
-                identities,
-                degraded.as_ref(),
-                &mut entry,
-            );
-            WatchEventKind::Put(entry)
-        }
-        WatchEventKind::Put(entry) => {
-            let mut entry = entry.clone();
-            profiles::observed::project(state, principal.as_ref(), identities, &mut entry);
-            WatchEventKind::Put(entry)
-        }
-        _ => return event.clone(),
-    };
-    WatchEvent {
-        namespace: event.namespace.clone(),
-        key: event.key.clone(),
-        revision: event.revision,
-        kind,
-    }
-}
-
 fn closed_notification(watch: &Watch, reason: CloseReason) -> proto::Notification {
     proto::Notification {
         event: Some(notification::Event::StateStoreWatchClosed(
@@ -745,7 +700,7 @@ mod tests {
             }),
         };
 
-        let projected = project_event_for_watch(&state, session_id, &event, None);
+        let projected = profile_view::SessionView::new(&state, session_id, None).project(&event);
         let WatchEventKind::Put(entry) = projected.kind else {
             panic!("status projection must keep its entry update");
         };
