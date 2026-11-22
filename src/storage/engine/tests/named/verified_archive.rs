@@ -489,7 +489,9 @@ fn with_archive_target<T>(
 #[test]
 fn qualification_creates_one_private_target_in_each_location_and_preserves_occupants()
 -> anyhow::Result<()> {
-    let (root, catalog, _manager) = runtime::tests::fixture(256 * MEBIBYTE_BYTES)?;
+    let root =
+        std::env::temp_dir().join(format!("keeppeek-archive-targets-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root)?;
     let external = root.join("separate-archive-parent");
     std::fs::create_dir(&external)?;
     std::fs::write(external.join("existing"), b"keep")?;
@@ -497,8 +499,8 @@ fn qualification_creates_one_private_target_in_each_location_and_preserves_occup
         with_archive_target(&root, parent, |target| {
             assert!(target.is_dir());
             assert_eq!(target.parent(), Some(parent.unwrap_or(&root)));
-            let worker = start_archive(target.to_owned(), catalog.handle())?;
-            worker.shutdown()?;
+            let root = crate::storage::volumes::root::Root::open(target)?;
+            archive::filesystem::FilesystemArchiveTarget::open(target, root.identity())?;
             Ok(())
         })?;
     }
@@ -506,7 +508,6 @@ fn qualification_creates_one_private_target_in_each_location_and_preserves_occup
     assert!(root.join("verified").is_dir());
     assert_eq!(std::fs::read(external.join("existing"))?, b"keep");
     assert_eq!(std::fs::read_dir(&external)?.count(), 1);
-    catalog.shutdown();
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
