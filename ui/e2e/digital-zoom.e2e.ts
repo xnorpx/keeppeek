@@ -213,11 +213,43 @@ async function seekRecordingStart(player: Locator) {
 	await expect(position).toHaveValue('0');
 }
 
+async function openSeekableRecording(page: Page) {
+	await page.goto('/');
+	const target = await page.evaluate(async () => {
+		const modulePath = '/src/lib/control-client.ts';
+		const { ControlClient } = await import(modulePath);
+		const client = new ControlClient();
+		try {
+			const [camera] = await client.getCameras();
+			if (!camera) throw new Error('The recording fixture has no camera.');
+			const now = Date.now();
+			const { ranges }: { ranges: { streamId: string; startMs: number; endMs: number }[] } =
+				await client.queryStoredTimeline({
+					sourceIds: [camera.id],
+					startMs: now - 86_400_000,
+					endMs: now,
+					includeEvents: false,
+					includeAttachments: false
+				});
+			// The fixture seeds the substream. A new live segment can be shorter than one slider step.
+			const recording = ranges.find(
+				(range) => range.streamId === 'sub' && range.endMs - range.startMs >= 10_000
+			);
+			if (!recording)
+				throw new Error('The fixture needs ten seconds of recorded video for seeking.');
+			return { camera: camera.id, at: recording.startMs + 1_000 };
+		} finally {
+			await client.close();
+		}
+	});
+	await page.goto(`/keep?camera=${encodeURIComponent(target.camera)}&stream=sub&at=${target.at}`);
+}
+
 test('real recorded pixels remain decoded through zoom, pause, seek, and viewport resize', async ({
 	page
 }, testInfo) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
-	await page.goto('/keep?stream=main');
+	await openSeekableRecording(page);
 	const player = page.getByRole('region', { name: 'Recorded video player' });
 	const video = player.locator('video');
 	await expect
