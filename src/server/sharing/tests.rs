@@ -179,6 +179,39 @@ fn selected_export(codec: VideoCodec) -> (Fixture, ExportJobRecord, proto::Share
 }
 
 #[test]
+fn a_ready_range_requires_an_intact_source_digest_before_preview_and_creation() {
+    use std::io::{Seek, SeekFrom, Write};
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let intent = proto::CreateShareGrant {
+        recording_range: Some(range.clone()),
+        ..fixture.intent()
+    };
+    let path = record.path.as_ref().unwrap();
+    let expected = std::fs::read(path).unwrap();
+    let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.seek(SeekFrom::End(-1)).unwrap();
+    file.write_all(&[expected.last().unwrap() ^ 1]).unwrap();
+    drop(file);
+    for action in [
+        Action::PreviewExport(proto::PreviewShareExport {
+            export_job_id: record.job.job_id,
+            recording_range: Some(range),
+        }),
+        Action::Create(intent),
+    ] {
+        let result = dispatch(
+            &fixture.state,
+            &fixture.principal,
+            proto::ShareCommand {
+                action: Some(action),
+            },
+        );
+        assert_eq!(result.unwrap_err().code, proto::ErrorCode::Unavailable);
+    }
+    assert!(fixture.list(1).grants.is_empty());
+}
+
+#[test]
 fn unsupported_range_codec_is_declined_before_disclosure() {
     let (fixture, record, range) = selected_export(VideoCodec::H265);
     let intent = fixture.intent();

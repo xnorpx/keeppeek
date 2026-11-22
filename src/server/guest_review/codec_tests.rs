@@ -80,6 +80,46 @@ fn actual_h264_and_optional_aac_lc_descriptions_define_admission() {
 }
 
 #[test]
+fn a_two_minute_export_with_a_fragment_for_each_keyframe_is_supported() {
+    let config = mp4::Mp4Config {
+        major_brand: "iso6".parse().unwrap(),
+        minor_version: 1,
+        compatible_brands: vec!["iso6".parse().unwrap()],
+        timescale: 90_000,
+    };
+    let track = mp4::TrackConfig {
+        track_type: mp4::TrackType::Video,
+        timescale: 90_000,
+        language: "und".into(),
+        media_conf: mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
+            width: 640,
+            height: 360,
+            seq_param_set: vec![0x67, 0x42, 0, 0x1f],
+            pic_param_set: vec![0x68, 0xce, 0x3c, 0x80],
+        }),
+    };
+    let mut writer =
+        mp4::FragmentedMp4Writer::write_start(Cursor::new(Vec::new()), &config, &[track]).unwrap();
+    for frame in 0..(120 * 60) {
+        writer
+            .write_sample(
+                1,
+                mp4::Mp4Sample {
+                    start_time: frame * 1_500,
+                    duration: 1_500,
+                    rendering_offset: 0,
+                    is_sync: true,
+                    bytes: bytes::Bytes::from_static(&[0, 0, 0, 1, 0x65]),
+                },
+            )
+            .unwrap();
+        writer.flush_fragment().unwrap();
+    }
+    writer.write_end().unwrap();
+    assert!(validate(writer.into_writer().into_inner()).is_ok());
+}
+
+#[test]
 fn unsupported_mixed_duplicate_or_excessive_tracks_are_rejected() {
     let video = track(b"vide", vec![video_entry()], Vec::new());
     assert!(validate(artifact(vec![video.clone(), video.clone()])).is_err());

@@ -111,9 +111,18 @@ fn admission(
     })
 }
 
-pub(in crate::server) fn inspect_range_codec(file: OwnedFile, bytes: u64) -> io::Result<()> {
+pub(in crate::server) fn verify_range_artifact(
+    file: OwnedFile,
+    binding: &ExportBinding,
+) -> io::Result<bool> {
     let started = Instant::now();
-    codecs::inspect(&mut PinnedReader(file), bytes, || verify_time_left(started))
+    let check = || verify_time_left(started);
+    let mut verified = Verified::new(PinnedReader(file), binding.bytes, binding.sha256, check)?;
+    match codecs::inspect(&mut verified, binding.bytes, check) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 fn verify_time_left(started: Instant) -> io::Result<()> {

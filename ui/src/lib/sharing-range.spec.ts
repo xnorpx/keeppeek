@@ -79,6 +79,71 @@ const signal = () => new AbortController().signal;
 const savedEvent = { id: 'saved', source_id: 'front', start_time_ms: 1000, end_time_ms: 2000 };
 
 describe('recording range sharing', () => {
+	it('tries a distinct recording when the initial source has a configured audio correction', async () => {
+		const recorder = client();
+		recorder.getServerCapabilities.mockResolvedValue({
+			capabilityIds: ['keeppeek.guest-range.v1'],
+			storedMediaSources: []
+		});
+		recorder.queryStoredTimeline.mockResolvedValue({
+			ranges: ['main', 'sub'].map((streamId) => ({ ...target, streamId }))
+		});
+		recorder.createExport
+			.mockRejectedValueOnce(new Error(recoveryMessages.correctedAudio))
+			.mockResolvedValueOnce(ready);
+		const preview = vi.fn().mockResolvedValue(create(ShareEvidenceSchema));
+		const targetRange = { ...target, streamId: undefined };
+		await new RangeSharePreview(preview).load(
+			{ client: recorder, target: targetRange },
+			'reload',
+			signal()
+		);
+		expect(recorder.createExport.mock.calls.map(([request]) => request.streamId)).toEqual([
+			'main',
+			'sub'
+		]);
+		expect(preview.mock.calls).toEqual([[ready.id, guard]]);
+		recorder.createExport.mockClear().mockRejectedValue(new Error(recoveryMessages.correctedAudio));
+		await expect(
+			new RangeSharePreview(preview).load({ client: recorder, target }, 'reload', signal())
+		).rejects.toThrow(recoveryMessages.correctedAudio);
+		expect(recorder.createExport).toHaveBeenCalledTimes(1);
+	});
+
+	it('keeps the untried alternate after an explicit replacement of a legacy recording', async () => {
+		const recorder = client();
+		recorder.getServerCapabilities.mockResolvedValue({
+			capabilityIds: ['keeppeek.guest-range.v1'],
+			storedMediaSources: []
+		});
+		recorder.queryStoredTimeline.mockResolvedValue({
+			ranges: ['main', 'sub'].map((streamId) => ({ ...target, streamId }))
+		});
+		recorder.listExports.mockResolvedValue([{ ...ready, id: 'old-main', streamId: 'main' }]);
+		recorder.createExport
+			.mockResolvedValueOnce({ ...ready, id: 'fresh-main', streamId: 'main' })
+			.mockResolvedValueOnce(ready);
+		const preview = vi
+			.fn()
+			.mockRejectedValueOnce(new Error(recoveryMessages.missingProof))
+			.mockRejectedValueOnce(new Error(recoveryMessages.incompatibleCodec))
+			.mockResolvedValueOnce(create(ShareEvidenceSchema));
+		const session = new RangeSharePreview(preview);
+		const range = { client: recorder, target: { ...target, streamId: undefined } };
+		const cause = await session.load(range, 'reload', signal()).catch((error: unknown) => error);
+		expect(session.recovery(cause)).toBe('replacement');
+		await expect(session.load(range, 'replacement', signal())).resolves.toMatchObject({ guard });
+		expect(recorder.createExport.mock.calls.map(([request]) => request.streamId)).toEqual([
+			'main',
+			'sub'
+		]);
+		expect(preview.mock.calls).toEqual([
+			['old-main', guard],
+			['fresh-main', guard],
+			[ready.id, guard]
+		]);
+	});
+
 	it('skips duplicate preparation when logical streams refer to the same recording', async () => {
 		const recorder = client();
 		recorder.listExports.mockResolvedValue([{ ...ready, streamId: 'main' }]);

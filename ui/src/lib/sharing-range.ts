@@ -28,6 +28,14 @@ export type RangePreparation = {
 
 export class RangePreparationError extends Error {}
 export class FailedRangeExport extends RangePreparationError {}
+export class CorrectedRangeStream extends RangePreparationError {
+	constructor(
+		readonly streamId: 'main' | 'sub',
+		readonly guard: RecordingRangeGuard
+	) {
+		super(correctedAudio);
+	}
+}
 export const guestExportByteLimitError = 'export exceeds the guest preparation byte limit';
 const maxGuestExportBytes = 512 * 1024 * 1024;
 export type PreparedRange = {
@@ -238,14 +246,21 @@ export async function prepareRangeShare(
 		excludedStream
 	);
 	signal.throwIfAborted();
-	const job = await client.createExport({
-		sourceId,
-		streamId,
-		startMs,
-		endMs,
-		allowPartial: true,
-		guestRangePreparation: true
-	});
+	let job: MediaExportJob;
+	try {
+		job = await client.createExport({
+			sourceId,
+			streamId,
+			startMs,
+			endMs,
+			allowPartial: true,
+			guestRangePreparation: true
+		});
+	} catch (cause) {
+		if (cause instanceof Error && cause.message === correctedAudio)
+			throw new CorrectedRangeStream(streamId, guard);
+		throw cause;
+	}
 	const prepared = { exportJobId: job.id, streamId, guard, reused: false };
 	remember?.(prepared);
 	await waitForRangeExport(client, prepared, signal, job);

@@ -1,6 +1,7 @@
 import type { ShareEvidence } from './proto/webrtc_pb';
 import {
 	alternateRangeStream,
+	CorrectedRangeStream,
 	FailedRangeExport,
 	guestExportByteLimitError,
 	prepareRangeShare,
@@ -80,16 +81,39 @@ export class RangeSharePreview {
 					streamId: kind === 'replacement' ? previous.streamId : range.target.streamId
 				}
 			: range.target;
-		const fallback = kind === 'initial' && !target.streamId ? 'available' : 'exhausted';
-		const prepared = await prepareRangeShare(
-			{ client: range.client, target },
-			signal,
-			kind === 'replacement',
-			kind === 'alternate' ? previous?.streamId : undefined,
-			(job) => {
-				this.#selection = { phase: 'waiting', job, fallback };
-			}
-		);
+		let fallback: Selection['fallback'] =
+			kind === 'replacement'
+				? (this.#selection?.fallback ?? 'exhausted')
+				: kind === 'initial' && !target.streamId
+					? 'available'
+					: 'exhausted';
+		const remember = (job: PreparedRange) => {
+			this.#selection = { phase: 'waiting', job, fallback };
+		};
+		let prepared: PreparedRange;
+		try {
+			prepared = await prepareRangeShare(
+				{ client: range.client, target },
+				signal,
+				kind === 'replacement',
+				kind === 'alternate' ? previous?.streamId : undefined,
+				remember
+			);
+		} catch (cause) {
+			if (!(cause instanceof CorrectedRangeStream) || fallback !== 'available') throw cause;
+			fallback = 'exhausted';
+			const { sourceId, startMs, endMs } = cause.guard;
+			prepared = await prepareRangeShare(
+				{
+					client: range.client,
+					target: { sourceId, startMs: Number(startMs), endMs: Number(endMs) }
+				},
+				signal,
+				false,
+				cause.streamId,
+				remember
+			);
+		}
 		this.#selection = { phase: 'ready', job: prepared, fallback };
 		return this.#selection;
 	}

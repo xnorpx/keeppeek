@@ -3,7 +3,7 @@ use mp4::ReadBox;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 const MAX_MOOV_BYTES: u64 = 1_024 * 1_024;
-const MAX_TOP_BOXES: usize = 4_096;
+const MAX_TOP_METADATA_BOXES: usize = 4_096;
 const MAX_CHILD_BOXES: usize = 32;
 
 #[derive(Clone, Copy)]
@@ -56,16 +56,21 @@ fn initialization(
     let mut offset = 0u64;
     let mut ftyp = false;
     let mut moov = None;
-    for _ in 0..MAX_TOP_BOXES {
-        if offset == bytes {
-            return if ftyp {
-                moov.ok_or_else(unavailable)
-            } else {
-                Err(unavailable())
-            };
-        }
+    let mut metadata_boxes = 0;
+    if bytes > crate::shares::MAX_MEDIA_BYTES {
+        return Err(unavailable());
+    }
+    // Every header consumes at least eight bytes and checks the caller's deadline.
+    // A valid exporter may produce a moof/mdat pair for every sync frame.
+    while offset < bytes {
         check()?;
         let (kind, header, length) = top_header(reader, offset, bytes)?;
+        if kind != *b"moof" && kind != *b"mdat" {
+            metadata_boxes += 1;
+            if metadata_boxes > MAX_TOP_METADATA_BOXES {
+                return Err(unavailable());
+            }
+        }
         if kind == *b"ftyp" {
             if ftyp || !(16..=4_096).contains(&length) {
                 return Err(unavailable());
@@ -81,7 +86,11 @@ fn initialization(
         }
         offset = offset.checked_add(length).ok_or_else(unavailable)?;
     }
-    Err(unavailable())
+    if ftyp {
+        moov.ok_or_else(unavailable)
+    } else {
+        Err(unavailable())
+    }
 }
 
 fn top_header(

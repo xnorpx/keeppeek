@@ -198,6 +198,20 @@ fn export_neighbors_follow_the_captured_stream_and_resolve_both_boundary_directi
 }
 
 #[test]
+fn guest_preparation_declines_corrected_audio_before_registering_any_export() {
+    let fixture = Fixture::new(true);
+    let mut request = fixture.request.clone();
+    request.guest_range_preparation = Some(true);
+    let error = create_export_job(&fixture.state, "owner", request).unwrap_err();
+    assert_eq!(
+        error.message,
+        crate::test_support::guest_range_recovery_messages()["correctedAudio"]
+    );
+    assert!(fixture.state.export_jobs.lock().unwrap().is_empty());
+    fixture.finish();
+}
+
+#[test]
 fn both_worker_paths_apply_the_actual_recorded_stream_snapshot_without_changing_source() {
     for named in [false, true] {
         let mut fixture = Fixture::new(named);

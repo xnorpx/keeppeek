@@ -52,19 +52,15 @@ pub(super) fn inspect(
             unavailable
         },
     )?;
-    if range.is_some() {
-        super::super::guest_review::inspect_range_codec(opened.file, checked.binding.bytes)
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::InvalidData {
-                    ControlCommandError::new(
-                        proto::ErrorCode::Rejected,
-                        409,
-                        "the selected recording could not be verified as browser-compatible",
-                    )
-                } else {
-                    unavailable()
-                }
-            })?;
+    if range.is_some()
+        && !super::super::guest_review::verify_range_artifact(opened.file, &checked.binding)
+            .map_err(|_| unavailable())?
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "the selected recording could not be verified as browser-compatible",
+        ));
     }
     Ok((checked, opened.lease))
 }
@@ -138,18 +134,7 @@ fn check_range(
     }
     // Corrected audio may come from neighboring source times. This proof describes
     // the output presentation timeline, so it cannot authorize those samples.
-    if record
-        .job
-        .recorded_audio
-        .as_ref()
-        .is_some_and(|timing| timing.applied_offset_ms != 0)
-    {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            409,
-            "recorded audio correction prevents verification of the selected source interval",
-        ));
-    }
+    recorded_audio::require_uncorrected_for_range(record.job.recorded_audio.as_ref())?;
     let bounds = record
         .media_proof
         .as_ref()

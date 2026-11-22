@@ -98,7 +98,7 @@ fn take_retry(
             "export job is not retryable",
         ));
     }
-    recorded_audio::validate_snapshot(record.job.recorded_audio.as_ref())?;
+    validate_timing(&record.request, record.job.recorded_audio.as_ref())?;
     validate_retry_source(state, record)?;
     let retry = Retry {
         request: record.request.clone(),
@@ -124,6 +124,17 @@ fn take_retry(
         ));
     }
     Ok(retry)
+}
+
+fn validate_timing(
+    request: &proto::CreateExportJob,
+    timing: Option<&proto::RecordedAudioTiming>,
+) -> Result<(), ControlCommandError> {
+    recorded_audio::validate_snapshot(timing)?;
+    if request.guest_range_preparation == Some(true) {
+        recorded_audio::require_uncorrected_for_range(timing)?;
+    }
+    Ok(())
 }
 
 fn validate_retry_source(
@@ -193,7 +204,7 @@ fn create_locked(
         )?),
         TimingSource::Captured(timing) => timing,
     };
-    recorded_audio::validate_snapshot(timing.as_ref())?;
+    validate_timing(&request, timing.as_ref())?;
     let captured_stream = timing
         .as_ref()
         .map(|_| recording_stream_id(&camera, &request.stream_id));
