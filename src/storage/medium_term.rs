@@ -9,12 +9,12 @@ use crate::storage::{
     segment::RecordingFrame,
 };
 use std::{
-    fs::File,
     io::BufWriter,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use uuid::Uuid;
+mod initialization;
 mod volume_file;
 use volume_file::WriterFile;
 
@@ -422,11 +422,26 @@ impl MediumTermWriter {
         let audio = audio_config.as_ref().map(|config| config.timescale);
         let mut track_configs = vec![video_config];
         track_configs.extend(audio_config);
-        let file = self.open_writer_file()?;
-        let file = BufWriter::with_capacity(self.write_buffer_bytes, file);
-        let writer = mp4::FragmentedMp4Writer::write_start(file, &mp4_config, &track_configs)
-            .map_err(mp4_err)?;
-        self.catalog_initialization(writer.initialization())?;
+        let reservation = self.reservation.take();
+        let initialize = |file| {
+            let buffered = BufWriter::with_capacity(self.write_buffer_bytes, file);
+            let writer =
+                mp4::FragmentedMp4Writer::write_start(buffered, &mp4_config, &track_configs)
+                    .map_err(mp4_err)?;
+            self.catalog_initialization(writer.initialization())?;
+            Ok(writer)
+        };
+        let writer = match reservation {
+            Some(reservation) => initialize(WriterFile::Named(Box::new(
+                reservation.open().map_err(std::io::Error::other)?,
+            )))?,
+            None if !self.named_volume => initialization::legacy(&self.path, initialize)?,
+            None => {
+                return Err(std::io::Error::other(
+                    "named recording reservation is no longer available",
+                ));
+            }
+        };
         tracing::debug!(
             path = %self.path.display(),
             audio = audio.is_some(),
@@ -448,18 +463,6 @@ impl MediumTermWriter {
             next_audio_dts: None,
             audio_after_gap: false,
         })
-    }
-
-    fn open_writer_file(&mut self) -> std::io::Result<WriterFile> {
-        match self.reservation.take() {
-            Some(reservation) => Ok(WriterFile::Named(Box::new(
-                reservation.open().map_err(std::io::Error::other)?,
-            ))),
-            None if !self.named_volume => Ok(WriterFile::Legacy(File::create_new(&self.path)?)),
-            None => Err(std::io::Error::other(
-                "named recording reservation is no longer available",
-            )),
-        }
     }
 
     fn catalog_initialization(&self, initialization: mp4::Mp4ByteRange) -> std::io::Result<()> {
@@ -719,7 +722,7 @@ impl MediumTermWriter {
                 )?;
                 Ok(Some(self.final_path))
             }
-            // A writer waiting for its first decodable keyframe never created a file.
+            // No initialized segment exists to publish or relocate.
             _ => Ok(None),
         }
     }
@@ -1038,6 +1041,32 @@ mod tests {
         assert!(!writer.final_path.exists());
         drop(writer);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_catalog_initialization_leaves_no_legacy_active_segment() -> anyhow::Result<()> {
+        let root = std::env::temp_dir().join(format!("keeppeek-writer-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)?;
+        let catalog = RecordingCatalog::open(&root.join("catalog.db"))?;
+        let start = Instant::now();
+        let mut writer = MediumTermWriter::create_with_catalog(
+            &root,
+            "camera/main",
+            start,
+            1,
+            catalog.handle(),
+        )?;
+        catalog.shutdown();
+        let path = writer.path.clone();
+        assert!(
+            writer
+                .init_mp4(&[video_frame(start, Duration::ZERO)])
+                .is_err()
+        );
+        assert!(!path.exists());
+        assert!(writer.finalize_recording()?.is_none());
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[test]
