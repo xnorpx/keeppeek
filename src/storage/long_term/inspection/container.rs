@@ -259,35 +259,39 @@ fn validate_extents<Reader: Read + Seek>(
     deadline: Instant,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(moof.trafs.len() <= 2, "too many fragment tracks");
-    let mut extents = Vec::new();
+    let mut extents = Vec::with_capacity(moof.trafs.len());
     for traf in &moof.trafs {
-        let count = traf
+        let run = traf
             .trun
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("missing samples"))?
-            .sample_count;
-        anyhow::ensure!(count <= 65_536, "sample limit exceeded");
+            .ok_or_else(|| anyhow::anyhow!("missing samples"))?;
+        anyhow::ensure!(
+            (1..=65_536).contains(&run.sample_count)
+                && run.sample_sizes.len() == usize::try_from(run.sample_count)?,
+            "invalid sample extent table"
+        );
         let next = sample_ids.entry(traf.tfhd.track_id).or_insert(1);
-        for _ in 0..count {
+        let first = parsed
+            .sample_location(traf.tfhd.track_id, *next)?
+            .ok_or_else(|| anyhow::anyhow!("missing sample extent"))?;
+        // The scanner requires one moof-relative run per track, with explicit sizes.
+        // Its samples are contiguous. Recomputing each offset would rescan every prior size.
+        let mut end = first.offset;
+        for &size in &run.sample_sizes {
             super::check_deadline(deadline)?;
-            let location = parsed
-                .sample_location(traf.tfhd.track_id, *next)?
-                .ok_or_else(|| anyhow::anyhow!("missing sample extent"))?;
-            let end = location
-                .offset
-                .checked_add(u64::from(location.size))
+            anyhow::ensure!(size > 0, "empty sample extent");
+            end = end
+                .checked_add(u64::from(size))
                 .ok_or_else(|| anyhow::anyhow!("sample extent overflow"))?;
-            anyhow::ensure!(
-                location.size > 0
-                    && location.offset >= range.payload
-                    && end <= range.range.offset + range.range.size,
-                "sample outside media payload"
-            );
-            extents.push((location.offset, end));
-            *next = next
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("sample ID overflow"))?;
         }
+        anyhow::ensure!(
+            first.offset >= range.payload && end <= range.range.offset + range.range.size,
+            "sample outside media payload"
+        );
+        extents.push((first.offset, end));
+        *next = next
+            .checked_add(run.sample_count)
+            .ok_or_else(|| anyhow::anyhow!("sample ID overflow"))?;
     }
     extents.sort_unstable();
     let mut next = range.payload;
