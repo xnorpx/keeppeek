@@ -211,7 +211,11 @@ fn paused_cursor_steps_under_historical_access_rules_and_invalidates_previous_to
     use proto::stored_media_command::Action;
     let root = RecordingDirectory::new();
     let (state, catalog) = routed_fixture(&root.0);
-    assert!(super::super::server_capability_ids(&state).iter().any(|id| id == CAPABILITY_ID));
+    assert!(
+        super::super::server_capability_ids(&state)
+            .iter()
+            .any(|id| id == CAPABILITY_ID)
+    );
     let session = SessionId::from_u64(479);
     state
         .api_session_owners
@@ -262,6 +266,13 @@ fn paused_cursor_steps_under_historical_access_rules_and_invalidates_previous_to
         )),
     };
     assert!(dispatch(SessionId::from_u64(480), Action::StepFrame(request.clone())).is_err());
+    // EventBoost recorded the substream for this main-stream cursor. Only the
+    // logical stream selected at open may address the cursor.
+    let wrong_stream = proto::StepStoredFrame {
+        stream_id: "sub".into(),
+        ..request.clone()
+    };
+    assert!(dispatch(session, Action::StepFrame(wrong_stream)).is_err());
     let delivery = dispatch(session, Action::StepFrame(request.clone())).unwrap();
     let Some(control_ok::Result::StoredFrameStepResult(first)) = delivery.result else {
         panic!("missing selected picture")

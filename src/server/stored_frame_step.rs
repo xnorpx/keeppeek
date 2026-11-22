@@ -648,7 +648,7 @@ pub(super) fn step(
             .get_mut(&key)
             .ok_or_else(|| rejected("stored media cursor is unavailable"))?;
         if c.source_id != request.source_id
-            || c.stream_id != request.stream_id
+            || c.requested_stream_id != request.stream_id
             || c.generation != request.generation
             || c.playing
             || c.mode != proto::StoredMediaMode::Playback

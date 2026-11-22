@@ -95,6 +95,7 @@ fn initial_cursor(
         recorded_audio: timing,
         archive: batch.archive,
         source_id: open.source_id,
+        requested_stream_id: open.stream_id,
         stream_id: stream,
         recording_stream_id: recording.clone(),
         requested_time_ms: options.time_ms,
