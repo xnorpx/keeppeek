@@ -19,6 +19,8 @@ pub struct AudioFrame {
     pub(crate) sample_rate_hz: u32,
     pub(crate) channel_count: u8,
     pub(crate) timestamp: Option<Duration>,
+    /// Duration of the encoded access unit when known at ingestion.
+    pub(crate) duration: Option<Duration>,
     pub(crate) received_at: Instant,
     pub(crate) data: Bytes,
 }
@@ -165,6 +167,7 @@ mod tests {
             sample_rate_hz: 8_000,
             channel_count: 1,
             timestamp: None,
+            duration: None,
             received_at,
             data: Bytes::from(vec![0; len]),
         }

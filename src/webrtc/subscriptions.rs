@@ -8,6 +8,14 @@ impl ApiMediaRuntime {
         request: &proto::SubscribeMedia,
         plan: MediaSubscriptionPlan,
     ) -> Result<proto::SubscriptionResult, ControlHandlerError> {
+        if request.live_audio_preview_offset_ms.is_some_and(|value| {
+            value.unsigned_abs() > crate::cameras::MAX_LIVE_AUDIO_OFFSET_MS as u32
+        }) {
+            return Err(ControlHandlerError::new(
+                ErrorCode::InvalidRequest,
+                "live audio offset must be between -200 and 200 milliseconds",
+            ));
+        }
         if plan.media_kind == proto::MediaKind::Audio {
             return self.subscribe_audio(session, request, plan);
         }
@@ -36,6 +44,10 @@ impl ApiMediaRuntime {
         let track_id = self.tracks[index].runtime.track_id.clone();
         self.discard_queued_stream_states(&track_id);
         self.tracks[index].runtime.update_subscription(&plan);
+        self.tracks[index]
+            .runtime
+            .timing
+            .set_preview(request.live_audio_preview_offset_ms);
         self.bandwidth.dirty = true;
         session
             .media_camera_ips
@@ -63,7 +75,7 @@ impl ApiMediaRuntime {
         } else {
             initial_stream(plan.has_sub_stream)
         };
-        let runtime = TrackRuntime::new(
+        let mut runtime = TrackRuntime::new(
             TrackPlan {
                 track_id: track_id.clone(),
                 camera_ip: plan.camera_ip,
@@ -82,6 +94,9 @@ impl ApiMediaRuntime {
                 recording_demand: session.recording_demand.clone(),
             },
         );
+        runtime
+            .timing
+            .set_preview(request.live_audio_preview_offset_ms);
         self.tracks.push(ApiMediaTrack {
             source_session_id: plan.source_session_id,
             runtime,
@@ -110,6 +125,11 @@ impl ApiMediaRuntime {
         let mut result =
             subscription_result(subscription_id, &runtime.delivery, selected_variant_id);
         result.live_quality = self.live_quality(&runtime.track_id);
+        result.live_audio = Some(
+            runtime
+                .timing
+                .report(runtime.subscription.active_source.stream),
+        );
         result
     }
 
@@ -122,20 +142,46 @@ impl ApiMediaRuntime {
         let track_id = TrackId::parse(request.subscription_id.clone()).map_err(|error| {
             ControlHandlerError::new(ErrorCode::InvalidRequest, error.to_string())
         })?;
-        if self
-            .audio_tracks
-            .iter()
-            .any(|track| track.runtime.track_id == track_id)
-        {
-            return Err(ControlHandlerError::new(
-                ErrorCode::InvalidRequest,
-                "audio subscription replacement is not supported",
-            ));
-        }
         let selected_stream = native_variant_stream(&plan.selected_variant_id)?;
+        if let Some(track) = self
+            .audio_tracks
+            .iter_mut()
+            .find(|track| track.runtime.track_id == track_id)
+        {
+            let runtime = &mut track.runtime;
+            let matches_transport = matches!(
+                (&runtime.delivery, plan.delivery_transport),
+                (
+                    TrackDelivery::ReliableData(_),
+                    proto::DeliveryTransport::ReliableData
+                ) | (TrackDelivery::Rtp(_), proto::DeliveryTransport::Rtp)
+            );
+            if runtime.source
+                != (Source {
+                    camera_ip: plan.camera_ip,
+                    stream: selected_stream,
+                })
+                || !matches_transport
+            {
+                return Err(ControlHandlerError::new(
+                    ErrorCode::InvalidRequest,
+                    "an audio timing update must keep its source, variant and delivery transport",
+                ));
+            }
+            runtime
+                .timing
+                .set_preview(request.live_audio_preview_offset_ms);
+            let mut result = subscription_result(
+                request.subscription_id.clone(),
+                &runtime.delivery,
+                plan.selected_variant_id,
+            );
+            result.live_audio = Some(runtime.timing.report(selected_stream));
+            return Ok(result);
+        }
         let reserved_bitrate_bps = bandwidth::audio_reservation_bps(&plan.format);
         let delivery = self.take_delivery(&request.subscription_id, &mut plan)?;
-        let runtime = AudioTrackRuntime::new(
+        let mut runtime = AudioTrackRuntime::new(
             session,
             track_id,
             Source {
@@ -144,12 +190,17 @@ impl ApiMediaRuntime {
             },
             delivery,
         );
-        let result = subscription_result(
+        runtime
+            .timing
+            .set_preview(request.live_audio_preview_offset_ms);
+        let mut result = subscription_result(
             request.subscription_id.clone(),
             &runtime.delivery,
             plan.selected_variant_id,
         );
+        result.live_audio = Some(runtime.timing.report(selected_stream));
         self.audio_tracks.push(ApiAudioTrack {
+            reported_timing: result.live_audio,
             runtime,
             reserved_bitrate_bps,
         });

@@ -94,6 +94,7 @@ impl ApiMediaRuntime {
         self.report_live_quality(now);
         self.bandwidth.dirty = false;
         self.bandwidth.refresh_due = (!self.tracks.is_empty()
+            || !self.audio_tracks.is_empty()
             || demand.has_rtp_tracks
             || self.bandwidth.transport_estimate_bps.is_some())
         .then(|| now + DESIRED_BITRATE_REFRESH);

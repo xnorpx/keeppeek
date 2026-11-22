@@ -43,6 +43,7 @@ use str0m::{
 };
 
 mod bandwidth;
+mod live_timing;
 mod session_registry;
 mod subscriptions;
 
@@ -421,6 +422,7 @@ struct MediaFrame {
 
 #[derive(Debug)]
 struct MediaFrameData {
+    permit: Option<MediaPermit>,
     avcc: Bytes,
     annexb: OnceLock<Arc<[u8]>>,
     h264_profile_level_id: OnceLock<Option<u32>>,
@@ -430,6 +432,7 @@ impl MediaFrameData {
     const fn new(avcc: Bytes) -> Self {
         Self {
             avcc,
+            permit: None,
             annexb: OnceLock::new(),
             h264_profile_level_id: OnceLock::new(),
         }
@@ -823,6 +826,7 @@ struct ApiMediaTrack {
 }
 
 struct ApiAudioTrack {
+    reported_timing: Option<crate::api::proto::LiveAudioTiming>,
     runtime: AudioTrackRuntime,
     reserved_bitrate_bps: u64,
 }
@@ -937,15 +941,22 @@ impl QueuedApiData {
 /// Carries the original privacy epoch across a bounded media queue.
 #[derive(Clone)]
 struct GuardedMedia<T> {
+    timing: Option<live_timing::DeliveryPermit>,
     value: T,
     permit: Option<MediaPermit>,
 }
 
 impl<T> GuardedMedia<T> {
     fn deliver<R>(&self, write: impl FnOnce(&T) -> R) -> Option<R> {
+        let deliver = || {
+            self.timing
+                .as_ref()
+                .is_none_or(|permit| permit.current(Instant::now()))
+                .then(|| write(&self.value))
+        };
         match &self.permit {
-            Some(permit) => permit.deliver(|| write(&self.value)),
-            None => Some(write(&self.value)),
+            Some(permit) => permit.deliver(deliver).flatten(),
+            None => deliver(),
         }
     }
 }
@@ -979,13 +990,14 @@ impl ApiMediaRuntime {
     }
 
     fn enqueue(&mut self, messages: Vec<OutboundDataMessage>) -> anyhow::Result<()> {
-        self.enqueue_with_permit(messages, None)
+        self.enqueue_with_permit(messages, None, None)
     }
 
     fn enqueue_with_permit(
         &mut self,
         messages: Vec<OutboundDataMessage>,
         permit: Option<&MediaPermit>,
+        timing: Option<&live_timing::DeliveryPermit>,
     ) -> anyhow::Result<()> {
         let mut queued = Vec::with_capacity(messages.len());
         let mut added_bytes = 0usize;
@@ -1000,6 +1012,7 @@ impl ApiMediaRuntime {
                 payload: GuardedMedia {
                     value: payload,
                     permit: permit.cloned(),
+                    timing: timing.cloned(),
                 },
             }));
         }
@@ -1029,6 +1042,7 @@ impl ApiMediaRuntime {
                 group: message.group,
                 payload: GuardedMedia {
                     value: payload,
+                    timing: None,
                     permit: None,
                 },
             }));
@@ -1325,6 +1339,11 @@ impl ApiMediaRuntime {
             .tracks
             .iter()
             .map(|track| track.runtime.subscription.active_source.camera_ip)
+            .chain(
+                self.audio_tracks
+                    .iter()
+                    .map(|track| track.runtime.source.camera_ip),
+            )
             .collect();
         *session
             .media_camera_ips
@@ -1344,6 +1363,7 @@ fn subscription_result(
         selected_variant_id,
         selected_lineage: Vec::new(),
         live_quality: None,
+        live_audio: None,
     }
 }
 
@@ -1510,6 +1530,7 @@ struct Inner {
     talkback_routes: Mutex<HashMap<SessionId, Vec<String>>>,
     talkback_audio: Mutex<HashMap<String, AudioQueue>>,
     camera_generations: Mutex<HashMap<IpAddr, u64>>,
+    live_timing: Mutex<HashMap<IpAddr, Arc<live_timing::CameraTiming>>>,
     camera_preview_keyframes: Mutex<HashMap<IpAddr, CameraPreviewKeyframe>>,
     privacy: RwLock<Option<Arc<PrivacyRegistry>>>,
     privacy_epochs: Mutex<HashMap<IpAddr, u64>>,
@@ -1608,10 +1629,13 @@ struct AudioSubscriber {
     track_id: TrackId,
     source: Source,
     sender: Sender<GuardedMedia<WebRtcAudioFrame>>,
+    poller: Option<Arc<Poller>>,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct WebRtcSourceHealth {
+    #[serde(skip)]
+    pub live_audio: crate::api::proto::LiveAudioTiming,
     pub camera_ip: IpAddr,
     pub stream: StreamKind,
     pub subscribers: usize,
@@ -2133,6 +2157,17 @@ impl Drop for SourceSubscription {
     }
 }
 
+impl Inner {
+    fn camera_timing(&self, ip: IpAddr) -> Arc<live_timing::CameraTiming> {
+        self.live_timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(ip)
+            .or_default()
+            .clone()
+    }
+}
+
 struct TrackDeps {
     inner: Arc<Inner>,
     session_id: SessionId,
@@ -2143,8 +2178,10 @@ struct TrackDeps {
 }
 
 struct TrackRuntime {
+    timing: live_timing::Queue<SessionCommand>,
     receiver_limit_bps: Option<u64>,
     reported_quality: Option<bandwidth::QualitySnapshot>,
+    reported_timing: Option<crate::api::proto::LiveAudioTiming>,
     track_id: TrackId,
     delivery: TrackDelivery,
     rx: Receiver<SessionCommand>,
@@ -2183,6 +2220,7 @@ impl TrackRuntime {
             plan.has_main_stream,
             plan.has_sub_stream,
         );
+        let timing = live_timing::Queue::new(inner.camera_timing(plan.camera_ip));
         let subscription = match &delivery {
             TrackDelivery::ReliableData(_) => {
                 let source = Source {
@@ -2205,8 +2243,10 @@ impl TrackRuntime {
             ),
         };
         Self {
+            timing,
             receiver_limit_bps: None,
             reported_quality: None,
+            reported_timing: None,
             track_id: plan.track_id,
             delivery,
             rx,
@@ -2241,6 +2281,9 @@ impl TrackRuntime {
 }
 
 struct AudioTrackRuntime {
+    clock: live_timing::AudioClock,
+    timing: live_timing::Queue<GuardedMedia<WebRtcAudioFrame>>,
+    source: Source,
     track_id: TrackId,
     delivery: TrackDelivery,
     rx: Receiver<GuardedMedia<WebRtcAudioFrame>>,
@@ -2256,8 +2299,16 @@ impl AudioTrackRuntime {
         let rx = Publisher {
             inner: session.inner.clone(),
         }
-        .subscribe_audio(session.session_id, track_id.clone(), source);
+        .subscribe_audio(
+            session.session_id,
+            track_id.clone(),
+            source,
+            Some(session.poller.clone()),
+        );
         Self {
+            clock: live_timing::AudioClock::default(),
+            timing: live_timing::Queue::new(session.inner.camera_timing(source.camera_ip)),
+            source,
             track_id,
             delivery,
             rx,
@@ -2357,6 +2408,7 @@ impl Publisher {
             None
         };
         let guarded = GuardedMedia {
+            timing: None,
             value: frame,
             permit,
         };
@@ -2385,7 +2437,13 @@ impl Publisher {
                     return true;
                 }
                 match subscriber.sender.try_send(guarded.clone()) {
-                    Ok(()) | Err(TrySendError::Full(_)) => true,
+                    Ok(()) => {
+                        if let Some(poller) = &subscriber.poller {
+                            let _ = poller.notify();
+                        }
+                        true
+                    }
+                    Err(TrySendError::Full(_)) => true,
                     Err(TrySendError::Disconnected(_)) => false,
                 }
             });
@@ -2397,6 +2455,7 @@ impl Publisher {
         session_id: SessionId,
         track_id: TrackId,
         source: Source,
+        poller: Option<Arc<Poller>>,
     ) -> Receiver<GuardedMedia<WebRtcAudioFrame>> {
         let (sender, receiver) = bounded(128);
         self.inner
@@ -2408,6 +2467,7 @@ impl Publisher {
                 track_id,
                 source,
                 sender,
+                poller,
             });
         receiver
     }
@@ -2423,6 +2483,15 @@ impl Publisher {
     }
 
     pub(crate) fn reset_camera(&self, camera_ip: IpAddr) {
+        if let Some(timing) = self
+            .inner
+            .live_timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&camera_ip)
+        {
+            timing.reset();
+        }
         let mut generations = self
             .inner
             .camera_generations
@@ -2492,7 +2561,7 @@ impl Publisher {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        if let Some(privacy) = privacy {
+        let permit = if let Some(privacy) = privacy {
             let (active, epoch) = privacy
                 .decision_for_ip(source.camera_ip, chrono::Utc::now())
                 .unwrap_or((true, u64::MAX));
@@ -2509,7 +2578,13 @@ impl Publisher {
                 }
                 return;
             }
-        }
+            let Some(permit) = privacy.media_permit(source.camera_ip.to_string().into()) else {
+                return;
+            };
+            Some(permit)
+        } else {
+            None
+        };
         self.inner.published_frames.fetch_add(1, Ordering::Relaxed);
         let frame_bytes = avcc.len();
         self.inner
@@ -2520,7 +2595,10 @@ impl Publisher {
             is_keyframe,
             received_at,
             timestamp,
-            data: Arc::new(MediaFrameData::new(avcc)),
+            data: Arc::new(MediaFrameData {
+                permit,
+                ..MediaFrameData::new(avcc)
+            }),
         };
         if is_keyframe && source.stream == StreamKind::Sub {
             let mut previews = self
@@ -2590,6 +2668,27 @@ fn try_reserve_bytes(counter: &AtomicUsize, bytes: usize, maximum: usize) -> boo
 }
 
 impl WebRtc {
+    pub(crate) fn remove_live_audio(&self, ip: IpAddr) {
+        if let Some(timing) = self
+            .live
+            .inner
+            .live_timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&ip)
+        {
+            timing.reset();
+        }
+    }
+
+    pub(crate) fn configure_live_audio(
+        &self,
+        ip: IpAddr,
+        settings: crate::cameras::LiveAudioSettings,
+    ) {
+        self.live.inner.camera_timing(ip).configure(settings);
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -3105,6 +3204,11 @@ impl WebRtc {
                     source_bitrate_bps =
                         source_bitrate_bps.saturating_add(state.bitrate.estimate_bps.unwrap_or(0));
                     WebRtcSourceHealth {
+                        live_audio: self
+                            .live
+                            .inner
+                            .camera_timing(source.camera_ip)
+                            .report(source.stream, None),
                         camera_ip: source.camera_ip,
                         stream: source.stream,
                         subscribers: state.subscribers.len(),
@@ -3566,17 +3670,14 @@ fn drive_api_session(
                 applied_streams.push((track.runtime.track_id.clone(), stream));
             }
         }
-        if !media_data_messages.is_empty() {
-            media.enqueue(media_data_messages)?;
-        }
-        let mut audio_batches = Vec::new();
+
         for track in &mut media.audio_tracks {
-            let result = drive_audio_track_runtime(rtc, &mut track.runtime, connected)?;
+            let result = drive_audio_track_runtime(rtc, &mut track.runtime, connected, now)?;
             wrote_media |= result.wrote_media;
-            audio_batches.extend(result.data_messages);
+            media_data_messages.extend(result.data_messages);
         }
-        for batch in audio_batches {
-            media.enqueue_with_permit(batch.value, batch.permit.as_ref())?;
+        for batch in media_data_messages {
+            media.enqueue_with_permit(batch.value, batch.permit.as_ref(), batch.timing.as_ref())?;
         }
         for notification in control_notifications {
             media.enqueue_control_notification(notification)?;
@@ -3596,9 +3697,20 @@ fn drive_api_session(
             )?;
         }
         events.clear();
+        let wake = media
+            .tracks
+            .iter()
+            .filter_map(|t| t.runtime.timing.deadline())
+            .chain(
+                media
+                    .audio_tracks
+                    .iter()
+                    .filter_map(|t| t.runtime.timing.deadline()),
+            )
+            .fold(next_timeout, Instant::min);
         poller.wait(
             &mut events,
-            Some(next_timeout.saturating_duration_since(Instant::now())),
+            Some(wake.saturating_duration_since(Instant::now())),
         )?;
         if drain_pending_control_dispatches(control_runtime, media)? {
             next_timeout = drain_api_outputs(
@@ -3675,13 +3787,27 @@ fn drive_audio_track_runtime(
     rtc: &mut Rtc,
     track: &mut AudioTrackRuntime,
     connected: bool,
+    now: Instant,
 ) -> anyhow::Result<AudioTrackDriveResult> {
     let mut wrote_media = false;
     let mut data_messages = Vec::new();
-    while let Ok(frame) = track.rx.try_recv() {
-        if !connected {
-            continue;
-        }
+    if !connected {
+        track.timing.clear();
+        while track.rx.try_recv().is_ok() {}
+        return Ok(AudioTrackDriveResult {
+            wrote_media,
+            data_messages,
+        });
+    }
+    while let Some((mut frame, due)) = next_audio_frame(track, now) {
+        frame.timing =
+            track
+                .timing
+                .delivery_permit(track.source.stream, frame.value.received_at, due);
+        let delay = due.saturating_duration_since(frame.value.received_at);
+        frame.value.received_at = due;
+        let presented = frame.value.timestamp.map(|time| time.saturating_add(delay));
+        frame.value.timestamp = Some(track.clock.map(due, presented, frame.value.sample_rate_hz));
         if let Some((wrote, messages)) = frame
             .deliver(|audio| write_audio_track_frame(rtc, &mut track.delivery, audio))
             .transpose()?
@@ -3690,6 +3816,7 @@ fn drive_audio_track_runtime(
             if !messages.is_empty() {
                 data_messages.push(GuardedMedia {
                     value: messages,
+                    timing: frame.timing,
                     permit: frame.permit,
                 });
             }
@@ -3699,6 +3826,72 @@ fn drive_audio_track_runtime(
         wrote_media,
         data_messages,
     })
+}
+
+fn next_audio_frame(
+    track: &mut AudioTrackRuntime,
+    now: Instant,
+) -> Option<(GuardedMedia<WebRtcAudioFrame>, Instant)> {
+    if let Some(ready) = track.timing.pop_due(now) {
+        return Some(ready);
+    }
+    for frame in track.rx.try_iter().take(FRAME_QUEUE_CAPACITY) {
+        let audio = &frame.value;
+        let packet = live_timing::Packet {
+            stream: track.source.stream,
+            format: live_timing::Format::Audio(
+                audio.codec,
+                audio.sample_rate_hz,
+                audio.channel_count,
+            ),
+            received: audio.received_at,
+            timestamp: audio.timestamp,
+            bytes: audio.data.len(),
+        };
+        if frame.deliver(|_| ()).is_some()
+            && let Some(ready) = track.timing.admit(frame, packet, now)
+        {
+            return Some(ready);
+        }
+    }
+    None
+}
+
+fn next_video_frame(
+    rx: &Receiver<SessionCommand>,
+    timing: &mut live_timing::Queue<SessionCommand>,
+    now: Instant,
+) -> Result<(SessionCommand, Option<live_timing::DeliveryPermit>), TryRecvError> {
+    let mut remaining = FRAME_QUEUE_CAPACITY;
+    let (mut item, due) = loop {
+        if let Some(ready) = timing.pop_due(now) {
+            break ready;
+        }
+        if remaining == 0 {
+            return Err(TryRecvError::Empty);
+        }
+        remaining -= 1;
+        let item = rx.try_recv()?;
+        let SessionCommand::Frame { source, frame, .. } = &item;
+        let packet = live_timing::Packet {
+            stream: source.stream,
+            format: live_timing::Format::Video(frame.codec),
+            received: frame.received_at,
+            timestamp: frame.timestamp,
+            bytes: frame.data.avcc.len(),
+        };
+        if let Some(ready) = timing.admit(item, packet, now) {
+            break ready;
+        }
+    };
+    let SessionCommand::Frame { frame, source, .. } = &mut item;
+    let permit = timing.delivery_permit(source.stream, frame.received_at, due);
+    let delay = due.saturating_duration_since(frame.received_at);
+    frame.received_at = due;
+    frame.timestamp = frame
+        .timestamp
+        .map(|timestamp| timestamp.saturating_add(delay));
+    Ok((item, permit))
 }
 
 fn drain_api_session_commands(data_rx: &Receiver<ApiSessionCommand>, media: &mut ApiMediaRuntime) {
@@ -3765,7 +3958,7 @@ fn drain_api_session_commands(data_rx: &Receiver<ApiSessionCommand>, media: &mut
 struct TrackDriveResult {
     wrote_media: bool,
     applied_stream: Option<StreamKind>,
-    data_messages: Vec<OutboundDataMessage>,
+    data_messages: Vec<GuardedMedia<Vec<OutboundDataMessage>>>,
     notifications: Vec<crate::api::proto::Notification>,
 }
 
@@ -3785,13 +3978,30 @@ fn drive_track_runtime(
     } else {
         track.subscription.arm_startup_fallback(rtc, mid);
     }
+    if !connected {
+        track.timing.clear();
+        track.subscription.discard_queued_frames(&track.rx);
+        return Ok(TrackDriveResult {
+            wrote_media,
+            applied_stream,
+            data_messages,
+            notifications,
+        });
+    }
+    let use_cached = track
+        .timing
+        .offsets(track.subscription.active_source.stream)
+        .1
+        >= 0;
     if connected && !track.keyframe_prepared {
-        track.subscription.prepare_keyframe(&track.rx);
+        if use_cached {
+            track.subscription.prepare_keyframe(&track.rx);
+        }
         track.last_frame_sequence = None;
         track.recovering_queue_gap = false;
         track.keyframe_prepared = true;
     }
-    if connected && track.keyframe_gate.allows(FrameOrigin::Cached, true) {
+    if connected && use_cached && track.keyframe_gate.allows(FrameOrigin::Cached, true) {
         let keyframe = track
             .subscription
             .sender
@@ -3803,25 +4013,45 @@ fn drive_track_runtime(
             track.subscription.discard_queued_frames(&track.rx);
             track.last_frame_sequence = None;
             track.recovering_queue_gap = false;
-            let (wrote_frame, messages) =
-                write_track_frame(rtc, &mut track.delivery, &keyframe, &mut track.media_clock)?;
+            let (wrote_frame, messages) = write_track_frame(
+                rtc,
+                &mut track.delivery,
+                &keyframe,
+                &mut track.media_clock,
+                None,
+            )?;
             if wrote_frame {
                 if let Some(notification) = track.delivery.take_configuration_notification() {
                     notifications.push(notification);
                 }
                 track.keyframe_gate.mark_written(FrameOrigin::Cached);
                 wrote_media = true;
-                data_messages.extend(messages);
+                if !messages.is_empty() {
+                    data_messages.push(GuardedMedia {
+                        value: messages,
+                        timing: None,
+                        permit: keyframe.data.permit.clone(),
+                    });
+                }
             }
         }
     }
 
-    while let Ok(SessionCommand::Frame {
-        sequence,
-        source,
-        frame,
-    }) = track.rx.try_recv()
+    while let Ok((
+        SessionCommand::Frame {
+            sequence,
+            source,
+            frame,
+        },
+        timing_permit,
+    )) = next_video_frame(&track.rx, &mut track.timing, now)
     {
+        if timing_permit
+            .as_ref()
+            .is_some_and(|permit| !permit.current(Instant::now()))
+        {
+            continue;
+        }
         let switched_stream = if track
             .subscription
             .finish_negotiated_switch(rtc, mid, source, &frame)
@@ -3858,7 +4088,13 @@ fn drive_track_runtime(
             .keyframe_gate
             .allows(FrameOrigin::Live, frame.is_keyframe);
         let (wrote_frame, messages) = if connected && frame_allowed {
-            write_track_frame(rtc, &mut track.delivery, &frame, &mut track.media_clock)?
+            write_track_frame(
+                rtc,
+                &mut track.delivery,
+                &frame,
+                &mut track.media_clock,
+                timing_permit.as_ref(),
+            )?
         } else {
             (false, Vec::new())
         };
@@ -3870,7 +4106,13 @@ fn drive_track_runtime(
             track.recovering_queue_gap = false;
             track.subscription.record_written_frame();
             wrote_media = true;
-            data_messages.extend(messages);
+            if !messages.is_empty() {
+                data_messages.push(GuardedMedia {
+                    value: messages,
+                    timing: timing_permit,
+                    permit: frame.data.permit.clone(),
+                });
+            }
             applied_stream = applied_stream.or(switched_stream);
         } else if connected && track.recovering_queue_gap && !frame_allowed {
             track.subscription.record_discarded_frames(1);
@@ -3902,14 +4144,21 @@ fn write_track_frame(
     delivery: &mut TrackDelivery,
     frame: &MediaFrame,
     media_clock: &mut MediaClock,
+    timing: Option<&live_timing::DeliveryPermit>,
 ) -> anyhow::Result<(bool, Vec<OutboundDataMessage>)> {
     match delivery {
         TrackDelivery::Rtp(mid) => Ok((
-            write_frame(rtc, Some(*mid), frame, media_clock)?,
+            write_frame(rtc, Some(*mid), frame, media_clock, timing)?,
             Vec::new(),
         )),
         TrackDelivery::ReliableData(binding) => {
-            let messages = encode_media_data_frame(binding, frame)?;
+            let messages = match &frame.data.permit {
+                Some(permit) => permit
+                    .deliver(|| encode_media_data_frame(binding, frame))
+                    .transpose()?
+                    .unwrap_or_default(),
+                None => encode_media_data_frame(binding, frame)?,
+            };
             Ok((!messages.is_empty(), messages))
         }
     }
@@ -3977,12 +4226,11 @@ fn encode_audio_data_frame(
         .map_err(|_| anyhow::anyhow!("audio frame has too many data-channel fragments"))?;
     let frame_id = binding.next_frame_id;
     binding.next_frame_id = binding.next_frame_id.saturating_add(1);
-    let timestamp = protobuf_timestamp(system_time_for_instant(frame.received_at));
-    let duration = prost_types::Duration {
-        seconds: 0,
-        nanos: i32::try_from(1_024_000_000_u64 / u64::from(frame.sample_rate_hz.max(1)))
-            .unwrap_or(i32::MAX),
-    };
+    let timestamp = media_data_timestamp(binding, frame.received_at, frame.timestamp);
+    let duration = frame
+        .duration
+        .map(prost_types::Duration::try_from)
+        .transpose()?;
     Ok(frame
         .data
         .chunks(API_MEDIA_FRAME_CHUNK_BYTES)
@@ -4001,7 +4249,7 @@ fn encode_audio_data_frame(
                                 fragment_index: u32::try_from(fragment_index).unwrap_or(u32::MAX),
                                 fragment_count: chunk_count,
                                 payload: payload.to_vec(),
-                                duration: Some(duration),
+                                duration,
                                 configuration_revision: binding.configuration_revision,
                             },
                         )),
@@ -4028,7 +4276,7 @@ fn encode_media_data_frame(
         .map_err(|_| anyhow::anyhow!("media frame has too many data-channel fragments"))?;
     let frame_id = binding.next_frame_id;
     binding.next_frame_id = binding.next_frame_id.saturating_add(1);
-    let timestamp = media_data_timestamp(binding, frame);
+    let timestamp = media_data_timestamp(binding, frame.received_at, frame.timestamp);
     let messages = frame
         .data
         .avcc
@@ -4106,10 +4354,11 @@ fn update_media_data_configuration(
 
 fn media_data_timestamp(
     binding: &mut DataMediaBinding,
-    frame: &MediaFrame,
+    received_at: Instant,
+    source: Option<Duration>,
 ) -> prost_types::Timestamp {
-    let received_at = system_time_for_instant(frame.received_at);
-    let timestamp = frame.timestamp.map_or(received_at, |source_timestamp| {
+    let received_at = system_time_for_instant(received_at);
+    let timestamp = source.map_or(received_at, |source_timestamp| {
         if binding
             .source_clock
             .as_ref()
@@ -4227,6 +4476,7 @@ fn drain_api_outputs(
                         codec: WebRtcAudioCodec::PcmS16Le,
                         sample_rate_hz: spec.clock_rate.get(),
                         channel_count: spec.channels.unwrap_or(1),
+                        duration: None,
                         timestamp: None,
                         received_at: data.network_time,
                         data: pcm,
@@ -4529,6 +4779,11 @@ fn drive_session(
     let mut video_mid = None;
     let mut connected = false;
     let mut keyframe_gate = KeyframeGate::new();
+    let mut timing = live_timing::Queue::new(
+        subscription
+            .inner
+            .camera_timing(subscription.active_source.camera_ip),
+    );
     let mut media_clock = MediaClock::default();
     let mut last_frame_sequence = None;
     let mut recovering_queue_gap = false;
@@ -4564,13 +4819,19 @@ fn drive_session(
         if keyframe_gate.has_live_gop() {
             subscription.select_source(rtc, video_mid, Instant::now());
         }
+        let use_cached = timing.offsets(subscription.active_source.stream).1 >= 0;
+        if !connected {
+            timing.clear();
+        }
         if connected && !keyframe_prepared {
-            subscription.prepare_keyframe(rx);
+            if use_cached {
+                subscription.prepare_keyframe(rx);
+            }
             last_frame_sequence = None;
             recovering_queue_gap = false;
             keyframe_prepared = true;
         }
-        if connected && keyframe_gate.allows(FrameOrigin::Cached, true) {
+        if connected && use_cached && keyframe_gate.allows(FrameOrigin::Cached, true) {
             let keyframe = subscription
                 .sender
                 .latest_keyframe
@@ -4581,7 +4842,7 @@ fn drive_session(
                 subscription.discard_queued_frames(rx);
                 last_frame_sequence = None;
                 recovering_queue_gap = false;
-                let wrote_frame = write_frame(rtc, video_mid, &keyframe, &mut media_clock)?;
+                let wrote_frame = write_frame(rtc, video_mid, &keyframe, &mut media_clock, None)?;
                 if wrote_frame {
                     keyframe_gate.mark_written(FrameOrigin::Cached);
                     next_timeout =
@@ -4590,12 +4851,21 @@ fn drive_session(
             }
         }
         loop {
-            match rx.try_recv() {
-                Ok(SessionCommand::Frame {
-                    sequence,
-                    source,
-                    frame,
-                }) => {
+            match next_video_frame(rx, &mut timing, now) {
+                Ok((
+                    SessionCommand::Frame {
+                        sequence,
+                        source,
+                        frame,
+                    },
+                    timing_permit,
+                )) => {
+                    if timing_permit
+                        .as_ref()
+                        .is_some_and(|permit| !permit.current(Instant::now()))
+                    {
+                        continue;
+                    }
                     if subscription.finish_negotiated_switch(rtc, video_mid, source, &frame) {
                         media_clock.reset_source();
                         last_frame_sequence = None;
@@ -4624,7 +4894,13 @@ fn drive_session(
                     let frame_allowed = keyframe_gate.allows(FrameOrigin::Live, frame.is_keyframe);
                     let wrote_frame = connected
                         && frame_allowed
-                        && write_frame(rtc, video_mid, &frame, &mut media_clock)?;
+                        && write_frame(
+                            rtc,
+                            video_mid,
+                            &frame,
+                            &mut media_clock,
+                            timing_permit.as_ref(),
+                        )?;
                     if wrote_frame {
                         keyframe_gate.mark_written(FrameOrigin::Live);
                         recovering_queue_gap = false;
@@ -4657,9 +4933,12 @@ fn drive_session(
         }
 
         events.clear();
+        let wake = timing
+            .deadline()
+            .map_or(next_timeout, |due| due.min(next_timeout));
         poller.wait(
             &mut events,
-            Some(next_timeout.saturating_duration_since(Instant::now())),
+            Some(wake.saturating_duration_since(Instant::now())),
         )?;
         if events.iter().any(|event| event.key == UDP_EVENT_KEY) {
             loop {
@@ -5153,6 +5432,23 @@ fn write_frame(
     video_mid: Option<Mid>,
     frame: &MediaFrame,
     media_clock: &mut MediaClock,
+    timing: Option<&live_timing::DeliveryPermit>,
+) -> anyhow::Result<bool> {
+    if let Some(permit) = &frame.data.permit {
+        return Ok(permit
+            .deliver(|| write_permitted_frame(rtc, video_mid, frame, media_clock, timing))
+            .transpose()?
+            .unwrap_or(false));
+    }
+    write_permitted_frame(rtc, video_mid, frame, media_clock, timing)
+}
+
+fn write_permitted_frame(
+    rtc: &mut Rtc,
+    video_mid: Option<Mid>,
+    frame: &MediaFrame,
+    media_clock: &mut MediaClock,
+    timing: Option<&live_timing::DeliveryPermit>,
 ) -> anyhow::Result<bool> {
     let Some(mid) = video_mid else {
         return Ok(false);
@@ -5172,6 +5468,10 @@ fn write_frame(
         return Ok(false);
     };
 
+    let payload = frame.data.annexb();
+    if timing.is_some_and(|permit| !permit.current(Instant::now())) {
+        return Ok(false);
+    }
     let first_write = media_clock.last_media_time.is_none();
     let media_time = media_clock.media_time(frame);
     rtc.writer(mid)
@@ -5180,7 +5480,7 @@ fn write_frame(
             payload_type,
             frame.received_at,
             MediaTime::from_90khz(media_time),
-            frame.data.annexb(),
+            payload,
         )?;
     if first_write {
         tracing::debug!(codec = ?frame.codec, ?payload_type, "wrote first WebRTC video frame");
@@ -5498,6 +5798,7 @@ mod tests {
                 group: "full".to_owned(),
                 payload: GuardedMedia {
                     value: vec![0; API_BACKGROUND_OUTBOUND_MAX_BYTES],
+                    timing: None,
                     permit: None,
                 },
             }));
@@ -7310,6 +7611,7 @@ mod tests {
             control_notification_bytes: 0,
         };
         let request = crate::api::proto::SubscribeMedia {
+            live_audio_preview_offset_ms: None,
             subscription_id: "front-door".to_owned(),
             source_session_id: "camera:front-door".to_owned(),
             kind: crate::api::proto::MediaKind::Video as i32,
@@ -7462,6 +7764,7 @@ mod tests {
         };
         let mut media = ApiMediaRuntime::default();
         let request = crate::api::proto::SubscribeMedia {
+            live_audio_preview_offset_ms: None,
             subscription_id: "detector-input".to_owned(),
             source_session_id: "camera:front-door".to_owned(),
             kind: crate::api::proto::MediaKind::Video as i32,
@@ -7606,6 +7909,7 @@ mod tests {
         media.unsubscribe(&session, &[request.subscription_id]);
         assert!(session.media_camera_ips.lock().unwrap().is_empty());
         let main_request = crate::api::proto::SubscribeMedia {
+            live_audio_preview_offset_ms: None,
             subscription_id: "detector-main".to_owned(),
             video_quality: crate::api::proto::VideoQuality::High as i32,
             ..request
@@ -7764,6 +8068,7 @@ mod tests {
                 codec: audio::AudioCodec::PcmS16Le,
                 sample_rate_hz: 8_000,
                 channel_count: 1,
+                duration: None,
                 timestamp: None,
                 received_at: Instant::now(),
                 data: Bytes::from_static(&[1, 2, 3]),
@@ -7782,94 +8087,167 @@ mod tests {
     }
 
     #[test]
-    fn camera_audio_privacy_revokes_queued_frames_and_reliable_chunks() {
-        let publisher = Publisher::default();
-        let registry = Arc::new(PrivacyRegistry::default());
-        publisher.set_privacy_registry(registry.clone());
-        let source = Source {
-            camera_ip: "127.0.0.1".parse().unwrap(),
-            stream: StreamKind::Main,
-        };
-        registry.set_alias(source.camera_ip.to_string(), "front".into());
-        let rx = publisher.subscribe_audio(
-            SessionId::from_u64(1),
-            TrackId::parse("audio-front".into()).unwrap(),
+    fn live_audio_negative_preview_holds_video_and_invalidates_serialized_delivery_on_reset() {
+        let camera = Arc::new(live_timing::CameraTiming::default());
+        let mut timing = live_timing::Queue::new(camera.clone());
+        timing.set_preview(Some(-100));
+        let (tx, rx) = bounded(1);
+        let received = Instant::now();
+        let mut raw = live_frame_at(true, received, 32);
+        raw.timestamp = Some(Duration::from_secs(1));
+        let source = test_source();
+        tx.send(SessionCommand::Frame {
+            sequence: 1,
             source,
+            frame: raw.clone(),
+        })
+        .unwrap();
+        assert!(matches!(
+            next_video_frame(&rx, &mut timing, received),
+            Err(TryRecvError::Empty)
+        ));
+        assert_eq!(timing.report(source.stream).held_video_bytes, 32);
+        let (SessionCommand::Frame { frame, .. }, permit) =
+            next_video_frame(&rx, &mut timing, received + Duration::from_millis(100)).unwrap();
+        assert_eq!(frame.timestamp, Some(Duration::from_millis(1100)));
+        assert_eq!(raw.timestamp, Some(Duration::from_secs(1)));
+        assert!(Arc::ptr_eq(&raw.data, &frame.data));
+        let permit = permit.unwrap();
+        assert!(permit.current(received + Duration::from_millis(100)));
+        assert!(!permit.current(received + Duration::from_millis(251)));
+        assert!(
+            !permit
+                .clone()
+                .current(received + Duration::from_millis(252))
         );
-        let publish = || {
-            publisher.publish_audio(
+        assert_eq!(timing.report(source.stream).expired_drops, 1);
+        timing.set_preview(None);
+        assert!(!permit.current(received + Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn camera_audio_privacy_revokes_queued_frames_and_reliable_chunks() {
+        for delay_ms in [0_u64, 80] {
+            let publisher = Publisher::default();
+            let registry = Arc::new(PrivacyRegistry::default());
+            publisher.set_privacy_registry(registry.clone());
+            let source = Source {
+                camera_ip: "127.0.0.1".parse().unwrap(),
+                stream: StreamKind::Main,
+            };
+            registry.set_alias(source.camera_ip.to_string(), "front".into());
+            let rx = publisher.subscribe_audio(
+                SessionId::from_u64(1),
+                TrackId::parse("audio-front".into()).unwrap(),
                 source,
-                WebRtcAudioFrame {
-                    codec: audio::AudioCodec::Aac,
-                    sample_rate_hz: 48_000,
-                    channel_count: 1,
-                    timestamp: None,
-                    received_at: Instant::now(),
-                    data: Bytes::from_static(b"synthetic audio"),
-                },
+                None,
             );
-        };
-        publish();
-        let first = rx.try_recv().unwrap();
-        assert_eq!(
-            first.deliver(|f| f.data.clone()),
-            Some(Bytes::from_static(b"synthetic audio"))
-        );
-        let mut rtc = rtc_config().build(Instant::now());
-        let channels = configure_session_channels(&mut rtc);
-        let mut track = AudioTrackRuntime {
-            track_id: TrackId::parse("audio-front".into()).unwrap(),
-            rx: rx.clone(),
-            delivery: TrackDelivery::ReliableData(Box::new(DataMediaBinding {
-                stream_binding_id: "audio-front".into(),
-                codec: crate::api::proto::CodecDescriptor {
-                    name: "aac".into(),
-                    ..Default::default()
-                },
-                format: Default::default(),
-                configuration_revision: 1,
-                next_frame_id: 1,
-                source_clock: None,
-                pending_configuration: None,
-            })),
-        };
-        publish();
-        let encoded = drive_audio_track_runtime(&mut rtc, &mut track, true).unwrap();
-        assert!(encoded.wrote_media);
-        let mut media = ApiMediaRuntime::default();
-        for batch in encoded.data_messages {
-            media
-                .enqueue_with_permit(batch.value, batch.permit.as_ref())
+            let publish_at = |received_at| {
+                publisher.publish_audio(
+                    source,
+                    WebRtcAudioFrame {
+                        codec: audio::AudioCodec::Aac,
+                        sample_rate_hz: 48_000,
+                        channel_count: 1,
+                        duration: Some(Duration::from_millis(20)),
+                        timestamp: None,
+                        received_at,
+                        data: Bytes::from_static(b"synthetic audio"),
+                    },
+                );
+            };
+            publish_at(Instant::now());
+            let first = rx.try_recv().unwrap();
+            assert_eq!(
+                first.deliver(|f| f.data.clone()),
+                Some(Bytes::from_static(b"synthetic audio"))
+            );
+            let mut rtc = rtc_config().build(Instant::now());
+            let channels = configure_session_channels(&mut rtc);
+            let mut track = AudioTrackRuntime {
+                clock: live_timing::AudioClock::default(),
+                timing: live_timing::Queue::new(publisher.inner.camera_timing(source.camera_ip)),
+                source,
+                track_id: TrackId::parse("audio-front".into()).unwrap(),
+                rx: rx.clone(),
+                delivery: TrackDelivery::ReliableData(Box::new(DataMediaBinding {
+                    stream_binding_id: "audio-front".into(),
+                    codec: crate::api::proto::CodecDescriptor {
+                        name: "aac".into(),
+                        ..Default::default()
+                    },
+                    format: Default::default(),
+                    configuration_revision: 1,
+                    next_frame_id: 1,
+                    source_clock: None,
+                    pending_configuration: None,
+                })),
+            };
+            if delay_ms > 0 {
+                track.timing.set_preview(Some(80));
+            }
+            let received = Instant::now();
+            publish_at(received);
+            let mut encoded =
+                drive_audio_track_runtime(&mut rtc, &mut track, true, received).unwrap();
+            if delay_ms > 0 {
+                assert!(!encoded.wrote_media);
+                assert_eq!(track.timing.report(source.stream).held_audio_bytes, 15);
+                encoded = drive_audio_track_runtime(
+                    &mut rtc,
+                    &mut track,
+                    true,
+                    received + Duration::from_millis(delay_ms),
+                )
                 .unwrap();
+            }
+            assert_eq!(track.timing.report(source.stream).held_audio_bytes, 0);
+            assert!(encoded.wrote_media);
+            let mut media = ApiMediaRuntime::default();
+            for batch in encoded.data_messages {
+                use crate::api::proto::{audio_message, message};
+                let Some(message::Message::Audio(audio)) = &batch.value[0].message.message else {
+                    panic!("expected listener audio")
+                };
+                let Some(audio_message::Message::Frame(frame)) = &audio.message else {
+                    panic!("expected an audio frame")
+                };
+                assert_eq!(frame.duration.as_ref().unwrap().nanos, 20_000_000);
+
+                media
+                    .enqueue_with_permit(batch.value, batch.permit.as_ref(), batch.timing.as_ref())
+                    .unwrap();
+            }
+            assert!(media.outbound_bytes > 0);
+            assert_eq!(media.outbound.len(), 1);
+            publish_at(Instant::now()); // Remains in the track queue across the profile transition.
+            let other = registry.media_permit("back".into()).unwrap();
+            registry
+                .replace_profile_overrides([("front".into(), true)].into())
+                .unwrap();
+            publish_at(Instant::now());
+            assert_eq!(rx.len(), 1);
+            assert_eq!(first.deliver(|_| true), None);
+            assert_eq!(other.deliver(|| true), Some(true));
+            registry
+                .replace_profile_overrides(Default::default())
+                .unwrap();
+            assert_eq!(first.deliver(|_| true), None);
+            let stale =
+                drive_audio_track_runtime(&mut rtc, &mut track, true, Instant::now()).unwrap();
+            assert!(!stale.wrote_media);
+            assert!(stale.data_messages.is_empty());
+            // An unopened SCTP channel cannot accept a write. The stale chunk must be
+            // discarded before consulting it and must release its full queue reservation.
+            media.flush_outbound(&mut rtc, channels).unwrap();
+            assert!(media.outbound.is_empty());
+            assert_eq!(media.outbound_bytes, 0);
+            publish_at(Instant::now());
+            assert_eq!(
+                rx.try_recv().unwrap().deliver(|f| f.data.clone()),
+                Some(Bytes::from_static(b"synthetic audio"))
+            );
         }
-        assert!(media.outbound_bytes > 0);
-        assert_eq!(media.outbound.len(), 1);
-        publish(); // Remains in the track queue across the profile transition.
-        let other = registry.media_permit("back".into()).unwrap();
-        registry
-            .replace_profile_overrides([("front".into(), true)].into())
-            .unwrap();
-        publish();
-        assert_eq!(rx.len(), 1);
-        assert_eq!(first.deliver(|_| true), None);
-        assert_eq!(other.deliver(|| true), Some(true));
-        registry
-            .replace_profile_overrides(Default::default())
-            .unwrap();
-        assert_eq!(first.deliver(|_| true), None);
-        let stale = drive_audio_track_runtime(&mut rtc, &mut track, true).unwrap();
-        assert!(!stale.wrote_media);
-        assert!(stale.data_messages.is_empty());
-        // An unopened SCTP channel cannot accept a write. The stale chunk must be
-        // discarded before consulting it and must release its full queue reservation.
-        media.flush_outbound(&mut rtc, channels).unwrap();
-        assert!(media.outbound.is_empty());
-        assert_eq!(media.outbound_bytes, 0);
-        publish();
-        assert_eq!(
-            rx.try_recv().unwrap().deliver(|f| f.data.clone()),
-            Some(Bytes::from_static(b"synthetic audio"))
-        );
     }
 
     #[test]
@@ -7883,11 +8261,13 @@ mod tests {
             SessionId::from_u64(1),
             TrackId::parse("audio-first".to_owned()).unwrap(),
             source,
+            None,
         );
         let second = publisher.subscribe_audio(
             SessionId::from_u64(2),
             TrackId::parse("audio-second".to_owned()).unwrap(),
             source,
+            None,
         );
         publisher.publish_audio(
             source,
@@ -7895,6 +8275,7 @@ mod tests {
                 codec: audio::AudioCodec::G711Alaw,
                 sample_rate_hz: 8_000,
                 channel_count: 1,
+                duration: None,
                 timestamp: Some(Duration::from_millis(20)),
                 received_at: Instant::now(),
                 data: Bytes::from_static(&[0xd5]),

@@ -4,6 +4,32 @@ use crate::api::proto::{
 };
 
 #[test]
+fn live_preview_changes_emit_timing_even_when_network_quality_is_stable() {
+    let mut fixture = SharedFixture::new(&[StreamQuality::Auto]);
+    fixture.prime();
+    fixture.take_stream_states();
+    fixture.media.tracks[0]
+        .runtime
+        .timing
+        .set_preview(Some(-80));
+    fixture
+        .media
+        .report_live_quality(fixture.start + Duration::from_secs(2));
+    let events = fixture.take_stream_states();
+    let timing = events.last().unwrap().live_audio.unwrap();
+    assert!(timing.preview);
+    assert_eq!(
+        (timing.configured_offset_ms, timing.applied_offset_ms),
+        (0, -80)
+    );
+    fixture
+        .media
+        .report_live_quality(fixture.start + Duration::from_secs(4));
+    assert!(fixture.take_stream_states().is_empty());
+    fixture.close();
+}
+
+#[test]
 fn live_quality_follows_holds_and_the_actual_keyframe_handoff() {
     let mut fixture = SharedFixture::new(&[StreamQuality::Auto]);
     fixture.prime();
