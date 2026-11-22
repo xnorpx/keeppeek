@@ -5,6 +5,7 @@ import { create } from '@bufbuild/protobuf';
 import { RecordedAudioTimingSchema, type RecordedAudioTiming } from '$lib/proto/webrtc_pb';
 import '../../app.css';
 import Keep from './+page.svelte';
+import { TimelineRepository } from '$lib/timeline-repository.svelte';
 
 const context = vi.hoisted(() => ({ control: vi.fn() }));
 vi.mock('$lib/control-context', () => ({ useControlClient: context.control }));
@@ -89,6 +90,11 @@ function controller(
 	audioSupported: boolean
 ) {
 	const open = vi.fn().mockResolvedValueOnce(first.playback).mockResolvedValue(next.playback);
+	type TimelineAccess = {
+		status: 'checking' | 'authenticated';
+		session: { principalId: string } | null;
+	};
+	let acceptAccess: (access: TimelineAccess) => void = () => {};
 	context.control.mockReturnValue({
 		onCapabilities: (listener: (values: string[]) => void) => {
 			listener([
@@ -97,8 +103,9 @@ function controller(
 			]);
 			return () => {};
 		},
-		onAccessState: (listener: (value: { session: null }) => void) => {
-			listener({ session: null });
+		onAccessState: (listener: (value: TimelineAccess) => void) => {
+			acceptAccess = listener;
+			listener({ status: 'authenticated', session: null });
 			return () => {};
 		},
 		getCameras: async () => [
@@ -110,18 +117,18 @@ function controller(
 		queryStoredTimeline: async () => ({ ranges: [], events: [] }),
 		openStoredMedia: open
 	});
-	return open;
+	return { open, emitAccess: (value: TimelineAccess) => acceptAccess(value) };
 }
 
 function keepFixture(audioSupported = false) {
 	const original = window.location.href;
 	const first = cursor('first');
 	const next = cursor('replacement');
-	const open = controller(first, next, audioSupported);
+	const controls = controller(first, next, audioSupported);
 	return {
 		first,
 		next,
-		open,
+		...controls,
 		async mount() {
 			await page.viewport(1280, 800);
 			window.history.replaceState(
@@ -130,7 +137,7 @@ function keepFixture(audioSupported = false) {
 				`/keep?camera=front&stream=sub&date=2026-10-15&at=${start}`
 			);
 			await render(Keep);
-			await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
+			await vi.waitFor(() => expect(controls.open).toHaveBeenCalledOnce());
 		},
 		dispose() {
 			window.history.replaceState(null, '', original);
@@ -139,6 +146,26 @@ function keepFixture(audioSupported = false) {
 		}
 	};
 }
+
+it('revalidates the mounted timeline only after retained access is confirmed again', async () => {
+	const fixture = keepFixture();
+	const revalidate = vi.spyOn(TimelineRepository.prototype, 'revalidate');
+	try {
+		await fixture.mount();
+		revalidate.mockClear();
+		const session = { principalId: 'viewer' };
+		fixture.emitAccess({ status: 'checking', session });
+		expect(revalidate).not.toHaveBeenCalled();
+		fixture.emitAccess({ status: 'authenticated', session });
+		await vi.waitFor(() => expect(revalidate).toHaveBeenCalled());
+		revalidate.mockClear();
+		fixture.emitAccess({ status: 'authenticated', session });
+		expect(revalidate).not.toHaveBeenCalled();
+	} finally {
+		revalidate.mockRestore();
+		fixture.dispose();
+	}
+});
 
 function beginDrag() {
 	const playhead = page.getByRole('button', { name: /Playback position at/ }).element();

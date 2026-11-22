@@ -1960,11 +1960,15 @@ describe('ControlClient', () => {
 		}
 	);
 
-	it('returns an expired bearer viewer to sign-in without attempting new signaling', async () => {
+	it('lets the recorder decide continuity when the browser clock is ahead', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		FakeDataChannel.absoluteExpiry = BigInt(Date.now() - 1);
-		api.createSession.mockResolvedValue({
-			session_id: 'expired',
+		const session = {
+			session_id: 'first',
+			answer: { type: 'answer', sdp: 'v=0' }
+		};
+		api.createSession.mockResolvedValueOnce(session).mockResolvedValueOnce({
+			session_id: 'replacement',
 			answer: { type: 'answer', sdp: 'v=0' }
 		});
 		api.deleteSession.mockResolvedValue(undefined);
@@ -1973,10 +1977,51 @@ describe('ControlClient', () => {
 		client.onAccessState((state) => states.push(state.status));
 		await client.signIn('retained-bearer');
 		FakePeerConnection.latest!.channels[0].close();
-		expect(states.at(-1)).toBe('sign-in-required');
-		expect(api.createSession).toHaveBeenCalledTimes(1);
+		await vi.waitFor(() => expect(states.at(-1)).toBe('authenticated'));
+		expect(api.createSession).toHaveBeenLastCalledWith(
+			expect.any(Object),
+			'retained-bearer',
+			'first'
+		);
 		await client.close();
 	});
+
+	it.each([false, true])(
+		'ends a lost replacement before capabilities (channel open: %s)',
+		async (opened) => {
+			const signaled = Promise.withResolvers<void>();
+			let connection = 0;
+			class DelayedReplacement extends FakePeerConnection {
+				override async setRemoteDescription(): Promise<void> {
+					if (++connection !== 2) return super.setRemoteDescription();
+					if (opened) {
+						this.channels[0]!.readyState = 'open';
+						this.channels[0]!.onopen?.();
+					}
+					signaled.resolve();
+				}
+			}
+			vi.stubGlobal('RTCPeerConnection', DelayedReplacement);
+			const session = { session_id: 'first', answer: { type: 'answer', sdp: 'v=0' } };
+			api.createSession
+				.mockResolvedValueOnce(session)
+				.mockResolvedValueOnce({ ...session, session_id: 'lost' })
+				.mockResolvedValueOnce({ ...session, session_id: 'fresh' });
+			api.deleteSession.mockResolvedValue(undefined);
+			const client = new ControlClient();
+			const states: string[] = [];
+			client.onAccessState((state) => states.push(state.status));
+			await client.signIn('first-bearer');
+			FakePeerConnection.latest!.channels[0].close();
+			await signaled.promise;
+			FakePeerConnection.latest!.channels[0].close();
+			expect(states.at(-1)).toBe('sign-in-required');
+			await client.signIn('next-bearer');
+			expect(states.at(-1)).toBe('authenticated');
+			expect(api.deleteSession).toHaveBeenCalledWith('lost', 'first-bearer');
+			await client.close();
+		}
+	);
 
 	it('keeps a local workspace identity during recovery and blocks commands until capabilities arrive', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);

@@ -73,120 +73,127 @@ impl NegotiatedPeers {
         permit: Option<MediaPermit>,
         media: &mut ApiMediaRuntime,
     ) {
-        let payload = b"authorized fixture audio";
         match path {
-            CameraPath::RtpAudio => {
-                let (tx, rx) = bounded(1);
-                tx.send(GuardedMedia {
-                    timing: None,
-                    value: WebRtcAudioFrame {
-                        codec: WebRtcAudioCodec::G711Alaw,
-                        sample_rate_hz: 8000,
-                        channel_count: 1,
-                        duration: Some(Duration::from_millis(20)),
-                        timestamp: Some(Duration::from_secs(1)),
-                        received_at: self.now,
-                        data: Bytes::copy_from_slice(&[0xd5; 160]),
-                    },
-                    permit,
-                })
-                .unwrap();
-                let mut track = AudioTrackRuntime {
-                    track_id: TrackId::parse("audio".into()).unwrap(),
-                    rx,
-                    source: Source {
-                        camera_ip: std::net::Ipv4Addr::LOCALHOST.into(),
-                        stream: StreamKind::Main,
-                    },
-                    timing: live_timing::Queue::new(Arc::default()),
-                    clock: live_timing::AudioClock::default(),
-                    delivery: TrackDelivery::Rtp(self.audio_mid),
-                };
-                assert!(
-                    drive_audio_track_runtime(
-                        &mut self.server,
-                        &mut track,
-                        true,
-                        self.now,
-                        &mut media.permits
-                    )
-                    .unwrap()
-                    .wrote_media
-                );
-            }
-            CameraPath::RtpVideo => {
-                let frame = MediaFrame {
-                    codec: VideoCodec::H264,
-                    is_keyframe: true,
-                    timestamp: Some(Duration::from_secs(1)),
-                    received_at: self.now,
-                    data: Arc::new(MediaFrameData {
-                        permit,
-                        ..MediaFrameData::new(Bytes::from_static(&[
-                            0, 0, 0, 4, 0x65, 0x88, 0x84, 0x21,
-                        ]))
-                    }),
-                };
-                assert!(
-                    write_frame(
-                        &mut self.server,
-                        Some(self.video_mid),
-                        &frame,
-                        &mut MediaClock::default(),
-                        None,
-                        &mut media.permits
-                    )
-                    .unwrap()
-                );
-            }
-            CameraPath::EventNotification => {
-                media
-                    .enqueue_event(OutboundEventDelivery {
-                        permit,
-                        event: crate::api::proto::Event {
-                            subscription_id: Some("events".into()),
-                            source_id: "front".into(),
-                            ..Default::default()
-                        },
-                        attachment_target: None,
-                        attachment_bytes: None,
-                        additional_attachments: Vec::new(),
-                        guard: EventDeliveryGuard::default(),
-                    })
-                    .unwrap();
-                media
-                    .flush_control_notifications(|bytes| {
-                        Ok(self
-                            .server
-                            .channel(self.channels.control)
-                            .unwrap()
-                            .write(true, bytes)?)
-                    })
-                    .unwrap();
-                assert!(media.control_notifications.is_empty());
-            }
-            CameraPath::Reliable | CameraPath::Unreliable => {
-                media
-                    .outbound
-                    .push_back(QueuedApiData::Message(QueuedDataMessage {
-                        group: "camera".into(),
-                        target: if matches!(path, CameraPath::Reliable) {
-                            DataChannelTarget::Reliable
-                        } else {
-                            DataChannelTarget::Unreliable
-                        },
-                        payload: GuardedMedia {
-                            value: payload.to_vec(),
-                            timing: None,
-                            permit,
-                        },
-                    }));
-                media
-                    .flush_outbound(&mut self.server, self.channels)
-                    .unwrap();
-                assert!(media.outbound.is_empty());
-            }
+            CameraPath::RtpAudio => self.admit_audio(permit, media),
+            CameraPath::RtpVideo => self.admit_video(permit, media),
+            CameraPath::EventNotification => self.admit_event(permit, media),
+            CameraPath::Reliable => self.admit_data(DataChannelTarget::Reliable, permit, media),
+            CameraPath::Unreliable => self.admit_data(DataChannelTarget::Unreliable, permit, media),
         }
+    }
+
+    fn admit_audio(&mut self, permit: Option<MediaPermit>, media: &mut ApiMediaRuntime) {
+        let (tx, rx) = bounded(1);
+        tx.send(GuardedMedia {
+            timing: None,
+            value: WebRtcAudioFrame {
+                codec: WebRtcAudioCodec::G711Alaw,
+                sample_rate_hz: 8000,
+                channel_count: 1,
+                duration: Some(Duration::from_millis(20)),
+                timestamp: Some(Duration::from_secs(1)),
+                received_at: self.now,
+                data: Bytes::copy_from_slice(&[0xd5; 160]),
+            },
+            permit,
+        })
+        .unwrap();
+        let mut track = AudioTrackRuntime {
+            track_id: TrackId::parse("audio".into()).unwrap(),
+            rx,
+            source: Source {
+                camera_ip: std::net::Ipv4Addr::LOCALHOST.into(),
+                stream: StreamKind::Main,
+            },
+            timing: live_timing::Queue::new(Arc::default()),
+            clock: live_timing::AudioClock::default(),
+            delivery: TrackDelivery::Rtp(self.audio_mid),
+        };
+        assert!(
+            drive_audio_track_runtime(
+                &mut self.server,
+                &mut track,
+                true,
+                self.now,
+                &mut media.permits
+            )
+            .unwrap()
+            .wrote_media
+        );
+    }
+
+    fn admit_video(&mut self, permit: Option<MediaPermit>, media: &mut ApiMediaRuntime) {
+        let frame = MediaFrame {
+            codec: VideoCodec::H264,
+            is_keyframe: true,
+            timestamp: Some(Duration::from_secs(1)),
+            received_at: self.now,
+            data: Arc::new(MediaFrameData {
+                permit,
+                ..MediaFrameData::new(Bytes::from_static(&[0, 0, 0, 4, 0x65, 0x88, 0x84, 0x21]))
+            }),
+        };
+        assert!(
+            write_frame(
+                &mut self.server,
+                Some(self.video_mid),
+                &frame,
+                &mut MediaClock::default(),
+                None,
+                &mut media.permits
+            )
+            .unwrap()
+        );
+    }
+
+    fn admit_event(&mut self, permit: Option<MediaPermit>, media: &mut ApiMediaRuntime) {
+        media
+            .enqueue_event(OutboundEventDelivery {
+                permit,
+                event: crate::api::proto::Event {
+                    subscription_id: Some("events".into()),
+                    source_id: "front".into(),
+                    ..Default::default()
+                },
+                attachment_target: None,
+                attachment_bytes: None,
+                additional_attachments: Vec::new(),
+                guard: EventDeliveryGuard::default(),
+            })
+            .unwrap();
+        media
+            .flush_control_notifications(|bytes| {
+                Ok(self
+                    .server
+                    .channel(self.channels.control)
+                    .unwrap()
+                    .write(true, bytes)?)
+            })
+            .unwrap();
+        assert!(media.control_notifications.is_empty());
+    }
+
+    fn admit_data(
+        &mut self,
+        target: DataChannelTarget,
+        permit: Option<MediaPermit>,
+        media: &mut ApiMediaRuntime,
+    ) {
+        media
+            .outbound
+            .push_back(QueuedApiData::Message(QueuedDataMessage {
+                group: "camera".into(),
+                target,
+                payload: GuardedMedia {
+                    value: b"authorized fixture audio".to_vec(),
+                    timing: None,
+                    permit,
+                },
+            }));
+        media
+            .flush_outbound(&mut self.server, self.channels)
+            .unwrap();
+        assert!(media.outbound.is_empty());
     }
 }
 
@@ -297,26 +304,15 @@ fn negotiated_camera_paths_require_their_original_epoch_at_udp_handoff() {
             let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
             receiver.set_nonblocking(true).unwrap();
             let destination = receiver.local_addr().unwrap();
-            assert!(
-                send_datagram(&media.permits, &sender, &packet.contents, destination).is_err(),
-                "{path:?}"
-            );
+            assert_blocked_datagram(&media.permits, &sender, &receiver, &packet.contents, path);
             let mut buf = [0; 2048];
-            assert_eq!(
-                receiver.recv(&mut buf).unwrap_err().kind(),
-                ErrorKind::WouldBlock
-            );
             send_datagram(&other, &sender, &packet.contents, destination).unwrap();
             let length = receiver.recv(&mut buf).unwrap();
             assert_eq!(&buf[..length], &packet.contents[..]);
             registry
                 .replace_profile_overrides(Default::default())
                 .unwrap();
-            assert!(send_datagram(&media.permits, &sender, &packet.contents, destination).is_err());
-            assert_eq!(
-                receiver.recv(&mut buf).unwrap_err().kind(),
-                ErrorKind::WouldBlock
-            );
+            assert_blocked_datagram(&media.permits, &sender, &receiver, &packet.contents, path);
             break;
         }
         assert!(registry.media_permit("front".into()).is_some());
@@ -326,6 +322,25 @@ fn negotiated_camera_paths_require_their_original_epoch_at_udp_handoff() {
             "{path:?} did not exercise UDP handoff"
         );
     }
+}
+
+fn assert_blocked_datagram(
+    permits: &TransportPermits,
+    sender: &UdpSocket,
+    receiver: &UdpSocket,
+    packet: &[u8],
+    path: CameraPath,
+) {
+    let destination = receiver.local_addr().unwrap();
+    assert!(
+        send_datagram(permits, sender, packet, destination).is_err(),
+        "{path:?}"
+    );
+    let mut buf = [0; 2048];
+    assert_eq!(
+        receiver.recv(&mut buf).unwrap_err().kind(),
+        ErrorKind::WouldBlock
+    );
 }
 
 #[test]
