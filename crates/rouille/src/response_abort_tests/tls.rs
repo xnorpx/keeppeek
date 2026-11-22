@@ -66,7 +66,7 @@ fn native_tls_request_reports_secure_transport() {
     client
         .write_all(b"GET /secure HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .unwrap();
-    server.poll_timeout(Duration::from_millis(10));
+    server.poll_once_timeout(Duration::from_secs(2));
     let body = response_body(&mut client);
     let finished = server.join_timeout(Duration::from_secs(1));
     let _ = client.get_ref().shutdown(Shutdown::Both);
@@ -90,7 +90,7 @@ fn native_tls_abort_releases_slow_reader_and_worker_within_one_deadline() {
     client
         .write_all(b"GET /large HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .unwrap();
-    server.poll_timeout(Duration::from_millis(10));
+    server.poll_once_timeout(Duration::from_secs(2));
     let handle = handle_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     assert!(!server.join_timeout(Duration::from_millis(100)));
     let started = Instant::now();
@@ -153,14 +153,14 @@ fn native_tls_completed_handle_preserves_the_next_normal_keepalive_response() {
     client
         .write_all(b"GET /first HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .unwrap();
-    server.poll_timeout(Duration::from_millis(10));
+    server.poll_once_timeout(Duration::from_secs(2));
     let obsolete = handle_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     assert_eq!(response_body(&mut client), b"first");
     assert!(server.join_timeout(Duration::from_secs(1)));
     client
         .write_all(b"GET /second HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .unwrap();
-    server.poll_timeout(Duration::from_millis(10));
+    server.poll_once_timeout(Duration::from_secs(2));
     started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     let finished = obsolete.is_finished().unwrap();
     let aborted = obsolete.abort().unwrap();
