@@ -6,6 +6,7 @@ import { SharedProfileWatch, type ProfileSubscription } from './runtime-profile-
 import type { ControlClientStateStore, StateStoreWatch } from './control-client-state-store';
 import {
 	assembleObservedParts,
+	sameObservationGeneration,
 	observedPartCount,
 	observedPartFromEntry,
 	type ObservedPart,
@@ -49,7 +50,7 @@ function unsupportedObservationKey(error: unknown): boolean {
 
 export class RuntimeProfilesControlClient {
 	private readonly activeWatch = new SharedProfileWatch<ActiveRuntimeProfile>();
-	private readonly statusWatch = new SharedProfileWatch<RuntimeProfileStatus>();
+	private readonly statusWatch = new SharedProfileWatch<RuntimeProfileStatus | null>();
 	constructor(private readonly stateStore: ControlClientStateStore) {}
 
 	private connectionGeneration = 0;
@@ -57,7 +58,7 @@ export class RuntimeProfilesControlClient {
 	handleConnectionClosed(): void {
 		this.connectionGeneration++;
 		this.activeWatch.invalidateSnapshot();
-		this.statusWatch.invalidateSnapshot();
+		this.statusWatch.invalidateSnapshot(null);
 	}
 
 	async getCameras(): Promise<RuntimeProfileCameras> {
@@ -97,7 +98,7 @@ export class RuntimeProfilesControlClient {
 		throw new Error('Runtime profiles changed while they were being read.');
 	}
 
-	async getStatus(): Promise<RuntimeProfileStatus> {
+	async getStatus(): Promise<RuntimeProfileStatus | null> {
 		for (let attempt = 0; attempt <= registryReadRetries; attempt++) {
 			let parts: ObservedPart[];
 			try {
@@ -116,7 +117,7 @@ export class RuntimeProfilesControlClient {
 			const assembled = assembleObservedParts(new Map(parts.entries()));
 			if (assembled) return assembled;
 		}
-		throw new Error('Runtime profile observations changed while they were being read.');
+		return null;
 	}
 
 	async saveRegistry(registry: RuntimeProfileRegistry): Promise<RuntimeProfileRegistry> {
@@ -300,8 +301,20 @@ export class RuntimeProfilesControlClient {
 			header = next;
 			notify();
 		});
-		if (header?.degradedCameras !== undefined) return active;
 		try {
+			if (!header) {
+				const generation = this.connectionGeneration;
+				const fresh = runtimeProfileHeaderFromEntry(
+					await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesActiveKey)
+				);
+				if (!header) {
+					if (generation !== this.connectionGeneration)
+						throw new Error('Recorder reconnected while reading the active profile.');
+					header = fresh;
+					notify();
+				}
+			}
+			if (header.degradedCameras !== undefined) return active;
 			// Older recorders supply the shell's health count through their single status watch.
 			const status = await this.watch(runtimeProfilesStatusKey, (entry) => {
 				legacy = runtimeProfileStatusFromEntry(entry);
@@ -340,26 +353,36 @@ export class RuntimeProfilesControlClient {
 		});
 	}
 
-	watchStatus(listener: (status: RuntimeProfileStatus) => void): Promise<ProfileSubscription> {
+	watchStatus(
+		listener: (status: RuntimeProfileStatus | null) => void
+	): Promise<ProfileSubscription> {
 		return this.statusWatch.subscribe(listener, (emit) => this.openStatusWatch(emit));
 	}
 
 	private async openStatusWatch(
-		emit: (status: RuntimeProfileStatus) => void
+		emit: (status: RuntimeProfileStatus | null) => void
 	): Promise<ProfileSubscription> {
 		let connectionGeneration = this.connectionGeneration;
+		let published: ObservedPart | undefined;
 		const parts = new Map<number, ObservedPart>();
 		const results = await Promise.allSettled(
 			observedIndices.map((index) =>
 				this.watch(`observed/${index}`, (entry) => {
 					if (connectionGeneration !== this.connectionGeneration) {
 						parts.clear();
+						published = undefined;
 						connectionGeneration = this.connectionGeneration;
 					}
-					parts.set(index, observedPartFromEntry(entry, index));
+					const part = observedPartFromEntry(entry, index);
+					if (published && !sameObservationGeneration(published, part)) {
+						published = undefined;
+						emit(null);
+					}
+					parts.set(index, part);
 					const status = assembleObservedParts(parts);
 					if (status) {
 						parts.clear();
+						published = part;
 						emit(status);
 					}
 				})

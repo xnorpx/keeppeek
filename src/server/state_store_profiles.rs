@@ -580,7 +580,7 @@ fn register_profile_watch(
     request: proto::WatchState,
     entry: StoredEntry,
 ) -> Result<proto::StateStoreResult, ControlCommandError> {
-    let message = proto::StateWatchSnapshot {
+    let mut message = proto::StateWatchSnapshot {
         watch_id: request.watch_id.clone(),
         namespace: NAMESPACE.to_owned(),
         key_prefix: request.key_prefix.clone(),
@@ -593,13 +593,14 @@ fn register_profile_watch(
         NAMESPACE,
         &request.watch_id,
     )?;
-    state
+    message.snapshot_revision = state
         .state_store_watches
-        .register(
+        .register_snapshot(
             session_id,
             NAMESPACE.to_owned(),
-            entry.key,
+            entry.key.clone(),
             request.watch_id.clone(),
+            Some(&entry),
         )
         .map_err(|error| registry_error(error, NAMESPACE, &request.watch_id))?;
     Ok(proto::StateStoreResult {
@@ -1282,6 +1283,7 @@ fn active_entry(registry: &crate::profiles::ProfileRegistry) -> StoredEntry {
         "profile_id": profile_id,
         "definition_revision": definition_revision,
         "observed_parts": observed::PART_COUNT,
+        "revision": registry.revision.to_string(),
     }))
     .expect("active profile header contains only JSON scalars");
     StoredEntry {
@@ -1508,6 +1510,7 @@ pub(in crate::server) fn publish_status_event(state: &ServerState, updated_ms: u
     if keys.is_empty() {
         return;
     }
+    let shared_status = std::sync::Arc::new(status.clone());
     let generation = std::cell::OnceCell::new();
     let events = keys
         .into_iter()
@@ -1541,7 +1544,10 @@ pub(in crate::server) fn publish_status_event(state: &ServerState, updated_ms: u
                 namespace: NAMESPACE.to_owned(),
                 key,
                 revision: status.revision,
-                kind: entry.map_or(WatchEventKind::ResnapshotRequired, WatchEventKind::Put),
+                kind: WatchEventKind::ProfileObservation {
+                    status: std::sync::Arc::clone(&shared_status),
+                    administrator: entry.ok(),
+                },
             }
         })
         .collect::<Vec<_>>();
@@ -1578,24 +1584,23 @@ pub(in crate::server) fn visible_profile_camera_ids(
     state: &ServerState,
     principal: &ApiPrincipal,
     identities: Option<&crate::keeppeek::CameraProfileIds>,
-) -> BTreeSet<String> {
-    let Some(identities) = identities else {
-        return BTreeSet::new();
-    };
-    super::super::camera_access::for_principal(state, principal)
-        .ok()
-        .and_then(|policy| super::super::camera_access::query_cameras(state, &policy, &[]).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|camera| {
-            camera
-                .info
-                .ip
-                .parse()
-                .ok()
-                .map(|ip| identities.camera_id(ip))
-        })
-        .collect()
+) -> Option<BTreeSet<String>> {
+    let identities = identities?;
+    let policy = super::super::camera_access::for_principal(state, principal).ok()?;
+    Some(
+        super::super::camera_access::query_cameras(state, &policy, &[])
+            .ok()?
+            .into_iter()
+            .filter_map(|camera| {
+                camera
+                    .info
+                    .ip
+                    .parse()
+                    .ok()
+                    .map(|ip| identities.camera_id(ip))
+            })
+            .collect(),
+    )
 }
 
 fn expand_compact_draft(value: &mut serde_json::Value) -> Result<(), Error> {
@@ -2196,8 +2201,9 @@ mod tests {
                 panic!("completion must be a watch update");
             };
             assert_eq!(update.watch_sequence, 1);
-            assert_eq!(update.revision, 1);
+            assert!(update.revision > 0);
             let entry = update.entry.unwrap();
+            assert_eq!(entry.revision, 1);
             assert_eq!(entry.key, STATUS_KEY);
             assert_eq!(entry.schema, STATUS_SCHEMA);
         }
@@ -3308,12 +3314,44 @@ mod tests {
             status_camera_ids(&snapshot.entries[0]).as_slice(),
             std::slice::from_ref(&visible_id)
         );
+        state
+            .runtime_profile_status
+            .write()
+            .unwrap()
+            .cameras
+            .get_mut(&hidden_id)
+            .unwrap()
+            .reason = Some("hidden worker changed".into());
+        publish_status_event(state, 2);
+        assert!(
+            pump().is_empty(),
+            "hidden-only changes must not generate viewer traffic"
+        );
+        let control_ok::Result::StateStoreResult(unchanged) =
+            super::super::dispatch(state, session, &principal, get_key(key)).unwrap()
+        else {
+            panic!("expected scoped Get")
+        };
+        let Some(state_store_result::Result::Entry(unchanged)) = unchanged.result else {
+            panic!("expected scoped entry")
+        };
+        assert_eq!(unchanged, snapshot.entries[0]);
+        state
+            .runtime_profile_status
+            .write()
+            .unwrap()
+            .cameras
+            .get_mut(&visible_id)
+            .unwrap()
+            .reason = Some("visible worker changed".into());
         publish_status_event(state, 3);
         let Some(proto::notification::Event::StateStoreWatchUpdate(update)) =
             single_watch_notification(pump())
         else {
             panic!("watch update expected")
         };
+        assert!(update.revision > snapshot.snapshot_revision);
+        assert_eq!(update.watch_sequence, 1);
         assert_eq!(status_camera_ids(&update.entry.unwrap()), [visible_id]);
         let (owner_id, _) = principal.credential_binding().unwrap();
         state.access_manager.revoke_credential(owner_id, 4).unwrap();
@@ -3358,6 +3396,15 @@ mod tests {
         assert_eq!(initial["degraded_cameras"].as_f64(), Some(1.0));
         assert_eq!(initial["observed_parts"].as_f64(), Some(8.0));
         assert!(initial.get("cameras").is_none());
+        let mut unknown = active_entry(&registry);
+        observed::set_header_count(
+            state,
+            Some(&principal),
+            None,
+            Some(&BTreeSet::new()),
+            &mut unknown,
+        );
+        assert!(header(&proto_entry(&unknown))["degraded_cameras"].is_null());
         state
             .runtime_profile_status
             .write()
@@ -3373,7 +3420,7 @@ mod tests {
             panic!("header update expected")
         };
         assert_eq!(update.key, ACTIVE_KEY);
-        assert_eq!(update.revision, snapshot.snapshot_revision);
+        assert!(update.revision > snapshot.snapshot_revision);
         assert_eq!(
             header(&update.entry.unwrap())["degraded_cameras"].as_f64(),
             Some(0.0)
@@ -3384,8 +3431,7 @@ mod tests {
     fn users_can_read_and_watch_runtime_application_status() {
         let fixture = Fixture::new();
         let session = SessionId::from_u64(20_209);
-        let mut principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
-        principal.role = AccessRole::User;
+        let principal = bind_scoped_viewer(&fixture.state, session, "192.0.2.20");
 
         let get =
             super::super::dispatch(&fixture.state, session, &principal, get_status()).unwrap();

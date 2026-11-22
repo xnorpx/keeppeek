@@ -805,6 +805,14 @@ fn observed_parts_cover_all_degraded_cameras_and_fit_document_and_snapshot_budge
     assert_eq!(seen, expected);
     assert_eq!(generations.len(), 1);
     publish_status_event(&lifecycle.state, 1);
+    assert!(pump().is_empty());
+    let next_generation = {
+        let mut observed_status = lifecycle.state.runtime_profile_status.write().unwrap();
+        observed_status.cameras.values_mut().next().unwrap().state =
+            RuntimeApplicationState::Applied;
+        observed::generation(&observed_status).unwrap()
+    };
+    publish_status_event(&lifecycle.state, 2);
     let mut keys = BTreeSet::new();
     for bytes in pump() {
         assert!(bytes.len() <= 48 * 1024);
@@ -823,12 +831,48 @@ fn observed_parts_cover_all_degraded_cameras_and_fit_document_and_snapshot_budge
         assert!(keys.insert(entry.key.clone()));
         if entry.key != ACTIVE_KEY {
             let json = super::super::super::peek_layouts::struct_to_json(entry.value.unwrap());
-            assert!(generations.contains(json["generation"].as_str().unwrap()));
+            assert_eq!(json["generation"].as_str(), Some(next_generation.as_str()));
         }
     }
-    let mut expected_keys: BTreeSet<_> = (0..8).map(|i| format!("observed/{i}")).collect();
-    expected_keys.insert(ACTIVE_KEY.to_owned());
+    let expected_keys: BTreeSet<_> = (0..8).map(|i| format!("observed/{i}")).collect();
     assert_eq!(keys, expected_keys);
+}
+
+#[test]
+fn observed_parts_cover_configured_and_retained_missing_targets_at_the_union_limit() {
+    for missing in [1, 127] {
+        let mut status = maximum_degraded_status();
+        for index in 0..missing {
+            let mut camera = status.cameras.values().next().unwrap().clone();
+            camera.camera_id = format!("{}-{index:03}", "m".repeat(252));
+            status.cameras.insert(camera.camera_id.clone(), camera);
+        }
+        let generation = observed::generation(&status).unwrap();
+        let mut seen = BTreeSet::new();
+        let mut compact_count = 0;
+        for index in 0..observed::PART_COUNT {
+            let part = observed::part_entry(&status, index, &generation).unwrap();
+            assert!(part.value.encoded_len() <= PROFILE_DOCUMENT_BYTES_MAX);
+            let value = super::super::super::peek_layouts::struct_to_json(part.value);
+            let cameras = value["cameras"].as_object().unwrap();
+            assert!(cameras.len() <= 32);
+            for (id, payload) in cameras {
+                assert!(seen.insert(id.clone()));
+                if part.schema.ends_with(".v2") {
+                    compact_count += 1;
+                    assert_eq!(payload.as_array().unwrap().len(), 4);
+                    assert_eq!(payload[0], "degraded");
+                    assert_eq!(payload[1], "off");
+                    assert_eq!(payload[2].as_f64(), Some(123.0));
+                    assert_eq!(payload[3].as_str().unwrap().len(), 96);
+                }
+            }
+        }
+        assert_eq!(seen, status.cameras.keys().cloned().collect());
+        if missing == 127 {
+            assert!(compact_count > 0);
+        }
+    }
 }
 
 fn response_envelope(result: control_ok::Result) -> proto::ControlEnvelope {

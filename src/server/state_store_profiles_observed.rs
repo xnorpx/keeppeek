@@ -3,6 +3,8 @@ use crate::profiles::RuntimeProfileStatus;
 
 pub(super) const PART_COUNT: usize =
     crate::profiles::MAX_PROFILE_TARGETS.div_ceil(PROFILE_PART_TARGETS);
+const MAX_OBSERVED_CAMERAS: usize = 2 * crate::profiles::MAX_PROFILE_TARGETS;
+const COMPACT_PART_SCHEMA: &str = "keeppeek.runtime-profiles.observed.v2";
 const PART_SCHEMA: &str = "keeppeek.runtime-profiles.observed.v1";
 
 pub(in crate::server) fn part_index(key: &str) -> Option<usize> {
@@ -14,7 +16,7 @@ pub(in crate::server) fn part_index(key: &str) -> Option<usize> {
 }
 
 pub(super) fn generation(status: &RuntimeProfileStatus) -> Result<String, Error> {
-    if status.cameras.len() > crate::profiles::MAX_PROFILE_TARGETS {
+    if status.cameras.len() > MAX_OBSERVED_CAMERAS {
         return Err(Error::Invalid(Invalid::ValueTooLarge));
     }
     // Worker observations can change without changing the desired profile revision.
@@ -32,11 +34,12 @@ pub(super) fn part_entry(
     index: usize,
     generation: &str,
 ) -> Result<StoredEntry, Error> {
-    let cameras = status
+    let width = PROFILE_PART_TARGETS.max(status.cameras.len().div_ceil(PART_COUNT));
+    let cameras: BTreeMap<_, _> = status
         .cameras
         .iter()
-        .skip(index * PROFILE_PART_TARGETS)
-        .take(PROFILE_PART_TARGETS)
+        .skip(index * width)
+        .take(width)
         .map(|(id, application)| {
             let mut application = application.clone();
             if let Some(reason) = &mut application.reason {
@@ -49,7 +52,7 @@ pub(super) fn part_entry(
         revision: status.revision,
         active_profile_id: status.active_profile_id.clone(),
         definition_revision: status.definition_revision,
-        cameras,
+        cameras: cameras.clone(),
     })
     .map_err(|error| Error::Storage(error.to_string()))?;
     entry.key = format!("observed/{index}");
@@ -92,6 +95,33 @@ pub(super) fn part_entry(
             )),
         },
     );
+    if entry.value.encoded_len() > PROFILE_DOCUMENT_BYTES_MAX {
+        use crate::profiles::FieldSource::Profile;
+        let mut rows = serde_json::Map::new();
+        for (id, camera) in cameras {
+            let policy = &camera.policy;
+            let flags = u8::from(policy.available)
+                | u8::from(policy.privacy_enforced) << 1
+                | u8::from(policy.notifications_enabled) << 2
+                | u8::from(policy.available_source == Profile) << 3
+                | u8::from(policy.recording_mode_source == Profile) << 4
+                | u8::from(policy.privacy_source == Profile) << 5
+                | u8::from(policy.notifications_source == Profile) << 6;
+            rows.insert(
+                id,
+                serde_json::json!([camera.state, policy.recording_mode, flags, camera.reason]),
+            );
+        }
+        let compact = super::super::super::peek_layouts::json_to_struct(rows.into())
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        entry.value.fields.insert(
+            "cameras".to_owned(),
+            Value {
+                kind: Some(Kind::StructValue(compact)),
+            },
+        );
+        entry.schema = COMPACT_PART_SCHEMA.to_owned();
+    }
     bounded(entry)
 }
 
@@ -109,13 +139,47 @@ pub(super) fn snapshot_entry(
     status: &RuntimeProfileStatus,
     key: &str,
 ) -> Result<StoredEntry, Error> {
-    let mut entry = if let Some(index) = part_index(key) {
-        part_entry(status, index, &generation(status)?)?
+    let visible;
+    let projected = if principal.role == AccessRole::Administrator {
+        status
     } else {
-        status_entry(status.clone()).map_err(|error| Error::Storage(error.to_string()))?
+        let ids =
+            visible_profile_camera_ids(state, principal, identities).ok_or(Error::NotAuthorized)?;
+        visible = scoped_status(status, &ids);
+        &visible
     };
-    project(state, Some(principal), identities, &mut entry);
-    bounded(entry)
+    entry_for_key(projected, key)
+}
+
+pub(in crate::server) fn scoped_status(
+    status: &RuntimeProfileStatus,
+    ids: &BTreeSet<String>,
+) -> RuntimeProfileStatus {
+    RuntimeProfileStatus {
+        revision: status.revision,
+        active_profile_id: status.active_profile_id.clone(),
+        definition_revision: status.definition_revision,
+        cameras: ids
+            .iter()
+            .filter_map(|id| {
+                status
+                    .cameras
+                    .get(id)
+                    .map(|camera| (id.clone(), camera.clone()))
+            })
+            .collect(),
+    }
+}
+
+pub(in crate::server) fn entry_for_key(
+    status: &RuntimeProfileStatus,
+    key: &str,
+) -> Result<StoredEntry, Error> {
+    if let Some(index) = part_index(key) {
+        part_entry(status, index, &generation(status)?)
+    } else {
+        bounded(status_entry(status.clone()).map_err(|error| Error::Storage(error.to_string()))?)
+    }
 }
 
 pub(in crate::server) fn project(
@@ -128,7 +192,7 @@ pub(in crate::server) fn project(
         return;
     }
     let visible = principal
-        .map(|principal| visible_profile_camera_ids(state, principal, identities))
+        .and_then(|principal| visible_profile_camera_ids(state, principal, identities))
         .unwrap_or_default();
     if let Some(value) = entry.value.fields.get_mut("cameras") {
         if let Some(Kind::StructValue(cameras)) = &mut value.kind {
@@ -181,12 +245,14 @@ pub(in crate::server) fn set_header_count(
     degraded: Option<&BTreeSet<String>>,
     entry: &mut StoredEntry,
 ) {
-    let count = degraded.map(|ids| match principal {
-        Some(principal) if principal.role == AccessRole::Administrator => ids.len(),
-        Some(principal) => ids
-            .intersection(&visible_profile_camera_ids(state, principal, identities))
-            .count(),
-        None => 0,
+    let count = degraded.and_then(|ids| {
+        let principal = principal?;
+        if principal.role == AccessRole::Administrator {
+            Some(ids.len())
+        } else {
+            visible_profile_camera_ids(state, principal, identities)
+                .map(|visible| ids.intersection(&visible).count())
+        }
     });
     entry.value.fields.insert(
         "degraded_cameras".to_owned(),

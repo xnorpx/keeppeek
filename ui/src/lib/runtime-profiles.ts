@@ -17,6 +17,8 @@ export const maxRuntimeProfiles = 32;
 export const maxProfileCameras = 127;
 export const maxRuntimeProfilePartCameras = 16;
 export const observedPartCount = Math.ceil(maxProfileCameras / maxRuntimeProfilePartCameras);
+const maxObservedCameras = 2 * maxProfileCameras;
+const maxObservedPartCameras = Math.ceil(maxObservedCameras / observedPartCount);
 
 export const profileRecordingModes = [
 	'off',
@@ -190,9 +192,6 @@ export function runtimeProfileManifestFromEntry(entry: StateEntry): RuntimeProfi
 	if (activeProfileId !== null && profiles[activeProfileId] === undefined) {
 		throw new Error('Server returned an unknown active runtime profile.');
 	}
-	if (value.observed_parts !== undefined && value.observed_parts !== observedPartCount) {
-		throw new Error('Server returned an unsupported observed part count.');
-	}
 	if (
 		value.activation_schema !== undefined &&
 		value.activation_schema !== runtimeProfileSelectSchema
@@ -274,6 +273,12 @@ export function runtimeProfileHeaderFromEntry(entry: StateEntry): ActiveRuntimeP
 		throw new Error('Server returned unexpected active runtime profile metadata.');
 	}
 	const value = record(entry.value, 'active runtime profile');
+	if (value.observed_parts !== undefined && value.observed_parts !== observedPartCount) {
+		throw new Error('Server returned an unsupported observed part count.');
+	}
+	if (value.revision !== undefined && value.revision !== entry.revision.toString()) {
+		throw new Error('Server returned an inconsistent active runtime profile revision.');
+	}
 	const profileId = value.profile_id;
 	if (typeof profileId !== 'string') {
 		throw new Error('Server returned an invalid active runtime profile.');
@@ -287,11 +292,7 @@ export function runtimeProfileHeaderFromEntry(entry: StateEntry): ActiveRuntimeP
 					degradedCameras:
 						value.degraded_cameras === null
 							? null
-							: boundedInteger(
-									value.degraded_cameras,
-									'degraded camera count',
-									Number.MAX_SAFE_INTEGER
-								)
+							: boundedInteger(value.degraded_cameras, 'degraded camera count', maxObservedCameras)
 				})
 	};
 }
@@ -313,12 +314,22 @@ export type ObservedPart = {
 	status: RuntimeProfileStatus;
 };
 
+export function sameObservationGeneration(left: ObservedPart, right: ObservedPart): boolean {
+	return (
+		left.generation === right.generation &&
+		left.definitionRevision === right.definitionRevision &&
+		left.status.revision === right.status.revision &&
+		left.status.active_profile_id === right.status.active_profile_id
+	);
+}
+
 export function observedPartFromEntry(entry: StateEntry, index: number): ObservedPart {
 	const value = record(entry.value, 'runtime profile observations');
 	if (
 		entry.namespace !== runtimeProfilesNamespace ||
 		entry.key !== `observed/${index}` ||
-		entry.schema !== 'keeppeek.runtime-profiles.observed.v1' ||
+		(entry.schema !== 'keeppeek.runtime-profiles.observed.v1' &&
+			entry.schema !== 'keeppeek.runtime-profiles.observed.v2') ||
 		value.part_index !== index ||
 		value.part_count !== observedPartCount ||
 		value.revision !== entry.revision.toString()
@@ -330,8 +341,41 @@ export function observedPartFromEntry(entry: StateEntry, index: number): Observe
 			value.definition_revision === null
 				? null
 				: revisionText(value.definition_revision, 'active definition revision'),
-		status: parseStatus(value, maxRuntimeProfilePartCameras)
+		status: parseStatus(
+			entry.schema === 'keeppeek.runtime-profiles.observed.v2' ? expandCompactPart(value) : value,
+			maxObservedPartCameras
+		)
 	};
+}
+
+function expandCompactPart(value: UnknownRecord): UnknownRecord {
+	const entries = Object.entries(record(value.cameras, 'compact runtime profile cameras'));
+	if (entries.length > maxObservedPartCameras)
+		throw new Error('Server returned too many runtime profile camera statuses.');
+	const cameras: UnknownRecord = Object.create(null);
+	for (const [id, row] of entries) {
+		if (!Array.isArray(row) || row.length !== 4)
+			throw new Error('Server returned an invalid compact camera observation.');
+		const [state, recording_mode, encoded, reason] = row;
+		const flags = boundedInteger(encoded, 'camera policy flags', 127);
+		const source = (mask: number) => (flags & mask ? 'profile' : 'base');
+		cameras[id] = {
+			camera_id: id,
+			state,
+			reason,
+			policy: {
+				recording_mode,
+				available: Boolean(flags & 1),
+				privacy_enforced: Boolean(flags & 2),
+				notifications_enabled: Boolean(flags & 4),
+				available_source: source(8),
+				recording_mode_source: source(16),
+				privacy_source: source(32),
+				notifications_source: source(64)
+			}
+		};
+	}
+	return { ...value, cameras };
 }
 
 export function assembleObservedParts(
@@ -342,21 +386,14 @@ export function assembleObservedParts(
 	const cameras: RuntimeProfileStatus['cameras'] = Object.create(null);
 	for (let index = 0; index < observedPartCount; index++) {
 		const part = parts.get(index);
-		if (
-			!part ||
-			part.generation !== first.generation ||
-			part.definitionRevision !== first.definitionRevision ||
-			part.status.revision !== first.status.revision ||
-			part.status.active_profile_id !== first.status.active_profile_id
-		)
-			return;
+		if (!part || !sameObservationGeneration(first, part)) return;
 		for (const [id, camera] of Object.entries(part.status.cameras)) {
 			if (Object.hasOwn(cameras, id))
 				throw new Error('Server returned overlapping runtime profile observations.');
 			cameras[id] = camera;
 		}
 	}
-	if (Object.keys(cameras).length > maxProfileCameras)
+	if (Object.keys(cameras).length > maxObservedCameras)
 		throw new Error('Server returned too many runtime profile camera statuses.');
 	return {
 		revision: first.status.revision,

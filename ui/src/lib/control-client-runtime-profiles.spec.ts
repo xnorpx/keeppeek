@@ -6,6 +6,9 @@ import {
 	runtimeProfileCompactRegistrySchema,
 	runtimeProfileSelectSchema,
 	runtimeProfilesActiveSchema,
+	assembleObservedParts,
+	observedPartFromEntry,
+	runtimeProfileHeaderFromEntry,
 	runtimeProfilesNamespace,
 	runtimeProfilesRegistrySchema,
 	runtimeProfilesRegistryKey,
@@ -110,7 +113,7 @@ describe('RuntimeProfilesControlClient', () => {
 				const id = 'p'.repeat(126) + String(i).padStart(2, '0');
 				return [
 					id,
-					{ id, name: '界'.repeat(26) + String(i).padStart(2, '0'), revision: '0', cameras: {} }
+					{ id, name: 'ç•Œ'.repeat(26) + String(i).padStart(2, '0'), revision: '0', cameras: {} }
 				];
 			})
 		);
@@ -352,6 +355,118 @@ function observedPart(index: number, generation = 'a'.repeat(64), revision = 3n)
 }
 
 describe('runtime profile observations', () => {
+	it('returns Pending when all three bounded reads cross observation generations', async () => {
+		const get = vi.fn(async (_namespace: string, key: string) => {
+			const index = Number(key.split('/')[1]);
+			return observedPart(index, (index === 0 ? 'a' : 'b').repeat(64));
+		});
+		const client = new RuntimeProfilesControlClient({ get } as unknown as ControlClientStateStore);
+		expect(await client.getStatus()).toBeNull();
+		expect(get).toHaveBeenCalledTimes(24);
+	});
+	it('reads the fresh header before picking a status format on reconnect', async () => {
+		const active = entry(
+			'active',
+			'keeppeek.runtime-profiles.active.v1',
+			{ profile_id: 'away', observed_parts: 8, degraded_cameras: 1 },
+			3n
+		);
+		const watch = vi.fn(
+			async (
+				_ns: string,
+				options: { keyPrefix: string; listener: (values: StateEntry[]) => void }
+			) => {
+				if (options.keyPrefix !== 'active') throw new Error('unexpected legacy status watch');
+				options.listener([active]);
+				return { close: async () => {} };
+			}
+		);
+		const get = vi.fn(async () => active);
+		const client = new RuntimeProfilesControlClient({
+			get,
+			watch
+		} as unknown as ControlClientStateStore);
+		const retained = await client.watchActive(vi.fn());
+		client.handleConnectionClosed();
+		const render = vi.fn();
+		const shell = await client.watchShellProfile(render);
+		expect(get).toHaveBeenCalledExactlyOnceWith(runtimeProfilesNamespace, 'active');
+		expect(watch).toHaveBeenCalledTimes(1);
+		expect(render).toHaveBeenCalledExactlyOnceWith('away', 1);
+		await Promise.all([shell.close(), retained.close()]);
+	});
+	it('validates the observation count on active headers', () => {
+		for (const count of [0, 7, 9, '8']) {
+			const header = entry(
+				'active',
+				'keeppeek.runtime-profiles.active.v1',
+				{ profile_id: '', observed_parts: count, degraded_cameras: 0 },
+				1n
+			);
+			expect(() => runtimeProfileHeaderFromEntry(header)).toThrow(
+				'unsupported observed part count'
+			);
+		}
+	});
+	it('assembles compact and expanded observations across the full 254-camera union', () => {
+		const compact = (index: number, count: number, flags = 85) => {
+			const part = observedPart(index);
+			return {
+				...part,
+				schema: 'keeppeek.runtime-profiles.observed.v2',
+				value: {
+					...part.value,
+					cameras: Object.fromEntries(
+						Array.from({ length: count }, (_, i) => [
+							String(index * 32 + i),
+							['degraded', 'both', flags, 'unavailable']
+						])
+					)
+				}
+			};
+		};
+		const parts = new Map(
+			Array.from({ length: 8 }, (_, i) => [
+				i,
+				observedPartFromEntry(compact(i, i === 7 ? 30 : 32), i)
+			])
+		);
+		const result = assembleObservedParts(parts)!;
+		expect(Object.keys(result.cameras)).toHaveLength(254);
+		expect(result.cameras['253']).toEqual({
+			camera_id: '253',
+			state: 'degraded',
+			reason: 'unavailable',
+			policy: {
+				available: true,
+				privacy_enforced: false,
+				notifications_enabled: true,
+				recording_mode: 'both',
+				available_source: 'base',
+				recording_mode_source: 'profile',
+				privacy_source: 'base',
+				notifications_source: 'profile'
+			}
+		});
+		parts.set(
+			0,
+			observedPartFromEntry(
+				{
+					...observedPart(0),
+					value: {
+						...observedPart(0).value,
+						cameras: Object.fromEntries(Object.entries(result.cameras).slice(0, 32))
+					}
+				},
+				0
+			)
+		);
+		expect(assembleObservedParts(parts)).toEqual(result);
+		parts.set(7, observedPartFromEntry(compact(7, 31), 7));
+		expect(() => assembleObservedParts(parts)).toThrow('too many');
+		expect(() => observedPartFromEntry(compact(0, 33), 0)).toThrow('too many');
+		expect(() => observedPartFromEntry(compact(0, 1, 128), 0)).toThrow('flags');
+	});
 	it('retries a mixed generation and bounds parallel reads', async () => {
 		let calls = 0;
 		let outstanding = 0;
@@ -405,9 +520,14 @@ describe('runtime profile observations', () => {
 		expect(first).toHaveBeenCalledTimes(1);
 		expect(second).toHaveBeenCalledTimes(1);
 		for (let i = 0; i < 7; i++) listeners.get(i)!([observedPart(i, 'b'.repeat(64), 4n)]);
-		expect(first).toHaveBeenCalledTimes(1);
-		listeners.get(7)!([observedPart(7, 'b'.repeat(64), 4n)]);
 		expect(first).toHaveBeenCalledTimes(2);
+		expect(second).toHaveBeenLastCalledWith(null);
+		const late = vi.fn();
+		const afterPartial = await client.watchStatus(late);
+		expect(late).toHaveBeenCalledExactlyOnceWith(null);
+		await afterPartial.close();
+		listeners.get(7)!([observedPart(7, 'b'.repeat(64), 4n)]);
+		expect(first).toHaveBeenCalledTimes(3);
 		expect(second).toHaveBeenLastCalledWith({
 			revision: '4',
 			active_profile_id: 'away',
@@ -449,7 +569,7 @@ describe('runtime profile observations', () => {
 			);
 		};
 		const client = new RuntimeProfilesControlClient({ get } as unknown as ControlClientStateStore);
-		expect((await client.getStatus()).revision).toBe('5');
+		expect((await client.getStatus())?.revision).toBe('5');
 	});
 
 	it('rejects an invalid part without trying an older data format', async () => {
@@ -522,11 +642,11 @@ describe('runtime profile observations', () => {
 		const late = vi.fn();
 		const second = await client.watchStatus(late);
 		update(7);
-		expect(render).toHaveBeenCalledTimes(1);
-		expect(late).not.toHaveBeenCalled();
-		for (let index = 0; index < 7; index++) update(index);
-		expect(late).toHaveBeenCalledTimes(1);
 		expect(render).toHaveBeenCalledTimes(2);
+		expect(late).toHaveBeenCalledExactlyOnceWith(null);
+		for (let index = 0; index < 7; index++) update(index);
+		expect(late).toHaveBeenCalledTimes(2);
+		expect(render).toHaveBeenCalledTimes(3);
 		await Promise.all([full.close(), second.close()]);
 	});
 });

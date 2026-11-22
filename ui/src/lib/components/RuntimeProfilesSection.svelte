@@ -24,6 +24,7 @@
 	let activeProfileId = $state<string | null>(null);
 	let activeRevision = $state('0');
 	let runtimeStatus = $state.raw<RuntimeProfileStatus | null>(null);
+	let statusUpdates = 0;
 	let cameraBindings = $state.raw<RuntimeProfileCameras | null>(null);
 	let bindingsForCameras = $state.raw<readonly CameraSettings[] | null>(null);
 	let selectedProfileId = $state('');
@@ -72,8 +73,8 @@
 		activeRevision = active.revision;
 	}
 
-	function acceptRuntimeStatus(next: RuntimeProfileStatus): void {
-		if (runtimeStatus && BigInt(next.revision) < BigInt(runtimeStatus.revision)) return;
+	function acceptRuntimeStatus(next: RuntimeProfileStatus | null): void {
+		if (next && runtimeStatus && BigInt(next.revision) < BigInt(runtimeStatus.revision)) return;
 		runtimeStatus = next;
 	}
 
@@ -89,7 +90,11 @@
 		};
 		void load();
 		void controlClient.runtimeProfiles
-			.watchStatus(acceptRuntimeStatus)
+			.watchStatus((next) => {
+				if (disposed) return;
+				statusUpdates++;
+				acceptRuntimeStatus(next);
+			})
 			.then((watch) => {
 				if (disposed) void watch.close();
 				else statusWatch = watch;
@@ -162,14 +167,9 @@
 		try {
 			const active = await controlClient.runtimeProfiles.getActive();
 			acceptActive(active);
-			const observedStatus = runtimeStatus;
+			const observedUpdates = statusUpdates;
 			const nextStatus = await controlClient.runtimeProfiles.getStatus();
-			if (
-				runtimeStatus === observedStatus ||
-				!runtimeStatus ||
-				BigInt(nextStatus.revision) > BigInt(runtimeStatus.revision)
-			)
-				acceptRuntimeStatus(nextStatus);
+			if (observedUpdates === statusUpdates) acceptRuntimeStatus(nextStatus);
 			if (administrator) {
 				const [next, bindings] = await Promise.all([
 					controlClient.runtimeProfiles.getRegistry(),
@@ -441,6 +441,8 @@
 						{/each}
 					</ul>
 				</div>
+			{:else}
+				<p role="status" class="text-sm text-text-muted">Camera application status pending.</p>
 			{/if}
 
 			{#if administrator && (!cameraBindingsAvailable || !registry)}
