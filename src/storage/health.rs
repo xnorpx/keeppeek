@@ -122,7 +122,7 @@ impl RecordingHealthRegistry {
             .entry(stream_id.to_owned())
             .or_default()
             .relocation_failed
-            .get_or_insert(Observation {
+            .get_or_insert_with(|| Observation {
                 at: Instant::now(),
                 at_ms: unix_time_ms(),
             });
