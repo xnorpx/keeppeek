@@ -1291,12 +1291,14 @@ impl WriterWorker {
 
         let active = self.demand.is_active(&storage_key);
         let pipeline = self.pipelines.get_mut(&storage_key).unwrap();
-        pipeline.short_term.push(frame);
-        let needs_flush = active || pipeline.last_flush.elapsed() >= self.config.flush_interval;
+        let received_at = frame.received_at;
+        let expires = pipeline.short_term.push_for_recording(frame);
+        let needs_flush =
+            active || expires || pipeline.last_flush.elapsed() >= self.config.flush_interval;
 
         if needs_flush {
             self.health.note_attempt(&storage_key);
-            match self.flush_camera(&storage_key, active) {
+            match self.flush_camera_at(&storage_key, active, Instant::now().max(received_at)) {
                 Ok(progress) => progress.report(&self.health, &storage_key),
                 Err(error) => {
                     self.health.note_failure(&storage_key, &error.to_string());
@@ -1406,23 +1408,26 @@ impl WriterWorker {
         camera_id: &str,
         publish_all: bool,
     ) -> std::io::Result<WriteProgress> {
+        self.flush_camera_at(camera_id, publish_all, Instant::now())
+    }
+
+    fn flush_camera_at(
+        &mut self,
+        camera_id: &str,
+        publish_all: bool,
+        clock: Instant,
+    ) -> std::io::Result<WriteProgress> {
         let pipeline = self.pipelines.get_mut(camera_id).unwrap();
         pipeline.last_flush = Instant::now();
         let frames = if publish_all {
             pipeline.short_term.drain_all()
         } else {
-            Instant::now()
+            clock
                 .checked_sub(self.config.short_term_duration)
-                .map_or_else(Vec::new, |cutoff| {
-                    if pipeline.medium_term.is_some() {
-                        // An existing writer has the reference keyframe for this buffered prefix.
-                        pipeline.short_term.drain_before(cutoff)
-                    } else {
-                        pipeline.short_term.drain_up_to_last_keyframe_before(cutoff)
-                    }
-                })
+                .map_or_else(Vec::new, |cutoff| pipeline.short_term.drain_before(cutoff))
         };
-
+        // The per-frame writer skips undecodable history until its first video keyframe
+        // and keeps all subsequent references, including across scheduled flushes.
         let mut progress = WriteProgress::default();
         let mut first_error = None;
         for frame in frames {

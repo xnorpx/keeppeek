@@ -6,7 +6,7 @@ use crate::storage::long_term::inspection::removal::{
 use cap_fs_ext::{
     DirExt, FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt, OpenOptionsSyncExt,
 };
-use cap_std::fs::{Dir, File, MetadataExt, OpenOptions};
+use cap_std::fs::{Dir, File, Metadata, MetadataExt, OpenOptions};
 use std::{
     ffi::{OsStr, OsString},
     io::{self, Read, Write},
@@ -20,6 +20,26 @@ fn intent_name(name: &OsStr) -> OsString {
     let mut marker = name.to_owned();
     marker.push(".origin");
     marker
+}
+
+fn pin_name(name: &OsStr) -> OsString {
+    let mut pin = name.to_owned();
+    pin.push(".pin");
+    pin
+}
+
+fn entry(directory: &Dir, name: &OsStr) -> io::Result<Option<Metadata>> {
+    match directory.symlink_metadata(name) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn matches_record(metadata: &Metadata, record: &[u8; 24]) -> bool {
+    metadata.is_file()
+        && record[8..16] == metadata.dev().to_be_bytes()
+        && record[16..] == metadata.ino().to_be_bytes()
 }
 
 fn read_intent(stage: &Dir, name: &OsStr) -> io::Result<[u8; 24]> {
@@ -42,32 +62,45 @@ fn read_intent(stage: &Dir, name: &OsStr) -> io::Result<[u8; 24]> {
     Ok(record)
 }
 
-fn create_intent(stage: &Dir, name: &OsStr, owned: &cap_std::fs::Metadata) -> io::Result<()> {
-    match stage.symlink_metadata(name) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "a prior staged recording entry needs recovery",
-            ));
-        }
-        Err(error) => return Err(error),
+fn create_intent(parent: &Dir, stage: &Dir, name: &OsStr, owned: &Metadata) -> io::Result<()> {
+    if entry(stage, name)?.is_some() || entry(stage, &intent_name(name))?.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "a prior staged recording entry needs recovery",
+        ));
     }
-    let mut marker = stage.open_with(
-        intent_name(name),
-        OpenOptions::new().create_new(true).write(true),
-    )?;
     let mut record = [0; 24];
     record[..8].copy_from_slice(INTENT_MAGIC);
     record[8..16].copy_from_slice(&owned.dev().to_be_bytes());
     record[16..].copy_from_slice(&owned.ino().to_be_bytes());
+
+    // Keep the inode allocated across process death so an unrelated file cannot reuse
+    // its device/inode pair before pre-move replay. The caller still has its original handle.
+    let pin = pin_name(name);
+    parent.hard_link(name, stage, &pin)?;
+    if !matches_record(&stage.symlink_metadata(&pin)?, &record) {
+        stage.remove_file(&pin)?;
+        sync_directory(stage)?;
+        return Err(io::Error::other("active recording changed before cleanup"));
+    }
+    sync_directory(stage)?;
+    let mut marker = stage.open_with(
+        intent_name(name),
+        OpenOptions::new().create_new(true).write(true),
+    )?;
     marker.write_all(&record)?;
     marker.sync_all()?;
     sync_directory(stage)
 }
 
-fn finish(stage: &Dir, name: &OsStr) -> io::Result<()> {
-    read_intent(stage, name)?;
+fn finish(stage: &Dir, name: &OsStr, record: &[u8; 24]) -> io::Result<()> {
+    let pin = pin_name(name);
+    if let Some(metadata) = entry(stage, &pin)? {
+        if !matches_record(&metadata, record) {
+            return Err(io::Error::other("recording recovery pin changed"));
+        }
+        stage.remove_file(pin)?;
+    }
     stage.remove_file(intent_name(name))?;
     sync_directory(stage)
 }
@@ -85,42 +118,73 @@ fn lock_stage(stage: &Dir) -> io::Result<std::fs::File> {
 pub(super) fn restore_pending(parent: &Dir, name: &OsStr) -> io::Result<()> {
     let stage = match parent.open_dir_nofollow(RECOVERY_DIRECTORY) {
         Ok(stage) => stage,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound
+                    | io::ErrorKind::NotADirectory
+                    | io::ErrorKind::PermissionDenied
+            ) || error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) =>
+        {
+            return Ok(());
+        }
         Err(error) => return Err(error),
     };
-    validate_owner(&stage, 0o077)?;
+    if let Err(error) = validate_owner(&stage, 0o077) {
+        // Never inspect or mutate an untrusted directory. legacy() still creates the active
+        // file exclusively, so skipping replay cannot overwrite a recording.
+        return if error.kind() == io::ErrorKind::PermissionDenied {
+            Ok(())
+        } else {
+            Err(error)
+        };
+    }
+    if entry(&stage, &intent_name(name))?.is_none() && entry(&stage, name)?.is_none() {
+        return Ok(());
+    }
     let _lease = lock_stage(&stage)?;
-    let entry = match stage.symlink_metadata(name) {
-        Ok(metadata) => Some(metadata),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
+    let staged = entry(&stage, name)?;
     let record = match read_intent(&stage, name) {
         Ok(record) => record,
-        Err(error) if entry.is_none() && error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if staged.is_none() && error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    match entry {
-        Some(metadata)
-            if metadata.is_file()
-                && record[8..16] == metadata.dev().to_be_bytes()
-                && record[16..] == metadata.ino().to_be_bytes() =>
-        {
-            stage.remove_file(name)?;
-            sync_directory(&stage)?;
-            finish(&stage, name)
-        }
-        Some(_) => restore(&stage, parent, name),
-        // A crash either preceded the move or followed a successful removal/restoration.
-        None => finish(&stage, name),
+    let pin = entry(&stage, &pin_name(name))?;
+    if pin
+        .as_ref()
+        .is_some_and(|metadata| !matches_record(metadata, &record))
+    {
+        return Err(io::Error::other("recording recovery pin changed"));
     }
+    if staged.is_none() {
+        // Older intents without a pin cannot prove that an inode at the public name was
+        // never recycled. Only reclaim a pre-move partial while its durable pin exists.
+        if pin.is_none()
+            || !entry(parent, name)?.is_some_and(|metadata| matches_record(&metadata, &record))
+        {
+            return finish(&stage, name, &record);
+        }
+        rename_to(parent, name, &stage, name)?;
+        sync_directory(&stage)?;
+        sync_directory(parent)?;
+    }
+    reconcile_staged(&stage, parent, name, &record)
 }
 
-fn restore(stage: &Dir, parent: &Dir, name: &OsStr) -> io::Result<()> {
-    rename_to(stage, name, parent, name)?;
-    sync_directory(parent)?;
+fn reconcile_staged(stage: &Dir, parent: &Dir, name: &OsStr, record: &[u8; 24]) -> io::Result<()> {
+    // Recheck after the no-replace move: a different file may have taken the public name.
+    if matches_record(&stage.symlink_metadata(name)?, record) {
+        stage.remove_file(name)?;
+    } else {
+        rename_to(stage, name, parent, name).map_err(|error| {
+            io::Error::new(error.kind(), format!(
+                "active recording name changed; displaced entry retained under {RECOVERY_DIRECTORY} with its original name: {error}"
+            ))
+        })?;
+        sync_directory(parent)?;
+    }
     sync_directory(stage)?;
-    finish(stage, name)
+    finish(stage, name, record)
 }
 
 pub(super) fn discard(parent: &Dir, name: &OsStr, file: File) -> io::Result<()> {
@@ -149,24 +213,14 @@ fn discard_with(
     // Neither staging nor restoration can overwrite an occupant.
     let stage = private_directory(parent, OsStr::new(RECOVERY_DIRECTORY), true)?;
     let _lease = lock_stage(&stage)?;
-    create_intent(&stage, name, &owned)?;
-    if let Err(error) = before_stage().and_then(|()| rename_to(parent, name, &stage, name)) {
-        finish(&stage, name)?;
-        return Err(error);
-    }
+    create_intent(parent, &stage, name, &owned)?;
+    before_stage()?;
+    rename_to(parent, name, &stage, name)?;
     sync_directory(&stage)?;
     sync_directory(parent)?;
     after_stage()?;
-    if !matches(&stage.symlink_metadata(name)?) {
-        return restore(&stage, parent, name).map_err(|error| {
-            io::Error::new(error.kind(), format!(
-                "active recording name changed; displaced entry retained under {RECOVERY_DIRECTORY} with its original name: {error}"
-            ))
-        });
-    }
-    stage.remove_file(name)?;
-    sync_directory(&stage)?;
-    finish(&stage, name)
+    let record = read_intent(&stage, name)?;
+    reconcile_staged(&stage, parent, name, &record)
 }
 
 #[cfg(test)]
@@ -201,18 +255,32 @@ mod tests {
         let name = OsStr::new("recording.mp4.active");
         parent.write(name, b"partial")?;
         let owned = parent.symlink_metadata(name)?;
-        create_intent(&stage, name, &owned)?;
+        create_intent(&parent, &stage, name, &owned)?;
         let lease = lock_stage(&stage)?;
         assert_eq!(
             restore_pending(&parent, name).unwrap_err().kind(),
             io::ErrorKind::WouldBlock
         );
         drop(lease);
-        restore_pending(&parent, name)?;
-        assert_eq!(parent.read(name)?, b"partial");
+        super::super::legacy(&root.join(name), |mut fresh| fresh.write_all(b"new header"))?;
+        assert_eq!(parent.read(name)?, b"new header");
         assert_eq!(stage.entries()?.count(), 0);
 
-        create_intent(&stage, name, &owned)?;
+        let owned = parent.symlink_metadata(name)?;
+        create_intent(&parent, &stage, name, &owned)?;
+        parent.remove_file(name)?;
+        parent.write(name, b"replacement before move")?;
+        assert_eq!(
+            super::super::legacy(&root.join(name), |_| Ok(()))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(parent.read(name)?, b"replacement before move");
+        assert_eq!(stage.entries()?.count(), 0);
+
+        let owned = parent.symlink_metadata(name)?;
+        create_intent(&parent, &stage, name, &owned)?;
         rename_to(&parent, name, &stage, name)?;
         parent.write(name, b"current occupant")?;
         restore_pending(&parent, name)?;

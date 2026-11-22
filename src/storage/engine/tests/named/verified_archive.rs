@@ -89,6 +89,58 @@ fn failed_relocation_processes_the_remaining_drained_frames_and_reports_the_erro
 }
 
 #[test]
+fn late_no_viewer_flush_delivers_predictive_frames_before_buffer_expiry() -> anyhow::Result<()> {
+    let (root, catalog, mut config) = named_fixture()?;
+    config.short_term_duration = Duration::from_secs(2);
+    config.flush_interval = Duration::from_secs(60);
+    config.medium_term_duration = Duration::from_secs(300);
+    let camera = RecordingStreamIdentity::new("late-buffer", "main", "late-buffer");
+    let mut worker = WriterWorker::new(
+        config,
+        RecordingDemand::new(Duration::ZERO),
+        Some(catalog.handle()),
+    );
+    let source = video_fixture(VideoCodec::H264, "640x360");
+    let start = Instant::now() - Duration::from_secs(90);
+    for (index, (template, ms)) in [
+        (0, 0),
+        (1, 100),
+        (2, 200),
+        (3, 300),
+        (4, 400),
+        (5, 63_500),
+        (0, 63_600),
+        (1, 63_700),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        worker.ingest(
+            camera.clone(),
+            fixture_sample(&source[template], start, Duration::from_millis(ms)),
+        );
+        if index == 1 {
+            worker.flush_all(false);
+            assert!(worker.pipelines[&camera.storage_key].medium_term.is_some());
+        }
+    }
+    worker.flush_all(true);
+    worker.finalize_all();
+    let paths: BTreeSet<_> = catalog
+        .handle()
+        .media_fragments_in_range(&camera.storage_key, 0, i64::MAX)?
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(samples(Path::new(paths.first().unwrap())), 8);
+    drop(worker);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn scheduled_flush_preserves_predictive_frames_with_or_without_prior_viewer_demand()
 -> anyhow::Result<()> {
     let source = video_fixture(VideoCodec::H264, "640x360");
