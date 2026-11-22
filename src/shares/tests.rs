@@ -1276,7 +1276,7 @@ fn wait_for_child(mut child: std::process::Child) -> std::process::Output {
     };
     assert!(
         !timed_out,
-        "recorder child exceeded 30 seconds; stdout: {}; stderr: {}",
+        "guest-store subprocess exceeded 30 seconds; stdout: {}; stderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

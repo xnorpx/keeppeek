@@ -182,11 +182,20 @@ fn qualify(frames: u32, spacing_ms: u64, export_timeout: Duration) {
     high = high.max(resident_bytes(&mut system));
     println!(
         "guest_capacity {}",
-        serde_json::json!({"bytes_per_file":expected.bytes, "sessions":8, "completed":7,
-        "administrator_prepare_us":authenticated.as_micros(),"guest_first_read_us":first_us,
-        "revoke_to_next_read_us":revoke.as_micros(), "seven_downloads_drain_us":drain_elapsed.as_micros(),
-        "total_us":elapsed.as_micros(),"idle_rss_bytes":idle,"administrator_result_rss_bytes":administrator_rss,"post_administrator_rss_bytes":baseline,
-        "sampled_high_rss_bytes":high})
+        serde_json::json!({
+            "bytes_per_file": expected.bytes,
+            "sessions": 8,
+            "completed": 7,
+            "administrator_prepare_us": authenticated.as_micros(),
+            "guest_first_read_us": first_us,
+            "revoke_to_next_read_us": revoke.as_micros(),
+            "seven_downloads_drain_us": drain_elapsed.as_micros(),
+            "total_us": elapsed.as_micros(),
+            "idle_rss_bytes": idle,
+            "administrator_result_rss_bytes": administrator_rss,
+            "post_administrator_rss_bytes": baseline,
+            "sampled_high_rss_bytes": high
+        })
     );
 }
 
