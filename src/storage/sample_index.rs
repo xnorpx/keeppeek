@@ -185,6 +185,7 @@ impl Fragment {
         for (index, p) in self.pictures.iter().enumerate() {
             let clock = p.source.ok_or(Unavailable::Timing)?;
             if clock.session_id != first.session_id
+                || clock.epoch_id != first.epoch_id
                 || clock.clock_rate != first.clock_rate
                 || clock.anchor != first.anchor
                 || (index > 0 && clock.discontinuity)

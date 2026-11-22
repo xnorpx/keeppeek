@@ -58,14 +58,14 @@ struct UdpSockets {
 
 fn original_rtp_time(
     session: uuid::Uuid,
+    epoch: uuid::Uuid,
     packet: retina::Timestamp,
-    discontinuity: bool,
 ) -> mp4::SourceRtpPacket {
     mp4::SourceRtpPacket {
         session_id: *session.as_bytes(),
+        epoch_id: *epoch.as_bytes(),
         clock_rate: packet.clock_rate(),
         timestamp: packet.timestamp(),
-        discontinuity,
     }
 }
 
@@ -737,8 +737,11 @@ impl RtspLoop {
             video_meta.framerate,
         );
         let mut video_continuity = VideoContinuity::new();
-        let mut video_discontinuity = true;
-        let mut audio_discontinuity = true;
+        let mut source_epochs: Vec<_> = driver
+            .streams()
+            .iter()
+            .map(|_| uuid::Uuid::new_v4())
+            .collect();
         let mut video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
         let mut pending_talkback = None;
         let mut talkback_session: Option<IsapiTalk> = None;
@@ -763,7 +766,11 @@ impl RtspLoop {
                 CodecItem::VideoFrame(frame) => {
                     video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
                     let loss = frame.loss();
-                    video_discontinuity |= loss > 0;
+                    let epoch = &mut source_epochs[frame.stream_id()];
+                    if loss > 0 {
+                        *epoch = uuid::Uuid::new_v4();
+                    }
+                    let epoch = *epoch;
                     if loss > 0 {
                         stats.dropped_frames = stats.dropped_frames.wrapping_add(u64::from(loss));
                     }
@@ -814,8 +821,8 @@ impl RtspLoop {
                                 RecordingFrame {
                                     source_rtp: Some(original_rtp_time(
                                         session,
+                                        epoch,
                                         packet_timestamp,
-                                        std::mem::take(&mut video_discontinuity),
                                     )),
                                     received_at,
                                     timestamp,
@@ -828,7 +835,11 @@ impl RtspLoop {
                 CodecItem::AudioFrame(frame) => {
                     if let Some(audio_meta) = &self.audio_meta {
                         let packet_timestamp = frame.packet_timestamp();
-                        audio_discontinuity |= frame.loss() > 0;
+                        let epoch = &mut source_epochs[frame.stream_id()];
+                        if frame.loss() > 0 {
+                            *epoch = uuid::Uuid::new_v4();
+                        }
+                        let epoch = *epoch;
                         let timestamp = frame.timestamp().elapsed_duration();
                         let duration = frame.duration();
                         let data = frame.data().to_vec();
@@ -884,8 +895,8 @@ impl RtspLoop {
                                     RecordingFrame {
                                         source_rtp: Some(original_rtp_time(
                                             session,
+                                            epoch,
                                             packet_timestamp,
-                                            std::mem::take(&mut audio_discontinuity),
                                         )),
                                         received_at: Instant::now(),
                                         timestamp,
@@ -1586,7 +1597,7 @@ mod tests {
         )
         .unwrap();
         for (i, frame) in [&first, &second].into_iter().enumerate() {
-            let measured = super::original_rtp_time(id, frame.timestamp(), i == 0);
+            let measured = super::original_rtp_time(id, id, frame.timestamp());
             recording
                 .write_sample_with_source_timing(
                     1,

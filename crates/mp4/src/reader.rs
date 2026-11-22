@@ -43,6 +43,7 @@ impl<R: Read + Seek> Mp4Reader<R> {
         let mut ftyp = None;
         let mut moov = None;
         let mut moofs = Vec::new();
+        let mut have_open_fragment = false;
         let mut moof_offsets = Vec::new();
         let mut emsgs = Vec::new();
 
@@ -73,6 +74,7 @@ impl<R: Read + Seek> Mp4Reader<R> {
                     skip_box(&mut reader, s)?;
                 }
                 BoxType::MdatBox => {
+                    have_open_fragment = false;
                     skip_box(&mut reader, s)?;
                 }
                 BoxType::MoovBox => {
@@ -81,11 +83,21 @@ impl<R: Read + Seek> Mp4Reader<R> {
                 BoxType::MoofBox => {
                     let moof = MoofBox::read_box(&mut reader, s)?;
                     moofs.push(moof);
+                    have_open_fragment = true;
                     moof_offsets.push(current);
                 }
                 BoxType::EmsgBox => {
                     let emsg = EmsgBox::read_box(&mut reader, s)?;
-                    emsgs.push(emsg);
+                    if emsg.scheme_id_uri == source_rtp::SCHEME {
+                        if !have_open_fragment {
+                            return Err(Error::InvalidData(
+                                "source RTP event is outside a fragment",
+                            ));
+                        }
+                        source_rtp::SourceTiming::attach(moofs.last_mut().unwrap(), &emsg)?;
+                    } else {
+                        emsgs.push(emsg);
+                    }
                 }
                 _ => {
                     // XXX warn!()
@@ -121,12 +133,15 @@ impl<R: Read + Seek> Mp4Reader<R> {
                 for traf in moof.trafs.iter() {
                     let track_id = traf.tfhd.track_id;
                     if let Some(track) = tracks.get_mut(&track_id) {
-                        let sample_count = traf.trun.as_ref().map(|t| t.sample_count).unwrap_or(0);
-                        let previous = track.traf_sample_counts.last().copied().unwrap_or(0);
-                        let cumulative = previous
-                            .checked_add(sample_count)
-                            .ok_or(Error::InvalidData("cumulative trun sample_count overflow"))?;
-                        track.traf_sample_counts.push(cumulative);
+                        let sample_count = traf.trun.as_ref().map_or(0, |t| t.sample_count);
+                        let last_count = track.traf_sample_counts.last().copied().unwrap_or(0);
+                        track.traf_sample_counts.push(
+                            last_count
+                                .checked_add(sample_count)
+                                .ok_or(Error::InvalidData(
+                                    "cumulative trun sample_count overflow",
+                                ))?,
+                        );
                         let base_offset = traf.tfhd.base_data_offset.unwrap_or({
                             if traf.tfhd.flags & TfhdBox::FLAG_DEFAULT_BASE_IS_MOOF != 0 {
                                 moof_offset

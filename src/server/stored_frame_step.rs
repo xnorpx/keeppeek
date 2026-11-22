@@ -305,6 +305,7 @@ fn target_window<'a>(
         .ok_or(Unavailable::Timing)?;
     if current.decoder != adjacent.decoder
         || old.session_id != new.session_id
+        || old.epoch_id != new.epoch_id
         || old.clock_rate != new.clock_rate
         || (fragment.recording_id == neighbor.recording_id && old.anchor != new.anchor)
         || (if forward {

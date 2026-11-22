@@ -325,4 +325,11 @@ actual shared source clock. Fragment fixtures exercise wrapping and backward
 timestamps, missing evidence, partial-file recovery and restoring an epoch after
 discarding unpublished samples. Historical recordings have no per-sample evidence.
 
+Each measured source track carries its own opaque epoch, which changes after packet
+loss even when the affected input frame is filtered. Bounded standard MP4 event
+messages carry the optional timing between the movie fragment and its media data.
+The recorder rotates on a keyframe when its metadata approaches the existing
+recovery limits. The recovery fixture writes 110 minutes of two-track data
+and inspects every resulting recording.
+
 The format and lookup contract are documented in the [MP4 crate guide](../crates/mp4/README.md#keeppeek-recording-source-clocks).

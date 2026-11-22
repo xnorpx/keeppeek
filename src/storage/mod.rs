@@ -13,6 +13,13 @@ pub mod identity;
 pub mod layout;
 pub mod long_term;
 pub mod media_objects;
+const RECORDING_METADATA_BYTES_MAX: u64 = 8 * 1024 * 1024;
+const RECORDING_BOX_COUNT_MAX: usize = 16_384;
+
+const fn recording_metadata_rotation_due(bytes: u64, boxes: u64) -> bool {
+    bytes >= RECORDING_METADATA_BYTES_MAX * 3 / 4 || boxes >= RECORDING_BOX_COUNT_MAX as u64 * 3 / 4
+}
+
 pub mod medium_term;
 pub mod metadata;
 pub mod nal;

@@ -44,6 +44,7 @@ fn recording(path: &Path, times: &[Option<i64>]) -> Vec<CatalogMediaFragment> {
         };
         let packet = stamp.map(|timestamp| mp4::SourceRtpPacket {
             session_id: [1; 16],
+            epoch_id: [2; 16],
             clock_rate: 1_000.try_into().unwrap(),
             timestamp,
             discontinuity: index == 0,

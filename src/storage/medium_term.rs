@@ -659,6 +659,18 @@ impl MediumTermWriter {
         &self.recording_id
     }
 
+    /// Leave room for the final GOP when approaching the bounded recovery scanner's limits.
+    pub(super) fn needs_rotation(&self, duration: Duration) -> bool {
+        if self.elapsed() >= duration {
+            return true;
+        }
+        let WriterState::Active(active) = &self.state else {
+            return false;
+        };
+        let (bytes, boxes) = active.writer.metadata_usage();
+        super::recording_metadata_rotation_due(bytes, boxes)
+    }
+
     pub fn elapsed(&self) -> Duration {
         self.started_at.elapsed()
     }
@@ -987,10 +999,10 @@ mod tests {
         let mut buffers = PreRecordBuffers::new(1024, 1024);
         buffers.configure("camera", "main", Duration::from_secs(2));
         let video_clock = mp4::SourceRtpPacket {
+            epoch_id: [5; 16],
             session_id: [9; 16],
             clock_rate: 90_000.try_into().unwrap(),
             timestamp: 4_294_967_313,
-            discontinuity: true,
         };
         let audio_clock = mp4::SourceRtpPacket {
             clock_rate: 16_000.try_into().unwrap(),
