@@ -326,7 +326,7 @@ impl RecordingCatalogHandle {
                 Err(error)
                     if error.is::<StaleCapacity>() && retries > 0 && Instant::now() < deadline =>
                 {
-                    retries -= 1
+                    retries -= 1;
                 }
                 result => return result,
             }
