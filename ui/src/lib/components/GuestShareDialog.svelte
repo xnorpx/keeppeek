@@ -7,7 +7,9 @@
 	import type { SharingControlClient } from '$lib/control-client-sharing';
 	import {
 		prepareRangeShare,
-		incompatibleRangeCodec,
+		alternateRangeStream,
+		FailedRangeExport,
+		waitForRangeExport,
 		replaceableRangeArtifact,
 		RangePreparationError,
 		type RangePreparation,
@@ -43,6 +45,8 @@
 	let error = $state<string | null>(null);
 	let replaceable = $state(false);
 	let preparedRange: Awaited<ReturnType<typeof prepareRangeShare>> | undefined;
+	let checkingJob = false;
+	let triedAlternate = false;
 	let url = $state<string | null>(null);
 	let copied = $state(false);
 	let requestId = $state<string | null>(null);
@@ -70,30 +74,59 @@
 		};
 	});
 
+	async function prepare(selection: RangePreparation, fresh: boolean, exclude?: 'main' | 'sub') {
+		const previous = preparedRange;
+		const target = previous
+			? {
+					sourceId: previous.guard.sourceId,
+					startMs: Number(previous.guard.startMs),
+					endMs: Number(previous.guard.endMs),
+					streamId: fresh ? previous.streamId : selection.target.streamId
+				}
+			: selection.target;
+		preparedRange = await prepareRangeShare(
+			{ client: selection.client, target },
+			lifetime.signal,
+			fresh,
+			exclude,
+			(pending) => {
+				preparedRange = pending;
+				checkingJob = true;
+			}
+		);
+		checkingJob = false;
+		return preparedRange;
+	}
+
 	async function previewRange(selection: RangePreparation, fresh: boolean) {
-		if (fresh || !preparedRange)
-			preparedRange = await prepareRangeShare(selection, lifetime.signal, fresh);
-		let triedAlternate = false;
+		let prepared = fresh || !preparedRange ? await prepare(selection, fresh) : preparedRange;
+		if (checkingJob) {
+			await waitForRangeExport(selection.client, prepared, lifetime.signal);
+			checkingJob = false;
+		}
 		for (;;) {
-			const prepared = preparedRange;
 			lifetime.signal.throwIfAborted();
 			try {
 				const evidence = await controller.previewExport(prepared.exportJobId, prepared.guard);
 				return { evidence, guard: prepared.guard };
 			} catch (cause) {
 				if (
-					cause instanceof Error &&
-					cause.message === incompatibleRangeCodec &&
+					alternateRangeStream(cause) &&
 					!selection.target.streamId &&
+					!fresh &&
 					!triedAlternate
 				) {
 					triedAlternate = true;
-					preparedRange = await prepareRangeShare(
-						selection,
-						lifetime.signal,
-						false,
-						prepared.streamId
-					);
+					try {
+						prepared = await prepare(selection, false, prepared.streamId);
+					} catch (alternate) {
+						if (alternate instanceof RangePreparationError && !checkingJob) {
+							replaceable = prepared.reused && replaceableRangeArtifact(cause);
+							throw cause;
+						}
+						if (!checkingJob) triedAlternate = false;
+						throw alternate;
+					}
 					continue;
 				}
 				replaceable = prepared.reused && replaceableRangeArtifact(cause);
@@ -145,8 +178,12 @@
 		} catch (cause) {
 			if (version !== generation) return;
 			stage = 'error';
+			if (cause instanceof FailedRangeExport) replaceable = true;
 			error = range
-				? cause instanceof RangePreparationError
+				? cause instanceof Error &&
+					(cause instanceof RangePreparationError ||
+						alternateRangeStream(cause) ||
+						replaceableRangeArtifact(cause))
 					? cause.message
 					: 'The recorder could not verify this recording for sharing. Check the connection, access, and selected footage, then reload the preview.'
 				: 'This export could not be previewed for sharing. Check access and file expiry, and use a new creator-owned export of at most 2 minutes and 512 MiB. Then reload.';

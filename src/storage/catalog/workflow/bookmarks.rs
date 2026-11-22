@@ -66,8 +66,10 @@ pub(super) async fn read(
     key: &EventKey,
 ) -> anyhow::Result<Option<Bookmark>> {
     let mut rows = connection.query(
-        "SELECT active, note, revision, created_by, created_at_ms, updated_by, updated_at_ms,
-             event_start_ms, event_kind FROM event_bookmarks WHERE source_id = ?1 AND event_id = ?2",
+        "SELECT b.active, b.note, b.revision, b.created_by, b.created_at_ms, b.updated_by, b.updated_at_ms,
+             COALESCE(e.start_time_ms, b.event_start_ms), b.event_kind FROM event_bookmarks AS b
+             LEFT JOIN recording_events AS e ON e.id = b.event_id AND e.camera_id = b.source_id
+             WHERE b.source_id = ?1 AND b.event_id = ?2",
         turso::params![key.source_id.clone(), key.event_id.clone()],
     ).await?;
     let Some(row) = rows.next().await? else {

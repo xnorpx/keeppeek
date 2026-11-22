@@ -28,6 +28,18 @@ function client() {
 			.fn()
 			.mockResolvedValue({ capabilityIds: ['keeppeek.guest-range.v1'] }),
 		queryStoredTimeline: vi.fn(),
+		getEventWorkflow: vi
+			.fn()
+			.mockResolvedValue({
+				states: [
+					{
+						sourceId: 'front',
+						eventId: 'saved',
+						eventPresent: true,
+						bookmark: { active: true, eventStartMs: 1000 }
+					}
+				]
+			}),
 		listExports: vi.fn().mockResolvedValue([]),
 		createExport: vi.fn().mockResolvedValue(ready),
 		getExport: vi.fn()
@@ -128,7 +140,7 @@ describe('recording range sharing', () => {
 		recorder.queryStoredTimeline.mockResolvedValue({
 			events: [
 				{ ...savedEvent, id: 'other' },
-				{ ...savedEvent, start_time_ms: 900 }
+				{ ...savedEvent, source_id: 'other' }
 			]
 		});
 		for (const selection of [
@@ -142,6 +154,36 @@ describe('recording range sharing', () => {
 		}
 		expect(recorder.listExports).not.toHaveBeenCalled();
 		expect(recorder.createExport).not.toHaveBeenCalled();
+	});
+	it('resolves both bookmark edges after the event moves beyond its saved timestamp', async () => {
+		const recorder = client();
+		recorder.getEventWorkflow.mockResolvedValue({
+			states: [
+				{
+					sourceId: 'front',
+					eventId: 'saved',
+					eventPresent: true,
+					bookmark: { active: true, eventStartMs: 4000 }
+				}
+			]
+		});
+		recorder.queryStoredTimeline.mockResolvedValue({
+			events: [{ ...savedEvent, start_time_ms: 4000, end_time_ms: 5400 }]
+		});
+		const prepared = await prepareRangeShare(
+			{ client: recorder, target: { ...target, endMs: null, bookmarkEventId: 'saved' } },
+			signal()
+		);
+		expect(recorder.getEventWorkflow).toHaveBeenCalledWith([
+			{ sourceId: 'front', eventId: 'saved' }
+		]);
+		expect(recorder.queryStoredTimeline).toHaveBeenCalledWith(
+			expect.objectContaining({ sourceIds: ['front'], startMs: 4000, endMs: 4001 })
+		);
+		expect(recorder.createExport).toHaveBeenCalledWith(
+			expect.objectContaining({ startMs: 4000, endMs: 5400 })
+		);
+		expect(prepared.guard).toEqual({ sourceId: 'front', startMs: 4000n, endMs: 5400n });
 	});
 	it('selects retained compatible footage for an event, preserving both interval edges', async () => {
 		const recorder = client();

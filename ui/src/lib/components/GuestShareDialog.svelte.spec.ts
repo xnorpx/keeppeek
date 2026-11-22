@@ -94,6 +94,7 @@ describe('creator guest share dialog', () => {
 				.mockResolvedValue({ capabilityIds: ['keeppeek.guest-range.v1'] }),
 			listExports: vi.fn().mockResolvedValue([]),
 			createExport: vi.fn().mockResolvedValue({ id: evidence.exportJobId, status: 'ready' }),
+			getEventWorkflow: vi.fn(),
 			getExport: vi.fn(),
 			queryStoredTimeline: vi.fn(),
 			searchEventMetadata: vi.fn()
@@ -120,7 +121,7 @@ describe('creator guest share dialog', () => {
 		);
 	});
 
-	it('tries retained substream footage after a generic MP4 main stream fails codec verification', async () => {
+	function alternateRecordings() {
 		const evidence = shareEvidenceFixture();
 		const target = {
 			sourceId: evidence.sourceId,
@@ -151,13 +152,21 @@ describe('creator guest share dialog', () => {
 				.fn()
 				.mockResolvedValue({ ranges: streams.map((streamId) => ({ ...target, streamId })) }),
 			listExports: vi.fn().mockResolvedValue([ready]),
+			getEventWorkflow: vi.fn(),
 			getExport: vi.fn(),
 			createExport: vi.fn().mockResolvedValue({ ...ready, id: 'sub-file', streamId: 'sub' })
 		};
+		return { target, ready, rangeClient };
+	}
+
+	it.each([
+		'the selected recording could not be verified as browser-compatible',
+		'the recording cannot be shared within the selected range',
+		'recorded audio correction prevents verification of the selected source interval'
+	])('tries the alternate retained stream after a confirmed rejection: %s', async (reason) => {
+		const { target, rangeClient } = alternateRecordings();
 		const share = controller();
-		share.previewExport.mockRejectedValueOnce(
-			new Error('the selected recording could not be verified as browser-compatible')
-		);
+		share.previewExport.mockRejectedValueOnce(new Error(reason));
 		await render(GuestShareDialog, {
 			props: { controller: share, range: { target, client: rangeClient }, onclose: vi.fn() }
 		});
@@ -172,8 +181,76 @@ describe('creator guest share dialog', () => {
 		});
 	});
 
+	it('replaces the selected legacy substream after the main stream fails verification', async () => {
+		const { target, ready, rangeClient } = alternateRecordings();
+		rangeClient.listExports.mockResolvedValue([
+			ready,
+			{ ...ready, id: 'sub-legacy', streamId: 'sub', expiresAtMs: ready.expiresAtMs - 1 }
+		]);
+		const share = controller();
+		share.previewExport
+			.mockRejectedValueOnce(
+				new Error('the selected recording could not be verified as browser-compatible')
+			)
+			.mockRejectedValueOnce(new Error(missingRangeProof));
+		await render(GuestShareDialog, {
+			props: { controller: share, range: { target, client: rangeClient }, onclose: vi.fn() }
+		});
+		await expect.element(page.getByRole('alert')).toMatchTextContent(missingRangeProof);
+		await page.getByRole('button', { name: 'Prepare a fresh export' }).click();
+		await expect.element(page.getByLabelText('Display name')).toBeVisible();
+		expect(rangeClient.createExport).toHaveBeenCalledExactlyOnceWith({
+			...target,
+			streamId: 'sub',
+			allowPartial: true,
+			guestRangePreparation: true
+		});
+		expect(share.previewExport.mock.calls.map(([id]) => id)).toEqual([
+			'main-file',
+			'sub-legacy',
+			'sub-file'
+		]);
+	});
+
+	it('reloads a rejected job by ID until the operator explicitly prepares another export', async () => {
+		const { target, ready, rangeClient } = alternateRecordings();
+		const failed = {
+			...ready,
+			id: 'size-limit',
+			status: 'failed',
+			error: 'Selected export exceeds 512 MiB.'
+		};
+		rangeClient.listExports.mockResolvedValue([]);
+		rangeClient.createExport.mockResolvedValueOnce(failed);
+		rangeClient.getExport.mockResolvedValue(failed);
+		const share = controller();
+		await render(GuestShareDialog, {
+			props: { controller: share, range: { target, client: rangeClient }, onclose: vi.fn() }
+		});
+		const alert = page.getByRole('alert');
+		await expect.element(alert).toMatchTextContent(failed.error);
+		await page.getByRole('button', { name: 'Reload preview' }).click();
+		await expect.element(alert).toMatchTextContent(failed.error);
+		expect(rangeClient.getExport).toHaveBeenCalledExactlyOnceWith('size-limit');
+		expect(rangeClient.createExport).toHaveBeenCalledOnce();
+		expect(share.previewExport).not.toHaveBeenCalled();
+		await page.getByRole('button', { name: 'Prepare a fresh export' }).click();
+		await expect.element(page.getByLabelText('Display name')).toBeVisible();
+		expect(rangeClient.createExport).toHaveBeenCalledTimes(2);
+	});
+
 	it.each([
 		{ failure: 'Connection lost', existing: true, replacement: false },
+		{
+			failure: 'the recording cannot be shared within the selected range',
+			existing: true,
+			replacement: false
+		},
+		{
+			failure: 'the selected recording could not be verified as browser-compatible',
+			existing: true,
+			replacement: false
+		},
 		{ failure: missingRangeProof, existing: false, replacement: false },
 		{ failure: missingRangeProof, existing: true, replacement: true },
 		{
@@ -207,6 +284,7 @@ describe('creator guest share dialog', () => {
 				queryStoredTimeline: vi.fn(),
 
 				listExports: vi.fn().mockResolvedValue(existing ? [old] : []),
+				getEventWorkflow: vi.fn(),
 				getExport: vi.fn(),
 				createExport: vi.fn().mockResolvedValue({ ...old, id: 'new-artifact' })
 			};
@@ -215,7 +293,9 @@ describe('creator guest share dialog', () => {
 			await render(GuestShareDialog, {
 				props: { controller: share, range: { target, client: rangeClient }, onclose: vi.fn() }
 			});
-			await expect.element(page.getByRole('alert')).toMatchTextContent('could not verify');
+			await expect
+				.element(page.getByRole('alert'))
+				.toMatchTextContent(failure === 'Connection lost' ? 'could not verify' : failure);
 			const fresh = page.getByRole('button', { name: 'Prepare a fresh export' });
 			const reload = page.getByRole('button', { name: 'Reload preview' });
 			await expect.element(reload).toBeVisible();

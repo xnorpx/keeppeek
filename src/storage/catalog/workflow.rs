@@ -697,6 +697,37 @@ mod tests {
     }
 
     #[test]
+    fn a_bookmark_resolves_the_current_event_start_after_a_revision() {
+        let root = test_dir("turso-bookmark-revised-event-start");
+        let catalog = crate::storage::RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        let key = EventKey {
+            source_id: "192.0.2.10".into(),
+            event_id: "moved".into(),
+        };
+        handle.insert_event(test_event("moved", 1000)).unwrap();
+        handle
+            .mutate_event_bookmark(
+                "alice",
+                false,
+                BookmarkChange {
+                    key: key.clone(),
+                    expected_revision: 0,
+                    active: true,
+                    note: String::new(),
+                },
+            )
+            .unwrap();
+        handle.insert_event(test_event("moved", 4000)).unwrap();
+        let point = handle.event_workflow("alice", vec![key.clone()]).unwrap();
+        assert_eq!(point[0].bookmark.as_ref().unwrap().event_start_ms, 4000);
+        assert_search_matches_point_read(&handle, &key);
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn event_workflow_rejects_oversized_identity_batches_before_database_work() {
         let root = test_dir("turso-workflow-bounds");
         let catalog = crate::storage::RecordingCatalog::open(&root.join("recordings.db")).unwrap();
