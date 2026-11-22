@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import { availableParallelism } from 'node:os';
 
 const backendPort = process.env.KEEPPEEK_E2E_BACKEND_PORT ?? '4317';
 const backendURL = `http://127.0.0.1:${backendPort}`;
@@ -14,6 +15,11 @@ export default defineConfig({
 	testMatch: '**/*.e2e.{ts,js}',
 	testIgnore: '**/external-analysis-conformance.e2e.ts',
 	fullyParallel: true,
+	// The Windows local gate shares a host with Vite, the recorder and the media fixtures.
+	workers:
+		process.platform === 'win32' && !isCI
+			? Math.max(1, Math.min(3, Math.floor(availableParallelism() / 2)))
+			: undefined,
 	forbidOnly: Boolean(process.env.CI),
 	retries: process.env.CI ? 2 : 0,
 	reporter: isCI
