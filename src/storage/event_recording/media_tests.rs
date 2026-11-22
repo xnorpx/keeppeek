@@ -266,9 +266,10 @@ fn verify_audio_coverage(path: &Path) -> f64 {
 }
 
 fn verify_catalog_seek(handle: &RecordingCatalogHandle, stream: &str, path: &Path) {
-    let now = time::OffsetDateTime::now_utc().unix_timestamp() * 1000;
+    // This private catalog contains one fixture recording. Decoding it can take longer than
+    // its synthetic age, so seek the indexed time instead of a window relative to wall time.
     let fragments = handle
-        .media_fragments_in_range(stream, now - 120_000, now)
+        .media_fragments_in_range(stream, 0, i64::MAX)
         .unwrap();
     assert!(
         fragments.len() >= 2,
@@ -279,6 +280,13 @@ fn verify_catalog_seek(handle: &RecordingCatalogHandle, stream: &str, path: &Pat
         fragments
             .iter()
             .all(|fragment| fragment.recording_id == first.recording_id)
+    );
+    let at_first = handle
+        .media_fragments_in_range(stream, first.start_ms, first.start_ms + 1)
+        .unwrap();
+    assert!(
+        at_first.contains(first),
+        "the indexed start must resolve this fragment"
     );
     let mut source = File::open(&first.path).unwrap();
     let mut clip = Vec::new();
