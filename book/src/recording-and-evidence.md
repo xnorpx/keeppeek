@@ -338,11 +338,19 @@ normal export path preserves source frames and timestamps without re-encoding.
 ### Compare RTSP source clocks
 
 When an RTSP camera is streaming, look for `camera.rtsp.source_timing` or
-`RTSP source timing` in the recorder's information-level logs. Match the camera,
-main or sub profile, and PLAY session UUID. The camera ID is its persisted profile UUID.
-Unregistered cameras have a process-local opaque ID that survives worker restarts. Each PLAY session starts a new set of
-readings. A report is emitted periodically and when the session ends, including a
-short-lived session. Each report includes a track only when that media type has a
+`RTSP source timing` in the recorder’s information-level logs. Match the Main or Sub
+profile and PLAY session. `session_uuid_0` through `session_uuid_3` are the UUID’s
+four unsigned 32-bit words, in network order. Convert each word to eight hexadecimal
+digits, join them, then apply the standard UUID grouping. Registered cameras expose
+the four corresponding `camera_uuid_*` fields for their persisted profile UUID.
+An unregistered camera reports `camera_registered=false`. Its session can be
+followed in the log, but correlation with a named camera requires registration.
+
+Failed PLAY attempts with accepted RTP and completed sessions emit final observations at
+info level. For a short live collection, enable `keeppeek::rtsp::timing=trace` in the
+recorder log filter. The first enabled periodic collection starts one five-minute window
+per recorder process. Reconnecting a camera or toggling the filter does not extend it.
+After the window expires, final observations continue at info level. Each report includes a track only when that media type has a
 single configured track and the recorder has accepted at least one RTP packet. Each track emits its own structured entry.
 
 - `first_rtp_ticks` and `latest_rtp_ticks` are the original 32-bit packet header

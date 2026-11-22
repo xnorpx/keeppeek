@@ -555,7 +555,7 @@ pub fn probe_rtsp_video(
 }
 
 pub struct RtspLoop {
-    pub(crate) timing_camera_id: String,
+    pub(crate) timing_camera_id: Option<uuid::Uuid>,
     pub camera_ip: IpAddr,
     pub camera_name: Option<String>,
     pub camera_brand: Option<String>,
@@ -1008,7 +1008,9 @@ impl RtspLoop {
         *last_report = Instant::now();
         let snapshot = stats.snapshot();
         let rates = snapshot.rates_since(previous);
-        self.report_source_timing(tracks, session, "periodic");
+        if super::timing::periodic_enabled() {
+            self.report_source_timing(tracks, session, "periodic");
+        }
         let mut streams = vec![video_report(
             self.stream,
             &snapshot,
@@ -1046,10 +1048,8 @@ impl RtspLoop {
         session: uuid::Uuid,
         phase: &'static str,
     ) {
-        if tracing::enabled!(tracing::Level::INFO)
-            && let Some(timing) = super::timing::SourceTiming::from_tracks(tracks)
-        {
-            timing.emit(&self.timing_camera_id, self.stream, session, phase);
+        if let Some(timing) = super::timing::SourceTiming::from_tracks(tracks) {
+            timing.emit(self.timing_camera_id, self.stream, session, phase);
         }
     }
 }
@@ -1478,21 +1478,52 @@ mod tests {
         assert!(second.data().len() > 2_000);
         let timing = super::super::timing::SourceTiming::from_tracks(client.streams()).unwrap();
         let hub = crate::logging::LogHub::default();
-        let subscriber = tracing_subscriber::layer::SubscriberExt::with(
-            tracing_subscriber::Registry::default(),
-            crate::logging::LogCaptureLayer::new(hub.clone()),
+        hub.set_sensitive_values(["4".to_owned()]);
+        let path =
+            std::env::temp_dir().join(format!("keeppeek-clock-{}.log", uuid::Uuid::new_v4()));
+        let id = uuid::Uuid::parse_str("00112233-4455-4677-8899-aabbccddeeff").unwrap();
+        crate::logging::capture_timing_for_test(
+            hub.clone(),
+            std::fs::File::create(&path).unwrap(),
+            || {
+                timing.emit(
+                    Some(id),
+                    crate::keeppeek::StreamKind::Main,
+                    id,
+                    "session_end",
+                );
+                timing.emit(None, crate::keeppeek::StreamKind::Main, id, "session_end");
+            },
         );
-        tracing::subscriber::with_default(subscriber, || {
-            timing.emit(
-                "test-camera",
-                crate::keeppeek::StreamKind::Main,
-                uuid::Uuid::new_v4(),
-                "session_end",
-            )
-        });
         let entries = hub.snapshot(None, 10).entries;
-        assert_eq!(entries.len(), 1);
-        let evidence = &entries[0].fields;
+        let formatted: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(formatted.len(), 2);
+        for entry in &entries {
+            assert!(
+                formatted
+                    .iter()
+                    .any(|event| event["fields"] == serde_json::to_value(&entry.fields).unwrap())
+            );
+            assert_eq!(entry.fields["session_uuid_1"], 0x4455_4677_u32);
+        }
+        let registered = &entries
+            .iter()
+            .find(|entry| entry.fields["camera_registered"] == true)
+            .unwrap()
+            .fields;
+        assert_eq!(registered["camera_uuid_1"], 0x4455_4677_u32);
+        let evidence = &entries
+            .iter()
+            .find(|entry| entry.fields["camera_registered"] == false)
+            .unwrap()
+            .fields;
+        assert!(!evidence.contains_key("camera_uuid_0"));
         assert_eq!(evidence["kind"], "video");
         assert_eq!(evidence["clock_rate_hz"], 90_000);
         assert_eq!(

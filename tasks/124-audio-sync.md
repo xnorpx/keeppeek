@@ -303,3 +303,12 @@ register `mod timing_benchmark;` inside the RTP test module.
 ```sh
 cargo +1.100.0 test --locked --release -p retina --lib measure_accepted_rtp_packets -- --ignored --nocapture
 ```
+
+### Source timing collection and attribution
+
+Final source-clock samples use the persisted camera profile UUID and the unique PLAY
+attempt UUID, recorded as numeric 32-bit words. An unregistered camera allows
+session-level comparison only. A targeted `keeppeek::rtsp::timing=trace` filter
+opts into a single five-minute recorder-wide periodic collection. Final reports
+remain enabled at info after the window. The two-sink test uses the numeric
+secret `4` and checks that both identities retain their original values.

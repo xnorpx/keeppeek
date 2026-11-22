@@ -1,8 +1,7 @@
 use retina::client::{RtpClockSnapshot, Stream};
 use std::{
-    hash::{BuildHasher, RandomState},
-    net::IpAddr,
     sync::OnceLock,
+    time::{Duration, Instant},
 };
 use uuid::Uuid;
 
@@ -35,19 +34,26 @@ struct SenderReport {
     ntp_fraction: u32,
 }
 
-/// Prefer the persisted profile identity. Unregistered cameras get an opaque address tag
-/// that stays stable across worker restarts within this recorder process.
-pub fn camera_tag(profile_identity: &str, ip: IpAddr) -> String {
-    static FALLBACK_KEY: OnceLock<RandomState> = OnceLock::new();
-    Uuid::parse_str(profile_identity).map_or_else(
-        |_| {
-            format!(
-                "local-{:016x}",
-                FALLBACK_KEY.get_or_init(RandomState::new).hash_one(ip)
-            )
-        },
-        |identity| identity.to_string(),
-    )
+const COLLECTION_WINDOW: Duration = Duration::from_secs(300);
+
+fn within_collection_window(start: &OnceLock<Instant>, now: Instant) -> bool {
+    now.saturating_duration_since(*start.get_or_init(|| now)) < COLLECTION_WINDOW
+}
+
+pub(super) fn periodic_enabled() -> bool {
+    static START: OnceLock<Instant> = OnceLock::new();
+    tracing::enabled!(tracing::Level::TRACE) && within_collection_window(&START, Instant::now())
+}
+
+// Four exact u32 words survive both JSON and browser number representations.
+const fn uuid_words(uuid: Uuid) -> [u32; 4] {
+    let (high, low) = uuid.as_u64_pair();
+    [
+        (high >> 32) as u32,
+        high as u32,
+        (low >> 32) as u32,
+        low as u32,
+    ]
 }
 
 impl SourceTiming {
@@ -67,11 +73,13 @@ impl SourceTiming {
 
     pub(super) fn emit(
         &self,
-        camera_id: &str,
+        camera_id: Option<Uuid>,
         stream: crate::keeppeek::StreamKind,
         session: Uuid,
         phase: &'static str,
     ) {
+        let camera = camera_id.map(uuid_words);
+        let session = uuid_words(session);
         for (kind, track) in [
             ("video", self.video.as_ref()),
             ("audio", self.audio.as_ref()),
@@ -82,7 +90,11 @@ impl SourceTiming {
             let report = track.sender_report.as_ref();
             tracing::info!(
                 name: "camera.rtsp.source_timing",
-                camera_id, stream = %stream, session = %session, phase, kind,
+                camera_registered = camera.is_some(),
+                camera_uuid_0 = camera.map(|v| v[0]), camera_uuid_1 = camera.map(|v| v[1]),
+                camera_uuid_2 = camera.map(|v| v[2]), camera_uuid_3 = camera.map(|v| v[3]),
+                session_uuid_0 = session[0], session_uuid_1 = session[1],
+                session_uuid_2 = session[2], session_uuid_3 = session[3], stream = %stream, phase, kind,
                 track_index = track.track_index as u64,
                 clock_rate_hz = track.clock_rate_hz,
                 play_origin_ticks = track.play_origin_ticks,
@@ -173,15 +185,39 @@ mod tests {
     }
 
     #[test]
-    fn profile_ids_and_process_local_fallbacks_distinguish_unnamed_cameras() {
-        let ip = "192.0.2.1".parse().unwrap();
-        let other = "192.0.2.2".parse().unwrap();
-        let id = Uuid::new_v4().to_string();
-        assert_eq!(camera_tag(&id, ip), id);
-        let fallback = camera_tag("unregistered", ip);
-        assert_eq!(fallback, camera_tag("unregistered", ip));
-        assert_ne!(fallback, camera_tag("unregistered", other));
-        assert!(!fallback.contains("192.0.2."));
+    fn recorder_default_filter_keeps_periodic_collection_off() {
+        use tracing_subscriber::{EnvFilter, prelude::*};
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(EnvFilter::new(crate::logging::DEFAULT_LOG_FILTER));
+        tracing::subscriber::with_default(subscriber, || assert!(!periodic_enabled()));
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(EnvFilter::new("warn,keeppeek::rtsp::timing=trace"));
+        tracing::subscriber::with_default(subscriber, || assert!(periodic_enabled()));
+    }
+
+    #[test]
+    fn periodic_collection_stops_at_its_single_recorder_window() {
+        let start = OnceLock::new();
+        let now = Instant::now();
+        assert!(within_collection_window(&start, now));
+        assert!(within_collection_window(
+            &start,
+            now + COLLECTION_WINDOW - Duration::from_millis(1)
+        ));
+        assert!(!within_collection_window(&start, now + COLLECTION_WINDOW));
+        assert!(!within_collection_window(
+            &start,
+            now + COLLECTION_WINDOW * 2
+        ));
+    }
+
+    #[test]
+    fn uuid_identity_uses_four_exact_json_numbers() {
+        let id = Uuid::parse_str("00112233-4455-4677-8899-aabbccddeeff").unwrap();
+        assert_eq!(
+            uuid_words(id),
+            [0x0011_2233, 0x4455_4677, 0x8899_aabb, 0xccdd_eeff]
+        );
     }
 
     #[test]

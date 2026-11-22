@@ -1,5 +1,5 @@
 mod blocking;
-pub(crate) mod timing;
+mod timing;
 
 pub(crate) use blocking::RtspLoop;
 pub use blocking::RtspTransport;

@@ -508,6 +508,20 @@ pub fn read_log_filter_file_and_reload(
 }
 
 #[cfg(test)]
+pub(crate) fn capture_timing_for_test(hub: LogHub, file: File, action: impl FnOnce()) {
+    let writer = RedactingMakeWriter::file(hub, file);
+    let subscriber = tracing_subscriber::Registry::default()
+        .with(EnvFilter::new("warn,keeppeek::rtsp::timing=info"))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(writer.clone())
+                .with_filter(filter_fn(|metadata| !source_timing_event(metadata))),
+        )
+        .with(LogCaptureLayer::with_formatted_timing(writer));
+    tracing::subscriber::with_default(subscriber, action);
+}
+
+#[cfg(test)]
 mod tests {
     use std::{
         fs,
