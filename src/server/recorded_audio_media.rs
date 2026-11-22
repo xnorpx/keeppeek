@@ -71,6 +71,7 @@ pub(super) fn batch(
     timing: &proto::RecordedAudioTiming,
 ) -> Result<StoredMediaBatch, ControlCommandError> {
     let _permit = Permit::acquire(&state.recorded_audio_workers)?;
+    let media_permit = derived_media_permit(state, request.source_id, 403)?;
     let deadline = Instant::now() + Duration::from_secs(30);
     check_access(state, request.source_id, deadline)?;
     validate_span(selected.start_ms, delivery_end_ms)?;
@@ -105,8 +106,7 @@ pub(super) fn batch(
     let sources = source_union(&video, &audio)?;
     preflight_bytes(&sources)?;
     let cancelled = || {
-        state.maintenance_active.load(Ordering::Acquire)
-            || privacy_active_for_media(state, request.source_id).unwrap_or(true)
+        state.maintenance_active.load(Ordering::Acquire) || media_permit.deliver(|| ()).is_none()
     };
     let work = recorded::Work {
         deadline,
@@ -121,7 +121,11 @@ pub(super) fn batch(
     };
     let loaded = correction.load(sources)?;
     let context = audio.iter().map(fragment_key).collect::<Vec<_>>();
-    correction.encode(&video, &context, &loaded, covered_start, covered_end)
+    let mut batch = correction.encode(&video, &context, &loaded, covered_start, covered_end)?;
+    for message in &mut batch.messages {
+        message.permit = Some(media_permit.clone());
+    }
+    Ok(batch)
 }
 
 fn validate_span(start: i64, end: i64) -> Result<(), ControlCommandError> {

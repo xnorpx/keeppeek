@@ -4197,6 +4197,28 @@ fn privacy_active_for_media(
         })
 }
 
+fn derived_media_permit(
+    state: &ServerState,
+    source_id: &str,
+    denied_status: u16,
+) -> Result<crate::privacy::MediaPermit, ControlCommandError> {
+    if let Some(permit) = state.privacy.media_permit(source_id.into()) {
+        return Ok(permit);
+    }
+    if privacy_active_for_media(state, source_id)? {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            denied_status,
+            "camera privacy is active",
+        ));
+    }
+    Err(ControlCommandError::new(
+        proto::ErrorCode::Unavailable,
+        503,
+        "camera privacy permission is unavailable",
+    ))
+}
+
 fn cancel_privacy_exports(state: &ServerState, source_id: &str) {
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
     let mut cleanup = Vec::new();

@@ -1,5 +1,12 @@
 use super::*;
 
+struct VerifiedDownload {
+    record: ExportJobRecord,
+    payload: Vec<u8>,
+    from_history: bool,
+    permit: crate::privacy::MediaPermit,
+}
+
 pub(in crate::server) fn download(
     state: &ServerState,
     requester: &str,
@@ -13,8 +20,19 @@ pub(in crate::server) fn download(
             "export downloads require reliable-data",
         ));
     }
-    let (record, payload, from_history) = resolve(state, requester, &request.job_id)?;
-    privacy(state, &record.job.source_id)?;
+    let VerifiedDownload {
+        record,
+        payload,
+        from_history,
+        permit,
+    } = resolve(state, requester, &request.job_id)?;
+    if permit.deliver(|| ()).is_none() {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "camera privacy changed during export download",
+        ));
+    }
     let chunk_count =
         u32::try_from(payload.len().div_ceil(DATA_MESSAGE_CHUNK_BYTES)).map_err(unavailable)?;
     let messages = payload
@@ -23,6 +41,7 @@ pub(in crate::server) fn download(
         .map(|(index, chunk)| OutboundDataMessage {
             permit: None,
             target,
+            permit: Some(permit.clone()),
             group: format!("export:{}", request.job_id),
             message: proto::Message {
                 message: Some(proto::message::Message::Export(proto::ExportMessage {
@@ -55,16 +74,21 @@ fn resolve(
     state: &ServerState,
     requester: &str,
     job_id: &str,
-) -> Result<(ExportJobRecord, Vec<u8>, bool), ControlCommandError> {
+) -> Result<VerifiedDownload, ControlCommandError> {
     let local_error = match snapshot(state, requester, job_id) {
         Ok(record) => {
-            privacy(state, &record.job.source_id)?;
+            let permit = derived_media_permit(state, &record.job.source_id, 409)?;
             match payload(state, &record) {
                 Ok(bytes)
                     if record.job.sha256.as_deref()
                         == Some(&encode_lower_hex(Sha256::digest(&bytes))) =>
                 {
-                    return Ok((record, bytes, true));
+                    return Ok(VerifiedDownload {
+                        record,
+                        payload: bytes,
+                        from_history: true,
+                        permit,
+                    });
                 }
                 Ok(_) => {
                     checksum_failure(state, &record);
@@ -78,12 +102,17 @@ fn resolve(
     let Some((record, archive)) = super::archive::snapshot(state, requester, job_id)? else {
         return Err(local_error);
     };
-    privacy(state, &record.job.source_id)?;
+    let permit = derived_media_permit(state, &record.job.source_id, 409)?;
     let bytes = super::archive::payload(state, &archive)?;
     if record.job.sha256.as_deref() != Some(&encode_lower_hex(Sha256::digest(&bytes))) {
         return Err(unavailable("archived export checksum verification failed"));
     }
-    Ok((record, bytes, false))
+    Ok(VerifiedDownload {
+        record,
+        payload: bytes,
+        from_history: false,
+        permit,
+    })
 }
 
 fn snapshot(
@@ -153,17 +182,6 @@ fn read(file: &mut impl std::io::Read, length: u64) -> Result<Vec<u8>, ControlCo
     let mut bytes = vec![0; usize::try_from(length).map_err(unavailable)?];
     file.read_exact(&mut bytes).map_err(unavailable)?;
     Ok(bytes)
-}
-
-fn privacy(state: &ServerState, source: &str) -> Result<(), ControlCommandError> {
-    if privacy_active_for_media(state, source)? {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            409,
-            "camera privacy is active",
-        ));
-    }
-    Ok(())
 }
 
 fn unavailable(error: impl std::fmt::Display) -> ControlCommandError {
