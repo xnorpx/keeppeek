@@ -105,6 +105,7 @@ test('Export stops reverse playback and returns to its frozen Timeline position'
 	const frozen = await page
 		.getByRole('button', { name: 'Export', exact: true })
 		.evaluate((button) => {
+			if (!(button instanceof HTMLButtonElement)) throw new Error('Expected Export mode button');
 			const at = Number(
 				document.querySelector<HTMLElement>('[data-keep-player]')!.dataset.recordingPlayheadMs
 			);
