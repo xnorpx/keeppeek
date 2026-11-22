@@ -172,10 +172,7 @@ impl BackupHttpClient {
 fn save_export(response: Response<Body>, output: &mut File) -> Result<u64, BackupClientError> {
     let maximum_bytes = super::DEFAULT_INSPECTION_LIMITS.maximum_archive_bytes;
     let copied = std::io::copy(
-        &mut response
-            .into_body()
-            .into_reader()
-            .take(maximum_bytes + 1),
+        &mut response.into_body().into_reader().take(maximum_bytes + 1),
         output,
     )
     .map_err(|_| BackupClientError::Transport)?;
