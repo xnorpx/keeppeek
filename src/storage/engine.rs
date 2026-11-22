@@ -1424,13 +1424,26 @@ impl WriterWorker {
         };
 
         let mut progress = WriteProgress::default();
+        let mut first_error = None;
         for frame in frames {
-            let written = self.write_frame_to_pipeline(camera_id, frame, false)?;
+            let written = match self.write_frame_to_pipeline(camera_id, frame, false) {
+                Ok(written) => written,
+                Err(error) => {
+                    // These frames have already left the buffer. Later frames can still
+                    // reach the open writer even when relocating its predecessor failed.
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
             progress.wrote |= written.wrote;
             progress.recorded_duration = progress
                 .recorded_duration
                 .saturating_add(written.recorded_duration);
             progress.keyframe_gap |= written.keyframe_gap;
+        }
+        if let Some(error) = first_error {
+            progress.report(&self.health, camera_id);
+            return Err(error);
         }
         Ok(progress)
     }

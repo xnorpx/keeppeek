@@ -30,6 +30,65 @@ fn fixture_sample(template: &RecordingFrame, start: Instant, offset: Duration) -
 }
 
 #[test]
+fn failed_relocation_processes_the_remaining_drained_frames_and_reports_the_error()
+-> anyhow::Result<()> {
+    let (root, catalog, mut config) = named_fixture()?;
+    config.volume_runtime = None;
+    config.medium_term_duration = Duration::from_secs(2);
+    config.short_term_duration = Duration::from_secs(60);
+    config.flush_interval = Duration::from_secs(60);
+    let destination = config.long_term_path.clone();
+    std::fs::write(&destination, b"unrelated occupant")?;
+    let camera = RecordingStreamIdentity::new("relocation", "main", "relocation");
+    let source = video_fixture(VideoCodec::H264, "640x360");
+    let start = Instant::now() - Duration::from_secs(8);
+    let mut worker = WriterWorker::new(
+        config,
+        RecordingDemand::new(Duration::ZERO),
+        Some(catalog.handle()),
+    );
+    for index in 0..8 {
+        worker.ingest(
+            camera.clone(),
+            fixture_sample(
+                &source[(index % 2) as usize],
+                start,
+                Duration::from_millis(index * 500),
+            ),
+        );
+    }
+    worker.flush_all(true);
+    let snapshot = worker.health.snapshot();
+    let stream = snapshot
+        .streams
+        .iter()
+        .find(|stream| stream.stream_id == camera.storage_key)
+        .context("missing recording health")?;
+    ensure!(
+        stream.last_error.is_some() && stream.recorded_duration_ms > 0,
+        "relocation failure and surviving writer progress must both be visible"
+    );
+    assert_eq!(std::fs::read(&destination)?, b"unrelated occupant");
+    std::fs::remove_file(&destination)?;
+    std::fs::create_dir(&destination)?;
+    worker.finalize_all();
+    let files: BTreeSet<_> = catalog
+        .handle()
+        .media_fragments_in_range(&camera.storage_key, 0, i64::MAX)?
+        .into_iter()
+        .map(|fragment| fragment.path)
+        .collect();
+    assert_eq!(files.len(), 2);
+    for file in files {
+        assert_eq!(samples(Path::new(&file)), 4);
+    }
+    drop(worker);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn scheduled_flush_preserves_predictive_frames_with_or_without_prior_viewer_demand()
 -> anyhow::Result<()> {
     let source = video_fixture(VideoCodec::H264, "640x360");
@@ -322,7 +381,9 @@ fn verified_archive_under_paced_recording_and_review() -> anyhow::Result<()> {
     );
     for run in 0..3 {
         for enabled in [run % 2 == 1, run % 2 == 0] {
-            qualify(&frames, enabled, run + 1)?;
+            qualify(&frames, enabled, run + 1).with_context(|| {
+                format!("paired repetition {}, archive enabled={enabled}", run + 1)
+            })?;
         }
     }
     Ok(())
