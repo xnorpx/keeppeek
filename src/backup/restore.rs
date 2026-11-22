@@ -2309,24 +2309,22 @@ mod tests {
             "[storage.archive]\nenabled=true\ntarget_id='{{secret:FIXTURE_SECRET}}'\nroot={root}\n"
         );
         for preserve_binding in [false, true] {
+            let source = if preserve_binding {
+                config.replace("{secret:FIXTURE_SECRET}", "target-value")
+            } else {
+                config.clone()
+            };
             let (directory, bundle, path, plan) =
-                activatable_fixture_with_target("archive-deletion-stage", &config);
+                activatable_fixture_with_configs("archive-deletion-stage", &source, &config);
             let active = config::load_config(&path).unwrap().storage.archive.unwrap();
             assert_eq!(active.target_id, "target-value");
             archive_deletion::check_staged_archive_deletion(&path, &active).unwrap();
-            let mut candidate = config::load_configuration_table(&path).unwrap();
-            if preserve_binding {
-                candidate["storage"]["archive"]["target_id"] = active.target_id.clone().into();
-            }
-            stage_restore_with_configuration(
-                StageRestoreOptions {
-                    bundle_path: &bundle,
-                    target_config_path: &path,
-                    plan: &plan,
-                    now_unix_ms: plan.created_at_unix_ms + 1,
-                },
-                &candidate,
-            )
+            stage_restore(StageRestoreOptions {
+                bundle_path: &bundle,
+                target_config_path: &path,
+                plan: &plan,
+                now_unix_ms: plan.created_at_unix_ms + 1,
+            })
             .unwrap();
             assert_eq!(
                 archive_deletion::check_staged_archive_deletion(&path, &active).is_ok(),
@@ -3865,11 +3863,16 @@ password = "{{secret:MQTT_PASSWORD}}"
         std::path::PathBuf,
         backup_proto::RestorePlan,
     ) {
-        activatable_fixture_with_target(name, "[storage]\nlong_term_max_gb = 20\n")
+        activatable_fixture_with_configs(
+            name,
+            "[storage]\nlong_term_max_gb = 10\n",
+            "[storage]\nlong_term_max_gb = 20\n",
+        )
     }
 
-    fn activatable_fixture_with_target(
+    fn activatable_fixture_with_configs(
         name: &str,
+        source_settings: &str,
         target_settings: &str,
     ) -> (
         std::path::PathBuf,
@@ -3884,7 +3887,7 @@ password = "{{secret:MQTT_PASSWORD}}"
         std::fs::create_dir_all(&target).unwrap();
         let source_config = source.join("config.toml");
         let target_config = target.join("config.toml");
-        std::fs::write(&source_config, "[storage]\nlong_term_max_gb = 10\n").unwrap();
+        std::fs::write(&source_config, source_settings).unwrap();
         std::fs::write(&target_config, target_settings).unwrap();
         std::fs::write(
             source.join("secrets.toml"),
