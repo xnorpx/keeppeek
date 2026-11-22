@@ -25,6 +25,31 @@ pub struct AudioFrame {
     pub(crate) data: Bytes,
 }
 
+impl AudioFrame {
+    /// Previous unit duration sets the next timestamp when a gateway has no usable source clock.
+    pub(super) fn encoded_duration(&self) -> Option<Duration> {
+        if let Some(duration) = self.duration.filter(|value| !value.is_zero()) {
+            return Some(duration);
+        }
+        let sample_width = match self.codec {
+            AudioCodec::G711Alaw | AudioCodec::G711Ulaw => 1,
+            AudioCodec::PcmS16Le => 2,
+            AudioCodec::Aac => return None,
+        };
+        let stride = sample_width * usize::from(self.channel_count);
+        if stride == 0
+            || self.sample_rate_hz == 0
+            || self.data.is_empty()
+            || !self.data.len().is_multiple_of(stride)
+        {
+            return None;
+        }
+        let samples = self.data.len() / stride;
+        let nanos = (samples as u128 * 1_000_000_000).div_ceil(u128::from(self.sample_rate_hz));
+        Some(Duration::from_nanos(u64::try_from(nanos).ok()?))
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct AudioQueue {
     frames: VecDeque<AudioFrame>,

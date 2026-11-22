@@ -473,6 +473,7 @@ pub(super) struct Packet {
 #[derive(Default)]
 pub(super) struct AudioClock {
     previous: Option<(Instant, Option<Duration>, Duration)>,
+    previous_unit_duration: Option<Duration>,
 }
 
 impl AudioClock {
@@ -481,6 +482,7 @@ impl AudioClock {
         received: Instant,
         source: Option<Duration>,
         rate: u32,
+        unit_duration: Option<Duration>,
     ) -> Duration {
         let mapped = self.previous.map_or_else(
             || source.unwrap_or_default(),
@@ -490,13 +492,23 @@ impl AudioClock {
                     .zip(source)
                     .and_then(|(old, next)| next.checked_sub(old))
                     .filter(|step| !step.is_zero() && step.abs_diff(wall_step) <= MAX_AGE)
-                    .unwrap_or(wall_step);
+                    .unwrap_or_else(|| {
+                        if wall_step > MAX_AGE {
+                            wall_step
+                        } else {
+                            self.previous_unit_duration.unwrap_or(wall_step)
+                        }
+                    });
                 // At least one sample tick when a gateway repeats both timestamps.
-                old_mapped.saturating_add(step.max(Duration::from_nanos(
-                    1_000_000_000_u64.div_ceil(u64::from(rate.max(1))),
-                )))
+                old_mapped.saturating_add(
+                    step.max(self.previous_unit_duration.unwrap_or_default())
+                        .max(Duration::from_nanos(
+                            1_000_000_000_u64.div_ceil(u64::from(rate.max(1))),
+                        )),
+                )
             },
         );
+        self.previous_unit_duration = unit_duration;
         self.previous = Some((received, source, mapped));
         mapped
     }
@@ -574,7 +586,7 @@ mod tests {
         ] {
             let t = Instant::now();
             let mut first = Queue::new(camera.clone());
-            let mut second = Queue::new(camera.clone());
+            let mut second = Queue::new(camera);
             first.set_preview(Some(offset));
             second.set_preview(Some(offset));
             first.admit(1, packet(StreamKind::Main, format, t, bytes), t);
@@ -779,10 +791,40 @@ mod tests {
     }
 
     #[test]
+    fn burst_audio_without_a_usable_clock_advances_by_the_previous_encoded_block() {
+        use crate::webrtc::audio::AudioFrame;
+        let t = Instant::now();
+        let mut clock = AudioClock::default();
+        for (bytes, source, expected) in [
+            (160, None, 0),
+            (80, None, 160),
+            (240, Some(Duration::ZERO), 240),
+            (160, Some(Duration::ZERO), 480),
+        ] {
+            let frame = AudioFrame {
+                codec: WebRtcAudioCodec::G711Ulaw,
+                sample_rate_hz: 8000,
+                channel_count: 1,
+                timestamp: source,
+                duration: None,
+                received_at: t,
+                data: bytes::Bytes::from(vec![0; bytes]),
+            };
+            let mapped = clock.map(t, source, 8000, frame.encoded_duration());
+            assert_eq!(super::super::duration_to_ticks(mapped, 8000), expected);
+        }
+        let mut aac = AudioClock::default();
+        for i in 0..3 {
+            let time = aac.map(t, None, 48_000, Some(Duration::from_millis(20)));
+            assert_eq!(time, Duration::from_millis(i * 20));
+        }
+    }
+
+    #[test]
     fn source_reset_and_missing_audio_timestamps_keep_the_listener_clock_advancing() {
         let t = Instant::now();
         let mut clock = AudioClock::default();
-        let mut last = clock.map(t, Some(Duration::from_secs(90)), 8000);
+        let mut last = clock.map(t, Some(Duration::from_secs(90)), 8000, None);
         for (ms, pts) in [
             (10, Some(Duration::ZERO)),
             (10, Some(Duration::ZERO)),
@@ -795,7 +837,7 @@ mod tests {
                 Some(Duration::from_secs(9_000) + Duration::from_millis(10)),
             ),
         ] {
-            let next = clock.map(t + Duration::from_millis(ms), pts, 8000);
+            let next = clock.map(t + Duration::from_millis(ms), pts, 8000, None);
             assert!(next > last);
             assert!(next - last <= Duration::from_millis(30));
             last = next;

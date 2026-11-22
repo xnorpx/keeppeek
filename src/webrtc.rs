@@ -3815,7 +3815,12 @@ fn drive_audio_track_runtime(
         let delay = due.saturating_duration_since(frame.value.received_at);
         frame.value.received_at = due;
         let presented = frame.value.timestamp.map(|time| time.saturating_add(delay));
-        frame.value.timestamp = Some(track.clock.map(due, presented, frame.value.sample_rate_hz));
+        frame.value.timestamp = Some(track.clock.map(
+            due,
+            presented,
+            frame.value.sample_rate_hz,
+            frame.value.encoded_duration(),
+        ));
         if let Some((wrote, messages)) = frame
             .deliver(|audio| write_audio_track_frame(rtc, &mut track.delivery, audio))
             .transpose()?
@@ -7851,7 +7856,7 @@ mod tests {
                 assert_eq!(media.audio_tracks.len(), 1);
                 assert!(media.outbound.is_empty());
                 request.live_audio_preview_offset_ms = None;
-                let normal = media.subscribe(&session, &request, plan.clone()).unwrap();
+                let normal = media.subscribe(&session, &request, plan).unwrap();
                 let Some(proto::subscription_result::Delivery::MediaData(binding)) =
                     normal.delivery
                 else {
