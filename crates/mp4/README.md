@@ -176,21 +176,28 @@ MIT
 
 ## KeepPeek recording source clocks
 
-New KeepPeek RTSP recordings may carry an optional `uuid` child of a `traf`.
-The user type is `b66e6019-3cb1-499b-aecc-af96aac89894`. Older MP4 readers
-can skip the box. MP4 sample timing, codec payloads and standard fragment addressing
-are independent of this metadata. A track fragment with no measured source
-timestamps uses the original box layout. Recorder retention, deletion and copies
-of the original file apply to its timing metadata.
+New KeepPeek RTSP recordings may carry standard version-1 `emsg` boxes between
+a fragment's `moof` and `mdat`. The scheme URI is `urn:keeppeek:original-rtp`,
+the event ID is the enclosing sequence number, and the value is the decimal track
+ID. The timescale and presentation time locate the start of that track fragment.
+The event message contains a `uuid` box with user type
+`b66e6019-3cb1-499b-aecc-af96aac89894`. At most 512 measured samples occur in
+one event, keeping even a fragment with a different source epoch per unit inside
+the recorder's 64 KiB event-size bound. The MP4 reader also understands multiple
+ordered events for one track. Legacy normalization can reserialize the unchanged
+standard `moof` and copy the original event and media byte ranges together.
+Recorder retention, deletion and byte-for-byte archives include the timing data.
 
-The UUID is followed by a big-endian `u32` version (currently 1), then one or
+The user type is followed by a big-endian `u32` version (currently 1), then one or
 more runs. All integers use big-endian order. A run starts with the zero-based
 `u32` index of its first sample in the enclosing `trun` and a nonzero `u32`
 sample count. Next come the 16-byte opaque RTSP PLAY UUID, the nonzero `u32`
 source clock rate, the first run sample's extended `i64` source RTP timestamp,
 and `u32` flags (bit zero marks a discontinuity, all others are zero). Two
-`i64` values identify the epoch anchor: its original RTP timestamp and its
-presentation time in this MP4 track's timescale. The remaining `count - 1`
+`i64` values identify the epoch anchor, its original RTP timestamp and its
+presentation time in this MP4 track's timescale. A 16-byte opaque RTP epoch identifies
+the negotiated source track and changes on loss, including when the first affected
+access unit gets filtered or discarded. The remaining `count - 1`
 signed `i32` entries are differences from the first sample's original RTP
 timestamp. The writer starts another run for a gap, discontinuity, session or
 rate change, or an unrepresentable delta. Unlisted samples have no measured RTP

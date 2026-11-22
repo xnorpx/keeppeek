@@ -85,7 +85,7 @@ pub mod mp4a;
 pub mod mvex;
 pub mod mvhd;
 pub mod smhd;
-pub(crate) mod source_rtp;
+pub mod source_rtp;
 pub mod stbl;
 pub mod stco;
 pub mod stsc;

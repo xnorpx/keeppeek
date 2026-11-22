@@ -3,9 +3,11 @@ use std::{
     time::Instant,
 };
 
-const METADATA_BYTES_MAX: u64 = 8 * 1024 * 1024;
+use crate::storage::{
+    RECORDING_BOX_COUNT_MAX as BOX_COUNT_MAX, RECORDING_METADATA_BYTES_MAX as METADATA_BYTES_MAX,
+};
 const BOX_BYTES_MAX: u64 = 1024 * 1024;
-const BOX_COUNT_MAX: usize = 16_384;
+
 const FRAGMENT_COUNT_MAX: usize = 4_096;
 
 pub(in crate::storage) fn inspect_initialization(
@@ -521,7 +523,7 @@ mod tests {
     use super::*;
     use std::{io::Cursor, time::Duration};
 
-    fn recording() -> Vec<u8> {
+    fn config_and_video() -> (mp4::Mp4Config, mp4::TrackConfig) {
         let config = mp4::Mp4Config {
             major_brand: "iso6".parse().unwrap(),
             minor_version: 1,
@@ -539,6 +541,11 @@ mod tests {
                 pic_param_set: vec![0x68, 0xce, 6, 0xe2],
             }),
         };
+        (config, track)
+    }
+
+    fn recording() -> Vec<u8> {
+        let (config, track) = config_and_video();
         let mut writer =
             mp4::FragmentedMp4Writer::write_start(Cursor::new(Vec::new()), &config, &[track])
                 .unwrap();
@@ -556,6 +563,70 @@ mod tests {
             .unwrap();
         writer.write_end().unwrap();
         writer.into_writer().into_inner()
+    }
+
+    #[test]
+    fn long_source_clock_recordings_rotate_inside_the_recovery_metadata_budget() {
+        let (config, video) = config_and_video();
+        let audio = mp4::TrackConfig {
+            track_type: mp4::TrackType::Audio,
+            timescale: 48_000,
+            language: "und".into(),
+            media_conf: mp4::MediaConfig::AacConfig(mp4::AacConfig {
+                bitrate: 64_000,
+                profile: mp4::AudioObjectType::AacLowComplexity,
+                freq_index: mp4::SampleFreqIndex::Freq48000,
+                chan_conf: mp4::ChannelConfig::Mono,
+            }),
+        };
+        let tracks = [video, audio];
+        let make = || {
+            mp4::FragmentedMp4Writer::write_start(Cursor::new(Vec::new()), &config, &tracks)
+                .unwrap()
+        };
+        let mut writer = make();
+        let mut files = 0;
+        let mut recovered_gops = 0;
+        for gop in 0_u64..3300 {
+            for (track, first, last, step) in [
+                (1, gop * 50, (gop + 1) * 50, 3600_u32),
+                (2, gop * 96_000 / 1024, (gop + 1) * 96_000 / 1024, 1024),
+            ] {
+                for n in first..last {
+                    let ticks = n * u64::from(step);
+                    let sample = mp4::Mp4Sample {
+                        start_time: ticks,
+                        duration: step,
+                        rendering_offset: 0,
+                        is_sync: track == 2 || n == first,
+                        bytes: bytes::Bytes::from_static(b"sample"),
+                    };
+                    let clock = mp4::SourceRtpPacket {
+                        session_id: [1; 16],
+                        epoch_id: [track as u8; 16],
+                        clock_rate: tracks[(track - 1) as usize].timescale.try_into().unwrap(),
+                        timestamp: ticks as i64 + 123,
+                    };
+                    writer
+                        .write_sample_with_source_timing(track, 1, sample, Some(clock))
+                        .unwrap();
+                }
+            }
+            writer.flush_fragment().unwrap();
+            let (bytes, boxes) = writer.metadata_usage();
+            if crate::storage::recording_metadata_rotation_due(bytes, boxes) || gop == 3299 {
+                assert!(bytes < METADATA_BYTES_MAX);
+                let mut cursor = std::mem::replace(&mut writer, make()).into_writer();
+                let size = cursor.get_ref().len() as u64;
+                cursor.set_position(0);
+                let index =
+                    inspect(&mut cursor, size, Instant::now() + Duration::from_secs(60)).unwrap();
+                recovered_gops += index.fragments.len();
+                files += 1;
+            }
+        }
+        assert!(files >= 2);
+        assert_eq!(recovered_gops, 3300);
     }
 
     #[test]

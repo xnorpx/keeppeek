@@ -1,26 +1,29 @@
-//! Optional KeepPeek UUID box inside a single fragmented-MP4 track run.
+//! Optional KeepPeek UUID payload inside a standard fragmented-MP4 event message.
 //! All integers use network byte order. Sample indices in this box start at zero.
 
 use super::*;
 use std::num::NonZeroU32;
 
-const USER_TYPE: [u8; 16] = [
+pub(crate) const USER_TYPE: [u8; 16] = [
     0xb6, 0x6e, 0x60, 0x19, 0x3c, 0xb1, 0x49, 0x9b, 0xae, 0xcc, 0xaf, 0x96, 0xaa, 0xc8, 0x98, 0x94,
 ];
 const VERSION: u32 = 1;
-const RUN_BYTES: u64 = 4 + 4 + 16 + 4 + 8 + 4 + 8 + 8;
+const RUN_BYTES: u64 = 4 + 4 + 16 + 4 + 8 + 4 + 8 + 8 + 16;
+pub(crate) const SCHEME: &str = "urn:keeppeek:original-rtp";
+const EVENT_SAMPLES_MAX: usize = 512;
 
+/// Native RTP clock evidence attached to one accepted recording access unit.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct SourceRtpPacket {
     /// Opaque RTSP PLAY attempt, shared by the audio and video tracks of that session.
     pub session_id: [u8; 16],
+    /// Opaque identity of one uninterrupted RTP clock on one negotiated source track.
+    pub epoch_id: [u8; 16],
     /// The source RTP clock rate, independent of the MP4 track timescale.
     pub clock_rate: NonZeroU32,
     /// Original packet timestamp with RTP wraps extended. Its low 32 bits are the wire value.
     pub timestamp: i64,
-    /// First access unit after a known source start or packet-loss discontinuity.
-    pub discontinuity: bool,
 }
 
 /// Stable calibration for one uninterrupted source epoch in this recording and track.
@@ -33,6 +36,7 @@ pub struct SourceRtpAnchor {
     pub presentation_time: i64,
 }
 
+/// Persisted source reading and its stable track-relative calibration.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct SourceRtpTime {
@@ -40,18 +44,20 @@ pub struct SourceRtpTime {
     pub anchor: SourceRtpAnchor,
     /// Opaque RTSP PLAY attempt, shared by the audio and video tracks of that session.
     pub session_id: [u8; 16],
+    /// Opaque identity of one uninterrupted RTP clock on one negotiated source track.
+    pub epoch_id: [u8; 16],
     /// The source RTP clock rate, independent of the MP4 track timescale.
     pub clock_rate: NonZeroU32,
     /// Original packet timestamp with RTP wraps extended. Its low 32 bits are the wire value.
     pub timestamp: i64,
-    /// First access unit after a known source start or packet-loss discontinuity.
+    /// First stored unit of this recording epoch, including after a loss or gap in evidence.
     pub discontinuity: bool,
 }
 
 impl SourceRtpPacket {
     pub(crate) fn recorded(self, previous: Option<SourceRtpTime>, pts: i64) -> SourceRtpTime {
         let continued = previous.filter(|v| {
-            !self.discontinuity
+            self.epoch_id == v.epoch_id
                 && self.session_id == v.session_id
                 && self.clock_rate == v.clock_rate
         });
@@ -65,6 +71,7 @@ impl SourceRtpPacket {
         SourceRtpTime {
             anchor,
             session_id: self.session_id,
+            epoch_id: self.epoch_id,
             clock_rate: self.clock_rate,
             timestamp: self.timestamp,
             discontinuity: continued.is_none(),
@@ -89,14 +96,19 @@ impl Run {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub(crate) struct SourceTiming(Vec<Run>);
+pub(crate) struct SourceTiming {
+    runs: Vec<Run>,
+    samples: u64,
+}
 
 impl SourceTiming {
     pub(crate) fn add(&mut self, index: u32, value: SourceRtpTime) {
-        if let Some(run) = self.0.last_mut()
+        self.samples += 1;
+        if let Some(run) = self.runs.last_mut()
             && run.end() == u64::from(index)
             && !value.discontinuity
             && value.anchor == run.first_time.anchor
+            && value.epoch_id == run.first_time.epoch_id
             && value.session_id == run.first_time.session_id
             && value.clock_rate == run.first_time.clock_rate
             && let Some(delta) = value
@@ -106,7 +118,7 @@ impl SourceTiming {
         {
             run.deltas.push(delta);
         } else {
-            self.0.push(Run {
+            self.runs.push(Run {
                 first: index,
                 first_time: value,
                 deltas: Vec::new(),
@@ -115,8 +127,10 @@ impl SourceTiming {
     }
 
     pub(crate) fn sample(&self, index: usize) -> Option<SourceRtpTime> {
-        let after = self.0.partition_point(|run| (run.first as usize) <= index);
-        let run = self.0.get(after.checked_sub(1)?)?;
+        let after = self
+            .runs
+            .partition_point(|run| (run.first as usize) <= index);
+        let run = self.runs.get(after.checked_sub(1)?)?;
         let offset = index - run.first as usize;
         if offset == 0 {
             return Some(run.first_time);
@@ -131,22 +145,114 @@ impl SourceTiming {
         })
     }
 
-    pub(super) fn size(&self) -> u64 {
-        if self.0.is_empty() {
+    pub(crate) const fn event_budget(&self) -> (u64, u64) {
+        let chunks = self.samples.div_ceil(EVENT_SAMPLES_MAX as u64);
+        // Each split can add a UUID header, a new clock anchor, and the surrounding emsg.
+        (self.size() + chunks * 192, chunks)
+    }
+
+    /// One bounded ISO event can contain 512 one-sample runs even in the worst case.
+    pub(crate) fn events(
+        &self,
+        track_id: u32,
+        seq: u32,
+        rate: u32,
+        pts: u64,
+    ) -> Result<Vec<EmsgBox>> {
+        let mut events = Vec::new();
+        let mut chunk = Self::default();
+        let mut count = 0;
+        for run in &self.runs {
+            for i in 0..=run.deltas.len() {
+                let index = run.first
+                    + u32::try_from(i)
+                        .map_err(|_| Error::InvalidData("source RTP ordinal overflow"))?;
+                let value = if i == 0 {
+                    run.first_time
+                } else {
+                    SourceRtpTime {
+                        timestamp: run.first_time.timestamp + i64::from(run.deltas[i - 1]),
+                        discontinuity: false,
+                        ..run.first_time
+                    }
+                };
+                chunk.add(index, value);
+                count += 1;
+                if count == EVENT_SAMPLES_MAX {
+                    events.push(chunk.event(track_id, seq, rate, pts)?);
+                    chunk = Self::default();
+                    count = 0;
+                }
+            }
+        }
+        if count != 0 {
+            events.push(chunk.event(track_id, seq, rate, pts)?);
+        }
+        Ok(events)
+    }
+
+    fn event(&self, track_id: u32, seq: u32, rate: u32, pts: u64) -> Result<EmsgBox> {
+        let mut message_data = Vec::with_capacity(self.size() as usize);
+        self.write(&mut message_data)?;
+        Ok(EmsgBox {
+            version: 1,
+            flags: 0,
+            timescale: rate,
+            presentation_time: Some(pts),
+            presentation_time_delta: None,
+            event_duration: 0,
+            id: seq,
+            scheme_id_uri: SCHEME.to_owned(),
+            value: track_id.to_string(),
+            message_data,
+        })
+    }
+
+    /// The event belongs to the immediately preceding moof and names its track and sequence.
+    pub(crate) fn attach(moof: &mut MoofBox, event: &EmsgBox) -> Result<()> {
+        if event.id != moof.mfhd.sequence_number {
+            return Err(Error::InvalidData("source RTP event sequence mismatch"));
+        }
+        let track = event
+            .value
+            .parse::<u32>()
+            .map_err(|_| Error::InvalidData("invalid source RTP event track"))?;
+        let traf = moof
+            .trafs
+            .iter_mut()
+            .find(|t| t.tfhd.track_id == track)
+            .ok_or(Error::TrakNotFound(track))?;
+        let mut reader = std::io::Cursor::new(&event.message_data);
+        let header = BoxHeader::read(&mut reader)?;
+        if header.name != BoxType::UuidBox || header.size != event.message_data.len() as u64 {
+            return Err(Error::InvalidData("invalid source RTP event payload"));
+        }
+        if let Some(mut timing) = Self::read(&mut reader, header.size)? {
+            timing.validate_count(traf.trun.as_ref().map_or(0, |t| t.sample_count))?;
+            if let Some(previous) = traf.source_timing.runs.last()
+                && previous.end() > u64::from(timing.runs[0].first)
+            {
+                return Err(Error::InvalidData("overlapping source RTP event chunks"));
+            }
+            traf.source_timing.samples += timing.samples;
+            traf.source_timing.runs.append(&mut timing.runs);
+        }
+        Ok(())
+    }
+
+    pub(super) const fn size(&self) -> u64 {
+        if self.runs.is_empty() {
             return 0;
         }
         HEADER_SIZE
             + 16
             + 4
-            + self
-                .0
-                .iter()
-                .map(|r| RUN_BYTES + r.deltas.len() as u64 * 4)
-                .sum::<u64>()
+            + self.runs.len() as u64 * RUN_BYTES
+            + (self.samples - self.runs.len() as u64) * 4
     }
 
     pub(super) fn validate_count(&self, count: u32) -> Result<()> {
-        if self.0.last().is_some_and(|r| r.end() > u64::from(count)) {
+        if self.runs.last().is_some_and(|r| r.end() > u64::from(count)) {
             return Err(Error::InvalidData(
                 "source RTP run exceeds track sample count",
             ));
@@ -162,7 +268,7 @@ impl SourceTiming {
         BoxHeader::new(BoxType::UuidBox, size).write(writer)?;
         writer.write_all(&USER_TYPE)?;
         writer.write_u32::<BigEndian>(VERSION)?;
-        for run in &self.0 {
+        for run in &self.runs {
             writer.write_u32::<BigEndian>(run.first)?;
             writer.write_u32::<BigEndian>(
                 u32::try_from(1 + run.deltas.len())
@@ -174,6 +280,7 @@ impl SourceTiming {
             writer.write_u32::<BigEndian>(u32::from(run.first_time.discontinuity))?;
             writer.write_i64::<BigEndian>(run.first_time.anchor.timestamp)?;
             writer.write_i64::<BigEndian>(run.first_time.anchor.presentation_time)?;
+            writer.write_all(&run.first_time.epoch_id)?;
             for &delta in &run.deltas {
                 writer.write_i32::<BigEndian>(delta)?;
             }
@@ -221,6 +328,8 @@ impl SourceTiming {
                     "source RTP discontinuity disagrees with its epoch anchor",
                 ));
             }
+            let mut epoch_id = [0; 16];
+            reader.read_exact(&mut epoch_id)?;
             ensure_box_bytes_remaining(reader, end, u64::from(count - 1) * 4)?;
             let mut deltas = Vec::new();
             for _ in 1..count {
@@ -235,6 +344,7 @@ impl SourceTiming {
                 first_time: SourceRtpTime {
                     anchor,
                     session_id,
+                    epoch_id,
                     clock_rate,
                     timestamp,
                     discontinuity,
@@ -245,7 +355,8 @@ impl SourceTiming {
         if runs.is_empty() {
             return Err(Error::InvalidData("empty source RTP timing box"));
         }
-        Ok(Some(Self(runs)))
+        let samples = runs.iter().map(|r| 1 + r.deltas.len() as u64).sum();
+        Ok(Some(Self { samples, runs }))
     }
 }
 
@@ -268,6 +379,7 @@ mod tests {
                 presentation_time: -17,
             },
             session_id: [4; 16],
+            epoch_id: [6; 16],
             clock_rate: 90_000.try_into().unwrap(),
             timestamp: i64::MAX,
             discontinuity: false,
@@ -292,7 +404,7 @@ mod tests {
         let mut version = bytes.clone();
         version[27] = 2;
         assert_eq!(parse(version).unwrap(), None);
-        for (start, value) in [(32, 0_u32), (32, u32::MAX), (52, 0), (64, 2), (84, 1)] {
+        for (start, value) in [(32, 0_u32), (32, u32::MAX), (52, 0), (64, 2), (100, 1)] {
             let mut invalid = bytes.clone();
             invalid[start..start + 4].copy_from_slice(&value.to_be_bytes());
             assert!(parse(invalid).is_err());

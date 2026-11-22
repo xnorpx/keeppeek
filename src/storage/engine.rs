@@ -1347,7 +1347,7 @@ impl WriterWorker {
         let needs_rotation = pipeline
             .medium_term
             .as_ref()
-            .is_some_and(|w| w.elapsed() >= self.config.medium_term_duration);
+            .is_some_and(|w| w.needs_rotation(self.config.medium_term_duration));
 
         let mut rotated = None;
         if needs_rotation && frame.is_video_keyframe() {
@@ -1418,7 +1418,7 @@ impl WriterWorker {
         let needs_rotation = pipeline
             .medium_term
             .as_ref()
-            .is_some_and(|w| w.elapsed() >= self.config.medium_term_duration);
+            .is_some_and(|w| w.needs_rotation(self.config.medium_term_duration));
 
         let mut rotated = None;
 
