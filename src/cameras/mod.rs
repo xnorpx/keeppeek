@@ -211,7 +211,7 @@ pub struct OnvifDevice {
     pub urls: Vec<Url>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CameraConfig {
     pub ip: IpAddr,
     /// Stable configuration key used for recording storage identity.
@@ -1386,7 +1386,7 @@ pub fn query_cameras(configs: &HashMap<String, Vec<CameraConfig>>) -> HashMap<Ip
             );
 
             if config.username.is_empty() {
-                tracing::warn!("skipping {} — no credentials", config.ip);
+                tracing::warn!("skipping {} â€” no credentials", config.ip);
                 continue;
             }
 
@@ -1407,7 +1407,7 @@ pub fn query_cameras(configs: &HashMap<String, Vec<CameraConfig>>) -> HashMap<Ip
             };
 
             tracing::info!(
-                "ONVIF: {} — {} {}",
+                "ONVIF: {} â€” {} {}",
                 config.ip,
                 camera.device.manufacturer.as_deref().unwrap_or("?"),
                 camera.device.model.as_deref().unwrap_or("?"),
@@ -1445,7 +1445,7 @@ pub fn query_cameras(configs: &HashMap<String, Vec<CameraConfig>>) -> HashMap<Ip
             if is_reolink {
                 camera.is_reolink = true;
                 normalize_reolink_device(&mut camera.device);
-                tracing::info!("detected Reolink — querying HTTP API for extras");
+                tracing::info!("detected Reolink â€” querying HTTP API for extras");
 
                 for (i, profile) in camera.profiles.iter().enumerate() {
                     if let Some(ref uri) = profile.stream_uri {

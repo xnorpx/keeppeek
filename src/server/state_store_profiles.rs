@@ -2960,6 +2960,26 @@ mod tests {
     }
 
     #[test]
+    fn camera_identity_refresh_supersedes_outstanding_application_but_rejects_unsubmitted_work() {
+        let fixture = Fixture::new();
+        fixture.add_camera(&camera_config("192.0.2.23".parse().unwrap()));
+        let config = config::load_config(&fixture.config_path()).unwrap();
+        let ids = config.camera_profile_identities().unwrap();
+        let current = |submitted| {
+            application::current_identities(
+                &fixture.state,
+                &config.runtime_profiles,
+                &ids,
+                submitted,
+            )
+        };
+        let (_, before) = current(None).unwrap().unwrap();
+        fixture.add_camera(&camera_config("192.0.2.24".parse().unwrap()));
+        assert!(current(Some(before)).unwrap().is_none());
+        assert!(current(None).is_err());
+    }
+
+    #[test]
     fn completion_fence_changes_on_same_identity_recording_mode_edit() {
         let fixture = Fixture::new();
         let ip = "192.0.2.23".parse().unwrap();

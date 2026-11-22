@@ -196,3 +196,95 @@ fn a_new_stop_cancels_a_deferred_start_before_its_worker_retires() {
     assert!(!recorder.camera_definitions.contains_key(&ip));
     assert!(!recorder.camera_workers.contains_key(&ip));
 }
+
+#[test]
+fn privacy_suspension_keeps_the_saved_camera_until_base_starts_it_behind_the_gate() {
+    let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let camera = runtime_rtsp_camera(listener.local_addr().unwrap());
+    let ip = camera.config.ip;
+    let privacy = std::sync::Arc::new(
+        crate::privacy::PrivacyRegistry::new(BTreeMap::from([(
+            ip.to_string(),
+            crate::privacy::PrivacySchedule {
+                enabled: true,
+                timezone: "UTC".into(),
+                windows: Vec::new(),
+                temporary_override: None,
+                keep_camera_connected: false,
+            },
+        )]))
+        .unwrap(),
+    );
+    privacy
+        .replace_profile_overrides(BTreeMap::from([(ip.to_string(), true)]))
+        .unwrap();
+    recorder.set_privacy_registry(privacy.clone());
+    recorder.camera_definitions.insert(ip, camera.clone());
+    let source = ip.to_string();
+    let private: ProfileRegistry = serde_json::from_value(serde_json::json!({
+        "revision":1,"active_profile_id":"private","profiles":{"private":{"id":"private","name":"Private","revision":1,"cameras":{source:{"privacy_enforced":true}}}}
+    })).unwrap();
+    recorder.set_runtime_profiles(private.clone());
+    let mut workers = CameraWorkers::new();
+    workers.configuration = Some(camera.config.clone());
+    recorder.camera_workers.insert(ip, workers);
+    let response = recorder.control().submit_privacy_stop(ip).unwrap();
+    recorder.handle_commands();
+    response.recv().unwrap().unwrap();
+    recorder.apply_runtime_profiles(private).unwrap();
+    assert!(recorder.camera_definitions.contains_key(&ip));
+    assert!(!recorder.camera_workers.contains_key(&ip));
+    assert!(listener.accept().is_err());
+    let base = ProfileRegistry {
+        revision: 2,
+        ..Default::default()
+    };
+    let applications = recorder.apply_runtime_profiles(base).unwrap();
+    assert_eq!(applications[0].state, RuntimeApplicationState::Applied);
+    let _connection = accept_rtsp_connection(&listener);
+    assert!(
+        privacy
+            .decision(&ip.to_string(), chrono::Utc::now())
+            .unwrap()
+            .0
+    );
+    recorder.stop_camera(ip).unwrap();
+}
+
+#[test]
+fn deferred_recovery_requires_fenced_privacy_confirmation_after_recording_ack() {
+    let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+    let camera = runtime_rtsp_camera((Ipv4Addr::LOCALHOST, 0).into());
+    let ip = camera.config.ip;
+    let privacy = std::sync::Arc::new(crate::privacy::PrivacyRegistry::default());
+    privacy
+        .replace_profile_overrides(BTreeMap::from([(ip.to_string(), true)]))
+        .unwrap();
+    recorder.set_privacy_registry(privacy.clone());
+    recorder.set_runtime_profiles(ProfileRegistry {
+        revision: 7,
+        ..Default::default()
+    });
+    recorder.camera_definitions.insert(ip, camera);
+    recorder.deferred_camera_starts.insert(ip, (true, true));
+    let (sent, received) = mpsc::channel();
+    recorder.set_recovered_profile_publisher(move |revision| sent.send(revision).unwrap());
+    recorder.retry_ready_camera_start();
+    assert_eq!(received.try_recv().unwrap(), 7);
+    let application =
+        recorder.runtime_profile_status.read().unwrap().cameras[&ip.to_string()].clone();
+    assert_eq!(application.state, RuntimeApplicationState::Degraded);
+    assert_eq!(
+        application.reason.as_deref(),
+        Some(crate::profiles::PENDING_PRIVACY_CONFIRMATION)
+    );
+    assert!(
+        privacy
+            .decision(&ip.to_string(), chrono::Utc::now())
+            .unwrap()
+            .0
+    );
+    recorder.stop_camera(ip).unwrap();
+}
