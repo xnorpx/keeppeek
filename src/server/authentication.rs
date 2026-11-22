@@ -347,6 +347,39 @@ fn active_locked(
     }
 }
 
+pub(super) fn sharing_administrator(
+    state: &ServerState,
+    issuer: &crate::shares::IssuerBinding,
+    now_ms: i64,
+) -> bool {
+    use crate::{access::AccessRole, shares::IssuerBinding};
+    match *issuer {
+        IssuerBinding::LocalAdministrator => true,
+        IssuerBinding::Credential { id, revision } => {
+            bearer_allowed(state, now_ms)
+                && state.access_manager.credential_role(id, revision, now_ms)
+                    == Some(AccessRole::Administrator)
+        }
+        IssuerBinding::ExternalIdentity { id, revision } => {
+            let Ok(registry) = state.authentication.lock() else {
+                return false;
+            };
+            let Some(config) = registry.config.as_ref() else {
+                return false;
+            };
+            registry
+                .directory
+                .active(id, revision)
+                .is_some_and(|identity| {
+                    identity.role == AccessRole::Administrator
+                        && config
+                            .providers
+                            .iter()
+                            .any(|provider| provider.id == identity.provider_id)
+                })
+        }
+    }
+}
 pub(super) fn bearer_allowed(state: &ServerState, now_ms: i64) -> bool {
     let registry = state
         .authentication
@@ -425,7 +458,11 @@ pub(super) fn identity_ids(state: &ServerState) -> Vec<String> {
         .collect()
 }
 
-fn header<'a>(request: &'a Request, name: &str, limit: usize) -> Result<Option<&'a str>, Response> {
+pub(super) fn header<'a>(
+    request: &'a Request,
+    name: &str,
+    limit: usize,
+) -> Result<Option<&'a str>, Response> {
     let mut matching = request
         .headers()
         .filter(|(key, _)| key.eq_ignore_ascii_case(name));
@@ -438,7 +475,7 @@ fn header<'a>(request: &'a Request, name: &str, limit: usize) -> Result<Option<&
     Ok(Some(value))
 }
 
-fn cookie<'a>(request: &'a Request, name: &str) -> Result<Option<&'a str>, Response> {
+pub(super) fn cookie<'a>(request: &'a Request, name: &str) -> Result<Option<&'a str>, Response> {
     let Some(value) = header(request, "Cookie", 16_384)? else {
         return Ok(None);
     };
@@ -719,7 +756,7 @@ fn audit(
     );
 }
 
-fn secure_transport(request: &Request, state: &ServerState) -> Result<(), Response> {
+pub(super) fn secure_transport(request: &Request, state: &ServerState) -> Result<(), Response> {
     secure_channel(request, state)?;
     if header(request, "Sec-Fetch-Site", 32)?
         .is_some_and(|site| !matches!(site, "same-origin" | "none"))
@@ -732,7 +769,7 @@ fn secure_transport(request: &Request, state: &ServerState) -> Result<(), Respon
     Ok(())
 }
 
-fn secure_channel(request: &Request, state: &ServerState) -> Result<(), Response> {
+pub(super) fn secure_channel(request: &Request, state: &ServerState) -> Result<(), Response> {
     use crate::access::ClientClassificationReason;
     let classification = state
         .network_access

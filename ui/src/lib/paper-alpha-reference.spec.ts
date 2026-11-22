@@ -52,7 +52,13 @@ const requiredBoards = [
 	47,
 	48,
 	49,
-	50
+	50,
+	51,
+	52,
+	53,
+	54,
+	55,
+	56
 ];
 const contractOnlyBoards = new Set([1, 2, 3, 5, 28, 32]);
 const supplementalScenarios = [
@@ -73,7 +79,25 @@ const supplementalScenarios = [
 	'keep.archive.unavailable',
 	'settings.mobile.archive-setup',
 	'settings.mobile.archive-jobs',
-	'settings.mobile.archive-recovery'
+	'settings.mobile.archive-recovery',
+	'sharing.creator.desktop.target-preview',
+	'sharing.creator.mobile390.target-preview',
+	'sharing.creator.mobile320.target-preview',
+	'sharing.creator.desktop.copy-once',
+	'sharing.creator.mobile390.copy-once',
+	'sharing.creator.mobile320.copy-once',
+	'sharing.creator.desktop.list-revoke',
+	'sharing.creator.mobile390.list-revoke',
+	'sharing.creator.mobile320.list-revoke',
+	'sharing.guest.desktop.ready',
+	'sharing.guest.mobile390.ready',
+	'sharing.guest.mobile320.ready',
+	'sharing.guest.desktop.expired',
+	'sharing.guest.mobile390.expired',
+	'sharing.guest.mobile320.expired',
+	'sharing.guest.desktop.unavailable',
+	'sharing.guest.mobile390.unavailable',
+	'sharing.guest.mobile320.unavailable'
 ];
 const maximumArtifactBytes = 64 * 1024 * 1024;
 // Concurrent Windows builds can stall disk reads while these tests hash the full export bundle.
@@ -179,6 +203,16 @@ describe('current NVR Paper reference snapshot', () => {
 			{ scenarioId: 'keep.mobile.compact-default', nodeId: 'AW8-0', status: 'proposal' },
 			{ scenarioId: 'keep.mobile.playback-options', nodeId: 'B09-0', status: 'proposal' }
 		]);
+	});
+
+	it('retains desktop and both mobile widths for every guest-sharing proposal', () => {
+		for (const number of [51, 52, 53, 54, 55, 56]) {
+			const board = manifest.boards.find((candidate) => candidate.number === number);
+			expect(board, `Guest-sharing board ${number}`).toBeDefined();
+			const widths = board!.references.map(({ width }) => width).toSorted((a, b) => a - b);
+			expect(widths).toEqual([320, 390, 1440]);
+			for (const reference of board!.references) expect(reference.status).toBe('proposal');
+		}
 	});
 
 	it(

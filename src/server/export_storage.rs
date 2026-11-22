@@ -4,6 +4,7 @@ use super::*;
 pub(super) mod archive;
 pub(super) mod download;
 pub(super) mod history;
+pub(super) mod provenance;
 use crate::storage::{
     catalog::{
         locations::{Kind, Object, Reply, Request, export_cleanup::Action},
