@@ -411,3 +411,80 @@ fn aliased_archive_root_publishes_its_spelling_and_keeps_the_only_file() {
     catalog.shutdown();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn nested_catalogless_capture_moves_only_the_file_the_writer_finalized() {
+    let root = std::env::temp_dir().join(format!("nested-capture-{}", uuid::Uuid::new_v4()));
+    let mut config = storage_config("nested-catalogless-capture");
+    config.medium_term_path = root.join("front");
+    config.long_term_path.clone_from(&root);
+    let recorded = Path::new("2026-11-22/13/0000000.mp4");
+    let stream = "front/sub";
+    let source = config.medium_term_path.join(stream).join(recorded);
+    let published = root.join(stream).join(recorded);
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, b"front/sub recording").unwrap();
+    let worker = WriterWorker::new(config.clone(), RecordingDemand::new(Duration::ZERO), None);
+    assert!(!worker.relocation_scan.enabled());
+    assert_eq!(
+        worker.move_to_long_term(stream, &source, "").unwrap(),
+        published
+    );
+    let mut restarted = WriterWorker::new(config, RecordingDemand::new(Duration::ZERO), None);
+    assert_eq!(restarted.retry_relocations(Instant::now()), None);
+    assert_eq!(std::fs::read(&published).unwrap(), b"front/sub recording");
+    assert!(!root.join("sub").join(recorded).exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn retention_expires_a_nested_published_stream_only_after_relocation() {
+    let root = std::env::temp_dir().join(format!("nested-expiry-{}", uuid::Uuid::new_v4()));
+    let mut config = storage_config("nested-expiry");
+    config.medium_term_path = root.join("front");
+    config.long_term_path.clone_from(&root);
+    let relative = Path::new("front/sub/2026-11-22/01/0000001.mp4");
+    let source = config.medium_term_path.join(relative);
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    let catalog = RecordingCatalog::open(&root.join("catalog.db")).unwrap();
+    let handle = catalog.handle();
+    insert_cleanup_recording(&handle, "expired", &source, 1_000, 40);
+    let settings = toml::from_str("[default]\ncontinuous_days=1.0").unwrap();
+    handle.request_retention_settings(Some(&settings)).unwrap();
+    let reconcile = || {
+        for _ in 0..16 {
+            if !handle.reconcile_retention_runtime(4).unwrap().pending {
+                assert_eq!(
+                    handle
+                        .retention_decision("expired")
+                        .unwrap()
+                        .unwrap()
+                        .deadline_ms,
+                    Some(86_402_000)
+                );
+                return;
+            }
+        }
+        panic!("retention reconciliation did not finish");
+    };
+    reconcile();
+    let store = LongTermStore::for_recording_roots(&root, &config.medium_term_path);
+    assert!(!retention::expire_legacy(&handle, &store, "expired").unwrap());
+    assert_eq!(std::fs::read(&source).unwrap().len(), 40);
+    let target = relocation::move_recording(
+        &config,
+        Some(&handle),
+        "front/sub",
+        &source,
+        "expired",
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(target, root.join(relative));
+    // Publication changes the file identity and schedules its normal retention re-evaluation.
+    reconcile();
+    assert!(retention::expire_legacy(&handle, &store, "expired").unwrap());
+    assert!(!target.exists());
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+}

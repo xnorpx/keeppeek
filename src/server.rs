@@ -19269,7 +19269,8 @@ mod tests {
             },
             &cancelled,
             |message| {
-                assert_eq!(
+                // Both legacy and named recording paths stay pinned during delivery.
+                assert!(
                     handler
                         .state
                         .catalog
@@ -19277,8 +19278,7 @@ mod tests {
                         .unwrap()
                         .reader_leases()
                         .conflicts(&fragments[0].recording_id, &fragments[0].path)
-                        .unwrap(),
-                    named
+                        .unwrap()
                 );
                 cancelled_messages.push(message);
                 cancelled.store(true, Ordering::Release);
