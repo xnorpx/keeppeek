@@ -141,11 +141,12 @@
 		let registryWatch: { close: () => Promise<void> } | undefined;
 		let activeWatch: { close: () => Promise<void> } | undefined;
 		let stopObserving = observeStatus();
+		let disposed = false;
 		retryObservation = () => {
+			if (disposed) return;
 			stopObserving();
 			stopObserving = observeStatus();
 		};
-		let disposed = false;
 		const registryFailure = (cause: unknown) => {
 			if (disposed) return;
 			registry = null;
