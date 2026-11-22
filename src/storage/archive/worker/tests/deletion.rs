@@ -156,9 +156,46 @@ fn archive_retention_worker_reverifies_legacy_media_before_assigning_an_age() ->
     assert_eq!(after.items[1].state, "retained");
     assert_eq!(std::fs::read(&target)?, corrupt);
 
-    // A durable explicit retry survives restart even after the operator selects
-    // indefinite retention. No automatic expiry or deletion is requested.
-    std::fs::write(&target, &original)?;
+    // Make the failed lower-ID job due again alongside an unread copy. An absent
+    // retry row identifies new work and must sort ahead of the due failed job.
+    let mut fixture = fixture.reopen_with(|path| {
+        pollster::block_on(async {
+            let database = turso::Builder::new_local(path.to_str().unwrap())
+                .experimental_generated_columns(true)
+                .build()
+                .await?;
+            let connection = database.connect()?;
+            connection
+                .execute(
+                    "UPDATE archive_reverification_retries SET retry_after_ms=0 WHERE job_id=?1",
+                    [damaged.id.as_str()],
+                )
+                .await?;
+            connection
+                .execute(
+                    "DELETE FROM archive_verified_at WHERE job_id=?1",
+                    [healthy.id.as_str()],
+                )
+                .await?;
+            Ok(())
+        })
+    })?;
+    let Reply::Job(Some(next)) =
+        fixture
+            .catalog
+            .handle()
+            .archive(Request::Deletion(Deletion::NextLegacy {
+                target: fixture.settings.target_id.clone(),
+                maximum_attempts: 2,
+                include_unrequested: true,
+            }))?
+    else {
+        anyhow::bail!("missing legacy verification candidate")
+    };
+    assert_eq!(next.id, healthy.id);
+
+    // A durable explicit retry survives restart after switching to indefinite retention.
+    // Corruption remains visible, and unrequested copies on that policy stay untouched.
     fixture
         .catalog
         .handle()
@@ -166,6 +203,12 @@ fn archive_retention_worker_reverifies_legacy_media_before_assigning_an_age() ->
     fixture.settings.retention_days = None;
     let fixture = fixture.reopen()?;
     let worker = Worker::start(fixture.settings.clone(), fixture.catalog.handle())?;
+    let failed =
+        super::lifecycle::wait_job(&worker.handle(), &damaged.id, Job::reverification_failed)?;
+    assert!(failed.verified_ms.is_none());
+    assert!(worker.handle().get(&healthy.id)?.verified_ms.is_none());
+    std::fs::write(&target, &original)?;
+    worker.handle().retry(&damaged.id)?;
     let repaired = super::lifecycle::wait_job(&worker.handle(), &damaged.id, |job| {
         job.verified_ms.is_some()
     })?;
