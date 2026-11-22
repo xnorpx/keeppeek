@@ -400,12 +400,12 @@
 	});
 
 	$effect(() => {
-		if (shuttleDirection !== -1 || !selected) return;
+		if (mode === 'export' || shuttleDirection !== -1 || !selected) return;
 		const reverse = () => {
 			const current = playheadMs ?? selected?.start_time_ms;
 			if (current !== undefined) seekToTimestamp(current - shuttleSpeed * 250, false);
 		};
-		reverse();
+		untrack(reverse);
 		const timer = window.setInterval(reverse, 250);
 		return () => window.clearInterval(timer);
 	});
@@ -1062,7 +1062,7 @@
 				})
 				.finally(() => {
 					scrubPump = null;
-					if (scrubTargetMs !== null && version === scrubVersion) {
+					if (scrubTargetMs !== null) {
 						void queueTimelineScrub(scrubTargetMs);
 					}
 				});
@@ -1572,8 +1572,24 @@
 
 	function switchMode(nextMode: KeepMode): void {
 		if (nextMode === mode) return;
+		const scrubTarget =
+			nextMode === 'export' && scrubbing && playheadMs !== null
+				? recordingTarget(orderedSegments, playheadMs)
+				: null;
+		if (nextMode === 'export') {
+			shuttleDirection = 0;
+			scrubVersion += 1;
+			scrubTargetMs = null;
+			scrubbing = false;
+			scrubPlayIntent = false;
+			targetLoadVersion += 1;
+			targetLoadController?.abort();
+			clearColdSeek();
+		}
 		mode = nextMode;
-		if (nextMode === 'export' || (nextMode === 'timeline' && selected && !storedPlayback)) {
+		if (scrubTarget) {
+			void selectSegment(scrubTarget.segment, scrubTarget.offsetSeconds);
+		} else if (nextMode === 'export' || (nextMode === 'timeline' && selected && !storedPlayback)) {
 			const target = retryPlaybackTarget;
 			if (target?.cameraId === cameraId && target.segment.date === selectedDate) {
 				const offset =
@@ -2181,6 +2197,7 @@
 		if (event.key.startsWith('Arrow') && target?.closest('[data-digital-pan-active]')) return;
 		const playerFocused = target?.closest('[data-keep-player]') !== null;
 		const key = event.key.toLowerCase();
+		if (mode === 'export' && key !== '[' && key !== ']') return;
 		if (key === 'j') shuttle(-1);
 		else if (key === 'k') pauseTransport();
 		else if (key === 'l') shuttle(1);
