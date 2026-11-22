@@ -266,3 +266,39 @@ seek figures measure the local stored-fragment write path. Browser latency,
 concurrent ingest, worker memory, CPU utilization, release-build throughput and
 hardware calibration still require qualification. The issue has no approved
 numeric performance budget for this comparison.
+
+## RTSP packet-clock diagnostics on 2026-11-22
+
+The recorder reports the original RTP header timestamps for the first and most
+recent accepted packet of each unambiguous audio and video track. The
+[operator guide](../book/src/recording-and-evidence.md#compare-rtsp-source-clocks)
+describes the PLAY origin, RTCP sender reference, sequence gaps and backwards
+timestamp steps. Measurements are scoped to the current RTSP session and
+profile. Historical media keeps its existing timing evidence.
+
+The optimized parser benchmark used Rust 1.100 on Windows 11 Pro build 26200,
+AMD Ryzen 5 5600G, six cores, 15.3 GiB available to the OS and a local SSD.
+The measured loop reads prebuilt packets from memory. Four 1,024-byte payloads
+share each 90 kHz frame timestamp. Each process warms up once and times 30 runs
+of 8,192 accepted packets. Ten pairs of baseline and candidate processes
+alternated order. The table gives the median of the ten per-process results.
+
+| Cost per accepted packet | Baseline `088331d` | With source timing |     Delta |
+| ------------------------ | -----------------: | -----------------: | --------: |
+| Median                   |           70.58 ns |           52.16 ns | −18.42 ns |
+| p95                      |          126.14 ns |          105.42 ns | −20.72 ns |
+
+The workstation also ran other test jobs. Per-process p95 ranged from 82.75 to
+154.42 ns at baseline and 35.78 to 125.37 ns with diagnostics. The storage budget
+for timing evidence is fixed-size counters and timestamps per negotiated track,
+with zero packet payloads retained for reporting. A deployment throughput target
+and live latency budget still require qualification.
+
+Run the following command with `CARGO_PROFILE_RELEASE_LTO=false` and
+`CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16`. For the baseline, copy the same
+`timing_benchmark.rs` into the matching Retina test directory at `088331d` and
+register `mod timing_benchmark;` inside the RTP test module.
+
+```sh
+cargo +1.100.0 test --locked --release -p retina --lib measure_accepted_rtp_packets -- --ignored --nocapture
+```

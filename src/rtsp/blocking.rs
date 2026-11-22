@@ -718,14 +718,19 @@ impl RtspLoop {
         let mut talkback_session: Option<IsapiTalk> = None;
         let mut talkback_speaker: Option<IsapiSpeaker> = None;
 
-        while !self.shutdown.is_cancelled() {
+        let result = loop {
+            if self.shutdown.is_cancelled() {
+                break Ok(());
+            }
             self.drive_hikvision_talkback(
                 &mut pending_talkback,
                 &mut talkback_session,
                 &mut talkback_speaker,
             );
-            let Some(item) = driver.next_item(&self.shutdown, Some(video_deadline))? else {
-                break;
+            let item = match driver.next_item(&self.shutdown, Some(video_deadline)) {
+                Ok(Some(item)) => item,
+                Ok(None) => break Ok(()),
+                Err(error) => break Err(error),
             };
             match item {
                 CodecItem::VideoFrame(frame) => {
@@ -741,7 +746,7 @@ impl RtspLoop {
                     let timestamp = frame.timestamp().elapsed_duration();
                     let data = Bytes::from(frame.into_data());
                     stats.on_video_frame(is_keyframe, data.len());
-                    self.report_if_due(stats, previous, last_report);
+                    self.report_if_due(stats, previous, last_report, driver.streams());
                     let frame_codec = match video_meta.encoding {
                         VideoEncoding::H264 => Some(VideoCodec::H264),
                         VideoEncoding::H265 => Some(VideoCodec::H265),
@@ -870,8 +875,9 @@ impl RtspLoop {
                 CodecItem::Rtcp(_) => {}
                 _ => tracing::debug!("ignoring unsupported RTSP codec item"),
             }
-        }
-        Ok(())
+        };
+        self.report_source_timing(driver.streams(), stats.reconnects, "session_end");
+        result
     }
 
     fn drive_hikvision_talkback(
@@ -982,6 +988,7 @@ impl RtspLoop {
         stats: &mut IngressStats,
         previous: &mut IngressSnapshot,
         last_report: &mut Instant,
+        tracks: &[retina::client::Stream],
     ) {
         if last_report.elapsed() < REPORT_INTERVAL {
             return;
@@ -989,6 +996,7 @@ impl RtspLoop {
         *last_report = Instant::now();
         let snapshot = stats.snapshot();
         let rates = snapshot.rates_since(previous);
+        self.report_source_timing(tracks, snapshot.reconnects, "periodic");
         let mut streams = vec![video_report(
             self.stream,
             &snapshot,
@@ -1018,6 +1026,27 @@ impl RtspLoop {
         log_camera_report(&report);
         self.health.publish(report);
         *previous = snapshot;
+    }
+
+    fn report_source_timing(
+        &self,
+        tracks: &[retina::client::Stream],
+        session: u64,
+        phase: &'static str,
+    ) {
+        if tracing::enabled!(tracing::Level::INFO)
+            && let Some(timing) = super::timing::SourceTiming::from_tracks(tracks)
+            && let Ok(evidence) = serde_json::to_string(&timing)
+        {
+            tracing::info!(
+                name: "camera.rtsp.source_timing",
+                ip = %self.camera_ip,
+                stream = %self.stream,
+                session,
+                phase,
+                "RTSP source timing {evidence}"
+            );
+        }
     }
 }
 
@@ -1378,6 +1407,16 @@ mod tests {
         assert_eq!(first.timestamp().elapsed(), 0);
         assert_eq!(second.timestamp().elapsed(), 3_000);
         assert!(second.data().len() > 2_000);
+        let timing = super::super::timing::SourceTiming::from_tracks(client.streams()).unwrap();
+        let evidence = serde_json::to_value(timing).unwrap();
+        assert_eq!(evidence["video"]["clock_rate_hz"], 90_000);
+        assert_eq!(
+            evidence["video"]["first_rtp_ticks"],
+            first.timestamp().timestamp() as u32
+        );
+        assert!(evidence["video"]["accepted_packets"].as_u64().unwrap() > 2);
+        assert!(evidence["audio"].is_null());
+        assert!(evidence["latest_audio_minus_video_play_us"].is_null());
         drop(client);
 
         let transcript = camera.finish().unwrap();
@@ -1405,6 +1444,9 @@ mod tests {
             client.next_item(&shutdown, Some(deadline)).unwrap(),
             Some(CodecItem::VideoFrame(_))
         ));
+        let clock = client.streams()[0].rtp_clock().unwrap();
+        assert_eq!(clock.clock.first.clock_rate().get(), 90_000);
+        assert!(clock.packets > 0);
         drop(client);
 
         let transcript = camera.finish().unwrap();

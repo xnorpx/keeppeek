@@ -335,6 +335,37 @@ expired artifact requires a fresh job if the original recordings are still avail
 Timestamp burn-in requires a configured re-encoding worker and otherwise fails explicitly. The
 normal export path preserves source frames and timestamps without re-encoding.
 
+### Compare RTSP source clocks
+
+When an RTSP camera is streaming, look for `camera.rtsp.source_timing` or
+`RTSP source timing` in the recorder's information-level logs. Match the camera,
+main or sub profile, and session number. Each PLAY session starts a new set of
+readings. A report is emitted periodically and when the session ends, including a
+short-lived session. Each report includes a track only when that media type has a
+single configured track and the recorder has accepted at least one RTP packet.
+
+- `first_rtp_ticks` and `latest_rtp_ticks` are the original 32-bit packet header
+  timestamps. Multiply elapsed ticks by 1,000 and divide by `clock_rate_hz` to get
+  milliseconds. Use the extended fields to calculate elapsed ticks across wrap.
+- `missing_sequence_numbers` counts gaps in accepted packet sequence numbers.
+  `backward_timestamp_steps` counts backwards presentation timestamps. Picture
+  reordering can produce such a step. Neither counter identifies a clock reset
+  by itself.
+- `sender_report` preserves the latest matching RTCP sender's RTP timestamp
+  and the seconds and fractional words of its reported NTP clock. These values
+  describe the camera's clock and can be absent or inaccurate.
+- `latest_audio_minus_video_play_us` compares the latest accepted packet
+  positions on the camera's PLAY timeline. A positive value means the last audio
+  packet is further along that timeline. Both tracks need a camera-supplied
+  PLAY origin. Packet interleaving can change the reading even when playback
+  sounds synchronized.
+
+The readings precede transcoding, recording timeline normalization and configured
+presentation correction. Use the recorded flash/tone preview or a known physical
+event to measure audible sync. These periodic observations live in the recorder
+log and expire with its retention policy. Existing recordings contain their
+stored media timestamps.
+
 For the availability and safety limits of manual deletion and catalog drift checks,
 see [Recording maintenance](./recording-maintenance.md). The Administrator workflow
 is under qualification; confirmed jobs can remove selected recordings permanently.
