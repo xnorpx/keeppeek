@@ -7,6 +7,7 @@ import {
 	CameraControlCommandSchema,
 	DeliveryTransport,
 	MediaKind,
+	LiveQualitySelectionReason,
 	MessageSchema,
 	RequestSchema,
 	SubscribeMediaSchema,
@@ -71,6 +72,7 @@ export type LivePeerTrack = {
 	requestedQuality: LiveQuality;
 	requestedVariantId: 'main' | 'sub' | null;
 	activeStream: 'main' | 'sub';
+	confirmedVideoVariant?: 'main' | 'sub';
 	pendingStream: 'main' | 'sub' | null;
 	estimatedBitrateBps: number | null;
 	liveQuality?: LiveQualityDiagnostics;
@@ -127,6 +129,11 @@ export class LivePeer {
 	#operation: Promise<void> = Promise.resolve();
 	#closeScheduled = false;
 	#holds = 0;
+	#previewWaiters = new Map<string, (failure?: Error) => void>();
+	#audioSync = new Map<
+		string,
+		{ variant: string; attempts: number; busy: boolean; retry?: ReturnType<typeof setTimeout> }
+	>();
 	#sessionTransport: LiveSessionTransport;
 
 	constructor(sessionTransport: LiveSessionTransport = defaultSessionTransport) {
@@ -296,27 +303,37 @@ export class LivePeer {
 			plans.map(async (plan) => {
 				const track = this.track(plan.cameraId);
 				if (!track) return;
+				if (!plan.active) return;
 				const timingChanged = track.liveAudioPreviewOffsetMs !== plan.liveAudioPreviewOffsetMs;
-				if (plan.active && timingChanged && track.subscribed) {
-					await this.unsubscribeTrack(plan.cameraId, track.trackId);
-				}
-				if (plan.active && (!track.subscribed || timingChanged)) {
+				const variant = plan.variantId ?? null;
+				if (
+					track.subscribed &&
+					!timingChanged &&
+					track.requestedQuality === plan.quality &&
+					track.requestedVariantId === variant
+				)
+					return;
+				try {
 					await this.subscribeTrack(
 						plan.cameraId,
 						track.trackId,
 						plan.quality,
-						plan.variantId ?? null,
-						false,
+						variant,
+						track.subscribed,
 						plan.liveAudioPreviewOffsetMs
 					);
-					return;
-				}
-				if (
-					plan.active &&
-					(track.requestedQuality !== plan.quality ||
-						track.requestedVariantId !== (plan.variantId ?? null))
-				) {
-					await this.setQuality(plan.cameraId, plan.quality, plan.variantId ?? null);
+				} catch (error) {
+					if (track.subscribed && timingChanged) {
+						await this.subscribeTrack(
+							plan.cameraId,
+							track.trackId,
+							track.requestedQuality,
+							track.requestedVariantId,
+							true,
+							track.liveAudioPreviewOffsetMs
+						);
+					}
+					throw error;
 				}
 			})
 		);
@@ -499,23 +516,6 @@ export class LivePeer {
 			throw error;
 		}
 	}
-	private async setQuality(
-		cameraId: string,
-		quality: LiveQuality,
-		variantId: 'main' | 'sub' | null
-	): Promise<void> {
-		const track = this.tracks[cameraId];
-		if (!track?.subscribed) return;
-		await this.subscribeTrack(
-			cameraId,
-			track.trackId,
-			quality,
-			variantId,
-			true,
-			track.liveAudioPreviewOffsetMs
-		);
-	}
-
 	private async subscribeTrack(
 		cameraId: string,
 		subscriptionId: string,
@@ -564,7 +564,7 @@ export class LivePeer {
 			(!result.value.liveAudio?.preview ||
 				result.value.liveAudio.appliedOffsetMs !== liveAudioPreviewOffsetMs)
 		) {
-			await this.unsubscribeTrack(cameraId, subscriptionId);
+			if (!replacement) await this.unsubscribeTrack(cameraId, subscriptionId);
 			throw new Error('The server did not apply the video timing preview.');
 		}
 		const mid = result.value.delivery.value.mid;
@@ -591,6 +591,10 @@ export class LivePeer {
 		const event = this.#trackEventByMid[mid];
 		if (event) this.attachTrackEvent(cameraId, event);
 		try {
+			if (liveAudioPreviewOffsetMs !== undefined) {
+				if (variantId === null) throw new Error('Choose a video profile for timing preview.');
+				await this.waitForPreviewProfile(cameraId, variantId);
+			}
 			await this.subscribeAudio(
 				cameraId,
 				this.track(cameraId)?.audioTrackId ?? `audio-${cameraId}`,
@@ -598,11 +602,41 @@ export class LivePeer {
 				liveAudioPreviewOffsetMs
 			);
 			this.replaceTrack(cameraId, { liveAudioPreviewOffsetMs });
+			this.followActiveAudio(cameraId);
 		} catch (error) {
-			if (liveAudioPreviewOffsetMs !== undefined)
+			if (!replacement && liveAudioPreviewOffsetMs !== undefined)
 				await this.unsubscribeTrack(cameraId, subscriptionId);
 			throw error;
 		}
+	}
+
+	private waitForPreviewProfile(cameraId: string, desired: 'main' | 'sub'): Promise<void> {
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(
+				() => observe(new Error('The selected video profile did not become active in time.')),
+				controlTimeoutMs
+			);
+			const observe = (failure?: Error) => {
+				const track = this.track(cameraId);
+				if (
+					!failure &&
+					track?.liveQuality?.selectionReason === LiveQualitySelectionReason.VARIANT_UNAVAILABLE
+				)
+					failure = new Error('The selected video profile is unavailable for this viewer.');
+				if (
+					!failure &&
+					(track?.confirmedVideoVariant !== desired ||
+						(track.pendingStream !== null && track.pendingStream !== desired))
+				)
+					return;
+				clearTimeout(timer);
+				this.#previewWaiters.delete(cameraId);
+				if (failure) reject(failure);
+				else resolve();
+			};
+			this.#previewWaiters.set(cameraId, observe);
+			observe();
+		});
 	}
 
 	private async subscribeAudio(
@@ -681,6 +715,7 @@ export class LivePeer {
 			return;
 		}
 		if (this.#audioPlaybackByBinding.has(result.value.delivery.value.streamBindingId)) return;
+		this.releaseAudioDecoder(cameraId);
 		const playback = new AacAudioPlayback();
 		try {
 			await playback.configure(
@@ -707,6 +742,7 @@ export class LivePeer {
 			return await this.request({ case: 'subscribeMedia', value: subscribe });
 		} catch (error) {
 			if (!(error instanceof MediaAdmissionError)) throw error;
+			if (subscribe.kind === MediaKind.AUDIO) return null;
 			this.replaceTrack(cameraId, {
 				status: 'unavailable',
 				admissionError: 'Server did not admit this stream'
@@ -724,7 +760,10 @@ export class LivePeer {
 			})
 		});
 		this.releaseAudio(cameraId);
+		this.clearAudioSync(cameraId);
+		this.#previewWaiters.get(cameraId)?.(new Error('The video subscription closed.'));
 		this.replaceTrack(cameraId, {
+			confirmedVideoVariant: undefined,
 			status: 'queued',
 			subscribed: false,
 			pendingStream: null,
@@ -735,13 +774,17 @@ export class LivePeer {
 		});
 	}
 
-	private releaseAudio(cameraId: string): void {
+	private releaseAudioDecoder(cameraId: string): void {
 		const binding = this.#audioBindingByCamera[cameraId];
 		if (binding) {
 			this.#audioPlaybackByBinding.get(binding)?.close();
 			this.#audioPlaybackByBinding.delete(binding);
 			delete this.#audioBindingByCamera[cameraId];
 		}
+	}
+
+	private releaseAudio(cameraId: string): void {
+		this.releaseAudioDecoder(cameraId);
 		for (const [mid, sourceId] of Object.entries(this.#audioCameraByMid)) {
 			if (sourceId === cameraId) delete this.#audioCameraByMid[mid];
 		}
@@ -867,10 +910,12 @@ export class LivePeer {
 			...(liveQuality === undefined
 				? {}
 				: {
+						confirmedVideoVariant: liveVariant(liveQuality.activeVariantId) ?? undefined,
 						activeStream: liveVariant(liveQuality.activeVariantId) ?? current.activeStream,
 						pendingStream: liveVariant(liveQuality.pendingVariantId)
 					})
 		});
+		this.#previewWaiters.get(cameraId)?.();
 		if (liveQuality !== undefined) this.receiveNetworkEstimate(liveQuality.sessionBandwidthBps);
 	}
 
@@ -891,45 +936,72 @@ export class LivePeer {
 		if (update.liveAudio) this.replaceTrack(current.cameraId, { liveAudio: update.liveAudio });
 		if (update.liveQuality !== undefined) {
 			this.applyLiveQuality(current.cameraId, update.liveQuality);
-			this.followActiveAudio(current);
+			this.followActiveAudio(current.cameraId);
 			return;
 		}
 		const activeStream = liveVariant(update.activeVariantId);
 		if (activeStream === null) return;
 		this.replaceTrack(current.cameraId, {
 			activeStream,
+			confirmedVideoVariant: activeStream,
 			pendingStream: current.pendingStream === activeStream ? null : current.pendingStream,
 			liveQuality: undefined
 		});
-		this.followActiveAudio(current);
+		this.#previewWaiters.get(current.cameraId)?.();
+		this.followActiveAudio(current.cameraId);
 	}
 
-	private followActiveAudio(previous: LivePeerTrack): void {
-		const current = this.track(previous.cameraId);
+	private clearAudioSync(cameraId: string): void {
+		const previous = this.#audioSync.get(cameraId);
+		if (previous?.retry) clearTimeout(previous.retry);
+		this.#audioSync.delete(cameraId);
+	}
+
+	private followActiveAudio(cameraId: string): void {
+		const track = this.track(cameraId);
+		const source = this.#capabilities?.sourceSessions.find(
+			(item) => item.sourceSessionId === this.#sourceSessionByCamera[cameraId]
+		);
+		const variants = source?.audio?.variants;
+		const variant = variants?.find((v) => v.variantId === track?.activeStream) ?? variants?.[0];
 		if (
-			!current?.subscribed ||
-			!current.audioVariantId ||
-			previous.activeStream === current.activeStream ||
-			current.requestedVariantId !== null
-		)
+			!track?.subscribed ||
+			track.requestedVariantId !== null ||
+			!variant ||
+			track.audioVariantId === variant.variantId
+		) {
+			this.clearAudioSync(cameraId);
 			return;
-		const owner = this.#peer;
+		}
+		let state = this.#audioSync.get(cameraId);
+		if (state?.variant !== variant.variantId) {
+			this.clearAudioSync(cameraId);
+			state = { variant: variant.variantId, attempts: 0, busy: false };
+			this.#audioSync.set(cameraId, state);
+		}
+		if (state.busy || state.retry || state.attempts >= 3) return;
+		const pending = state;
+		pending.busy = true;
 		void this.enqueue(async () => {
-			const track = this.track(previous.cameraId);
-			if (
-				owner !== this.#peer ||
-				!track?.subscribed ||
-				track.requestedVariantId !== null ||
-				track.audioVariantId === track.activeStream
-			)
-				return;
-			await this.subscribeAudio(
-				track.cameraId,
-				track.audioTrackId,
-				track.activeStream,
-				track.liveAudioPreviewOffsetMs
-			);
-		}).catch((error) => console.warn('Unable to follow live audio profile change', error));
+			if (this.#audioSync.get(cameraId) !== pending) return;
+			const latest = this.track(cameraId);
+			if (!latest?.subscribed || latest.requestedVariantId !== null) return;
+			pending.attempts++;
+			await this.subscribeAudio(cameraId, latest.audioTrackId, latest.activeStream);
+		})
+			.catch((error) => console.warn('Unable to follow live audio profile', error))
+			.finally(() => {
+				if (this.#audioSync.get(cameraId) !== pending) return;
+				pending.busy = false;
+				if (this.track(cameraId)?.audioVariantId === pending.variant) {
+					this.clearAudioSync(cameraId);
+				} else if (pending.attempts < 3) {
+					pending.retry = setTimeout(() => {
+						pending.retry = undefined;
+						this.followActiveAudio(cameraId);
+					}, 250 * pending.attempts);
+				}
+			});
 	}
 
 	private removeSourceDiagnostics(sourceSessionId: string): void {
@@ -1009,6 +1081,7 @@ export class LivePeer {
 	}
 
 	private failPending(message: string): void {
+		for (const waiter of this.#previewWaiters.values()) waiter(new Error(message));
 		for (const pending of this.#pending.values()) {
 			clearTimeout(pending.timeout);
 			pending.reject(new Error(message));
@@ -1056,6 +1129,7 @@ export class LivePeer {
 	}
 
 	private releaseLocalResources(): string | null {
+		for (const id of this.#audioSync.keys()) this.clearAudioSync(id);
 		const peer = this.#peer;
 		const sessionToken = this.#sessionToken;
 		this.#peer = null;

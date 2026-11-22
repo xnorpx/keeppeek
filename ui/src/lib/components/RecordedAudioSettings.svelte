@@ -159,7 +159,9 @@
 		<p class="font-mono text-2xs tracking-caps text-primary-soft"
 			>{live ? 'LIVE AUDIO' : 'RECORDED AUDIO'}</p
 		>
-		<h2 id={`${helpId}-heading`} class="mt-1 text-base font-semibold">Audio synchronization</h2>
+		<h2 id={`${helpId}-heading`} class="mt-1 text-base font-semibold"
+			>{live ? 'Live' : 'Recorded'} audio synchronization</h2
+		>
 		<p id={helpId} class="mt-1 text-xs leading-5 text-text-muted">
 			{#if live}
 				Positive offsets delay audio. Negative offsets delay video. Use whole milliseconds from −200
@@ -253,7 +255,16 @@
 								</select></label
 							>
 							<label class="grid gap-1 text-xs"
-								>Preview offset (ms)<Input inputmode="numeric" bind:value={previewInput} /></label
+								>Preview offset (ms)<Input
+									inputmode="numeric"
+									bind:value={previewInput}
+									onkeydown={(event) => {
+										if (event.key === 'Enter') {
+											event.preventDefault();
+											if (parsedPreview !== null) void preview(parsedPreview);
+										}
+									}}
+								/></label
 							>
 						</div>
 						{#if parsedPreview === null}

@@ -1,4 +1,4 @@
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import type { CameraSettings } from '$lib/types';
@@ -57,6 +57,10 @@ describe('recorded-audio camera settings', () => {
 		const view = await render(RecordedAudioSettings, {
 			props: { camera: settings, kind: 'live', onpreview, onsave }
 		});
+		await expect
+			.element(page.getByRole('region', { name: 'Live audio synchronization' }))
+			.toBeVisible();
+		await page.getByRole('textbox', { name: 'Camera default offset (ms)' }).fill('40');
 		const input = page.getByRole('textbox', { name: 'Preview offset (ms)' });
 		const apply = page.getByRole('button', { name: 'Apply preview' });
 		await input.fill('201');
@@ -65,7 +69,9 @@ describe('recorded-audio camera settings', () => {
 		await input.fill('-200');
 		await expect.element(page.getByText('Video will play 200 ms later.')).toBeVisible();
 		expect(onpreview).not.toHaveBeenCalled();
-		await apply.click();
+		await input.click();
+		await userEvent.keyboard('{Enter}');
+		expect(onsave).not.toHaveBeenCalled();
 		expect(onpreview).toHaveBeenCalledExactlyOnceWith('sub', -200);
 		await view.rerender({ appliedPreview: -200 });
 		await page.getByRole('button', { name: 'Reset preview' }).click();

@@ -1037,7 +1037,7 @@ An authorized listener may set `SubscribeMedia.live_audio_preview_offset_ms` for
 audio or video subscription. Both subscriptions for a calibration preview must request the
 same source profile and identical signed offset. Zero previews uncorrected timing.
 Omitting the field restores configured timing. Check `SubscriptionResult.live_audio.preview`
-and `applied_offset_ms` on both admitted tracks before showing the preview as active.
+and `applied_offset_ms` on both admitted tracks and confirm the video profile is active before showing the preview as active. A pending handover can still present the previous profile. Reliable-data audio binding IDs are opaque and may rotate when the preview changes. Retire the previous decoder when its binding is replaced.
 `SubscriptionStreamState.live_audio` follows the actual active video profile during adaptive
 handover. Audio stream-state notifications carry their own selected profile and timing,
 including when adaptive video and available audio use different profiles. Preview selections last only for their subscriptions and do not change other listeners.
@@ -1047,8 +1047,7 @@ It reports currently held audio bytes, video bytes and encoded video frames plus
 capacity and expiry drops for that camera profile across listeners. The same source counters
 appear in `WebRtcSourceHealthSnapshot.live_audio` with the saved policy. A listener may hold
 encoded audio for up to 250 ms and the profile shares 256 KiB of audio storage across sessions.
-Each held audio packet is charged for its encoded bytes and queue entry. The reported byte
-count is encoded payload occupancy. Video has the same 250 ms age ceiling with at most 2 MiB and 128 encoded frames per profile.
+Identical source payloads shared by listeners count once toward the encoded bytes and frames. Each listener also consumes one queue entry per held unit under the corresponding byte limit. Reported bytes count encoded payload occupancy. Video has the same 250 ms age ceiling with at most 2 MiB and 128 encoded frames per profile.
 Capacity rejects new frames. Expiry discards late frames. A codec change, backward source time,
 reconnect, policy change or removed subscription invalidates its pending correction.
 These limits describe the server-side hold. Transport and browser playout can add latency. Reliable AAC frames carry the original

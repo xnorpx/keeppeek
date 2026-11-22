@@ -168,15 +168,29 @@ impl ApiMediaRuntime {
                     "an audio timing update must keep its source, variant and delivery transport",
                 ));
             }
-            runtime
+            let retired = if runtime
                 .timing
-                .set_preview(request.live_audio_preview_offset_ms);
+                .set_preview(request.live_audio_preview_offset_ms)
+                && let TrackDelivery::ReliableData(binding) = &mut runtime.delivery
+            {
+                // SCTP data already handed off cannot be recalled. Retire its binding
+                // so late fragments cannot enter the new calibration decoder.
+                Some(std::mem::replace(
+                    &mut binding.stream_binding_id,
+                    audio_binding_id(&request.subscription_id),
+                ))
+            } else {
+                None
+            };
             let mut result = subscription_result(
                 request.subscription_id.clone(),
                 &runtime.delivery,
                 plan.selected_variant_id,
             );
             result.live_audio = Some(runtime.timing.report(selected_stream));
+            if let Some(retired) = retired {
+                self.cancel_group(&retired);
+            }
             return Ok(result);
         }
         let reserved_bitrate_bps = bandwidth::audio_reservation_bps(&plan.format);
@@ -235,7 +249,11 @@ impl ApiMediaRuntime {
             }
             proto::DeliveryTransport::ReliableData => {
                 Ok(TrackDelivery::ReliableData(Box::new(DataMediaBinding {
-                    stream_binding_id: format!("media:{subscription_id}"),
+                    stream_binding_id: if audio {
+                        audio_binding_id(subscription_id)
+                    } else {
+                        format!("media:{subscription_id}")
+                    },
                     codec: std::mem::take(&mut plan.codec),
                     format: std::mem::take(&mut plan.format),
                     configuration_revision: 1,
@@ -300,4 +318,8 @@ fn native_variant_stream(variant_id: &str) -> Result<StreamKind, ControlHandlerE
             "media subscription plan selected an invalid variant",
         )),
     }
+}
+
+fn audio_binding_id(subscription_id: &str) -> String {
+    format!("media:{subscription_id}:{}", uuid::Uuid::new_v4())
 }

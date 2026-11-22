@@ -1317,8 +1317,11 @@ impl ApiMediaRuntime {
             {
                 let track = self.tracks.swap_remove(index);
                 self.discard_queued_stream_states(&track.runtime.track_id);
-                if let TrackDelivery::Rtp(mid) = track.runtime.delivery {
-                    self.available_video_mids.push(mid);
+                match track.runtime.delivery {
+                    TrackDelivery::Rtp(mid) => self.available_video_mids.push(mid),
+                    TrackDelivery::ReliableData(binding) => {
+                        self.cancel_group(&binding.stream_binding_id)
+                    }
                 }
             } else if let Some(index) = self
                 .audio_tracks
@@ -1330,8 +1333,12 @@ impl ApiMediaRuntime {
                     inner: session.inner.clone(),
                 }
                 .unsubscribe_audio(session.session_id, &track.runtime.track_id);
-                if let TrackDelivery::Rtp(mid) = track.runtime.delivery {
-                    self.available_audio_mids.push(mid);
+                self.discard_queued_stream_states(&track.runtime.track_id);
+                match track.runtime.delivery {
+                    TrackDelivery::Rtp(mid) => self.available_audio_mids.push(mid),
+                    TrackDelivery::ReliableData(binding) => {
+                        self.cancel_group(&binding.stream_binding_id)
+                    }
                 }
             }
         }
@@ -3848,6 +3855,7 @@ fn next_audio_frame(
             received: audio.received_at,
             timestamp: audio.timestamp,
             bytes: audio.data.len(),
+            payload_address: audio.data.as_ptr() as usize,
         };
         if frame.deliver(|_| ()).is_some()
             && let Some(ready) = track.timing.admit(frame, packet, now)
@@ -3880,6 +3888,7 @@ fn next_video_frame(
             received: frame.received_at,
             timestamp: frame.timestamp,
             bytes: frame.data.avcc.len(),
+            payload_address: frame.data.avcc.as_ptr() as usize,
         };
         if let Some(ready) = timing.admit(item, packet, now) {
             break ready;
@@ -7742,6 +7751,124 @@ mod tests {
                 .values()
                 .all(|source| source.subscribers.is_empty())
         );
+    }
+
+    #[test]
+    fn live_preview_admission_reuses_tracks_and_retires_stale_reliable_audio() {
+        use crate::api::proto::{self, DeliveryTransport, MediaKind};
+        let session = test_background_control();
+        let mut media = ApiMediaRuntime {
+            available_video_mids: vec![Mid::from("video_0")],
+            ..Default::default()
+        };
+        for (kind, transport) in [
+            (MediaKind::Video, DeliveryTransport::Rtp),
+            (MediaKind::Audio, DeliveryTransport::ReliableData),
+        ] {
+            let id = if kind == MediaKind::Audio {
+                "audio-front"
+            } else {
+                "video-front"
+            };
+            let plan = MediaSubscriptionPlan {
+                media_kind: kind,
+                source_session_id: "camera:front".into(),
+                camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                has_main_stream: true,
+                has_sub_stream: true,
+                recording_label: "front".into(),
+                quality: StreamQuality::Low,
+                delivery_transport: transport,
+                codec: proto::CodecDescriptor {
+                    name: if kind == MediaKind::Audio {
+                        "aac"
+                    } else {
+                        "h264"
+                    }
+                    .into(),
+                    ..Default::default()
+                },
+                format: Default::default(),
+                selected_variant_id: "sub".into(),
+            };
+            let mut request = proto::SubscribeMedia {
+                subscription_id: id.into(),
+                source_session_id: plan.source_session_id.clone(),
+                kind: kind as i32,
+                requested_delivery_transport: transport as i32,
+                variant_id: "sub".into(),
+                ..Default::default()
+            };
+            for value in [-201, 201] {
+                request.live_audio_preview_offset_ms = Some(value);
+                assert!(media.subscribe(&session, &request, plan.clone()).is_err());
+            }
+            request.live_audio_preview_offset_ms = Some(-200);
+            let first = media.subscribe(&session, &request, plan.clone()).unwrap();
+            assert_eq!(first.live_audio.unwrap().applied_offset_ms, -200);
+            if kind == MediaKind::Audio {
+                for incompatible in [
+                    MediaSubscriptionPlan {
+                        selected_variant_id: "main".into(),
+                        ..plan.clone()
+                    },
+                    MediaSubscriptionPlan {
+                        delivery_transport: DeliveryTransport::Rtp,
+                        ..plan.clone()
+                    },
+                ] {
+                    assert!(media.subscribe(&session, &request, incompatible).is_err());
+                }
+                assert_eq!(
+                    media
+                        .subscribe(&session, &request, plan.clone())
+                        .unwrap()
+                        .delivery,
+                    first.delivery
+                );
+                let Some(proto::subscription_result::Delivery::MediaData(binding)) =
+                    &first.delivery
+                else {
+                    panic!("expected audio binding")
+                };
+                media
+                    .enqueue(vec![OutboundDataMessage {
+                        target: DataChannelTarget::Reliable,
+                        group: binding.stream_binding_id.clone(),
+                        message: test_event_data_message(),
+                    }])
+                    .unwrap();
+            }
+            request.live_audio_preview_offset_ms = Some(200);
+            let second = media.subscribe(&session, &request, plan.clone()).unwrap();
+            assert_eq!(second.live_audio.unwrap().applied_offset_ms, 200);
+            if kind == MediaKind::Video {
+                assert_eq!(first.delivery, second.delivery);
+                assert!(media.available_video_mids.is_empty());
+                assert_eq!(media.tracks.len(), 1);
+            } else {
+                assert_ne!(first.delivery, second.delivery);
+                assert_eq!(media.audio_tracks.len(), 1);
+                assert!(media.outbound.is_empty());
+                request.live_audio_preview_offset_ms = None;
+                let normal = media.subscribe(&session, &request, plan.clone()).unwrap();
+                let Some(proto::subscription_result::Delivery::MediaData(binding)) =
+                    normal.delivery
+                else {
+                    panic!("expected audio binding")
+                };
+                media
+                    .enqueue(vec![OutboundDataMessage {
+                        target: DataChannelTarget::Reliable,
+                        group: binding.stream_binding_id,
+                        message: test_event_data_message(),
+                    }])
+                    .unwrap();
+                media.unsubscribe(&session, &[id.to_owned()]);
+                assert!(media.outbound.is_empty());
+                assert!(media.audio_tracks.is_empty());
+            }
+        }
     }
 
     #[test]

@@ -119,6 +119,7 @@
 	async function previewLiveAudio(stream: 'main' | 'sub', offset: number | null) {
 		if (!previewAvailable || !camera) throw new Error('The live camera is unavailable.');
 		const id = camera.id;
+		const previous = livePreview;
 		const candidate = offset === null ? null : { cameraId: id, stream, offset };
 		try {
 			await livePeer.configure([cameraPlan(id, candidate)]);
@@ -128,8 +129,8 @@
 			livePreview = candidate;
 		} catch (cause) {
 			if (cameraId === id) {
-				livePreview = null;
-				await livePeer.configure([cameraPlan(id, null)]);
+				livePreview = previous;
+				await livePeer.configure([cameraPlan(id, previous)]);
 			}
 			throw cause;
 		}
@@ -149,11 +150,15 @@
 	});
 
 	onMount(() => {
+		const releasePeer = livePeer.hold();
 		const media = window.matchMedia('(max-width: 767px)');
 		const update = () => (mobileViewport = media.matches);
 		update();
 		media.addEventListener('change', update);
-		return () => media.removeEventListener('change', update);
+		return () => {
+			media.removeEventListener('change', update);
+			releasePeer();
+		};
 	});
 
 	$effect(() => {

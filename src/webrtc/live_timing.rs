@@ -3,7 +3,7 @@
 use super::{StreamKind, WebRtcAudioCodec};
 use crate::{api::proto, cameras::LiveAudioSettings, storage::VideoCodec};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
@@ -40,12 +40,18 @@ struct StreamPolicy {
     generation: u64,
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default)]
 struct Usage {
+    payloads: HashMap<PayloadKey, usize>,
+    stats: Counters,
+    reserved_bytes: usize,
+}
+
+#[derive(Default, Clone, Copy)]
+struct Counters {
     expired_drops: u64,
     capacity_drops: u64,
     bytes: usize,
-    reserved_bytes: usize,
     frames: usize,
 }
 
@@ -101,7 +107,7 @@ impl CameraTiming {
             .budget(stream, audio)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        usage.expired_drops = usage.expired_drops.saturating_add(1);
+        usage.stats.expired_drops = usage.stats.expired_drops.saturating_add(1);
     }
 
     pub(super) fn report(
@@ -111,10 +117,10 @@ impl CameraTiming {
     ) -> proto::LiveAudioTiming {
         let configured_offset_ms = self.policy(stream).offset;
         let usage = |audio| {
-            *self
-                .budget(stream, audio)
+            self.budget(stream, audio)
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .stats
         };
         let (audio, video) = (usage(true), usage(false));
         proto::LiveAudioTiming {
@@ -130,12 +136,21 @@ impl CameraTiming {
     }
 }
 
+/// A capture retains its backing allocation while any queue holds it. The address
+/// is only an in-process identity and is never dereferenced or exposed.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct PayloadKey {
+    address: usize,
+    bytes: usize,
+    received: Instant,
+}
+
 struct Reservation {
     camera: Arc<CameraTiming>,
     stream: StreamKind,
     audio: bool,
-    bytes: usize,
-    charge: usize,
+    key: PayloadKey,
+    entry_bytes: usize,
 }
 
 impl Reservation {
@@ -143,9 +158,9 @@ impl Reservation {
         camera: &Arc<CameraTiming>,
         stream: StreamKind,
         audio: bool,
-        bytes: usize,
+        key: PayloadKey,
     ) -> Option<Self> {
-        let mut used = camera
+        let mut usage = camera
             .budget(stream, audio)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -154,43 +169,55 @@ impl Reservation {
         } else {
             MAX_VIDEO_BYTES
         };
-        // A one-byte audio packet still occupies a queue entry. Charge its
-        // bookkeeping to the audio budget so variable packetization stays bounded.
-        let charge = if audio {
-            bytes.saturating_add(size_of::<Held<T>>())
+        let entry_bytes = size_of::<Held<T>>();
+        let first = !usage.payloads.contains_key(&key);
+        let charge = if first {
+            key.bytes.saturating_add(entry_bytes)
         } else {
-            bytes
+            entry_bytes
         };
-        if bytes == 0
-            || charge > limit - used.reserved_bytes
-            || (!audio && used.frames == MAX_FRAMES)
+        if key.bytes == 0
+            || charge > limit - usage.reserved_bytes
+            || (!audio && first && usage.stats.frames == MAX_FRAMES)
         {
-            used.capacity_drops = used.capacity_drops.saturating_add(1);
+            usage.stats.capacity_drops = usage.stats.capacity_drops.saturating_add(1);
             return None;
         }
-        used.frames += 1;
-        used.bytes += bytes;
-        used.reserved_bytes += charge;
+        *usage.payloads.entry(key).or_insert(0) += 1;
+        if first {
+            usage.stats.frames += 1;
+            usage.stats.bytes += key.bytes;
+        }
+        usage.reserved_bytes += charge;
         Some(Self {
             camera: camera.clone(),
             stream,
             audio,
-            bytes,
-            charge,
+            key,
+            entry_bytes,
         })
     }
 }
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        let mut used = self
+        let mut usage = self
             .camera
             .budget(self.stream, self.audio)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        used.frames -= 1;
-        used.bytes -= self.bytes;
-        used.reserved_bytes -= self.charge;
+        let viewers = usage
+            .payloads
+            .get_mut(&self.key)
+            .expect("reservation owns a payload reference");
+        *viewers -= 1;
+        if *viewers == 0 {
+            usage.payloads.remove(&self.key);
+            usage.stats.frames -= 1;
+            usage.stats.bytes -= self.key.bytes;
+            usage.reserved_bytes -= self.key.bytes;
+        }
+        usage.reserved_bytes -= self.entry_bytes;
     }
 }
 
@@ -284,11 +311,13 @@ impl<T> Queue<T> {
         }
     }
 
-    pub(super) fn set_preview(&mut self, preview: Option<i32>) {
-        if self.preview != preview {
-            self.clear();
-            self.preview = preview;
+    pub(super) fn set_preview(&mut self, preview: Option<i32>) -> bool {
+        if self.preview == preview {
+            return false;
         }
+        self.clear();
+        self.preview = preview;
+        true
     }
 
     pub(super) fn offsets(&self, stream: StreamKind) -> (i32, i32) {
@@ -374,6 +403,7 @@ impl<T> Queue<T> {
             received,
             timestamp,
             bytes,
+            payload_address,
         } = packet;
         let policy = self.camera.policy(stream);
         if policy.reset_at.is_some_and(|reset| received < reset) {
@@ -401,7 +431,7 @@ impl<T> Queue<T> {
             return Some((item, received));
         }
         let age = now.saturating_duration_since(received);
-        if received > now || age > MAX_AGE {
+        if age > MAX_AGE {
             self.camera.record_expired(stream, audio);
             return None;
         }
@@ -409,7 +439,16 @@ impl<T> Queue<T> {
         if due <= now && profile.frames.is_empty() {
             return Some((item, due));
         }
-        let reservation = Reservation::acquire::<T>(&self.camera, stream, audio, bytes)?;
+        let reservation = Reservation::acquire::<T>(
+            &self.camera,
+            stream,
+            audio,
+            PayloadKey {
+                address: payload_address,
+                bytes,
+                received,
+            },
+        )?;
         profile.frames.push_back(Held {
             item,
             received,
@@ -426,6 +465,7 @@ pub(super) struct Packet {
     pub(super) received: Instant,
     pub(super) timestamp: Option<Duration>,
     pub(super) bytes: usize,
+    pub(super) payload_address: usize,
 }
 
 /// Maps a sender reset onto the current listener timeline. The original capture timestamp
@@ -473,6 +513,7 @@ mod tests {
             received,
             timestamp: Some(Duration::ZERO),
             bytes,
+            payload_address: bytes,
         }
     }
 
@@ -529,7 +570,7 @@ mod tests {
         let camera = Arc::new(CameraTiming::default());
         for (format, offset, bytes) in [
             (AUDIO, 200, MAX_AUDIO_BYTES - size_of::<Held<i32>>()),
-            (VIDEO, -200, MAX_VIDEO_BYTES),
+            (VIDEO, -200, MAX_VIDEO_BYTES - size_of::<Held<i32>>()),
         ] {
             let t = Instant::now();
             let mut first = Queue::new(camera.clone());
@@ -549,14 +590,50 @@ mod tests {
         video.set_preview(Some(-200));
         let t = Instant::now();
         for n in 0..MAX_FRAMES + 6 {
-            video.admit(n, packet(StreamKind::Main, VIDEO, t, 1), t);
+            let mut frame = packet(StreamKind::Main, VIDEO, t, 1);
+            frame.payload_address = n;
+            video.admit(n, frame, t);
         }
         assert_eq!(video.profiles[0].frames.len(), MAX_FRAMES);
         assert_eq!(video.pop_due(t + MAX_AGE + Duration::from_millis(1)), None);
         assert_eq!(
-            camera.budget(StreamKind::Main, false).lock().unwrap().bytes,
+            camera
+                .budget(StreamKind::Main, false)
+                .lock()
+                .unwrap()
+                .stats
+                .bytes,
             0
         );
+    }
+
+    #[test]
+    fn fresh_frames_after_the_poll_snapshot_are_scheduled_and_shared_across_viewers() {
+        let camera = Arc::new(CameraTiming::default());
+        let mut first = Queue::new(camera.clone());
+        let mut second = Queue::new(camera.clone());
+        first.set_preview(Some(-120));
+        second.set_preview(Some(-120));
+        let poll = Instant::now();
+        let arrival = poll + Duration::from_millis(1);
+        let bytes = MAX_VIDEO_BYTES * 3 / 4;
+        first.admit(1, packet(StreamKind::Main, VIDEO, arrival, bytes), poll);
+        second.admit(2, packet(StreamKind::Main, VIDEO, arrival, bytes), poll);
+        let stats = first.report(StreamKind::Main);
+        assert_eq!(
+            (
+                stats.held_video_frames,
+                stats.held_video_bytes,
+                stats.expired_drops,
+                stats.capacity_drops
+            ),
+            (1, bytes as u32, 0, 0)
+        );
+        let due = arrival + Duration::from_millis(120);
+        assert_eq!(first.pop_due(due), Some((1, due)));
+        assert_eq!(second.report(StreamKind::Main).held_video_frames, 1);
+        assert_eq!(second.pop_due(due), Some((2, due)));
+        assert_eq!(second.report(StreamKind::Main).held_video_bytes, 0);
     }
 
     #[test]
