@@ -8,6 +8,7 @@ function installAacPlaybackClock() {
 	const nodes: Array<{ onended: (() => void) | null }> = [];
 	const start = vi.fn();
 	const stop = vi.fn();
+	const disconnect = vi.fn();
 	vi.stubGlobal(
 		'AudioContext',
 		class {
@@ -18,7 +19,7 @@ function installAacPlaybackClock() {
 				return { duration: 0.02, getChannelData: () => new Float32Array(1) };
 			}
 			createBufferSource() {
-				const node = { connect: vi.fn(), disconnect: vi.fn(), start, stop, onended: null };
+				const node = { connect: vi.fn(), disconnect, start, stop, onended: null };
 				nodes.push(node);
 				return node;
 			}
@@ -57,7 +58,7 @@ function installAacPlaybackClock() {
 			}
 		}
 	);
-	return { start, stop, clock, nodes };
+	return { start, stop, disconnect, clock, nodes };
 }
 
 function pushTimestamp(player: AacAudioPlayback, frame: number, ms: number) {
@@ -109,6 +110,29 @@ describe('reliable AAC presentation', () => {
 			expect(nodes.filter((node) => node.onended !== null).length).toBeLessThanOrEqual(32);
 		} finally {
 			player.close();
+			vi.unstubAllGlobals();
+			vi.useRealTimers();
+		}
+	});
+
+	it('silences scheduled output from a retired binding while its shared context stays available', async () => {
+		vi.useFakeTimers();
+		const { start, stop, disconnect } = installAacPlaybackClock();
+		const context = new AudioContext();
+		const closeContext = vi.spyOn(context, 'close');
+		const player = new AacAudioPlayback(context);
+		try {
+			await player.configure('aac', new Uint8Array([0x12, 0x10]), 48_000, 1);
+			pushTimestamp(player, 1, 0);
+			pushTimestamp(player, 2, 20);
+			await vi.advanceTimersByTimeAsync(90);
+			expect(start).toHaveBeenCalledTimes(2);
+			player.close();
+			expect(stop).toHaveBeenCalledTimes(2);
+			expect(disconnect).toHaveBeenCalledTimes(2);
+			expect(closeContext).not.toHaveBeenCalled();
+		} finally {
+			await context.close();
 			vi.unstubAllGlobals();
 			vi.useRealTimers();
 		}
