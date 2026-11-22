@@ -1,6 +1,6 @@
 use crate::api::backup_proto;
 use serde::de::DeserializeOwned;
-use std::{fmt, fs::File, path::Path, time::Duration};
+use std::{fmt, fs::File, io::Read, path::Path, time::Duration};
 use ureq::{Agent, Body, http::Response};
 use url::{Host, Url};
 
@@ -174,9 +174,8 @@ fn save_export(response: Response<Body>, output: &mut File) -> Result<u64, Backu
     let copied = std::io::copy(
         &mut response
             .into_body()
-            .into_with_config()
-            .limit(maximum_bytes + 1)
-            .reader(),
+            .into_reader()
+            .take(maximum_bytes + 1),
         output,
     )
     .map_err(|_| BackupClientError::Transport)?;
