@@ -25,10 +25,15 @@ struct Evidence {
 
 impl Evidence {
     fn new(allow_download: bool) -> Self {
-        Self::recording(allow_download, 2, 1000)
+        Self::recording(allow_download, 2, 1000, Duration::from_secs(10))
     }
 
-    fn recording(allow_download: bool, frames: u32, spacing_ms: u64) -> Self {
+    fn recording(
+        allow_download: bool,
+        frames: u32,
+        spacing_ms: u64,
+        export_timeout: Duration,
+    ) -> Self {
         let (root, catalog, manager, mut state, request) =
             super::super::super::export_storage_tests::setup_with_frames(
                 16 * 1024 * 1024,
@@ -51,14 +56,7 @@ impl Evidence {
             &state, &principal, request,
         )
         .unwrap();
-        wait_for_export(
-            &state,
-            if frames > 2 {
-                Duration::from_secs(90)
-            } else {
-                Duration::from_secs(10)
-            },
-        );
+        wait_for_export(&state, export_timeout);
         let binding = binding(&state);
         let (grant, token) = grant(&state, binding, allow_download);
         let context = sharing::context(&state).unwrap();

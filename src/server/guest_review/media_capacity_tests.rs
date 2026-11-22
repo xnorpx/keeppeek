@@ -143,8 +143,8 @@ fn resident_bytes(system: &mut sysinfo::System) -> u64 {
     system.process(pid).unwrap().memory()
 }
 
-fn qualify(frames: u32, spacing_ms: u64) {
-    let fixture = Evidence::recording(true, frames, spacing_ms);
+fn qualify(frames: u32, spacing_ms: u64, export_timeout: Duration) {
+    let fixture = Evidence::recording(true, frames, spacing_ms, export_timeout);
     let expected = &fixture.grant.intent.binding;
     let mut system = sysinfo::System::new().unwrap();
     let idle = resident_bytes(&mut system);
@@ -190,11 +190,11 @@ fn qualify(frames: u32, spacing_ms: u64) {
 
 #[test]
 fn eight_valid_guest_downloads_keep_the_other_seven_readable_when_one_is_revoked() {
-    qualify(2, 1000);
+    qualify(2, 1000, Duration::from_secs(10));
 }
 
 #[test]
 #[ignore = "run in its own process for guest media timing and resident-memory samples"]
 fn measure_eight_guest_downloads() {
-    qualify(64, 40);
+    qualify(64, 40, Duration::from_secs(90));
 }
