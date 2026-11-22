@@ -123,3 +123,43 @@ fn composition_offset_signedness_follows_the_fragment_version() {
         assert!(!sample.bytes.is_empty());
     }
 }
+
+#[test]
+fn hybrid_timing_rejects_both_initial_and_fragmented_ordinals() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/exact_frame_step/cfr.mp4");
+    let output = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args([
+            "-map",
+            "0:v:0",
+            "-c",
+            "copy",
+            "-movflags",
+            "+frag_keyframe",
+            "-f",
+            "mp4",
+            "pipe:1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let size = u64::try_from(output.stdout.len()).unwrap();
+    let reader = mp4::Mp4Reader::read_header(std::io::Cursor::new(output.stdout), size).unwrap();
+    let track = &reader.tracks()[&1];
+    assert_eq!(track.trak.mdia.minf.stbl.stsz.sample_count, 6);
+    assert_eq!(reader.moofs.len(), 1);
+    for ordinal in [1, 7, 12] {
+        assert!(matches!(
+            track.sample_timing(ordinal),
+            Err(mp4::Error::InvalidData(
+                "exact timing of hybrid sample-table and fragmented tracks is unsupported"
+            ))
+        ));
+    }
+}

@@ -902,6 +902,11 @@ impl Mp4Track {
 
     /// Looks up one-based sample timing without reading or allocating encoded sample data.
     pub fn sample_timing(&self, sample_id: u32) -> Result<Option<Mp4SampleTiming>> {
+        if !self.trafs.is_empty() && self.trak.mdia.minf.stbl.stsz.sample_count > 0 {
+            return Err(Error::InvalidData(
+                "exact timing of hybrid sample-table and fragmented tracks is unsupported",
+            ));
+        }
         if sample_id == 0 || sample_id > self.sample_count() {
             return Ok(None);
         }
