@@ -52,6 +52,9 @@ impl GuestRecording {
         event.end_time_ms =
             Some(required_timestamp_ms(request.end_time.as_ref(), "fixture end").unwrap() + 500);
         catalog.handle().insert_event(event).unwrap();
+        state = state.with_event_store(
+            EventStore::new(catalog.handle(), &directory.join("event-thumbnails"), 0).unwrap(),
+        );
         (
             state,
             Self {
