@@ -28,7 +28,7 @@ but the files remain authoritative:
 | ------------------- | ---------------------------------------------------- | -------------------------------------------------------- |
 | Rust                | `Cargo.toml`, `.github/workflows/ci.yml`             | Stable toolchain, Rust 2024 edition, `rustfmt`, `clippy` |
 | Cargo tools         | `.github/workflows/ci.yml`                           | `cargo-machete` 0.9.2, `cargo-nextest` 0.9.143           |
-| Bun                 | `ui/.bun-version`, `ui/package.json`                 | Bun 1.4.0                                                |
+| Bun                 | `ui/.bun-version`, `ui/package.json`                 | Bun 1.4.4                                                |
 | JavaScript packages | `ui/package.json`, `.npmrc`, `ui/bunfig.toml`        | Bun only, public npm registry, no lockfile               |
 | Python              | `examples/object_detection_service/.python-version`  | Python 3.12, no virtual environments                     |
 | Python packages     | `examples/object_detection_service/requirements.txt` | Unpinned, always newest releases                         |
@@ -193,13 +193,13 @@ Read the exact version from `ui/.bun-version`. On macOS or Linux, install that v
 official versioned installer:
 
 ```sh
-curl -fsSL https://bun.com/install | bash -s "bun-v1.4.0"
+curl -fsSL https://bun.com/install | bash -s "bun-v1.4.4"
 ```
 
 On Windows, use Bun's official versioned installer:
 
 ```powershell
-iex "& {$(irm https://bun.com/install.ps1)} -Version 1.4.0"
+iex "& {$(irm https://bun.com/install.ps1)} -Version 1.4.4"
 ```
 
 Substitute the version read from the file. Add `$HOME/.bun/bin` or

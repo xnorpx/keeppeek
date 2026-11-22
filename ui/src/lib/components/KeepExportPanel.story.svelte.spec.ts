@@ -4,6 +4,46 @@ import { render } from 'vitest-browser-svelte';
 import '../../app.css';
 import ExportLifecycleStory from '../../../visual-harness/stories/ExportLifecycleStory.svelte';
 
+const expectedLanes: Record<string, Array<[number, number]>> = {
+	running: [
+		[20, 42],
+		[78, 26],
+		[120, 80],
+		[216, 32]
+	],
+	ready: [
+		[20, 42],
+		[78, 100],
+		[194, 100]
+	],
+	partial: [
+		[20, 42],
+		[78, 33],
+		[127, 80],
+		[223, 32]
+	],
+	failed: [
+		[20, 42],
+		[78, 78],
+		[172, 54],
+		[242, 32],
+		[290, 14]
+	]
+};
+
+function expectContainedContent(panel: HTMLElement): void {
+	const panelBounds = panel.getBoundingClientRect();
+	for (const child of panel.querySelectorAll<HTMLElement>('*')) {
+		const bounds = child.getBoundingClientRect();
+		if (bounds.width === 0 || bounds.height === 0) continue;
+		const label = `${panel.dataset.exportStatus}: ${child.tagName} ${child.textContent}`;
+		expect(bounds.left, label).toBeGreaterThanOrEqual(panelBounds.left);
+		expect(bounds.right, label).toBeLessThanOrEqual(panelBounds.right);
+		expect(bounds.top, label).toBeGreaterThanOrEqual(panelBounds.top);
+		expect(bounds.bottom, label).toBeLessThanOrEqual(panelBounds.bottom);
+	}
+}
+
 describe('Board 29 export lifecycle story', () => {
 	it('renders all four production states inside the Paper frame', async () => {
 		await page.viewport(1440, 900);
@@ -42,33 +82,8 @@ describe('Board 29 export lifecycle story', () => {
 			throw new Error(`Board 29 card clipping: ${JSON.stringify(cardBounds)}`);
 		}
 
-		const expectedLanes: Record<string, Array<[number, number]>> = {
-			running: [
-				[20, 42],
-				[78, 26],
-				[120, 80],
-				[216, 32]
-			],
-			ready: [
-				[20, 42],
-				[78, 100],
-				[194, 100]
-			],
-			partial: [
-				[20, 42],
-				[78, 33],
-				[127, 80],
-				[223, 32]
-			],
-			failed: [
-				[20, 42],
-				[78, 78],
-				[172, 54],
-				[242, 32],
-				[290, 14]
-			]
-		};
 		for (const panel of panels) {
+			expectContainedContent(panel);
 			const status = panel.dataset.exportStatus;
 			expect(status).toBeTruthy();
 			const content = panel.querySelector<HTMLElement>('[data-export-job]');
@@ -84,5 +99,12 @@ describe('Board 29 export lifecycle story', () => {
 				})
 			).toEqual(expectedLanes[status!]);
 		}
+		await expect
+			.element(
+				page.getByText(
+					'Recorded audio timing unavailable. No correction snapshot was reported. Do not assume zero correction.'
+				)
+			)
+			.toBeVisible();
 	});
 });

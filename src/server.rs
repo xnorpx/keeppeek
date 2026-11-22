@@ -75,7 +75,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, RwLock, Weak,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -115,8 +115,17 @@ mod logging;
 mod mqtt_integration;
 mod native_events;
 pub(super) mod peek_layouts;
+mod recorded_audio;
+mod recorded_audio_media;
+mod recorded_audio_settings;
+#[cfg(test)]
+mod recorded_audio_settings_tests;
 pub(crate) mod recording_coverage;
 mod recording_maintenance;
+mod stored_encoding;
+mod stored_playback;
+mod stored_read;
+use stored_read::StoredReadRange;
 mod runtime_configuration;
 mod session_lifecycle;
 mod sharing;
@@ -252,6 +261,7 @@ struct CameraSettingsUpdate {
     event_recording_duration_secs: Option<u64>,
     event_pre_recording_duration_secs: Option<u64>,
     event_recording_stream: Option<crate::cameras::EventRecordingStream>,
+    recorded_audio: Option<crate::cameras::RecordedAudioSettings>,
 }
 
 #[derive(Deserialize)]
@@ -309,6 +319,7 @@ struct CameraSettings {
     event_recording_duration_secs: u64,
     event_pre_recording_duration_secs: u64,
     event_recording_stream: crate::cameras::EventRecordingStream,
+    recorded_audio: crate::cameras::RecordedAudioSettings,
     health: Option<String>,
     model: Option<String>,
 }
@@ -1350,6 +1361,18 @@ fn server_capabilities(
         .iter()
         .filter_map(proto_camera_stored_media_source)
         .collect();
+    proto::ServerCapabilities {
+        revision: 2,
+        cameras,
+        source_sessions,
+        stored_media_sources,
+        self_source_session_id: String::new(),
+        capability_ids: server_capability_ids(state),
+        access_session: None,
+    }
+}
+
+fn server_capability_ids(state: &ServerState) -> Vec<String> {
     let mut capability_ids = vec![
         "keeppeek.media-export.v1".to_owned(),
         "keeppeek.event-search".to_owned(),
@@ -1386,15 +1409,10 @@ fn server_capabilities(
     }
     capability_ids.push("keeppeek.identity.v1".to_owned());
     capability_ids.push(camera_permissions::CAPABILITY_ID.to_owned());
-    proto::ServerCapabilities {
-        revision: 2,
-        cameras,
-        source_sessions,
-        stored_media_sources,
-        self_source_session_id: String::new(),
-        capability_ids,
-        access_session: None,
+    if state.catalog.is_some() {
+        capability_ids.push(recorded_audio::CAPABILITY_ID.to_owned());
     }
+    capability_ids
 }
 
 fn connection_capabilities(
@@ -2854,6 +2872,7 @@ impl ServerControlHandler {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
         let (camera, onvif_error) = if request.query_onvif.unwrap_or(true) {
             match probe_onvif_camera(&config) {
@@ -3556,7 +3575,15 @@ struct StoredTimelineAttachment {
     path: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct StoredMediaIdentifiers {
+    initialization_id: u64,
+    sequence: u64,
+}
+
 struct StoredMediaBatch {
+    identifiers: StoredMediaIdentifiers,
+    audio_timing: Option<crate::storage::playback::AudioTimingEvidence>,
     archive: bool,
     content_type: String,
     fragment_time_ms: i64,
@@ -3584,6 +3611,7 @@ struct StoredMediaDispatch {
 }
 
 struct StoredMediaBatchRequest<'a> {
+    identifiers: StoredMediaIdentifiers,
     stored_media_id: &'a str,
     source_id: &'a str,
     stream_id: &'a str,
@@ -3602,7 +3630,12 @@ fn create_export_job(
     requester_id: &str,
     request: proto::CreateExportJob,
 ) -> Result<proto::ExportJob, ControlCommandError> {
-    export_storage::provenance::create(state, requester_id, request)
+    export_storage::creation::create(
+        state,
+        requester_id,
+        request,
+        export_storage::creation::TimingSource::Configured,
+    )
 }
 
 fn export_event_seed(
@@ -3895,7 +3928,12 @@ fn finish_export_worker(
         .export_jobs
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(record) = jobs.get_mut(job_id) else {
+    let record = jobs.get_mut(job_id).filter(|record| {
+        Arc::ptr_eq(&record.cancel, cancel)
+            && record.artifact_id == target.artifact_id
+            && record.job.status == proto::ExportJobStatus::Running as i32
+    });
+    let Some(record) = record else {
         drop(jobs);
         let _ = cleanup_export_attempt_artifacts(state, job_id, target.artifact_id);
         return;
@@ -3947,6 +3985,9 @@ fn complete_export_record(
     record.job.status = proto::ExportJobStatus::Ready as i32;
     record.job.progress_per_mille = 1_000;
     record.job.bytes_written = artifact.bytes;
+    if let Some(timing) = &mut record.job.recorded_audio {
+        recorded_audio::observe(timing, artifact.audio_timing);
+    }
     record.job.aligned_start_time = Some(millis_timestamp(artifact.aligned_start_ms));
     record.job.file_name = Some(target.file_name.to_owned());
     record.job.sha256 = Some(checksum);
@@ -4128,7 +4169,7 @@ fn retry_export_job(
     requester_id: &str,
     job_id: &str,
 ) -> Result<proto::ExportJob, ControlCommandError> {
-    export_storage::provenance::retry(state, requester_id, job_id)
+    export_storage::creation::retry(state, requester_id, job_id)
 }
 
 fn download_export(
@@ -4406,130 +4447,7 @@ fn open_stored_media(
     ),
     ControlCommandError,
 > {
-    validate_client_id(&open.stored_media_id, "stored media cursor ID")?;
-    let camera = state.camera(&open.source_id).ok_or_else(|| {
-        ControlCommandError::new(
-            proto::ErrorCode::NotFound,
-            404,
-            "stored media source was not found",
-        )
-    })?;
-    if !matches!(open.stream_id.as_str(), "main" | "sub")
-        || !camera
-            .info
-            .profiles
-            .iter()
-            .any(|profile| profile.stream == open.stream_id)
-    {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::NotFound,
-            404,
-            "stored media stream was not found",
-        ));
-    }
-    if !open.data_payload_routes.is_empty() {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::UnsupportedRequest,
-            501,
-            "stored timed-data playback is unavailable",
-        ));
-    }
-    let requested_time_ms = required_timestamp_ms(open.timestamp.as_ref(), "stored media time")?;
-    let end_time_ms = open
-        .end_time
-        .as_ref()
-        .map(|timestamp| required_timestamp_ms(Some(timestamp), "stored media end time"))
-        .transpose()?;
-    if end_time_ms.is_some_and(|end_time_ms| end_time_ms <= requested_time_ms) {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "stored media end time must follow its initial time",
-        ));
-    }
-    if !open.playback_rate.is_finite() || open.playback_rate <= 0.0 {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "stored media playback rate must be finite and positive",
-        ));
-    }
-    let mode = proto::StoredMediaMode::try_from(open.mode).map_err(|_| {
-        ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "stored media mode is invalid",
-        )
-    })?;
-    if mode == proto::StoredMediaMode::Unspecified {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "stored media mode is required",
-        ));
-    }
-    if mode == proto::StoredMediaMode::Scrub && open.playing {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "stored media scrub mode must be paused",
-        ));
-    }
-    let (media_target, media_channel) = data_channel_target(open.media_channel)?;
-    let requested_buffer_ms = optional_duration_ms(open.max_buffer_duration.as_ref())?;
-    let max_buffer_ms = if requested_buffer_ms == 0 {
-        u64::try_from(DEFAULT_STORED_MEDIA_BUFFER.as_millis()).unwrap_or(u64::MAX)
-    } else {
-        requested_buffer_ms
-    };
-    if max_buffer_ms > u64::try_from(MAX_STORED_MEDIA_BUFFER.as_millis()).unwrap_or(u64::MAX) {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "stored media buffer duration exceeds 300 seconds",
-        ));
-    }
-    let stored_stream_id = recording_stream(&camera, &open.stream_id).to_owned();
-    let recording_stream_id = recording_stream_id(&camera, &open.stream_id);
-    let batch = stored_media_batch(
-        state,
-        StoredMediaBatchRequest {
-            stored_media_id: &open.stored_media_id,
-            source_id: &open.source_id,
-            stream_id: &stored_stream_id,
-            recording_stream_id: &recording_stream_id,
-            requested_time_ms,
-            end_time_ms,
-            mode,
-            media_target,
-            max_buffer_ms,
-            generation: 1,
-        },
-    )?;
-    let demand = state.recording_demand.acquire(recording_stream_id.clone());
-    let status = stored_media_status(end_time_ms, batch.delivered_through_ms);
-    let cursor = StoredMediaCursor {
-        archive: batch.archive,
-        source_id: open.source_id,
-        stream_id: stored_stream_id,
-        recording_stream_id,
-        requested_time_ms,
-        end_time_ms,
-        mode,
-        playing: open.playing,
-        playback_rate: open.playback_rate,
-        media_target,
-        media_channel,
-        max_buffer_ms,
-        generation: 1,
-        content_type: batch.content_type.clone(),
-        fragment_time_ms: batch.fragment_time_ms,
-        delivered_through_ms: batch.delivered_through_ms,
-        status,
-        _demand: demand,
-    };
-    let cursor_state = proto_stored_media_state(&open.stored_media_id, &cursor);
-    Ok((cursor, cursor_state, batch.messages))
+    stored_playback::open(state, open)
 }
 
 fn seek_stored_media(
@@ -4537,97 +4455,7 @@ fn seek_stored_media(
     session_id: SessionId,
     seek: proto::SeekStoredMedia,
 ) -> Result<(proto::StoredMediaState, Vec<OutboundDataMessage>), ControlCommandError> {
-    let requested_time_ms =
-        required_timestamp_ms(seek.timestamp.as_ref(), "stored media seek time")?;
-    let (
-        source_id,
-        stream_id,
-        recording_stream_id,
-        end_time_ms,
-        mode,
-        media_target,
-        max_buffer_ms,
-        previous_generation,
-    ) = {
-        let cursors = state
-            .stored_media_cursors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cursor = cursors
-            .get(&(session_id, seek.stored_media_id.clone()))
-            .ok_or_else(|| {
-                ControlCommandError::new(
-                    proto::ErrorCode::NotFound,
-                    404,
-                    "stored media cursor was not found",
-                )
-            })?;
-        if cursor
-            .end_time_ms
-            .is_some_and(|end_time_ms| requested_time_ms >= end_time_ms)
-        {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::NotFound,
-                404,
-                "stored media seek time is unavailable",
-            ));
-        }
-        (
-            cursor.source_id.clone(),
-            cursor.stream_id.clone(),
-            cursor.recording_stream_id.clone(),
-            cursor.end_time_ms,
-            cursor.mode,
-            cursor.media_target,
-            cursor.max_buffer_ms,
-            cursor.generation,
-        )
-    };
-    let generation = previous_generation.checked_add(1).ok_or_else(|| {
-        ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            "stored media generation overflowed",
-        )
-    })?;
-    let batch = stored_media_batch(
-        state,
-        StoredMediaBatchRequest {
-            stored_media_id: &seek.stored_media_id,
-            source_id: &source_id,
-            stream_id: &stream_id,
-            recording_stream_id: &recording_stream_id,
-            requested_time_ms,
-            end_time_ms,
-            mode,
-            media_target,
-            max_buffer_ms,
-            generation,
-        },
-    )?;
-    let mut cursors = state
-        .stored_media_cursors
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let cursor = cursors
-        .get_mut(&(session_id, seek.stored_media_id.clone()))
-        .filter(|cursor| cursor.generation == previous_generation)
-        .ok_or_else(|| {
-            ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "stored media cursor changed during seek",
-            )
-        })?;
-    cursor.requested_time_ms = requested_time_ms;
-    cursor.generation = generation;
-    cursor.archive = batch.archive;
-    cursor.content_type = batch.content_type;
-    cursor.fragment_time_ms = batch.fragment_time_ms;
-    cursor.delivered_through_ms = batch.delivered_through_ms;
-    cursor.status = stored_media_status(cursor.end_time_ms, cursor.delivered_through_ms);
-    let cursor_state = proto_stored_media_state(&seek.stored_media_id, cursor);
-    Ok((cursor_state, batch.messages))
+    stored_playback::seek(state, session_id, seek)
 }
 
 fn refill_stored_media(
@@ -4635,100 +4463,7 @@ fn refill_stored_media(
     session_id: SessionId,
     refill: proto::RefillStoredMedia,
 ) -> Result<(proto::StoredMediaState, Vec<OutboundDataMessage>), ControlCommandError> {
-    let playback_time_ms =
-        required_timestamp_ms(refill.playback_time.as_ref(), "stored media playback time")?;
-    let (
-        recording_stream_id,
-        end_time_ms,
-        media_target,
-        max_buffer_ms,
-        previous_generation,
-        delivered_through_ms,
-        content_type,
-        can_refill,
-    ) = {
-        let cursors = state
-            .stored_media_cursors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cursor = cursors
-            .get(&(session_id, refill.stored_media_id.clone()))
-            .ok_or_else(|| {
-                ControlCommandError::new(
-                    proto::ErrorCode::NotFound,
-                    404,
-                    "stored media cursor was not found",
-                )
-            })?;
-        (
-            cursor.recording_stream_id.clone(),
-            cursor.end_time_ms,
-            cursor.media_target,
-            cursor.max_buffer_ms,
-            cursor.generation,
-            cursor.delivered_through_ms,
-            cursor.content_type.clone(),
-            cursor.status == proto::StoredMediaStatus::Active
-                && cursor.mode == proto::StoredMediaMode::Playback
-                && cursor.playing,
-        )
-    };
-    if !can_refill {
-        return Ok((
-            stored_media_cursor_state(state, session_id, &refill.stored_media_id)?,
-            Vec::new(),
-        ));
-    }
-    let target_buffer_ms = max_buffer_ms.min(STORED_MEDIA_TARGET_BUFFER_MS);
-    let buffer_end =
-        playback_time_ms.saturating_add(i64::try_from(target_buffer_ms).unwrap_or(i64::MAX));
-    let delivery_end = end_time_ms.map_or(buffer_end, |end_time| end_time.min(buffer_end));
-    if delivery_end <= delivered_through_ms {
-        return Ok((
-            stored_media_cursor_state(state, session_id, &refill.stored_media_id)?,
-            Vec::new(),
-        ));
-    }
-    let Some(batch) = stored_media_continuation_batch(
-        state,
-        &refill.stored_media_id,
-        &recording_stream_id,
-        delivered_through_ms,
-        delivery_end,
-        media_target,
-        previous_generation,
-    )?
-    else {
-        return Ok((
-            stored_media_cursor_state(state, session_id, &refill.stored_media_id)?,
-            Vec::new(),
-        ));
-    };
-    if batch.content_type != content_type {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            409,
-            "stored media codec changed during refill",
-        ));
-    }
-    let mut cursors = state
-        .stored_media_cursors
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let cursor = cursors
-        .get_mut(&(session_id, refill.stored_media_id.clone()))
-        .filter(|cursor| cursor.generation == previous_generation)
-        .ok_or_else(|| {
-            ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "stored media cursor changed during refill",
-            )
-        })?;
-    cursor.delivered_through_ms = batch.delivered_through_ms;
-    cursor.status = stored_media_status(cursor.end_time_ms, cursor.delivered_through_ms);
-    let cursor_state = proto_stored_media_state(&refill.stored_media_id, cursor);
-    Ok((cursor_state, batch.messages))
+    stored_playback::refill(state, session_id, refill)
 }
 
 fn stored_media_cursor_state(
@@ -4757,141 +4492,7 @@ fn set_stored_media_playback(
     session_id: SessionId,
     update: proto::SetStoredMediaPlayback,
 ) -> Result<(proto::StoredMediaState, Vec<OutboundDataMessage>), ControlCommandError> {
-    let playback_rate = update
-        .playback_rate
-        .map(|playback_rate| {
-            if !playback_rate.is_finite() || playback_rate <= 0.0 {
-                return Err(ControlCommandError::new(
-                    proto::ErrorCode::InvalidRequest,
-                    400,
-                    "stored media playback rate must be finite and positive",
-                ));
-            }
-            Ok(playback_rate)
-        })
-        .transpose()?;
-    let mode = update
-        .mode
-        .map(|mode| {
-            let mode = proto::StoredMediaMode::try_from(mode).map_err(|_| {
-                ControlCommandError::new(
-                    proto::ErrorCode::InvalidRequest,
-                    400,
-                    "stored media mode is invalid",
-                )
-            })?;
-            if mode == proto::StoredMediaMode::Unspecified {
-                return Err(ControlCommandError::new(
-                    proto::ErrorCode::InvalidRequest,
-                    400,
-                    "stored media mode is required",
-                ));
-            }
-            Ok(mode)
-        })
-        .transpose()?;
-    let (
-        source_id,
-        stream_id,
-        recording_stream_id,
-        requested_time_ms,
-        end_time_ms,
-        media_target,
-        max_buffer_ms,
-        generation,
-        next_mode,
-        next_playing,
-        starts_playback,
-    ) = {
-        let cursors = state
-            .stored_media_cursors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cursor = cursors
-            .get(&(session_id, update.stored_media_id.clone()))
-            .ok_or_else(|| {
-                ControlCommandError::new(
-                    proto::ErrorCode::NotFound,
-                    404,
-                    "stored media cursor was not found",
-                )
-            })?;
-        let next_mode = mode.unwrap_or(cursor.mode);
-        let next_playing = update.playing.unwrap_or(cursor.playing);
-        if next_mode == proto::StoredMediaMode::Scrub && next_playing {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                "stored media scrub mode must be paused",
-            ));
-        }
-        (
-            cursor.source_id.clone(),
-            cursor.stream_id.clone(),
-            cursor.recording_stream_id.clone(),
-            cursor.requested_time_ms,
-            cursor.end_time_ms,
-            cursor.media_target,
-            cursor.max_buffer_ms,
-            cursor.generation,
-            next_mode,
-            next_playing,
-            cursor.mode == proto::StoredMediaMode::Scrub
-                && next_mode == proto::StoredMediaMode::Playback,
-        )
-    };
-    let batch = starts_playback
-        .then(|| {
-            stored_media_batch(
-                state,
-                StoredMediaBatchRequest {
-                    stored_media_id: &update.stored_media_id,
-                    source_id: &source_id,
-                    stream_id: &stream_id,
-                    recording_stream_id: &recording_stream_id,
-                    requested_time_ms,
-                    end_time_ms,
-                    mode: next_mode,
-                    media_target,
-                    max_buffer_ms,
-                    generation,
-                },
-            )
-        })
-        .transpose()?;
-    let mut cursors = state
-        .stored_media_cursors
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let cursor = cursors
-        .get_mut(&(session_id, update.stored_media_id.clone()))
-        .filter(|cursor| cursor.generation == generation)
-        .ok_or_else(|| {
-            ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "stored media cursor changed during playback update",
-            )
-        })?;
-    cursor.mode = next_mode;
-    cursor.playing = next_playing;
-    if let Some(playback_rate) = playback_rate {
-        cursor.playback_rate = playback_rate;
-    }
-    let messages = if let Some(batch) = batch {
-        cursor.archive = batch.archive;
-        cursor.content_type = batch.content_type;
-        cursor.fragment_time_ms = batch.fragment_time_ms;
-        cursor.delivered_through_ms = batch.delivered_through_ms;
-        cursor.status = stored_media_status(cursor.end_time_ms, cursor.delivered_through_ms);
-        batch.messages
-    } else {
-        Vec::new()
-    };
-    Ok((
-        proto_stored_media_state(&update.stored_media_id, cursor),
-        messages,
-    ))
+    stored_playback::update(state, session_id, update)
 }
 
 fn stored_media_batch(
@@ -4955,6 +4556,7 @@ fn stored_media_batch(
         selected.start_ms,
         request.media_target,
         fragments,
+        request.identifiers,
     )
 }
 
@@ -5065,6 +4667,8 @@ fn encode_stored_media_keyframe(
         .collect();
     Ok(StoredMediaBatch {
         archive: location.archive.is_some(),
+        audio_timing: None,
+        identifiers: request.identifiers,
         content_type: format.keyframe_content_type,
         fragment_time_ms: fragment.start_ms,
         delivered_through_ms: fragment.start_ms,
@@ -5074,32 +4678,33 @@ fn encode_stored_media_keyframe(
 
 fn stored_media_continuation_batch(
     state: &ServerState,
-    stored_media_id: &str,
-    recording_stream_id: &str,
-    start_time_ms: i64,
+    request: StoredMediaBatchRequest<'_>,
     end_time_ms: i64,
-    media_target: DataChannelTarget,
-    generation: u64,
 ) -> Result<Option<StoredMediaBatch>, ControlCommandError> {
-    let Some(catalog) = &state.catalog else {
-        return Err(ControlCommandError::new(
+    let catalog = state.catalog.as_ref().ok_or_else(|| {
+        ControlCommandError::new(
             proto::ErrorCode::Unavailable,
             503,
             "recording catalog is unavailable",
-        ));
-    };
+        )
+    })?;
     let (fragments, _fragment_leases) = catalog
-        .leased_media_fragments_in_range(recording_stream_id, start_time_ms, end_time_ms)
+        .leased_media_fragments_in_range(
+            request.recording_stream_id,
+            request.requested_time_ms,
+            end_time_ms,
+        )
         .map_err(|error| stored_catalog_error("refill stored media fragments", error))?;
-    let Some(fragment_time_ms) = fragments.first().map(|fragment| fragment.start_ms) else {
+    let Some(time_ms) = fragments.first().map(|fragment| fragment.start_ms) else {
         return Ok(None);
     };
     encode_stored_media_fragments(
-        stored_media_id,
-        generation,
-        fragment_time_ms,
-        media_target,
+        request.stored_media_id,
+        request.generation,
+        time_ms,
+        request.media_target,
         fragments,
+        request.identifiers,
     )
     .map(Some)
 }
@@ -5110,71 +4715,16 @@ fn encode_stored_media_fragments(
     fragment_time_ms: i64,
     media_target: DataChannelTarget,
     fragments: Vec<CatalogMediaFragment>,
+    identifiers: StoredMediaIdentifiers,
 ) -> Result<StoredMediaBatch, ControlCommandError> {
-    let archive = fragments.iter().any(|fragment| fragment.archive.is_some());
-    let delivered_through_ms = fragments.iter().fold(fragment_time_ms, |end, fragment| {
-        end.max(
-            fragment
-                .start_ms
-                .saturating_add(i64::try_from(fragment.duration_ms).unwrap_or(i64::MAX)),
-        )
-    });
-    let mut last_period = None::<StoredMediaPeriodKey>;
-    let mut initialization_id = 0u64;
-    let mut content_type = None;
-    let mut messages = Vec::new();
-    let mut sequence = 0u64;
-    for fragment in fragments {
-        let initialization = read_stored_range(
-            Path::new(&fragment.path),
-            fragment.archive.as_ref(),
-            fragment.init_offset,
-            fragment.init_len,
-        )?;
-        let payload = read_stored_range(
-            Path::new(&fragment.path),
-            fragment.archive.as_ref(),
-            fragment.byte_offset,
-            fragment.byte_len,
-        )?;
-        let period = stored_media_period(&initialization, &payload)?;
-        let period_key = StoredMediaPeriodKey {
-            recording_id: fragment.recording_id.clone(),
-            sample_descriptions: period.sample_descriptions,
-        };
-        if last_period.as_ref() != Some(&period_key) {
-            initialization_id = initialization_id.saturating_add(1);
-            content_type.get_or_insert_with(|| period.content_type.clone());
-            append_initialization_messages(
-                &mut messages,
-                stored_media_id,
-                generation,
-                initialization_id,
-                &period.content_type,
-                &period.initialization,
-            )?;
-            last_period = Some(period_key);
-        }
-        sequence = sequence.saturating_add(1);
-        append_fragment_messages(
-            &mut messages,
-            stored_media_id,
-            generation,
-            initialization_id,
-            sequence,
-            fragment.start_ms,
-            fragment.duration_ms,
-            media_target,
-            &period.fragment,
-        )?;
-    }
-    Ok(StoredMediaBatch {
-        archive,
-        content_type: content_type.unwrap_or_else(|| "video/mp4".to_owned()),
+    stored_encoding::encode(
+        stored_media_id,
+        generation,
         fragment_time_ms,
-        delivered_through_ms,
-        messages,
-    })
+        media_target,
+        fragments,
+        identifiers,
+    )
 }
 
 fn stored_media_status(
@@ -5203,6 +4753,7 @@ fn proto_stored_media_state(
 ) -> proto::StoredMediaState {
     proto::StoredMediaState {
         archive: cursor.archive,
+        recorded_audio: Some(cursor.recorded_audio.clone()),
         stored_media_id: stored_media_id.to_owned(),
         status: cursor.status as i32,
         generation: cursor.generation,
@@ -5227,81 +4778,26 @@ fn read_stored_range(
     offset: u64,
     length: u64,
 ) -> Result<Vec<u8>, ControlCommandError> {
-    if let Some(archive) = archive {
-        let work = crate::storage::archive::target::Work {
-            deadline: Instant::now() + Duration::from_secs(30),
-            cancelled: &|| false,
-        };
-        return crate::storage::archive::read_range(archive, offset, length, &work)
-            .map_err(|error| {
-                tracing::warn!(%error, "archive playback range is unavailable");
-                ControlCommandError::new(proto::ErrorCode::Unavailable, 503,
-                    "Archive media is unavailable or failed integrity verification. Check the archive target and retry.")
-            });
-    }
-    if length == 0 || length > MAX_STORED_OBJECT_BYTES {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            "stored media byte range is invalid",
-        ));
-    }
-    let mut file = File::open(path).map_err(|error| {
-        ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            format!("unable to open indexed recording: {error}"),
-        )
-    })?;
-    let file_len = file
-        .metadata()
-        .map_err(|error| {
-            ControlCommandError::new(
-                proto::ErrorCode::Internal,
-                500,
-                format!("unable to inspect indexed recording: {error}"),
-            )
-        })?
-        .len();
-    if offset.checked_add(length).is_none_or(|end| end > file_len) {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            "stored media byte range exceeds its indexed recording",
-        ));
-    }
-    file.seek(SeekFrom::Start(offset)).map_err(|error| {
-        ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            format!("unable to seek indexed recording: {error}"),
-        )
-    })?;
-    let capacity = usize::try_from(length).map_err(|_| {
-        ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            "stored media byte range does not fit memory",
-        )
-    })?;
-    let mut payload = Vec::with_capacity(capacity);
-    file.take(length)
-        .read_to_end(&mut payload)
-        .map_err(|error| {
-            ControlCommandError::new(
-                proto::ErrorCode::Internal,
-                500,
-                format!("unable to read indexed recording: {error}"),
-            )
-        })?;
-    if payload.len() != capacity {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            "indexed recording byte range was truncated",
-        ));
-    }
-    Ok(payload)
+    let work = crate::storage::archive::target::Work {
+        deadline: Instant::now() + Duration::from_secs(30),
+        cancelled: &|| false,
+    };
+    read_stored_range_with_work(
+        StoredReadRange {
+            path,
+            archive,
+            offset,
+            length,
+        },
+        &work,
+    )
+}
+
+fn read_stored_range_with_work(
+    range: StoredReadRange<'_>,
+    work: &crate::storage::archive::target::Work<'_>,
+) -> Result<Vec<u8>, ControlCommandError> {
+    stored_read::read(range, work)
 }
 
 fn fragmented_mp4_content_type(initialization: &[u8]) -> Result<String, ControlCommandError> {
@@ -5309,52 +4805,11 @@ fn fragmented_mp4_content_type(initialization: &[u8]) -> Result<String, ControlC
         Cursor::new(initialization),
         initialization.len().try_into().unwrap_or(u64::MAX),
     )
-    .map_err(|error| {
-        ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            format!("unable to parse indexed MP4 initialization: {error}"),
-        )
-    })?;
+    .map_err(|error| stored_mp4_period_error("parse initialization", error))?;
     let mut codecs = Vec::new();
     let mut has_video = false;
     for track in reader.tracks().values() {
-        let track_type = track.track_type().map_err(|error| {
-            ControlCommandError::new(
-                proto::ErrorCode::Internal,
-                500,
-                format!("unable to read indexed MP4 track type: {error}"),
-            )
-        })?;
-        match track_type {
-            mp4::TrackType::Video => {
-                for index in 1..=track.sample_description_count() {
-                    let decoder = track
-                        .video_decoder_config_for_description(
-                            u32::try_from(index).unwrap_or(u32::MAX),
-                        )
-                        .map_err(|error| {
-                            ControlCommandError::new(
-                                proto::ErrorCode::Internal,
-                                500,
-                                format!("unable to read indexed MP4 video codec: {error}"),
-                            )
-                        })?;
-                    if let Some(decoder) = decoder {
-                        has_video = true;
-                        if !codecs.contains(&decoder.codec) {
-                            codecs.push(decoder.codec);
-                        }
-                    }
-                }
-            }
-            mp4::TrackType::Audio => {
-                if matches!(track.media_type(), Ok(mp4::MediaType::AAC)) {
-                    codecs.push("mp4a.40.2".to_owned());
-                }
-            }
-            mp4::TrackType::Subtitle => {}
-        }
+        has_video |= append_fragmented_mp4_codecs(track, &mut codecs)?;
     }
     if !has_video {
         return Err(ControlCommandError::new(
@@ -5363,7 +4818,41 @@ fn fragmented_mp4_content_type(initialization: &[u8]) -> Result<String, ControlC
             "indexed MP4 initialization has no supported video track",
         ));
     }
+    // Track maps do not retain order. Refill compares this MIME string across periods.
+    codecs.sort_unstable();
+    codecs.dedup();
     Ok(format!("video/mp4; codecs=\"{}\"", codecs.join(", ")))
+}
+
+fn append_fragmented_mp4_codecs(
+    track: &mp4::Mp4Track,
+    codecs: &mut Vec<String>,
+) -> Result<bool, ControlCommandError> {
+    let track_type = track
+        .track_type()
+        .map_err(|error| stored_mp4_period_error("read track type", error))?;
+    match track_type {
+        mp4::TrackType::Video => {
+            let mut video = false;
+            for index in 1..=track.sample_description_count() {
+                let decoder = track
+                    .video_decoder_config_for_description(u32::try_from(index).unwrap_or(u32::MAX))
+                    .map_err(|error| stored_mp4_period_error("read video codec", error))?;
+                if let Some(decoder) = decoder {
+                    video = true;
+                    codecs.push(decoder.codec);
+                }
+            }
+            Ok(video)
+        }
+        mp4::TrackType::Audio => {
+            if matches!(track.media_type(), Ok(mp4::MediaType::AAC)) {
+                codecs.push("mp4a.40.2".to_owned());
+            }
+            Ok(false)
+        }
+        mp4::TrackType::Subtitle => Ok(false),
+    }
 }
 
 fn stored_media_period(
@@ -8136,6 +7625,7 @@ fn proto_camera_settings(camera: CameraSettings) -> proto::CameraSettings {
             .unwrap_or(u32::MAX),
         health: camera.health,
         model: camera.model,
+        recorded_audio: Some(recorded_audio_settings::to_proto(camera.recorded_audio)),
     }
 }
 
@@ -8160,6 +7650,10 @@ fn camera_settings_update_from_proto(
         event_recording_duration_secs: update.event_recording_duration_secs.map(u64::from),
         event_pre_recording_duration_secs: update.event_pre_recording_duration_secs.map(u64::from),
         event_recording_stream: optional_event_recording_stream(update.event_recording_stream)?,
+        recorded_audio: update
+            .recorded_audio
+            .map(recorded_audio_settings::from_proto)
+            .transpose()?,
     })
 }
 
@@ -8651,6 +8145,9 @@ fn proto_access_audit_event(event: AccessAuditEvent) -> proto::AccessAuditEvent 
 }
 
 struct StoredMediaCursor {
+    incarnation: Uuid,
+    identifiers: StoredMediaIdentifiers,
+    recorded_audio: proto::RecordedAudioTiming,
     archive: bool,
     source_id: String,
     stream_id: String,
@@ -8673,6 +8170,7 @@ struct StoredMediaCursor {
 
 #[derive(Clone)]
 struct ExportJobRecord {
+    recording_stream_id: Option<String>,
     requester_id: String,
     artifact_id: String,
     /// The configured camera incarnation when this export attempt was created.
@@ -8740,6 +8238,8 @@ struct PersistedExportHistory {
 
 #[derive(Serialize, Deserialize)]
 struct PersistedExportJobRecord {
+    #[serde(default)]
+    recording_stream_id: Option<String>,
     requester_id: String,
     artifact_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -8760,6 +8260,7 @@ struct PersistedExportJobRecord {
 impl PersistedExportJobRecord {
     fn from_record(record: &ExportJobRecord) -> Self {
         Self {
+            recording_stream_id: record.recording_stream_id.clone(),
             requester_id: record.requester_id.clone(),
             artifact_id: record.artifact_id.clone(),
             source_identity: record.source_identity,
@@ -8784,6 +8285,18 @@ impl PersistedExportJobRecord {
         let request =
             proto::CreateExportJob::decode(URL_SAFE_NO_PAD.decode(&self.request)?.as_slice())?;
         let job = proto::ExportJob::decode(URL_SAFE_NO_PAD.decode(&self.job)?.as_slice())?;
+        recorded_audio::validate_snapshot(job.recorded_audio.as_ref())
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+        if job.recorded_audio.is_some() {
+            anyhow::ensure!(
+                self.recording_stream_id
+                    .as_ref()
+                    .is_some_and(|stream| !stream.is_empty()
+                        && stream.len() <= 1024
+                        && !stream.chars().any(char::is_control)),
+                "corrected export is missing its captured recording source"
+            );
+        }
         anyhow::ensure!(
             request.job_id == job.job_id
                 && safe_export_job_id(&job.job_id)
@@ -8814,6 +8327,7 @@ impl PersistedExportJobRecord {
     ) -> anyhow::Result<ExportJobRecord> {
         let (request, job) = self.messages()?;
         let mut record = ExportJobRecord {
+            recording_stream_id: self.recording_stream_id,
             requester_id: self.requester_id,
             artifact_id: self.artifact_id,
             source_identity: self.source_identity,
@@ -8984,6 +8498,7 @@ pub struct ServerState {
     api_session_owners: Arc<Mutex<HashMap<SessionId, ApiSessionRecord>>>,
     http_stream_cancellations: Arc<Mutex<Vec<HttpStreamCancellation>>>,
     stored_media_cursors: Arc<Mutex<HashMap<(SessionId, String), StoredMediaCursor>>>,
+    recorded_audio_workers: Arc<AtomicUsize>,
     stored_media_cursor_reservations: Arc<Mutex<HashMap<(SessionId, String), uuid::Uuid>>>,
     ptz_owners: Arc<Mutex<HashMap<String, camera_control::Owner>>>,
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
@@ -9170,6 +8685,7 @@ impl ServerState {
             api_session_owners: Arc::new(Mutex::new(HashMap::new())),
             http_stream_cancellations: Arc::new(Mutex::new(Vec::new())),
             stored_media_cursors: Arc::new(Mutex::new(HashMap::new())),
+            recorded_audio_workers: Arc::new(AtomicUsize::new(0)),
             stored_media_cursor_reservations: Arc::new(Mutex::new(HashMap::new())),
             ptz_owners: Arc::new(Mutex::new(HashMap::new())),
             export_jobs: Arc::new(Mutex::new(export_jobs)),
@@ -12497,6 +12013,7 @@ fn camera_settings_entry(
         event_recording_duration_secs: configuration.event_recording_duration_secs,
         event_pre_recording_duration_secs: configuration.event_pre_recording_duration_secs,
         event_recording_stream: configuration.event_recording_stream,
+        recorded_audio: configuration.recorded_audio,
         health,
         model: camera.and_then(|camera| camera.info.model.clone()),
     }
@@ -13007,6 +12524,18 @@ fn preserved_retention_settings(
 }
 
 fn save_camera_settings(
+    update: CameraSettingsUpdate,
+    router_tx: &FacadeSender<RouterMessage>,
+    state: &ServerState,
+    camera_id: &str,
+) -> Result<CameraSettingsUpdateResponse, ControlCommandError> {
+    if recorded_audio_settings::only(&update) {
+        return recorded_audio_settings::save(&update, state, camera_id);
+    }
+    save_camera_connection_settings(update, router_tx, state, camera_id)
+}
+
+fn save_camera_connection_settings(
     mut update: CameraSettingsUpdate,
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
@@ -13241,6 +12770,10 @@ fn save_camera_settings(
                     .map(|camera| camera.event_recording_duration_secs)
             })
             .unwrap_or(60),
+        recorded_audio: recorded_audio_settings::merged(
+            update.recorded_audio,
+            existing_config.as_ref(),
+        )?,
     };
     if config.event_pre_recording_duration_secs > 30 {
         return Err(ControlCommandError::new(
@@ -13302,48 +12835,7 @@ fn save_camera_settings(
     } else {
         health
     };
-    let camera = CameraSettings {
-        id: config.ip.to_string(),
-        ip: config.ip.to_string(),
-        display_name: config.display_name.clone(),
-        manufacturer_override: config.manufacturer_override().map(str::to_owned),
-        username_configured: true,
-        password_configured: true,
-        onvif_port: config.onvif_port,
-        http_port: config.http_port,
-        main_rtsp_url: camera_setting_for_output(
-            Some(config_path),
-            &config,
-            "main_rtsp_url",
-            config.main_rtsp_url.as_deref(),
-        ),
-        sub_rtsp_url: camera_setting_for_output(
-            Some(config_path),
-            &config,
-            "sub_rtsp_url",
-            config.sub_rtsp_url.as_deref(),
-        ),
-        uid_configured: config.uid.is_some(),
-        backend: camera_backend_name(config.backend).to_owned(),
-        transport: camera_transport_name(config.transport).to_owned(),
-        record_generic_motion_events: config.record_generic_motion_events,
-        recording_mode: match config.recording_mode {
-            CameraRecordingMode::Off => "off",
-            CameraRecordingMode::Sub => "sub",
-            CameraRecordingMode::Main => "main",
-            CameraRecordingMode::Both => "both",
-            CameraRecordingMode::EventBoost => "event-boost",
-            CameraRecordingMode::EventOnly => "event-only",
-        }
-        .to_owned(),
-        event_recording_duration_secs: config.event_recording_duration_secs,
-        event_pre_recording_duration_secs: config.event_pre_recording_duration_secs,
-        event_recording_stream: config.event_recording_stream,
-        health,
-        model: existing
-            .as_ref()
-            .and_then(|camera| camera.info.model.clone()),
-    };
+    let camera = camera_settings_entry(&config, existing.as_ref(), health, Some(config_path));
     Ok(CameraSettingsUpdateResponse {
         camera,
         restart_required: !dynamically_started,
@@ -13868,6 +13360,26 @@ mod tests {
         profiles::{CameraProfileOverride, RuntimeProfile},
     };
 
+    fn spawn_router_query_worker(
+        mut router: crate::runtime::Router,
+    ) -> std::thread::JoinHandle<usize> {
+        std::thread::spawn(move || {
+            // A wakeup can be empty, and request setup can precede the actual router query.
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(
+                    !remaining.is_zero(),
+                    "test request never reached the router"
+                );
+                let handled = router.wait_and_drain(Some(remaining)).unwrap();
+                if handled != 0 {
+                    return handled;
+                }
+            }
+        })
+    }
+
     #[test]
     fn persisted_active_profile_privacy_is_restored_into_the_server_media_gate() {
         let camera_identity = uuid::Uuid::new_v4().to_string();
@@ -14265,6 +13777,7 @@ mod tests {
             0,
             DataChannelTarget::Reliable,
             fragments,
+            StoredMediaIdentifiers::default(),
         )
         .unwrap();
         let content_types = batch
@@ -14607,6 +14120,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
         let mut state = ServerState::empty();
         state.cameras = Arc::new(RwLock::new(vec![camera_entry(&config, None)]));
@@ -14724,6 +14238,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
         let config = Config::default();
         let storage = StorageConfig::default();
@@ -14767,13 +14282,12 @@ mod tests {
             WebRtc::new(),
         )
         .with_health_registry(registry);
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_worker =
-            std::thread::spawn(move || router.wait_and_drain(Some(Duration::from_secs(2))));
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_worker = spawn_router_query_worker(router);
 
         let health = server_health(&router_tx, &state);
 
-        assert_eq!(router_worker.join().unwrap().unwrap(), 1);
+        assert_eq!(router_worker.join().unwrap(), 1);
         assert_eq!(health.totals.ingress_fps, 15.0);
         assert_eq!(health.totals.ingress_bitrate_bps, 512_000);
         assert_eq!(health.totals.frames, 100);
@@ -14817,6 +14331,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
         let config = Config::default();
         let storage = StorageConfig::default();
@@ -14877,11 +14392,10 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(router.wait_and_drain(Some(Duration::ZERO)).unwrap(), 1);
-        let router_worker =
-            std::thread::spawn(move || router.wait_and_drain(Some(Duration::from_secs(30))));
+        let router_worker = spawn_router_query_worker(router);
 
         let mut health = server_health(&router_tx, &state);
-        assert_eq!(router_worker.join().unwrap().unwrap(), 1);
+        assert_eq!(router_worker.join().unwrap(), 1);
         assert_eq!(health.cameras[0].state, CameraHealthState::Starting);
         assert_eq!(health.cameras[0].reason, CameraHealthReason::Starting);
         assert_eq!(health.totals.connected_cameras, 1);
@@ -17438,6 +16952,7 @@ mod tests {
             control_request::Command::StoredMediaCommand(proto::StoredMediaCommand {
                 action: Some(proto::stored_media_command::Action::Open(
                     proto::OpenStoredMedia {
+                        recorded_audio_preview: None,
                         source_id: "127.0.0.1".to_owned(),
                         ..Default::default()
                     },
@@ -19993,6 +19508,7 @@ mod tests {
         let (_, paused_playback_state, paused_playback_messages) = open_stored_media(
             &state,
             proto::OpenStoredMedia {
+                recorded_audio_preview: None,
                 stored_media_id: "paused-prebuffer".to_owned(),
                 source_id: "127.0.0.1".to_owned(),
                 stream_id: "main".to_owned(),
@@ -20042,6 +19558,7 @@ mod tests {
                 command: Some(control_request::Command::StoredMediaCommand(
                     proto::StoredMediaCommand {
                         action: Some(stored_media_command::Action::Open(proto::OpenStoredMedia {
+                            recorded_audio_preview: None,
                             stored_media_id: cursor_id.to_owned(),
                             source_id: "127.0.0.1".to_owned(),
                             stream_id: "main".to_owned(),
@@ -20128,6 +19645,7 @@ mod tests {
                 command: Some(control_request::Command::StoredMediaCommand(
                     proto::StoredMediaCommand {
                         action: Some(stored_media_command::Action::Open(proto::OpenStoredMedia {
+                            recorded_audio_preview: None,
                             stored_media_id: cursor_id.to_owned(),
                             source_id: "127.0.0.1".to_owned(),
                             stream_id: "main".to_owned(),
@@ -20183,6 +19701,7 @@ mod tests {
                     proto::StoredMediaCommand {
                         action: Some(stored_media_command::Action::SetPlayback(
                             proto::SetStoredMediaPlayback {
+                                recorded_audio_preview: None,
                                 stored_media_id: cursor_id.to_owned(),
                                 playing: Some(true),
                                 playback_rate: Some(1.0),
@@ -20273,6 +19792,7 @@ mod tests {
                     proto::StoredMediaCommand {
                         action: Some(stored_media_command::Action::SetPlayback(
                             proto::SetStoredMediaPlayback {
+                                recorded_audio_preview: None,
                                 stored_media_id: cursor_id.to_owned(),
                                 playing: Some(false),
                                 playback_rate: None,
@@ -20337,6 +19857,7 @@ mod tests {
                     proto::StoredMediaCommand {
                         action: Some(stored_media_command::Action::SetPlayback(
                             proto::SetStoredMediaPlayback {
+                                recorded_audio_preview: None,
                                 stored_media_id: cursor_id.to_owned(),
                                 playing: Some(true),
                                 playback_rate: Some(1.0),
@@ -20381,6 +19902,7 @@ mod tests {
                     proto::StoredMediaCommand {
                         action: Some(stored_media_command::Action::SetPlayback(
                             proto::SetStoredMediaPlayback {
+                                recorded_audio_preview: None,
                                 stored_media_id: cursor_id.to_owned(),
                                 playing: Some(false),
                                 playback_rate: Some(2.0),
@@ -20428,6 +19950,7 @@ mod tests {
                 command: Some(control_request::Command::StoredMediaCommand(
                     proto::StoredMediaCommand {
                         action: Some(stored_media_command::Action::Open(proto::OpenStoredMedia {
+                            recorded_audio_preview: None,
                             stored_media_id: "disconnect-review".to_owned(),
                             source_id: "127.0.0.1".to_owned(),
                             stream_id: "main".to_owned(),
@@ -20943,6 +20466,42 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    fn active_export_fixture(
+        state: &ServerState,
+        request: &proto::CreateExportJob,
+    ) -> ExportJobRecord {
+        let camera = state.camera(&request.source_id).unwrap();
+        let stream = recording_stream(&camera, &request.stream_id);
+        let now_ms = i64::try_from(unix_time_ms()).unwrap();
+        ExportJobRecord {
+            recording_stream_id: Some(recording_stream_id(&camera, &request.stream_id)),
+            requester_id: "owner".to_owned(),
+            artifact_id: "active-attempt".to_owned(),
+            source_identity: None,
+            owner_key: None,
+            media_proof: None,
+            request: request.clone(),
+            job: proto::ExportJob {
+                recorded_audio: Some(recorded_audio::configured(&camera, stream).unwrap()),
+                job_id: request.job_id.clone(),
+                source_id: request.source_id.clone(),
+                stream_id: request.stream_id.clone(),
+                requested_start_time: request.start_time,
+                requested_end_time: request.end_time,
+                status: proto::ExportJobStatus::Running as i32,
+                progress_per_mille: 100,
+                ..Default::default()
+            },
+            path: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            created_at_ms: now_ms,
+            started_at_ms: Some(now_ms),
+            updated_at_ms: now_ms,
+            completed_at_ms: None,
+            downloaded_at_ms: None,
+        }
+    }
+
     #[test]
     fn export_active_duplicates_are_requester_scoped_and_option_exact() {
         let mut state = media_test_state();
@@ -20957,45 +20516,12 @@ mod tests {
             burn_in_timestamp: false,
             event_seed: None,
         };
-        let now_ms = i64::try_from(unix_time_ms()).unwrap();
-        state.export_jobs.lock().unwrap().insert(
-            request.job_id.clone(),
-            ExportJobRecord {
-                requester_id: "owner".to_owned(),
-                artifact_id: "active-attempt".to_owned(),
-                source_identity: None,
-                owner_key: None,
-                media_proof: None,
-                request: request.clone(),
-                job: proto::ExportJob {
-                    job_id: request.job_id.clone(),
-                    source_id: request.source_id.clone(),
-                    stream_id: request.stream_id.clone(),
-                    requested_start_time: request.start_time,
-                    requested_end_time: request.end_time,
-                    aligned_start_time: None,
-                    status: proto::ExportJobStatus::Running as i32,
-                    progress_per_mille: 100,
-                    bytes_written: 0,
-                    estimated_bytes: None,
-                    file_name: None,
-                    sha256: None,
-                    expires_at: None,
-                    missing_ranges: Vec::new(),
-                    error: None,
-                    retryable: false,
-                    burn_in_timestamp: false,
-                    event_seed: None,
-                },
-                path: None,
-                cancel: Arc::new(AtomicBool::new(false)),
-                created_at_ms: now_ms,
-                started_at_ms: Some(now_ms),
-                updated_at_ms: now_ms,
-                completed_at_ms: None,
-                downloaded_at_ms: None,
-            },
-        );
+        let active = active_export_fixture(&state, &request);
+        state
+            .export_jobs
+            .lock()
+            .unwrap()
+            .insert(request.job_id.clone(), active);
 
         let mut duplicate = request;
         duplicate.job_id = "new-client-id".to_owned();
@@ -21080,6 +20606,7 @@ mod tests {
         state.export_jobs.lock().unwrap().insert(
             request.job_id.clone(),
             ExportJobRecord {
+                recording_stream_id: None,
                 requester_id: "owner".to_owned(),
                 artifact_id: "private-ready-artifact".to_owned(),
                 source_identity: None,
@@ -21087,6 +20614,7 @@ mod tests {
                 media_proof: None,
                 request: request.clone(),
                 job: proto::ExportJob {
+                    recorded_audio: None,
                     job_id: request.job_id.clone(),
                     source_id: request.source_id.clone(),
                     stream_id: request.stream_id.clone(),
@@ -21151,6 +20679,7 @@ mod tests {
             state.export_jobs.lock().unwrap().insert(
                 job_id.to_owned(),
                 ExportJobRecord {
+                    recording_stream_id: None,
                     requester_id: "owner".to_owned(),
                     artifact_id: artifact_id.clone(),
                     source_identity: None,
@@ -21158,6 +20687,7 @@ mod tests {
                     media_proof: None,
                     request: request.clone(),
                     job: proto::ExportJob {
+                        recorded_audio: None,
                         job_id: job_id.to_owned(),
                         source_id: request.source_id,
                         stream_id: request.stream_id,
@@ -21387,6 +20917,7 @@ mod tests {
         state.export_jobs.lock().unwrap().insert(
             job_id.to_owned(),
             ExportJobRecord {
+                recording_stream_id: None,
                 requester_id: "owner".to_owned(),
                 artifact_id: artifact_id.to_owned(),
                 source_identity: None,
@@ -21394,6 +20925,7 @@ mod tests {
                 media_proof: None,
                 request: request.clone(),
                 job: proto::ExportJob {
+                    recorded_audio: None,
                     job_id: job_id.to_owned(),
                     source_id: request.source_id,
                     stream_id: request.stream_id,
@@ -21477,6 +21009,7 @@ mod tests {
         };
         let job = |job_id: &str, status: proto::ExportJobStatus, file_name: Option<&str>| {
             proto::ExportJob {
+                recorded_audio: None,
                 job_id: job_id.to_owned(),
                 source_id: "front-door".to_owned(),
                 stream_id: "main".to_owned(),
@@ -21499,6 +21032,7 @@ mod tests {
         };
         let record =
             |request: proto::CreateExportJob, job: proto::ExportJob, path| ExportJobRecord {
+                recording_stream_id: None,
                 requester_id: "local-administrator".to_owned(),
                 artifact_id: format!("{}-attempt", job.job_id),
                 source_identity: None,
@@ -21997,10 +21531,8 @@ mod tests {
         )
         .unwrap();
         let state = ServerState::empty().with_camera_config_path(config_path.clone());
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let handler = ServerControlHandler::new(state, router_tx);
         let response = handler
             .handle(proto::Request {
@@ -22035,6 +21567,7 @@ mod tests {
                                     proto::EventRecordingStream::Sub as i32,
                                 ),
                                 expected_configuration_revision: String::new(),
+                                recorded_audio: None,
                             },
                         )),
                     },
@@ -22138,10 +21671,8 @@ mod tests {
         )
         .unwrap();
         let state = ServerState::empty().with_camera_config_path(config_path.clone());
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let handler = ServerControlHandler::new(state, router_tx);
         let response = handler
             .handle(proto::Request {
@@ -22176,6 +21707,7 @@ mod tests {
                                 event_pre_recording_duration_secs: None,
                                 event_recording_stream: None,
                                 expected_configuration_revision: String::new(),
+                                recorded_audio: None,
                             },
                         )),
                     },
@@ -22511,10 +22043,8 @@ mod tests {
     #[test]
     fn data_channel_health_get_returns_typed_snapshot() {
         let state = ServerState::empty();
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = ServerControlHandler::new(state, router_tx)
             .handle(proto::Request {
                 request_id: 88,
@@ -23319,10 +22849,8 @@ mod tests {
     #[test]
     fn health_command_returns_runtime_and_resource_sections() {
         let state = ServerState::empty();
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = ServerControlHandler::new(state, router_tx)
             .handle(proto::Request {
                 request_id: 95,
@@ -23374,10 +22902,8 @@ mod tests {
         state.upsert_camera(camera_entry(&config, None));
         state.health.events.record_kind(config.ip, "digital_input");
         assert!(state.health.snapshot().is_empty());
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let request = Request::fake_http("GET", "/metrics", Vec::new(), Vec::new());
         let response = handle_request(&request, &router_tx, &state);
         assert_eq!(response.status_code, 200);
@@ -23395,10 +22921,8 @@ mod tests {
     #[test]
     fn metrics_route_returns_prometheus_text_exposition() {
         let state = ServerState::empty();
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let request = Request::fake_http("GET", "/metrics", Vec::new(), Vec::new());
 
         let response = handle_request(&request, &router_tx, &state);
@@ -23473,6 +22997,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
         let camera_configs = HashMap::from([
             (
@@ -23501,10 +23026,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = handle_request(&request, &router_tx, &state);
         assert_eq!(response.status_code, 200);
         assert_eq!(router_thread.join().unwrap(), 1);
@@ -23515,10 +23038,8 @@ mod tests {
         assert_eq!(first["cameras"][0]["streams"][0]["coverage_percent"], 0.0);
         let token = first["next_page_token"].as_str().unwrap();
 
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let metrics = handle_request(
             &Request::fake_http("GET", "/metrics", Vec::new(), Vec::new()),
             &router_tx,
@@ -23539,10 +23060,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = handle_request(&request, &router_tx, &state);
         assert_eq!(response.status_code, 200);
         assert_eq!(router_thread.join().unwrap(), 1);
@@ -23573,10 +23092,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = handle_request(&request, &router_tx, &state);
         assert_eq!(response.status_code, 409);
         assert_eq!(router_thread.join().unwrap(), 1);
@@ -23614,10 +23131,8 @@ mod tests {
             RecordingDemand::new(Duration::ZERO),
             WebRtc::new(),
         );
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = ServerControlHandler::new(state, router_tx)
             .handle(proto::Request {
                 request_id: 97,
@@ -23667,6 +23182,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
 
@@ -23710,9 +23226,7 @@ mod tests {
             .expect("configured camera streams must be advertised while starting");
         assert_eq!(stored_source.streams.len(), 2);
 
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let router_thread = spawn_router_query_worker(router);
         let settings = handler
             .handle(proto::Request {
                 request_id: 89,
@@ -23764,6 +23278,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config.clone()])]);
         let state = ServerState::new(
@@ -23928,6 +23443,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
         let state = ServerState::new(
@@ -23938,7 +23454,7 @@ mod tests {
             RecordingDemand::new(Duration::ZERO),
             WebRtc::new(),
         );
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
         let handler = ServerControlHandler::new(state, router_tx);
         let capabilities = handler
             .initial_capabilities(SessionId::from_u64(0))
@@ -23956,9 +23472,7 @@ mod tests {
             .expect("configured camera streams must be advertised");
         assert_eq!(stored.streams.len(), 2);
 
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let router_thread = spawn_router_query_worker(router);
         let health = handler
             .handle(proto::Request {
                 request_id: 103,
@@ -24068,6 +23582,7 @@ mod tests {
                 event_recording_duration_secs: 60,
                 event_pre_recording_duration_secs: 0,
                 event_recording_stream: Default::default(),
+                recorded_audio: Default::default(),
             },
             groups: vec!["cameras".to_owned()],
             battery_uid: None,
@@ -24122,6 +23637,7 @@ mod tests {
             event_recording_duration_secs: 60,
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
         };
         let camera_configs = HashMap::from([
             ("Exterior".to_owned(), vec![front.clone()]),
@@ -24151,10 +23667,8 @@ mod tests {
         let config_path = directory.join("config.toml");
         crate::config::write_private_file(&config_path, b"[cameras]\n").unwrap();
         let state = ServerState::empty().with_camera_config_path(config_path.clone());
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
 
         let saved_response = save_camera_settings(
             CameraSettingsUpdate {
@@ -24198,10 +23712,8 @@ mod tests {
             Some("rtsp://192.0.2.77:8554/live/sub")
         );
 
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let response = ServerControlHandler::new(state.clone(), router_tx)
             .handle(proto::Request {
                 request_id: 91,
@@ -24234,10 +23746,8 @@ mod tests {
         );
         assert_eq!(router_thread.join().unwrap(), 1);
 
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         save_camera_settings(
             CameraSettingsUpdate {
                 display_name: Some(Some("Updated Manual Gate".to_owned())),
@@ -24259,10 +23769,8 @@ mod tests {
             Some("rtsp://192.0.2.77:8554/live/main")
         );
 
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         save_camera_settings(
             CameraSettingsUpdate {
                 main_rtsp_url: Some(None),
@@ -24405,10 +23913,8 @@ mod tests {
                 toml::Value::String("reo-proto".to_owned()),
             );
         crate::config::write_configuration_table(&config_path, &current).unwrap();
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
 
         let saved = save_camera_settings(
             CameraSettingsUpdate {
@@ -24443,10 +23949,8 @@ mod tests {
         let path = directory.join("config.toml");
         crate::config::write_private_file(&path, b"[camera_defaults]\nusername='operator'\npassword='password'\nevent_pre_recording_duration_secs=12\nevent_recording_stream='sub'\n[cameras]\n").unwrap();
         let state = ServerState::empty().with_camera_config_path(path.clone());
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
+        let (router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = spawn_router_query_worker(router);
         let saved = save_camera_settings(
             CameraSettingsUpdate {
                 recording_mode: Some(CameraRecordingMode::EventOnly),

@@ -75,10 +75,49 @@ fn fragment(path: &Path, id: &str, start_ms: i64) -> CatalogMediaFragment {
 
 fn export(fragments: &[CatalogMediaFragment], end_ms: i64) -> (ExportArtifact, Cursor<Vec<u8>>) {
     let mut output = Cursor::new(Vec::new());
-    let artifact =
-        export_fragment_ranges_to_writer(fragments, end_ms, &mut output, || false, |_| {}).unwrap();
+    let artifact = export_fragment_ranges_to_writer_with_audio_offset(
+        fragments,
+        end_ms,
+        &mut output,
+        0,
+        || false,
+        |_| {},
+    )
+    .unwrap();
     output.set_position(0);
     (artifact, output)
+}
+
+#[test]
+fn corrected_export_bounds_follow_the_final_aac_samples() {
+    let path = source(
+        &[video(), audio()],
+        vec![(1, sample(0, 90_000, 0)), (2, sample(47_520, 1_024, 0))],
+    );
+    let source_bytes = std::fs::read(&path).unwrap();
+    let mut output = Cursor::new(Vec::new());
+    let artifact = export_fragment_ranges_to_writer_with_audio_offset(
+        &[fragment(&path, "corrected", 10_000)],
+        12_000,
+        &mut output,
+        200,
+        || false,
+        |_| {},
+    )
+    .unwrap();
+    output.set_position(0);
+    let mut reader = mp4::Mp4Reader::read_header(output, artifact.bytes).unwrap();
+    let written = reader.read_sample(2, 1).unwrap().unwrap();
+    assert_eq!((written.start_time, written.duration), (57_120, 1_024));
+    assert_eq!(
+        artifact.media_bounds,
+        Some(ExportMediaBounds {
+            start_ms: 10_000,
+            end_ms: 11_212,
+        })
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), source_bytes);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

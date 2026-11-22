@@ -136,7 +136,8 @@ for (const reference of references) {
 }
 
 const ciCommand = packageManifest.scripts['loki:test:ci'];
-if (packageManifest.devDependencies['@ferocia-oss/osnap'] !== '1.3.5') {
+const osnapVersion = packageManifest.devDependencies['@ferocia-oss/osnap'];
+if (!/^\d+\.\d+\.\d+$/.test(osnapVersion ?? '')) {
 	throw new Error("The visual harness must pin Loki's eagerly required osnap runtime.");
 }
 if (

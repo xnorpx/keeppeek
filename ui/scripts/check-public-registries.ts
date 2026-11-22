@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 
 const uiRoot = process.cwd();
 const repositoryRoot = resolve(uiRoot, '..');
-const requiredBunVersion = '1.4.0';
+const requiredBunVersion = '1.4.4';
 
 type PackageManifest = {
 	packageManager?: string;
@@ -73,6 +73,11 @@ if (!runtimeBunVersion || !versionAtLeast(runtimeBunVersion, requiredBunVersion)
 const bunVersionFile = readFileSync(resolve(uiRoot, '.bun-version'), 'utf8').trim();
 if (bunVersionFile !== requiredBunVersion) {
 	throw new Error(`.bun-version must pin ${requiredBunVersion}`);
+}
+
+const dockerfile = readFileSync(resolve(repositoryRoot, 'Dockerfile'), 'utf8');
+if (!dockerfile.includes(`FROM oven/bun:${requiredBunVersion}@sha256:`)) {
+	throw new Error(`Dockerfile must use the pinned Bun ${requiredBunVersion} image`);
 }
 
 const uiManifest = packageManifest(resolve(uiRoot, 'package.json'));

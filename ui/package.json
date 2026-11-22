@@ -3,9 +3,9 @@
 	"version": "0.1.0",
 	"private": true,
 	"type": "module",
-	"packageManager": "bun@1.4.0",
+	"packageManager": "bun@1.4.4",
 	"engines": {
-		"bun": ">=1.4.0"
+		"bun": ">=1.4.4"
 	},
 	"scripts": {
 		"dev": "vite dev",
@@ -25,7 +25,7 @@
 		"lint:fix": "oxlint . --fix",
 		"format": "prettier --write .",
 		"format:check": "prettier --check .",
-		"format:markdown:check": "prettier --check \"../**/*.md\"",
+		"format:markdown:check": "prettier --check \"../**/*.md\" \"!../target/**\"",
 		"registry:check": "bun scripts/check-public-registries.ts",
 		"wiki:build": "bun scripts/build-wiki.ts --output ../target/wiki",
 		"wiki:check": "bun scripts/build-wiki.ts --check",
