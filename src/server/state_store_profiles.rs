@@ -9,9 +9,8 @@ use std::{
 };
 #[path = "state_store_profiles_identity.rs"]
 mod identity;
-use identity::{
-    camera_profile_configuration, camera_profile_ids, cameras_entry, configured_profile_ids,
-};
+pub(in crate::server) use identity::camera_profile_ids;
+use identity::{camera_profile_configuration, cameras_entry, configured_profile_ids};
 
 #[cfg(test)]
 #[path = "state_store_profiles_lifecycle_tests.rs"]
@@ -101,6 +100,10 @@ struct StagedProfileRegistry {
 
 pub(super) fn is_adapter_namespace(namespace: &str) -> bool {
     namespace == NAMESPACE
+}
+
+pub(in crate::server) fn viewer_watch_key(key: &str) -> bool {
+    matches!(key, ACTIVE_KEY | STATUS_KEY)
 }
 
 pub(super) fn dispatch(
@@ -420,10 +423,7 @@ fn watch_profiles(
     if key_prefix.is_empty() {
         return Err(registry_error(Error::NotAuthorized, NAMESPACE, ACTIVE_KEY));
     }
-    if key_prefix != ACTIVE_KEY
-        && key_prefix != STATUS_KEY
-        && (key_prefix != REGISTRY_KEY || !admin)
-    {
+    if !viewer_watch_key(key_prefix) && (key_prefix != REGISTRY_KEY || !admin) {
         return Err(registry_error(
             Error::Invalid(Invalid::Key),
             NAMESPACE,
@@ -1434,14 +1434,20 @@ fn project_status(
     if principal.role == AccessRole::Administrator {
         return status;
     }
-    let identities = match identities {
-        Some(identities) => identities,
-        None => {
-            status.cameras.clear();
-            return status;
-        }
+    let visible = visible_profile_camera_ids(state, principal, identities);
+    status.cameras.retain(|id, _| visible.contains(id));
+    status
+}
+
+pub(in crate::server) fn visible_profile_camera_ids(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    identities: Option<&crate::keeppeek::CameraProfileIds>,
+) -> BTreeSet<String> {
+    let Some(identities) = identities else {
+        return BTreeSet::new();
     };
-    let visible_camera_ids = super::super::camera_access::for_principal(state, principal)
+    super::super::camera_access::for_principal(state, principal)
         .ok()
         .and_then(|policy| super::super::camera_access::query_cameras(state, &policy, &[]).ok())
         .unwrap_or_default()
@@ -1454,11 +1460,7 @@ fn project_status(
                 .ok()
                 .map(|ip| identities.camera_id(ip))
         })
-        .collect::<BTreeSet<_>>();
-    status
-        .cameras
-        .retain(|camera_id, _| visible_camera_ids.contains(camera_id));
-    status
+        .collect()
 }
 
 fn registry_entry(registry: crate::profiles::ProfileRegistry) -> Result<StoredEntry, Error> {
@@ -2808,6 +2810,129 @@ mod tests {
                 .state
                 .state_store_watches
                 .owns_watch(session, "active")
+        );
+    }
+
+    fn bind_scoped_viewer(
+        state: &ServerState,
+        session: SessionId,
+        visible_ip: &str,
+    ) -> ApiPrincipal {
+        let credential = state
+            .access_manager
+            .create_credential("Viewer", None, AccessRole::User, None, 1)
+            .unwrap();
+        state
+            .access_manager
+            .set_camera_access(
+                credential.metadata.id,
+                credential.metadata.revision,
+                crate::access::CameraAccess {
+                    camera_ids: vec![visible_ip.to_owned()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let auth = format!("Bearer {}", credential.access_key.canonical());
+        let remote = "192.0.2.20".parse().unwrap();
+        let principal = ApiPrincipal::credential(
+            state
+                .access_manager
+                .authenticate(remote, &[&auth], 2, Instant::now())
+                .unwrap(),
+        );
+        let mut record = super::super::super::tests::local_test_session();
+        record.principal = principal.clone();
+        state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(session, record);
+        principal
+    }
+
+    fn single_watch_notification(frames: Vec<Vec<u8>>) -> Option<proto::notification::Event> {
+        use prost::Message as _;
+        assert_eq!(frames.len(), 1);
+        let envelope = proto::ControlEnvelope::decode(frames[0].as_slice()).unwrap();
+        let Some(proto::control_envelope::Message::Notification(notification)) = envelope.message
+        else {
+            panic!("notification expected")
+        };
+        notification.event
+    }
+
+    fn status_camera_ids(entry: &proto::StateEntry) -> Vec<String> {
+        let value = super::super::super::peek_layouts::struct_to_json(entry.value.clone().unwrap());
+        value["cameras"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+    }
+
+    #[test]
+    fn scoped_viewer_receives_the_same_profile_camera_ids_in_snapshots_and_updates() {
+        let fixture = Fixture::new();
+        let state = &fixture.state;
+        let visible_ip = "192.0.2.11";
+        let visible_id = fixture.add_camera(&camera_config(visible_ip.parse().unwrap()));
+        let hidden_id = fixture.add_camera(&camera_config("192.0.2.12".parse().unwrap()));
+        let registry = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        update_runtime_status(state, &registry, None, None, true);
+        assert!(
+            state
+                .runtime_profile_status
+                .read()
+                .unwrap()
+                .cameras
+                .contains_key(&hidden_id)
+        );
+
+        let session = SessionId::from_u64(20_273);
+        let principal = bind_scoped_viewer(state, session, visible_ip);
+        let mut pump = state.webrtc.stage_api_session_pump(session);
+        let registry_watch = proto::StateStoreCommand {
+            action: Some(state_store_command::Action::Watch(proto::WatchState {
+                watch_id: "definitions".to_owned(),
+                namespace: NAMESPACE.to_owned(),
+                key_prefix: REGISTRY_KEY.to_owned(),
+            })),
+        };
+        assert!(super::super::dispatch(state, session, &principal, registry_watch).is_err());
+        let result =
+            super::super::dispatch(state, session, &principal, watch_status("viewer")).unwrap();
+        let control_ok::Result::StateStoreResult(result) = result else {
+            panic!("watch result expected")
+        };
+        let Some(state_store_result::Result::Watch(snapshot)) = result.result else {
+            panic!("watch snapshot expected")
+        };
+        assert_eq!(
+            status_camera_ids(&snapshot.entries[0]).as_slice(),
+            std::slice::from_ref(&visible_id)
+        );
+        publish_status_event(state, 3);
+        let Some(proto::notification::Event::StateStoreWatchUpdate(update)) =
+            single_watch_notification(pump())
+        else {
+            panic!("watch update expected")
+        };
+        assert_eq!(status_camera_ids(&update.entry.unwrap()), [visible_id]);
+        let (owner_id, _) = principal.credential_binding().unwrap();
+        state.access_manager.revoke_credential(owner_id, 4).unwrap();
+        publish_status_event(state, 5);
+        let Some(proto::notification::Event::StateStoreWatchClosed(closed)) =
+            single_watch_notification(pump())
+        else {
+            panic!("revoked watcher must close")
+        };
+        assert_eq!(
+            closed.reason,
+            proto::StateStoreWatchCloseReason::AuthorizationRevoked as i32
         );
     }
 

@@ -17,7 +17,7 @@
 
 use super::ServerState;
 use super::state_store::{
-    Error, Invalid, NamespaceLayout, StoredEntry, authorize_read, validate_namespace,
+    Error, Invalid, NamespaceLayout, StoredEntry, authorize_read, profiles, validate_namespace,
 };
 use crate::{
     access::AccessRole,
@@ -234,6 +234,11 @@ impl WatchRegistry {
         now_ms: u64,
         enqueue: impl Fn(SessionId, proto::Notification) -> EnqueueOutcome,
     ) -> Vec<(SessionId, proto::Notification)> {
+        let identities = if events.iter().any(is_profile_status_event) {
+            profiles::camera_profile_ids(state).ok()
+        } else {
+            None
+        };
         let mut sent = Vec::new();
         let mut watches = self.lock();
         let mut closed: Vec<(Watch, CloseReason)> = Vec::new();
@@ -255,7 +260,7 @@ impl WatchRegistry {
                 if watch.namespace != event.namespace || !event.key.starts_with(&watch.key_prefix) {
                     continue;
                 }
-                if !session_authorized(state, watch.session_id, layout.as_ref()) {
+                if !session_authorized(state, watch, layout.as_ref()) {
                     terminate.push((key.clone(), Some(CloseReason::AuthorizationRevoked)));
                     continue;
                 }
@@ -271,7 +276,8 @@ impl WatchRegistry {
                     terminate.push((key.clone(), Some(CloseReason::BufferOverflow)));
                     continue;
                 }
-                let projected_event = project_event_for_watch(state, watch.session_id, event);
+                let projected_event =
+                    project_event_for_watch(state, watch.session_id, event, identities.as_ref());
                 let notification = update_notification(watch, &projected_event, sequence);
                 match enqueue(watch.session_id, notification.clone()) {
                     EnqueueOutcome::Sent => {
@@ -315,7 +321,7 @@ impl WatchRegistry {
                 continue;
             }
             let layout = validate_namespace(&watch.namespace).ok();
-            if !session_authorized(state, watch.session_id, layout.as_ref()) {
+            if !session_authorized(state, watch, layout.as_ref()) {
                 terminate.push((key.clone(), Some(CloseReason::AuthorizationRevoked)));
                 continue;
             }
@@ -348,7 +354,7 @@ impl WatchRegistry {
 
 fn session_authorized(
     state: &ServerState,
-    session_id: SessionId,
+    watch: &Watch,
     layout: Option<&NamespaceLayout>,
 ) -> bool {
     let Some(layout) = layout else {
@@ -358,7 +364,7 @@ fn session_authorized(
         .api_session_owners
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(session) = sessions.get(&session_id) else {
+    let Some(session) = sessions.get(&watch.session_id) else {
         return false;
     };
     let now = std::time::Instant::now();
@@ -373,6 +379,9 @@ fn session_authorized(
         || !super::authentication::active(state, &session.principal, now, now_ms)
     {
         return false;
+    }
+    if watch.namespace == profiles::NAMESPACE && profiles::viewer_watch_key(&watch.key_prefix) {
+        return true;
     }
     authorize_read(
         layout,
@@ -403,19 +412,21 @@ fn update_notification(watch: &Watch, event: &WatchEvent, sequence: u64) -> prot
     }
 }
 
+fn is_profile_status_event(event: &WatchEvent) -> bool {
+    event.namespace == profiles::NAMESPACE
+        && event.key == profiles::STATUS_KEY
+        && matches!(event.kind, WatchEventKind::Put(_))
+}
+
 fn project_event_for_watch(
     state: &ServerState,
     session_id: SessionId,
     event: &WatchEvent,
+    identities: Option<&crate::keeppeek::CameraProfileIds>,
 ) -> WatchEvent {
-    if event.namespace != super::state_store::profiles::NAMESPACE
-        || event.key != super::state_store::profiles::STATUS_KEY
-    {
+    if !is_profile_status_event(event) {
         return event.clone();
     }
-    let WatchEventKind::Put(_) = &event.kind else {
-        return event.clone();
-    };
     let principal = state
         .api_session_owners
         .lock()
@@ -428,29 +439,20 @@ fn project_event_for_watch(
     {
         return event.clone();
     }
-    let visible_camera_ids = principal
+    let visible = principal
         .as_ref()
-        .and_then(|principal| super::camera_access::for_principal(state, principal).ok())
-        .and_then(|policy| super::camera_access::query_cameras(state, &policy, &[]).ok())
-        .map(|cameras| {
-            cameras
-                .into_iter()
-                .map(|camera| camera.info.id)
-                .collect::<std::collections::BTreeSet<_>>()
-        })
+        .map(|principal| profiles::visible_profile_camera_ids(state, principal, identities))
         .unwrap_or_default();
     let mut projected = event.clone();
-    if let WatchEventKind::Put(entry) = &mut projected.kind {
-        let mut value = super::peek_layouts::struct_to_json(entry.value.clone());
-        if let Some(cameras) = value
-            .as_object_mut()
-            .and_then(|value| value.get_mut("cameras"))
-            .and_then(serde_json::Value::as_object_mut)
-        {
-            cameras.retain(|camera_id, _| visible_camera_ids.contains(camera_id));
-            if let Ok(filtered) = super::peek_layouts::json_to_struct(value) {
-                entry.value = filtered;
-            }
+    if let WatchEventKind::Put(entry) = &mut projected.kind
+        && let Some(value) = entry.value.fields.get_mut("cameras")
+    {
+        if let Some(prost_types::value::Kind::StructValue(cameras)) = &mut value.kind {
+            cameras.fields.retain(|id, _| visible.contains(id));
+        } else {
+            value.kind = Some(prost_types::value::Kind::StructValue(
+                prost_types::Struct::default(),
+            ));
         }
     }
     projected
@@ -615,7 +617,7 @@ mod tests {
             }),
         };
 
-        let projected = project_event_for_watch(&state, session_id, &event);
+        let projected = project_event_for_watch(&state, session_id, &event, None);
         let WatchEventKind::Put(entry) = projected.kind else {
             panic!("status projection must keep its entry update");
         };
