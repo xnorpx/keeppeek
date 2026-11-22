@@ -21,7 +21,9 @@ gzip = ["deflate"]
 [dependencies]
 base64 = "0.23"
 brotli = { version = "9.0.0", optional = true }
-chrono = { package = "sad-chrono", version = "0.5.1", default-features = false, features = ["clock"] }
+chrono = { package = "sad-chrono", version = "0.5.1", default-features = false, features = [
+  "clock",
+] }
 filetime = "0.2.29"
 deflate = { version = "1.0.0", optional = true, features = ["gzip"] }
 rouille-multipart = { version = "0.18", path = "rouille-multipart", default-features = false, features = [

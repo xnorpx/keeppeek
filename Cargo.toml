@@ -34,7 +34,9 @@ cap-fs-ext = { version = "=4.0.3", default-features = false, features = [
 ] }
 cap-std = { version = "=4.0.3", default-features = false }
 test-hikvision = { path = "crates/test-hikvision", version = "0.1.0" }
-chrono = { package = "sad-chrono", version = "0.5.1", default-features = false, features = ["std"] }
+chrono = { package = "sad-chrono", version = "0.5.1", default-features = false, features = [
+  "std",
+] }
 isapi = { path = "crates/isapi", version = "0.1.0" }
 digest_auth = { version = "0.3.1", default-features = false }
 encoding_rs = { version = "0.8.35", default-features = false, features = [
@@ -134,7 +136,9 @@ mime = { workspace = true }
 anyhow = { version = "1.0.104" }
 base64 = { version = "0.23.1" }
 bytes = { version = "1.12.1" }
-chrono = { package = "sad-chrono", version = "0.5.1", default-features = false, features = ["std"] }
+chrono = { package = "sad-chrono", version = "0.5.1", default-features = false, features = [
+  "std",
+] }
 chrono-tz = { package = "sad-chrono-tz", version = "0.11.1" }
 clap = { version = "4.6.6", default-features = false, features = [
   "std",
