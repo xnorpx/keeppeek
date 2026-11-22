@@ -59,7 +59,7 @@ async function expectMobileHistoryGeometry(
 		expect(playbackState).toEqual({
 			startupPhase: 'opening',
 			alertCount: 0,
-			heading: 'Preparing playback…'
+			heading: 'Preparing playbackâ€¦'
 		});
 	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
 		true
@@ -125,7 +125,7 @@ test.describe('touch input', () => {
 				await expectMobileHistoryGeometry(page, testInfo, width, 'failed');
 				await player.getByRole('button', { name: 'Retry playback', exact: true }).click();
 				await expect(
-					player.getByRole('heading', { name: 'Preparing playback…', exact: true })
+					player.getByRole('heading', { name: 'Preparing playbackâ€¦', exact: true })
 				).toBeVisible();
 				await expect(player.getByRole('alert')).toHaveCount(0);
 				await expectMobileHistoryGeometry(page, testInfo, width, 'preparing');
@@ -308,7 +308,11 @@ test.describe('touch input', () => {
 		await expect(
 			player.getByText('No retained recording is available near this moment.', { exact: false })
 		).toBeVisible();
-		expect(new URL(page.url()).searchParams.get('at')).toBe(String(olderDayMs));
+		await expect(page).toHaveURL(
+			(url) =>
+				url.searchParams.get('date') === keepModeOlderDate &&
+				url.searchParams.get('at') === String(olderDayMs)
+		);
 	});
 
 	test('same-clock camera switches query new timeline events and recorded days', async ({
