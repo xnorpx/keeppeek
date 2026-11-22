@@ -238,8 +238,11 @@ fn copy_and_publish(source: &Path, destination: &Path, parent: &Path) -> io::Res
     if copied.is_err() {
         let _ = directory.remove_file(&temporary);
     }
+    // Windows can report a failed no-replace handle rename as a generic I/O
+    // error. The destination itself decides whether a previous publication can
+    // be reused; its complete contents must agree with the retained source.
     match copied {
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => verify_existing(source, destination),
+        Err(_) if destination.try_exists()? => verify_existing(source, destination),
         other => other,
     }
 }
