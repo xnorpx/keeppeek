@@ -199,18 +199,8 @@ impl MediumTermWriter {
         })
     }
 
+    /// Append a caller-supplied batch while honoring the same GOP budget as single appends.
     pub fn append_batch(&mut self, frames: Vec<RecordingFrame>) -> std::io::Result<Duration> {
-        let (recorded_duration, exceeded) = self.append_bounded_batch(frames)?;
-        if exceeded {
-            return Err(keyframe_budget_error());
-        }
-        Ok(recorded_duration)
-    }
-
-    pub(super) fn append_bounded_batch(
-        &mut self,
-        frames: Vec<RecordingFrame>,
-    ) -> std::io::Result<(Duration, bool)> {
         let mut recorded_duration = Duration::ZERO;
         let mut exceeded = false;
         for rf in frames {
@@ -218,7 +208,10 @@ impl MediumTermWriter {
             recorded_duration = recorded_duration.saturating_add(duration);
             exceeded |= gap;
         }
-        Ok((recorded_duration, exceeded))
+        if exceeded {
+            return Err(keyframe_budget_error());
+        }
+        Ok(recorded_duration)
     }
 
     pub fn append_one(&mut self, rf: RecordingFrame) -> std::io::Result<Duration> {
@@ -802,6 +795,7 @@ impl MediumTermWriter {
         received.saturating_duration_since(self.started_at)
     }
 
+    /// Wall time since the writer started. Segment rotation uses received media time.
     pub fn elapsed(&self) -> Duration {
         self.started_at.elapsed()
     }

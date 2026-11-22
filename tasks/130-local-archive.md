@@ -61,6 +61,30 @@ and 23.656 s respectively. At least 64 further byte-checked primary seeks and 9.
 of progress on every camera coincided with advancing archive verification in each enabled
 run. The issue specifies forward progress and leaves numeric latency and CPU budgets open.
 
+At `310255db`, the first three repetitions on the shared system NVMe each retained all
+3,600 samples, finalized 48 files and completed 99 exact primary seeks. In the fourth
+repetition, archive off, the live catalog read lease returned “recording catalog stopped
+before replying”. That revision used the same diagnostic for a two-second deadline and
+disconnection. The host ran other builds and tests on the same NVMe, and sampled whole-host
+CPU averaged 74.2%. The incomplete run qualifies only its three finished repetitions on that device.
+
+The same executable then passed all six repetitions in 333.49 s with both fixture roots
+on the physically separate T-FORCE SATA NTFS drive. The system NVMe continued servicing
+other work. Both modes retained 10,800 of 10,800 samples with 48 complete files per
+repetition. Off/on median primary seek p95 was 78.700/190.851 ms, ingest p95 was
+39.7/36.2 µs and process CPU was 13.078/19.500 s. Each enabled repetition advanced
+all streams at least 7.867 s and performed at least 69 exact seeks between increasing
+verification observations. The workload sustained forward progress with the measured
+seek and CPU costs. [PR #352](https://github.com/xnorpx/keeppeek/pull/352)
+records provenance, raw sample counts, workload limits and physical I/O counters.
+
+To repeat the paced qualification with physically separate primary and archive drives, set
+`TEMP` and `TMP` on Windows (or `TMPDIR` on Unix) to a private primary fixture directory,
+and `KEEPPEEK_TEST_ARCHIVE_PARENT` to an existing absolute directory on the other volume.
+The test exclusively creates and cleans a new child per repetition. With the variable
+unset it uses a child of the primary fixture. Record the actual volume identities with the
+results because distinct directories may still share the same physical device.
+
 ## Operator-confirmed archive retention
 
 The local filesystem target keeps verified copies indefinitely by default. An Administrator
