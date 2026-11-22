@@ -66,6 +66,7 @@ impl Transport for Socket {
     }
 
     fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
+        let timeout = timeout.for_write();
         let deadline = Instant::now()
             + timeout
                 .not_zero()
@@ -79,6 +80,7 @@ impl Transport for Socket {
     }
 
     fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+        let timeout = timeout.for_read();
         let deadline = Instant::now()
             + timeout
                 .not_zero()
