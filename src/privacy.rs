@@ -492,14 +492,27 @@ impl PrivacyRegistry {
         );
     }
 
-    /// Returns the effective active state and transition epoch for a camera.
-    pub fn decision(&self, camera_id: &str, instant: DateTime<Utc>) -> anyhow::Result<(bool, u64)> {
-        let configured_id = self
+    fn configured_id(&self, camera_id: &str) -> String {
+        let aliases = self
             .aliases
             .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        resolve_alias(&aliases, camera_id).0.to_owned()
+    }
+
+    pub(crate) fn schedule_active(&self, camera_id: &str, instant: DateTime<Utc>) -> bool {
+        let configured_id = self.configured_id(camera_id);
+        self.state
+            .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(camera_id)
-            .map_or_else(|| camera_id.to_owned(), |alias| alias.camera_id.clone());
+            .compiled
+            .get(&configured_id)
+            .is_some_and(|schedule| schedule.active(instant))
+    }
+
+    /// Returns the effective active state and transition epoch for a camera.
+    pub fn decision(&self, camera_id: &str, instant: DateTime<Utc>) -> anyhow::Result<(bool, u64)> {
+        let configured_id = self.configured_id(camera_id);
         let state = self
             .state
             .read()
@@ -567,12 +580,7 @@ impl PrivacyRegistry {
 
     /// Returns the gate for a configured camera.
     pub fn gate(&self, camera_id: &str) -> Option<std::sync::Arc<PrivacyGate>> {
-        let configured_id = self
-            .aliases
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(camera_id)
-            .map_or_else(|| camera_id.to_owned(), |alias| alias.camera_id.clone());
+        let configured_id = self.configured_id(camera_id);
         self.state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -583,12 +591,7 @@ impl PrivacyRegistry {
 
     /// Returns the configured schedule resolved through transport aliases.
     pub fn schedule(&self, camera_id: &str) -> Option<PrivacySchedule> {
-        let configured_id = self
-            .aliases
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(camera_id)
-            .map_or_else(|| camera_id.to_owned(), |alias| alias.camera_id.clone());
+        let configured_id = self.configured_id(camera_id);
         self.state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
