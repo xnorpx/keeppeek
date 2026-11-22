@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-293a7481.js";
+            window.path_to_searchindex_js = "searchindex-67f490a9.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-53d99c1d.js"></script>
+        <script src="toc-6871163b.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -228,6 +228,7 @@ Root fields must appear before a table header or they belong to that table.</p>
 </thead>
 <tbody>
 <tr><td>Root fields</td><td><code>Config</code></td><td>Operator settings</td></tr>
+<tr><td><code>[sharing]</code></td><td><code>sharing::SharingConfig</code></td><td>Guest review deployment policy; server-owned revision</td></tr>
 <tr><td><code>[access]</code></td><td><code>AccessConfig</code></td><td>Administrator security policy</td></tr>
 <tr><td><code>[direct_card]</code></td><td><code>DirectCardConfig</code></td><td>Exact browser-origin allowlist</td></tr>
 <tr><td><code>[storage]</code></td><td><code>StorageToml</code></td><td>Recording paths, retention, and safety</td></tr>
@@ -397,6 +398,44 @@ listener.</p>
 </tbody>
 </table>
 </div>
+<h2 id="guest-review-deployment-policy"><a class="header" href="#guest-review-deployment-policy">Guest review deployment policy</a></h2>
+<p>Type: <code>sharing::SharingConfig</code>, section <code>[sharing]</code>. Guest sharing is disabled by default.
+These settings use the existing <code>config.toml</code>; they do not configure a tunnel, relay, DNS,
+TLS certificate or network exposure. An operator must provide the reachable HTTPS origin.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enables guest handoff only when the remaining origin, evidence, private metadata and transport checks succeed.</td></tr>
+<tr><td><code>public_origin</code></td><td>optional <code>String</code></td><td>Absent</td><td>Canonical HTTPS origin, 1 to 512 UTF-8 bytes. No credentials, path, query, fragment or trailing slash; for example <code>"https://review.example"</code>. An enabled policy requires this value.</td></tr>
+<tr><td><code>revision</code></td><td><code>u64</code></td><td><code>1</code></td><td>Server-owned optimistic-write revision. Must be positive and fit a TOML signed integer. Successful Administrator policy writes increment it; stale revisions are rejected.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Unknown fields in <code>[sharing]</code> are rejected by the real configuration loader. A
+<code>public_origin</code> may use the existing <code>{secret:KEY}</code> resolver. Saving an unchanged effective
+origin preserves its original secret reference in <code>config.toml</code>; it does not rewrite the
+resolved value or modify <code>secrets.toml</code>. The effective origin is visible to Administrators
+because it is the public address used in guest links.</p>
+<p>A policy save invalidates guest sessions and stops active guest delivery. Delivered view
+and download counters remain durable. If an atomic settings write returns an error after
+its commit point, guest access stops until an Administrator saves the policy successfully.
+Reloading a camera configuration cannot silently enable that suspended policy. Manual file
+edits take effect on restart; live policy changes use the Administrator control command.</p>
+<p>Grants, hashed token verifiers and audit counters are operational data under the private,
+identity-pinned metadata owner, in <code>guest-review/grants.db</code>; they are not a second settings
+file. The store requires private local filesystem ownership and rejects unsafe or unavailable
+roots. Guest sessions and active transfers do not survive restart. The dedicated guest cookie
+never becomes a normal KeepPeek principal, role or control-channel credential.</p>
+<p>The fixed grant limits are 256 active grants, 32 per creator, at most 24 hours and no later
+than the immutable export’s expiry. Evidence is limited to two minutes and 512 MiB. Display
+names are limited to 128 UTF-8 bytes and notes to 512. There are at most eight media sessions
+globally and two per grant. Retention may remove evidence before a grant expires; sharing
+creates no evidence hold. Expired or revoked metadata disappears from management lists after
+30 days, with bounded physical cleanup scheduled at most once per minute. New grants are
+rejected when the retained audit store reaches its fixed capacity.</p>
 <h2 id="external-authentication-configuration"><a class="header" href="#external-authentication-configuration">External authentication configuration</a></h2>
 <p>Type: <code>access::external::Config</code>, optional section <code>[external_auth]</code>. Configured
 OIDC providers use browser authorization-code login with PKCE. Configured identity

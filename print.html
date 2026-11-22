@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-293a7481.js";
+            window.path_to_searchindex_js = "searchindex-67f490a9.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-53d99c1d.js"></script>
+        <script src="toc-6871163b.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -1385,6 +1385,76 @@ is under qualification; confirmed jobs can remove selected recordings permanentl
 and <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/evidence-exports.md">evidence export</a>
 references.</p>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="guest-review-links"><a class="header" href="#guest-review-links">Guest review links</a></h1>
+<p>Guest review gives a recipient access to one completed export without a KeepPeek account.
+This chapter describes the first workflow under development. End-to-end HTTPS, resource and
+performance qualification remains open; full guest-sharing release readiness is not established.</p>
+<h2 id="prepare-the-deployment"><a class="header" href="#prepare-the-deployment">Prepare the deployment</a></h2>
+<p>As an Administrator, open <strong>Settings → Access → Guest sharing</strong>. Sharing defaults off. Set
+<strong>External HTTPS origin</strong>, enable sharing and save. Use a canonical origin such as
+<code>https://review.example</code> or <code>https://review.example:8443</code>, without a path, credentials, query,
+fragment or trailing slash. The policy belongs in the existing <code>config.toml</code>:</p>
+<pre><code class="language-toml">[sharing]
+enabled = true
+public_origin = "https://review.example"
+</code></pre>
+<p>Use Settings for live changes. Manual file edits apply on restart; leave the server-owned
+revision alone. See the <a href="#guest-review-deployment-policy">configuration reference</a>.</p>
+<p>The operator supplies DNS, valid HTTPS, any reverse proxy, firewall rules and recipient network
+access. KeepPeek supplies no tunnel or relay and does not verify reachability. Configure
+<a href="#authentication-and-access-control">proxy trust</a> explicitly and preserve the expected external Host and origin.</p>
+<p>The identity-bound metadata owner and export volume must be available. Grant verifiers and
+counters live in a private operational database under that metadata owner, separate from settings.
+Supported private local filesystem permissions are required; Windows requires NTFS. Do not
+construct or relocate this directory manually. A configuration ZIP does not back up the database.
+Keep sharing disabled during metadata recovery: an older backup is not current revocation evidence.</p>
+<h2 id="share-a-completed-export"><a class="header" href="#share-a-completed-export">Share a completed export</a></h2>
+<ol>
+<li>In <strong>Keep → Export</strong>, create an export as the Administrator who will share it. Wait for
+<strong>Ready</strong>, then choose <strong>Create guest link</strong>. Older exports without durable creator and camera
+identity or measured media proof require a new export.</li>
+<li>Inspect the camera, file bounds, gaps, size and file expiry. The grant covers the complete
+previewed MP4, which can start before the originally requested range to include a keyframe.
+This workflow does not trim an exact interval. Evidence is limited to two minutes and 512 MiB;
+guest media admission accepts H.264 with supported AAC audio.</li>
+<li>Set a display name, optional private note, expiry, playback/download permissions and any positive
+usage limits. Expiry is at most 24 hours and cannot exceed the export’s expiry. Download defaults
+off. Review these choices, then create the link.</li>
+<li>Copy the link while the dialog remains open and send it through your chosen private channel.
+KeepPeek holds the secret in the dialog’s memory. After closing, the list can revoke access
+but cannot recover the link. Anyone holding the full link can use its permitted access.</li>
+</ol>
+<p>This first workflow requires a retained local export with a file expiry. Archive-only exports
+are outside this workflow.</p>
+<p>If creation is unconfirmed, retain its displayed reference. Find and revoke that grant in
+<strong>Settings → Access → Guest links</strong> before creating another. A retry cannot recover a lost secret.</p>
+<h2 id="what-the-guest-receives"><a class="header" href="#what-the-guest-receives">What the guest receives</a></h2>
+<p>An isolated page removes the secret fragment before the application loads and uses a separate
+Secure, HttpOnly guest cookie. Guests can play and seek the file, and download it when permitted.
+Browser codec support is still required. <strong>End review</strong> ends the session; it does not revoke the link.</p>
+<p>Guests receive no KeepPeek role or control channel, live wall, other footage, events/search,
+snapshots, camera controls, talk, settings, health or logs. A second guest tab cannot switch an
+existing tab to different evidence through the shared cookie.</p>
+<p>The first successful media-byte delivery commits a view durably; seeks in that session reuse it.
+Downloads count separately per started transfer. Opening the page or failed validation consumes
+no view. A crash can conservatively count delivery before bytes reach the recipient; committed
+use is never refunded. Sessions last at most five minutes; media also stops at grant expiry.</p>
+<h2 id="revoke-and-recover"><a class="header" href="#revoke-and-recover">Revoke and recover</a></h2>
+<p>Use <strong>Guest links</strong> to inspect counters and revoke access with a reason. Sharing creates no
+retention hold: deletion, retention, missing storage or a replaced export can end availability
+sooner. Camera removal, active privacy and an invalid creator issuer revision or Administrator
+role also prevent delivery. The source binding identifies a configured camera incarnation;
+it does not prove historical physical hardware identity.</p>
+<p>Policy changes end active sessions. An uncertain settings write suspends guest access: reload
+the policy and save the desired settings successfully. Camera settings reload does not clear
+that suspension. Restart ends sessions and transfers while preserving grants, revocations and
+committed counts. Starting again requires the original valid link and remaining usage allowance.</p>
+<p>Limits are 256 active grants, 32 per creator, eight media sessions globally and two per grant.
+Retained history is capped at 4096 records; creation is rejected when full. Expired/revoked metadata
+leaves lists after 30 days, with bounded physical cleanup. Exact-range derivatives, all four
+creator entry points, measured revoke latency and full HTTPS/performance qualification remain
+tracked implementation work.</p>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="digital-zoom-and-pan"><a class="header" href="#digital-zoom-and-pan">Digital zoom and pan</a></h1>
 <p>Digital zoom enlarges the media already decoded by your browser. It is available in the focused
 Peek Viewer, Keep recorded playback, and event detail images. It does not move the camera, request
@@ -1857,6 +1927,7 @@ Root fields must appear before a table header or they belong to that table.</p>
 </thead>
 <tbody>
 <tr><td>Root fields</td><td><code>Config</code></td><td>Operator settings</td></tr>
+<tr><td><code>[sharing]</code></td><td><code>sharing::SharingConfig</code></td><td>Guest review deployment policy; server-owned revision</td></tr>
 <tr><td><code>[access]</code></td><td><code>AccessConfig</code></td><td>Administrator security policy</td></tr>
 <tr><td><code>[direct_card]</code></td><td><code>DirectCardConfig</code></td><td>Exact browser-origin allowlist</td></tr>
 <tr><td><code>[storage]</code></td><td><code>StorageToml</code></td><td>Recording paths, retention, and safety</td></tr>
@@ -2026,6 +2097,44 @@ listener.</p>
 </tbody>
 </table>
 </div>
+<h2 id="guest-review-deployment-policy"><a class="header" href="#guest-review-deployment-policy">Guest review deployment policy</a></h2>
+<p>Type: <code>sharing::SharingConfig</code>, section <code>[sharing]</code>. Guest sharing is disabled by default.
+These settings use the existing <code>config.toml</code>; they do not configure a tunnel, relay, DNS,
+TLS certificate or network exposure. An operator must provide the reachable HTTPS origin.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enables guest handoff only when the remaining origin, evidence, private metadata and transport checks succeed.</td></tr>
+<tr><td><code>public_origin</code></td><td>optional <code>String</code></td><td>Absent</td><td>Canonical HTTPS origin, 1 to 512 UTF-8 bytes. No credentials, path, query, fragment or trailing slash; for example <code>"https://review.example"</code>. An enabled policy requires this value.</td></tr>
+<tr><td><code>revision</code></td><td><code>u64</code></td><td><code>1</code></td><td>Server-owned optimistic-write revision. Must be positive and fit a TOML signed integer. Successful Administrator policy writes increment it; stale revisions are rejected.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Unknown fields in <code>[sharing]</code> are rejected by the real configuration loader. A
+<code>public_origin</code> may use the existing <code>{secret:KEY}</code> resolver. Saving an unchanged effective
+origin preserves its original secret reference in <code>config.toml</code>; it does not rewrite the
+resolved value or modify <code>secrets.toml</code>. The effective origin is visible to Administrators
+because it is the public address used in guest links.</p>
+<p>A policy save invalidates guest sessions and stops active guest delivery. Delivered view
+and download counters remain durable. If an atomic settings write returns an error after
+its commit point, guest access stops until an Administrator saves the policy successfully.
+Reloading a camera configuration cannot silently enable that suspended policy. Manual file
+edits take effect on restart; live policy changes use the Administrator control command.</p>
+<p>Grants, hashed token verifiers and audit counters are operational data under the private,
+identity-pinned metadata owner, in <code>guest-review/grants.db</code>; they are not a second settings
+file. The store requires private local filesystem ownership and rejects unsafe or unavailable
+roots. Guest sessions and active transfers do not survive restart. The dedicated guest cookie
+never becomes a normal KeepPeek principal, role or control-channel credential.</p>
+<p>The fixed grant limits are 256 active grants, 32 per creator, at most 24 hours and no later
+than the immutable export’s expiry. Evidence is limited to two minutes and 512 MiB. Display
+names are limited to 128 UTF-8 bytes and notes to 512. There are at most eight media sessions
+globally and two per grant. Retention may remove evidence before a grant expires; sharing
+creates no evidence hold. Expired or revoked metadata disappears from management lists after
+30 days, with bounded physical cleanup scheduled at most once per minute. New grants are
+rejected when the retained audit store reaches its fixed capacity.</p>
 <h2 id="external-authentication-configuration"><a class="header" href="#external-authentication-configuration">External authentication configuration</a></h2>
 <p>Type: <code>access::external::Config</code>, optional section <code>[external_auth]</code>. Configured
 OIDC providers use browser authorization-code login with PKCE. Configured identity
