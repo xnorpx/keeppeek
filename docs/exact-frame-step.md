@@ -21,9 +21,10 @@ before their timestamps can identify adjacent pictures.
 
 The fixtures contain twelve independently identifiable H.264 pictures, two
 random-access GOPs and both forward- and backward-referenced pictures. Each of four
-luma stripes encodes one bit of the picture ID. The regression compares the MP4
-reader's timing and byte positions to FFprobe's returned picture positions and the
-IDs decoded from FFmpeg's raw pixels.
+luma stripes encodes one bit of the picture ID. The regression reads each numbered picture from FFmpeg's decoded pixels,
+uses FFprobe's packet position to identify its encoded sample, and checks that sample's
+track timestamp against the fixture schedule below. The values are relative to the
+track's time origin. A demuxer can expose a different starting timestamp.
 
 | Fixture       | Presentation times in milliseconds, in picture order   |
 | ------------- | ------------------------------------------------------ |
