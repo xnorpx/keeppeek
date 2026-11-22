@@ -50,6 +50,8 @@ decisions and verification evidence without marking unobserved issue criteria co
 The current-delivery criteria below map to #130 in their original order. Broader provider,
 selection, remote retention and disaster-recovery requirements remain open in that issue.
 Passing local fixtures does not establish those capabilities.
+The table records the original delivery checkpoint. The November qualification below adds
+concurrent recording, primary-seek, transfer and target-reconnection results.
 
 | Criterion                                | Implementation and evidence                                                                            | Observed result                                                                                                                                                                                                                                                              |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -65,6 +67,70 @@ Passing local fixtures does not establish those capabilities.
 | Preview, holds and owned-object deletion | Eviction/restore confirmation, SQL intent guards and conditional retirement receipts                   | Partial: explicit primary-eviction/restore confirmation and owned cleanup pass. Independent archive expiry, general deletion preview and provider retention remain later work.                                                                                               |
 | Deterministic and performance evidence   | 89 focused archive tests, two quiet native measurements, isolated browser fixture                      | Partial: focused correctness and limited observations pass. Sustained ingest latency, large-fleet interference, pure storage throughput budgets and additional filesystem qualification remain unmeasured.                                                                   |
 | Documentation and canonical validation   | Book build, Paper export integrity guard, UI workflows, Windows `check.bat`                            | Book build and focused checks pass; final Windows gate pending.                                                                                                                                                                                                              |
+
+## Concurrent recording and local archive qualification, 2026-11-22
+
+Source `6a9ebc5cc9d48c3a850059b7ea017ffb6ee5b45e`, Rust 1.100.0,
+unoptimized test profile. The Windows test binary had SHA-256
+`b64930321441b858532487b92c35f2b80288a437c03a6d150a24ada067498f24`.
+The uninterrupted run lasted 199.74 seconds, from 08:30:39 to 08:33:59 Pacific.
+Other repository builds and benchmark processes were paused. Windows 11 Pro
+build 26200 ran on an AMD Ryzen 5 5600G (6 cores, 12 logical processors) with
+15.34 GiB usable RAM. The private primary and archive directories shared one
+NTFS volume on a Micron MTFDHBA1T0QFD NVMe SSD.
+
+Eight camera identities each submitted a checked-in 3840×2160 H.264 GOP at
+15 fps for 30 seconds. Each camera retained all 450 submitted samples across its
+finalized MP4s in every run. Each mode supplied 10,800 samples, 1,350 paced ticks
+and 297 timed primary seeks. A seek resolves the production catalog lease, opens
+a finalized primary MP4 and checks a non-keyframe sample against its original bytes.
+Each run produced 48 primary recordings. With automatic archiving enabled, 40
+independently verified replicas became ready while the producer was running, and
+all 48 recording IDs had verified replicas after the queue drained.
+
+The control and enabled cases ran consecutively in three pairs, in the order
+off/on, on/off and off/on. Entries below are medians of the three per-run
+statistics in each mode. Ingest measures caller admission time. Tick lateness
+measures scheduler delay before dispatching a frame to the eight cameras.
+CPU is process time over the observed recording window. Peak resident memory
+was sampled throughout that window.
+
+| Measurement                              | Archive off | Archive on | On minus off |
+| ---------------------------------------- | ----------: | ---------: | -----------: |
+| Ingest p50, µs                           |         1.5 |        1.7 |         +0.2 |
+| Ingest p95, µs                           |        39.3 |       33.7 |         −5.6 |
+| Paced tick lateness p50, µs              |     284.733 |    318.500 |      +33.767 |
+| Paced tick lateness p95, µs              |     520.533 |    581.833 |      +61.300 |
+| Primary seek p50, ms                     |      27.620 |     29.463 |       +1.843 |
+| Primary seek p95, ms                     |      46.893 |     54.319 |       +7.426 |
+| Process CPU, ms                          |      11,360 |     23,391 |      +12,031 |
+| Sampled peak resident memory, bytes      |  52,064,256 | 52,023,296 |      −40,960 |
+| Verified bytes committed during ingest   |           0 | 67,489,800 |  +67,489,800 |
+| Verified MiB/s over the recording window |       0.000 |      2.157 |       +2.157 |
+
+Between the first and last changing Ready checkpoints, each archived run
+completed 39 additional replicas. Every camera advanced at least 23.267,
+23.533 and 23.533 seconds respectively, while 91, 92 and 92 additional
+exact primary seeks completed. The measured transfer rate reflects this
+offered workload. A disk throughput ceiling, an owner-approved latency budget,
+a physical second disk, mounted/network filesystems and multi-host recovery
+remain unqualified.
+
+This fixture exposed and now covers three failure modes. Buffered segment
+rotation keeps predictive frames until the next keyframe. During diagnosis a
+12-second control lost 78 of 180 submitted samples from one camera before
+this fix. Reconnecting the bound target promptly retries a pending archive
+scan. A capacity observation superseded by a competing catalog write is
+resampled before admission. Root identity, byte limits and configured
+headroom continue to apply. The default recovery test restarts with the
+destination disconnected, finalizes another recording and verifies both
+original jobs and their destination bytes after reconnection.
+
+Run the paced qualification on its own after building the test binary:
+
+```powershell
+cargo test --locked -p keeppeek --lib verified_archive_under_paced_recording_and_review -- --ignored --nocapture --test-threads=1
+```
 
 ## Native playback measurements
 
