@@ -732,6 +732,16 @@ fn write_export_recording<R: Read + Seek, W: Write + Seek>(
         })
     });
     for (track_id, sample_id, mut sample) in samples {
+        if (callbacks.cancelled)() {
+            bail!("export was cancelled");
+        }
+        if progress
+            .last_sample_start
+            .get(&sample.track_id)
+            .is_some_and(|previous| sample.sample.start_time <= *previous)
+        {
+            continue;
+        }
         let remaining = callbacks
             .selection
             .maximum_bytes
@@ -970,13 +980,6 @@ fn append_export_sample<W: Write + Seek>(
 ) -> anyhow::Result<()> {
     if (callbacks.cancelled)() {
         bail!("export was cancelled");
-    }
-    if progress
-        .last_sample_start
-        .get(&sample.track_id)
-        .is_some_and(|previous| sample.sample.start_time <= *previous)
-    {
-        return Ok(());
     }
     if sample.track_type == mp4::TrackType::Video && sample.sample.is_sync {
         if progress.pending_video {

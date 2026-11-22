@@ -280,6 +280,36 @@ fn export_envelope_ignores_duplicate_samples_that_are_not_emitted() {
 }
 
 #[test]
+fn bounded_export_skips_overlapping_payloads_that_will_not_be_emitted() {
+    let first = source(&[video()], vec![(1, sample(900, 3_600, 0))]);
+    let fragments = [fragment(&first, "one", 9_990)];
+    let (expected, expected_output) = export(&fragments, 10_040);
+    let mut overlap = sample(0, 3_600, 0);
+    overlap.bytes = vec![0; usize::try_from(expected.bytes + 1).unwrap()].into();
+    let duplicate = source(&[video()], vec![(1, overlap)]);
+    let fragments = [fragments[0].clone(), fragment(&duplicate, "two", 10_000)];
+    let mut output = Cursor::new(Vec::new());
+    let artifact = export_sources_to_writer(
+        ExportSources {
+            video_fragments: &fragments,
+            audio_context: &[],
+            requested_end_ms: 10_040,
+        },
+        &mut output,
+        0,
+        Some(expected.bytes),
+        || false,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(artifact.bytes, expected.bytes);
+    assert_eq!(artifact.media_bounds, expected.media_bounds);
+    assert_eq!(output.into_inner(), expected_output.into_inner());
+    std::fs::remove_file(first).unwrap();
+    std::fs::remove_file(duplicate).unwrap();
+}
+
+#[test]
 fn export_envelope_tracks_writer_rewritten_audio_duration_and_preserves_gaps() {
     let path = source(
         &[video(), audio()],

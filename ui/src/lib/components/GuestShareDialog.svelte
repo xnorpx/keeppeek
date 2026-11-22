@@ -5,11 +5,9 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import type { SharingControlClient } from '$lib/control-client-sharing';
+	import { RangeSharePreview } from '$lib/sharing-range-preview';
 	import {
-		prepareRangeShare,
 		alternateRangeStream,
-		FailedRangeExport,
-		waitForRangeExport,
 		replaceableRangeArtifact,
 		RangePreparationError,
 		type RangePreparation,
@@ -44,9 +42,9 @@
 	let maxDownloads = $state('');
 	let error = $state<string | null>(null);
 	let replaceable = $state(false);
-	let preparedRange: Awaited<ReturnType<typeof prepareRangeShare>> | undefined;
-	let checkingJob = false;
-	let triedAlternate = false;
+	const rangePreview = new RangeSharePreview((jobId, guard) =>
+		controller.previewExport(jobId, guard)
+	);
 	let url = $state<string | null>(null);
 	let copied = $state(false);
 	let requestId = $state<string | null>(null);
@@ -74,67 +72,6 @@
 		};
 	});
 
-	async function prepare(selection: RangePreparation, fresh: boolean, exclude?: 'main' | 'sub') {
-		const previous = preparedRange;
-		const target = previous
-			? {
-					sourceId: previous.guard.sourceId,
-					startMs: Number(previous.guard.startMs),
-					endMs: Number(previous.guard.endMs),
-					streamId: fresh ? previous.streamId : selection.target.streamId
-				}
-			: selection.target;
-		preparedRange = await prepareRangeShare(
-			{ client: selection.client, target },
-			lifetime.signal,
-			fresh,
-			exclude,
-			(pending) => {
-				preparedRange = pending;
-				checkingJob = true;
-			}
-		);
-		checkingJob = false;
-		return preparedRange;
-	}
-
-	async function previewRange(selection: RangePreparation, fresh: boolean) {
-		let prepared = fresh || !preparedRange ? await prepare(selection, fresh) : preparedRange;
-		if (checkingJob) {
-			await waitForRangeExport(selection.client, prepared, lifetime.signal);
-			checkingJob = false;
-		}
-		for (;;) {
-			lifetime.signal.throwIfAborted();
-			try {
-				const evidence = await controller.previewExport(prepared.exportJobId, prepared.guard);
-				return { evidence, guard: prepared.guard };
-			} catch (cause) {
-				if (
-					alternateRangeStream(cause) &&
-					!selection.target.streamId &&
-					!fresh &&
-					!triedAlternate
-				) {
-					triedAlternate = true;
-					try {
-						prepared = await prepare(selection, false, prepared.streamId);
-					} catch (alternate) {
-						if (alternate instanceof RangePreparationError && !checkingJob) {
-							replaceable = prepared.reused && replaceableRangeArtifact(cause);
-							throw cause;
-						}
-						if (!checkingJob) triedAlternate = false;
-						throw alternate;
-					}
-					continue;
-				}
-				replaceable = prepared.reused && replaceableRangeArtifact(cause);
-				throw cause;
-			}
-		}
-	}
-
 	async function load(replace = false): Promise<void> {
 		const version = ++generation;
 		stage = 'loading';
@@ -155,7 +92,7 @@
 					throw new RangePreparationError(
 						'Enable sharing and configure its HTTPS origin in Settings before preparing a recording range.'
 					);
-				const result = await previewRange(range, replace);
+				const result = await rangePreview.load(range, replace, lifetime.signal);
 				nextEvidence = result.evidence;
 				guard = result.guard;
 			} else if (exportJobId) {
@@ -178,7 +115,7 @@
 		} catch (cause) {
 			if (version !== generation) return;
 			stage = 'error';
-			if (cause instanceof FailedRangeExport) replaceable = true;
+			replaceable = rangePreview.canReplace(cause);
 			error = range
 				? cause instanceof Error &&
 					(cause instanceof RangePreparationError ||

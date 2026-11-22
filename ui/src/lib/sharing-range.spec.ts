@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { create } from '@bufbuild/protobuf';
+import { ShareEvidenceSchema } from './proto/webrtc_pb';
+import { RangeSharePreview } from './sharing-range-preview';
 import {
 	insideRecordingRange,
 	prepareRangeShare,
@@ -28,18 +31,16 @@ function client() {
 			.fn()
 			.mockResolvedValue({ capabilityIds: ['keeppeek.guest-range.v1'] }),
 		queryStoredTimeline: vi.fn(),
-		getEventWorkflow: vi
-			.fn()
-			.mockResolvedValue({
-				states: [
-					{
-						sourceId: 'front',
-						eventId: 'saved',
-						eventPresent: true,
-						bookmark: { active: true, eventStartMs: 1000 }
-					}
-				]
-			}),
+		getEventWorkflow: vi.fn().mockResolvedValue({
+			states: [
+				{
+					sourceId: 'front',
+					eventId: 'saved',
+					eventPresent: true,
+					bookmark: { active: true, eventStartMs: 1000 }
+				}
+			]
+		}),
 		listExports: vi.fn().mockResolvedValue([]),
 		createExport: vi.fn().mockResolvedValue(ready),
 		getExport: vi.fn()
@@ -49,6 +50,42 @@ const signal = () => new AbortController().signal;
 const savedEvent = { id: 'saved', source_id: 'front', start_time_ms: 1000, end_time_ms: 2000 };
 
 describe('recording range sharing', () => {
+	it('resumes a failed alternate preparation by its own job ID and guard on reload', async () => {
+		const recorder = client();
+		recorder.getServerCapabilities.mockResolvedValue({
+			capabilityIds: ['keeppeek.guest-range.v1'],
+			storedMediaSources: []
+		});
+		recorder.listExports.mockResolvedValue([{ ...ready, id: 'main-ready', streamId: 'main' }]);
+		recorder.queryStoredTimeline.mockResolvedValue({ ranges: [{ ...target, streamId: 'sub' }] });
+		const failed = {
+			...ready,
+			id: 'sub-job',
+			status: 'failed',
+			error: 'The recorder could not finish the selected export.'
+		};
+		recorder.createExport.mockResolvedValue(failed);
+		recorder.getExport.mockResolvedValue({ ...failed, status: 'ready' });
+		const evidence = create(ShareEvidenceSchema);
+		const preview = vi
+			.fn()
+			.mockRejectedValueOnce(
+				new Error('the selected recording could not be verified as browser-compatible')
+			)
+			.mockResolvedValue(evidence);
+		const recovery = new RangeSharePreview(preview);
+		const range = { client: recorder, target: { ...target, streamId: undefined } };
+		await expect(recovery.load(range, false, signal())).rejects.toThrow(failed.error);
+		expect(recovery.canReplace(new Error('Connection lost'))).toBe(false);
+		expect(await recovery.load(range, false, signal())).toEqual({ evidence, guard });
+		expect(recorder.createExport).toHaveBeenCalledTimes(1);
+		expect(recorder.getExport).toHaveBeenCalledWith('sub-job');
+		expect(preview.mock.calls).toEqual([
+			['main-ready', guard],
+			['sub-job', guard]
+		]);
+	});
+
 	it('reuses only the unexpired, exact recording and keeps existing stream selection', async () => {
 		const recorder = client();
 		recorder.listExports.mockResolvedValue([
