@@ -13,7 +13,10 @@ presentation time and duration in track ticks. On a parsed track it reads the sa
 tables without reading encoded media bytes. The presentation time is the decode time
 plus the composition offset. Version 0 offsets are unsigned and version 1 offsets are
 signed. Presentation time can precede zero. The sample ordinal breaks ties within one
-track and timing epoch.
+track and timing epoch. Exact timing lookup rejects hybrid tracks containing both initial
+sample-table entries and later fragments. The MP4 reader reports an unsupported layout
+when one track fragment contains multiple runs. Both cases require a complete ordinal index
+before their timestamps can identify adjacent pictures.
 
 The fixtures contain twelve independently identifiable H.264 pictures, two
 random-access GOPs and both forward- and backward-referenced pictures. Each of four

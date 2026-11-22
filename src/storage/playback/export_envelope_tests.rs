@@ -240,7 +240,7 @@ fn export_envelope_rejects_invalid_timing_permanently_and_empty_output() {
     envelope.flush();
     assert_eq!(envelope.bounds(), None);
     let mut overflow = ExportEnvelope::new(i64::MAX);
-    overflow.sample(1, 1, &sample(u64::MAX, 1, i32::MAX));
+    overflow.sample(1, 1, &sample(u64::MAX, 1, i64::from(i32::MAX)));
     overflow.flush();
     assert_eq!(overflow.bounds(), None);
 }
