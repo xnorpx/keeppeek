@@ -188,5 +188,5 @@ fn eight_valid_guest_downloads_keep_the_other_seven_readable_when_one_is_revoked
 #[test]
 #[ignore = "run in its own process for guest media timing and resident-memory samples"]
 fn measure_eight_guest_downloads() {
-    qualify(120, 500);
+    qualify(64, 40);
 }

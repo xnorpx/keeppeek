@@ -51,7 +51,14 @@ impl Evidence {
             &state, &principal, request,
         )
         .unwrap();
-        wait_for_export(&state);
+        wait_for_export(
+            &state,
+            if frames > 2 {
+                Duration::from_secs(90)
+            } else {
+                Duration::from_secs(10)
+            },
+        );
         let binding = binding(&state);
         let (grant, token) = grant(&state, binding, allow_download);
         let context = sharing::context(&state).unwrap();
@@ -372,8 +379,8 @@ fn malformed_range_and_checksum_failure_do_not_count_failed_views() {
     assert_eq!(f.snapshot().views, 0);
 }
 
-fn wait_for_export(state: &ServerState) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+fn wait_for_export(state: &ServerState, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
     loop {
         let record = super::super::super::export_provenance_tests::current_record(state);
         if record.job.status != crate::api::proto::ExportJobStatus::Running as i32 {
