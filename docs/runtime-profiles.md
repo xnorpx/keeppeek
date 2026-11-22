@@ -23,9 +23,20 @@ cannot replace a newer pending status. Recording-policy admission and worker cre
 status fence; publishing a newer pending revision waits for those synchronous admissions.
 Notification acknowledgement holds the fence for up to its existing five-second timeout. A queued
 notification update is cancelled when its acknowledgement times out or a newer update is admitted.
-The notification worker checks that request before applying suppression. An already executing
-notification update, claimed external delivery or camera worker stop is not preempted. These
-bounds do not establish the complete asynchronous convergence or privacy acceptance matrix.
+The notification worker checks that request before applying suppression. Notifications already
+in delivery continue under the delivery worker's existing timeout.
+
+The camera loop gives all camera stops in one profile transition a shared six-second deadline.
+Cancellation starts for every affected camera. A worker still running at the deadline reports a
+Degraded camera. The recorder retains its thread handle, refuses a replacement at the same IP,
+and joins it after it exits. Reapply the selected profile to refresh the per-camera result.
+An event-only edit keeps media running if its previous event worker takes too long to stop.
+The privacy gate continues to enforce the accepted policy throughout retirement.
+New media starts pause if 127 cancelled groups are still running. Disabled definitions can
+still be accepted. In the Windows debug fixture, four blocked camera threads shared one
+6.012-second stop interval. Each camera reported Degraded. Releasing the four threads let
+the recorder join them all. This fixture measures worker retirement, independently of the
+release-build WebRTC acknowledgement and browser latency requirements.
 
 The application publishes loop-owned startup and profile-application results through the existing
 status watch. Startup and activation batches each produce one completion update, so 127 camera
@@ -105,7 +116,7 @@ arbitrary user metadata are not valid profile fields.
 | Durable state and watches                                                               | Config-backed CAS, bounded definition and observation parts, scoped active-header and status watches.                                                                | Combined storage quota, retained memory and release-build transport performance.                                                    |
 | Camera identity                                                                         | Per-camera UUIDs, atomic legacy migration, explicit missing targets and source mapping at runtime boundaries.                                                        | Full cross-platform upgrade/restore qualification; ambiguous active source routing fails closed.                                    |
 | Recording                                                                               | Admission, queue acceptance, writer acknowledgement and covered later input write failures report per-camera status. Same-policy recovery retains desired selection. | Cleanup/finalization, periodic FlushAll, shutdown, producer queues, storage-pressure failures and complete media recovery evidence. |
-| Camera availability                                                                     | Loop-owned worker start/stop preserves Base definitions and accepted event edits.                                                                                    | Worker stop has no deadline; caller timeout does not preempt in-progress work.                                                      |
+| Camera availability                                                                     | Bounded worker shutdown, retained ownership until exit, and Base restoration after accepted event edits.                                                             | Durable acknowledgement latency, automatic convergence, and shutdown under a permanently stalled external device.                   |
 | Privacy                                                                                 | Source-translated profile inputs share the existing schedule/media gate; restrictive transitions retain prior denies on failure.                                     | Complete tagged-byte leak matrix across all media operations and failure paths.                                                     |
 | Notifications                                                                           | Candidate suppression and pending-outbox cancellation preserve rule definitions. Queued updates are cancelled after timeout or supersession.                         | Already executing updates and claimed external deliveries are not preempted; complete delivery-race qualification remains.          |
 | Browser                                                                                 | Settings manages profiles through the same WebRTC CAS operations; explicit retry and discard/reload protect current selection and drafts.                            | Final-build browser/restart and complete accessibility/performance evidence.                                                        |
