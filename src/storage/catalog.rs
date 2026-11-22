@@ -36,6 +36,7 @@ mod event_write;
 pub mod locations;
 pub mod maintenance;
 pub(crate) mod readers;
+pub(crate) mod relocation;
 pub mod retention;
 pub mod workflow;
 
@@ -448,6 +449,10 @@ enum Command {
         fragment: CatalogFragment,
         keyframe: CatalogKeyframe,
         reply: SyncSender<anyhow::Result<()>>,
+    },
+    Relocation {
+        request: relocation::Request,
+        reply: SyncSender<anyhow::Result<Option<relocation::Move>>>,
     },
     FinalizedRelocation {
         source: String,
@@ -1802,6 +1807,12 @@ fn run_catalog(
                     keyframe,
                 )));
             }
+            Command::Relocation { request, reply } => {
+                let _ = reply.send(pollster::block_on(relocation::dispatch(
+                    &connection,
+                    request,
+                )));
+            }
             Command::FinalizedRelocation {
                 source,
                 destination,
@@ -2609,6 +2620,7 @@ async fn find_cleanup_candidate(
                 format!("SELECT id, path, file_bytes, cleanup_pending
                  FROM recording_files
                  WHERE finalized = 1 AND protected = 0 AND retention_pending=0
+                   AND NOT EXISTS(SELECT 1 FROM legacy_recording_relocations m WHERE m.id=recording_files.id)
                    AND (?2 IS NULL OR (substr(replace(path,char(92),'/'),1,length(?2))=?2 COLLATE NOCASE
                        AND EXISTS(SELECT 1 FROM recording_retention_policies p WHERE p.camera_id=recording_files.source_id OR p.camera_id='')
                        AND retention_generation=(SELECT generation FROM recording_retention_runtime WHERE singleton=1)
@@ -3088,6 +3100,7 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     backfill_recording_coverage(connection).await?;
     initialize_operational_schema(connection).await?;
     archive::initialize(connection).await?;
+    relocation::initialize(connection).await?;
     Ok(())
 }
 
@@ -6486,14 +6499,20 @@ fn current_unix_time_ms() -> i64 {
 }
 
 #[cfg(unix)]
-fn recording_file_identity(_path: &Path, metadata: &std::fs::Metadata) -> Option<String> {
+pub(super) fn recording_file_identity(
+    _path: &Path,
+    metadata: &std::fs::Metadata,
+) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
 
     Some(format!("{}:{}", metadata.dev(), metadata.ino()))
 }
 
 #[cfg(windows)]
-fn recording_file_identity(path: &Path, _metadata: &std::fs::Metadata) -> Option<String> {
+pub(super) fn recording_file_identity(
+    path: &Path,
+    _metadata: &std::fs::Metadata,
+) -> Option<String> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
@@ -6512,7 +6531,10 @@ fn recording_file_identity(path: &Path, _metadata: &std::fs::Metadata) -> Option
 }
 
 #[cfg(not(any(unix, windows)))]
-fn recording_file_identity(_path: &Path, _metadata: &std::fs::Metadata) -> Option<String> {
+pub(super) fn recording_file_identity(
+    _path: &Path,
+    _metadata: &std::fs::Metadata,
+) -> Option<String> {
     None
 }
 
