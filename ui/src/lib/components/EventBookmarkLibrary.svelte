@@ -10,6 +10,7 @@
 		type EventWorkflowState
 	} from '$lib/event-workflow';
 	import EventWorkflowControls from './EventWorkflowControls.svelte';
+	import GuestShareExportButton from './GuestShareExportButton.svelte';
 	import EventWorkflowNotice from './EventWorkflowNotice.svelte';
 	import BookmarkIcon from '@lucide/svelte/icons/bookmark';
 	import XIcon from '@lucide/svelte/icons/x';
@@ -19,12 +20,14 @@
 		cameras,
 		workflow,
 		identity,
+		rangeSharing = false,
 		onclose
 	}: {
 		date: string;
 		cameras: readonly CameraListItem[];
 		workflow: EventWorkflow;
 		identity: EventWorkflowIdentity;
+		rangeSharing?: boolean;
 		onclose: () => void;
 	} = $props();
 	const client = useControlClient();
@@ -183,6 +186,24 @@
 						class="inline-flex min-h-11 items-center text-xs font-medium text-primary underline"
 						onclick={onclose}>Open event detail</a
 					>{/if}
+				{#if rangeSharing && current.bookmark?.active && current.eventPresent && current.sourceAvailable}
+					<GuestShareExportButton
+						controller={client}
+						range={{
+							client,
+							target: {
+								sourceId: current.sourceId,
+								streamId: 'main',
+								startMs: current.bookmark.eventStartMs,
+								endMs: null,
+								bookmarkEventId: current.eventId
+							}
+						}}
+					/>
+				{:else if rangeSharing && current.bookmark?.active}
+					<p class="text-xs text-muted-foreground">Recording range unavailable for this bookmark.</p
+					>
+				{/if}
 			</article>
 		{:else}{#if !loading && !error}<p class="px-4 py-6 text-sm text-text-muted">
 					No saved bookmarks for this date.

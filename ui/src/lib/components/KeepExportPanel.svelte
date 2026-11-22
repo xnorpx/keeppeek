@@ -950,6 +950,20 @@
 						</button>
 					</CapabilityGate>
 				{/if}
+				{#if range && segment && capabilities.supports(capabilityActions.shareRecordingRange.capability)}
+					<GuestShareExportButton
+						controller={controlClient}
+						range={{
+							client: controlClient,
+							target: {
+								sourceId,
+								streamId: segment.stream,
+								startMs: range.startMs,
+								endMs: range.endMs
+							}
+						}}
+					/>
+				{/if}
 				{#if operationError}
 					<div
 						class="flex items-start gap-2 rounded-sm border border-live/40 bg-live/5 px-3 py-2.5 text-xs text-live-text"

@@ -1584,6 +1584,8 @@
 
 {#if bookmarkLibraryOpen && workflowIdentity}
 	<EventBookmarkLibrary
+		rangeSharing={workflowIdentity.administrator &&
+			capabilities.supports(capabilityActions.shareRecordingRange.capability)}
 		date={filters.date}
 		{cameras}
 		{workflow}
@@ -1600,6 +1602,9 @@
 		onclick={closeDetail}
 	></button>
 	<EventDetailDrawer
+		sharingController={capabilities.supports(capabilityActions.shareRecordingRange.capability)
+			? controlClient
+			: undefined}
 		record={workflowRecord(selectedRecord)}
 		{workflow}
 		{workflowIdentity}

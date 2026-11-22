@@ -78,6 +78,46 @@ describe('creator guest share dialog', () => {
 		expect(document.querySelector(`a[href*="${sharingFixtureToken}"]`)).toBeNull();
 	});
 
+	it('shows the original recording selection next to measured file times and carries it into creation', async () => {
+		const client = controller();
+		const evidence = shareEvidenceFixture();
+		const target = {
+			sourceId: evidence.sourceId,
+			streamId: 'main' as const,
+			startMs: Number(evidence.startMs) - 1000,
+			endMs: Number(evidence.endMs) + 1000
+		};
+		const rangeClient = {
+			getServerCapabilities: vi
+				.fn()
+				.mockResolvedValue({ capabilityIds: ['keeppeek.guest-range.v1'] }),
+			listExports: vi.fn().mockResolvedValue([]),
+			createExport: vi.fn().mockResolvedValue({ id: evidence.exportJobId, status: 'ready' }),
+			getExport: vi.fn(),
+			searchEventMetadata: vi.fn()
+		};
+		await render(GuestShareDialog, {
+			props: { controller: client, range: { target, client: rangeClient }, onclose: vi.fn() }
+		});
+		await expect
+			.element(page.getByText(/Selected interval/))
+			.toMatchTextContent('2026-10-17T06:11:47.000Z');
+		await expect
+			.element(page.getByText('17 Oct 2026, 06:11:48 UTC', { exact: true }))
+			.toBeVisible();
+		const guard = {
+			sourceId: evidence.sourceId,
+			startMs: BigInt(target.startMs),
+			endMs: BigInt(target.endMs)
+		};
+		expect(client.previewExport).toHaveBeenCalledWith(evidence.exportJobId, guard);
+		await page.getByRole('button', { name: 'Create guest link', exact: true }).click();
+		expect(client.create).toHaveBeenCalledWith(
+			expect.objectContaining({ recordingRange: guard }),
+			sharingFixtureOrigin
+		);
+	});
+
 	it('requires list/revoke recovery after an unconfirmed create and never retries automatically', async () => {
 		const client = controller();
 		client.create.mockRejectedValueOnce(new Error('Connection lost'));

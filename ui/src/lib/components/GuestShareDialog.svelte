@@ -5,6 +5,12 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import type { SharingControlClient } from '$lib/control-client-sharing';
+	import {
+		prepareRangeShare,
+		RangePreparationError,
+		type RangePreparation,
+		type RecordingRangeGuard
+	} from '$lib/sharing-range';
 	import type { ShareEvidence, SharePolicy } from '$lib/proto/webrtc_pb';
 	import { shareBytes, shareDateInput, shareExpiry, shareQuota, shareTime } from '$lib/sharing';
 	import XIcon from '@lucide/svelte/icons/x';
@@ -13,10 +19,13 @@
 	type Stage = 'loading' | 'preview' | 'creating' | 'created' | 'unconfirmed' | 'error';
 	type Props = {
 		controller: Pick<SharingControlClient, 'getPolicy' | 'previewExport' | 'create'>;
-		exportJobId: string;
+		exportJobId?: string;
+		range?: RangePreparation;
 		onclose: () => void;
 	};
-	let { controller, exportJobId, onclose }: Props = $props();
+	let { controller, exportJobId, range, onclose }: Props = $props();
+	let selectedRange = $state.raw<RecordingRangeGuard | undefined>();
+	const lifetime = new AbortController();
 	const id = $props.id();
 	let dialog = $state<HTMLDialogElement | null>(null);
 	let stage = $state<Stage>('loading');
@@ -30,6 +39,7 @@
 	let maxViews = $state('');
 	let maxDownloads = $state('');
 	let error = $state<string | null>(null);
+	let freshExport = $state(false);
 	let url = $state<string | null>(null);
 	let copied = $state(false);
 	let requestId = $state<string | null>(null);
@@ -51,6 +61,7 @@
 		void load();
 		return () => {
 			window.removeEventListener('pagehide', leave);
+			lifetime.abort();
 			generation += 1;
 			url = null;
 		};
@@ -61,23 +72,55 @@
 		stage = 'loading';
 		error = null;
 		try {
-			const [nextPolicy, nextEvidence] = await Promise.all([
-				controller.getPolicy(),
-				controller.previewExport(exportJobId)
-			]);
+			let nextPolicy: SharePolicy;
+			let nextEvidence: ShareEvidence;
+			let guard: RecordingRangeGuard | undefined;
+			if (range) {
+				nextPolicy = await controller.getPolicy();
+				if (version !== generation) return;
+				if (
+					!nextPolicy.available ||
+					!nextPolicy.settings?.enabled ||
+					!nextPolicy.settings.publicOrigin
+				)
+					throw new RangePreparationError(
+						'Enable sharing and configure its HTTPS origin in Settings before preparing a recording range.'
+					);
+				const prepared = await prepareRangeShare(range, lifetime.signal, freshExport);
+				if (version !== generation) return;
+				guard = prepared.guard;
+				try {
+					nextEvidence = await controller.previewExport(prepared.exportJobId, guard);
+				} catch (cause) {
+					// A matching older artifact can lack the proof required for a range grant.
+					freshExport = true;
+					throw cause;
+				}
+			} else if (exportJobId) {
+				[nextPolicy, nextEvidence] = await Promise.all([
+					controller.getPolicy(),
+					controller.previewExport(exportJobId)
+				]);
+			} else {
+				throw new RangePreparationError('Select evidence to share.');
+			}
 			if (version !== generation) return;
 			policy = nextPolicy;
 			evidence = nextEvidence;
+			selectedRange = guard;
 			displayName = nextEvidence.cameraName || 'Shared footage';
 			expiry = shareDateInput(
 				Math.min(Date.now() + 3_600_000, Number(nextEvidence.availableUntilMs))
 			);
 			stage = 'preview';
-		} catch {
+		} catch (cause) {
 			if (version !== generation) return;
 			stage = 'error';
-			error =
-				'This export could not be previewed for sharing. Check access and file expiry, and use a new creator-owned export of at most 2 minutes and 512 MiB. Then reload.';
+			error = range
+				? cause instanceof RangePreparationError
+					? cause.message
+					: 'This recording cannot be shared within the selected interval. Check recording coverage and codec boundaries, or select a different interval.'
+				: 'This export could not be previewed for sharing. Check access and file expiry, and use a new creator-owned export of at most 2 minutes and 512 MiB. Then reload.';
 		}
 	}
 
@@ -114,6 +157,7 @@
 					exportJobId: evidence.exportJobId,
 					artifactId: evidence.artifactId,
 					expectedSha256: evidence.sha256,
+					...(selectedRange ? { recordingRange: selectedRange } : {}),
 					displayName,
 					note,
 					allowStream,
@@ -147,6 +191,7 @@
 	}
 
 	function close(): void {
+		lifetime.abort();
 		generation += 1;
 		url = null;
 		dialog?.close();
@@ -167,7 +212,11 @@
 		<header class="flex items-center gap-3 border-b border-border p-4">
 			<div class="min-w-0 flex-1">
 				<h2 id="{id}-title" class="text-lg font-semibold">Create guest link</h2>
-				<p class="mt-1 text-sm text-muted-foreground">Share one completed evidence file.</p>
+				<p class="mt-1 text-sm text-muted-foreground"
+					>{range
+						? 'Share footage from the selected recording interval.'
+						: 'Share one completed evidence file.'}</p
+				>
 			</div>
 			<Button
 				variant="ghost"
@@ -181,11 +230,13 @@
 			{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
 			{#if stage === 'loading'}
 				<p role="status" class="text-sm text-muted-foreground">
-					Checking the immutable export and sharing policy...
+					{range
+						? 'Preparing and checking the selected recording range…'
+						: 'Checking the immutable export and sharing policy...'}
 				</p>
 			{:else if stage === 'error'}
 				<Button variant="outline" class="min-h-11" onclick={() => void load()}
-					>Reload preview</Button
+					>{range && freshExport ? 'Prepare a fresh export' : 'Reload preview'}</Button
 				>
 			{:else if stage === 'created' && url}
 				<div class="space-y-4">
@@ -250,8 +301,14 @@
 						</div>
 					</dl>
 					<p class="text-sm text-muted-foreground">
-						This shares the complete MP4 with the bounds shown. It may start before the range
-						originally requested to include a preceding keyframe.
+						{#if selectedRange}
+							Selected interval: {new Date(Number(selectedRange.startMs)).toISOString()} – {new Date(
+								Number(selectedRange.endMs)
+							).toISOString()}. The file bounds above show the footage available inside it.
+						{:else}
+							This shares the complete MP4 with the bounds shown. It may start before the range
+							originally requested to include a preceding keyframe.
+						{/if}
 					</p>
 					{#if evidence.hasGaps}<p role="status" class="text-sm text-activity">
 							The file contains gaps in recorded coverage.

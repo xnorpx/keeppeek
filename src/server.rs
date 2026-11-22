@@ -1396,6 +1396,7 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
     }
     if state.camera_config_path.is_some() {
         capability_ids.push(sharing::CAPABILITY_ID.to_owned());
+        capability_ids.push(sharing::RANGE_CAPABILITY_ID.to_owned());
         capability_ids.push(peek_layouts::CAPABILITY_ID.to_owned());
         capability_ids.push(CONFIGURATION_CAPABILITY_ID.to_owned());
         capability_ids.push("keeppeek.recording.pre-roll.v1".to_owned());

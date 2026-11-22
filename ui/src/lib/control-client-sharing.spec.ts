@@ -52,6 +52,44 @@ describe('sharing control client', () => {
 		).toEqual(['getPolicy', 'previewExport']);
 	});
 
+	it('sends the same source and half-open interval on preview and creation and checks returned bounds', async () => {
+		vi.spyOn(Date, 'now').mockReturnValue(sharingFixtureNow);
+		const evidence = shareEvidenceFixture();
+		const guard = { sourceId: evidence.sourceId, startMs: evidence.startMs, endMs: evidence.endMs };
+		const send = vi
+			.fn()
+			.mockResolvedValueOnce(result({ result: { case: 'evidence', value: evidence } }))
+			.mockResolvedValueOnce(result({ result: { case: 'created', value: shareIssuedFixture() } }))
+			.mockResolvedValueOnce(
+				result({ result: { case: 'evidence', value: { ...evidence, endMs: evidence.endMs + 1n } } })
+			)
+			.mockResolvedValueOnce(
+				result({
+					result: {
+						case: 'created',
+						value: {
+							...shareIssuedFixture(),
+							grant: {
+								...shareGrantFixture(),
+								evidence: { ...evidence, startMs: evidence.startMs - 1n }
+							}
+						}
+					}
+				})
+			);
+		const client = new SharingControlClient(send);
+		await client.previewExport(evidence.exportJobId, guard);
+		await client.create({ ...input(), recordingRange: guard }, sharingFixtureOrigin);
+		for (const [cmd] of send.mock.calls)
+			expect(cmd.value.action.value.recordingRange).toMatchObject(guard);
+		await expect(client.previewExport(evidence.exportJobId, guard)).rejects.toThrow(
+			'outside the selected range'
+		);
+		await expect(
+			client.create({ ...input(), recordingRange: guard }, sharingFixtureOrigin)
+		).rejects.toThrow('invalid sharing response');
+	});
+
 	it('requires an exact canonical HTTPS origin and keeps revision-checked policy writes', async () => {
 		const send = vi
 			.fn()

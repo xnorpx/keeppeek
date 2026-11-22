@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { capabilityActions } from '$lib/capability-actions';
 	import { afterNavigate, goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { navigating, page } from '$app/state';
@@ -220,6 +221,7 @@
 		if (mobilePanel) history.back();
 	}
 	let capabilitiesSeen = false;
+	let guestRangeSupported = $state(false);
 	let reconnectPending = false;
 	let scrubUsesFragmentFallback = false;
 	let secondaryLoadsReady = $state(false);
@@ -417,6 +419,9 @@
 		updateOrientation();
 		portraitMedia.addEventListener('change', updateOrientation);
 		const unsubscribeCapabilities = controlClient.onCapabilities((capabilityIds) => {
+			guestRangeSupported = capabilityIds.includes(
+				capabilityActions.shareRecordingRange.capability
+			);
 			audioPreviewSupported = capabilityIds.includes('keeppeek.recorded-audio.v1');
 			eventSearchAvailable = capabilityIds.includes('keeppeek.event-search');
 			eventWorkflowAvailable = capabilityIds.includes(EVENT_WORKFLOW_CAPABILITY);
@@ -2819,6 +2824,7 @@
 		onclick={() => (selectedWorkflowEvent = null)}
 	></button>
 	<EventDetailDrawer
+		sharingController={guestRangeSupported ? controlClient : undefined}
 		record={{ camera: selectedCamera, event: withWorkflow(selectedWorkflowEvent) }}
 		{workflow}
 		{workflowIdentity}

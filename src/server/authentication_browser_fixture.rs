@@ -46,6 +46,12 @@ impl GuestRecording {
         ));
         state.sharing.open(&state.storage_config).unwrap();
         let start_ms = required_timestamp_ms(request.start_time.as_ref(), "fixture start").unwrap();
+        let mut event =
+            crate::storage::catalog::tests::test_event("guest-range-event", start_ms - 500);
+        event.camera_id.clone_from(&request.source_id);
+        event.end_time_ms =
+            Some(required_timestamp_ms(request.end_time.as_ref(), "fixture end").unwrap() + 500);
+        catalog.handle().insert_event(event).unwrap();
         (
             state,
             Self {

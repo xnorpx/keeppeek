@@ -17,6 +17,7 @@ pub(super) fn preview(
     state: &ServerState,
     principal: &ApiPrincipal,
     id: &str,
+    range: Option<&proto::ShareRecordingRange>,
 ) -> Result<ValidatedEvidence, ControlCommandError> {
     if principal.role != AccessRole::Administrator {
         return Err(denied());
@@ -28,6 +29,30 @@ pub(super) fn preview(
     let binding = binding(&record)?;
     let current_source = source(state, binding.source_identity)?;
     camera_access::require_camera(&policy, &current_source)?;
+    if let Some(selected) = range {
+        if selected.start_ms < 0
+            || selected.end_ms <= selected.start_ms
+            || selected.end_ms.saturating_sub(selected.start_ms)
+                > crate::shares::MAX_MEDIA_DURATION_MS
+        {
+            return Err(invalid("select a recording interval of up to two minutes"));
+        }
+        if selected.source_id != current_source
+            || selected.source_id != binding.source_id
+            || selected.start_ms
+                != required_timestamp_ms(record.request.start_time.as_ref(), "export start")?
+            || selected.end_ms
+                != required_timestamp_ms(record.request.end_time.as_ref(), "export end")?
+            || binding.start_ms < selected.start_ms
+            || binding.end_ms > selected.end_ms
+        {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                409,
+                "the recording cannot be shared within the selected range",
+            ));
+        }
+    }
     let checked = live_evidence(state, &record, binding)?;
     let _opened = open_guest(state, &checked.binding)?;
     Ok(checked)

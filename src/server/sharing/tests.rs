@@ -14,7 +14,12 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let (root, catalog, manager, mut state, request) = setup(16 * 1024 * 1024);
+        Self::with_export(|_| {})
+    }
+
+    fn with_export(select: impl FnOnce(&mut proto::CreateExportJob)) -> Self {
+        let (root, catalog, manager, mut state, mut request) = setup(16 * 1024 * 1024);
+        select(&mut request);
         state.export_history_path = Some(Arc::new(root.join("history.json")));
         let identity = Uuid::parse_str("b70a223d-3e4f-42e6-b950-c7a4e9429c77").unwrap();
         let path = configured_source(&mut state, &root, identity);
@@ -65,6 +70,7 @@ impl Fixture {
         let Value::Evidence(evidence) =
             self.action(Action::PreviewExport(proto::PreviewShareExport {
                 export_job_id: "named-export".into(),
+                recording_range: None,
             }))
         else {
             panic!("export preview must return evidence");
@@ -73,8 +79,15 @@ impl Fixture {
     }
 
     fn issue(&self) -> proto::IssuedShareGrant {
+        let Value::Created(issued) = self.action(Action::Create(self.intent())) else {
+            panic!("grant creation must return one issued link");
+        };
+        issued
+    }
+
+    fn intent(&self) -> proto::CreateShareGrant {
         let evidence = self.preview();
-        let Value::Created(issued) = self.action(Action::Create(proto::CreateShareGrant {
+        proto::CreateShareGrant {
             request_id: Uuid::new_v4().to_string(),
             export_job_id: evidence.export_job_id,
             artifact_id: evidence.artifact_id,
@@ -86,10 +99,8 @@ impl Fixture {
             allow_download: true,
             max_views: Some(2),
             max_downloads: Some(2),
-        })) else {
-            panic!("grant creation must return one issued link");
-        };
-        issued
+            recording_range: None,
+        }
     }
 
     fn list(&self, page_size: u32) -> proto::ShareGrantList {
@@ -146,6 +157,104 @@ fn wait_for_export(state: &ServerState, principal: &ApiPrincipal) {
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("fixture export did not finish within ten seconds");
+}
+
+#[test]
+fn selected_interval_guards_preview_and_grant_creation() {
+    let fixture = Fixture::with_export(|request| {
+        let start = required_timestamp_ms(request.start_time.as_ref(), "start").unwrap();
+        let end = required_timestamp_ms(request.end_time.as_ref(), "end").unwrap();
+        request.start_time = Some(millis_timestamp(start - 500));
+        request.end_time = Some(millis_timestamp(end + 500));
+        request.allow_partial = true;
+    });
+    let record = current_record(&fixture.state);
+    let selected = proto::ShareRecordingRange {
+        source_id: record.job.source_id.clone(),
+        start_ms: required_timestamp_ms(record.request.start_time.as_ref(), "start").unwrap(),
+        end_ms: required_timestamp_ms(record.request.end_time.as_ref(), "end").unwrap(),
+    };
+    let guarded_preview = |selected: &proto::ShareRecordingRange| {
+        Action::PreviewExport(proto::PreviewShareExport {
+            export_job_id: record.job.job_id.clone(),
+            recording_range: Some(selected.clone()),
+        })
+    };
+    let guarded_create = |selected: &proto::ShareRecordingRange| {
+        Action::Create(proto::CreateShareGrant {
+            recording_range: Some(selected.clone()),
+            ..fixture.intent()
+        })
+    };
+    let Value::Evidence(preview) = fixture.action(guarded_preview(&selected)) else {
+        panic!("expected range preview")
+    };
+    assert!(preview.start_ms >= selected.start_ms && preview.end_ms <= selected.end_ms);
+    assert!(matches!(
+        fixture.action(guarded_create(&selected)),
+        Value::Created(_)
+    ));
+    for changed in [
+        proto::ShareRecordingRange {
+            source_id: "different-camera".into(),
+            ..selected.clone()
+        },
+        proto::ShareRecordingRange {
+            start_ms: selected.start_ms - 1,
+            ..selected.clone()
+        },
+        proto::ShareRecordingRange {
+            end_ms: selected.end_ms - 1,
+            ..selected.clone()
+        },
+        proto::ShareRecordingRange {
+            end_ms: selected.start_ms,
+            ..selected.clone()
+        },
+    ] {
+        for action in [guarded_preview(&changed), guarded_create(&changed)] {
+            assert!(
+                dispatch(
+                    &fixture.state,
+                    &fixture.principal,
+                    proto::ShareCommand {
+                        action: Some(action)
+                    }
+                )
+                .is_err()
+            );
+        }
+    }
+    // Keep the immutable bytes and their measured bounds. Exercise a preceding keyframe
+    // and a trailing sample independently using corresponding requested intervals.
+    for (start, end) in [
+        (preview.start_ms + 1, selected.end_ms),
+        (selected.start_ms, preview.end_ms - 1),
+    ] {
+        {
+            let mut jobs = fixture.state.export_jobs.lock().unwrap();
+            let request = &mut jobs.get_mut(&record.job.job_id).unwrap().request;
+            request.start_time = Some(millis_timestamp(start));
+            request.end_time = Some(millis_timestamp(end));
+        }
+        let narrower = proto::ShareRecordingRange {
+            start_ms: start,
+            end_ms: end,
+            ..selected.clone()
+        };
+        for action in [guarded_preview(&narrower), guarded_create(&narrower)] {
+            let error = dispatch(
+                &fixture.state,
+                &fixture.principal,
+                proto::ShareCommand {
+                    action: Some(action),
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.code, proto::ErrorCode::Rejected);
+        }
+    }
+    assert_eq!(fixture.list(100).grants.len(), 1);
 }
 
 #[test]
@@ -335,7 +444,7 @@ fn a_missing_owned_artifact_is_unavailable_even_while_its_history_remains_ready(
         page.grants[0].status,
         proto::ShareGrantStatus::Unavailable as i32
     );
-    assert!(evidence::preview(&fixture.state, &fixture.principal, "named-export").is_err());
+    assert!(evidence::preview(&fixture.state, &fixture.principal, "named-export", None).is_err());
 }
 
 #[test]
@@ -385,7 +494,7 @@ fn activating_policy_reclaims_sessions_and_reservations_without_refunding_delive
 #[test]
 fn overdue_audit_records_are_hidden_before_bounded_maintenance_purges_them() {
     let fixture = Fixture::new();
-    let binding = evidence::preview(&fixture.state, &fixture.principal, "named-export")
+    let binding = evidence::preview(&fixture.state, &fixture.principal, "named-export", None)
         .unwrap()
         .binding;
     let sampled = raw_clock().unwrap();

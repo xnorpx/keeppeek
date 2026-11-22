@@ -68,10 +68,41 @@ fn sharing_creation_preserves_optional_quota_presence_on_the_wire() {
         allow_download: false,
         max_views: Some(1),
         max_downloads: None,
+        recording_range: None,
     };
     let decoded = proto::CreateShareGrant::decode(request.encode_to_vec().as_slice()).unwrap();
     assert_eq!(decoded, request);
     assert_eq!(decoded.max_views, Some(1));
     assert_eq!(decoded.max_downloads, None);
     assert!(!decoded.allow_download);
+}
+
+#[test]
+fn optional_recording_range_is_additive_on_preview_and_create() {
+    let range = proto::ShareRecordingRange {
+        source_id: "c".into(),
+        start_ms: 1,
+        end_ms: 2,
+    };
+    let preview = proto::PreviewShareExport {
+        export_job_id: "j".into(),
+        recording_range: Some(range.clone()),
+    };
+    assert_eq!(
+        preview.encode_to_vec(),
+        [10, 1, b'j', 18, 7, 10, 1, b'c', 16, 1, 24, 2]
+    );
+    let legacy = proto::PreviewShareExport::decode(&[10u8, 1, b'j'][..]).unwrap();
+    assert_eq!(legacy.recording_range, None);
+    let create = proto::CreateShareGrant {
+        recording_range: Some(range.clone()),
+        ..Default::default()
+    };
+    assert_eq!(create.encode_to_vec(), [98, 7, 10, 1, b'c', 16, 1, 24, 2]);
+    assert_eq!(
+        proto::CreateShareGrant::decode(create.encode_to_vec().as_slice())
+            .unwrap()
+            .recording_range,
+        Some(range)
+    );
 }

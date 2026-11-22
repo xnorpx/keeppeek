@@ -1,4 +1,5 @@
 import { create, type MessageInitShape } from '@bufbuild/protobuf';
+import { insideRecordingRange, type RecordingRangeGuard } from './sharing-range';
 import {
 	ShareCommandSchema,
 	CreateShareGrantSchema,
@@ -47,12 +48,21 @@ export class SharingControlClient {
 		return validPolicy(result.value);
 	}
 
-	async previewExport(exportJobId: string): Promise<ShareEvidence> {
+	async previewExport(
+		exportJobId: string,
+		recordingRange?: RecordingRangeGuard
+	): Promise<ShareEvidence> {
 		if (!text(exportJobId, 64)) throw new Error('Select a completed export.');
-		const result = await this.request({ case: 'previewExport', value: { exportJobId } });
+		const result = await this.request({
+			case: 'previewExport',
+			value: { exportJobId, recordingRange }
+		});
 		if (result.case !== 'evidence' || result.value.exportJobId !== exportJobId)
 			throw new Error(responseError);
-		return validEvidence(result.value);
+		const evidence = validEvidence(result.value);
+		if (recordingRange && !insideRecordingRange(evidence, recordingRange))
+			throw new Error('The file includes footage outside the selected range.');
+		return evidence;
 	}
 
 	async create(input: ShareCreateInput, expectedOrigin: string): Promise<IssuedShareGrant> {
@@ -69,6 +79,7 @@ export class SharingControlClient {
 			grant.evidence?.exportJobId !== intent.exportJobId ||
 			grant.evidence.artifactId !== intent.artifactId ||
 			grant.evidence.sha256 !== intent.expectedSha256 ||
+			(intent.recordingRange && !insideRecordingRange(grant.evidence, intent.recordingRange)) ||
 			grant.expiresAtMs !== intent.expiresAtMs ||
 			grant.allowStream !== intent.allowStream ||
 			grant.allowDownload !== intent.allowDownload ||

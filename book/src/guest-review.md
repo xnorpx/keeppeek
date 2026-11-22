@@ -1,8 +1,7 @@
 # Guest review links
 
-Guest review gives a recipient access to one completed export without a KeepPeek account.
-This chapter describes the first workflow under development. End-to-end HTTPS, resource and
-performance qualification remains open; full guest-sharing release readiness is not established.
+Guest review gives a recipient access to a selected recording interval or one completed export
+without a KeepPeek account.
 
 ## Prepare the deployment
 
@@ -52,6 +51,20 @@ are outside this workflow.
 If creation is unconfirmed, retain its displayed reference. Find and revoke that grant in
 **Settings → Access → Guest links** before creating another. A retry cannot recover a lost secret.
 
+## Share a recording range
+
+As an Administrator, select **Share recording range** in **Keep → Export**, in an event's
+detail, or beside a saved bookmark. Event and bookmark actions use the event's recorded
+start and end, without adding surrounding footage. An open event or missing recording
+cannot supply a bounded interval. Older recorders require an update to show the action.
+
+KeepPeek prepares a locally retained export for the selected camera and stream, or
+reuses a matching export you own. Review both the selected interval and the measured file
+bounds. Gaps and file expiry appear before creation. If a keyframe, audio sample or
+trailing frame would extend outside the interval, KeepPeek declines the range. You can
+choose new bounds explicitly in Keep. The two-minute and 512 MiB evidence limits and
+the playback, download and expiry settings apply to range links too.
+
 ## What the guest receives
 
 An isolated page removes the secret fragment before the application loads and uses a separate
@@ -82,6 +95,5 @@ committed counts. Starting again requires the original valid link and remaining 
 
 Limits are 256 active grants, 32 per creator, eight media sessions globally and two per grant.
 Retained history is capped at 4096 records; creation is rejected when full. Expired/revoked metadata
-leaves lists after 30 days, with bounded physical cleanup. Exact-range derivatives, all four
-creator entry points, measured revoke latency and full HTTPS/performance qualification remain
-tracked implementation work.
+leaves lists after 30 days, with bounded physical cleanup. Remaining transport and resource
+qualification is tracked in [issue #132](https://github.com/xnorpx/keeppeek/issues/132).

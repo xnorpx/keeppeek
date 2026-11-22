@@ -13,9 +13,14 @@ pub(in crate::server) fn dispatch(
     let value = match command.action {
         Some(Action::GetPolicy(_)) => Value::Policy(wire::policy(state)?),
         Some(Action::ConfigurePolicy(request)) => Value::Policy(configure(state, request)?),
-        Some(Action::PreviewExport(request)) => Value::Evidence(wire::evidence(
-            &evidence::preview(state, principal, &request.export_job_id)?,
-        )),
+        Some(Action::PreviewExport(request)) => {
+            Value::Evidence(wire::evidence(&evidence::preview(
+                state,
+                principal,
+                &request.export_job_id,
+                request.recording_range.as_ref(),
+            )?))
+        }
         Some(Action::Create(request)) => Value::Created(create(state, principal, request)?),
         Some(Action::List(request)) => Value::Grants(list(state, principal, request)?),
         Some(Action::Revoke(request)) => Value::Grant(revoke(state, request)?),
@@ -95,7 +100,12 @@ fn create(
 ) -> Result<proto::IssuedShareGrant, ControlCommandError> {
     let _configuration = coordination(state)?;
     let context = context(state)?;
-    let evidence = evidence::preview(state, principal, &request.export_job_id)?;
+    let evidence = evidence::preview(
+        state,
+        principal,
+        &request.export_job_id,
+        request.recording_range.as_ref(),
+    )?;
     if evidence.binding.artifact_id != request.artifact_id
         || encode_lower_hex(evidence.binding.sha256) != request.expected_sha256
     {
