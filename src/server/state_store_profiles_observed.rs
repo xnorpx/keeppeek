@@ -10,11 +10,15 @@ const COMPACT_PART_SCHEMA: &str = "keeppeek.runtime-profiles.observed.v2";
 const PART_SCHEMA: &str = "keeppeek.runtime-profiles.observed.v1";
 
 pub(in crate::server) fn part_index(key: &str) -> Option<usize> {
-    let [digit] = key.strip_prefix("observed/")?.as_bytes() else {
+    let suffix = key.strip_prefix("observed/")?;
+    if (suffix.len() > 1 && suffix.starts_with('0')) || !suffix.bytes().all(|b| b.is_ascii_digit())
+    {
         return None;
-    };
-    let index = usize::from(digit.checked_sub(b'0')?);
-    (index < PART_COUNT).then_some(index)
+    }
+    suffix
+        .parse::<usize>()
+        .ok()
+        .filter(|&index| index < PART_COUNT)
 }
 
 pub(in crate::server) fn generation(status: &RuntimeProfileStatus) -> Result<String, Error> {
@@ -308,4 +312,27 @@ pub(in crate::server) fn write_header_count(count: Option<usize>, entry: &mut St
             ),
         },
     );
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::{PART_COUNT, part_index};
+
+    #[test]
+    fn only_canonical_decimal_part_keys_address_the_published_parts() {
+        for index in 0..PART_COUNT {
+            assert_eq!(part_index(&format!("observed/{index}")), Some(index));
+        }
+        assert_eq!(part_index(&format!("observed/{PART_COUNT}")), None);
+        for key in [
+            "observed/",
+            "observed/+1",
+            "observed/01",
+            "observed/-1",
+            "observed/1/0",
+            "other/0",
+        ] {
+            assert_eq!(part_index(key), None, "{key}");
+        }
+    }
 }
