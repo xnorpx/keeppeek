@@ -450,25 +450,17 @@ fn qualify(frames: &[RecordingFrame], enabled: bool, run: usize) -> anyhow::Resu
         );
     }
     let (root, catalog, manager) = runtime::tests::fixture(256 * MEBIBYTE_BYTES)?;
-    let target = archive_parent.as_ref().map_or_else(
-        || root.join("verified"),
-        |parent| parent.join(format!("keeppeek-archive-trial-{}", uuid::Uuid::new_v4())),
-    );
-    // A failed exclusive creation must never authorize cleanup of an existing directory.
-    let created = std::fs::create_dir(&target);
-    let external_target = created.is_ok() && archive_parent.is_some();
-    let result = created
-        .map_err(anyhow::Error::from)
-        .and_then(|()| run_fixture(&root, &target, catalog.handle(), manager, frames, enabled));
+    let result = with_archive_target(&root, archive_parent.as_deref(), |target| {
+        let worker = if enabled {
+            Some(start_archive(target.to_owned(), catalog.handle())?)
+        } else {
+            None
+        };
+        run_fixture(&root, catalog.handle(), manager, frames, worker)
+    });
     catalog.shutdown();
-    let target_cleanup = if external_target {
-        std::fs::remove_dir_all(&target)
-    } else {
-        Ok(())
-    };
     let cleanup = std::fs::remove_dir_all(root);
     let mut report = result?;
-    target_cleanup?;
     cleanup?;
     report["archive_parent_override"] = archive_parent.is_some().into();
     report["run"] = run.into();
@@ -476,13 +468,55 @@ fn qualify(frames: &[RecordingFrame], enabled: bool, run: usize) -> anyhow::Resu
     Ok(())
 }
 
+fn with_archive_target<T>(
+    root: &Path,
+    archive_parent: Option<&Path>,
+    run: impl FnOnce(&Path) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let target = archive_parent.map_or_else(
+        || root.join("verified"),
+        |parent| parent.join(format!("keeppeek-archive-trial-{}", uuid::Uuid::new_v4())),
+    );
+    // Only successful exclusive creation grants permission to clean up an external child.
+    std::fs::create_dir(&target)?;
+    let result = runtime::tests::protect_created_root(&target).and_then(|()| run(&target));
+    if archive_parent.is_some() {
+        std::fs::remove_dir_all(&target)?;
+    }
+    result
+}
+
+#[test]
+fn qualification_creates_one_private_target_in_each_location_and_preserves_occupants()
+-> anyhow::Result<()> {
+    let (root, catalog, _manager) = runtime::tests::fixture(256 * MEBIBYTE_BYTES)?;
+    let external = root.join("separate-archive-parent");
+    std::fs::create_dir(&external)?;
+    std::fs::write(external.join("existing"), b"keep")?;
+    for parent in [None, Some(external.as_path())] {
+        with_archive_target(&root, parent, |target| {
+            assert!(target.is_dir());
+            assert_eq!(target.parent(), Some(parent.unwrap_or(&root)));
+            let worker = start_archive(target.to_owned(), catalog.handle())?;
+            worker.shutdown()?;
+            Ok(())
+        })?;
+    }
+    assert!(with_archive_target(&root, None, |_| Ok(())).is_err());
+    assert!(root.join("verified").is_dir());
+    assert_eq!(std::fs::read(external.join("existing"))?, b"keep");
+    assert_eq!(std::fs::read_dir(&external)?.count(), 1);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 fn run_fixture(
     root: &Path,
-    target: &Path,
     catalog_handle: RecordingCatalogHandle,
     manager: runtime::Manager,
     frames: &[RecordingFrame],
-    enabled: bool,
+    worker: Option<archive::Worker>,
 ) -> anyhow::Result<serde_json::Value> {
     let mut config = storage_config("verified-archive");
     config.volume_runtime = Some(Arc::new(manager));
@@ -492,12 +526,6 @@ fn run_fixture(
     config.medium_term_duration = Duration::from_secs(5);
     config.short_term_duration = Duration::from_secs(2);
     config.flush_interval = Duration::from_millis(250);
-    runtime::tests::create_root(target)?;
-    let worker = if enabled {
-        Some(start_archive(target.to_path_buf(), catalog_handle.clone())?)
-    } else {
-        None
-    };
     let archive = worker.as_ref().map(archive::Worker::handle);
     config.archive_runtime.clone_from(&archive);
     let engine = StorageEngine::start_with_catalog(config, catalog_handle.clone());
@@ -538,7 +566,7 @@ fn run_fixture(
     if let Some(handle) = archive {
         wait_for_replicas(&handle, &recordings)?;
     }
-    report["archive"] = enabled.into();
+    report["archive"] = worker.is_some().into();
     report["primary_recordings"] = recordings.len().into();
     if let Some(worker) = worker {
         worker.shutdown()?;
