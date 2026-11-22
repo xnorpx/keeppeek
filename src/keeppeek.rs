@@ -399,7 +399,7 @@ impl CameraStreamStatus {
 enum InactiveCameraReason {
     AwaitingStart,
     MissingCredentials,
-    PrivacyPaused,
+    PrivacyPaused(crate::cameras::CameraRecordingMode),
 }
 
 struct InactiveCamera {
@@ -419,10 +419,18 @@ impl InactiveCamera {
         }
     }
 
-    fn acknowledge_privacy(&mut self) {
-        if !matches!(self.reason, InactiveCameraReason::MissingCredentials) {
-            self.reason = InactiveCameraReason::PrivacyPaused;
+    fn after_privacy_stop(
+        config: &crate::cameras::CameraConfig,
+        application: Option<&crate::profiles::CameraRuntimeApplication>,
+    ) -> Self {
+        let mut camera = Self::from_config(config);
+        if matches!(camera.reason, InactiveCameraReason::AwaitingStart)
+            && let Some(row) = application
+            && row.state == crate::profiles::RuntimeApplicationState::Applied
+        {
+            camera.reason = InactiveCameraReason::PrivacyPaused(row.policy.recording_mode);
         }
+        camera
     }
 
     fn application_state(
@@ -434,10 +442,13 @@ impl InactiveCamera {
             InactiveCameraReason::MissingCredentials => {
                 Err("camera credentials are not configured".into())
             }
-            InactiveCameraReason::PrivacyPaused if policy.privacy_enforced || !policy.available => {
+            InactiveCameraReason::PrivacyPaused(acknowledged_mode)
+                if acknowledged_mode == policy.recording_mode
+                    && (policy.privacy_enforced || !policy.available) =>
+            {
                 Ok(RuntimeApplicationState::Applied)
             }
-            InactiveCameraReason::AwaitingStart | InactiveCameraReason::PrivacyPaused => {
+            InactiveCameraReason::AwaitingStart | InactiveCameraReason::PrivacyPaused(_) => {
                 Ok(RuntimeApplicationState::Pending)
             }
         }
@@ -1852,11 +1863,18 @@ impl KeepPeekLoop {
                         }
                         CameraStopReason::Privacy => {
                             if let Some(camera) = definition {
-                                self.inactive_configurations
-                                    .insert(ip, InactiveCamera::from_config(&camera.config));
-                            }
-                            if let Some(camera) = self.inactive_configurations.get_mut(&ip) {
-                                camera.acknowledge_privacy();
+                                let status = self
+                                    .runtime_profile_status
+                                    .read()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                let id = self.runtime_profile_camera_ids.camera_id(ip);
+                                self.inactive_configurations.insert(
+                                    ip,
+                                    InactiveCamera::after_privacy_stop(
+                                        &camera.config,
+                                        status.cameras.get(&id),
+                                    ),
+                                );
                             }
                         }
                     }
@@ -2278,7 +2296,8 @@ mod tests {
     fn acknowledged_camera_privacy_pause_reports_applied_until_resumption_is_required() {
         use crate::profiles::RuntimeApplicationState::{Applied, Degraded, Pending};
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+        let (storage, respond) = StorageHandle::with_test_ack_queue(1);
+        let mut recorder = KeepPeekLoop::new(Shutdown::new(), Some(storage));
         let camera = runtime_rtsp_camera(listener.local_addr().unwrap());
         let mut other = camera.config.clone();
         other.ip = "127.0.0.2".parse().unwrap();
@@ -2287,8 +2306,17 @@ mod tests {
         let id = ip.to_string();
         recorder.seed_profile_observations([&camera.config, &other].into_iter());
         let status = recorder.control().runtime_profile_status_handle();
+        let start_and_acknowledge = |recorder: &mut KeepPeekLoop| {
+            let mut pending = Vec::new();
+            recorder
+                .begin_add_camera(&camera, true, false, &mut pending)
+                .unwrap();
+            assert_eq!(status.read().unwrap().cameras[&id].state, Pending);
+            assert_eq!(respond(vec![Some(Ok(()))]), 1);
+            recorder.finish_camera_recordings(pending);
+        };
         assert_eq!(status.read().unwrap().cameras[&id].state, Pending);
-        recorder.add_camera(&camera, true, false).unwrap();
+        start_and_acknowledge(&mut recorder);
         let privacy = active_privacy_schedule(&id);
         assert!(privacy.decision(&id, chrono::Utc::now()).unwrap().0);
         recorder.set_privacy_registry(privacy.clone());
@@ -2318,10 +2346,32 @@ mod tests {
             assert_eq!(view.cameras[&other.ip.to_string()].state, Degraded);
             assert!(!recorder.camera_workers.contains_key(&ip));
         }
+        let changed = serde_json::from_value(serde_json::json!({
+            "revision": 2, "active_profile_id": "away", "profiles": {"away": {
+                "id": "away", "name": "Away", "revision": 1,
+                "cameras": {id.clone(): {"recording_mode": "off"}}
+            }}
+        }))
+        .unwrap();
+        assert_ne!(
+            camera.config.recording_mode,
+            crate::cameras::CameraRecordingMode::Off
+        );
+        recorder.apply_runtime_profiles(changed).unwrap();
+        {
+            let view = status.read().unwrap();
+            assert_eq!(view.cameras[&id].state, Pending);
+            assert_eq!(
+                view.cameras[&id].policy.recording_mode,
+                crate::cameras::CameraRecordingMode::Off
+            );
+            assert!(view.cameras[&id].policy.privacy_enforced);
+            assert!(!recorder.camera_workers.contains_key(&ip));
+        }
         privacy.replace_schedules(Default::default()).unwrap();
         recorder.reconcile_missing_profile_targets();
         assert_eq!(status.read().unwrap().cameras[&id].state, Pending);
-        recorder.add_camera(&camera, true, false).unwrap();
+        start_and_acknowledge(&mut recorder);
         assert_eq!(status.read().unwrap().cameras[&id].state, Applied);
         recorder.stop_camera(ip);
     }
