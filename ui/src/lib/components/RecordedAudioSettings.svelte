@@ -11,12 +11,48 @@
 
 	type Props = {
 		camera: CameraSettings;
+		kind?: 'recorded' | 'live';
+		onpreview?: (stream: 'main' | 'sub', offset: number | null) => Promise<void>;
+		appliedPreview?: number;
 		disabled?: boolean;
 		onsave: (settings: RecordedAudioSettings, revision: string) => Promise<CameraSettings>;
 	};
 	type Key = keyof RecordedAudioSettings;
 	type Draft = Record<Key, { mode: 'inherit' | 'custom'; text: string }>;
-	let { camera, disabled = false, onsave }: Props = $props();
+	let {
+		camera,
+		disabled = false,
+		onsave,
+		kind = 'recorded',
+		onpreview,
+		appliedPreview
+	}: Props = $props();
+	const live = $derived(kind === 'live');
+	let previewStream = $state<'main' | 'sub'>('main');
+	let previewInput = $state('0');
+	let previewing = $state(false);
+	let parsedPreview = $derived.by(() => {
+		try {
+			return parseRecordedAudioOffset(previewInput, 200);
+		} catch {
+			return null;
+		}
+	});
+	async function preview(offset: number | null) {
+		if (!onpreview || previewing) return;
+		previewing = true;
+		error = null;
+		try {
+			await onpreview(previewStream, offset);
+			status = offset === null ? 'Saved live timing restored.' : 'Preview applied to this viewer.';
+		} catch (cause) {
+			error = cause instanceof Error ? cause.message : 'Live preview failed.';
+			await tick();
+			errorSummary?.focus();
+		} finally {
+			previewing = false;
+		}
+	}
 	const fields = [
 		{ key: 'default_offset_ms', label: 'Camera default' },
 		{ key: 'main_offset_ms', label: 'Main stream' },
@@ -34,7 +70,8 @@
 		try {
 			const settings: RecordedAudioSettings = {};
 			for (const { key } of fields) {
-				if (draft[key].mode === 'custom') settings[key] = parseRecordedAudioOffset(draft[key].text);
+				if (draft[key].mode === 'custom')
+					settings[key] = parseRecordedAudioOffset(draft[key].text, live ? 200 : 5000);
 			}
 			return { settings, error: null };
 		} catch (cause) {
@@ -51,7 +88,10 @@
 	let changedElsewhere = $derived(camera.configuration_revision !== saved.revision);
 
 	function snapshot(value: CameraSettings) {
-		return { settings: { ...value.recorded_audio }, revision: value.configuration_revision ?? '' };
+		return {
+			settings: { ...(kind === 'live' ? value.live_audio : value.recorded_audio) },
+			revision: value.configuration_revision ?? ''
+		};
 	}
 
 	function draftFrom(settings: RecordedAudioSettings): Draft {
@@ -80,22 +120,27 @@
 
 	async function submit(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
-		if (saving || disabled || !dirty || camera.recorded_audio === undefined) return;
+		if (
+			saving ||
+			disabled ||
+			!dirty ||
+			(live ? camera.live_audio : camera.recorded_audio) === undefined
+		)
+			return;
 		error = null;
 		status = null;
 		try {
 			if (parsed.error || !parsed.settings)
 				throw new Error(parsed.error ?? 'Invalid audio offset.');
-			if (!saved.revision) throw new Error('Reload camera settings before saving recorded timing.');
+			if (!saved.revision) throw new Error('Reload camera settings before saving timing.');
 			saving = true;
 			const result = await onsave(parsed.settings, saved.revision);
-			if (result.id !== camera.id)
-				throw new Error('The camera changed while saving recorded timing.');
+			if (result.id !== camera.id) throw new Error('The camera changed while saving timing.');
 			saved = snapshot(result);
 			draft = draftFrom(saved.settings);
-			status = 'Recorded timing saved. Camera recording continues.';
+			status = live ? 'Live timing saved.' : 'Recorded timing saved. Camera recording continues.';
 		} catch (cause) {
-			error = cause instanceof Error ? cause.message : 'Recorded timing was not saved.';
+			error = cause instanceof Error ? cause.message : 'Timing was not saved.';
 			await tick();
 			errorSummary?.focus();
 		} finally {
@@ -107,19 +152,27 @@
 <section
 	class="min-w-0 rounded-md border border-hairline bg-surface"
 	aria-labelledby={`${helpId}-heading`}
-	data-recorded-audio-settings
+	data-recorded-audio-settings={live ? undefined : true}
+	data-live-audio-settings={live ? true : undefined}
 >
 	<header class="border-b border-hairline p-4">
-		<p class="font-mono text-2xs tracking-caps text-primary-soft">RECORDED AUDIO</p>
+		<p class="font-mono text-2xs tracking-caps text-primary-soft"
+			>{live ? 'LIVE AUDIO' : 'RECORDED AUDIO'}</p
+		>
 		<h2 id={`${helpId}-heading`} class="mt-1 text-base font-semibold">Audio synchronization</h2>
 		<p id={helpId} class="mt-1 text-xs leading-5 text-text-muted">
-			Positive offsets delay audio. Negative offsets advance it. Source recordings stay unchanged.
-			Use whole milliseconds from −5000 to +5000. Explicit 0 disables correction at that level.
+			{#if live}
+				Positive offsets delay audio. Negative offsets delay video. Use whole milliseconds from −200
+				to +200. Explicit 0 disables correction at that level.
+			{:else}
+				Positive offsets delay audio. Negative offsets advance it. Source recordings stay unchanged.
+				Use whole milliseconds from −5000 to +5000. Explicit 0 disables correction at that level.
+			{/if}
 		</p>
 	</header>
-	{#if camera.recorded_audio === undefined}
+	{#if (live ? camera.live_audio : camera.recorded_audio) === undefined}
 		<p class="p-4 text-sm text-text-muted">
-			Recorded-audio settings are unavailable on this server.
+			{live ? 'Live-audio' : 'Recorded-audio'} settings are unavailable on this server.
 		</p>
 	{:else}
 		<form class="min-w-0" onsubmit={submit}>
@@ -169,6 +222,65 @@
 						</p>
 					</div>
 				{/each}
+				{#if live && parsed.settings}
+					{#each ['main', 'sub'] as stream}
+						{@const offset = effectiveRecordedAudioOffset(
+							parsed.settings,
+							stream === 'main' ? 'main' : 'sub'
+						)}
+						{#if offset < 0}
+							<p class="text-warning text-xs leading-5"
+								>{stream === 'main' ? 'Main' : 'Sub'} video will play {Math.abs(offset)} ms later after
+								saving.</p
+							>
+						{/if}
+					{/each}
+				{/if}
+				{#if live && onpreview}
+					<div class="space-y-2">
+						<h3 class="text-sm font-semibold">Preview live timing</h3>
+						<p class="text-xs text-text-muted"
+							>Preview applies to the selected stream in this viewer.</p
+						>
+						<div class="grid gap-2 sm:grid-cols-2">
+							<label class="grid gap-1 text-xs"
+								>Preview stream
+								<select
+									class="h-11 rounded-sm border border-hairline bg-background px-3"
+									bind:value={previewStream}
+								>
+									<option value="main">Main stream</option><option value="sub">Sub stream</option>
+								</select></label
+							>
+							<label class="grid gap-1 text-xs"
+								>Preview offset (ms)<Input inputmode="numeric" bind:value={previewInput} /></label
+							>
+						</div>
+						{#if parsedPreview === null}
+							<p class="text-xs text-destructive">Enter a whole number from −200 to +200 ms.</p>
+						{:else if parsedPreview < 0}
+							<p class="text-warning text-xs">Video will play {Math.abs(parsedPreview)} ms later.</p
+							>
+						{/if}
+						<div class="flex flex-wrap gap-2">
+							<Button
+								type="button"
+								variant="outline"
+								disabled={previewing || parsedPreview === null}
+								onclick={() => preview(parsedPreview)}>Apply preview</Button
+							>
+							<Button
+								type="button"
+								variant="outline"
+								disabled={previewing || appliedPreview === undefined}
+								onclick={() => preview(null)}>Reset preview</Button
+							>
+						</div>
+						{#if appliedPreview !== undefined}<p class="text-xs text-text-muted"
+								>Active preview {formatRecordedAudioOffset(appliedPreview)}</p
+							>{/if}
+					</div>
+				{/if}
 				{#if largeOffset}
 					<p class="text-warning text-xs leading-5" role="status">
 						Large offset: confirm synchronization against a visible sound before saving.
@@ -193,7 +305,7 @@
 				{#if status}<p class="text-xs text-healthy" role="status">{status}</p>{/if}
 				<div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
 					<Button type="submit" class="h-11 w-full sm:w-auto" disabled={!dirty}
-						>{saving ? 'Saving recorded timing…' : 'Save recorded timing'}</Button
+						>{saving ? 'Saving…' : live ? 'Save live timing' : 'Save recorded timing'}</Button
 					>
 					<Button type="button" variant="outline" class="h-11 w-full sm:w-auto" onclick={reload}
 						>Reload saved values</Button
@@ -202,11 +314,13 @@
 			</fieldset>
 		</form>
 	{/if}
-	<footer class="border-t border-hairline p-4 text-xs leading-5 text-text-muted">
-		<p>
-			Applies to recorded playback and new exports. Existing export retries retain their original
-			timing.
-		</p>
-		<p>Live audio correction is unavailable.</p>
-	</footer>
+	{#if !live}
+		<footer class="border-t border-hairline p-4 text-xs leading-5 text-text-muted">
+			<p>
+				Applies to recorded playback and new exports. Existing export retries retain their original
+				timing.
+			</p>
+			{#if camera.live_audio === undefined}<p>Live audio correction is unavailable.</p>{/if}
+		</footer>
+	{/if}
 </section>

@@ -25,6 +25,7 @@ import {
 	type Response as ControlResponse,
 	type ServerCapabilities,
 	type LiveQualityDiagnostics,
+	type LiveAudioTiming,
 	type SubscriptionStreamState,
 	type TalkbackTarget
 } from './proto/webrtc_pb';
@@ -54,6 +55,7 @@ export type LivePeerPlan = {
 	cameraId: string;
 	quality: LiveQuality;
 	variantId?: 'main' | 'sub';
+	liveAudioPreviewOffsetMs?: number;
 	active?: boolean;
 };
 
@@ -72,6 +74,10 @@ export type LivePeerTrack = {
 	pendingStream: 'main' | 'sub' | null;
 	estimatedBitrateBps: number | null;
 	liveQuality?: LiveQualityDiagnostics;
+	liveAudio?: LiveAudioTiming;
+	audioVariantId?: string;
+	audioTiming?: LiveAudioTiming;
+	liveAudioPreviewOffsetMs?: number;
 	subscribed: boolean;
 	admissionError?: string | null;
 };
@@ -290,12 +296,18 @@ export class LivePeer {
 			plans.map(async (plan) => {
 				const track = this.track(plan.cameraId);
 				if (!track) return;
-				if (plan.active && !track.subscribed) {
+				const timingChanged = track.liveAudioPreviewOffsetMs !== plan.liveAudioPreviewOffsetMs;
+				if (plan.active && timingChanged && track.subscribed) {
+					await this.unsubscribeTrack(plan.cameraId, track.trackId);
+				}
+				if (plan.active && (!track.subscribed || timingChanged)) {
 					await this.subscribeTrack(
 						plan.cameraId,
 						track.trackId,
 						plan.quality,
-						plan.variantId ?? null
+						plan.variantId ?? null,
+						false,
+						plan.liveAudioPreviewOffsetMs
 					);
 					return;
 				}
@@ -466,7 +478,9 @@ export class LivePeer {
 							track.cameraId,
 							track.trackId,
 							track.quality,
-							track.variantId ?? null
+							track.variantId ?? null,
+							false,
+							track.liveAudioPreviewOffsetMs
 						)
 					)
 			);
@@ -492,7 +506,14 @@ export class LivePeer {
 	): Promise<void> {
 		const track = this.tracks[cameraId];
 		if (!track?.subscribed) return;
-		await this.subscribeTrack(cameraId, track.trackId, quality, variantId, true);
+		await this.subscribeTrack(
+			cameraId,
+			track.trackId,
+			quality,
+			variantId,
+			true,
+			track.liveAudioPreviewOffsetMs
+		);
 	}
 
 	private async subscribeTrack(
@@ -500,7 +521,8 @@ export class LivePeer {
 		subscriptionId: string,
 		quality: LiveQuality,
 		variantId: 'main' | 'sub' | null = null,
-		replacement = false
+		replacement = false,
+		liveAudioPreviewOffsetMs?: number
 	): Promise<void> {
 		const owner = this.#peer;
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
@@ -524,13 +546,26 @@ export class LivePeer {
 			kind: MediaKind.VIDEO,
 			requestedDeliveryTransport: DeliveryTransport.RTP,
 			videoQuality: protoQuality(variantId === null ? quality : 'auto'),
+			liveAudioPreviewOffsetMs,
 			variantId: variantId ?? ''
 		});
 		const result = await this.requestMedia(cameraId, subscribe);
 		if (owner !== this.#peer) return;
-		if (result === null) return;
+		if (result === null) {
+			if (liveAudioPreviewOffsetMs !== undefined)
+				throw new Error('Video timing preview was not admitted.');
+			return;
+		}
 		if (result.case !== 'subscriptionResult' || result.value.delivery.case !== 'rtp') {
 			throw new Error('Server returned an unexpected media subscription response.');
+		}
+		if (
+			liveAudioPreviewOffsetMs !== undefined &&
+			(!result.value.liveAudio?.preview ||
+				result.value.liveAudio.appliedOffsetMs !== liveAudioPreviewOffsetMs)
+		) {
+			await this.unsubscribeTrack(cameraId, subscriptionId);
+			throw new Error('The server did not apply the video timing preview.');
 		}
 		const mid = result.value.delivery.value.mid;
 		const selectedStream = liveVariant(result.value.selectedVariantId);
@@ -545,6 +580,7 @@ export class LivePeer {
 		this.#cameraByMid[mid] = cameraId;
 		this.replaceTrack(cameraId, {
 			admissionError: null,
+			liveAudio: result.value.liveAudio,
 			requestedQuality: quality,
 			requestedVariantId: variantId,
 			activeStream: pendingStream === null ? selectedStream : current!.activeStream,
@@ -554,18 +590,48 @@ export class LivePeer {
 		this.applyLiveQuality(cameraId, result.value.liveQuality);
 		const event = this.#trackEventByMid[mid];
 		if (event) this.attachTrackEvent(cameraId, event);
-		await this.subscribeAudio(cameraId, this.track(cameraId)?.audioTrackId ?? `audio-${cameraId}`);
+		try {
+			await this.subscribeAudio(
+				cameraId,
+				this.track(cameraId)?.audioTrackId ?? `audio-${cameraId}`,
+				variantId,
+				liveAudioPreviewOffsetMs
+			);
+			this.replaceTrack(cameraId, { liveAudioPreviewOffsetMs });
+		} catch (error) {
+			if (liveAudioPreviewOffsetMs !== undefined)
+				await this.unsubscribeTrack(cameraId, subscriptionId);
+			throw error;
+		}
 	}
 
-	private async subscribeAudio(cameraId: string, subscriptionId: string): Promise<void> {
+	private async subscribeAudio(
+		cameraId: string,
+		subscriptionId: string,
+		videoVariant: 'main' | 'sub' | null,
+		previewOffset?: number
+	): Promise<void> {
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
 		const source = this.#capabilities?.sourceSessions.find(
 			(item) => item.sourceSessionId === sourceSessionId
 		);
 		const variant =
-			source?.audio?.variants.find((item) => item.variantId === 'main') ??
-			source?.audio?.variants[0];
-		if (!variant) return;
+			source?.audio?.variants.find(
+				(item) => item.variantId === (videoVariant ?? this.track(cameraId)?.activeStream)
+			) ?? (previewOffset === undefined ? source?.audio?.variants[0] : undefined);
+		if (!variant) {
+			if (previewOffset !== undefined)
+				throw new Error('This stream has no matching live audio profile.');
+			return;
+		}
+		const previousVariant = this.track(cameraId)?.audioVariantId;
+		if (previousVariant && previousVariant !== variant.variantId) {
+			await this.request({
+				case: 'unsubscribe',
+				value: create(UnsubscribeSchema, { subscriptionIds: [subscriptionId] })
+			});
+			this.releaseAudio(cameraId);
+		}
 		const requestedDeliveryTransport = variant.deliveryTransports.includes(
 			DeliveryTransport.RELIABLE_DATA
 		)
@@ -577,12 +643,26 @@ export class LivePeer {
 				subscriptionId,
 				sourceSessionId,
 				kind: MediaKind.AUDIO,
+				liveAudioPreviewOffsetMs: previewOffset,
 				requestedDeliveryTransport,
 				videoQuality: VideoQuality.AUTO,
 				variantId: variant.variantId
 			})
 		);
-		if (result?.case !== 'subscriptionResult') return;
+		if (result?.case !== 'subscriptionResult') {
+			if (previewOffset !== undefined) throw new Error('Audio timing preview was not admitted.');
+			return;
+		}
+		if (
+			previewOffset !== undefined &&
+			(!result.value.liveAudio?.preview || result.value.liveAudio.appliedOffsetMs !== previewOffset)
+		) {
+			throw new Error('The server did not apply the audio timing preview.');
+		}
+		this.replaceTrack(cameraId, {
+			audioVariantId: variant.variantId,
+			audioTiming: result.value.liveAudio
+		});
 		if (result.value.delivery.case === 'rtp') {
 			const mid = result.value.delivery.value.mid;
 			this.#audioCameraByMid[mid] = cameraId;
@@ -594,6 +674,7 @@ export class LivePeer {
 			return;
 		const format = variant.format?.format;
 		if (format?.case !== 'audio') return;
+		if (this.#audioPlaybackByBinding.has(result.value.delivery.value.streamBindingId)) return;
 		const playback = new AacAudioPlayback();
 		try {
 			await playback.configure(
@@ -634,6 +715,19 @@ export class LivePeer {
 				subscriptionIds: audioTrackId ? [subscriptionId, audioTrackId] : [subscriptionId]
 			})
 		});
+		this.releaseAudio(cameraId);
+		this.replaceTrack(cameraId, {
+			status: 'queued',
+			subscribed: false,
+			pendingStream: null,
+			estimatedBitrateBps: null,
+			liveQuality: undefined,
+			liveAudio: undefined,
+			liveAudioPreviewOffsetMs: undefined
+		});
+	}
+
+	private releaseAudio(cameraId: string): void {
 		const binding = this.#audioBindingByCamera[cameraId];
 		if (binding) {
 			this.#audioPlaybackByBinding.get(binding)?.close();
@@ -644,13 +738,10 @@ export class LivePeer {
 			if (sourceId === cameraId) delete this.#audioCameraByMid[mid];
 		}
 		this.replaceTrack(cameraId, {
-			status: 'queued',
-			subscribed: false,
+			audioVariantId: undefined,
+			audioTiming: undefined,
 			audioReceiver: null,
-			audioStream: null,
-			pendingStream: null,
-			estimatedBitrateBps: null,
-			liveQuality: undefined
+			audioStream: null
 		});
 	}
 
@@ -777,12 +868,22 @@ export class LivePeer {
 
 	private receiveStreamState(update: SubscriptionStreamState): void {
 		if (!this.acceptsTelemetry()) return;
+		const audio = Object.values(this.tracks).find(
+			(track) =>
+				track.subscribed && track.audioVariantId && track.audioTrackId === update.subscriptionId
+		);
+		if (audio && update.liveAudio && update.activeVariantId === audio.audioVariantId) {
+			this.replaceTrack(audio.cameraId, { audioTiming: update.liveAudio });
+			return;
+		}
 		const current = Object.values(this.tracks).find(
 			(track) => track.trackId === update.subscriptionId && track.subscribed
 		);
 		if (!current || !this.#sourceSessionByCamera[current.cameraId]) return;
+		if (update.liveAudio) this.replaceTrack(current.cameraId, { liveAudio: update.liveAudio });
 		if (update.liveQuality !== undefined) {
 			this.applyLiveQuality(current.cameraId, update.liveQuality);
+			this.followActiveAudio(current);
 			return;
 		}
 		const activeStream = liveVariant(update.activeVariantId);
@@ -792,6 +893,35 @@ export class LivePeer {
 			pendingStream: current.pendingStream === activeStream ? null : current.pendingStream,
 			liveQuality: undefined
 		});
+		this.followActiveAudio(current);
+	}
+
+	private followActiveAudio(previous: LivePeerTrack): void {
+		const current = this.track(previous.cameraId);
+		if (
+			!current?.subscribed ||
+			!current.audioVariantId ||
+			previous.activeStream === current.activeStream ||
+			current.requestedVariantId !== null
+		)
+			return;
+		const owner = this.#peer;
+		void this.enqueue(async () => {
+			const track = this.track(previous.cameraId);
+			if (
+				owner !== this.#peer ||
+				!track?.subscribed ||
+				track.requestedVariantId !== null ||
+				track.audioVariantId === track.activeStream
+			)
+				return;
+			await this.subscribeAudio(
+				track.cameraId,
+				track.audioTrackId,
+				track.activeStream,
+				track.liveAudioPreviewOffsetMs
+			);
+		}).catch((error) => console.warn('Unable to follow live audio profile change', error));
 	}
 
 	private removeSourceDiagnostics(sourceSessionId: string): void {

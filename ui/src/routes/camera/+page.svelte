@@ -102,9 +102,38 @@
 			'main'
 		);
 	});
+	type LivePreview = { cameraId: string; stream: 'main' | 'sub'; offset: number };
+	let livePreview = $state.raw<LivePreview | null>(null);
+	function cameraPlan(id: string, preview: LivePreview | null) {
+		return {
+			cameraId: id,
+			quality: 'auto' as const,
+			...(preview?.cameraId === id
+				? { variantId: preview.stream, liveAudioPreviewOffsetMs: preview.offset }
+				: {})
+		};
+	}
 	let livePlans = $derived(
-		previewAvailable && camera !== null ? [{ cameraId: camera.id, quality: 'auto' as const }] : []
+		previewAvailable && camera !== null ? [cameraPlan(camera.id, livePreview)] : []
 	);
+	async function previewLiveAudio(stream: 'main' | 'sub', offset: number | null) {
+		if (!previewAvailable || !camera) throw new Error('The live camera is unavailable.');
+		const id = camera.id;
+		const candidate = offset === null ? null : { cameraId: id, stream, offset };
+		try {
+			await livePeer.configure([cameraPlan(id, candidate)]);
+			if (cameraId !== id) return;
+			if (offset !== null && livePeer.track(id)?.liveAudioPreviewOffsetMs !== offset)
+				throw new Error('Reconnect the camera before previewing timing.');
+			livePreview = candidate;
+		} catch (cause) {
+			if (cameraId === id) {
+				livePreview = null;
+				await livePeer.configure([cameraPlan(id, null)]);
+			}
+			throw cause;
+		}
+	}
 	let capabilityItems = $derived.by(() => {
 		const capabilities = camera?.capabilities;
 		if (!capabilities) return [];
@@ -314,7 +343,8 @@
 
 	async function saveRecordedAudio(
 		settings: RecordedAudioConfiguration,
-		revision: string
+		revision: string,
+		kind: 'live_audio' | 'recorded_audio' = 'recorded_audio'
 	): Promise<CameraSettings> {
 		const target = cameraSettings;
 		const id = cameraId;
@@ -322,7 +352,7 @@
 		savingRecordedAudio = true;
 		try {
 			const result = await controlClient.updateCamera(target.ip, {
-				recorded_audio: settings,
+				[kind]: settings,
 				expected_configuration_revision: revision
 			});
 			if (result.camera.id !== target.id) throw new Error('Unexpected camera settings response.');
@@ -629,6 +659,17 @@
 									disabled={savingConfiguration || savingPrivacy || savingRecordedAudio}
 									onsave={saveRecordedAudio}
 								/>
+								{#if serverCapabilities.supports('keeppeek.live-audio-timing.v1')}
+									<RecordedAudioSettings
+										kind="live"
+										camera={cameraSettings}
+										disabled={savingConfiguration || savingPrivacy || savingRecordedAudio}
+										appliedPreview={livePeer.track(cameraSettings.id)?.liveAudioPreviewOffsetMs}
+										onpreview={previewAvailable ? previewLiveAudio : undefined}
+										onsave={(settings, revision) =>
+											saveRecordedAudio(settings, revision, 'live_audio')}
+									/>
+								{/if}
 							{/key}
 						</div>
 						<div id="privacy" class="mt-4">
@@ -1155,6 +1196,17 @@
 										disabled={savingConfiguration || savingPrivacy || savingRecordedAudio}
 										onsave={saveRecordedAudio}
 									/>
+									{#if serverCapabilities.supports('keeppeek.live-audio-timing.v1')}
+										<RecordedAudioSettings
+											kind="live"
+											camera={cameraSettings}
+											disabled={savingConfiguration || savingPrivacy || savingRecordedAudio}
+											appliedPreview={livePeer.track(cameraSettings.id)?.liveAudioPreviewOffsetMs}
+											onpreview={previewAvailable ? previewLiveAudio : undefined}
+											onsave={(settings, revision) =>
+												saveRecordedAudio(settings, revision, 'live_audio')}
+										/>
+									{/if}
 								{/key}
 							</div>
 						{/if}

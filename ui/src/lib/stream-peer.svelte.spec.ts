@@ -2,6 +2,9 @@ import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	CameraInfoSchema,
+	DeliveryTransport,
+	MediaKind,
+	type SubscribeMedia,
 	ConnectionUpdateSchema,
 	ControlEnvelopeSchema,
 	LiveQualityDiagnosticsSchema,
@@ -31,6 +34,7 @@ import { LivePeer } from './stream-peer.svelte';
 
 class FakeDataChannel {
 	static suppressCapabilities = false;
+	static audioVariants: string[] = [];
 	static offlineCamera: string | null = null;
 	static rejectedSubscription: string | null = null;
 	static rejectUnsubscribe = false;
@@ -44,6 +48,7 @@ class FakeDataChannel {
 	onerror: (() => void) | null = null;
 	onmessage: ((event: MessageEvent) => void) | null = null;
 	readonly commands: string[] = [];
+	readonly subscriptions: SubscribeMedia[] = [];
 
 	constructor(
 		readonly label: string,
@@ -61,6 +66,7 @@ class FakeDataChannel {
 		const request = envelope.message.value;
 		const command = request.command;
 		this.commands.push(command.case ?? 'unknown');
+		if (command.case === 'subscribeMedia') this.subscriptions.push(command.value);
 
 		const result =
 			command.case === 'subscribeMedia'
@@ -76,6 +82,10 @@ class FakeDataChannel {
 							},
 							selectedVariantId:
 								FakeDataChannel.selectedVariant ?? (command.value.variantId || 'sub'),
+							liveAudio: {
+								preview: command.value.liveAudioPreviewOffsetMs !== undefined,
+								appliedOffsetMs: command.value.liveAudioPreviewOffsetMs ?? 0
+							},
 							liveQuality: FakeDataChannel.subscriptionQuality
 						})
 					}
@@ -121,7 +131,15 @@ class FakeDataChannel {
 									sourceSessionId: `camera:${cameraId}`,
 									sourceId: cameraId,
 									displayName: cameraId,
-									video: create(MediaStreamCapabilitySchema)
+									video: create(MediaStreamCapabilitySchema),
+									audio: FakeDataChannel.audioVariants.length
+										? create(MediaStreamCapabilitySchema, {
+												variants: FakeDataChannel.audioVariants.map((variantId) => ({
+													variantId,
+													deliveryTransports: [DeliveryTransport.RTP]
+												}))
+											})
+										: undefined
 								})
 							)
 						})
@@ -200,6 +218,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.clearAllMocks();
 	FakeDataChannel.suppressCapabilities = false;
+	FakeDataChannel.audioVariants = [];
 	FakeDataChannel.offlineCamera = null;
 	FakeDataChannel.rejectedSubscription = null;
 	FakeDataChannel.rejectUnsubscribe = false;
@@ -238,6 +257,74 @@ function streamState(
 }
 
 describe('LivePeer', () => {
+	it('applies and resets the same viewer preview on both admitted tracks of the selected profile', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'timing',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		FakeDataChannel.audioVariants = ['main', 'sub'];
+		const peer = new LivePeer();
+		for (const offset of [undefined, -80, 200, 0, undefined]) {
+			await peer.configure([
+				{
+					cameraId: 'front-door',
+					variantId: 'sub',
+					quality: 'auto',
+					liveAudioPreviewOffsetMs: offset
+				}
+			]);
+			const channel = FakePeerConnection.latest!.channels[0];
+			expect(
+				channel.subscriptions
+					.slice(-2)
+					.map((s) => [s.kind, s.variantId, s.liveAudioPreviewOffsetMs])
+			).toEqual([
+				[MediaKind.VIDEO, 'sub', offset],
+				[MediaKind.AUDIO, 'sub', offset]
+			]);
+			expect(peer.track('front-door')?.liveAudio?.preview).toBe(offset !== undefined);
+		}
+		expect(api.createSession).toHaveBeenCalledOnce();
+		await peer.close();
+	});
+
+	it('rejects a preview when the chosen video variant has no matching audio', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'timing',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		FakeDataChannel.audioVariants = ['main'];
+		const peer = new LivePeer();
+		await expect(
+			peer.configure([
+				{ cameraId: 'front-door', variantId: 'sub', quality: 'auto', liveAudioPreviewOffsetMs: 25 }
+			])
+		).rejects.toThrow('no matching live audio profile');
+		expect(api.deleteSession).toHaveBeenCalledOnce();
+	});
+
+	it('follows the active video profile after an adaptive handover', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'timing',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		FakeDataChannel.audioVariants = ['main', 'sub'];
+		const peer = new LivePeer();
+		await peer.configure([{ cameraId: 'front-door', quality: 'auto' }]);
+		expect(peer.track('front-door')?.audioVariantId).toBe('sub');
+		const channel = FakePeerConnection.latest!.channels[0];
+		channel.onmessage?.(streamState('camera-0', 'main'));
+		await vi.waitFor(() => expect(peer.track('front-door')?.audioVariantId).toBe('main'));
+		expect(channel.commands.slice(-2)).toEqual(['unsubscribe', 'subscribeMedia']);
+		await peer.close();
+	});
+
 	it('uses actual active and pending diagnostics instead of treating the selected target as active', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({

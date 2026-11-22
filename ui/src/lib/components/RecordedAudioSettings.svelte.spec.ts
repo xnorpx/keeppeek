@@ -50,6 +50,35 @@ describe('recorded-audio camera settings', () => {
 		await expect.element(page.getByRole('button', { name: 'Save recorded timing' })).toBeDisabled();
 	});
 
+	it('shows live video latency before preview or save and resets the viewer independently', async () => {
+		const settings = camera({ live_audio: { default_offset_ms: 30 } });
+		const onpreview = vi.fn(async () => undefined);
+		const onsave = vi.fn(async () => settings);
+		const view = await render(RecordedAudioSettings, {
+			props: { camera: settings, kind: 'live', onpreview, onsave }
+		});
+		const input = page.getByRole('textbox', { name: 'Preview offset (ms)' });
+		const apply = page.getByRole('button', { name: 'Apply preview' });
+		await input.fill('201');
+		await expect.element(apply).toBeDisabled();
+		await page.getByRole('combobox', { name: 'Preview stream' }).selectOptions('sub');
+		await input.fill('-200');
+		await expect.element(page.getByText('Video will play 200 ms later.')).toBeVisible();
+		expect(onpreview).not.toHaveBeenCalled();
+		await apply.click();
+		expect(onpreview).toHaveBeenCalledExactlyOnceWith('sub', -200);
+		await view.rerender({ appliedPreview: -200 });
+		await page.getByRole('button', { name: 'Reset preview' }).click();
+		expect(onpreview).toHaveBeenLastCalledWith('sub', null);
+		await page.getByRole('textbox', { name: 'Camera default offset (ms)' }).fill('-100');
+		await expect
+			.element(page.getByText('Sub video will play 100 ms later after saving.'))
+			.toBeVisible();
+		expect(onsave).not.toHaveBeenCalled();
+		await page.getByRole('button', { name: 'Save live timing' }).click();
+		expect(onsave).toHaveBeenCalledExactlyOnceWith({ default_offset_ms: -100 }, 'revision-one');
+	});
+
 	it('saves only the full timing object and captured revision, preserving explicit zero', async () => {
 		const onsave = vi.fn(async () =>
 			camera({
