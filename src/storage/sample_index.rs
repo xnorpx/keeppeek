@@ -1,4 +1,6 @@
 //! Bounded picture metadata for one catalogued recording fragment.
+mod h264_order;
+
 use super::long_term::inspection::container;
 use anyhow::{Context as _, ensure};
 use sha2::{Digest as _, Sha256};
@@ -175,7 +177,10 @@ impl Fragment {
         Ok(index)
     }
 
-    pub(crate) fn presentation_order(&self) -> Result<Vec<usize>, Unavailable> {
+    pub(crate) fn presentation_order(
+        &self,
+        mut payload: impl FnMut(&Picture) -> Result<Vec<u8>, Unavailable>,
+    ) -> Result<Vec<usize>, Unavailable> {
         let mut order: Vec<usize> = (0..self.pictures.len()).collect();
         let first = self
             .pictures
@@ -196,11 +201,36 @@ impl Fragment {
         order.sort_unstable_by_key(|&index| {
             self.pictures[index].source.map(|clock| clock.timestamp)
         });
-        if order.windows(2).any(|w| {
-            self.pictures[w[0]].source.map(|c| c.timestamp)
-                == self.pictures[w[1]].source.map(|c| c.timestamp)
-        }) {
-            // A decode ordinal alone cannot order two pictures with identical source PTS.
+        let ticks = |i: usize| self.pictures[i].source.map(|clock| clock.timestamp);
+        if order
+            .windows(2)
+            .all(|pair| ticks(pair[0]) != ticks(pair[1]))
+        {
+            return Ok(order);
+        }
+        let first_ns = self.pictures[*order.first().ok_or(Unavailable::Timing)?]
+            .presentation_ns
+            .ok_or(Unavailable::Timing)?;
+        let last_ns = self.pictures[*order.last().ok_or(Unavailable::Timing)?]
+            .presentation_ns
+            .ok_or(Unavailable::Timing)?;
+        if last_ns - first_ns > MAX_SPAN_NS {
+            return Err(Unavailable::Limit);
+        }
+        let mut decoder =
+            h264_order::PictureOrder::new(&self.decoder).ok_or(Unavailable::Ambiguous)?;
+        let mut counts = Vec::with_capacity(self.pictures.len());
+        for picture in &self.pictures {
+            let count = decoder
+                .next(&payload(picture)?, picture.sync)
+                .ok_or(Unavailable::Ambiguous)?;
+            counts.push(count);
+        }
+        order.sort_unstable_by_key(|&i| counts[i]);
+        if order
+            .windows(2)
+            .any(|pair| counts[pair[0]] == counts[pair[1]] || ticks(pair[0]) > ticks(pair[1]))
+        {
             return Err(Unavailable::Ambiguous);
         }
         Ok(order)

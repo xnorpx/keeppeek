@@ -1737,7 +1737,9 @@ total encoded bytes. The reliable data channel delivers `StoredFrameStepChunk` m
 that step ID and cursor generation in decode order. Each access unit declares its full byte
 length. All chunks before its last contain 32 KiB. The first sample is a random
 access point. Presentation rank follows the evidenced picture order of the decode window.
-Source timestamps can coincide even when two access units have distinct identities. If the
+Source timestamps can coincide even when two access units have distinct identities. For a
+closed progressive H.264 GOP with single-slice pictures and type-0 picture-order counts,
+the recorder can establish the order from encoded slice headers. If the
 recorder cannot establish their display order, it returns `AMBIGUOUS_ANCHOR`. Give each
 encoded chunk its sample's unique rank as the WebCodecs timestamp, then match the returned
 VideoFrame timestamp to the target rank. Keep the source time with the sample token.

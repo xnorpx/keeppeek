@@ -201,6 +201,7 @@ fn index_fragment(
 struct Window<'a> {
     fragment: &'a CatalogMediaFragment,
     index: index::Fragment,
+    presentation_order: Vec<usize>,
     target: usize,
     witness: Witness,
 }
@@ -250,7 +251,16 @@ fn target_window<'a>(
     } else {
         current.displayed(anchor)?
     };
-    let order = current.presentation_order()?;
+    let mut inspection_bytes = index::MAX_ENCODED_BYTES;
+    let mut ordered = |source: &CatalogMediaFragment, index: &index::Fragment| {
+        index.presentation_order(|picture| {
+            inspection_bytes = inspection_bytes
+                .checked_sub(u64::from(picture.size))
+                .ok_or(Unavailable::Limit)?;
+            picture_payload(source, picture, work)
+        })
+    };
+    let order = ordered(fragment, &current)?;
     let at = order
         .iter()
         .position(|i| *i == displayed)
@@ -264,6 +274,7 @@ fn target_window<'a>(
         return Ok(Window {
             fragment,
             index: current,
+            presentation_order: order,
             target,
             witness: current_file,
         });
@@ -293,7 +304,7 @@ fn target_window<'a>(
     }
     let adjacent_file = witness(neighbor)?;
     let adjacent = index_fragment(neighbor, remaining, work)?;
-    let order = adjacent.presentation_order()?;
+    let order = ordered(neighbor, &adjacent)?;
     let target =
         *if forward { order.first() } else { order.last() }.ok_or(Unavailable::Boundary)?;
     let old = current.pictures[displayed]
@@ -319,6 +330,7 @@ fn target_window<'a>(
     Ok(Window {
         fragment: neighbor,
         index: adjacent,
+        presentation_order: order,
         target,
         witness: adjacent_file,
     })
@@ -392,13 +404,13 @@ fn encode(
     let Window {
         fragment,
         index,
+        presentation_order: order,
         target,
         witness,
     } = window;
     let target_picture = &index.pictures[target];
     let clock = target_picture.source.ok_or(Unavailable::Timing)?;
     let source_ns = target_picture.presentation_ns.ok_or(Unavailable::Timing)?;
-    let order = index.presentation_order()?;
     let first = (0..=target)
         .rev()
         .find(|&i| index.pictures[i].sync)

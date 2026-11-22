@@ -293,3 +293,114 @@ fn paused_cursor_steps_under_historical_access_rules_and_invalidates_previous_to
     drop(state);
     catalog.shutdown();
 }
+
+#[test]
+fn duplicate_source_timestamps_step_in_codec_display_order_in_both_directions() {
+    let data = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/exact_frame_step/duplicate-pts.mp4"
+    ));
+    let mut input =
+        mp4::Mp4Reader::read_header(std::io::Cursor::new(data), data.len() as u64).unwrap();
+    let input_track = &input.tracks()[&1];
+    let track = mp4::TrackConfig {
+        track_type: mp4::TrackType::Video,
+        timescale: 1_000,
+        language: "und".into(),
+        media_conf: mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
+            width: input_track.width(),
+            height: input_track.height(),
+            seq_param_set: input_track.sequence_parameter_set().unwrap().to_vec(),
+            pic_param_set: input_track.picture_parameter_set().unwrap().to_vec(),
+        }),
+    };
+    let config = mp4::Mp4Config {
+        major_brand: "iso6".parse().unwrap(),
+        minor_version: 1,
+        compatible_brands: vec!["iso6".parse().unwrap()],
+        timescale: 1_000,
+    };
+    let directory = RecordingDirectory::new();
+    let path = directory.0.join("reordered.mp4");
+    let mut writer = mp4::FragmentedMp4Writer::write_start(
+        std::fs::File::create(&path).unwrap(),
+        &config,
+        &[track],
+    )
+    .unwrap();
+    // The recorder may assign monotonic stored times while retaining original RTP timestamps.
+    for ordinal in 7..=12 {
+        let mut sample = input.read_sample(1, ordinal).unwrap().unwrap();
+        let timestamp = i64::try_from(
+            input.tracks()[&1]
+                .sample_timing(ordinal)
+                .unwrap()
+                .unwrap()
+                .presentation_time,
+        )
+        .unwrap();
+        sample.start_time = u64::from(ordinal - 7) * 40;
+        sample.duration = 40;
+        sample.rendering_offset = 0;
+        writer
+            .write_sample_with_source_timing(
+                1,
+                1,
+                sample,
+                Some(mp4::SourceRtpPacket {
+                    session_id: [1; 16],
+                    epoch_id: [2; 16],
+                    clock_rate: 1000.try_into().unwrap(),
+                    timestamp,
+                }),
+            )
+            .unwrap();
+    }
+    let fragment = writer.flush_fragment().unwrap().unwrap();
+    writer.write_end().unwrap();
+    let fragments = [CatalogMediaFragment {
+        recording_id: "reordered".into(),
+        recording_started_at_ms: 10_000,
+        path: path.to_str().unwrap().into(),
+        init_offset: 0,
+        init_len: fragment.range.offset,
+        sequence: u64::from(fragment.sequence_number),
+        start_ms: 10_000,
+        duration_ms: 240,
+        byte_offset: fragment.range.offset,
+        byte_len: fragment.range.size,
+        archive: None,
+    }];
+    let request = proto::StepStoredFrame {
+        generation: 1,
+        step_id: "duplicate".into(),
+        stored_media_id: "playback".into(),
+        ..Default::default()
+    };
+    let mut previous = None;
+    let mut anchor = 10_000_000_000;
+    // Ordinal 6 (B picture 10) displays before ordinal 5 (reference picture 11).
+    for (forward, ordinal, ticks, rank) in [
+        (true, 3, 440, 1),
+        (true, 4, 480, 2),
+        (true, 2, 600, 3),
+        (true, 6, 640, 4),
+        (true, 5, 640, 5),
+        (false, 6, 640, 4),
+        (false, 2, 600, 3),
+    ] {
+        let window =
+            target_window(&fragments, anchor, previous.as_ref(), forward, &work()).unwrap();
+        let step = encode(window, &request, &work()).unwrap();
+        assert_eq!(
+            (
+                step.selected.ordinal,
+                step.result.source_ticks,
+                step.result.target_presentation_rank
+            ),
+            (ordinal, ticks, rank)
+        );
+        anchor = step.selected.stored_ns;
+        previous = Some(step.selected);
+    }
+}
