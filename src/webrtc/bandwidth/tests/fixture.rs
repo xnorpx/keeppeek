@@ -166,9 +166,10 @@ impl SharedFixture {
         observe_api_output(
             &mut self.rtc,
             &mut self.media,
-            &Output::Event(Event::EgressBitrateEstimate(BweKind::Twcc(Bitrate::bps(
-                bitrate_bps,
-            )))),
+            &Output::Event(Event::EgressBitrateEstimate(BweKind::Twcc {
+                estimate: Bitrate::bps(bitrate_bps),
+                can_probe: true,
+            })),
             now,
         );
     }
@@ -178,10 +179,10 @@ impl SharedFixture {
         observe_api_output(
             &mut self.rtc,
             &mut self.media,
-            &Output::Event(Event::EgressBitrateEstimate(BweKind::Remb(
+            &Output::Event(Event::EgressBitrateEstimate(BweKind::Remb {
                 mid,
-                Bitrate::bps(bitrate_bps),
-            ))),
+                estimate: Bitrate::bps(bitrate_bps),
+            })),
             now,
         );
     }

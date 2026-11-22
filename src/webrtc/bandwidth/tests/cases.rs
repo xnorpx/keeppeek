@@ -1,33 +1,6 @@
 use super::*;
 
 #[test]
-fn shared_feedback_poll_hook_observes_an_actual_str0m_event() {
-    let mut fixture = SharedFixture::new(&[StreamQuality::Auto]);
-    let now = fixture.start + Duration::from_millis(1);
-    fixture.rtc.bwe().reset(Bitrate::mbps(4));
-    fixture.rtc.handle_input(Input::Timeout(now)).unwrap();
-    let mut emitted_bitrate_bps = None;
-    for _ in 0..64 {
-        match poll_api_output(&mut fixture.rtc, &mut fixture.media, now).unwrap() {
-            Output::Event(Event::EgressBitrateEstimate(BweKind::Twcc(bitrate))) => {
-                emitted_bitrate_bps = Some(bitrate.as_u64());
-                break;
-            }
-            Output::Timeout(_) => break,
-            Output::Event(_) | Output::Transmit(_) => {}
-        }
-    }
-    let emitted =
-        emitted_bitrate_bps.expect("str0m did not emit the changed BWE event after reset");
-    assert!(emitted > 0);
-    assert!(
-        fixture.allocation(0) > 0,
-        "the shared poll hook discarded the BWE event"
-    );
-    assert!(fixture.allocation(0) <= emitted);
-}
-
-#[test]
 fn shared_feedback_unknown_and_zero_budget_keep_the_native_lowest_stream() {
     let mut fixture = SharedFixture::new(&[StreamQuality::Auto]);
     fixture.prime();

@@ -148,7 +148,8 @@ fn latency_distribution_for_127_principals_over_30_rounds() {
     let mut baseline_us = Vec::with_capacity(3_810);
     let mut durable_us = Vec::with_capacity(3_810);
     let mut snapshot_us = Vec::with_capacity(3_810);
-    let mut system = sysinfo::System::new();
+    let mut system =
+        sysinfo::System::new().expect("process metrics must be available for qualification");
     idle_resources(&mut system);
     let mut sampled_peak_rss_bytes = 0;
     for round in 0..30 {
