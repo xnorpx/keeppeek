@@ -82,11 +82,26 @@ impl<'a> PictureOrder<'a> {
                 UnitType::AccessUnitDelimiter | UnitType::SEI | UnitType::FillerData => continue,
                 _ => return None,
             };
-            if idr != sync || idr != self.previous_reference.is_none() || order.is_some() {
+            if idr != sync || (!idr && self.previous_reference.is_none()) || order.is_some() {
                 return None;
             }
             let (slice, sps, pps) =
                 SliceHeader::from_bits(&self.context, &mut nal.rbsp_bits(), header, None).ok()?;
+            if idr {
+                if self.previous_reference.is_some()
+                    && matches!(
+                        slice.dec_ref_pic_marking,
+                        Some(DecRefPicMarking::Idr {
+                            no_output_of_prior_pics_flag: true,
+                            ..
+                        })
+                    )
+                {
+                    return None;
+                }
+                self.previous_reference = None;
+                self.parameter_set = None;
+            }
             if slice.first_mb_in_slice != 0
                 || slice.field_pic != FieldPic::Frame
                 || !matches!(sps.frame_mbs_flags, FrameMbsFlags::Frames)
@@ -156,8 +171,8 @@ mod tests {
             .video_decoder_config_for_description(1)
             .unwrap()
             .unwrap();
+        let mut counts = PictureOrder::new(&decoder).unwrap();
         for first in [1_u32, 7] {
-            let mut counts = PictureOrder::new(&decoder).unwrap();
             let mut observed = Vec::new();
             for ordinal in first..first + 6 {
                 let picture = reader.read_sample(1, ordinal).unwrap().unwrap();

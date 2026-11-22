@@ -220,17 +220,23 @@ impl Fragment {
         let mut decoder =
             h264_order::PictureOrder::new(&self.decoder).ok_or(Unavailable::Ambiguous)?;
         let mut counts = Vec::with_capacity(self.pictures.len());
+        let mut group = 0;
         for picture in &self.pictures {
+            // Each IDR starts a new picture-order count sequence.
             let count = decoder
                 .next(&payload(picture)?, picture.sync)
                 .ok_or(Unavailable::Ambiguous)?;
-            counts.push(count);
+            if picture.sync {
+                group = picture.ordinal;
+            }
+            counts.push((group, count));
         }
         order.sort_unstable_by_key(|&i| counts[i]);
-        if order
-            .windows(2)
-            .any(|pair| counts[pair[0]] == counts[pair[1]] || ticks(pair[0]) > ticks(pair[1]))
-        {
+        if order.windows(2).any(|pair| {
+            counts[pair[0]] == counts[pair[1]]
+                || ticks(pair[0]) > ticks(pair[1])
+                || (counts[pair[0]].0 != counts[pair[1]].0 && ticks(pair[0]) == ticks(pair[1]))
+        }) {
             return Err(Unavailable::Ambiguous);
         }
         Ok(order)
