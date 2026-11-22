@@ -80,6 +80,15 @@ pub struct FragmentedMp4Writer<W> {
     committed_box_count: u64,
 }
 
+/// Upper bound on recovery work for the committed file and the current open fragment.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FragmentedMetadataUsage {
+    pub bytes: u64,
+    pub boxes: u64,
+    pub fragments: u32,
+    pub pending_moof_bytes: u64,
+}
+
 impl<W> FragmentedMp4Writer<W> {
     /// Returns the flushed `ftyp`/`moov` initialization range.
     pub const fn initialization(&self) -> Mp4ByteRange {
@@ -88,12 +97,17 @@ impl<W> FragmentedMp4Writer<W> {
 
     /// Conservative recording inspection cost, including the current unpublished fragment.
     /// Budgets bytes in MP4 box metadata rather than encoded media in mdat.
-    pub fn metadata_usage(&self) -> (u64, u64) {
-        let mut bytes = self.committed_metadata_bytes;
-        let mut boxes = self.committed_box_count;
+    pub fn metadata_usage(&self) -> FragmentedMetadataUsage {
+        let mut usage = FragmentedMetadataUsage {
+            bytes: self.committed_metadata_bytes,
+            boxes: self.committed_box_count,
+            fragments: self.sequence_number - 1,
+            pending_moof_bytes: 0,
+        };
         if self.has_pending_samples() {
-            bytes += 32;
-            boxes += 2;
+            usage.pending_moof_bytes = 32;
+            usage.boxes += 2;
+            usage.fragments += 1;
         }
         for track in &self.tracks {
             let count = track.samples.len() as u64;
@@ -101,12 +115,13 @@ impl<W> FragmentedMp4Writer<W> {
                 continue;
             }
             // tfhd/tfdt/trun plus all four optional u32 table entries per sample.
-            bytes += 160 + 16 * count;
+            usage.pending_moof_bytes += 160 + 16 * count;
             let (event_bytes, event_count) = track.source_timing.event_budget();
-            bytes += event_bytes;
-            boxes += event_count;
+            usage.bytes += event_bytes;
+            usage.boxes += event_count;
         }
-        (bytes, boxes)
+        usage.bytes += usage.pending_moof_bytes;
+        usage
     }
 
     /// Consumes the fragmented writer and returns its underlying writer.
@@ -840,6 +855,35 @@ mod tests {
             is_sync,
             bytes: Bytes::from_static(bytes),
         }
+    }
+
+    #[test]
+    fn historical_sample_table_with_a_fragment_has_no_qualified_source_clock() {
+        let mut flat =
+            crate::Mp4Writer::write_start(Cursor::new(Vec::new()), &mp4_config()).unwrap();
+        flat.add_track(&video_track()).unwrap();
+        flat.write_sample(1, &sample(0, true, b"old sample"))
+            .unwrap();
+        flat.write_end().unwrap();
+        let mut bytes = flat.into_writer().into_inner();
+
+        let mut tail = FragmentedMp4Writer::write_start(
+            Cursor::new(Vec::new()),
+            &mp4_config(),
+            &[video_track()],
+        )
+        .unwrap();
+        tail.write_sample(1, sample(1_000, true, b"fragment"))
+            .unwrap();
+        let fragment = tail.write_end().unwrap().unwrap();
+        let offset = usize::try_from(fragment.range.offset).unwrap();
+        bytes.extend_from_slice(&tail.into_writer().into_inner()[offset..]);
+        let size = bytes.len() as u64;
+        let reader = Mp4Reader::read_header(Cursor::new(bytes), size).unwrap();
+        assert_eq!(reader.tracks()[&1].trak.mdia.minf.stbl.stsz.sample_count, 1);
+        assert_eq!(reader.tracks()[&1].trafs.len(), 1);
+        assert_eq!(reader.source_rtp_time(1, 1).unwrap(), None);
+        assert_eq!(reader.source_rtp_time(1, 2).unwrap(), None);
     }
 
     #[test]

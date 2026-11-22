@@ -328,8 +328,12 @@ discarding unpublished samples. Historical recordings have no per-sample evidenc
 Each measured source track carries its own opaque epoch, which changes after packet
 loss even when the affected input frame is filtered. Bounded standard MP4 event
 messages carry the optional timing between the movie fragment and its media data.
-The recorder rotates on a keyframe when its metadata approaches the existing
-recovery limits. The recovery fixture writes 110 minutes of two-track data
-and inspects every resulting recording.
+The recorder checks the byte, box and fragment-count budgets at each keyframe,
+including buffered delivery and shutdown. It reserves enough metadata for each
+additional access unit before admitting it. If an unusually long GOP exhausts a
+hard limit, the file keeps its decodable prefix and recording resumes at the next
+video keyframe. The recovery fixtures reopen 110 minutes of two-track data, a
+4,100-keyframe batch without source timing, and a long GOP with a clock change on
+every frame.
 
 The format and lookup contract are documented in the [MP4 crate guide](../crates/mp4/README.md#keeppeek-recording-source-clocks).

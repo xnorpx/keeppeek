@@ -302,9 +302,8 @@ impl<R: Read + Seek> Mp4Reader<R> {
             .get(&track_id)
             .ok_or(Error::TrakNotFound(track_id))?;
         if !track.trafs.is_empty() && track.trak.mdia.minf.stbl.stsz.sample_count != 0 {
-            return Err(Error::InvalidData(
-                "mixed sample-table and fragment RTP ordinals are unsupported",
-            ));
+            // This optional lookup cannot assign one global ordinal to a mixed layout.
+            return Ok(None);
         }
         Ok(track.source_rtp_time(sample_id))
     }

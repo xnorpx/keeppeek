@@ -4,11 +4,10 @@ use std::{
 };
 
 use crate::storage::{
-    RECORDING_BOX_COUNT_MAX as BOX_COUNT_MAX, RECORDING_METADATA_BYTES_MAX as METADATA_BYTES_MAX,
+    RECORDING_BOX_BYTES_MAX as BOX_BYTES_MAX, RECORDING_BOX_COUNT_MAX as BOX_COUNT_MAX,
+    RECORDING_FRAGMENT_COUNT_MAX as FRAGMENT_COUNT_MAX,
+    RECORDING_METADATA_BYTES_MAX as METADATA_BYTES_MAX,
 };
-const BOX_BYTES_MAX: u64 = 1024 * 1024;
-
-const FRAGMENT_COUNT_MAX: usize = 4_096;
 
 pub(in crate::storage) fn inspect_initialization(
     reader: &mut (impl Read + Seek),
@@ -613,9 +612,9 @@ mod tests {
                 }
             }
             writer.flush_fragment().unwrap();
-            let (bytes, boxes) = writer.metadata_usage();
-            if crate::storage::recording_metadata_rotation_due(bytes, boxes) || gop == 3299 {
-                assert!(bytes < METADATA_BYTES_MAX);
+            let usage = writer.metadata_usage();
+            if crate::storage::recording_metadata_rotation_due(usage) || gop == 3299 {
+                assert!(usage.bytes < METADATA_BYTES_MAX);
                 let mut cursor = std::mem::replace(&mut writer, make()).into_writer();
                 let size = cursor.get_ref().len() as u64;
                 cursor.set_position(0);

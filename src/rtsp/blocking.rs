@@ -56,14 +56,19 @@ struct UdpSockets {
     rtcp: UdpSocket,
 }
 
-fn original_rtp_time(
-    session: uuid::Uuid,
-    epoch: uuid::Uuid,
-    packet: retina::Timestamp,
-) -> mp4::SourceRtpPacket {
-    mp4::SourceRtpPacket {
+fn source_epoch(session: uuid::Uuid) -> std::sync::Arc<crate::storage::segment::RecordingRtpEpoch> {
+    std::sync::Arc::new(crate::storage::segment::RecordingRtpEpoch {
         session_id: *session.as_bytes(),
-        epoch_id: *epoch.as_bytes(),
+        epoch_id: *uuid::Uuid::new_v4().as_bytes(),
+    })
+}
+
+fn original_rtp_time(
+    epoch: &std::sync::Arc<crate::storage::segment::RecordingRtpEpoch>,
+    packet: retina::Timestamp,
+) -> crate::storage::segment::RecordingRtpTime {
+    crate::storage::segment::RecordingRtpTime {
+        epoch: epoch.clone(),
         clock_rate: packet.clock_rate(),
         timestamp: packet.timestamp(),
     }
@@ -740,7 +745,7 @@ impl RtspLoop {
         let mut source_epochs: Vec<_> = driver
             .streams()
             .iter()
-            .map(|_| uuid::Uuid::new_v4())
+            .map(|_| source_epoch(session))
             .collect();
         let mut video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
         let mut pending_talkback = None;
@@ -768,9 +773,8 @@ impl RtspLoop {
                     let loss = frame.loss();
                     let epoch = &mut source_epochs[frame.stream_id()];
                     if loss > 0 {
-                        *epoch = uuid::Uuid::new_v4();
+                        *epoch = source_epoch(session);
                     }
-                    let epoch = *epoch;
                     if loss > 0 {
                         stats.dropped_frames = stats.dropped_frames.wrapping_add(u64::from(loss));
                     }
@@ -819,11 +823,7 @@ impl RtspLoop {
                                     &self.storage_label(),
                                 ),
                                 RecordingFrame {
-                                    source_rtp: Some(original_rtp_time(
-                                        session,
-                                        epoch,
-                                        packet_timestamp,
-                                    )),
+                                    source_rtp: Some(original_rtp_time(epoch, packet_timestamp)),
                                     received_at,
                                     timestamp,
                                     frame,
@@ -837,9 +837,8 @@ impl RtspLoop {
                         let packet_timestamp = frame.packet_timestamp();
                         let epoch = &mut source_epochs[frame.stream_id()];
                         if frame.loss() > 0 {
-                            *epoch = uuid::Uuid::new_v4();
+                            *epoch = source_epoch(session);
                         }
-                        let epoch = *epoch;
                         let timestamp = frame.timestamp().elapsed_duration();
                         let duration = frame.duration();
                         let data = frame.data().to_vec();
@@ -894,7 +893,6 @@ impl RtspLoop {
                                     ),
                                     RecordingFrame {
                                         source_rtp: Some(original_rtp_time(
-                                            session,
                                             epoch,
                                             packet_timestamp,
                                         )),
@@ -1596,8 +1594,9 @@ mod tests {
             &[track],
         )
         .unwrap();
+        let epoch = super::source_epoch(id);
         for (i, frame) in [&first, &second].into_iter().enumerate() {
-            let measured = super::original_rtp_time(id, id, frame.timestamp());
+            let measured = super::original_rtp_time(&epoch, frame.timestamp()).packet();
             recording
                 .write_sample_with_source_timing(
                     1,

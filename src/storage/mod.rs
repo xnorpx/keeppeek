@@ -13,13 +13,6 @@ pub mod identity;
 pub mod layout;
 pub mod long_term;
 pub mod media_objects;
-const RECORDING_METADATA_BYTES_MAX: u64 = 8 * 1024 * 1024;
-const RECORDING_BOX_COUNT_MAX: usize = 16_384;
-
-const fn recording_metadata_rotation_due(bytes: u64, boxes: u64) -> bool {
-    bytes >= RECORDING_METADATA_BYTES_MAX * 3 / 4 || boxes >= RECORDING_BOX_COUNT_MAX as u64 * 3 / 4
-}
-
 pub mod medium_term;
 pub mod metadata;
 pub mod nal;
@@ -32,6 +25,23 @@ pub mod search;
 pub mod segment;
 pub mod short_term;
 pub mod volumes;
+
+const RECORDING_METADATA_BYTES_MAX: u64 = 8 * 1024 * 1024;
+const RECORDING_BOX_BYTES_MAX: u64 = 1024 * 1024;
+const RECORDING_BOX_COUNT_MAX: usize = 16_384;
+const RECORDING_FRAGMENT_COUNT_MAX: usize = 4_096;
+
+// Rotate at the next keyframe once three quarters of a recovery budget is used.
+// The remaining quarter usually accommodates the entire next GOP at ordinary camera rates.
+const ROTATION_RESERVE_DIVISOR: u64 = 4;
+const fn recording_metadata_rotation_due(usage: mp4::FragmentedMetadataUsage) -> bool {
+    const fn near_limit(used: u64, limit: u64) -> bool {
+        used >= limit - limit / ROTATION_RESERVE_DIVISOR
+    }
+    near_limit(usage.bytes, RECORDING_METADATA_BYTES_MAX)
+        || near_limit(usage.boxes, RECORDING_BOX_COUNT_MAX as u64)
+        || near_limit(usage.fragments as u64, RECORDING_FRAGMENT_COUNT_MAX as u64)
+}
 
 pub use catalog::{
     CatalogEventKeyframeLink, CatalogFragment, CatalogKeyframe, CatalogMediaFragment,

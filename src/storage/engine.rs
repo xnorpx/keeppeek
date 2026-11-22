@@ -1342,20 +1342,21 @@ impl WriterWorker {
         frame: RecordingFrame,
         received_clock: bool,
     ) -> std::io::Result<WriteProgress> {
-        let pipeline = self.pipelines.get_mut(camera_id).unwrap();
-
-        let needs_rotation = pipeline
-            .medium_term
-            .as_ref()
-            .is_some_and(|w| w.needs_rotation(self.config.medium_term_duration));
-
-        let mut rotated = None;
-        if needs_rotation && frame.is_video_keyframe() {
-            let old = pipeline.medium_term.take().unwrap();
-            let recording_id = old.recording_id().to_owned();
-            rotated = Some((old.finalize()?, recording_id));
+        if frame.is_video_keyframe()
+            && let Some(pipeline) = self.pipelines.get_mut(camera_id)
+            && let Some(writer) = &mut pipeline.medium_term
+        {
+            // The initial GOP can still be buffered for audio codec discovery.
+            writer.activate_prepared()?;
+            if writer.needs_rotation(self.config.medium_term_duration) {
+                let old = pipeline.medium_term.take().unwrap();
+                let recording_id = old.recording_id().to_owned();
+                let path = old.finalize()?;
+                self.move_to_long_term(camera_id, &path, &recording_id)?;
+            }
         }
 
+        let pipeline = self.pipelines.get_mut(camera_id).unwrap();
         if pipeline.medium_term.is_none() {
             if !frame.is_video_keyframe() {
                 return Ok(WriteProgress::default());
@@ -1371,7 +1372,7 @@ impl WriterWorker {
             tracing::info!(
                 camera = camera_id,
                 path = %writer.active_path().display(),
-                "new segment started (direct-write)",
+                "new recording segment started",
             );
             pipeline.medium_term = Some(writer);
         }
@@ -1383,12 +1384,8 @@ impl WriterWorker {
             writer.append_one(frame)?
         };
 
-        if let Some((path, recording_id)) = rotated {
-            self.move_to_long_term(camera_id, &path, &recording_id)?;
-        }
-
         Ok(WriteProgress {
-            wrote: true,
+            wrote: !writer.recovery_limit_reached,
             recorded_duration,
         })
     }
@@ -1402,7 +1399,7 @@ impl WriterWorker {
         pipeline.last_flush = Instant::now();
         let mut progress = WriteProgress::default();
 
-        let mut frames = if publish_all {
+        let frames = if publish_all {
             pipeline.short_term.drain_all()
         } else {
             Instant::now()
@@ -1411,88 +1408,13 @@ impl WriterWorker {
                     pipeline.short_term.drain_up_to_last_keyframe_before(cutoff)
                 })
         };
-        if frames.is_empty() {
-            return Ok(progress);
+        for frame in frames {
+            let next = self.write_frame_to_pipeline(camera_id, frame, false)?;
+            progress.wrote |= next.wrote;
+            progress.recorded_duration = progress
+                .recorded_duration
+                .saturating_add(next.recorded_duration);
         }
-
-        let needs_rotation = pipeline
-            .medium_term
-            .as_ref()
-            .is_some_and(|w| w.needs_rotation(self.config.medium_term_duration));
-
-        let mut rotated = None;
-
-        if needs_rotation {
-            if let Some(kf_idx) = frames.iter().position(|f| f.is_video_keyframe()) {
-                if kf_idx > 0 {
-                    let remainder = frames.split_off(kf_idx);
-                    let recorded_duration = pipeline
-                        .medium_term
-                        .as_mut()
-                        .unwrap()
-                        .append_batch(frames)?;
-                    progress.wrote = true;
-                    progress.recorded_duration =
-                        progress.recorded_duration.saturating_add(recorded_duration);
-                    frames = remainder;
-                }
-            } else {
-                let recorded_duration = pipeline
-                    .medium_term
-                    .as_mut()
-                    .unwrap()
-                    .append_batch(frames)?;
-                progress.wrote = true;
-                progress.recorded_duration =
-                    progress.recorded_duration.saturating_add(recorded_duration);
-                frames = Vec::new();
-            }
-
-            let old = pipeline.medium_term.take().unwrap();
-            let recording_id = old.recording_id().to_owned();
-            rotated = Some((old.finalize()?, recording_id));
-        }
-
-        if !frames.is_empty() && pipeline.medium_term.is_none() {
-            if let Some(keyframe_index) = frames.iter().position(RecordingFrame::is_video_keyframe)
-            {
-                if keyframe_index > 0 {
-                    frames = frames.split_off(keyframe_index);
-                }
-                let started_at = frames[0].received_at;
-                let writer = create_medium_term_writer(
-                    &self.config,
-                    self.catalog.as_ref(),
-                    &pipeline.identity,
-                    started_at,
-                    self.safety.recording_paused(),
-                )?;
-                tracing::info!(
-                    camera = camera_id,
-                    path = %writer.active_path().display(),
-                    "new medium-term segment started",
-                );
-                pipeline.medium_term = Some(writer);
-            } else {
-                frames.clear();
-            }
-        }
-
-        if !frames.is_empty() {
-            let recorded_duration = pipeline
-                .medium_term
-                .as_mut()
-                .unwrap()
-                .append_batch(frames)?;
-            progress.wrote = true;
-            progress.recorded_duration =
-                progress.recorded_duration.saturating_add(recorded_duration);
-        }
-
-        if let Some((path, recording_id)) = rotated {
-            self.move_to_long_term(camera_id, &path, &recording_id)?;
-        }
-
         Ok(progress)
     }
 
@@ -1506,42 +1428,10 @@ impl WriterWorker {
     }
 
     fn shutdown_flush(&mut self) {
-        self.flush_all();
-
-        for (id, pipeline) in &mut self.pipelines {
-            let frames = pipeline.short_term.drain_all();
-            if frames.is_empty() {
-                continue;
-            }
-
-            let mut frames = frames;
-            if pipeline.medium_term.is_none() {
-                let Some(keyframe_index) =
-                    frames.iter().position(RecordingFrame::is_video_keyframe)
-                else {
-                    continue;
-                };
-                if keyframe_index > 0 {
-                    frames = frames.split_off(keyframe_index);
-                }
-                let started_at = frames[0].received_at;
-                match create_medium_term_writer(
-                    &self.config,
-                    self.catalog.as_ref(),
-                    &pipeline.identity,
-                    started_at,
-                    self.safety.recording_paused(),
-                ) {
-                    Ok(writer) => pipeline.medium_term = Some(writer),
-                    Err(e) => {
-                        tracing::error!(camera = %id, error = %e, "failed to create segment on shutdown");
-                        continue;
-                    }
-                }
-            }
-
-            if let Err(e) = pipeline.medium_term.as_mut().unwrap().append_batch(frames) {
-                tracing::error!(camera = %id, error = %e, "failed to write remaining frames on shutdown");
+        let ids: Vec<_> = self.pipelines.keys().cloned().collect();
+        for id in ids {
+            if let Err(error) = self.flush_camera(&id, true) {
+                tracing::error!(camera = %id, %error, "failed to write remaining frames on shutdown");
             }
         }
     }
@@ -1747,6 +1637,7 @@ pub struct ShortTermStats {
 #[cfg(test)]
 mod tests {
     mod finalization;
+    mod metadata_rotation;
     mod named;
 
     use super::*;
