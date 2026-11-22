@@ -3,13 +3,39 @@ use std::path::{Path, PathBuf};
 
 pub mod inspection;
 
+#[derive(Clone)]
 pub struct LongTermStore {
     root: PathBuf,
+    pending_source: Option<PathBuf>,
 }
 
 impl LongTermStore {
     pub const fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            pending_source: None,
+        }
+    }
+
+    pub(crate) fn for_recording_roots(root: &Path, source: &Path) -> Self {
+        // A nested capture directory also lies under the archive prefix until relocation completes.
+        let pending_source =
+            (root != source && source.starts_with(root)).then(|| source.to_owned());
+        Self {
+            root: root.to_owned(),
+            pending_source,
+        }
+    }
+
+    pub(crate) fn pending_source(&self) -> Option<&Path> {
+        self.pending_source.as_deref()
+    }
+
+    pub(crate) fn contains_cleanup_path(&self, path: &Path) -> bool {
+        path.starts_with(&self.root)
+            && !self
+                .pending_source()
+                .is_some_and(|source| path.starts_with(source))
     }
 
     pub fn finalized_segments(&self, camera_id: &str) -> std::io::Result<Vec<PathBuf>> {

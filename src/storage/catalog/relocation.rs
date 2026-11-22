@@ -46,6 +46,27 @@ pub(super) async fn initialize(db: &turso::Connection) -> Result<()> {
     Ok(())
 }
 
+/// A journal entry pins both paths and the original filesystem identity until handoff finishes.
+pub(crate) fn ensure_migration_idle(db: &turso::Connection) -> Result<()> {
+    pollster::block_on(async {
+        let mut schema = db.query(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='legacy_recording_relocations'",
+            (),
+        ).await?;
+        if schema.next().await?.is_some() {
+            drop(schema);
+            let mut pending = db
+                .query("SELECT 1 FROM legacy_recording_relocations LIMIT 1", ())
+                .await?;
+            ensure!(
+                pending.next().await?.is_none(),
+                "finish pending recording relocations before moving storage"
+            );
+        }
+        Ok(())
+    })
+}
+
 fn read(row: &turso::Row) -> Result<Move> {
     Ok(Move {
         id: row.get(0)?,

@@ -699,8 +699,9 @@ mod tests;
 pub fn transfer_legacy(source_path: &Path, destination_path: &Path) -> anyhow::Result<()> {
     use crate::backup::{BackupSection, database};
     let mut source = Lease::acquire(source_path)?;
-    let mut destination = Lease::acquire(destination_path)?;
     let source_connection = source.connect()?;
+    super::relocation::ensure_migration_idle(&source_connection)?;
+    let mut destination = Lease::acquire(destination_path)?;
     pollster::block_on(source_connection.execute(SCHEMA, ()))?;
     if load(&source_connection)?.is_none() {
         source.initialize(&source_connection)?;
