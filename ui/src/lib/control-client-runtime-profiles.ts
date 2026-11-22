@@ -258,6 +258,14 @@ export class RuntimeProfilesControlClient {
 		expectedRevision: string,
 		selection?: RuntimeProfileRegistry
 	): Promise<string> {
+		return (await this.activateWithHeader(profileId, expectedRevision, selection)).revision;
+	}
+
+	async activateWithHeader(
+		profileId: string | null,
+		expectedRevision: string,
+		selection?: RuntimeProfileRegistry
+	): Promise<ReturnType<typeof runtimeProfileFromEntry>> {
 		let schema = runtimeProfilesActiveSchema;
 		const revision = BigInt(expectedRevision);
 		const value: JsonObject = { profile_id: profileId ?? '' };
@@ -294,7 +302,7 @@ export class RuntimeProfilesControlClient {
 			value,
 			expectedRevision: revision
 		});
-		return runtimeProfileFromEntry(entry).revision;
+		return runtimeProfileFromEntry(entry);
 	}
 
 	watchActive(

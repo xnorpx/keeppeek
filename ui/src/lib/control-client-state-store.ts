@@ -368,12 +368,16 @@ export class ControlClientStateStore {
 	private async rewatch(record: WatchRecord, options: { unwatchFirst: boolean }): Promise<void> {
 		if (this.#disposed || record.status === 'closed' || record.status === 'rewatching') return;
 		const previousWatchId = record.watchId;
-		record.generation += 1;
-		record.status = 'rewatching';
 		if (record.onInterrupted) {
+			// closeRecord detaches the handle synchronously. Invalidate its group while
+			// the recorder retires the previous watch, including remotely closed IDs.
+			const released = this.closeRecord(record).catch(() => {});
 			record.onInterrupted();
+			await released;
 			return;
 		}
+		record.generation += 1;
+		record.status = 'rewatching';
 		const generation = record.generation;
 		if (options.unwatchFirst) await this.bestEffortUnwatch(previousWatchId);
 		for (let attempt = 0; attempt < maxRewatchAttempts; attempt += 1) {
