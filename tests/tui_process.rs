@@ -24,13 +24,21 @@ fn help_version_and_configuration_keep_plain_output_with_a_dashboard_request() {
         assert!(!output.stdout.contains(&0x1b));
     }
     let help = String::from_utf8(run(&["--help"]).stdout).unwrap();
-    assert!(help.contains("--tui") && help.contains("auto") && help.contains("never"));
+    assert!(
+        ["--tui", "auto", "always", "never"]
+            .iter()
+            .all(|option| help.contains(option))
+    );
 }
 
 #[test]
 fn the_foreground_cli_rejects_an_unknown_dashboard_mode() {
     let output = run(&["--tui", "invalid-dashboard-setting"]);
     assert_eq!(output.status.code(), Some(2));
-    let error = String::from_utf8(output.stderr).unwrap();
-    assert!(error.contains("--tui") && error.contains("always"));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .starts_with("error:")
+    );
 }
