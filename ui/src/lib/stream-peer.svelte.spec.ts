@@ -462,7 +462,11 @@ describe('LivePeer', () => {
 		old.onconnectionstatechange?.();
 		await rejected;
 		await vi.waitFor(() => expect(peer.sessionId).toBe('replacement'));
-		expect(api.deleteSession).toHaveBeenCalledWith('first', null, undefined);
+		expect(api.createSession).toHaveBeenLastCalledWith(
+			expect.objectContaining({ type: 'offer' }),
+			null,
+			'first'
+		);
 		expect(peer.track('front-door')?.subscribed).toBe(true);
 		expect(peer.track('garage')?.subscribed).toBe(false);
 		const fresh = FakePeerConnection.latest!;

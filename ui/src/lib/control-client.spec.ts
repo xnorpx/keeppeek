@@ -179,6 +179,8 @@ function catalogCamera() {
 }
 
 class FakeDataChannel {
+	static localAccess = false;
+	static absoluteExpiry = 1_777_086_400_000n;
 	readyState: RTCDataChannelState = 'connecting';
 	binaryType: BinaryType = 'blob';
 	onopen: (() => void) | null = null;
@@ -1298,11 +1300,11 @@ class FakeDataChannel {
 									principalId: '550e8400-e29b-41d4-a716-446655440001',
 									displayName: 'Remote viewer',
 									role: ProtoAccessRole.USER,
-									local: false,
+									local: FakeDataChannel.localAccess,
 									clientClassification: 'direct_remote',
 									createdAtMs: 1_777_000_000_000n,
 									lastActivityAtMs: 1_777_000_000_000n,
-									absoluteExpiresAtMs: 1_777_086_400_000n
+									absoluteExpiresAtMs: FakeDataChannel.absoluteExpiry
 								}),
 								cameras: [
 									create(CameraInfoSchema, {
@@ -1527,6 +1529,8 @@ function appendTimingPeriod(
 }
 
 afterEach(() => {
+	FakeDataChannel.localAccess = false;
+	FakeDataChannel.absoluteExpiry = 1_777_086_400_000n;
 	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
@@ -1926,31 +1930,77 @@ describe('ControlClient', () => {
 	});
 
 	it.each([true, false])(
-		'checks the current bearer before restoring a retired control peer (authorized=%s)',
-		async (authorized) => {
+		'honors the server privacy recovery decision for a current bearer (allowed %s)',
+		async (allowed) => {
 			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			FakeDataChannel.absoluteExpiry = BigInt(Date.now() + 3600_000);
 			const response = { session_id: 'first', answer: { type: 'answer', sdp: 'v=0' } };
 			api.createSession.mockResolvedValueOnce(response);
-			if (authorized)
-				api.createSession.mockResolvedValueOnce({ ...response, session_id: 'replacement' });
-			else api.createSession.mockRejectedValueOnce(new api.ApiRequestError(401, 'revoked'));
+			if (allowed) api.createSession.mockResolvedValueOnce({ ...response, session_id: 'restored' });
+			else
+				api.createSession.mockRejectedValueOnce(
+					new api.ApiRequestError(401, 'previous session unavailable')
+				);
 			api.deleteSession.mockResolvedValue(undefined);
 			const client = new ControlClient();
 			const states: string[] = [];
-			client.onAccessState((s) => states.push(s.status));
+			client.onAccessState((state) => states.push(state.status));
 			await client.signIn('retained-bearer');
 			FakePeerConnection.latest!.channels[0].close();
 			await vi.waitFor(() =>
-				expect(states.at(-1)).toBe(authorized ? 'authenticated' : 'sign-in-required')
+				expect(states.at(-1)).toBe(allowed ? 'authenticated' : 'sign-in-required')
 			);
-			expect(api.createSession).toHaveBeenCalledTimes(2);
 			expect(api.createSession).toHaveBeenLastCalledWith(
 				expect.objectContaining({ type: 'offer' }),
-				'retained-bearer'
+				'retained-bearer',
+				'first'
 			);
+			expect(api.createSession).toHaveBeenCalledTimes(2);
 			await client.close();
 		}
 	);
+
+	it('returns an expired bearer viewer to sign-in without attempting new signaling', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		FakeDataChannel.absoluteExpiry = BigInt(Date.now() - 1);
+		api.createSession.mockResolvedValue({
+			session_id: 'expired',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+		const states: string[] = [];
+		client.onAccessState((state) => states.push(state.status));
+		await client.signIn('retained-bearer');
+		FakePeerConnection.latest!.channels[0].close();
+		expect(states.at(-1)).toBe('sign-in-required');
+		expect(api.createSession).toHaveBeenCalledTimes(1);
+		await client.close();
+	});
+
+	it('keeps a local workspace identity during recovery and blocks commands until capabilities arrive', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		FakeDataChannel.localAccess = true;
+		FakeDataChannel.absoluteExpiry = BigInt(Date.now() + 3600_000);
+		const response = { session_id: 'old', answer: { type: 'answer', sdp: 'v=0' } };
+		const pending = Promise.withResolvers<typeof response>();
+		api.createSession.mockResolvedValueOnce(response).mockReturnValueOnce(pending.promise);
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+		const states: { status: string; principal?: string }[] = [];
+		client.onAccessState((state) =>
+			states.push({ status: state.status, principal: state.session?.principalId })
+		);
+		await client.getServerCapabilities();
+		const principal = states.at(-1)?.principal;
+		FakePeerConnection.latest!.channels[0].close();
+		expect(states.at(-1)).toEqual({ status: 'checking', principal });
+		await expect(client.getHealth()).rejects.toThrow(/reconnecting/);
+		pending.resolve({ ...response, session_id: 'fresh' });
+		await vi.waitFor(() => expect(states.at(-1)).toEqual({ status: 'authenticated', principal }));
+		expect(api.createSession).toHaveBeenCalledTimes(2);
+		await client.close();
+	});
 
 	it('clears a rejected bearer and publishes token-free sign-in state', async () => {
 		vi.useFakeTimers();

@@ -503,6 +503,7 @@ export class ControlClient {
 	#capabilityIds: readonly string[] = [];
 	#capabilityListeners = new Set<CapabilityListener>();
 	#accessKey: HttpCredential = null;
+	#previousSession: string | undefined;
 	readonly externalAuthentication = new ExternalAuthentication();
 	#externalAdministration = new ExternalAuthenticationAdmin((command) => this.request(command));
 	#restoreVerification = new ConfigurationRestoreVerificationClient((command) =>
@@ -755,8 +756,13 @@ export class ControlClient {
 		});
 	}
 
-	createWebRtcSession(offer: RTCSessionDescriptionInit) {
-		return createSession(offer, this.#accessKey);
+	async createWebRtcSession(offer: RTCSessionDescriptionInit, previousSession?: string) {
+		if (this.#accessState.status === 'checking' && this.#accessState.session)
+			await this.getServerCapabilities();
+		if (this.#accessState.status === 'sign-in-required' || this.#accessState.status === 'error')
+			throw new ApiRequestError(401, 'Sign in again before opening live media.');
+		this.assertAccessReady();
+		return createSession(offer, this.#accessKey, previousSession);
 	}
 
 	deleteWebRtcSession(sessionId: string, options: { keepalive?: boolean } = {}): Promise<void> {
@@ -2280,10 +2286,20 @@ export class ControlClient {
 		}
 	}
 
+	private assertAccessReady(): void {
+		if (this.#accessState.status === 'checking' && this.#accessState.session)
+			throw new Error('The session is reconnecting. Wait for access to be confirmed.');
+	}
+
 	private async connectForRequest(signal?: AbortSignal, admit?: () => void): Promise<void> {
+		this.assertAccessReady();
 		admit?.();
 		signal?.throwIfAborted();
+		const generation = this.#transportGeneration;
 		await this.connect();
+		if (generation !== this.#transportGeneration)
+			throw new Error('The control connection changed before the command was sent.');
+		this.assertAccessReady();
 		admit?.();
 		signal?.throwIfAborted();
 	}
@@ -2405,6 +2421,44 @@ export class ControlClient {
 		const credential = this.#accessKey;
 		const peer = new RTCPeerConnection();
 		this.#peer = peer;
+		const control = this.openControlChannels(peer);
+		const opening = watchControlOpening(control);
+		try {
+			const offer = await peer.createOffer();
+			await peer.setLocalDescription(offer);
+			if (!peer.localDescription) throw new Error('WebRTC offer is unavailable.');
+			const previous = this.#previousSession;
+			const session = previous
+				? await createSession(peer.localDescription, credential, previous)
+				: await createSession(peer.localDescription, credential);
+			if (peer !== this.#peer) {
+				await deleteSession(session.session_id, credential);
+				throw new Error('The control connection changed during setup.');
+			}
+			this.#previousSession = undefined;
+			this.#sessionId = session.session_id;
+			await peer.setRemoteDescription({
+				type: session.answer.type as RTCSdpType,
+				sdp: session.answer.sdp
+			});
+			if (control.readyState !== 'open') {
+				const openingError = await opening.opened;
+				if (openingError) throw openingError;
+			}
+		} catch (error) {
+			if (peer !== this.#peer) throw error;
+			const sessionId = this.releaseTransport(true);
+			if (sessionId !== null) {
+				await deleteSession(sessionId, credential).catch(() => undefined);
+			}
+			this.publishConnectionError(error);
+			throw error;
+		} finally {
+			opening.close();
+		}
+	}
+
+	private openControlChannels(peer: RTCPeerConnection): RTCDataChannel {
 		const control = peer.createDataChannel('control-channel', {
 			negotiated: true,
 			id: 0,
@@ -2428,88 +2482,52 @@ export class ControlClient {
 		this.#reliableChannel = reliable;
 		this.#unreliableChannel = unreliable;
 
-		let openingTimeout: ReturnType<typeof setTimeout> | undefined;
-		const opened = new Promise<Error | null>((resolve) => {
-			openingTimeout = setTimeout(
-				() => resolve(new Error('WebRTC control channel did not open.')),
-				controlTimeoutMs
-			);
-			control.onopen = () => {
-				clearTimeout(openingTimeout);
-				resolve(null);
-			};
-			control.onerror = () => {
-				clearTimeout(openingTimeout);
-				resolve(new Error('WebRTC control channel failed.'));
-			};
-		});
 		control.onmessage = (event) => {
 			if (peer === this.#peer) this.receive(event);
 		};
 		reliable.onmessage = (event) => {
 			if (peer === this.#peer) this.receiveData(event);
 		};
-		const lost = () => {
-			if (peer !== this.#peer) return;
-			const authorized = this.#accessState.status === 'authenticated';
-			const credential = this.#accessKey;
-			const connecting = this.#connecting;
-			const generation = this.#transportGeneration;
-			const sessionId = this.releaseTransport(false);
-			if (sessionId !== null) void deleteSession(sessionId, credential).catch(() => undefined);
-			if (!authorized) return;
-			this.publishAccessState({ status: 'checking', session: null, message: null });
-			// Session creation checks the current credential and capabilities restore all active watches.
-			void (async () => {
-				await connecting?.catch(() => undefined);
-				if (generation !== this.#transportGeneration || credential !== this.#accessKey) return;
-				try {
-					await this.getServerCapabilities();
-				} catch (error) {
-					if (generation === this.#transportGeneration && this.#accessState.status === 'checking')
-						this.publishConnectionError(error);
-				}
-			})();
-		};
-		control.onclose = lost;
+		control.onclose = () => this.controlTransportLost(peer);
 		reliable.onclose = () => {
 			if (peer === this.#peer) this.failData('WebRTC reliable data channel closed.');
 		};
 		peer.onconnectionstatechange = () => {
-			if (['failed', 'disconnected', 'closed'].includes(peer.connectionState)) lost();
+			if (['failed', 'disconnected', 'closed'].includes(peer.connectionState))
+				this.controlTransportLost(peer);
 		};
 
-		try {
-			const offer = await peer.createOffer();
-			await peer.setLocalDescription(offer);
-			if (!peer.localDescription) throw new Error('WebRTC offer is unavailable.');
-			const session = await createSession(peer.localDescription, credential);
-			if (peer !== this.#peer) {
-				await deleteSession(session.session_id, credential);
-				throw new Error('The control connection changed during setup.');
-			}
-			this.#sessionId = session.session_id;
-			await peer.setRemoteDescription({
-				type: session.answer.type as RTCSdpType,
-				sdp: session.answer.sdp
-			});
-			if (control.readyState !== 'open') {
-				const openingError = await opened;
-				if (openingError) throw openingError;
-			}
-		} catch (error) {
-			if (peer !== this.#peer) throw error;
-			const sessionId = this.releaseTransport(true);
-			if (sessionId !== null) {
-				await deleteSession(sessionId, credential).catch(() => undefined);
-			}
-			this.publishConnectionError(error);
-			throw error;
-		} finally {
-			clearTimeout(openingTimeout);
-			control.onopen = null;
-			control.onerror = null;
+		return control;
+	}
+
+	private controlTransportLost(peer: RTCPeerConnection): void {
+		if (peer !== this.#peer) return;
+		const previous =
+			this.#accessState.status === 'authenticated' ? this.#accessState.session : null;
+		const credential = this.#accessKey;
+		const connecting = this.#connecting;
+		const generation = ++this.#transportGeneration;
+		const mayRecover = previous && previous.absoluteExpiresAtMs > Date.now();
+		const sessionId = this.releaseTransport(!mayRecover);
+		if (!previous || !mayRecover || sessionId === null) {
+			if (sessionId !== null) void deleteSession(sessionId, credential).catch(() => undefined);
+			if (previous)
+				this.publishConnectionError(new ApiRequestError(401, 'Sign in again to continue.'));
+			return;
 		}
+		this.#previousSession = sessionId;
+		this.publishAccessState({ status: 'checking', session: previous, message: null });
+		// Session creation checks the current credential and capabilities restore all active watches.
+		void (async () => {
+			await connecting?.catch(() => undefined);
+			if (generation !== this.#transportGeneration || credential !== this.#accessKey) return;
+			try {
+				await this.getServerCapabilities();
+			} catch (error) {
+				if (generation === this.#transportGeneration && this.#accessState.status === 'checking')
+					this.publishConnectionError(error);
+			}
+		})();
 	}
 
 	private receive(event: MessageEvent): void {
@@ -2527,9 +2545,18 @@ export class ControlClient {
 		if (envelope.message.case === 'notification') {
 			if (envelope.message.value.event.case === 'initialCapabilities') {
 				const capabilities = envelope.message.value.event.value;
+				if (
+					this.#accessState.status === 'checking' &&
+					this.#accessState.session &&
+					!capabilities.accessSession
+				) {
+					this.release();
+					this.publishConnectionError(
+						new ApiRequestError(401, 'The server did not confirm renewed access.')
+					);
+					return;
+				}
 				this.#serverCapabilities = capabilities;
-				void this.#stateStore.handleConnectionOpened();
-				void this.#runtimeProfiles.handleConnectionOpened();
 				for (const waiter of this.#capabilityWaiters) {
 					clearTimeout(waiter.timeout);
 					waiter.resolve(capabilities);
@@ -2543,6 +2570,8 @@ export class ControlClient {
 						message: null
 					});
 				}
+				void this.#stateStore.handleConnectionOpened();
+				void this.#runtimeProfiles.handleConnectionOpened();
 			}
 			if (envelope.message.value.event.case === 'storedMediaState') {
 				const state = envelope.message.value.event.value;
@@ -2988,6 +3017,7 @@ export class ControlClient {
 	private publishConnectionError(error: unknown): void {
 		if (error instanceof ApiRequestError && error.status === 401) {
 			const hadCredential = this.#accessKey !== null;
+			this.#previousSession = undefined;
 			const cookieSession = Boolean(this.#accessKey && typeof this.#accessKey !== 'string');
 			this.#accessKey = null;
 			this.publishAccessState({
@@ -3016,6 +3046,7 @@ export class ControlClient {
 		request: () => Promise<T>,
 		localStatuses: readonly number[] = []
 	): Promise<T> {
+		this.assertAccessReady();
 		try {
 			return await request();
 		} catch (error) {
@@ -3031,7 +3062,10 @@ export class ControlClient {
 
 	private release(): string | null {
 		this.#transportGeneration++;
-		return this.releaseTransport(true);
+		const previous = this.#previousSession;
+		this.#previousSession = undefined;
+		const current = this.releaseTransport(true);
+		return current ?? previous ?? null;
 	}
 
 	private releaseTransport(revokeObjectUrls: boolean): string | null {
@@ -3062,12 +3096,38 @@ export class ControlClient {
 			for (const url of this.#objectUrls) URL.revokeObjectURL(url);
 			this.#objectUrls.clear();
 		}
-		this.publishCapabilities([]);
+		if (revokeObjectUrls) this.publishCapabilities([]);
 		this.#runtimeProfiles.handleConnectionClosed();
 		this.#stateStore.handleConnectionClosed();
 		this.failPending('WebRTC control connection closed.');
 		return sessionId;
 	}
+}
+
+function watchControlOpening(control: RTCDataChannel) {
+	let openingTimeout: ReturnType<typeof setTimeout> | undefined;
+	const opened = new Promise<Error | null>((resolve) => {
+		openingTimeout = setTimeout(
+			() => resolve(new Error('WebRTC control channel did not open.')),
+			controlTimeoutMs
+		);
+		control.onopen = () => {
+			clearTimeout(openingTimeout);
+			resolve(null);
+		};
+		control.onerror = () => {
+			clearTimeout(openingTimeout);
+			resolve(new Error('WebRTC control channel failed.'));
+		};
+	});
+	return {
+		opened,
+		close: () => {
+			clearTimeout(openingTimeout);
+			control.onopen = null;
+			control.onerror = null;
+		}
+	};
 }
 
 function protoAccessRole(role: AccessRole): ProtoAccessRole {

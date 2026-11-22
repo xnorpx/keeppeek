@@ -35,12 +35,12 @@ const controlTimeoutMs = 10_000;
 class MediaAdmissionError extends Error {}
 
 export type LiveSessionTransport = {
-	create: (offer: RTCSessionDescriptionInit) => Promise<CreateResponse>;
+	create: (offer: RTCSessionDescriptionInit, previousSession?: string) => Promise<CreateResponse>;
 	delete: (sessionId: string, options?: { keepalive?: boolean }) => Promise<void>;
 };
 
 const defaultSessionTransport: LiveSessionTransport = {
-	create: createSession,
+	create: (offer, previousSession) => createSession(offer, null, previousSession),
 	delete: (sessionId, options) => deleteSession(sessionId, null, options)
 };
 
@@ -97,6 +97,7 @@ export class LivePeer {
 
 	#peer: RTCPeerConnection | null = null;
 	#sessionToken: string | null = null;
+	#previousSession: string | undefined;
 	#controlChannel: RTCDataChannel | null = null;
 	#reliableChannel: RTCDataChannel | null = null;
 	#unreliableChannel: RTCDataChannel | null = null;
@@ -321,6 +322,10 @@ export class LivePeer {
 	private cancelRecovery(): void {
 		if (this.#recoveryTimer !== undefined) clearTimeout(this.#recoveryTimer);
 		this.#recoveryTimer = undefined;
+		if (this.#previousSession) {
+			void this.#sessionTransport.delete(this.#previousSession).catch(() => undefined);
+			this.#previousSession = undefined;
+		}
 		this.#recoveryAttempts = 0;
 		this.#healthySince = undefined;
 	}
@@ -338,10 +343,7 @@ export class LivePeer {
 			this.#recoveryAttempts = 0;
 		this.#healthySince = undefined;
 		const token = this.releaseLocalResources();
-		if (token !== null)
-			void this.#sessionTransport
-				.delete(token)
-				.catch((error) => console.debug('Unable to delete retired media session', error));
+		if (token) this.#previousSession = token;
 		this.scheduleRecovery();
 	}
 
@@ -541,12 +543,16 @@ export class LivePeer {
 				}
 			}
 
-			const session = await this.#sessionTransport.create(peer.localDescription);
+			const session = await this.#sessionTransport.create(
+				peer.localDescription,
+				this.#previousSession
+			);
 			if (peer !== this.#peer) {
 				await this.#sessionTransport.delete(session.session_id);
 				return;
 			}
 
+			this.#previousSession = undefined;
 			this.#sessionToken = session.session_id;
 			this.sessionId = session.session_id;
 			await peer.setRemoteDescription({

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+	createSession,
 	fetchLogSnapshot,
 	fetchMetricsSnapshot,
 	fetchRecordingCoverage,
@@ -233,3 +234,34 @@ function recordingCoverageSnapshot() {
 		next_page_token: null
 	} as const;
 }
+
+describe('privacy signaling continuity', () => {
+	it.each([true, false])(
+		'requires the actual previous-session acknowledgement (echoed %s)',
+		async (echoed) => {
+			vi.stubGlobal('window', { CompressionStream, location: { origin: 'http://localhost' } });
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce(
+					Response.json(
+						{ session_id: '18', answer: { type: 'answer', sdp: 'v=0' } },
+						{
+							status: 201,
+							headers: echoed ? { 'X-KeepPeek-Previous-Session': '17' } : {}
+						}
+					)
+				)
+				.mockResolvedValueOnce(new Response(null, { status: 204 }));
+			vi.stubGlobal('fetch', fetchMock);
+			const resume = createSession({ type: 'offer', sdp: 'v=0' }, 'current-credential', '17');
+			if (echoed) await expect(resume).resolves.toMatchObject({ session_id: '18' });
+			else await expect(resume).rejects.toMatchObject({ status: 401 });
+			const [url, init] = fetchMock.mock.calls[0];
+			expect(url).toBe('/create');
+			expect(new Headers(init.headers).get('X-KeepPeek-Previous-Session')).toBe('17');
+			expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(
+				echoed ? ['/create'] : ['/create', '/delete']
+			);
+		}
+	);
+});
