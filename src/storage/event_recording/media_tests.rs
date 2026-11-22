@@ -120,7 +120,12 @@ fn drain(
             }
             EventOutput::Finish { end, .. } => {
                 if let Some(writer) = writer.take() {
-                    paths.push(writer.finalize_before(end).unwrap().unwrap());
+                    paths.push(
+                        writer
+                            .finalize_before(end)
+                            .expect("finalize the fixture event recording")
+                            .expect("the emitted GOP must publish a segment before event finish"),
+                    );
                 }
             }
         }
