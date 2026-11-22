@@ -3,30 +3,14 @@
 use crate::storage::long_term::inspection::removal::{
     private_directory, sync_directory, unix::rename_to, validate_owner,
 };
-use cap_fs_ext::{
-    DirExt, FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt, OpenOptionsSyncExt,
-};
+use cap_fs_ext::{DirExt, OpenOptionsMaybeDirExt};
 use cap_std::fs::{Dir, File, Metadata, MetadataExt, OpenOptions};
 use std::{
     ffi::{OsStr, OsString},
-    io::{self, Read},
+    io,
 };
 
 pub(super) const RECOVERY_DIRECTORY: &str = ".keeppeek-header-recovery-v1";
-
-const INTENT_MAGIC: &[u8; 8] = b"KPHDRv1\0";
-
-fn intent_name(name: &OsStr) -> OsString {
-    let mut marker = name.to_owned();
-    marker.push(".origin");
-    marker
-}
-
-fn pin_name(name: &OsStr) -> OsString {
-    let mut pin = name.to_owned();
-    pin.push(".pin");
-    pin
-}
 
 fn entry(directory: &Dir, name: &OsStr) -> io::Result<Option<Metadata>> {
     match directory.symlink_metadata(name) {
@@ -34,32 +18,6 @@ fn entry(directory: &Dir, name: &OsStr) -> io::Result<Option<Metadata>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
-}
-
-fn matches_record(metadata: &Metadata, record: &[u8; 24]) -> bool {
-    metadata.is_file()
-        && record[8..16] == metadata.dev().to_be_bytes()
-        && record[16..] == metadata.ino().to_be_bytes()
-}
-
-fn read_legacy_record(stage: &Dir, name: &OsStr) -> io::Result<[u8; 24]> {
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No).nonblock(true);
-    let mut intent = stage.open_with(intent_name(name), &options)?;
-    let metadata = intent.metadata()?;
-    if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() != 24 {
-        return Err(io::Error::other(
-            "invalid recording initialization recovery record",
-        ));
-    }
-    let mut record = [0; 24];
-    intent.read_exact(&mut record)?;
-    if &record[..8] != INTENT_MAGIC {
-        return Err(io::Error::other(
-            "invalid recording initialization recovery marker",
-        ));
-    }
-    Ok(record)
 }
 
 fn pins_name(name: &OsStr) -> OsString {
@@ -72,63 +30,30 @@ fn pin_leaf(metadata: &Metadata) -> String {
     format!("pin-{:016x}-{:016x}", metadata.dev(), metadata.ino())
 }
 
-fn record_for(metadata: &Metadata) -> [u8; 24] {
-    let mut record = [0; 24];
-    record[..8].copy_from_slice(INTENT_MAGIC);
-    record[8..16].copy_from_slice(&metadata.dev().to_be_bytes());
-    record[16..].copy_from_slice(&metadata.ino().to_be_bytes());
-    record
-}
-
-enum Pin {
-    Legacy(bool),
-    Named { directory: Dir, leaf: OsString },
-}
-
 struct Intent {
-    record: [u8; 24],
-    pin: Pin,
+    directory: Dir,
+    leaf: OsString,
 }
 
 fn read_intent(stage: &Dir, name: &OsStr) -> io::Result<Intent> {
-    if entry(stage, &pins_name(name))?.is_some() {
-        let directory = private_directory(stage, &pins_name(name), false)?;
-        let mut entries = directory.entries()?;
-        if let Some(first) = entries.next().transpose()? {
-            let leaf = first.file_name();
-            let metadata = directory.symlink_metadata(&leaf)?;
-            if entries.next().transpose()?.is_some()
-                || !metadata.is_file()
-                || leaf != OsStr::new(&pin_leaf(&metadata))
-            {
-                return Err(io::Error::other("unrecognized recording recovery pin"));
-            }
-            drop(entries);
-            return Ok(Intent {
-                record: record_for(&metadata),
-                pin: Pin::Named { directory, leaf },
-            });
-        }
+    let directory = private_directory(stage, &pins_name(name), false)?;
+    let mut entries = directory.entries()?;
+    let first = entries.next().transpose()?.ok_or(io::ErrorKind::NotFound)?;
+    let leaf = first.file_name();
+    let metadata = directory.symlink_metadata(&leaf)?;
+    if entries.next().transpose()?.is_some() || !matches_pin(&metadata, &leaf) {
+        return Err(io::Error::other("unrecognized recording recovery pin"));
     }
-    let record = read_legacy_record(stage, name)?;
-    let pin = entry(stage, &pin_name(name))?;
-    if pin
-        .as_ref()
-        .is_some_and(|metadata| !matches_record(metadata, &record))
-    {
-        return Err(io::Error::other("recording recovery pin changed"));
-    }
-    Ok(Intent {
-        record,
-        pin: Pin::Legacy(pin.is_some()),
-    })
+    drop(entries);
+    Ok(Intent { directory, leaf })
+}
+
+fn matches_pin(metadata: &Metadata, leaf: &OsStr) -> bool {
+    metadata.is_file() && leaf == OsStr::new(&pin_leaf(metadata))
 }
 
 fn create_intent(parent: &Dir, stage: &Dir, name: &OsStr, owned: &Metadata) -> io::Result<()> {
-    if entry(stage, name)?.is_some()
-        || entry(stage, &intent_name(name))?.is_some()
-        || entry(stage, &pin_name(name))?.is_some()
-    {
+    if entry(stage, name)?.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "a prior staged recording entry needs recovery",
@@ -145,7 +70,7 @@ fn create_intent(parent: &Dir, stage: &Dir, name: &OsStr, owned: &Metadata) -> i
     // create therefore leaves a complete intent or no pin, never a pin awaiting a marker.
     let leaf = pin_leaf(owned);
     parent.hard_link(name, &directory, &leaf)?;
-    if !matches_record(&directory.symlink_metadata(&leaf)?, &record_for(owned)) {
+    if !matches_pin(&directory.symlink_metadata(&leaf)?, OsStr::new(&leaf)) {
         directory.remove_file(&leaf)?;
         sync_directory(&directory)?;
         return Err(io::Error::other("active recording changed before cleanup"));
@@ -156,26 +81,12 @@ fn create_intent(parent: &Dir, stage: &Dir, name: &OsStr, owned: &Metadata) -> i
 
 impl Intent {
     fn finish(&self, stage: &Dir, name: &OsStr) -> io::Result<()> {
-        match &self.pin {
-            Pin::Named { directory, leaf } => {
-                if !matches_record(&directory.symlink_metadata(leaf)?, &self.record) {
-                    return Err(io::Error::other("recording recovery pin changed"));
-                }
-                directory.remove_file(leaf)?;
-                sync_directory(directory)?;
-                stage.remove_dir(pins_name(name))?;
-            }
-            Pin::Legacy(pinned) => {
-                if *pinned {
-                    let pin = pin_name(name);
-                    if !matches_record(&stage.symlink_metadata(&pin)?, &self.record) {
-                        return Err(io::Error::other("recording recovery pin changed"));
-                    }
-                    stage.remove_file(pin)?;
-                }
-                stage.remove_file(intent_name(name))?;
-            }
+        if !matches_pin(&self.directory.symlink_metadata(&self.leaf)?, &self.leaf) {
+            return Err(io::Error::other("recording recovery pin changed"));
         }
+        self.directory.remove_file(&self.leaf)?;
+        sync_directory(&self.directory)?;
+        stage.remove_dir(pins_name(name))?;
         sync_directory(stage)
     }
 }
@@ -214,10 +125,7 @@ pub(super) fn restore_pending(parent: &Dir, name: &OsStr) -> io::Result<()> {
             Err(error)
         };
     }
-    if entry(&stage, &intent_name(name))?.is_none()
-        && entry(&stage, &pins_name(name))?.is_none()
-        && entry(&stage, name)?.is_none()
-    {
+    if entry(&stage, &pins_name(name))?.is_none() && entry(&stage, name)?.is_none() {
         return Ok(());
     }
     let _lease = lock_stage(&stage)?;
@@ -228,11 +136,7 @@ pub(super) fn restore_pending(parent: &Dir, name: &OsStr) -> io::Result<()> {
         Err(error) => return Err(error),
     };
     if staged.is_none() {
-        // A legacy marker without a pin cannot prove that a public inode wasn't recycled.
-        if matches!(intent.pin, Pin::Legacy(false))
-            || !entry(parent, name)?
-                .is_some_and(|metadata| matches_record(&metadata, &intent.record))
-        {
+        if !entry(parent, name)?.is_some_and(|metadata| matches_pin(&metadata, &intent.leaf)) {
             return intent.finish(&stage, name);
         }
         rename_to(parent, name, &stage, name)?;
@@ -244,7 +148,7 @@ pub(super) fn restore_pending(parent: &Dir, name: &OsStr) -> io::Result<()> {
 
 fn reconcile_staged(stage: &Dir, parent: &Dir, name: &OsStr, intent: &Intent) -> io::Result<()> {
     // Recheck after the no-replace move: a different file may have taken the public name.
-    if matches_record(&stage.symlink_metadata(name)?, &intent.record) {
+    if matches_pin(&stage.symlink_metadata(name)?, &intent.leaf) {
         stage.remove_file(name)?;
     } else {
         rename_to(stage, name, parent, name).map_err(|error| {
@@ -280,7 +184,7 @@ fn discard_with(
         Err(error) => return Err(error),
     }
 
-    // The durable marker records the pinned identity and original name before the move.
+    // The durable link records the pinned identity and original name before the move.
     // Neither staging nor restoration can overwrite an occupant.
     let stage = private_directory(parent, OsStr::new(RECOVERY_DIRECTORY), true)?;
     let _lease = lock_stage(&stage)?;
@@ -313,13 +217,14 @@ mod tests {
         assert!(!parent.exists(name));
         stage.remove_file(name)?;
         parent.write(name, b"new partial")?;
-        let pin = pin_name(name);
-        stage.write(&pin, b"older pin")?;
+        let pins = private_directory(&stage, &pins_name(name), true)?;
+        pins.write("unrecognized", b"unrelated pin entry")?;
         let error =
             create_intent(&parent, &stage, name, &parent.symlink_metadata(name)?).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert!(error.to_string().contains("needs recovery"));
-        assert_eq!(stage.read(&pin)?, b"older pin");
+        assert_eq!(pins.read("unrecognized")?, b"unrelated pin entry");
+        drop(pins);
         assert_eq!(parent.read(name)?, b"new partial");
         drop(stage);
         drop(parent);
@@ -336,7 +241,7 @@ mod tests {
         let name = OsStr::new("recording.mp4.active");
         parent.write(name, b"partial")?;
         create_intent(&parent, &stage, name, &parent.symlink_metadata(name)?)?;
-        assert!(entry(&stage, &intent_name(name))?.is_none());
+        assert_eq!(stage.entries()?.count(), 1);
         drop(stage);
         drop(parent);
         super::super::legacy(&root.join(name), |mut fresh| fresh.write_all(b"new header"))?;
@@ -350,35 +255,6 @@ mod tests {
         assert_eq!(pins.read(&expected)?, b"unrelated");
         assert_eq!(parent.read(name)?, b"new header");
         drop(pins);
-        drop(stage);
-        drop(parent);
-        std::fs::remove_dir_all(root)
-    }
-
-    #[test]
-    fn legacy_origin_requires_its_original_pin_before_reclaiming_an_active_name() -> io::Result<()>
-    {
-        let root =
-            std::env::temp_dir().join(format!("keeppeek-header-v1-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&root)?;
-        let parent = Dir::open_ambient_dir(&root, cap_std::ambient_authority())?;
-        let stage = private_directory(&parent, OsStr::new(RECOVERY_DIRECTORY), true)?;
-        let name = OsStr::new("recording.mp4.active");
-        parent.write(name, b"retained")?;
-        let put_origin = || {
-            stage.write(
-                intent_name(name),
-                record_for(&parent.symlink_metadata(name)?),
-            )
-        };
-        put_origin()?;
-        restore_pending(&parent, name)?;
-        assert_eq!(parent.read(name)?, b"retained");
-        put_origin()?;
-        parent.hard_link(name, &stage, pin_name(name))?;
-        restore_pending(&parent, name)?;
-        assert!(!parent.exists(name));
-        assert_eq!(stage.entries()?.count(), 0);
         drop(stage);
         drop(parent);
         std::fs::remove_dir_all(root)

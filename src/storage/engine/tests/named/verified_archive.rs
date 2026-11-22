@@ -489,8 +489,10 @@ fn with_archive_target<T>(
 #[test]
 fn qualification_creates_one_private_target_in_each_location_and_preserves_occupants()
 -> anyhow::Result<()> {
-    let root =
-        std::env::temp_dir().join(format!("keeppeek-archive-targets-{}", uuid::Uuid::new_v4()));
+    let base = std::env::temp_dir();
+    #[cfg(unix)]
+    let base = std::fs::canonicalize(base)?;
+    let root = base.join(format!("keeppeek-archive-targets-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root)?;
     let external = root.join("separate-archive-parent");
     std::fs::create_dir(&external)?;
