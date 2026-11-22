@@ -1,9 +1,9 @@
+import recoveryMessages from '../../../../tests/fixtures/guest-range-recovery.json';
 import { page } from 'vitest/browser';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import '../../app.css';
 import GuestShareDialog from './GuestShareDialog.svelte';
-import { missingRangeProof } from '../sharing-range';
 import {
 	shareEvidenceFixture,
 	sharePolicyFixture,
@@ -161,9 +161,9 @@ describe('creator guest share dialog', () => {
 	}
 
 	it.each([
-		'the selected recording could not be verified as browser-compatible',
-		'the recording cannot be shared within the selected range',
-		'recorded audio correction prevents verification of the selected source interval'
+		recoveryMessages.incompatibleCodec,
+		recoveryMessages.crossedRange,
+		recoveryMessages.correctedAudio
 	])('tries the alternate retained stream after a confirmed rejection: %s', async (reason) => {
 		const { target, rangeClient } = alternateRecordings();
 		const share = controller();
@@ -190,14 +190,12 @@ describe('creator guest share dialog', () => {
 		]);
 		const share = controller();
 		share.previewExport
-			.mockRejectedValueOnce(
-				new Error('the selected recording could not be verified as browser-compatible')
-			)
-			.mockRejectedValueOnce(new Error(missingRangeProof));
+			.mockRejectedValueOnce(new Error(recoveryMessages.incompatibleCodec))
+			.mockRejectedValueOnce(new Error(recoveryMessages.missingProof));
 		await render(GuestShareDialog, {
 			props: { controller: share, range: { target, client: rangeClient }, onclose: vi.fn() }
 		});
-		await expect.element(page.getByRole('alert')).toMatchTextContent(missingRangeProof);
+		await expect.element(page.getByRole('alert')).toMatchTextContent(recoveryMessages.missingProof);
 		await page.getByRole('button', { name: 'Prepare a fresh export' }).click();
 		await expect.element(page.getByLabelText('Display name')).toBeVisible();
 		expect(rangeClient.createExport).toHaveBeenCalledExactlyOnceWith({
@@ -219,7 +217,7 @@ describe('creator guest share dialog', () => {
 			...ready,
 			id: 'size-limit',
 			status: 'failed',
-			error: 'export exceeds the guest preparation byte limit'
+			error: recoveryMessages.byteLimit
 		};
 		rangeClient.listExports.mockResolvedValue([]);
 		rangeClient.createExport.mockResolvedValueOnce(failed);
@@ -249,19 +247,19 @@ describe('creator guest share dialog', () => {
 	it.each([
 		{ failure: 'Connection lost', existing: true, replacement: false },
 		{
-			failure: 'the recording cannot be shared within the selected range',
+			failure: recoveryMessages.crossedRange,
 			existing: true,
 			replacement: false
 		},
 		{
-			failure: 'the selected recording could not be verified as browser-compatible',
+			failure: recoveryMessages.incompatibleCodec,
 			existing: true,
 			replacement: false
 		},
-		{ failure: missingRangeProof, existing: false, replacement: false },
-		{ failure: missingRangeProof, existing: true, replacement: true },
+		{ failure: recoveryMessages.missingProof, existing: false, replacement: false },
+		{ failure: recoveryMessages.missingProof, existing: true, replacement: true },
 		{
-			failure: 'recorded audio correction prevents verification of the selected source interval',
+			failure: recoveryMessages.correctedAudio,
 			existing: true,
 			replacement: true
 		}

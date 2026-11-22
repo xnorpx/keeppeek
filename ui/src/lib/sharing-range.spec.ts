@@ -1,12 +1,26 @@
+import recoveryMessages from '../../../tests/fixtures/guest-range-recovery.json';
 import { describe, expect, it, vi } from 'vitest';
 import { create } from '@bufbuild/protobuf';
 import { ShareEvidenceSchema } from './proto/webrtc_pb';
 import { RangeSharePreview } from './sharing-range-preview';
 import {
+	alternateRangeStream,
+	replaceableRangeArtifact,
 	insideRecordingRange,
 	prepareRangeShare,
 	type RecordingShareTarget
 } from './sharing-range';
+
+it('recognizes each recorder recovery message exactly', () => {
+	const { incompatibleCodec, correctedAudio, crossedRange, missingProof } = recoveryMessages;
+	for (const message of Object.values(recoveryMessages)) {
+		const error = new Error(message);
+		expect(alternateRangeStream(error)).toBe(
+			[incompatibleCodec, correctedAudio, crossedRange].includes(message)
+		);
+		expect(replaceableRangeArtifact(error)).toBe([missingProof, correctedAudio].includes(message));
+	}
+});
 
 const target: RecordingShareTarget = {
 	sourceId: 'front',
@@ -70,9 +84,7 @@ describe('recording range sharing', () => {
 		const evidence = create(ShareEvidenceSchema);
 		const preview = vi
 			.fn()
-			.mockRejectedValueOnce(
-				new Error('the selected recording could not be verified as browser-compatible')
-			)
+			.mockRejectedValueOnce(new Error(recoveryMessages.incompatibleCodec))
 			.mockResolvedValue(evidence);
 		const recovery = new RangeSharePreview(preview);
 		const range = { client: recorder, target: { ...target, streamId: undefined } };
@@ -138,7 +150,7 @@ describe('recording range sharing', () => {
 			id: 'large-main',
 			streamId: 'main',
 			status: 'failed',
-			error: 'export exceeds the guest preparation byte limit'
+			error: recoveryMessages.byteLimit
 		};
 		recorder.createExport.mockResolvedValueOnce(failed).mockResolvedValueOnce(ready);
 		recorder.getExport.mockResolvedValue(failed);

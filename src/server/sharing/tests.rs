@@ -3,6 +3,7 @@ use super::super::export_storage_tests::setup_for_codec;
 use super::*;
 use crate::shares::{CreateGrant, IssuerBinding, Mode};
 use crate::storage::{RecordingCatalog, VideoCodec};
+use crate::test_support::guest_range_recovery_messages;
 use proto::{share_command::Action, share_result::Result as Value};
 
 struct Fixture {
@@ -200,7 +201,10 @@ fn unsupported_range_codec_is_declined_before_disclosure() {
         )
         .unwrap_err();
         assert_eq!(error.code, proto::ErrorCode::Rejected);
-        assert!(error.message.contains("browser-compatible"));
+        assert_eq!(
+            error.message,
+            guest_range_recovery_messages()["incompatibleCodec"]
+        );
     }
     assert!(fixture.list(1).grants.is_empty());
 }
@@ -209,10 +213,11 @@ fn unsupported_range_codec_is_declined_before_disclosure() {
 fn range_preview_and_creation_require_uncorrected_audio_and_an_existing_media_proof() {
     let (fixture, record, range) = selected_export(VideoCodec::H264);
     let intent = fixture.intent();
+    let messages = guest_range_recovery_messages();
     for (offset, missing_proof, reason) in [
-        (200, false, "audio correction"),
-        (-200, false, "audio correction"),
-        (0, true, "no recorded media proof"),
+        (200, false, messages["correctedAudio"]),
+        (-200, false, messages["correctedAudio"]),
+        (0, true, messages["missingProof"]),
     ] {
         {
             let mut records = fixture.state.export_jobs.lock().unwrap();
@@ -242,7 +247,7 @@ fn range_preview_and_creation_require_uncorrected_audio_and_an_existing_media_pr
                 },
             )
             .unwrap_err();
-            assert!(err.message.contains(reason), "{}", err.message);
+            assert_eq!(err.message, reason);
         }
     }
     assert!(fixture.list(100).grants.is_empty());
@@ -353,12 +358,9 @@ fn a_maximum_interval_reports_a_crossed_source_edge_before_the_general_duration_
             selected,
         )
     };
-    assert!(
-        preview(Some(&range))
-            .err()
-            .unwrap()
-            .message
-            .contains("within the selected range")
+    assert_eq!(
+        preview(Some(&range)).err().unwrap().message,
+        guest_range_recovery_messages()["crossedRange"]
     );
     assert!(preview(None).is_err());
 }
@@ -387,7 +389,10 @@ fn older_output_only_proofs_still_serve_completed_exports_and_require_fresh_rang
         },
     )
     .unwrap_err();
-    assert!(error.message.contains("no recorded media proof"));
+    assert_eq!(
+        error.message,
+        guest_range_recovery_messages()["missingProof"]
+    );
     assert!(fixture.list(100).grants.is_empty());
     assert!(!fixture.issue().url.is_empty());
 }
@@ -415,7 +420,10 @@ fn a_creator_can_identify_legacy_range_artifacts_that_need_replacement() {
             stored.owner_key = owner;
             stored.source_identity = source;
         }
-        assert!(preview().message.contains("no recorded media proof"));
+        assert_eq!(
+            preview().message,
+            guest_range_recovery_messages()["missingProof"]
+        );
     }
     fixture
         .state

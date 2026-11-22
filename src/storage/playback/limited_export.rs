@@ -111,7 +111,10 @@ mod tests {
             output.write_all(b"12345678").unwrap();
             output.seek(SeekFrom::Start(2)).unwrap();
             output.write_all(b"abc").unwrap();
-            assert!(output.write_all(b"long").is_err());
+            assert_eq!(
+                output.write_all(b"long").unwrap_err().to_string(),
+                crate::test_support::guest_range_recovery_messages()["byteLimit"]
+            );
             output.seek(SeekFrom::End(1)).unwrap();
             assert!(output.write_all(b"x").is_err());
         }

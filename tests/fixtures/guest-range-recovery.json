@@ -1,0 +1,7 @@
+{
+  "missingProof": "the completed export has no recorded media proof",
+  "incompatibleCodec": "the selected recording could not be verified as browser-compatible",
+  "correctedAudio": "recorded audio correction prevents verification of the selected source interval",
+  "crossedRange": "the recording cannot be shared within the selected range",
+  "byteLimit": "export exceeds the guest preparation byte limit"
+}

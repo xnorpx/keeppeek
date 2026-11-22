@@ -135,6 +135,15 @@ fn encoded_samples_are_read_only_within_the_remaining_preparation_budget() {
 #[test]
 fn bounded_export_removes_an_incomplete_file_and_publishes_at_the_exact_budget() {
     let input = source(&[video()], vec![(1, sample(0, 90_000, 0))]);
+    let file = std::fs::File::open(&input).unwrap();
+    let size = file.metadata().unwrap().len();
+    let mut reader = mp4::Mp4Reader::read_header(file, size).unwrap();
+    let payload_error = limited_export::read_payload(&mut reader, 1, 1, Some(4)).unwrap_err();
+    assert_eq!(
+        payload_error.to_string(),
+        crate::test_support::guest_range_recovery_messages()["byteLimit"]
+    );
+    drop(reader);
     let fragments = [fragment(&input, "guest-budget", 1000)];
     let (artifact, _) = export(&fragments, 2000);
     let sources = ExportSources {
@@ -154,7 +163,10 @@ fn bounded_export_removes_an_incomplete_file_and_publishes_at_the_exact_budget()
         || false,
         |_| {},
     );
-    assert!(rejected.is_err());
+    assert_eq!(
+        rejected.err().expect("short budget must fail").to_string(),
+        crate::test_support::guest_range_recovery_messages()["byteLimit"]
+    );
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
     let completed = export_sources_to_file_with_limit(
         sources,
