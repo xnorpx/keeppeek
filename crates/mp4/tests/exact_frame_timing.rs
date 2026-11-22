@@ -62,7 +62,7 @@ fn decoded_positions(path: &Path) -> Vec<u64> {
         ])
         .arg(path)
         .output()
-        .unwrap();
+        .expect("FFprobe must be on PATH to identify the decoded fixture pictures");
     assert!(
         probe.status.success(),
         "{}",
