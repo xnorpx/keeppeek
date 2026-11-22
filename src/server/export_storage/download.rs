@@ -39,9 +39,8 @@ pub(in crate::server) fn download(
         .chunks(DATA_MESSAGE_CHUNK_BYTES)
         .enumerate()
         .map(|(index, chunk)| OutboundDataMessage {
-            permit: None,
-            target,
             permit: Some(permit.clone()),
+            target,
             group: format!("export:{}", request.job_id),
             message: proto::Message {
                 message: Some(proto::message::Message::Export(proto::ExportMessage {

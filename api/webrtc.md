@@ -354,15 +354,6 @@ Stored-media capabilities do not include a changing earliest or latest timestamp
 `QueryStoredMediaTimeline` to discover indexed availability and events for a time range, avoiding
 a new complete capability snapshot whenever another fragment is recorded.
 
-When a camera enters privacy, the recorder retires an affected WebRTC peer before
-its next UDP transmission. A multiplexed SCTP or RTP packet can contain media from
-a previous camera epoch. A new authenticated session negotiates fresh subscriptions
-against the current camera capabilities. The browser retries a lost viewer up to
-three times. An authentication or authorization denial ends automatic retries. Other peers continue independently. An interrupted talkback, chime or
-quick-reply command ends with the old connection and requires an explicit new
-command. Guest media responses use their existing camera-privacy check and close
-the affected HTTP transfer when its source epoch changes.
-
 ### Groups
 
 A group is a named, persistent collection of streams. It serves two purposes at once: it bundles
