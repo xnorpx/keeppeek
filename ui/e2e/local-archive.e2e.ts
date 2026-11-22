@@ -393,10 +393,21 @@ test('local archive survives restart and plays evicted media before restoring it
 		const deletion = page.getByRole('dialog', { name: 'Archive deletion preview' });
 		await expect(deletion).toContainText('1 selected');
 		await expect(deletion).toContainText(fixture.seededObjectId);
+		const beforeDeletion = await continuitySnapshot(live, fixture.url);
+		const startedAt = performance.now();
 		await deletion.getByRole('button', { name: 'Confirm archive deletion' }).click();
 		await expect(deletion).toContainText('Batch confirmed');
 		await deletion.getByRole('button', { name: 'Close', exact: true }).click();
 		await refreshUntil(archive, job, '· deleted');
+		evidence.transfers.push({
+			operation: 'delete archive replica',
+			elapsed_ms: performance.now() - startedAt,
+			object_bytes: fixture.seededObjectBytes
+		});
+		evidence.continuity.push({
+			operation: 'delete archive replica',
+			evidence: await expectContinuity(live, fixture.url, beforeDeletion)
+		});
 		evidence.timings.push(
 			await measureArchivePlayback(page, fixture.seededAtMs + 5000, 'local-after-archive-deletion')
 		);
