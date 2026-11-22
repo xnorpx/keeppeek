@@ -7,7 +7,7 @@ use anyhow::{Context, bail};
 /// Rejects zero timescales, overflowing arithmetic and positive starts beyond the track clock.
 pub(super) fn audio_start(
     normalized_start_ticks: i128,
-    rendering_offset: i32,
+    rendering_offset: i64,
     offset_ms: i32,
     timescale: u32,
 ) -> anyhow::Result<Option<u64>> {
@@ -104,7 +104,7 @@ mod tests {
             (5, 0, -6),
             (5, -10, 0),
             (5, 10, -6),
-            (100, i32::MIN, 0),
+            (100, i64::from(i32::MIN), 0),
         ] {
             assert_eq!(
                 audio_start(start, composition, offset_ms, 1_000).unwrap(),
@@ -129,7 +129,7 @@ mod tests {
         assert!(audio_start(i128::from(u64::MAX), 1, 0, 1_000).is_err());
         assert!(audio_start(i128::from(u64::MAX) + 1, 0, 0, 1_000).is_err());
         assert!(audio_start(i128::MAX, 0, i32::MAX, u32::MAX).is_err());
-        assert!(audio_start(i128::MAX, i32::MAX, 0, 1_000).is_err());
+        assert!(audio_start(i128::MAX, i64::from(i32::MAX), 0, 1_000).is_err());
         assert!(audio_start(i128::MIN, 0, i32::MIN, u32::MAX).is_err());
     }
 
