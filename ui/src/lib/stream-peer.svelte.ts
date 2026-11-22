@@ -421,6 +421,10 @@ export class LivePeer {
 				} catch (error) {
 					if (track.subscribed && timingChanged) {
 						await this.restoreTimingPair(plan, track);
+					} else if (timingChanged && this.#peer) {
+						await this.unsubscribeTrack(plan.cameraId, track.trackId).catch((cleanupError) =>
+							console.warn('Unable to release an unconfirmed preview', cleanupError)
+						);
 					}
 					throw error;
 				}
@@ -439,6 +443,7 @@ export class LivePeer {
 			true
 		)
 			.then(() => {
+				if (!this.#desiredPlans.includes(plan)) return;
 				this.#desiredPlans = this.#desiredPlans.map((item) =>
 					item === plan
 						? {
@@ -657,7 +662,9 @@ export class LivePeer {
 			)
 				throw error;
 			const saved = { ...plan, variantId: undefined, liveAudioPreviewOffsetMs: undefined };
-			await this.subscribeTrack(plan.cameraId, id, saved.quality);
+			// The preview may have admitted video before audio failed. Replace the same
+			// subscription in place so its MID retains the existing sender clock.
+			await this.subscribeTrack(plan.cameraId, id, saved.quality, null, true, undefined, true);
 			if (owner === this.#peer && this.#desiredPlans.includes(plan)) {
 				this.#desiredPlans = this.#desiredPlans.map((item) => (item === plan ? saved : item));
 				this.replaceTrack(plan.cameraId, { restoredSavedTiming: true });
@@ -728,7 +735,6 @@ export class LivePeer {
 			throw new Error('Server returned an unexpected media subscription response.');
 		}
 		if (confirmTiming && !timingConfirmed(result.value.liveAudio, liveAudioPreviewOffsetMs)) {
-			if (!replacement) await this.unsubscribeTrack(cameraId, subscriptionId);
 			throw new Error('The server did not apply the video timing preview.');
 		}
 		this.applyVideoAdmission(
@@ -741,9 +747,7 @@ export class LivePeer {
 		);
 		await this.completeTimingAdmission(
 			cameraId,
-			subscriptionId,
 			variantId,
-			replacement,
 			liveAudioPreviewOffsetMs,
 			confirmTiming
 		);
@@ -751,35 +755,27 @@ export class LivePeer {
 
 	private async completeTimingAdmission(
 		cameraId: string,
-		subscriptionId: string,
 		variantId: 'main' | 'sub' | null,
-		replacement: boolean,
 		liveAudioPreviewOffsetMs: number | undefined,
 		confirmTiming: boolean
 	) {
-		try {
-			if (liveAudioPreviewOffsetMs !== undefined) {
-				if (variantId === null) throw new Error('Choose a video profile for timing preview.');
-				await this.waitForPreviewProfile(cameraId, variantId);
-			}
-			await this.subscribeAudio(
-				cameraId,
-				this.track(cameraId)?.audioTrackId ?? `audio-${cameraId}`,
-				variantId,
-				liveAudioPreviewOffsetMs,
-				confirmTiming
-			);
-			this.replaceTrack(cameraId, {
-				liveAudioPreviewOffsetMs,
-				timingReconciliationNeeded: false,
-				restoredSavedTiming: false
-			});
-			this.followActiveAudio(cameraId);
-		} catch (error) {
-			if (!replacement && liveAudioPreviewOffsetMs !== undefined)
-				await this.unsubscribeTrack(cameraId, subscriptionId);
-			throw error;
+		if (liveAudioPreviewOffsetMs !== undefined) {
+			if (variantId === null) throw new Error('Choose a video profile for timing preview.');
+			await this.waitForPreviewProfile(cameraId, variantId);
 		}
+		await this.subscribeAudio(
+			cameraId,
+			this.track(cameraId)?.audioTrackId ?? `audio-${cameraId}`,
+			variantId,
+			liveAudioPreviewOffsetMs,
+			confirmTiming
+		);
+		this.replaceTrack(cameraId, {
+			liveAudioPreviewOffsetMs,
+			timingReconciliationNeeded: false,
+			restoredSavedTiming: false
+		});
+		this.followActiveAudio(cameraId);
 	}
 
 	private applyVideoAdmission(
@@ -857,9 +853,17 @@ export class LivePeer {
 		const variant =
 			source?.audio?.variants.find(
 				(item) => item.variantId === (videoVariant ?? this.track(cameraId)?.activeStream)
-			) ?? (!confirmTiming ? source?.audio?.variants[0] : undefined);
+			) ?? (previewOffset === undefined ? source?.audio?.variants[0] : undefined);
 		if (!variant) {
-			if (confirmTiming) throw new Error('This stream has no matching live audio profile.');
+			if (previewOffset !== undefined)
+				throw new Error('This stream has no matching live audio profile.');
+			if (confirmTiming) {
+				await this.request({
+					case: 'unsubscribe',
+					value: create(UnsubscribeSchema, { subscriptionIds: [subscriptionId] })
+				});
+				this.releaseAudio(cameraId);
+			}
 			return;
 		}
 		const previousVariant = this.track(cameraId)?.audioVariantId;

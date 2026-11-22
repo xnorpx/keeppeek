@@ -44,6 +44,8 @@ class FakeDataChannel {
 	static rejectUnsubscribe = false;
 	holdUnsubscribe = false;
 	releaseUnsubscribe: (() => void) | undefined;
+	holdSavedVideo = false;
+	releaseSavedVideo: (() => void) | undefined;
 	holdCameraCommand = false;
 	static subscriptionQuality: LiveQualityDiagnostics | undefined;
 	static selectedVariant: string | null = null;
@@ -133,6 +135,14 @@ class FakeDataChannel {
 		if (command.case === 'unsubscribe' && this.holdUnsubscribe) {
 			this.holdUnsubscribe = false;
 			this.releaseUnsubscribe = deliver;
+		} else if (
+			this.holdSavedVideo &&
+			command.case === 'subscribeMedia' &&
+			command.value.kind === MediaKind.VIDEO &&
+			command.value.liveAudioPreviewOffsetMs === undefined
+		) {
+			this.holdSavedVideo = false;
+			this.releaseSavedVideo = deliver;
 		} else {
 			deliver();
 		}
@@ -141,6 +151,10 @@ class FakeDataChannel {
 	open(): void {
 		this.readyState = 'open';
 		this.onopen?.();
+		this.publishCapabilities();
+	}
+
+	publishCapabilities(): void {
 		if (this.label !== 'control-channel' || FakeDataChannel.suppressCapabilities) return;
 		const capabilities = create(ControlEnvelopeSchema, {
 			message: {
@@ -375,6 +389,64 @@ describe('LivePeer', () => {
 		await peer.close();
 	});
 
+	it('applies a queued deactivation after an older preview rollback completes', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'timing',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		FakeDataChannel.audioVariants = ['sub'];
+		const peer = new LivePeer();
+		const saved = { cameraId: 'front-door', quality: 'auto' as const };
+		await peer.configure([saved]);
+		const channel = FakePeerConnection.latest!.channels[0];
+		channel.holdSavedVideo = true;
+		const rejected = expect(
+			peer.configure([{ ...saved, variantId: 'main', liveAudioPreviewOffsetMs: -80 }])
+		).rejects.toThrow('matching live audio');
+		await vi.waitFor(() => expect(channel.releaseSavedVideo).toBeDefined());
+		const deactivate = peer.configure([{ ...saved, active: false }]);
+		channel.releaseSavedVideo!();
+		await rejected;
+		await deactivate;
+		expect(peer.track('front-door')?.subscribed).toBe(false);
+		expect(channel.unsubscribed.flat()).toContain('camera-0');
+		await peer.close();
+	});
+
+	it.each([false, true])(
+		'restores saved timing with fallback or removed audio, video only %s',
+		async (videoOnly) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			api.createSession.mockResolvedValue({
+				session_id: 'timing',
+				answer: { type: 'answer', sdp: 'v=0' }
+			});
+			api.deleteSession.mockResolvedValue(undefined);
+			FakeDataChannel.audioVariants = ['sub'];
+			const peer = new LivePeer();
+			await peer.configure([
+				{ cameraId: 'front-door', quality: 'auto', variantId: 'sub', liveAudioPreviewOffsetMs: -80 }
+			]);
+			const channel = FakePeerConnection.latest!.channels[0];
+			if (videoOnly) {
+				FakeDataChannel.audioVariants = [];
+				channel.publishCapabilities();
+			}
+			await peer.configure([{ cameraId: 'front-door', quality: 'auto', variantId: 'main' }]);
+			expect(peer.track('front-door')).toMatchObject({
+				subscribed: true,
+				liveAudioPreviewOffsetMs: undefined,
+				audioVariantId: videoOnly ? undefined : 'sub',
+				timingReconciliationNeeded: false
+			});
+			if (videoOnly) expect(channel.unsubscribed.flat()).toContain('audio-0');
+			expect(channel.unsubscribed.flat()).not.toContain('camera-0');
+			await peer.close();
+		}
+	);
+
 	it('restores saved timing or cancels a pending preview when recovering a disconnected peer', async () => {
 		for (const cancel of [false, true]) {
 			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
@@ -406,7 +478,9 @@ describe('LivePeer', () => {
 				})
 			);
 			expect(peer.sessionId).toBe('after');
-			const requests = FakePeerConnection.latest!.channels[0].subscriptions;
+			const recoveredChannel = FakePeerConnection.latest!.channels[0];
+			expect(recoveredChannel.unsubscribed.flat()).not.toContain('camera-0');
+			const requests = recoveredChannel.subscriptions;
 			expect(requests.some((request) => request.liveAudioPreviewOffsetMs === -80)).toBe(!cancel);
 			await peer.close();
 		}
