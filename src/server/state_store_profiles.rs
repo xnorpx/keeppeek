@@ -13,7 +13,7 @@ use std::{
 };
 #[path = "state_store_profiles_application.rs"]
 mod application;
-pub(in crate::server) use application::{ProfileApplicationQueue, confirmed_privacy};
+pub(in crate::server) use application::{ProfileApplicationQueue, apply_confirmed_privacy};
 #[path = "state_store_profiles_identity.rs"]
 mod identity;
 #[path = "state_store_profiles_observed.rs"]
@@ -1555,7 +1555,8 @@ pub(in crate::server) fn publish_status_event(state: &ServerState, updated_ms: u
     if keys.is_empty() {
         return;
     }
-    let shared_status = std::sync::Arc::new(status.clone());
+    let shared_status =
+        std::sync::Arc::new(application::observed_status(state, &status).into_owned());
     let generation = std::cell::OnceCell::new();
     let events = keys
         .into_iter()
@@ -1571,18 +1572,21 @@ pub(in crate::server) fn publish_status_event(state: &ServerState, updated_ms: u
                     revision: registry.revision,
                     kind: WatchEventKind::ProfileHeader {
                         entry: active_entry(&registry),
-                        degraded: observed::degraded_camera_ids(&registry, &status),
+                        degraded: observed::degraded_camera_ids(&registry, &shared_status),
                     },
                 };
             }
             let entry = observed::part_index(&key).map_or_else(
-                || status_entry(status.clone()).map_err(|error| Error::Storage(error.to_string())),
+                || {
+                    status_entry((*shared_status).clone())
+                        .map_err(|error| Error::Storage(error.to_string()))
+                },
                 |index| {
                     let generation = generation
-                        .get_or_init(|| observed::generation(&status))
+                        .get_or_init(|| observed::generation(&shared_status))
                         .as_ref()
                         .map_err(Clone::clone)?;
-                    observed::part_entry(&status, index, generation)
+                    observed::part_entry(&shared_status, index, generation)
                 },
             );
             WatchEvent {
@@ -2952,6 +2956,35 @@ mod tests {
                 cameras: BTreeMap::from([(live.camera_id.clone(), live)]),
             };
         (fixture, profiles, returned)
+    }
+
+    #[test]
+    fn completion_fence_changes_on_same_identity_recording_mode_edit() {
+        let fixture = Fixture::new();
+        let ip = "192.0.2.23".parse().unwrap();
+        let mut definition = camera_config(ip);
+        fixture.add_camera(&definition);
+        let registry = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        let ids = config::load_camera_profile_identities(&fixture.config_path()).unwrap();
+        let current = || {
+            application::camera_fingerprint(&config::load_config(&fixture.config_path()).unwrap())
+                .unwrap()
+        };
+        let before = current();
+        definition.recording_mode =
+            if definition.recording_mode == crate::cameras::CameraRecordingMode::Main {
+                crate::cameras::CameraRecordingMode::Sub
+            } else {
+                crate::cameras::CameraRecordingMode::Main
+            };
+        fixture.add_camera(&definition);
+        let after = current();
+        let updated = config::load_config(&fixture.config_path()).unwrap();
+        assert_eq!(updated.runtime_profiles, registry);
+        assert_eq!(updated.camera_profile_identities().unwrap(), ids);
+        assert_ne!(before, after);
     }
 
     #[test]

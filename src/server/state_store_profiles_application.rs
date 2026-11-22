@@ -11,7 +11,7 @@ struct Desired {
 pub(in crate::server) struct ProfileApplicationQueue {
     next: Option<Desired>,
     running: bool,
-    stalled: bool,
+    stalled_revision: Option<u64>,
 }
 
 // Called after durable persistence and pending publication, under the config update lock.
@@ -34,14 +34,10 @@ pub(super) fn schedule(
         camera_ids,
     });
     if queue.running {
-        let stalled = queue.stalled;
-        drop(queue);
-        if stalled {
-            report_failure(
-                state,
-                registry,
-                "Camera runtime has not acknowledged the preceding transition",
-            );
+        if queue.stalled_revision.is_some() {
+            queue.stalled_revision = Some(registry.revision);
+            drop(queue);
+            publish_status_event(state, now_ms());
         }
         return;
     }
@@ -65,7 +61,7 @@ fn report_failure(state: &ServerState, registry: &ProfileRegistry, reason: &str)
 
 fn run(state: &ServerState) {
     loop {
-        let (desired, response) = {
+        let (desired, submitted_config, response) = {
             // Serialize submission with camera edits. Never wait on the recorder under this lock.
             let _guard = state
                 .config_update
@@ -75,13 +71,13 @@ fn run(state: &ServerState) {
                 .profile_application
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            queue.stalled = false;
+            queue.stalled_revision = None;
             let Some(desired) = queue.next.take() else {
                 queue.running = false;
                 return;
             };
             drop(queue);
-            let identities = match current_identities(state, &desired) {
+            let (identities, submitted_config) = match current_identities(state, &desired) {
                 Ok(Some(ids)) => ids,
                 Ok(None) => continue,
                 Err(error) => {
@@ -95,7 +91,7 @@ fn run(state: &ServerState) {
                 .expect("application worker requires camera runtime");
             let response =
                 runtime.submit_runtime_profiles(desired.registry.clone(), Some(identities));
-            (desired, response)
+            (desired, submitted_config, response)
         };
         let result = response.and_then(|response| {
             match response.recv_timeout(crate::keeppeek::CAMERA_CONTROL_TIMEOUT) {
@@ -113,18 +109,14 @@ fn run(state: &ServerState) {
                             .profile_application
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        queue.stalled = true;
-                        let registry = queue
-                            .next
-                            .as_ref()
-                            .map_or(&desired.registry, |next| &next.registry)
-                            .clone();
-                        drop(queue);
-                        report_failure(
-                            state,
-                            &registry,
-                            "Camera runtime did not acknowledge the requested transition in time",
+                        queue.stalled_revision = Some(
+                            queue
+                                .next
+                                .as_ref()
+                                .map_or(desired.registry.revision, |next| next.registry.revision),
                         );
+                        drop(queue);
+                        publish_status_event(state, now_ms());
                     }
                     // Keep only one command in flight. A late reply can recover; a new desired
                     // selection replaces the queued selection even while the recorder is stalled.
@@ -138,11 +130,19 @@ fn run(state: &ServerState) {
             .config_update
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .profile_application
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stalled_revision = None;
         match current_identities(state, &desired) {
-            Ok(Some(ids)) => {
+            Ok(Some((_, current_config))) if current_config != submitted_config => {
+                // The camera edit owns newer observations even when profile and source IDs match.
+                publish_status_event(state, now_ms());
+            }
+            Ok(Some((ids, _))) => {
                 let result = result.and_then(|applications| {
-                    let privacy = confirmed_privacy(state, &desired.registry, &ids, &applications)?;
-                    state.privacy.replace_profile_overrides(privacy)?;
+                    apply_confirmed_privacy(state, &desired.registry, &ids, &applications, None)?;
                     Ok(applications)
                 });
                 match result {
@@ -168,7 +168,7 @@ fn run(state: &ServerState) {
 fn current_identities(
     state: &ServerState,
     desired: &Desired,
-) -> anyhow::Result<Option<crate::keeppeek::CameraProfileIds>> {
+) -> anyhow::Result<Option<(crate::keeppeek::CameraProfileIds, [u8; 32])>> {
     if state
         .runtime_profiles
         .read()
@@ -188,17 +188,49 @@ fn current_identities(
         config.runtime_profiles == desired.registry && ids == desired.camera_ids,
         "Camera configuration changed during application. Reapply the current profile to retry."
     );
-    Ok(Some(crate::keeppeek::CameraProfileIds::new(ids)?))
+    Ok(Some((
+        crate::keeppeek::CameraProfileIds::new(ids)?,
+        camera_fingerprint(&config)?,
+    )))
 }
 
-pub(in crate::server) fn confirmed_privacy(
+pub(super) fn camera_fingerprint(config: &Config) -> anyhow::Result<[u8; 32]> {
+    use sha2::Digest as _;
+    let cameras: BTreeMap<_, _> = config.camera_configurations()?.into_iter().collect();
+    Ok(sha2::Sha256::digest(serde_json::to_vec(&cameras)?).into())
+}
+
+/// Report a delayed command reply separately from the camera loop's own observations.
+pub(super) fn observed_status<'a>(
+    state: &ServerState,
+    status: &'a crate::profiles::RuntimeProfileStatus,
+) -> std::borrow::Cow<'a, crate::profiles::RuntimeProfileStatus> {
+    if state
+        .profile_application
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .stalled_revision
+        != Some(status.revision)
+    {
+        return std::borrow::Cow::Borrowed(status);
+    }
+    let mut observation = status.clone();
+    for application in observation.cameras.values_mut() {
+        if application.state != RuntimeApplicationState::Degraded {
+            application.state = RuntimeApplicationState::Degraded;
+            application.reason = Some("Camera runtime acknowledgment timed out".into());
+        }
+    }
+    std::borrow::Cow::Owned(observation)
+}
+
+pub(in crate::server) fn apply_confirmed_privacy(
     state: &ServerState,
     registry: &ProfileRegistry,
     ids: &crate::keeppeek::CameraProfileIds,
     applications: &[CameraRuntimeApplication],
-) -> anyhow::Result<BTreeMap<String, bool>> {
-    let held = state.privacy.profile_overrides_snapshot();
-    let mut next = ids.privacy_overrides(registry);
+    stopped: Option<IpAddr>,
+) -> anyhow::Result<()> {
     let current = state
         .runtime_profile_status
         .read()
@@ -207,6 +239,8 @@ pub(in crate::server) fn confirmed_privacy(
         current.revision == registry.revision,
         "runtime profile transition was superseded"
     );
+    let held = state.privacy.profile_overrides_snapshot();
+    let mut next = ids.privacy_overrides(registry);
     let applied: BTreeSet<_> = applications
         .iter()
         .filter(|application| {
@@ -223,5 +257,61 @@ pub(in crate::server) fn confirmed_privacy(
             next.insert(source, true);
         }
     }
-    Ok(next)
+    if let Some(stopped) = stopped {
+        next.remove(&stopped.to_string());
+    }
+    state.privacy.replace_profile_overrides(next)?;
+    drop(current);
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delayed_acknowledgment_projects_a_timeout_without_replacing_the_recorder_observation() {
+        let state = ServerState::empty();
+        let policy = crate::profiles::resolve_camera_policy(
+            &crate::profiles::BaseCameraPolicy {
+                available: true,
+                recording_mode: crate::cameras::CameraRecordingMode::Main,
+                privacy_enforced: false,
+                notifications_enabled: true,
+            },
+            None,
+        );
+        let camera = CameraRuntimeApplication {
+            camera_id: "camera".into(),
+            state: RuntimeApplicationState::Applied,
+            policy,
+            reason: None,
+        };
+        let mut actual = crate::profiles::RuntimeProfileStatus {
+            revision: 4,
+            cameras: BTreeMap::from([(camera.camera_id.clone(), camera.clone())]),
+            ..Default::default()
+        };
+        state.profile_application.lock().unwrap().stalled_revision = Some(4);
+        let shown = observed_status(&state, &actual);
+        assert_eq!(
+            shown.cameras["camera"].state,
+            RuntimeApplicationState::Degraded
+        );
+        assert_eq!(actual.cameras["camera"], camera);
+        drop(shown);
+        let failed = actual.cameras.get_mut("camera").unwrap();
+        failed.state = RuntimeApplicationState::Degraded;
+        failed.reason = Some("recording stopped".into());
+        assert_eq!(
+            observed_status(&state, &actual).cameras["camera"]
+                .reason
+                .as_deref(),
+            Some("recording stopped")
+        );
+        actual
+            .cameras
+            .insert(camera.camera_id.clone(), camera.clone());
+        state.profile_application.lock().unwrap().stalled_revision = None;
+        assert_eq!(observed_status(&state, &actual).cameras["camera"], camera);
+    }
 }

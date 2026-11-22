@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { StateEntry } from './proto/webrtc_pb';
+import { StateStoreErrorCode, type StateEntry } from './proto/webrtc_pb';
+import { StateStoreRequestError } from './state-store-error';
 import { RuntimeProfilesControlClient } from './control-client-runtime-profiles';
 import {
 	runtimeProfileCompactRegistrySchema,
@@ -145,47 +146,63 @@ describe('RuntimeProfilesControlClient', () => {
 		);
 	});
 
-	it('saves and reads 32 maximum-length IDs and UTF-8 names inside a compact registry', async () => {
-		const profiles = Object.fromEntries(
-			Array.from({ length: 32 }, (_, i) => {
-				const id = 'p'.repeat(126) + String(i).padStart(2, '0');
-				const name = '界'.repeat(26) + String(i).padStart(2, '0');
-				expect(new TextEncoder().encode(name).byteLength).toBe(80);
-				return [id, { id, name, revision: '0', cameras: {} }];
-			})
-		);
-		let stored = entry(
-			'registry',
-			runtimeProfilesRegistrySchema,
-			{ revision: '0', active_profile_id: null, profiles: {} },
-			0n
-		);
-		const put = vi.fn(
-			async (
-				_namespace: string,
-				key: string,
-				input: { schema: string; value: Record<string, unknown> }
-			) => {
-				const { draft_id: _draft, ...value } = input.value;
-				stored = entry(key, input.schema, { ...value, revision: '1' }, 1n);
-				return stored;
+	it.each([false, true])(
+		'saves 32 maximum-length profiles with legacy recorder %s',
+		async (legacy) => {
+			const profiles = Object.fromEntries(
+				Array.from({ length: 32 }, (_, i) => {
+					const id = 'p'.repeat(126) + String(i).padStart(2, '0');
+					const name = '界'.repeat(26) + String(i).padStart(2, '0');
+					expect(new TextEncoder().encode(name).byteLength).toBe(80);
+					return [id, { id, name, revision: '0', cameras: {} }];
+				})
+			);
+			let stored = entry(
+				'registry',
+				runtimeProfilesRegistrySchema,
+				{ revision: '0', active_profile_id: null, profiles: {} },
+				0n
+			);
+			const put = vi.fn(
+				async (
+					_namespace: string,
+					key: string,
+					input: { schema: string; value: Record<string, unknown>; expectedRevision: bigint }
+				) => {
+					if (legacy && input.schema === runtimeProfileCompactRegistrySchema)
+						throw new StateStoreRequestError('Unsupported schema', {
+							namespace: runtimeProfilesNamespace,
+							key,
+							code: StateStoreErrorCode.SCHEMA_INVALID
+						});
+					const { draft_id: _draft, ...value } = input.value;
+					stored = entry(key, input.schema, { ...value, revision: '1' }, 1n);
+					return stored;
+				}
+			);
+			const client = new RuntimeProfilesControlClient({
+				get: async () => stored,
+				put
+			} as unknown as ControlClientStateStore);
+			const accepted = await client.saveRegistry({
+				revision: '0',
+				active_profile_id: null,
+				profiles
+			});
+			expect(stored.schema).toBe(
+				legacy ? runtimeProfilesRegistrySchema : runtimeProfileCompactRegistrySchema
+			);
+			expect(put.mock.calls.map(([, , input]) => input.expectedRevision)).toEqual(
+				legacy ? [0n, 0n] : [0n]
+			);
+			if (legacy)
+				expect(put.mock.calls[0][2].value.draft_id).toBe(put.mock.calls[1][2].value.draft_id);
+			expect(Object.keys(accepted.profiles)).toEqual(Object.keys(profiles));
+			for (const [id, profile] of Object.entries(accepted.profiles)) {
+				expect(profile).toEqual({ ...profiles[id], revision: '1' });
 			}
-		);
-		const client = new RuntimeProfilesControlClient({
-			get: async () => stored,
-			put
-		} as unknown as ControlClientStateStore);
-		const accepted = await client.saveRegistry({
-			revision: '0',
-			active_profile_id: null,
-			profiles
-		});
-		expect(stored.schema).toBe(runtimeProfileCompactRegistrySchema);
-		expect(Object.keys(accepted.profiles)).toEqual(Object.keys(profiles));
-		for (const [id, profile] of Object.entries(accepted.profiles)) {
-			expect(profile).toEqual({ ...profiles[id], revision: '1' });
 		}
-	});
+	);
 
 	it('reports an asynchronous registry watch read failure to its owner', async () => {
 		let notify: (entries: readonly StateEntry[]) => void = () => {};

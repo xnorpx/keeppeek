@@ -228,11 +228,28 @@ export class RuntimeProfilesControlClient {
 					)
 				}
 			: value;
-		await this.stateStore.put(runtimeProfilesNamespace, runtimeProfilesRegistryKey, {
-			schema: compact ? runtimeProfileCompactRegistrySchema : runtimeProfilesRegistrySchema,
-			value: payload as JsonObject,
-			expectedRevision: BigInt(registry.revision)
-		});
+		const put = (schema: string, document: JsonObject) =>
+			this.stateStore.put(runtimeProfilesNamespace, runtimeProfilesRegistryKey, {
+				schema,
+				value: document,
+				expectedRevision: BigInt(registry.revision)
+			});
+		if (compact) {
+			try {
+				await put(runtimeProfileCompactRegistrySchema, payload as JsonObject);
+			} catch (cause) {
+				if (
+					!(cause instanceof StateStoreRequestError) ||
+					cause.code !== StateStoreErrorCode.SCHEMA_INVALID ||
+					cause.namespace !== runtimeProfilesNamespace ||
+					cause.key !== runtimeProfilesRegistryKey
+				)
+					throw cause;
+				await put(runtimeProfilesRegistrySchema, value as JsonObject);
+			}
+		} else {
+			await put(runtimeProfilesRegistrySchema, value as JsonObject);
+		}
 		return this.getRegistry();
 	}
 
