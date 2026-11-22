@@ -78,6 +78,42 @@ fn caller_deadline_rejects_before_retirement_mutation() -> anyhow::Result<()> {
 }
 
 #[test]
+fn refused_final_survivor_check_preserves_the_recoverable_staged_bytes() -> anyhow::Result<()> {
+    let fixture = Fixture::new()?;
+    let receipt = fixture.prepare()?;
+    let error = receipt
+        .finish_checked(|| -> anyhow::Result<()> { anyhow::bail!("survivor changed") })
+        .unwrap_err();
+    assert_eq!(error.to_string(), "survivor changed");
+    assert_eq!(receipt.directory.read(LEAF)?, b"retained");
+    assert!(read_receipt(&receipt.directory, STAGED)?.is_some());
+    drop(receipt);
+    let resumed = fixture.prepare()?;
+    resumed.finish_checked(|| Ok(()))?;
+    assert!(absent(&resumed.directory, LEAF)?);
+    drop(resumed);
+    fixture.close()
+}
+
+#[test]
+fn archive_retirement_honors_long_configured_verification_deadlines() -> anyhow::Result<()> {
+    let fixture = Fixture::new()?;
+    let deadline = Instant::now() + Duration::from_secs(900);
+    let receipt = Retirement::prepare(
+        &fixture.root,
+        &fixture.key,
+        &fixture.file_identity,
+        8,
+        fixture.digest,
+        &fixture.operation,
+        deadline,
+    )?;
+    assert_eq!(receipt.deadline, deadline);
+    receipt.finish()?;
+    fixture.close()
+}
+
+#[test]
 fn caller_deadline_allows_exact_retirement() -> anyhow::Result<()> {
     let fixture = Fixture::new()?;
     fixture.root.retire_owned_until(

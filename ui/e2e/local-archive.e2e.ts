@@ -43,9 +43,10 @@ async function routeIsolatedBackend(context: BrowserContext, origin: string, bac
 	);
 }
 
-async function selectSeededRecording(archive: Locator, objectId: string) {
-	await archive.getByRole('button', { name: 'Load archive source volumes' }).click();
-	const sources = archive.getByRole('combobox', { name: 'Source volume', exact: true });
+async function selectSeededRecording(archive: Locator, objectId: string): Promise<boolean> {
+	const picker = archive.getByRole('region', { name: 'Copy media to archive', exact: true });
+	await picker.getByRole('button', { name: 'Load archive source volumes' }).click();
+	const sources = picker.getByRole('combobox', { name: 'Source volume', exact: true });
 	await expect(sources.locator('option').nth(1)).toBeAttached();
 	const volumes = await sources
 		.locator('option')
@@ -55,29 +56,29 @@ async function selectSeededRecording(archive: Locator, objectId: string) {
 				.filter(Boolean)
 		);
 	expect(volumes.length).toBeGreaterThan(0);
-	for (const volume of volumes.slice(0, 16)) {
+	for (const volume of volumes) {
 		await sources.selectOption(volume);
-		const load = archive.getByRole('button', { name: 'Load eligible media' });
+		const load = picker.getByRole('button', { name: 'Load eligible media' });
 		await load.click();
-		await expect(load).toBeEnabled();
-		const objects = archive.getByRole('combobox', { name: 'Media object', exact: true });
-		if (!(await objects.count())) continue;
-		const value = await objects
-			.locator('option')
-			.evaluateAll(
-				(options, id) =>
-					options
-						.find(
-							(option) => option instanceof HTMLOptionElement && option.value.endsWith(`:${id}`)
-						)
-						?.getAttribute('value'),
-				objectId
-			);
-		if (!value) continue;
-		await objects.selectOption(value);
-		return value.slice(value.indexOf(':') + 1);
+		for (let page = 0; page < 16; page++) {
+			await expect(load).toBeEnabled();
+			await expect(picker.getByRole('alert')).toHaveCount(0);
+			const objects = picker.getByRole('combobox', { name: 'Media object', exact: true });
+			const option = objects.getByRole('option').filter({ hasText: objectId });
+			if (await option.count()) {
+				const value = await option.getAttribute('value');
+				if (!value?.endsWith(`:${objectId}`))
+					throw new Error('Unexpected archive candidate identity');
+				await objects.selectOption(value);
+				return true;
+			}
+			const next = picker.getByRole('button', { name: 'Next media page' });
+			if (!(await next.count())) break;
+			if (page === 15) throw new Error('Isolated fixture exceeded 16 archive inventory pages');
+			await next.click();
+		}
 	}
-	throw new Error('No seeded finalized recording appeared in the isolated catalog.');
+	return false;
 }
 
 async function refreshUntil(archive: Locator, job: Locator, text: string) {
@@ -85,7 +86,7 @@ async function refreshUntil(archive: Locator, job: Locator, text: string) {
 	await expect(async () => {
 		await archive.getByRole('button', { name: 'Refresh archive jobs' }).click();
 		latest = await job.innerText();
-		expect(latest.includes(text) || latest.includes('Ã‚Â· failed')).toBe(true);
+		expect(latest.includes(text) || latest.includes('· failed')).toBe(true);
 	}).toPass({ timeout: 30_000, intervals: [250, 500, 1000] });
 	expect(latest).toContain(text);
 }
@@ -236,11 +237,12 @@ async function copyAndEvict(
 	await live.goto('/');
 	const archive = page.getByRole('region', { name: 'Local archive', exact: true });
 	const baseline = await continuitySnapshot(live, fixture.url);
-	const objectId = await selectSeededRecording(archive, fixture.seededObjectId);
+	const objectId = fixture.seededObjectId;
+	expect(await selectSeededRecording(archive, objectId)).toBe(true);
 	const startedAt = performance.now();
 	await archive.getByRole('button', { name: 'Queue archive copy' }).click();
 	const job = archive.getByRole('article').first();
-	await refreshUntil(archive, job, 'Ã‚Â· ready');
+	await refreshUntil(archive, job, '· ready');
 	evidence.transfers.push({
 		operation: 'copy',
 		elapsed_ms: performance.now() - startedAt,
@@ -398,18 +400,33 @@ test('local archive survives restart and plays evicted media before restoring it
 		await deletion.getByRole('button', { name: 'Confirm archive deletion' }).click();
 		await expect(deletion).toContainText('Batch confirmed');
 		await deletion.getByRole('button', { name: 'Close', exact: true }).click();
-		await refreshUntil(archive, job, '· deleted');
+		const deletionCompleted = process.platform === 'win32';
+		const outcome = deletionCompleted
+			? 'delete archive replica'
+			: 'retain archive with mutable primary';
+		await refreshUntil(
+			archive,
+			job,
+			deletionCompleted
+				? '· deleted'
+				: 'Archive retained. The primary needs filesystem-enforced write protection'
+		);
 		evidence.transfers.push({
-			operation: 'delete archive replica',
+			operation: outcome,
 			elapsed_ms: performance.now() - startedAt,
 			object_bytes: fixture.seededObjectBytes
 		});
 		evidence.continuity.push({
-			operation: 'delete archive replica',
+			operation: outcome,
 			evidence: await expectContinuity(live, fixture.url, beforeDeletion)
 		});
+		expect(await selectSeededRecording(archive, fixture.seededObjectId)).toBe(false);
 		evidence.timings.push(
-			await measureArchivePlayback(page, fixture.seededAtMs + 5000, 'local-after-archive-deletion')
+			await measureArchivePlayback(
+				page,
+				fixture.seededAtMs + 5000,
+				deletionCompleted ? 'local-after-archive-deletion' : 'local-after-blocked-deletion'
+			)
 		);
 	} finally {
 		try {

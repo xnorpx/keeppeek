@@ -1684,7 +1684,9 @@ for age-based removal until the local worker completes a fresh verified readback
 The age-based selection requires a configured retention period. Each page is
 independent. `ArchiveResult.deletion_preview` (4) reports the target alias,
 job and object IDs, byte counts, known verification times and eligibility.
-The result includes the selected count and bytes and the next cursor.
+The result includes the selected count and bytes and the next cursor. A retention
+page with no eligible objects has an empty plan ID, revision and nonce. The client
+can continue browsing with the cursor without consuming an outstanding plan.
 An explicit job selection is available with indefinite retention.
 
 `ArchiveCommand.confirm_deletion` (10) requires the same Administrator,
@@ -1703,8 +1705,15 @@ and `acknowledged`. An item blocked before claiming requires a new preview.
 Each batch requires an explicit Administrator confirmation. A recording with
 an evicted primary requires successful restore first. A completed export with
 an expired or unavailable primary retains its archive copy.
+Windows holds a read handle that excludes writers through archive removal. On Linux,
+the surviving primary must already have fs-verity enabled. On a filesystem without
+enforced write protection, KeepPeek keeps both copies and reports the blocked deletion. The job reports
+`archive_primary_write_protection_required` when this prevents removal.
 The catalog retains an acknowledged deletion tombstone for that recording or export.
 Both automatic admission and the manual copy picker exclude its object identity.
+The picker sets `ListStorageObjects.archive_copy_candidates_only` (field 3). The
+catalog applies archive source eligibility before sorting and limiting the page.
+The default volume inventory continues to include retained primary objects.
 
 ## Guest evidence review
 

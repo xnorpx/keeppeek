@@ -9206,6 +9206,11 @@ impl ServerState {
         self
     }
 
+    pub(crate) fn with_configuration_update_lock(mut self, lock: Arc<Mutex<()>>) -> Self {
+        self.config_update = lock;
+        self
+    }
+
     pub(crate) fn configuration_update_lock(&self) -> Arc<Mutex<()>> {
         self.config_update.clone()
     }
@@ -12435,6 +12440,9 @@ fn save_runtime_settings(
                 "runtime configuration changed after this editor was opened; reload before applying the draft",
             ));
         }
+    }
+    if let Some(settings) = settings.storage.archive.as_ref() {
+        storage_archive::validate_claim_recovery(state, Some(settings))?;
     }
     storage_volumes::settings::validate_removals(
         state,

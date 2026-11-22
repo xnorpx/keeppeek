@@ -11,7 +11,19 @@ mod file;
 mod retirement;
 pub use file::OwnedFile;
 
+#[derive(Debug)]
+pub(crate) struct ArchiveSurvivorUnprotected;
+
+impl std::fmt::Display for ArchiveSurvivorUnprotected {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("archive deletion requires a write-protected surviving primary")
+    }
+}
+
+impl std::error::Error for ArchiveSurvivorUnprotected {}
+
 /// An opened directory and the identity that a binding must retain.
+
 pub struct Root {
     path: PathBuf,
     directory: Dir,

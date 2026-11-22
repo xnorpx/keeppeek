@@ -1461,7 +1461,7 @@ enum StorageObjectKind {
   STORAGE_OBJECT_KIND_THUMBNAIL = 3;
 }
 message StorageObject { StorageObjectKind kind = 1; string id = 2; }
-message ListStorageObjects { string volume_id = 1; StorageObject after = 2; }
+message ListStorageObjects { string volume_id = 1; StorageObject after = 2; bool archive_copy_candidates_only = 3; }
 message PreviewStorageMove {
   StorageObject object = 1;
   string destination_volume_id = 2;

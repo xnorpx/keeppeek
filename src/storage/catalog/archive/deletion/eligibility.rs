@@ -109,14 +109,20 @@ pub(super) async fn guards(
     if job.kind == "recording" {
         let mut rows = connection
             .query(
-                "SELECT protected,retention_pending,retention_error IS NOT NULL FROM recording_files WHERE id=?1",
+                "SELECT protected,retention_pending,retention_error IS NOT NULL,
+                 EXISTS(SELECT 1 FROM recording_retention_camera_work w WHERE w.camera_id=recording_files.source_id)
+                 FROM recording_files WHERE id=?1",
                 [job.recording_id.as_str()],
             )
             .await?;
         let Some(row) = rows.next().await? else {
             return Ok("primary_unavailable");
         };
-        if row.get::<i64>(0)? != 0 || row.get::<i64>(1)? != 0 || row.get::<i64>(2)? != 0 {
+        if row.get::<i64>(0)? != 0
+            || row.get::<i64>(1)? != 0
+            || row.get::<i64>(2)? != 0
+            || (!recovering_claim && row.get::<i64>(3)? != 0)
+        {
             return Ok("preservation_hold");
         }
         drop(rows);

@@ -95,7 +95,6 @@ pub enum Request {
     Pending {
         after: String,
         limit: u16,
-        reverify_legacy: bool,
     },
     Candidates {
         after: String,
@@ -388,14 +387,10 @@ async fn admission_source(
             operation: String::new(),
         });
     }
-    if value.kind == "recording" {
-        ensure_source_active(connection, &value.recording_id).await?;
-    }
     let mut rows = connection.query("SELECT a.destination_path,a.file_identity,a.bytes,a.digest,b.root,b.filesystem,b.root_identity,a.relative_key,a.operation
         FROM storage_volume_allocations a JOIN storage_volume_bindings b ON b.id=a.volume_id AND b.generation=a.generation
-        WHERE a.kind=?1 AND a.object_id=?2 AND a.state='published'
-        AND NOT EXISTS(SELECT 1 FROM storage_volume_moves m WHERE m.object_id=a.object_id AND m.kind=a.kind
-            AND (m.phase NOT IN('complete','cancelled') OR m.receipt_acknowledged=0))",
+        JOIN archive_copy_sources eligible ON eligible.operation=a.operation
+        WHERE a.kind=?1 AND a.object_id=?2",
         (value.kind.as_str(),value.recording_id.as_str())).await?;
     let row = rows
         .next()
@@ -442,10 +437,9 @@ async fn check_capacity(
 }
 
 async fn ensure_source_active(connection: &turso::Connection, id: &str) -> anyhow::Result<()> {
-    let mut rows=connection.query("SELECT 1 FROM recording_files r WHERE r.id=?1 AND r.finalized=1 AND r.cleanup_pending=0
-        AND NOT EXISTS(SELECT 1 FROM recording_maintenance_claims c WHERE c.recording_id=r.id AND c.active=1)
-        AND NOT EXISTS(SELECT 1 FROM storage_recording_retirements q WHERE q.recording_id=r.id AND q.complete=0)
-        AND NOT EXISTS(SELECT 1 FROM storage_recording_recovery q WHERE q.recording_id=r.id AND q.complete=0)", [id]).await?;
+    let mut rows = connection
+        .query("SELECT 1 FROM archive_active_recordings WHERE id=?1", [id])
+        .await?;
     anyhow::ensure!(
         rows.next().await?.is_some(),
         "recording is active, retiring or unavailable"
@@ -572,6 +566,21 @@ async fn retry(connection: &turso::Connection, id: &str) -> anyhow::Result<Reply
                 [id],
             )
             .await?;
+        connection
+            .execute(
+                "UPDATE archive_replicas SET error=NULL WHERE job_id=?1",
+                [id],
+            )
+            .await?;
+        return Ok(Reply::Job(load(connection, id).await?.map(Box::new)));
+    }
+    if job.state == "ready"
+        && job.kind != "probe"
+        && job.action.is_empty()
+        && job.verified_ms.is_none()
+        && job.pending_deletion().is_none()
+    {
+        connection.execute("UPDATE archive_reverification_retries SET attempts=0,retry_after_ms=0 WHERE job_id=?1", [id]).await?;
         connection
             .execute(
                 "UPDATE archive_replicas SET error=NULL WHERE job_id=?1",
@@ -781,12 +790,7 @@ async fn page(connection: &turso::Connection, after: &str, limit: u16) -> anyhow
     Ok(Reply::Jobs(values))
 }
 
-async fn pending(
-    connection: &turso::Connection,
-    after: &str,
-    limit: u16,
-    reverify_legacy: bool,
-) -> anyhow::Result<Reply> {
+async fn pending(connection: &turso::Connection, after: &str, limit: u16) -> anyhow::Result<Reply> {
     anyhow::ensure!(
         (1..=64).contains(&limit),
         "invalid archive pending page size"
@@ -794,10 +798,8 @@ async fn pending(
     let mut rows=connection.query("SELECT a.job_id FROM archive_replicas a WHERE a.job_id>?1 AND ((a.state IN('queued','copying','failed') AND a.cancelled=0)
         OR (a.kind='probe' AND (a.state='ready' OR (a.state='deleted' AND a.probe_acknowledged=0)))
         OR (a.state='ready' AND a.action!='') OR (a.state='cancelled' AND a.cleanup_acknowledged=0)
-        OR EXISTS(SELECT 1 FROM archive_deletion_items d WHERE d.job_id=a.job_id AND d.phase IN('queued','claimed','retired'))
-        OR (?3=1 AND a.kind!='probe' AND a.state='ready' AND a.action='' AND a.cancelled=0
-           AND NOT EXISTS(SELECT 1 FROM archive_verified_at v WHERE v.job_id=a.job_id AND v.version=a.version)))
-        ORDER BY a.job_id LIMIT ?2",turso::params![after,i64::from(limit),i64::from(reverify_legacy)]).await?;
+        OR EXISTS(SELECT 1 FROM archive_deletion_items d WHERE d.job_id=a.job_id AND d.phase IN('queued','claimed','retired')))
+        ORDER BY a.job_id LIMIT ?2",turso::params![after,i64::from(limit)]).await?;
     let mut ids = Vec::with_capacity(usize::from(limit));
     while let Some(row) = rows.next().await? {
         ids.push(row.get::<String>(0)?);

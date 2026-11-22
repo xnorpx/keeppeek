@@ -158,10 +158,10 @@ pub(super) fn reverify_legacy(
 pub(super) fn remove_replica(
     catalog: &RecordingCatalogHandle,
     job: &Job,
-    settings: &super::settings::Settings,
     work: &Work<'_>,
+    claim: impl Fn() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    use crate::storage::catalog::archive::deletion::{Policy, Request as Deletion};
+    use crate::storage::catalog::archive::deletion::Request as Deletion;
     let intent = job
         .deletion
         .as_ref()
@@ -176,24 +176,43 @@ pub(super) fn remove_replica(
     )?;
     let operation = ObjectId::parse(&intent.operation)?;
     if intent.phase != "retired" {
-        let mut primary = source_root(job)?.open_owned(
-            &job.source_relative_key,
-            &job.source_identity,
-            job.bytes,
-        )?;
-        let (bytes, identity, digest) =
-            primary.inspect_until(work.deadline, &mut |_| work.check())?;
-        anyhow::ensure!(
-            bytes == job.bytes && identity == job.source_identity && digest == job.digest,
-            "independent primary verification failed"
-        );
-        catalog.archive(Request::Deletion(Deletion::Claim {
-            job: job.id.clone(),
-            policy: Policy::from_settings(settings)?,
-        }))?;
+        let verify_primary = || -> anyhow::Result<_> {
+            let mut primary = source_root(job)?.open_owned(
+                &job.source_relative_key,
+                &job.source_identity,
+                job.bytes,
+            )?;
+            primary.validate_archive_survivor()?;
+            let (bytes, identity, digest) =
+                primary.inspect_until(work.deadline, &mut |_| work.check())?;
+            anyhow::ensure!(
+                bytes == job.bytes && identity == job.source_identity && digest == job.digest,
+                "independent primary verification failed"
+            );
+            Ok(primary)
+        };
+        let prepared = if intent.phase == "queued" {
+            let primary = verify_primary()?;
+            claim()?;
+            Some(primary)
+        } else {
+            None
+        };
         work.check()?;
-        primary.revalidate()?;
-        target.delete(&version, job.digest, operation, work)?;
+        target.delete_while_primary_is_verified(&version, job.digest, operation, work, || {
+            // A completed durable removal has no file left to unlink. Its receipt can be
+            // reconciled after a restart even if the primary has since gone offline.
+            let primary = if let Some(primary) = prepared {
+                primary
+            } else {
+                let primary = verify_primary()?;
+                claim()?;
+                primary
+            };
+            work.check()?;
+            primary.validate_archive_survivor()?;
+            Ok(primary)
+        })?;
         catalog.archive(Request::Deletion(Deletion::Retired(job.id.clone())))?;
     }
     target.acknowledge_delete(&version, job.digest, operation, work)?;

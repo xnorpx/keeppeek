@@ -64,6 +64,7 @@ export async function measureArchivePlayback(
 		| 'archive-repeat'
 		| 'local-restored'
 		| 'local-after-archive-deletion'
+		| 'local-after-blocked-deletion'
 ) {
 	await page.goto(
 		`/keep?camera=${encodeURIComponent(cardSourceIds[0])}&stream=sub&at=${moment}&date=${new Date(moment).toISOString().slice(0, 10)}`

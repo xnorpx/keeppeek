@@ -211,6 +211,7 @@ fn confirmation_is_actor_bound_and_uses_the_existing_durable_worker() {
         proto::ListStorageObjects {
             volume_id: "secondary".into(),
             after: None,
+            archive_copy_candidates_only: false,
         },
     )
     .unwrap();

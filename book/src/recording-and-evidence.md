@@ -169,6 +169,10 @@ retention days are configured. Review the target, object IDs and byte count.
 Each additional page needs its own confirmation. Leaving retention days blank
 keeps copies indefinitely. Expiry alone performs no deletion.
 
+Windows holds a read handle that excludes writers through archive removal. On Linux,
+the surviving primary must already have fs-verity enabled. On a filesystem without
+enforced write protection, KeepPeek keeps both copies and reports the blocked deletion.
+
 KeepPeek records each acknowledged deletion in the catalog. The retained primary remains
 available. The automatic archive worker and manual copy picker permanently exclude that
 recording or export while this catalog is in use.

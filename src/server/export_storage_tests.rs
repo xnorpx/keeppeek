@@ -771,7 +771,28 @@ fn archive_deletion_removes_redundant_export_and_preserves_primary_download() {
         })
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
-    while handle.get(&id).unwrap().state != "deleted" {
+    loop {
+        let current = handle.get(&id).unwrap();
+        if cfg!(windows) && current.state == "deleted" {
+            break;
+        }
+        if cfg!(unix)
+            && current.error.as_deref() == Some("archive_primary_write_protection_required")
+        {
+            assert_eq!(current.state, "ready");
+            assert_eq!(current.deletion.unwrap().phase, "blocked");
+            assert_eq!(
+                std::fs::read(
+                    current
+                        .binding
+                        .root
+                        .join(format!("{}.mp4", current.object_id))
+                )
+                .unwrap(),
+                original
+            );
+            break;
+        }
         assert!(
             Instant::now() < deadline,
             "redundant export deletion did not finish"

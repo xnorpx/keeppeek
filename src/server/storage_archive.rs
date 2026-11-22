@@ -89,6 +89,19 @@ pub(super) fn sanitized(config: &Config) -> Option<Settings> {
     )
 }
 
+pub(super) fn validate_claim_recovery(state: &ServerState, next: Option<&Settings>) -> Result<()> {
+    if let Some(handle) = &state.storage_config.archive_runtime {
+        handle.ensure_recovery_binding(next).map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                409,
+                "reconcile the confirmed archive deletion before disabling or replacing its target",
+            )
+        })?;
+    }
+    Ok(())
+}
+
 pub(super) fn dispatch(
     state: &ServerState,
     principal: &ApiPrincipal,
@@ -362,7 +375,9 @@ fn wire_job(
         },
         bytes: job.bytes,
         attempts: job.attempts,
-        error_code: if job.error.is_some() {
+        error_code: if job.error.as_deref() == Some("archive_primary_write_protection_required") {
+            "archive_primary_write_protection_required".into()
+        } else if job.error.is_some() {
             "archive_operation_failed".into()
         } else {
             String::new()

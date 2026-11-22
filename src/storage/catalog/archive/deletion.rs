@@ -97,7 +97,13 @@ pub(crate) enum Request {
     Retired(String),
     Acknowledged(String),
     Blocked(String),
+    UnprotectedPrimary(String),
     Failed(String),
+    EnsureNoActiveClaim(String),
+    NextLegacy {
+        target: String,
+        maximum_attempts: u32,
+    },
     LegacyFailed(String),
     Reverified {
         job: String,
@@ -128,9 +134,58 @@ pub(super) async fn dispatch(
         }
         Request::Retired(id) => execution::retired(connection, &id).await,
         Request::Acknowledged(id) => execution::acknowledged(connection, &id).await,
-        Request::Blocked(id) => execution::blocked(connection, &id).await,
+        Request::Blocked(id) => execution::blocked(connection, &id, false).await,
+        Request::UnprotectedPrimary(id) => execution::blocked(connection, &id, true).await,
         Request::Failed(id) => execution::failed(connection, &id).await,
+        Request::EnsureNoActiveClaim(target) => {
+            let mut rows=connection.query("SELECT 1 FROM archive_deletion_items d JOIN archive_replicas a ON a.job_id=d.job_id
+                WHERE a.target_id=?1 AND d.phase IN('claimed','retired') LIMIT 1",[target]).await?;
+            ensure!(
+                rows.next().await?.is_none(),
+                "confirmed archive retirement still requires this target"
+            );
+            Ok(Reply::Done)
+        }
+        Request::NextLegacy {
+            target,
+            maximum_attempts,
+        } => {
+            ensure!(
+                (1..=10).contains(&maximum_attempts),
+                "invalid archive reverification retry limit"
+            );
+            let mut rows = connection.query("SELECT a.job_id FROM archive_replicas a
+                LEFT JOIN archive_reverification_retries r ON r.job_id=a.job_id
+                WHERE a.target_id=?1 AND a.kind!='probe' AND a.state='ready' AND a.action='' AND a.cancelled=0
+                AND NOT EXISTS(SELECT 1 FROM archive_verified_at v WHERE v.job_id=a.job_id AND v.version=a.version)
+                AND NOT EXISTS(SELECT 1 FROM archive_deletion_items d WHERE d.job_id=a.job_id AND d.phase IN('queued','claimed','retired'))
+                AND COALESCE(r.attempts,0)<?2 AND COALESCE(r.retry_after_ms,0)<=?3
+                ORDER BY CASE WHEN r.attempts=0 THEN 0 ELSE 1 END,a.job_id LIMIT 1",
+                turso::params![target, i64::from(maximum_attempts), current_unix_time_ms()]).await?;
+            let id = rows
+                .next()
+                .await?
+                .map(|row| row.get::<String>(0))
+                .transpose()?;
+            drop(rows);
+            Ok(Reply::Job(if let Some(id) = id {
+                load(connection, &id).await?.map(Box::new)
+            } else {
+                None
+            }))
+        }
         Request::LegacyFailed(id) => {
+            let now = current_unix_time_ms();
+            connection
+                .execute(
+                    "INSERT INTO archive_reverification_retries(job_id,attempts,retry_after_ms)
+                SELECT job_id,1,?2+60000 FROM archive_replicas WHERE job_id=?1 AND state='ready'
+                    AND NOT EXISTS(SELECT 1 FROM archive_verified_at v WHERE v.job_id=?1)
+                ON CONFLICT(job_id) DO UPDATE SET attempts=min(10,attempts+1),
+                    retry_after_ms=?2+60000*min(10,attempts+1)",
+                    (id.as_str(), now),
+                )
+                .await?;
             connection.execute("UPDATE archive_replicas SET error='Archive reverification failed; check the target' WHERE job_id=?1 AND state='ready' AND NOT EXISTS(SELECT 1 FROM archive_verified_at WHERE job_id=?1)",[id.as_str()]).await?;
             Ok(Reply::Done)
         }
@@ -156,12 +211,26 @@ async fn preview(
         "invalid archive configuration revision"
     );
     let now = current_unix_time_ms();
-    prune(connection, now).await?;
     let (ids, next) = eligibility::select(connection, &policy, &selection).await?;
     let mut items = Vec::with_capacity(ids.len());
     for id in ids {
         items.push(eligibility::inspect(connection, readers, &policy, &selection, &id, now).await?);
     }
+    // A retention page without eligible copies has no confirmation to persist.
+    if matches!(selection, Selection::Retention { .. })
+        && !items.iter().any(|item| item.state == "eligible")
+    {
+        return Ok(Reply::Deletion(Box::new(Plan {
+            id: String::new(),
+            revision: String::new(),
+            nonce: None,
+            expires_ms: 0,
+            items,
+            next,
+            confirmed: false,
+        })));
+    }
+    prune(connection, now).await?;
     let encoded = serde_json::to_string(&Snapshot {
         policy: policy.clone(),
         selection,
@@ -261,6 +330,12 @@ async fn confirm(
             connection.execute("INSERT INTO archive_deletion_items(job_id,plan_id,operation,phase) VALUES(?1,?2,?3,'queued')
                 ON CONFLICT(job_id) DO UPDATE SET plan_id=excluded.plan_id, operation=excluded.operation,phase='queued',attempts=0 WHERE phase='blocked'",
                 turso::params![item.job_id.as_str(), id.as_str(), uuid::Uuid::new_v4().to_string()]).await?;
+            connection
+                .execute(
+                    "UPDATE archive_replicas SET error=NULL WHERE job_id=?1",
+                    [item.job_id.as_str()],
+                )
+                .await?;
         }
         connection
             .execute(
@@ -303,7 +378,7 @@ async fn prune(connection: &turso::Connection, now: i64) -> anyhow::Result<()> {
     connection.execute("DELETE FROM archive_deletion_plans WHERE id IN (
         SELECT p.id FROM archive_deletion_plans p WHERE (p.confirmed_ms IS NULL AND p.expires_ms<=?1)
         OR (p.confirmed_ms<?2 AND NOT EXISTS(SELECT 1 FROM archive_deletion_items d WHERE d.plan_id=p.id
-            AND d.phase NOT IN('acknowledged','blocked'))) ORDER BY p.expires_ms LIMIT 32)",(now,before)).await?;
+            AND d.phase NOT IN('acknowledged','blocked'))) ORDER BY p.confirmed_ms IS NOT NULL, p.expires_ms, p.id LIMIT 32)",(now,before)).await?;
     let mut rows = connection.query("SELECT count(*),count(*) FILTER(WHERE confirmed_ms IS NULL) FROM archive_deletion_plans",()).await?;
     let count = rows
         .next()

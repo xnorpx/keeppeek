@@ -50,6 +50,33 @@ fn copy(fixture: &Fixture, recording: &str) -> anyhow::Result<Job> {
     context.catalog.archive_job(&job.id)
 }
 
+fn retire_fixture_copy(context: &Context, job: &Job) -> anyhow::Result<bool> {
+    let pending = context.catalog.archive_job(&job.id)?;
+    let result = context.process(pending, Instant::now() + Duration::from_secs(15));
+    if cfg!(windows) {
+        result?;
+        return Ok(true);
+    }
+    // These freshly written test files have no filesystem-enforced Unix write protection.
+    let error = result.expect_err("mutable fixture primary must retain its archive");
+    assert!(
+        error.is::<crate::storage::volumes::root::ArchiveSurvivorUnprotected>(),
+        "{error:#}"
+    );
+    let retained = context.catalog.archive_job(&job.id)?;
+    assert_eq!(retained.state, "ready");
+    assert_eq!(retained.deletion.unwrap().phase, "blocked");
+    assert_eq!(
+        retained.error.as_deref(),
+        Some("archive_primary_write_protection_required")
+    );
+    assert_eq!(
+        std::fs::read(&job.source_path)?,
+        std::fs::read(job.binding.root.join(format!("{}.mp4", job.object_id)))?
+    );
+    Ok(false)
+}
+
 #[test]
 fn archive_retention_confirmation_covers_only_the_displayed_page() -> anyhow::Result<()> {
     let mut fixture = Fixture::new()?;
@@ -141,16 +168,16 @@ fn archive_deletion_requires_same_administrator_rechecks_readers_and_preserves_p
     assert_eq!(confirm(&fixture, &plan, "admin")?.items[0].state, "queued");
     assert_eq!(confirm(&fixture, &plan, "admin")?.items[0].state, "queued");
     let context = fixture.context();
-    let job = context.catalog.archive_job(&job.id)?;
-    context.process(job.clone(), Instant::now() + Duration::from_secs(15))?;
-    let deleted = context.catalog.archive_job(&job.id)?;
-    assert_eq!(deleted.state, "deleted");
-    assert_eq!(deleted.deletion.unwrap().phase, "acknowledged");
-    assert_eq!(
-        confirm(&fixture, &plan, "admin")?.items[0].state,
-        "acknowledged"
-    );
-    assert!(!target.exists());
+    if retire_fixture_copy(&context, &job)? {
+        let deleted = context.catalog.archive_job(&job.id)?;
+        assert_eq!(deleted.state, "deleted");
+        assert_eq!(deleted.deletion.unwrap().phase, "acknowledged");
+        assert_eq!(
+            confirm(&fixture, &plan, "admin")?.items[0].state,
+            "acknowledged"
+        );
+        assert!(!target.exists());
+    }
     assert_eq!(std::fs::read(&unrelated)?, b"unrelated");
     assert_eq!(std::fs::read(&path)?, data);
     drop(context);
@@ -215,12 +242,37 @@ fn archive_deletion_blocks_the_only_copy_until_successful_restore() -> anyhow::R
     let restored = preview(&fixture, selection)?;
     assert_eq!(restored.items[0].state, "eligible");
     confirm(&fixture, &restored, "admin")?;
-    context.process(
-        context.catalog.archive_job(&job.id)?,
-        Instant::now() + Duration::from_secs(15),
-    )?;
-    assert_eq!(context.catalog.archive_job(&job.id)?.state, "deleted");
+    if retire_fixture_copy(&context, &job)? {
+        assert_eq!(context.catalog.archive_job(&job.id)?.state, "deleted");
+    }
     assert_eq!(std::fs::read(path)?, original);
+    drop(context);
+    fixture.close()
+}
+
+#[cfg(unix)]
+#[test]
+fn archive_deletion_retains_bytes_when_an_existing_writer_can_mutate_the_primary()
+-> anyhow::Result<()> {
+    use std::io::{Seek, Write};
+    let fixture = Fixture::new()?;
+    let (id, path) = fixture.recording("camera")?;
+    let job = copy(&fixture, &id)?;
+    let original = std::fs::read(&path)?;
+    let mut writer = std::fs::OpenOptions::new().write(true).open(&path)?;
+    let plan = preview(&fixture, Selection::Explicit(job.id.clone()))?;
+    confirm(&fixture, &plan, "admin")?;
+    let context = fixture.context();
+    assert!(!retire_fixture_copy(&context, &job)?);
+    writer.rewind()?;
+    writer.write_all(&[original[0] ^ 1])?;
+    writer.sync_all()?;
+    assert_eq!(std::fs::metadata(&path)?.len(), original.len() as u64);
+    assert_eq!(
+        std::fs::read(job.binding.root.join(format!("{}.mp4", job.object_id)))?,
+        original
+    );
+    drop(writer);
     drop(context);
     fixture.close()
 }
@@ -277,5 +329,46 @@ fn archive_deletion_reconciles_a_lost_retirement_acknowledgement_after_restart()
     assert_eq!(std::fs::read(path)?, original);
     drop(handle);
     worker.shutdown()?;
+    fixture.close()
+}
+
+#[test]
+fn archive_deletion_claim_observes_saved_retention_changed_after_confirmation() -> anyhow::Result<()>
+{
+    let mut fixture = Fixture::new()?;
+    fixture.settings.retention_days = Some(1);
+    let (id, primary) = fixture.recording("camera")?;
+    let job = copy(&fixture, &id)?;
+    let plan = preview(&fixture, Selection::Explicit(job.id.clone()))?;
+    confirm(&fixture, &plan, "admin")?;
+    let config_path = fixture.path.join("updated-config.toml");
+    let mut saved = fixture.settings.clone();
+    saved.retention_days = None;
+    std::fs::write(
+        &config_path,
+        format!("[storage.archive]\n{}", toml::to_string(&saved)?),
+    )?;
+    let mut ctx = fixture.context();
+    ctx.saved_configuration = Some((config_path, Arc::new(Mutex::new(()))));
+    let queued = ctx.catalog.archive_job(&job.id)?;
+    let result = ctx.claim_deletion(&queued);
+    assert!(result.unwrap_err().to_string().contains("policy changed"));
+    assert_eq!(
+        ctx.catalog.archive_job(&job.id)?.deletion.unwrap().phase,
+        "queued"
+    );
+    assert!(
+        ctx.process(queued, Instant::now() + Duration::from_secs(15))
+            .is_err()
+    );
+    assert_eq!(
+        ctx.catalog.archive_job(&job.id)?.deletion.unwrap().phase,
+        "blocked"
+    );
+    assert_eq!(
+        std::fs::read(job.binding.root.join(format!("{}.mp4", job.object_id)))?,
+        std::fs::read(primary)?
+    );
+    drop(ctx);
     fixture.close()
 }

@@ -71,11 +71,7 @@ fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_
         assert!(page(&connection, None).await.is_err());
         let not_due = page(&connection, Some(2)).await?;
         assert_eq!(not_due.items[0].state, "retained");
-        assert!(
-            confirm(&connection, &not_due, policy(Some(2)))
-                .await
-                .is_err()
-        );
+        assert!(not_due.nonce.is_none());
         connection
             .execute(
                 "UPDATE archive_verified_at SET verified_ms=?1",
@@ -107,6 +103,37 @@ fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_
         confirm(&connection, &active, policy(Some(2))).await?;
         let id = admission().job_id;
         assert_eq!(required(&connection, &id).await?.state, "ready");
+        connection
+            .execute(
+                "UPDATE recording_files SET source_id='camera' WHERE id='recording'",
+                (),
+            )
+            .await?;
+        connection.execute("INSERT INTO recording_retention_camera_work(camera_id,lower_ms,upper_ms,generation)
+            SELECT source_id,0,1000,0 FROM recording_files WHERE id='recording'", ()).await?;
+        assert!(
+            run(
+                &connection,
+                Deletion::Claim {
+                    job: id.clone(),
+                    policy: policy(Some(2))
+                }
+            )
+            .await
+            .is_err()
+        );
+        run(&connection, Deletion::Blocked(id.clone())).await?;
+        assert!(required(&connection, &id).await?.error.is_some());
+        assert_eq!(
+            page(&connection, Some(2)).await?.items[0].state,
+            "preservation_hold"
+        );
+        connection
+            .execute("DELETE FROM recording_retention_camera_work", ())
+            .await?;
+        let new_plan = page(&connection, Some(2)).await?;
+        confirm(&connection, &new_plan, policy(Some(2))).await?;
+        assert!(required(&connection, &id).await?.error.is_none());
         run(
             &connection,
             Deletion::Claim {
@@ -139,14 +166,102 @@ fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_
             },
         )
         .await?;
+        assert!(
+            run(&connection, Deletion::EnsureNoActiveClaim("cold".into()))
+                .await
+                .is_err()
+        );
+        connection.execute_batch("INSERT INTO recording_files(id,stream_id,source_id,started_at_ms,ended_at_ms,path,init_offset,init_len,finalized,finalized_at_ms,file_identity,file_bytes)
+            SELECT 'z-other',stream_id,'other-camera',1,2,'/hot/z-other.mp4',0,1,1,2,'other-file',4 FROM recording_files WHERE id='recording';
+            UPDATE recording_retention_runtime SET complete=0,cursor=NULL,high_water='z-other';").await?;
+        use crate::storage::catalog::retention::runtime::test_reconciliation_turn;
+        assert_eq!(test_reconciliation_turn(&connection).await?.evaluated, 0);
+        assert_eq!(test_reconciliation_turn(&connection).await?.evaluated, 1);
+        test_reconciliation_turn(&connection).await?;
+        let mut rows = connection
+            .query(
+                "SELECT recording_id FROM archive_deletion_deferred_retention",
+                (),
+            )
+            .await?;
+        assert_eq!(rows.next().await?.unwrap().get::<String>(0)?, "recording");
+        drop(rows);
         run(&connection, Deletion::Retired(id.clone())).await?;
         run(&connection, Deletion::Acknowledged(id.clone())).await?;
+        run(&connection, Deletion::EnsureNoActiveClaim("cold".into())).await?;
+        assert_eq!(test_reconciliation_turn(&connection).await?.evaluated, 1);
+        let mut deferred = connection
+            .query("SELECT 1 FROM archive_deletion_deferred_retention", ())
+            .await?;
+        assert!(deferred.next().await?.is_none());
+        drop(deferred);
         assert_eq!(required(&connection, &id).await?.state, "deleted");
+        check_retired_copy_selection(&connection).await?;
         connection
             .execute("UPDATE recording_files SET protected=1", ())
             .await?;
         Ok(())
     })
+}
+
+async fn check_retired_copy_selection(connection: &turso::Connection) -> anyhow::Result<()> {
+    use crate::storage::catalog::locations::{self, Kind, Object};
+    let next_id = "z-eligible";
+    connection.execute_batch(
+        "INSERT INTO recording_files(id,stream_id,started_at_ms,ended_at_ms,path,init_offset,init_len,
+             finalized,finalized_at_ms,file_identity,file_bytes)
+         SELECT 'z-eligible',stream_id,1,2,'/hot/later.mp4',0,1,1,2,'later-file',4 FROM recording_files WHERE id='recording';
+         INSERT INTO storage_volume_allocations(operation,kind,object_id,volume_id,generation,
+             relative_key,destination_path,bytes,intent_bytes,materialized_bytes,state,file_identity,digest,location_revision)
+         SELECT 'later-source',kind,'z-eligible',volume_id,generation,'later.mp4','/hot/later.mp4',4,4,4,'published','later-file',zeroblob(32),1
+         FROM storage_volume_allocations WHERE operation='source-operation';"
+    ).await?;
+    let query = |filtered, after: Option<&str>| {
+        let request = locations::Request::Objects(locations::objects::Page {
+            volume: "hot".into(),
+            after: after.map(|id| Object {
+                kind: Kind::Recording,
+                id: id.to_owned(),
+            }),
+            limit: 1,
+            archive_copy_candidates_only: filtered,
+        });
+        async move {
+            let locations::Reply::Objects(rows) = locations::execute(
+                connection,
+                request,
+                Instant::now() + std::time::Duration::from_secs(5),
+            )
+            .await?
+            else {
+                anyhow::bail!("unexpected object page");
+            };
+            Ok::<_, anyhow::Error>(
+                rows.into_iter()
+                    .map(|row| row.object.id)
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+    assert_eq!(query(false, None).await?, ["recording"]);
+    assert_eq!(query(false, Some("recording")).await?, [next_id]);
+    assert_eq!(query(true, None).await?, [next_id]);
+    assert!(query(true, Some(next_id)).await?.is_empty());
+    let Reply::Candidates(automatic) = candidates(connection, "", i64::MAX, 1).await? else {
+        anyhow::bail!("unexpected automatic candidate page");
+    };
+    assert_eq!(automatic.len(), 1);
+    assert_eq!(automatic[0].0, next_id);
+    let manual = Admission {
+        job_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".into(),
+        ..admission()
+    };
+    assert!(enqueue(connection, &manual).await.is_err());
+    assert_eq!(
+        required(connection, &admission().job_id).await?.state,
+        "deleted"
+    );
+    Ok(())
 }
 
 #[test]
@@ -184,9 +299,83 @@ fn archive_retention_keeps_legacy_ready_replicas_until_a_new_verified_observatio
             },
         )
         .await?;
+        let Reply::Job(None) = run(
+            &connection,
+            Deletion::NextLegacy {
+                target: "cold".into(),
+                maximum_attempts: 1,
+            },
+        )
+        .await?
+        else {
+            anyhow::bail!("verified job was offered for reverification")
+        };
         let observed = page(&connection, Some(1)).await?;
         assert!(observed.items[0].verified_ms.is_some());
         assert_eq!(observed.items[0].state, "retained");
+        Ok(())
+    })
+}
+
+#[test]
+fn archive_retention_prunes_expired_previews_before_old_confirmations() -> anyhow::Result<()> {
+    pollster::block_on(async {
+        let connection = fixture().await?;
+        ready_for_eviction(&connection).await?;
+        connection.execute_batch("UPDATE archive_replicas SET action=''; UPDATE archive_verified_at SET verified_ms=1;").await?;
+        for i in 0..160 {
+            let confirmed = (i < 32).then_some(1_i64);
+            let expires = if confirmed.is_some() { 2 } else { 3 };
+            connection.execute("INSERT INTO archive_deletion_plans(id,actor,target_id,revision,nonce_hash,expires_ms,confirmed_ms,snapshot)
+                VALUES(?1,'admin','cold','revision',?2,?3,?4,'{}')", turso::params![i.to_string(),"a".repeat(64),expires,confirmed]).await?;
+        }
+        let page = page(&connection, Some(1)).await?;
+        assert!(page.nonce.is_some());
+        let mut rows = connection
+            .query(
+                "SELECT COUNT(*) FROM archive_deletion_plans WHERE confirmed_ms IS NULL",
+                (),
+            )
+            .await?;
+        assert_eq!(rows.next().await?.unwrap().get::<i64>(0)?, 97);
+        Ok(())
+    })
+}
+
+#[test]
+fn archive_retention_backoff_retries_are_persisted_and_administrator_can_reset_them()
+-> anyhow::Result<()> {
+    pollster::block_on(async {
+        let connection = fixture().await?;
+        ready_for_eviction(&connection).await?;
+        connection
+            .execute_batch(
+                "UPDATE archive_replicas SET action=''; DELETE FROM archive_verified_at;",
+            )
+            .await?;
+        let id = admission().job_id;
+        let next = || Deletion::NextLegacy {
+            target: "cold".into(),
+            maximum_attempts: 1,
+        };
+        assert!(matches!(
+            run(&connection, next()).await?,
+            Reply::Job(Some(_))
+        ));
+        run(&connection, Deletion::LegacyFailed(id.clone())).await?;
+        assert!(matches!(run(&connection, next()).await?, Reply::Job(None)));
+        connection
+            .execute(
+                "UPDATE archive_reverification_retries SET retry_after_ms=0",
+                (),
+            )
+            .await?;
+        assert!(matches!(run(&connection, next()).await?, Reply::Job(None)));
+        super::super::retry(&connection, &id).await?;
+        assert!(matches!(
+            run(&connection, next()).await?,
+            Reply::Job(Some(_))
+        ));
         Ok(())
     })
 }

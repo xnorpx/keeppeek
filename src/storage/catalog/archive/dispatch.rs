@@ -14,11 +14,7 @@ pub(super) async fn dispatch(
         Request::Get(id) => Ok(Reply::Job(load(connection, &id).await?.map(Box::new))),
         Request::FindExport(id) => find_export(connection, &id).await,
         Request::List { after, limit } => page(connection, &after, limit).await,
-        Request::Pending {
-            after,
-            limit,
-            reverify_legacy,
-        } => pending(connection, &after, limit, reverify_legacy).await,
+        Request::Pending { after, limit } => pending(connection, &after, limit).await,
         Request::Candidates {
             after,
             before_ms,

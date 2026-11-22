@@ -90,7 +90,7 @@ impl Root {
         )
     }
 
-    /// Retires an exact owned leaf before the caller's deadline, capped at five minutes.
+    /// Retires an exact owned leaf before the caller's deadline, bounded to one hour.
     ///
     /// # Errors
     /// Rejects expired work or any failed ownership, digest, or receipt check.
@@ -103,6 +103,28 @@ impl Root {
         operation: &str,
         deadline: Instant,
     ) -> anyhow::Result<()> {
+        self.retire_owned_while(
+            key,
+            expected_identity,
+            bytes,
+            digest,
+            operation,
+            deadline,
+            || Ok(()),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn retire_owned_while<G>(
+        &self,
+        key: &str,
+        expected_identity: &str,
+        bytes: u64,
+        digest: [u8; 32],
+        operation: &str,
+        deadline: Instant,
+        recheck: impl FnOnce() -> anyhow::Result<G>,
+    ) -> anyhow::Result<()> {
         Retirement::prepare(
             self,
             key,
@@ -112,7 +134,7 @@ impl Root {
             operation,
             deadline,
         )?
-        .finish()
+        .finish_checked(recheck)
     }
 
     /// Removes retirement receipts only after the catalog has durably completed this job.
@@ -231,7 +253,7 @@ impl<'a> Retirement<'a> {
             staging,
             directory,
             receipt,
-            deadline: deadline.min(Instant::now() + Duration::from_secs(300)),
+            deadline: deadline.min(Instant::now() + Duration::from_secs(3_600)),
         };
         retirement.revalidate()?;
         retirement.prepare_intent()?;
@@ -257,7 +279,12 @@ impl<'a> Retirement<'a> {
         Ok(())
     }
 
+    #[cfg(test)]
     fn finish(&self) -> anyhow::Result<()> {
+        self.finish_checked(|| Ok(()))
+    }
+
+    fn finish_checked<G>(&self, recheck: impl FnOnce() -> anyhow::Result<G>) -> anyhow::Result<()> {
         self.revalidate()?;
         let completed_staging = read_receipt(&self.directory, STAGED)?;
         if let Some(receipt) = &completed_staging {
@@ -301,6 +328,7 @@ impl<'a> Retirement<'a> {
         }
         self.revalidate()?;
         verify_named(&self.directory, LEAF, &self.receipt.file)?;
+        let _survivor = recheck()?;
         remove(&self.directory, staged)?;
         anyhow::ensure!(
             absent(&self.directory, LEAF)? && absent(&self.root.directory, &self.receipt.key)?,

@@ -345,6 +345,30 @@ impl OwnedFile {
         Ok((after.len(), self.identity.clone(), digest))
     }
 
+    /// Verify that the opened primary has kernel-enforced protection from content changes.
+    pub(crate) fn validate_archive_survivor(&self) -> anyhow::Result<()> {
+        self.revalidate()?;
+        #[cfg(windows)]
+        {
+            // open_owned() excludes writable handles and mappings until this file closes.
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use rustix::fs::{AtFlags, StatxAttributes, StatxFlags, statx};
+            let sealed = statx(&self.file, "", AtFlags::EMPTY_PATH, StatxFlags::empty()).is_ok_and(
+                |status| {
+                    (status.stx_attributes & status.stx_attributes_mask)
+                        .contains(StatxAttributes::VERITY)
+                },
+            );
+            anyhow::ensure!(sealed, super::ArchiveSurvivorUnprotected);
+            Ok(())
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        Err(super::ArchiveSurvivorUnprotected.into())
+    }
+
     /// Checks the pinned file and its name before another reserved write.
     ///
     /// # Errors

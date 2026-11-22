@@ -64,6 +64,17 @@ pub(super) async fn retired(connection: &turso::Connection, id: &str) -> anyhow:
     let changed = connection.execute("UPDATE archive_replicas SET state='deleted',error=NULL WHERE job_id=?1 AND state='deleting' AND local_evicted=0
         AND EXISTS(SELECT 1 FROM archive_deletion_items WHERE job_id=?1 AND phase='claimed')",[id]).await?;
     ensure!(changed == 1, "archive deletion has no matching claim");
+    connection.execute("UPDATE recording_files SET retention_pending=1,retention_error=NULL,
+        retention_generation=(SELECT generation FROM archive_deletion_deferred_retention WHERE recording_id=recording_files.id)
+        WHERE id IN(SELECT d.recording_id FROM archive_deletion_deferred_retention d JOIN archive_replicas a
+            ON a.recording_id=d.recording_id AND a.kind='recording' WHERE a.job_id=?1)", [id]).await?;
+    connection
+        .execute(
+            "DELETE FROM archive_deletion_deferred_retention WHERE recording_id IN
+        (SELECT recording_id FROM archive_replicas WHERE job_id=?1 AND kind='recording')",
+            [id],
+        )
+        .await?;
     connection
         .execute(
             "UPDATE archive_deletion_items SET phase='retired',attempts=0 WHERE job_id=?1",
@@ -89,7 +100,11 @@ pub(super) async fn acknowledged(
     Ok(Reply::Done)
 }
 
-pub(super) async fn blocked(connection: &turso::Connection, id: &str) -> anyhow::Result<Reply> {
+pub(super) async fn blocked(
+    connection: &turso::Connection,
+    id: &str,
+    unprotected: bool,
+) -> anyhow::Result<Reply> {
     let changed = connection
         .execute(
             "UPDATE archive_deletion_items SET phase='blocked' WHERE job_id=?1 AND phase='queued'",
@@ -97,7 +112,17 @@ pub(super) async fn blocked(connection: &turso::Connection, id: &str) -> anyhow:
         )
         .await?;
     ensure!(changed == 1, "archive deletion already claimed");
-    connection.execute("UPDATE archive_replicas SET error='Archive deletion blocked; check the primary and preview again' WHERE job_id=?1 AND state='ready'",[id]).await?;
+    let message = if unprotected {
+        "archive_primary_write_protection_required"
+    } else {
+        "Archive deletion blocked; check the primary and preview again"
+    };
+    connection
+        .execute(
+            "UPDATE archive_replicas SET error=?2 WHERE job_id=?1 AND state='ready'",
+            (id, message),
+        )
+        .await?;
     Ok(Reply::Done)
 }
 
@@ -119,6 +144,12 @@ pub(super) async fn reverified(
     );
     connection.execute("INSERT INTO archive_verified_at(job_id,version,verified_ms) VALUES(?1,?2,?3) ON CONFLICT(job_id) DO NOTHING",
         turso::params![id,version,current_unix_time_ms()]).await?;
+    connection
+        .execute(
+            "DELETE FROM archive_reverification_retries WHERE job_id=?1",
+            [id],
+        )
+        .await?;
     connection
         .execute(
             "UPDATE archive_replicas SET error=NULL WHERE job_id=?1",

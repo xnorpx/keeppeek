@@ -121,7 +121,7 @@
 		<p class="text-sm"
 			>{plan.confirmed
 				? 'Batch confirmed. Refresh archive jobs to follow progress.'
-				: 'Confirming queues removal of the selected archive copies. Each primary copy is verified again before removal.'}</p
+				: 'Confirming queues removal of the selected archive copies. Each primary copy is verified again before removal. If the filesystem cannot protect the primary from writes, KeepPeek retains both copies.'}</p
 		>
 		{#if !plan.confirmed && plan.selectedCount > 0}
 			<p class="text-sm"

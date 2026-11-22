@@ -95,6 +95,7 @@ impl Fixture {
 
     fn context(&self) -> Context {
         Context {
+            saved_configuration: None,
             settings: Arc::new(self.settings.clone()),
             catalog: self.catalog.handle(),
             shared: Arc::new(Shared {

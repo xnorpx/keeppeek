@@ -468,6 +468,15 @@ pub(in crate::server) fn authorize_upload(
     principal: &ApiPrincipal,
     context: crate::backup::ConfigurationApply<'_>,
 ) -> anyhow::Result<crate::api::backup_proto::RestoreRecord> {
+    crate::server::storage_archive::validate_claim_recovery(
+        state,
+        context.candidate.configuration.storage.archive.as_ref(),
+    )
+    .map_err(|_| {
+        crate::backup::ServiceError::conflict(
+            "reconcile the confirmed archive deletion before changing its target",
+        )
+    })?;
     let before = config::load_config(context.config_path())?;
     let current = Candidate {
         plan_id: String::new(),

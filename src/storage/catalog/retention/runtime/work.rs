@@ -49,7 +49,7 @@ async fn state(connection: &turso::Connection) -> Result<State> {
     Ok(state)
 }
 
-pub(super) async fn step(connection: &turso::Connection) -> Result<Progress> {
+pub(in crate::storage::catalog) async fn step(connection: &turso::Connection) -> Result<Progress> {
     let state = state(connection).await?;
     if requires_events(connection).await?
         && !super::super::event_index::reconcile(connection, 16).await?
@@ -301,14 +301,31 @@ async fn policy_for(connection: &turso::Connection, id: &str) -> Result<Option<P
 }
 
 async fn evaluate(connection: &turso::Connection, id: &str, generation: i64) -> Result<Progress> {
-    if archive_eviction_for_recording(connection, id).await? {
-        connection.execute("UPDATE recording_files SET retention_pending=1,retention_generation=?1,retention_error=NULL WHERE id=?2",
-            turso::params![generation,id]).await?;
+    let mut claims = connection
+        .query(
+            "SELECT state='deleting' FROM archive_replicas
+        WHERE kind='recording' AND recording_id=?1 AND (local_evicted=2 OR state='deleting')",
+            [id],
+        )
+        .await?;
+    if let Some(claim) = claims.next().await? {
+        let deleting = claim.get::<i64>(0)? != 0;
+        drop(claims);
+        if deleting {
+            // The deletion fence protects the recording row. Queue this evaluation beside it
+            // so event and backfill cursors can advance until the receipt releases the fence.
+            connection.execute("INSERT INTO archive_deletion_deferred_retention(recording_id,generation) VALUES(?1,?2)
+                ON CONFLICT(recording_id) DO UPDATE SET generation=max(generation,excluded.generation)", (id,generation)).await?;
+        } else {
+            connection.execute("UPDATE recording_files SET retention_pending=1,retention_generation=?1,retention_error=NULL WHERE id=?2",
+                turso::params![generation,id]).await?;
+        }
         return Ok(Progress {
             pending: true,
             ..Progress::default()
         });
     }
+    drop(claims);
     let Some(policy) = policy_for(connection, id).await? else {
         finish_file(connection, id, generation, None).await?;
         return Ok(Progress {
@@ -336,14 +353,6 @@ async fn evaluate(connection: &turso::Connection, id: &str, generation: i64) -> 
             })
         }
     }
-}
-
-async fn archive_eviction_for_recording(connection: &turso::Connection, id: &str) -> Result<bool> {
-    let mut rows = connection.query(
-        "SELECT 1 FROM archive_replicas WHERE kind='recording' AND recording_id=?1 AND local_evicted=2",
-        [id],
-    ).await?;
-    Ok(rows.next().await?.is_some())
 }
 
 async fn commit_file(connection: &turso::Connection, id: &str, policy: &Policy) -> Result<()> {

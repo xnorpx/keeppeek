@@ -5,7 +5,12 @@ use crate::storage::catalog::{
     maintenance::jobs::Nonce,
 };
 
-fn policy(state: &ServerState, handle: &Handle) -> Result<Policy> {
+fn submit(
+    state: &ServerState,
+    handle: &Handle,
+    build: impl FnOnce(Policy) -> Request,
+) -> Result<Plan> {
+    let _configuration = state.config_update.lock().map_err(|_| unavailable())?;
     let policy = handle.deletion_policy().map_err(operation_failed)?;
     if let Some(path) = &state.camera_config_path {
         let config = crate::config::load_config(path).map_err(operation_failed)?;
@@ -14,7 +19,7 @@ fn policy(state: &ServerState, handle: &Handle) -> Result<Policy> {
             return Err(unavailable());
         }
     }
-    Ok(policy)
+    handle.deletion(build(policy)).map_err(operation_failed)
 }
 
 pub(super) fn preview(
@@ -44,13 +49,11 @@ pub(super) fn preview(
         }
         None => return Err(invalid("archive deletion selection is required")),
     };
-    let plan = handle
-        .deletion(Request::Preview {
-            actor: principal.id(),
-            policy: policy(state, handle)?,
-            selection,
-        })
-        .map_err(operation_failed)?;
+    let plan = submit(state, handle, |policy| Request::Preview {
+        actor: principal.id(),
+        policy,
+        selection,
+    })?;
     wire(state, plan)
 }
 
@@ -66,15 +69,13 @@ pub(super) fn confirm(
     }
     let nonce = Nonce::parse(&input.confirmation_nonce)
         .map_err(|_| invalid("archive deletion confirmation is invalid"))?;
-    let plan = handle
-        .deletion(Request::Confirm {
-            actor: principal.id(),
-            policy: policy(state, handle)?,
-            plan: input.plan_id,
-            revision: input.expected_revision,
-            nonce,
-        })
-        .map_err(operation_failed)?;
+    let plan = submit(state, handle, |policy| Request::Confirm {
+        actor: principal.id(),
+        policy,
+        plan: input.plan_id,
+        revision: input.expected_revision,
+        nonce,
+    })?;
     wire(state, plan)
 }
 
