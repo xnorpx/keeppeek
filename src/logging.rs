@@ -10,6 +10,7 @@ use std::fs::File;
 
 use serde::Serialize;
 use tracing::info;
+use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::{
     EnvFilter, Registry,
     fmt::MakeWriter,
@@ -61,12 +62,15 @@ pub fn initialize_global_logging(config_path: &Path) -> anyhow::Result<LoggingSe
     let hub = LogHub::default();
     configure_secret_redaction(&hub, config_path)?;
 
+    let writer = RedactingMakeWriter::stderr(hub.clone());
     Registry::default()
         .with(filter_layer)
         .with(
-            tracing_subscriber::fmt::layer().with_writer(RedactingMakeWriter::stderr(hub.clone())),
+            tracing_subscriber::fmt::layer()
+                .with_writer(writer.clone())
+                .with_filter(filter_fn(|metadata| !source_timing_event(metadata))),
         )
-        .with(LogCaptureLayer::new(hub.clone()))
+        .with(LogCaptureLayer::with_formatted_timing(writer))
         .try_init()?;
 
     Ok(logging_service(
@@ -105,14 +109,16 @@ pub fn initialize_service_logging(
                 .create(true)
                 .append(true)
                 .open(log_directory.join("keeppeek-service.log"))?;
+            let writer = RedactingMakeWriter::file(hub.clone(), log_file);
             Registry::default()
                 .with(filter_layer)
                 .with(
                     tracing_subscriber::fmt::layer()
                         .with_ansi(false)
-                        .with_writer(RedactingMakeWriter::file(hub.clone(), log_file)),
+                        .with_writer(writer.clone())
+                        .with_filter(filter_fn(|metadata| !source_timing_event(metadata))),
                 )
-                .with(LogCaptureLayer::new(hub.clone()))
+                .with(LogCaptureLayer::with_formatted_timing(writer))
                 .try_init()?;
         }
     }
@@ -214,21 +220,31 @@ impl Write for RedactingWriter {
     }
 }
 
+fn source_timing_event(metadata: &tracing::Metadata<'_>) -> bool {
+    metadata.name() == "camera.rtsp.source_timing"
+}
+
 impl Drop for RedactingWriter {
     fn drop(&mut self) {
         let output = self
             .hub
             .redact_output(String::from_utf8_lossy(&self.buffer).as_ref());
-        match &self.destination {
-            RedactingDestination::Stderr => {
-                let _ = std::io::stderr().write_all(output.as_bytes());
+        self.destination.write(output.as_bytes());
+    }
+}
+
+impl RedactingDestination {
+    fn write(&self, output: &[u8]) {
+        match self {
+            Self::Stderr => {
+                let _ = std::io::stderr().write_all(output);
             }
             #[cfg(any(windows, test))]
-            RedactingDestination::File(file) => {
+            Self::File(file) => {
                 let _ = file
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .write_all(output.as_bytes());
+                    .write_all(output);
             }
         }
     }
@@ -492,6 +508,20 @@ pub fn read_log_filter_file_and_reload(
 }
 
 #[cfg(test)]
+pub(crate) fn capture_timing_for_test(hub: LogHub, file: File, action: impl FnOnce()) {
+    let writer = RedactingMakeWriter::file(hub, file);
+    let subscriber = tracing_subscriber::Registry::default()
+        .with(EnvFilter::new("warn,keeppeek::rtsp::timing=info"))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(writer.clone())
+                .with_filter(filter_fn(|metadata| !source_timing_event(metadata))),
+        )
+        .with(LogCaptureLayer::with_formatted_timing(writer));
+    tracing::subscriber::with_default(subscriber, action);
+}
+
+#[cfg(test)]
 mod tests {
     use std::{
         fs,
@@ -633,6 +663,36 @@ mod tests {
         let error = initial.error.unwrap();
         assert!(error.contains("invalid saved log filter"));
         assert!(error.contains("invalid RUST_LOG value"));
+        let _ = fs::remove_dir_all(file.path().parent().unwrap());
+    }
+
+    #[test]
+    fn packet_clock_fields_preserve_numeric_values_in_both_sinks_and_redact_strings() {
+        let file = temporary_filter_file();
+        let path = file.path().with_file_name("timing.log");
+        let hub = LogHub::default();
+        hub.set_sensitive_values(["1234".to_owned(), "192.0.2.1".to_owned()]);
+        let writer = RedactingMakeWriter::file(hub.clone(), File::create(&path).unwrap());
+        let subscriber = Registry::default()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(writer.clone())
+                    .with_filter(filter_fn(|metadata| !source_timing_event(metadata))),
+            )
+            .with(LogCaptureLayer::with_formatted_timing(writer));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(name:"camera.rtsp.source_timing", first_rtp_ticks=12345_u32, camera_id="192.0.2.1",password=1234_u64,"RTSP source timing");
+        });
+        let formatted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        let captured = hub.snapshot(None, 1).entries.pop().unwrap();
+        assert_eq!(
+            formatted["fields"],
+            serde_json::to_value(&captured.fields).unwrap()
+        );
+        assert_eq!(captured.fields["first_rtp_ticks"], 12345);
+        assert_eq!(captured.fields["camera_id"], "[REDACTED]");
+        assert_eq!(captured.fields["password"], "[REDACTED]");
         let _ = fs::remove_dir_all(file.path().parent().unwrap());
     }
 

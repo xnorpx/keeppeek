@@ -69,12 +69,23 @@ pub struct InorderParser {
 
     /// Total RTP packets seen in this stream.
     seen_rtp_packets: u64,
+    clock: Option<PacketClock>,
+    sender_report: Option<(u32, crate::NtpTimestamp)>,
 
     /// Total RTCP packets seen in this stream.
     seen_rtcp_packets: u64,
 
     unknown_rtcp_session: UnknownRtcpSsrcPolicy,
     seen_unknown_rtcp_session: bool,
+}
+
+/// Source clock readings from accepted RTP packets in one RTSP PLAY session.
+#[derive(Clone, Copy, Debug)]
+pub struct PacketClock {
+    pub first: crate::Timestamp,
+    pub latest: crate::Timestamp,
+    pub backward_steps: u64,
+    pub missing_sequence_numbers: u64,
 }
 
 fn note_stale_live555_data_if_tcp(
@@ -112,10 +123,24 @@ impl InorderParser {
                 next,
             }),
             seen_rtp_packets: 0,
+            clock: None,
+            sender_report: None,
             seen_rtcp_packets: 0,
             unknown_rtcp_session,
             seen_unknown_rtcp_session: false,
         }
+    }
+
+    pub(super) fn clock_snapshot(
+        &self,
+        play_origin: Option<u32>,
+    ) -> Option<super::RtpClockSnapshot> {
+        Some(super::RtpClockSnapshot {
+            packets: self.seen_rtp_packets,
+            clock: self.clock?,
+            sender_report: self.sender_report,
+            play_origin,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -214,6 +239,19 @@ impl InorderParser {
             next: sequence_number.wrapping_add(1),
         });
         self.seen_rtp_packets += 1;
+        let clock = self.clock.get_or_insert(PacketClock {
+            first: timestamp,
+            latest: timestamp,
+            backward_steps: 0,
+            missing_sequence_numbers: 0,
+        });
+        clock.backward_steps = clock
+            .backward_steps
+            .saturating_add(u64::from(timestamp.timestamp() < clock.latest.timestamp()));
+        clock.missing_sequence_numbers = clock
+            .missing_sequence_numbers
+            .saturating_add(u64::from(loss));
+        clock.latest = timestamp;
         Ok(Some(PacketItem::Rtp(ReceivedPacket {
             ctx: *pkt_ctx,
             stream_id,
@@ -285,6 +323,11 @@ impl InorderParser {
                     ssrc,
                 });
             }
+            // ProcessPackets can deliver other senders' control packets to the caller.
+            if self.ssrc.is_some_and(|source| source.ssrc == ssrc) {
+                self.sender_report =
+                    (sr.ntp_timestamp().0 != 0).then(|| (sr.rtp_timestamp(), sr.ntp_timestamp()));
+            }
         }
         self.seen_rtcp_packets += 1;
         Ok(Some(PacketItem::Rtcp(ReceivedCompoundPacket {
@@ -298,6 +341,8 @@ impl InorderParser {
 
 #[cfg(test)]
 mod tests {
+    mod clock;
+    mod timing_benchmark;
     use super::*;
     use std::time::Duration;
 
