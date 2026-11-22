@@ -1706,6 +1706,9 @@
 		if (mode === 'export') {
 			// No video element is mounted here. A playback fallback must not change
 			// the operator's chosen stream or discard its draft and one-time link.
+			cameraSwitchPending = false;
+			cameraSwitchAnimating = false;
+			clearCameraSwitchFrame();
 			playbackVersion += 1;
 			selected = segment;
 			playheadMs = requestedTimestampMs;

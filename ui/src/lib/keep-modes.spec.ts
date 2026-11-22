@@ -74,14 +74,16 @@ describe('Keep modes', () => {
 	});
 
 	it('keeps an open export when playback refreshes the same evidence and resets for another selection', () => {
-		const first = segment('front-door', 1000, 3000);
+		const first = segment('front-door', 1000, 1_201_000);
 		const key = exportSelectionKey('front-door', first, null);
 		expect(exportSelectionKey('front-door', { ...first, url: 'refreshed-playback' }, null)).toBe(
 			key
 		);
 		expect(exportSelectionKey('side-door', first, null)).not.toBe(key);
 		expect(exportSelectionKey('front-door', { ...first, stream: 'sub' }, null)).not.toBe(key);
-		expect(exportSelectionKey('front-door', { ...first, end_time_ms: 4000 }, null)).not.toBe(key);
+		expect(exportSelectionKey('front-door', { ...first, end_time_ms: 601_000 }, null)).not.toBe(
+			key
+		);
 		expect(exportSelectionKey('front-door', first, { id: 'event', revision: 7 })).not.toBe(key);
 	});
 

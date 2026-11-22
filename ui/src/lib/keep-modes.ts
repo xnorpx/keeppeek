@@ -91,12 +91,11 @@ export function exportSelectionKey(
 	segment: RecordingSegment | null,
 	event: Pick<RecordingEvent, 'id' | 'revision'> | null
 ): string {
-	const range = createExportRange(segment, null);
 	return JSON.stringify([
 		sourceId,
 		segment?.stream,
-		range?.startMs,
-		range?.endMs,
+		segment?.start_time_ms,
+		segment?.end_time_ms,
 		event?.id,
 		event?.revision
 	]);

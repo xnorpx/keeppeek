@@ -45,6 +45,49 @@ async function selectTwoMinuteRange(page: Page): Promise<void> {
 	await expect(panel).toHaveAttribute('data-export-end-ms', String(selectedEndMs));
 }
 
+test('Export closes Timeline playback and keeps camera navigation available', async ({ page }) => {
+	test.setTimeout(90_000);
+	const requests = await mockKeepModes(page, 2);
+	await page.goto(`/keep?camera=front-door&stream=main&at=${selectedStartMs}`);
+	await expect(page.getByRole('button', { name: 'Timeline', exact: true })).toBeVisible({
+		timeout: 45_000
+	});
+	await expect.poll(() => requests.storedOpens.length).toBe(1);
+	const initial = requests.storedOpens[0]!;
+	expect(initial.timestampMs).toBe(selectedStartMs);
+	const mode = (name: string) => page.getByRole('button', { name, exact: true });
+	await mode('Export').click();
+	await expect.poll(() => requests.storedCloses).toEqual([initial.storedMediaId]);
+	await expect(page.locator('[data-keep-export]')).toBeVisible();
+	expect(requests.storedOpens).toHaveLength(1);
+	await mode('Timeline').click();
+	await expect.poll(() => requests.storedOpens.length).toBe(2);
+	expect(requests.storedOpens[1]).toMatchObject({
+		sourceId: 'front-door',
+		streamId: 'main',
+		timestampMs: selectedStartMs
+	});
+	await expect(mode('Play recording')).toBeVisible();
+	await mode('Export').click();
+	await expect.poll(() => requests.storedCloses.length).toBe(2);
+	const next = page.getByRole('button', { name: /^Next camera,/ });
+	const previous = page.getByRole('button', { name: /^Previous camera,/ });
+	await next.click();
+	await expect(page.locator('[data-camera-switcher]')).toHaveAttribute(
+		'data-selected-camera',
+		'camera-2'
+	);
+	await expect(next).toBeEnabled();
+	await expect(previous).toBeEnabled();
+	await previous.click();
+	await expect(page.locator('[data-camera-switcher]')).toHaveAttribute(
+		'data-selected-camera',
+		'front-door'
+	);
+	await expect(next).toBeEnabled();
+	expect(requests.storedOpens).toHaveLength(2);
+});
+
 test('preserves an export range while job creation fails closed', async ({ page }) => {
 	await mockKeepModes(page);
 	const noncanonicalRequests = observeNoncanonicalControlRequests(page);
