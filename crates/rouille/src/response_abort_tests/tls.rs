@@ -27,8 +27,11 @@ where
     socket
         .set_write_timeout(Some(Duration::from_secs(2)))
         .unwrap();
+    let fixture_root =
+        native_tls::Certificate::from_pem(include_bytes!("test_certificate.pem")).unwrap();
     TlsConnector::builder()
-        .danger_accept_invalid_certs(true)
+        .disable_built_in_roots(true)
+        .add_root_certificate(fixture_root)
         .build()
         .unwrap()
         .connect("localhost", socket)
