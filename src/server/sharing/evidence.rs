@@ -24,72 +24,97 @@ pub(super) fn preview(
     }
     let record = record(state, id)?;
     let issuer = principal.sharing_issuer();
-    require_owner(&record, &issuer)?;
     let policy = camera_access::for_principal(state, principal)?;
+    if range.is_some()
+        && record.requester_id == principal.id()
+        && record.job.status == proto::ExportJobStatus::Ready as i32
+        && (record.owner_key.is_none() || record.source_identity.is_none())
+    {
+        camera_access::require_camera(&policy, &record.job.source_id)?;
+        return Err(missing_range_proof());
+    }
+    require_owner(&record, &issuer)?;
     let current_source = source(state, record.source_identity.ok_or_else(denied)?)?;
     camera_access::require_camera(&policy, &current_source)?;
     if range.is_some()
         && record.media_proof.is_none()
         && record.job.status == proto::ExportJobStatus::Ready as i32
     {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            409,
-            "the completed export has no recorded media proof",
-        ));
+        return Err(missing_range_proof());
     }
     let binding = binding(&record)?;
     if let Some(selected) = range {
-        if selected.start_ms < 0
-            || selected.end_ms <= selected.start_ms
-            || selected.end_ms.saturating_sub(selected.start_ms)
-                > crate::shares::MAX_MEDIA_DURATION_MS
-        {
-            return Err(invalid("select a recording interval of up to two minutes"));
-        }
-        // Corrected audio may come from neighboring source times. This proof describes
-        // the output presentation timeline, so it cannot authorize those samples.
-        if record
-            .job
-            .recorded_audio
-            .as_ref()
-            .is_some_and(|timing| timing.applied_offset_ms != 0)
-        {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "recorded audio correction prevents verification of the selected source interval",
-            ));
-        }
-        if selected.source_id != current_source
-            || selected.source_id != binding.source_id
-            || selected.start_ms
-                != required_timestamp_ms(record.request.start_time.as_ref(), "export start")?
-            || selected.end_ms
-                != required_timestamp_ms(record.request.end_time.as_ref(), "export end")?
-            || binding.start_ms < selected.start_ms
-            || binding.end_ms > selected.end_ms
-        {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "the recording cannot be shared within the selected range",
-            ));
-        }
+        check_range(&record, &binding, &current_source, selected)?;
     }
     let checked = live_evidence(state, &record, binding)?;
     let opened = open_guest(state, &checked.binding)?;
     if range.is_some() {
         super::super::guest_review::inspect_range_codec(opened.file, checked.binding.bytes)
-            .map_err(|_| {
-                ControlCommandError::new(
-                    proto::ErrorCode::Rejected,
-                    409,
-                    "the selected recording could not be verified as browser-compatible",
-                )
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::InvalidData {
+                    ControlCommandError::new(
+                        proto::ErrorCode::Rejected,
+                        409,
+                        "the selected recording could not be verified as browser-compatible",
+                    )
+                } else {
+                    unavailable()
+                }
             })?;
     }
     Ok(checked)
+}
+
+fn missing_range_proof() -> ControlCommandError {
+    ControlCommandError::new(
+        proto::ErrorCode::Rejected,
+        409,
+        "the completed export has no recorded media proof",
+    )
+}
+
+// The original selection and the pinned artifact must both fit the requested interval.
+fn check_range(
+    record: &ExportJobRecord,
+    binding: &ExportBinding,
+    current_source: &str,
+    selected: &proto::ShareRecordingRange,
+) -> Result<(), ControlCommandError> {
+    if selected.start_ms < 0
+        || selected.end_ms <= selected.start_ms
+        || selected.end_ms.saturating_sub(selected.start_ms) > crate::shares::MAX_MEDIA_DURATION_MS
+    {
+        return Err(invalid("select a recording interval of up to two minutes"));
+    }
+    // Corrected audio may come from neighboring source times. This proof describes
+    // the output presentation timeline, so it cannot authorize those samples.
+    if record
+        .job
+        .recorded_audio
+        .as_ref()
+        .is_some_and(|timing| timing.applied_offset_ms != 0)
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "recorded audio correction prevents verification of the selected source interval",
+        ));
+    }
+    if selected.source_id != current_source
+        || selected.source_id != binding.source_id
+        || selected.start_ms
+            != required_timestamp_ms(record.request.start_time.as_ref(), "export start")?
+        || selected.end_ms != required_timestamp_ms(record.request.end_time.as_ref(), "export end")?
+        || binding.start_ms < selected.start_ms
+        || binding.end_ms > selected.end_ms
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "the recording cannot be shared within the selected range",
+        ));
+    }
+    Ok(())
 }
 
 pub(in crate::server) fn validate_guest(

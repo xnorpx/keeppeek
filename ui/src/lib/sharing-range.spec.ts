@@ -28,13 +28,13 @@ function client() {
 			.fn()
 			.mockResolvedValue({ capabilityIds: ['keeppeek.guest-range.v1'] }),
 		queryStoredTimeline: vi.fn(),
-		searchEventMetadata: vi.fn(),
 		listExports: vi.fn().mockResolvedValue([]),
 		createExport: vi.fn().mockResolvedValue(ready),
 		getExport: vi.fn()
 	};
 }
 const signal = () => new AbortController().signal;
+const savedEvent = { id: 'saved', source_id: 'front', start_time_ms: 1000, end_time_ms: 2000 };
 
 describe('recording range sharing', () => {
 	it('reuses only the unexpired, exact recording and keeps existing stream selection', async () => {
@@ -48,16 +48,49 @@ describe('recording range sharing', () => {
 		]);
 		expect(await prepareRangeShare({ client: recorder, target }, signal())).toEqual({
 			exportJobId: ready.id,
+			streamId: 'sub',
 			reused: true,
 			guard
 		});
 		expect(recorder.createExport).not.toHaveBeenCalled();
 	});
+	it('reuses the newest exact ready artifact even after the original footage is retained away', async () => {
+		const recorder = client();
+		recorder.listExports.mockResolvedValue([
+			ready,
+			{ ...ready, id: 'newest', streamId: 'main', expiresAtMs: ready.expiresAtMs + 1000 }
+		]);
+		const result = await prepareRangeShare(
+			{ client: recorder, target: { ...target, streamId: undefined } },
+			signal()
+		);
+		expect(result).toMatchObject({ exportJobId: 'newest', reused: true, guard });
+		expect(recorder.queryStoredTimeline).not.toHaveBeenCalled();
+	});
+
+	it('continues polling the same bounded export beyond the first minute', async () => {
+		const recorder = client();
+		recorder.createExport.mockResolvedValue({ ...ready, status: 'running' });
+		recorder.getExport.mockResolvedValue(ready);
+		const clock = vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValue(61000);
+		try {
+			expect(await prepareRangeShare({ client: recorder, target }, signal())).toMatchObject({
+				exportJobId: ready.id,
+				reused: false,
+				guard
+			});
+			expect(recorder.getExport).toHaveBeenCalledTimes(1);
+			expect(recorder.getExport).toHaveBeenCalledWith(ready.id);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
 	it('can explicitly replace a legacy match without extending its selection', async () => {
 		const recorder = client();
 		recorder.listExports.mockResolvedValue([{ ...ready, id: 'legacy' }]);
 		const result = await prepareRangeShare({ client: recorder, target }, signal(), true);
-		expect(result).toEqual({ exportJobId: ready.id, guard, reused: false });
+		expect(result).toEqual({ exportJobId: ready.id, streamId: 'sub', guard, reused: false });
 		expect(recorder.listExports).not.toHaveBeenCalled();
 		expect(recorder.createExport).toHaveBeenCalledWith({
 			...target,
@@ -68,20 +101,20 @@ describe('recording range sharing', () => {
 
 	it('prepares a new export using only the selected bookmark event and interval', async () => {
 		const recorder = client();
-		recorder.searchEventMetadata.mockResolvedValue({ hits: [{ eventId: 'saved', ...target }] });
+		recorder.queryStoredTimeline.mockResolvedValue({ events: [savedEvent] });
 		expect(
 			await prepareRangeShare(
 				{ client: recorder, target: { ...target, endMs: null, bookmarkEventId: 'saved' } },
 				signal()
 			)
-		).toEqual({ exportJobId: ready.id, guard, reused: false });
-		expect(recorder.searchEventMetadata).toHaveBeenCalledWith(
+		).toEqual({ exportJobId: ready.id, streamId: 'sub', guard, reused: false });
+		expect(recorder.queryStoredTimeline).toHaveBeenCalledWith(
 			expect.objectContaining({
-				eventIds: ['saved'],
+				includeAvailability: false,
+				includeEvents: true,
 				sourceIds: ['front'],
 				startMs: 1000,
-				endMs: 1001,
-				streamId: 'sub'
+				endMs: 1001
 			})
 		);
 		expect(recorder.createExport).toHaveBeenCalledWith({
@@ -92,10 +125,10 @@ describe('recording range sharing', () => {
 	});
 	it('does not prepare a different or missing bookmark, an open event or an oversized interval', async () => {
 		const recorder = client();
-		recorder.searchEventMetadata.mockResolvedValue({
-			hits: [
-				{ eventId: 'other', ...target },
-				{ eventId: 'saved', ...target, startMs: 900 }
+		recorder.queryStoredTimeline.mockResolvedValue({
+			events: [
+				{ ...savedEvent, id: 'other' },
+				{ ...savedEvent, start_time_ms: 900 }
 			]
 		});
 		for (const selection of [
@@ -125,14 +158,12 @@ describe('recording range sharing', () => {
 			]
 		});
 		recorder.queryStoredTimeline.mockResolvedValue({
+			events: [savedEvent],
 			ranges: [
 				{ sourceId: 'front', streamId: 'main', startMs: 1000, endMs: 2000 },
 				{ sourceId: 'front', streamId: 'sub', startMs: 1100, endMs: 1900 }
 			]
 		});
-		recorder.searchEventMetadata
-			.mockResolvedValueOnce({ hits: [] })
-			.mockResolvedValueOnce({ hits: [{ eventId: 'saved', ...target }] });
 		const { guard: selected } = await prepareRangeShare(
 			{
 				client: recorder,
@@ -146,10 +177,10 @@ describe('recording range sharing', () => {
 			signal()
 		);
 		expect(selected).toEqual(guard);
-		expect(recorder.searchEventMetadata.mock.calls.map(([query]) => query.streamId)).toEqual([
-			'main',
-			'sub'
-		]);
+		expect(recorder.queryStoredTimeline.mock.calls[0]![0]).toMatchObject({
+			includeAvailability: false,
+			includeEvents: true
+		});
 		expect(recorder.createExport).toHaveBeenCalledWith({
 			...target,
 			allowPartial: true,

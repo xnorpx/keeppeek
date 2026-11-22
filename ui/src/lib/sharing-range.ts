@@ -16,12 +16,7 @@ export type RangePreparation = {
 	target: RecordingShareTarget;
 	client: Pick<
 		ControlClient,
-		| 'getServerCapabilities'
-		| 'queryStoredTimeline'
-		| 'searchEventMetadata'
-		| 'listExports'
-		| 'getExport'
-		| 'createExport'
+		'getServerCapabilities' | 'queryStoredTimeline' | 'listExports' | 'getExport' | 'createExport'
 	>;
 };
 
@@ -30,6 +25,19 @@ export class RangePreparationError extends Error {}
 const invalidInterval = 'Select a completed recording interval of up to two minutes.';
 const variants = ['main', 'sub'] as const;
 export const missingRangeProof = 'the completed export has no recorded media proof';
+export const incompatibleRangeCodec =
+	'the selected recording could not be verified as browser-compatible';
+export function replaceableRangeArtifact(cause: unknown): boolean {
+	return (
+		cause instanceof Error &&
+		[
+			missingRangeProof,
+			incompatibleRangeCodec,
+			'recorded audio correction prevents verification of the selected source interval',
+			'the recording cannot be shared within the selected range'
+		].includes(cause.message)
+	);
+}
 
 async function selectedEnd({ target, client }: RangePreparation, signal: AbortSignal) {
 	const { sourceId, startMs } = target;
@@ -42,29 +50,22 @@ async function selectedEnd({ target, client }: RangePreparation, signal: AbortSi
 		throw new RangePreparationError(invalidInterval);
 	let endMs = target.endMs;
 	if (target.bookmarkEventId) {
-		endMs = null;
-		for (const streamId of target.streamId ? [target.streamId] : variants) {
-			signal.throwIfAborted();
-			const page = await client.searchEventMetadata({
-				sourceIds: [sourceId],
-				eventIds: [target.bookmarkEventId],
-				streamId,
-				startMs,
-				endMs: startMs + 1,
-				pageSize: 1,
-				signal
-			});
-			const hit = page.hits.find(
-				(event) =>
-					event.eventId === target.bookmarkEventId &&
-					event.sourceId === sourceId &&
-					event.startMs === startMs
-			);
-			if (hit) {
-				endMs = hit.endMs;
-				break;
-			}
-		}
+		const page = await client.queryStoredTimeline({
+			sourceIds: [sourceId],
+			startMs,
+			endMs: startMs + 1,
+			includeEvents: true,
+			includeAvailability: false,
+			includeAttachments: false,
+			signal
+		});
+		const hit = page.events.find(
+			(event) =>
+				event.id === target.bookmarkEventId &&
+				event.source_id === sourceId &&
+				event.start_time_ms === startMs
+		);
+		endMs = hit?.end_time_ms ?? null;
 	}
 	if (
 		endMs === null ||
@@ -80,7 +81,8 @@ async function retainedStream(
 	{ target, client }: RangePreparation,
 	endMs: number,
 	caps: ServerCapabilities,
-	signal: AbortSignal
+	signal: AbortSignal,
+	excludedStream?: 'main' | 'sub'
 ): Promise<'main' | 'sub'> {
 	const { sourceId, startMs } = target;
 	if (target.streamId) return target.streamId;
@@ -94,6 +96,7 @@ async function retainedStream(
 		signal
 	});
 	const candidates = variants
+		.filter((streamId) => streamId !== excludedStream)
 		.map((streamId) => {
 			const type = stored?.streams.find((stream) => stream.streamId === streamId)?.contentType;
 			// The real file is inspected on the recorder. Prefer a known AVC track when
@@ -124,7 +127,8 @@ async function retainedStream(
 export async function prepareRangeShare(
 	preparation: RangePreparation,
 	signal: AbortSignal,
-	freshExport = false
+	freshExport = false,
+	excludedStream?: 'main' | 'sub'
 ) {
 	const { target, client } = preparation;
 	signal.throwIfAborted();
@@ -135,24 +139,31 @@ export async function prepareRangeShare(
 	const { sourceId, startMs } = target;
 	const endMs = await selectedEnd(preparation, signal);
 	signal.throwIfAborted();
-	const streamId = await retainedStream(preparation, endMs, capabilities, signal);
-	signal.throwIfAborted();
 	const guard = { sourceId, startMs: BigInt(startMs), endMs: BigInt(endMs) };
 	const jobs = freshExport ? [] : await client.listExports();
 	signal.throwIfAborted();
-	let job = jobs.find(
-		(candidate) =>
-			candidate.sourceId === sourceId &&
-			candidate.streamId === streamId &&
-			candidate.requestedStartMs === startMs &&
-			candidate.requestedEndMs === endMs &&
-			!candidate.burnInTimestamp &&
-			candidate.status === 'ready' &&
-			candidate.expiresAtMs !== null &&
-			candidate.expiresAtMs > Date.now()
-	);
-	const reused = job !== undefined;
-	job ??= await client.createExport({
+	const existing = jobs
+		.filter(
+			(candidate) =>
+				candidate.sourceId === sourceId &&
+				(!target.streamId || candidate.streamId === target.streamId) &&
+				candidate.streamId !== excludedStream &&
+				candidate.requestedStartMs === startMs &&
+				candidate.requestedEndMs === endMs &&
+				!candidate.burnInTimestamp &&
+				candidate.status === 'ready' &&
+				candidate.expiresAtMs !== null &&
+				candidate.expiresAtMs > Date.now()
+		)
+		.sort(
+			(left, right) =>
+				(right.expiresAtMs ?? 0) - (left.expiresAtMs ?? 0) || left.id.localeCompare(right.id)
+		)[0];
+	if (existing)
+		return { exportJobId: existing.id, streamId: existing.streamId, guard, reused: true };
+	const streamId = await retainedStream(preparation, endMs, capabilities, signal, excludedStream);
+	signal.throwIfAborted();
+	let job = await client.createExport({
 		sourceId,
 		streamId,
 		startMs,
@@ -160,7 +171,7 @@ export async function prepareRangeShare(
 		allowPartial: true,
 		guestRangePreparation: true
 	});
-	const deadline = performance.now() + 60_000;
+	const deadline = performance.now() + 5 * 60_000;
 	while (job.status === 'running' && performance.now() < deadline) {
 		signal.throwIfAborted();
 		await new Promise<void>((resolve) => setTimeout(resolve, 500));
@@ -170,7 +181,7 @@ export async function prepareRangeShare(
 	signal.throwIfAborted();
 	if (job.status !== 'ready')
 		throw new RangePreparationError('A completed export of this recording range is not available.');
-	return { exportJobId: job.id, guard, reused };
+	return { exportJobId: job.id, streamId, guard, reused: false };
 }
 
 export function insideRecordingRange(

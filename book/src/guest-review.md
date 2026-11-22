@@ -67,8 +67,11 @@ the playback, download and expiry settings apply to range links too.
 For an event or bookmark the recorder checks which streams have footage inside the selected
 interval. Keep preserves the stream you selected. A nonzero recorded-audio correction prevents
 range sharing because a sample's original time can differ from its presentation time in the file.
-**Reload preview** checks the same file again. If a reused file lacks its original media proof,
-**Prepare a fresh export** creates a replacement for the same selection.
+**Reload preview** checks the same file again. For a reused file without adequate source, owner, timing or media proof, **Prepare a fresh
+export** creates a replacement for the same selection. Events and bookmarks first try the newest
+matching ready file, including when the original recording has already expired. If an automatically
+selected stream fails codec verification, the recorder can prepare the other retained stream for
+the same interval. Keep preserves the stream explicitly selected by the operator.
 
 ## What the guest receives
 

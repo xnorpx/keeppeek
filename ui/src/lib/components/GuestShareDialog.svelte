@@ -7,7 +7,8 @@
 	import type { SharingControlClient } from '$lib/control-client-sharing';
 	import {
 		prepareRangeShare,
-		missingRangeProof,
+		incompatibleRangeCodec,
+		replaceableRangeArtifact,
 		RangePreparationError,
 		type RangePreparation,
 		type RecordingRangeGuard
@@ -69,6 +70,38 @@
 		};
 	});
 
+	async function previewRange(selection: RangePreparation, fresh: boolean) {
+		if (fresh || !preparedRange)
+			preparedRange = await prepareRangeShare(selection, lifetime.signal, fresh);
+		let triedAlternate = false;
+		for (;;) {
+			const prepared = preparedRange;
+			lifetime.signal.throwIfAborted();
+			try {
+				const evidence = await controller.previewExport(prepared.exportJobId, prepared.guard);
+				return { evidence, guard: prepared.guard };
+			} catch (cause) {
+				if (
+					cause instanceof Error &&
+					cause.message === incompatibleRangeCodec &&
+					!selection.target.streamId &&
+					!triedAlternate
+				) {
+					triedAlternate = true;
+					preparedRange = await prepareRangeShare(
+						selection,
+						lifetime.signal,
+						false,
+						prepared.streamId
+					);
+					continue;
+				}
+				replaceable = prepared.reused && replaceableRangeArtifact(cause);
+				throw cause;
+			}
+		}
+	}
+
 	async function load(replace = false): Promise<void> {
 		const version = ++generation;
 		stage = 'loading';
@@ -89,19 +122,9 @@
 					throw new RangePreparationError(
 						'Enable sharing and configure its HTTPS origin in Settings before preparing a recording range.'
 					);
-				if (replace || !preparedRange)
-					preparedRange = await prepareRangeShare(range, lifetime.signal, replace);
-				const prepared = preparedRange;
-				if (version !== generation) return;
-				guard = prepared.guard;
-				try {
-					nextEvidence = await controller.previewExport(prepared.exportJobId, guard);
-				} catch (cause) {
-					// A matching older artifact can lack the proof required for a range grant.
-					replaceable =
-						prepared.reused && cause instanceof Error && cause.message === missingRangeProof;
-					throw cause;
-				}
+				const result = await previewRange(range, replace);
+				nextEvidence = result.evidence;
+				guard = result.guard;
 			} else if (exportJobId) {
 				[nextPolicy, nextEvidence] = await Promise.all([
 					controller.getPolicy(),

@@ -120,12 +120,69 @@ describe('creator guest share dialog', () => {
 		);
 	});
 
+	it('tries retained substream footage after a generic MP4 main stream fails codec verification', async () => {
+		const evidence = shareEvidenceFixture();
+		const target = {
+			sourceId: evidence.sourceId,
+			startMs: Number(evidence.startMs),
+			endMs: Number(evidence.endMs)
+		};
+		const streams = ['main', 'sub'];
+		const ready = {
+			id: 'main-file',
+			sourceId: target.sourceId,
+			streamId: 'main',
+			requestedStartMs: target.startMs,
+			requestedEndMs: target.endMs,
+			status: 'ready',
+			expiresAtMs: sharingFixtureNow + 60000
+		};
+		const rangeClient = {
+			getServerCapabilities: vi.fn().mockResolvedValue({
+				capabilityIds: ['keeppeek.guest-range.v1'],
+				storedMediaSources: [
+					{
+						sourceId: target.sourceId,
+						streams: streams.map((streamId) => ({ streamId, contentType: 'video/mp4' }))
+					}
+				]
+			}),
+			queryStoredTimeline: vi
+				.fn()
+				.mockResolvedValue({ ranges: streams.map((streamId) => ({ ...target, streamId })) }),
+			listExports: vi.fn().mockResolvedValue([ready]),
+			getExport: vi.fn(),
+			createExport: vi.fn().mockResolvedValue({ ...ready, id: 'sub-file', streamId: 'sub' })
+		};
+		const share = controller();
+		share.previewExport.mockRejectedValueOnce(
+			new Error('the selected recording could not be verified as browser-compatible')
+		);
+		await render(GuestShareDialog, {
+			props: { controller: share, range: { target, client: rangeClient }, onclose: vi.fn() }
+		});
+		await expect.element(page.getByLabelText('Display name')).toBeVisible();
+		expect(share.previewExport.mock.calls.map(([id]) => id)).toEqual(['main-file', 'sub-file']);
+		expect(rangeClient.createExport).toHaveBeenCalledOnce();
+		expect(rangeClient.createExport).toHaveBeenCalledWith({
+			...target,
+			streamId: 'sub',
+			allowPartial: true,
+			guestRangePreparation: true
+		});
+	});
+
 	it.each([
 		{ failure: 'Connection lost', existing: true, replacement: false },
 		{ failure: missingRangeProof, existing: false, replacement: false },
-		{ failure: missingRangeProof, existing: true, replacement: true }
+		{ failure: missingRangeProof, existing: true, replacement: true },
+		{
+			failure: 'recorded audio correction prevents verification of the selected source interval',
+			existing: true,
+			replacement: true
+		}
 	])(
-		'only explicitly replaces an existing artifact without proof: $failure, existing=$existing',
+		'allows explicit replacement only for a permanent failure on a reused artifact: $failure, existing=$existing',
 		async ({ failure, existing, replacement }) => {
 			const evidence = shareEvidenceFixture();
 			const target = {
@@ -148,7 +205,7 @@ describe('creator guest share dialog', () => {
 					.fn()
 					.mockResolvedValue({ capabilityIds: ['keeppeek.guest-range.v1'] }),
 				queryStoredTimeline: vi.fn(),
-				searchEventMetadata: vi.fn(),
+
 				listExports: vi.fn().mockResolvedValue(existing ? [old] : []),
 				getExport: vi.fn(),
 				createExport: vi.fn().mockResolvedValue({ ...old, id: 'new-artifact' })

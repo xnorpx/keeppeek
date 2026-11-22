@@ -249,6 +249,42 @@ fn range_preview_and_creation_require_uncorrected_audio_and_an_existing_media_pr
 }
 
 #[test]
+fn a_creator_can_identify_legacy_range_artifacts_that_need_replacement() {
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let preview = || {
+        evidence::preview(
+            &fixture.state,
+            &fixture.principal,
+            &record.job.job_id,
+            Some(&range),
+        )
+        .err()
+        .expect("legacy evidence must be rejected")
+    };
+    for (owner, source) in [
+        (None, record.source_identity),
+        (record.owner_key.clone(), None),
+    ] {
+        {
+            let mut records = fixture.state.export_jobs.lock().unwrap();
+            let stored = records.get_mut(&record.job.job_id).unwrap();
+            stored.owner_key = owner;
+            stored.source_identity = source;
+        }
+        assert!(preview().message.contains("no recorded media proof"));
+    }
+    fixture
+        .state
+        .export_jobs
+        .lock()
+        .unwrap()
+        .get_mut(&record.job.job_id)
+        .unwrap()
+        .requester_id = "another-creator".to_owned();
+    assert_eq!(preview().message, "guest evidence is unavailable");
+}
+
+#[test]
 fn selected_interval_guards_preview_and_grant_creation() {
     let (fixture, record, selected) = selected_export(VideoCodec::H264);
     let guarded_preview = |selected: &proto::ShareRecordingRange| {
