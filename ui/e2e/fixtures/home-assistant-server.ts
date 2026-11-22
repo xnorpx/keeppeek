@@ -121,7 +121,8 @@ allowed_origins = [${JSON.stringify(origin)}]
 [storage]
 short_term_secs = 5
 medium_term_secs = ${options.frameStepMedia ? 8 : 60}
-${options.frameStepMedia ? 'flush_interval_secs = 1\n' : ''}long_term_max_gb = 0
+long_term_max_gb = 0
+${options.frameStepMedia ? 'flush_interval_secs = 1' : ''}
 ${options.archiveFixture || options.calibrationFixture || options.frameStepMedia ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
 [access_credentials]
 version = 1

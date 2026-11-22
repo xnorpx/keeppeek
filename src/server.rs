@@ -20421,8 +20421,8 @@ mod tests {
     #[test]
     fn export_range_is_limited_to_two_minutes_and_named_for_the_camera() {
         assert_eq!(
-            export_file_name(" Front / DÃ¸r ", 0, 120_000),
-            "Front-DÃ¸r_1970-01-01T00-00-00-000Z_to_1970-01-01T00-02-00-000Z.mp4"
+            export_file_name(" Front / Dør ", 0, 120_000),
+            "Front-Dør_1970-01-01T00-00-00-000Z_to_1970-01-01T00-02-00-000Z.mp4"
         );
         assert_eq!(
             export_file_name("///", 0, 1),
