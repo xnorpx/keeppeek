@@ -305,6 +305,17 @@ fn acknowledged_retirement_cleans_receipts_and_retries_without_media_deletion() 
 {
     let fixture = Fixture::new()?;
     fixture.retire()?;
+    #[cfg(windows)]
+    {
+        let staging = private_directory(&fixture.root.directory, OsStr::new(QUARANTINE), false)?;
+        let directory = private_directory(&staging, OsStr::new(&fixture.operation), false)?;
+        for name in [INTENT, STAGED] {
+            drop(removal::windows::exclusive_file(
+                &directory,
+                OsStr::new(name),
+            )?);
+        }
+    }
     let acknowledge = || {
         fixture.root.acknowledge_retirement(
             &fixture.key,
