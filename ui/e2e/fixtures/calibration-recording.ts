@@ -32,7 +32,13 @@ export async function seedCalibrationRecording(
 			'--age-seconds',
 			'120'
 		],
-		{ cwd: directory, windowsHide: true, timeout: 30_000, maxBuffer: 16_384 }
+		{
+			cwd: directory,
+			env: { ...process.env, RUST_LOG: 'warn' },
+			windowsHide: true,
+			timeout: 30_000,
+			maxBuffer: 16_384
+		}
 	);
 	const result: CalibrationRecording = JSON.parse(stdout);
 	if (
