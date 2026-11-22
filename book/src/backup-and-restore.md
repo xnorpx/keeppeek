@@ -43,6 +43,11 @@ Protect all owned volume roots with a separate archive policy when they need rec
 | Access audit, credential last-use activity and active sessions                                                          | Runtime memory; reset on restart. Durable identities and grants remain.                                                |
 | Browser sign-in key, media handles and active wake lock                                                                 | Page/browser runtime state; reload or reconnect as required. Saved dashboard wake-lock intent remains configuration.   |
 
+An evidence guest link has its own durable authorization store on the target metadata volume.
+Applying a configuration ZIP preserves that store. An empty target needs newly issued links.
+See [Recover guest links](./recording-archive-recovery.md#recover-guest-links) when restoring
+an entire metadata volume.
+
 Restart is therefore a recording interruption and a runtime-state reset, even when every saved
 setting returns correctly. Collect required audit and delivery evidence before restart. A queue
 that was pending before shutdown is not proof of later provider delivery.

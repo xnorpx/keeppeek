@@ -56,6 +56,19 @@ If you use storage snapshots instead of a stopped copy, establish and test a con
 procedure for every involved volume and writer. This book does not claim that an arbitrary live
 filesystem copy is recoverable.
 
+## Recover guest links
+
+Guest link verifiers, revocations and consumed view or download limits live in the metadata
+volume’s `guest-review/grants.db` database. The configuration ZIP contains the sharing policy.
+A restart ends existing guest sessions and active transfers.
+
+Keep guest sharing disabled during recovery. An older volume image can contain links revoked
+after the copy or counters that have since increased. On a replacement recorder, recover the
+recordings and completed exports with a fresh guest store, then issue new links for the evidence
+an Administrator still authorizes. If you explicitly restore the original guest store, use its
+consistent database family and verify the latest revocations and counts before enabling sharing.
+When those later changes cannot be established, use a fresh store and reissue links.
+
 ## Restore the runtime state store before accepting watches
 
 Restore the state-store database family together with its counters: namespace
