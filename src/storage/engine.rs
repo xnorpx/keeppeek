@@ -938,9 +938,8 @@ impl WriterWorker {
         let long_term =
             LongTermStore::for_recording_roots(&config.long_term_path, &config.medium_term_path);
         let safety = health.storage();
-        let relocation_scan = relocation::Scan::new(
-            catalog.is_some() || config.medium_term_path != config.long_term_path,
-        );
+        let relocation_scan =
+            relocation::Scan::new(relocation::can_scan(&config, catalog.is_some()));
         Self {
             config,
             demand,
@@ -959,7 +958,7 @@ impl WriterWorker {
     }
 
     fn run(&mut self, rx: StorageCommandReceiver) {
-        if self.catalog.is_some() || self.config.medium_term_path != self.config.long_term_path {
+        if self.relocation_scan.enabled() {
             self.relocator = Some(relocation::Background::start(
                 self.config.clone(),
                 self.catalog.clone(),
@@ -1223,7 +1222,10 @@ impl WriterWorker {
         capacity: &mut FilesystemCapacity,
     ) -> anyhow::Result<()> {
         if let Some(candidate) = catalog.pending_cleanup_candidate()? {
-            if !self.long_term.contains_cleanup_path(&candidate.path) {
+            if !self
+                .long_term
+                .contains_cleanup_path(&candidate.path, &candidate.stream_id)
+            {
                 // A previous build could claim a finalized capture before its move began.
                 catalog.cancel_cleanup(&candidate.recording_id)?;
             } else if !candidate.path.exists() {
@@ -1798,13 +1800,13 @@ mod tests {
 
     #[test]
     fn capacity_cleanup_skips_unrelocated_capture_even_before_the_move_is_reserved() {
-        for nested in [false, true] {
+        for nested in [None, Some("capture"), Some("front")] {
             let mut config = storage_config("cleanup-unrelocated-capture");
             let fixture =
                 std::env::temp_dir().join(format!("cleanup-unrelocated-{}", uuid::Uuid::new_v4()));
             let archive = fixture.join("archive");
-            let medium = if nested {
-                archive.join("capture")
+            let medium = if let Some(directory) = nested {
+                archive.join(directory)
             } else {
                 fixture.join("archive-capture")
             };
@@ -1830,7 +1832,7 @@ mod tests {
                 "source"
             );
             config.long_term_max_bytes = 50;
-            let worker = WriterWorker::new(
+            let mut worker = WriterWorker::new(
                 config,
                 RecordingDemand::new(Duration::ZERO),
                 Some(handle.clone()),
@@ -1862,6 +1864,27 @@ mod tests {
             )
             .unwrap();
             assert_eq!(relocated, archive.join(relative));
+            assert!(
+                worker
+                    .long_term
+                    .contains_cleanup_path(&relocated, "front/sub")
+            );
+            let mut now = Instant::now();
+            for _ in 0..32 {
+                let Some(delay) = worker.retry_relocations(now) else {
+                    break;
+                };
+                now += delay;
+            }
+            assert!(!worker.relocation_scan.take_published());
+            assert!(
+                worker
+                    .health
+                    .snapshot()
+                    .streams
+                    .iter()
+                    .all(|entry| entry.last_error.is_none())
+            );
             assert_eq!(std::fs::read(relocated).unwrap().len(), 40);
             assert!(!source.exists());
             assert_eq!(

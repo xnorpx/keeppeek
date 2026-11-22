@@ -3,6 +3,36 @@ use std::path::{Path, PathBuf};
 
 pub mod inspection;
 
+pub(crate) fn legacy_stream(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let name = relative.file_name()?.to_str()?.strip_suffix(".mp4")?;
+    let hour = relative.parent()?;
+    let date = hour.parent()?;
+    let stream = date.parent()?;
+    let digits = |text: &str, len| text.len() == len && text.bytes().all(|b| b.is_ascii_digit());
+    let day = date.file_name()?.to_str()?;
+    if !digits(name, 7)
+        || !digits(hour.file_name()?.to_str()?, 2)
+        || day.len() != 10
+        || !day.is_ascii()
+        || !digits(&day[..4], 4)
+        || !digits(&day[5..7], 2)
+        || !digits(&day[8..], 2)
+        || &day[4..5] != "-"
+        || &day[7..8] != "-"
+        || stream.as_os_str().is_empty()
+    {
+        return None;
+    }
+    Some(
+        stream
+            .iter()
+            .map(|s| s.to_str())
+            .collect::<Option<Vec<_>>>()?
+            .join("/"),
+    )
+}
+
 #[derive(Clone)]
 pub struct LongTermStore {
     root: PathBuf,
@@ -31,11 +61,24 @@ impl LongTermStore {
         self.pending_source.as_deref()
     }
 
-    pub(crate) fn contains_cleanup_path(&self, path: &Path) -> bool {
-        path.starts_with(&self.root)
-            && !self
-                .pending_source()
-                .is_some_and(|source| path.starts_with(source))
+    pub(crate) fn contains_cleanup_path(&self, path: &Path, catalog_stream: &str) -> bool {
+        if !path.starts_with(&self.root) {
+            return false;
+        }
+        if self
+            .pending_source()
+            .is_some_and(|source| path.starts_with(source))
+        {
+            // A published stream can share the name of a capture directory nested in the archive.
+            return legacy_stream(&self.root, path).is_some_and(|stream| {
+                if cfg!(windows) {
+                    stream.eq_ignore_ascii_case(catalog_stream)
+                } else {
+                    stream == catalog_stream
+                }
+            });
+        }
+        true
     }
 
     pub fn finalized_segments(&self, camera_id: &str) -> std::io::Result<Vec<PathBuf>> {

@@ -210,6 +210,7 @@ pub struct CatalogMediaObjectLocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CatalogCleanupCandidate {
     pub recording_id: String,
+    pub stream_id: String,
     pub path: PathBuf,
     pub file_bytes: u64,
     pub pending: bool,
@@ -2573,10 +2574,9 @@ async fn select_cleanup_candidate(
 ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
     if let Some(candidate) = pending_cleanup_candidate(connection).await? {
         if (filter.recording_id.is_some() && !candidate.retention_expiry)
-            || filter
-                .store
-                .as_ref()
-                .is_some_and(|store| !store.contains_cleanup_path(&candidate.path))
+            || filter.store.as_ref().is_some_and(|store| {
+                !store.contains_cleanup_path(&candidate.path, &candidate.stream_id)
+            })
         {
             return Ok(None);
         }
@@ -2630,14 +2630,21 @@ async fn find_cleanup_candidate(
     } else {
         ("path", "BINARY")
     };
+    // Keep this exceptional nested-root match identical to long_term::legacy_stream.
+    let legacy_tail = concat!(
+        "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/",
+        "[0-9][0-9]/[0-9][0-9][0-9][0-9][0-9][0-9][0-9].mp4"
+    );
     let mut rows = connection
             .query(
-                format!("SELECT id, path, file_bytes, cleanup_pending
+                format!("SELECT id, path, file_bytes, cleanup_pending, stream_id
                  FROM recording_files
                  WHERE finalized = 1 AND protected = 0 AND retention_pending=0
                    AND NOT EXISTS(SELECT 1 FROM legacy_recording_relocations m WHERE m.id=recording_files.id)
                    AND (?2 IS NULL OR substr({column},1,length(?2))=?2 COLLATE {collation})
-                   AND (?4 IS NULL OR substr({column},1,length(?4))!=?4 COLLATE {collation})
+                   AND (?4 IS NULL OR substr({column},1,length(?4))!=?4 COLLATE {collation}
+                       OR (substr({column},1,length(?2 || stream_id || '/'))=(?2 || stream_id || '/') COLLATE {collation}
+                           AND substr({column},length(?2 || stream_id || '/')+1) GLOB ?5))
                    AND (?3 IS NULL OR (EXISTS(SELECT 1 FROM recording_retention_policies p WHERE p.camera_id=recording_files.source_id OR p.camera_id='')
                        AND retention_generation=(SELECT generation FROM recording_retention_runtime WHERE singleton=1)
                        AND EXISTS(SELECT 1 FROM recording_retention_decisions d WHERE d.recording_id=recording_files.id)))
@@ -2652,7 +2659,7 @@ async fn find_cleanup_candidate(
                                    WHERE a.kind='recording' AND a.recording_id=recording_files.id AND (a.state='ready' OR a.local_evicted!=0))
                  {} ORDER BY cleanup_pending DESC, started_at_ms, id
                  LIMIT 1",if filter.recording_id.is_some(){"AND id=?3"} else {"AND ?3 IS NULL"}),
-                turso::params![retention::now_ms()?,root.as_deref(),filter.recording_id.as_deref(),source.as_deref()],
+                turso::params![retention::now_ms()?,root.as_deref(),filter.recording_id.as_deref(),source.as_deref(),legacy_tail],
             )
             .await?;
     let candidate = rows
@@ -2661,6 +2668,7 @@ async fn find_cleanup_candidate(
         .map(|row| {
             anyhow::Ok(CatalogCleanupCandidate {
                 recording_id: row.get(0)?,
+                stream_id: row.get(4)?,
                 path: PathBuf::from(row.get::<String>(1)?),
                 file_bytes: to_u64(row.get(2)?, "cleanup candidate file bytes")?,
                 pending: row.get::<i64>(3)? != 0,
@@ -2677,7 +2685,7 @@ async fn pending_cleanup_candidate(
 ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
     let mut rows = connection
         .query(
-            "SELECT id, path, file_bytes,cleanup_retention_expiry
+            "SELECT id, path, file_bytes, cleanup_retention_expiry, stream_id
              FROM recording_files
              WHERE finalized = 1 AND protected = 0 AND cleanup_pending = 1
                AND NOT EXISTS (SELECT 1 FROM archive_replicas a
@@ -2694,6 +2702,7 @@ async fn pending_cleanup_candidate(
         .map(|row| {
             anyhow::Ok(CatalogCleanupCandidate {
                 recording_id: row.get(0)?,
+                stream_id: row.get(4)?,
                 path: PathBuf::from(row.get::<String>(1)?),
                 file_bytes: to_u64(row.get(2)?, "pending cleanup file bytes")?,
                 pending: true,

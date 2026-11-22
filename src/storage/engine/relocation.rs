@@ -1,5 +1,6 @@
 //! Recover split-root recording moves from the finalized source file itself.
 use super::{RecordingCatalogHandle, RecordingHealthRegistry, StorageConfig, WriterWorker};
+use crate::storage::long_term::legacy_stream;
 mod background;
 mod files;
 mod handoff;
@@ -40,6 +41,10 @@ impl Scan {
             due: distinct_roots.then(Instant::now),
             ..Self::default()
         }
+    }
+
+    pub(super) fn enabled(&self) -> bool {
+        self.due.is_some()
     }
 
     pub(super) fn take_published(&mut self) -> bool {
@@ -91,42 +96,10 @@ enum Next {
     File(String, PathBuf),
 }
 
-fn legacy_stream(root: &Path, path: &Path) -> Option<String> {
-    let relative = path.strip_prefix(root).ok()?;
-    let name = relative.file_name()?.to_str()?.strip_suffix(".mp4")?;
-    let hour = relative.parent()?;
-    let date = hour.parent()?;
-    let stream = date.parent()?;
-    let digits = |text: &str, len| text.len() == len && text.bytes().all(|b| b.is_ascii_digit());
-    let day = date.file_name()?.to_str()?;
-    if !digits(name, 7)
-        || !digits(hour.file_name()?.to_str()?, 2)
-        || day.len() != 10
-        || !day.is_ascii()
-        || !digits(&day[..4], 4)
-        || !digits(&day[5..7], 2)
-        || !digits(&day[8..], 2)
-        || &day[4..5] != "-"
-        || &day[7..8] != "-"
-        || stream.as_os_str().is_empty()
-    {
-        return None;
-    }
-    Some(
-        stream
-            .iter()
-            .map(|s| s.to_str())
-            .collect::<Option<Vec<_>>>()?
-            .join("/"),
-    )
-}
-
 impl WriterWorker {
     pub(super) fn finish_relocation(&mut self, stream: &str, path: &Path, id: &str) {
         if let Err(error) = self.move_to_long_term(stream, path, id) {
-            if self.config.medium_term_path != self.config.long_term_path
-                && legacy_stream(&self.config.medium_term_path, path).is_some()
-            {
+            if can_scan(&self.config, self.catalog.is_some()) && legacy_path(&self.config, path) {
                 self.health.relocation_failed(stream);
                 self.relocation_scan.fail(stream, Instant::now());
             } else {
@@ -141,6 +114,12 @@ impl WriterWorker {
         self.relocation_scan
             .step(&self.config, self.catalog.as_ref(), &self.health, now)
     }
+}
+
+pub(super) fn can_scan(config: &StorageConfig, has_catalog: bool) -> bool {
+    // Without a catalog, a nested file can name both a capture and a published stream.
+    // Only the writer knows the actual stream at finalization.
+    has_catalog || !config.medium_term_path.starts_with(&config.long_term_path)
 }
 
 pub(super) fn legacy_path(config: &StorageConfig, path: &Path) -> bool {
@@ -191,12 +170,13 @@ impl Scan {
         let page = self.next(&config.medium_term_path, &config.long_term_path);
         match page {
             Ok(Next::File(stream, path)) => {
-                if let Err(error) = retry_file(config, catalog, &stream, &path, &self.stop) {
-                    self.fail(&stream, now);
-                    health.relocation_failed(&stream);
-                    tracing::warn!(camera = stream, %error, "recording relocation retry deferred");
-                } else {
-                    self.published = true;
+                match retry_file(config, catalog, &stream, &path, &self.stop) {
+                    Ok(moved) => self.published |= moved,
+                    Err(error) => {
+                        self.fail(&stream, now);
+                        health.relocation_failed(&stream);
+                        tracing::warn!(camera = stream, %error, "recording relocation retry deferred");
+                    }
                 }
                 self.due = Some(now.max(Instant::now()) + PAGE_DELAY);
             }
@@ -231,7 +211,7 @@ fn retry_file(
     stream: &str,
     path: &Path,
     stop: &AtomicBool,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     // The writer joins the logical stream key (such as "front/main") in one step.
     // Rebuild that spelling after a directory walk: Windows enumeration returns
     // backslashes for both components, while the catalog path is a unique TEXT key.
@@ -244,9 +224,14 @@ fn retry_file(
             .finalized_relocation(&path, &destination)
             .map_err(io::Error::other)?
         else {
-            return Ok(());
+            return Ok(false);
         };
         if catalog_stream != stream {
+            if legacy_stream(&config.long_term_path, &path).as_deref()
+                == Some(catalog_stream.as_str())
+            {
+                return Ok(false);
+            }
             return Err(io::Error::other(
                 "recording stream does not match legacy path",
             ));
@@ -255,5 +240,5 @@ fn retry_file(
     } else {
         String::new()
     };
-    move_recording(config, catalog, stream, &path, &id, stop).map(|_| ())
+    move_recording(config, catalog, stream, &path, &id, stop).map(|_| true)
 }

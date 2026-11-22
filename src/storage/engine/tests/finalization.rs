@@ -411,3 +411,28 @@ fn aliased_archive_root_publishes_its_spelling_and_keeps_the_only_file() {
     catalog.shutdown();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn nested_catalogless_capture_moves_only_the_file_the_writer_finalized() {
+    let root = std::env::temp_dir().join(format!("nested-capture-{}", uuid::Uuid::new_v4()));
+    let mut config = storage_config("nested-catalogless-capture");
+    config.medium_term_path = root.join("front");
+    config.long_term_path.clone_from(&root);
+    let recorded = Path::new("2026-11-22/13/0000000.mp4");
+    let stream = "front/sub";
+    let source = config.medium_term_path.join(stream).join(recorded);
+    let published = root.join(stream).join(recorded);
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, b"front/sub recording").unwrap();
+    let worker = WriterWorker::new(config.clone(), RecordingDemand::new(Duration::ZERO), None);
+    assert!(!worker.relocation_scan.enabled());
+    assert_eq!(
+        worker.move_to_long_term(stream, &source, "").unwrap(),
+        published
+    );
+    let mut restarted = WriterWorker::new(config, RecordingDemand::new(Duration::ZERO), None);
+    assert_eq!(restarted.retry_relocations(Instant::now()), None);
+    assert_eq!(std::fs::read(&published).unwrap(), b"front/sub recording");
+    assert!(!root.join("sub").join(recorded).exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
