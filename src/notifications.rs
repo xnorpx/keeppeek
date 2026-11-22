@@ -102,6 +102,7 @@ enum Command {
     },
     SetProfileSuppressedSources {
         source_ids: std::collections::BTreeSet<String>,
+        revision: Option<ProfileRevisionFence>,
         active: Arc<AtomicBool>,
         reply: SyncSender<anyhow::Result<usize>>,
     },
@@ -148,6 +149,12 @@ enum Command {
         reply: SyncSender<anyhow::Result<u64>>,
     },
     Shutdown,
+}
+
+#[derive(Debug)]
+pub(crate) struct ProfileRevisionFence {
+    pub(crate) status: Arc<std::sync::RwLock<crate::profiles::RuntimeProfileStatus>>,
+    pub(crate) revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -277,6 +284,14 @@ impl Handle {
         &self,
         source_ids: std::collections::BTreeSet<String>,
     ) -> anyhow::Result<usize> {
+        self.update_profile_suppression(source_ids, None)
+    }
+
+    pub(crate) fn update_profile_suppression(
+        &self,
+        source_ids: std::collections::BTreeSet<String>,
+        revision: Option<ProfileRevisionFence>,
+    ) -> anyhow::Result<usize> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         let active = Arc::new(AtomicBool::new(true));
         {
@@ -287,6 +302,7 @@ impl Handle {
             self.tx
                 .try_send(Command::SetProfileSuppressedSources {
                     source_ids,
+                    revision,
                     active: active.clone(),
                     reply: reply_tx,
                 })
@@ -598,12 +614,14 @@ fn run(
             }
             Command::SetProfileSuppressedSources {
                 source_ids,
+                revision,
                 active,
                 reply,
             } => {
                 let _ = reply.send(apply_profile_suppression(
                     &store,
                     source_ids,
+                    revision.as_ref(),
                     &active,
                     &profile_suppression,
                 ));
@@ -672,6 +690,7 @@ fn run(
 fn apply_profile_suppression(
     store: &store::Store,
     source_ids: std::collections::BTreeSet<String>,
+    revision: Option<&ProfileRevisionFence>,
     active: &Arc<AtomicBool>,
     profile_suppression: &Mutex<Option<Arc<AtomicBool>>>,
 ) -> anyhow::Result<usize> {
@@ -685,7 +704,7 @@ fn apply_profile_suppression(
         && active.load(Ordering::Acquire);
     drop(latest);
     anyhow::ensure!(accepted, "notification profile update was superseded");
-    store.set_profile_suppressed_sources(source_ids)
+    store.set_profile_suppressed_sources(source_ids, revision)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

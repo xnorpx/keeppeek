@@ -8486,6 +8486,7 @@ pub struct ServerState {
     privacy: Arc<PrivacyRegistry>,
     runtime_profiles: Arc<RwLock<crate::profiles::ProfileRegistry>>,
     runtime_profile_status: Arc<RwLock<crate::profiles::RuntimeProfileStatus>>,
+    profile_application: Arc<Mutex<state_store::profiles::ProfileApplicationQueue>>,
     runtime_profile_drafts: Arc<Mutex<state_store::profiles::RuntimeProfileDrafts>>,
     privacy_sources: Arc<RwLock<BTreeMap<String, PrivacySource>>>,
     privacy_epochs: Arc<Mutex<HashMap<IpAddr, u64>>>,
@@ -8672,6 +8673,7 @@ impl ServerState {
             runtime_profile_drafts: Arc::new(Mutex::new(
                 state_store::profiles::RuntimeProfileDrafts::default(),
             )),
+            profile_application: Arc::default(),
             privacy_sources: Arc::new(RwLock::new(privacy_sources)),
             privacy_epochs: Arc::new(Mutex::new(HashMap::new())),
             privacy_override_states: Arc::new(Mutex::new(HashMap::new())),

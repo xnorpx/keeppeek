@@ -7,6 +7,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
+#[path = "state_store_profiles_application.rs"]
+mod application;
+pub(in crate::server) use application::ProfileApplicationQueue;
 #[path = "state_store_profiles_identity.rs"]
 mod identity;
 #[path = "state_store_profiles_observed.rs"]
@@ -352,34 +355,7 @@ pub(super) fn dispatch(
                 current.runtime_profiles.clone();
             mark_runtime_status_pending(state, &current.runtime_profiles);
             publish_status_event(state, now_ms());
-            let runtime_result = state.camera_runtime.as_ref().map(|runtime| {
-                runtime.set_runtime_profiles_with_camera_ids(
-                    current.runtime_profiles.clone(),
-                    camera_ids,
-                )
-            });
-            let applications = runtime_result
-                .as_ref()
-                .and_then(|result| result.as_ref().ok())
-                .cloned();
-            if runtime_result.as_ref().is_some_and(|result| result.is_ok()) {
-                state
-                    .privacy
-                    .replace_profile_overrides(next_privacy)
-                    .map_err(|error| {
-                        registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY)
-                    })?;
-            }
-            let runtime_error = runtime_result
-                .as_ref()
-                .and_then(|result| result.as_ref().err().map(|error| error.to_string()));
-            update_runtime_status(
-                state,
-                &current.runtime_profiles,
-                applications,
-                runtime_error,
-                runtime_result.is_none(),
-            );
+            application::schedule(state, &current.runtime_profiles, camera_ids);
             let audit_target = current.runtime_profiles.active_profile_id.clone();
             let entry = {
                 let status = state
@@ -412,7 +388,6 @@ pub(super) fn dispatch(
                 "accepted",
                 classification,
             );
-            publish_status_event(state, now_ms());
             entry_result(entry)
         }
         Some(state_store_command::Action::Watch(request)) => {
@@ -1112,32 +1087,7 @@ fn put_registry(
         .unwrap_or_else(std::sync::PoisonError::into_inner) = candidate.clone();
     mark_runtime_status_pending(state, &candidate);
     publish_status_event(state, now_ms());
-    let runtime_result = state
-        .camera_runtime
-        .as_ref()
-        .map(|runtime| runtime.set_runtime_profiles_with_camera_ids(candidate.clone(), camera_ids));
-    let applications = runtime_result
-        .as_ref()
-        .and_then(|result| result.as_ref().ok())
-        .cloned();
-    if runtime_result.as_ref().is_some_and(|result| result.is_ok()) {
-        state
-            .privacy
-            .replace_profile_overrides(next_privacy)
-            .map_err(|error| {
-                registry_error(Error::Storage(error.to_string()), NAMESPACE, REGISTRY_KEY)
-            })?;
-    }
-    let runtime_error = runtime_result
-        .as_ref()
-        .and_then(|result| result.as_ref().err().map(|error| error.to_string()));
-    update_runtime_status(
-        state,
-        &candidate,
-        applications,
-        runtime_error,
-        runtime_result.is_none(),
-    );
+    application::schedule(state, &candidate, camera_ids);
 
     let classification = state
         .api_session_owners
@@ -1169,7 +1119,6 @@ fn put_registry(
         false,
         now_ms(),
     );
-    publish_status_event(state, now_ms());
     Ok(control_ok::Result::StateStoreResult(entry_result(
         registry_entry,
     )))
@@ -2167,6 +2116,58 @@ mod tests {
                 .as_deref(),
             Some("away")
         );
+    }
+
+    #[test]
+    fn durable_selections_reach_watchers_while_camera_loop_is_paused() {
+        let fixture = Fixture::new();
+        let shutdown = crate::shutdown::Shutdown::new();
+        let mut runtime = crate::keeppeek::KeepPeekLoop::new(shutdown.clone(), None);
+        let state = fixture.state.clone().with_camera_runtime(runtime.control());
+        let mut watched = connected_profile_status_watch(&state, 20_281);
+        let (accepted, replies) = std::sync::mpsc::channel();
+        let writer = state.clone();
+        let write = std::thread::spawn(move || {
+            let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+            for (revision, id) in [(0, "away"), (1, ""), (2, "away")] {
+                super::super::dispatch(
+                    &writer,
+                    SessionId::from_u64(20_282),
+                    &principal,
+                    put_active(id, revision),
+                )
+                .unwrap();
+                accepted.send(revision + 1).unwrap();
+            }
+        });
+        // The recorder has not started. A synchronous device wait cannot satisfy this check.
+        for revision in 1..=3 {
+            assert_eq!(
+                replies.recv_timeout(Duration::from_secs(3)).unwrap(),
+                revision
+            );
+        }
+        write.join().unwrap();
+        assert!(!watched().is_empty());
+        let persisted = config::load_config(&fixture.config_path()).unwrap();
+        assert_eq!(persisted.runtime_profiles.revision, 3);
+        assert_eq!(
+            persisted.runtime_profiles.active_profile_id.as_deref(),
+            Some("away")
+        );
+        let (applied, observed) = std::sync::mpsc::channel();
+        let status = runtime.control().runtime_profile_status_handle();
+        runtime.set_runtime_profile_status_publisher(move || {
+            let selected = status.read().unwrap();
+            let _ = applied.send((selected.revision, selected.active_profile_id.clone()));
+        });
+        let worker = std::thread::spawn(move || runtime.run());
+        assert_eq!(
+            observed.recv_timeout(Duration::from_secs(5)).unwrap(),
+            (3, Some("away".to_owned()))
+        );
+        shutdown.cancel();
+        worker.join().unwrap();
     }
 
     #[test]

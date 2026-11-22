@@ -118,13 +118,14 @@ impl KeepPeekLoop {
         result: Result<RuntimeApplicationState, String>,
     ) -> crate::profiles::CameraRuntimeApplication {
         let result = result.and_then(|state| {
-            if policy.notifications_enabled {
-                Ok(state)
-            } else {
-                self.runtime_profile_notification_error
-                    .clone()
-                    .map_or(Ok(state), Err)
+            if let Some(reason) = &self.runtime_profile_notification_error
+                && self
+                    .runtime_profile_notification_sources
+                    .contains(&camera.config.ip.to_string())
+            {
+                return Err(reason.clone());
             }
+            Ok(state)
         });
         crate::profiles::CameraRuntimeApplication {
             camera_id: self.runtime_profile_camera_ids.camera_id(camera.config.ip),

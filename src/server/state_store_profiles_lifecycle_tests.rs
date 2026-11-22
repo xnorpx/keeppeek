@@ -197,6 +197,24 @@ impl Lifecycle {
     }
 
     fn assert_applied(&self, revision: u64, profile: Option<&str>, mode: CameraRecordingMode) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = self.state.runtime_profile_status.read().unwrap();
+            if status.revision == revision
+                && status
+                    .cameras
+                    .get(&self.identity)
+                    .is_some_and(|camera| camera.state == RuntimeApplicationState::Applied)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "camera did not converge: {status:?}"
+            );
+            drop(status);
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let status = self.state.runtime_profile_status.read().unwrap();
         assert_eq!(status.revision, revision);
         assert_eq!(status.active_profile_id.as_deref(), profile);
@@ -416,6 +434,7 @@ fn runtime_profile_lifecycle_restores_base_privacy_before_runtime_acceptance() {
 fn runtime_profile_identity_survives_ip_edit_and_readd_uses_base() {
     let mut lifecycle = Lifecycle::new(false);
     lifecycle.activate("away", 0);
+    lifecycle.assert_applied(1, Some("away"), CameraRecordingMode::Main);
     let original_identity = lifecycle.identity.clone();
     lifecycle.send_frames("main");
     lifecycle.wait_for_progress("main", 0);

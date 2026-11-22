@@ -34,9 +34,12 @@ pub(crate) use profile_identity::CameraProfileIds;
 
 const CHANNEL_BUFFER: usize = 256;
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const CAMERA_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const CAMERA_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 // Allow an in-flight camera request (up to five seconds) to finish before the control deadline.
 const CAMERA_STOP_BUDGET: Duration = Duration::from_secs(6);
+
+pub(crate) type ProfileApplicationResult =
+    anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>>;
 
 type EventPublisher = Box<dyn Fn(&TimelineEvent) + Send + Sync>;
 
@@ -180,7 +183,7 @@ enum KeepPeekCommand {
     SetRuntimeProfiles {
         profiles: crate::profiles::ProfileRegistry,
         camera_ids: Option<CameraProfileIds>,
-        reply: SyncSender<anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>>>,
+        reply: SyncSender<ProfileApplicationResult>,
     },
 }
 
@@ -259,6 +262,18 @@ impl KeepPeekControl {
         profiles: crate::profiles::ProfileRegistry,
         camera_ids: Option<CameraProfileIds>,
     ) -> anyhow::Result<Vec<crate::profiles::CameraRuntimeApplication>> {
+        self.submit_runtime_profiles(profiles, camera_ids)?
+            .recv_timeout(CAMERA_CONTROL_TIMEOUT)
+            .map_err(|error| {
+                anyhow::anyhow!("KeepPeek loop did not acknowledge profile activation: {error}")
+            })?
+    }
+
+    pub(crate) fn submit_runtime_profiles(
+        &self,
+        profiles: crate::profiles::ProfileRegistry,
+        camera_ids: Option<CameraProfileIds>,
+    ) -> anyhow::Result<Receiver<ProfileApplicationResult>> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.tx
             .send(KeepPeekCommand::SetRuntimeProfiles {
@@ -267,11 +282,7 @@ impl KeepPeekControl {
                 reply: reply_tx,
             })
             .map_err(|_| anyhow::anyhow!("KeepPeek loop is no longer running"))?;
-        reply_rx
-            .recv_timeout(CAMERA_CONTROL_TIMEOUT)
-            .map_err(|error| {
-                anyhow::anyhow!("KeepPeek loop did not acknowledge profile activation: {error}")
-            })?
+        Ok(reply_rx)
     }
 }
 
@@ -411,6 +422,7 @@ pub struct KeepPeekLoop {
     runtime_profiles: crate::profiles::ProfileRegistry,
     runtime_profile_camera_ids: CameraProfileIds,
     runtime_profile_notification_error: Option<String>,
+    runtime_profile_notification_sources: std::collections::BTreeSet<String>,
     runtime_profile_status_publisher: Option<Box<dyn Fn() + Send + Sync>>,
     runtime_profile_status:
         std::sync::Arc<std::sync::RwLock<crate::profiles::RuntimeProfileStatus>>,
@@ -449,6 +461,7 @@ impl KeepPeekLoop {
             runtime_profiles: crate::profiles::ProfileRegistry::default(),
             runtime_profile_camera_ids: CameraProfileIds::default(),
             runtime_profile_notification_error: None,
+            runtime_profile_notification_sources: Default::default(),
             runtime_profile_status_publisher: None,
             runtime_profile_status: std::sync::Arc::new(std::sync::RwLock::new(
                 crate::profiles::RuntimeProfileStatus::default(),
@@ -475,26 +488,43 @@ impl KeepPeekLoop {
 
     pub fn set_runtime_profiles(&mut self, profiles: crate::profiles::ProfileRegistry) {
         self.runtime_profiles = profiles;
-        let suppressed_sources = active_notification_suppressions(
-            &self.runtime_profiles,
-            &self.runtime_profile_camera_ids,
-        );
-        self.runtime_profile_notification_error = if let Some(notifications) = &self.notifications {
-            notifications
-                .set_profile_suppressed_sources(suppressed_sources)
-                .err()
-                .map(|error| error.to_string())
-        } else if suppressed_sources.is_empty() {
-            None
-        } else {
-            Some("notification runtime is unavailable".to_owned())
-        };
+        self.apply_notification_suppression(None);
         let mut status = self
             .runtime_profile_status
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         status.set_selection(&self.runtime_profiles);
         status.cameras.clear();
+    }
+
+    fn apply_notification_suppression(
+        &mut self,
+        fence: Option<crate::notifications::ProfileRevisionFence>,
+    ) {
+        let desired = active_notification_suppressions(
+            &self.runtime_profiles,
+            &self.runtime_profile_camera_ids,
+        );
+        let result = match &self.notifications {
+            Some(handle) => handle
+                .update_profile_suppression(desired.clone(), fence)
+                .map(|_| ()),
+            None if desired.is_empty() => Ok(()),
+            None => Err(anyhow::anyhow!("notification runtime is unavailable")),
+        };
+        self.runtime_profile_notification_error = result.err().map(|error| error.to_string());
+        if self.runtime_profile_notification_error.is_some() {
+            // A timeout can race application. Both newly requested and previously suppressed
+            // sources have uncertain notification state until a later acknowledgement.
+            self.runtime_profile_notification_sources.retain(|source| {
+                source
+                    .parse::<IpAddr>()
+                    .is_ok_and(|ip| self.camera_definitions.contains_key(&ip))
+            });
+            self.runtime_profile_notification_sources.extend(desired);
+        } else {
+            self.runtime_profile_notification_sources = desired;
+        }
     }
 
     pub(crate) fn set_runtime_profile_camera_ids(
@@ -777,8 +807,6 @@ impl KeepPeekLoop {
             "runtime profile revision is stale or conflicts with the accepted registry"
         );
         let status_handle = self.runtime_profile_status.clone();
-        // ponytail: hold the fence across the bounded notification acknowledgement. Use a
-        // revision-aware notification command if this wait must become preemptible.
         let mut status = status_handle
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -790,23 +818,6 @@ impl KeepPeekLoop {
             self.runtime_profile_camera_ids = camera_ids;
         }
         self.runtime_profiles = profiles;
-        let suppressed_sources = active_notification_suppressions(
-            &self.runtime_profiles,
-            &self.runtime_profile_camera_ids,
-        );
-        let has_suppressed_sources = !suppressed_sources.is_empty();
-        let notification_update = self
-            .notifications
-            .as_ref()
-            .map(|notifications| notifications.set_profile_suppressed_sources(suppressed_sources));
-        let notification_error = notification_update
-            .as_ref()
-            .and_then(|result| result.as_ref().err().map(ToString::to_string))
-            .or_else(|| {
-                (self.notifications.is_none() && has_suppressed_sources)
-                    .then(|| "notification runtime is unavailable".to_owned())
-            });
-        self.runtime_profile_notification_error = notification_error;
         let cameras = self
             .camera_definitions
             .values()
@@ -825,6 +836,19 @@ impl KeepPeekLoop {
                 },
             );
         }
+        drop(status);
+        self.apply_notification_suppression(Some(crate::notifications::ProfileRevisionFence {
+            status: status_handle.clone(),
+            revision: self.runtime_profiles.revision,
+        }));
+        anyhow::ensure!(
+            status_handle
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .revision
+                == self.runtime_profiles.revision,
+            "runtime profile transition was superseded"
+        );
         Ok(cameras)
     }
 
