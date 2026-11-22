@@ -10,9 +10,6 @@ authors = [
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
-[package.metadata.cargo-machete]
-ignored = ["xml-rs"]
-
 [lints]
 workspace = true
 
@@ -20,7 +17,6 @@ workspace = true
 bigdecimal = "0.4"
 chrono = { package = "sad-chrono", version = "0.5.1" }
 num-bigint = "0.5"
-xml-rs = "1.0.0"
 xsd-macro-utils = { path = "../xsd-macro-utils" }
 yaserde = { workspace = true }
 

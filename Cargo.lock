@@ -6361,7 +6361,6 @@ dependencies = [
  "bigdecimal",
  "num-bigint 0.5.1",
  "sad-chrono",
- "xml-rs",
  "xsd-macro-utils",
  "yaserde",
  "yaserde_derive",
