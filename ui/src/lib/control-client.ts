@@ -37,6 +37,7 @@ import type {
 	CameraAccessSettings,
 	IssuedAccessCredential
 } from './access';
+import { workspaceAccessChanged } from './access';
 import { NotificationControlClient } from './control-client-notifications';
 import { SystemControlClient, healthProfile, numeric } from './control-client-system';
 import { ConfigurationControlClient } from './control-client-configuration';
@@ -2571,12 +2572,7 @@ export class ControlClient {
 				const nextSession = capabilities.accessSession
 					? accessSession(capabilities.accessSession)
 					: null;
-				if (
-					previousAccess.session &&
-					(nextSession?.principalId !== previousAccess.session.principalId ||
-						nextSession?.role !== previousAccess.session.role ||
-						previousAccess.cameraSourceIds?.some((id) => !cameraSourceIds.includes(id)))
-				)
+				if (workspaceAccessChanged(previousAccess, nextSession, cameraSourceIds))
 					this.revokeMediaUrls();
 				this.#serverCapabilities = capabilities;
 				for (const waiter of this.#capabilityWaiters) {

@@ -70,6 +70,21 @@ export type AccessConnectionState = {
 	generation: number;
 };
 
+export function workspaceAccessChanged(
+	previous: AccessConnectionState,
+	session: AccessSession | null,
+	cameraSourceIds?: readonly string[]
+): boolean {
+	if (!previous.session) return false;
+	if (
+		session?.principalId !== previous.session.principalId ||
+		session.role !== previous.session.role
+	)
+		return true;
+	const granted = new Set(cameraSourceIds);
+	return previous.cameraSourceIds?.some((id) => !granted.has(id)) ?? false;
+}
+
 export type AccessCredentialInput = {
 	name: string;
 	description?: string;

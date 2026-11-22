@@ -50,17 +50,25 @@ function admin(principalId: string): AccessSession {
 }
 
 describe('workspace recovery', () => {
-	it('discards cached frames and the camera workspace when the same principal loses a camera', async () => {
+	it('keeps drafts and cached frames on camera grants and discards them on camera loss', async () => {
 		const session = admin('viewer');
 		const allowed = { session, cameraSourceIds: ['front', 'garage'], generation: 1, message: null };
 		const children = createRawSnippet(() => ({
 			render: () => '<input aria-label="Camera work" />'
 		}));
 		const view = await render(AppShell, { props: { children } });
-		connection.emit({ ...allowed, status: 'authenticated' });
+		connection.emit({ ...allowed, cameraSourceIds: ['front'], status: 'authenticated' });
 		const input = page.getByRole('textbox', { name: 'Camera work' });
 		await input.fill('prior camera detail');
 		const previous = input.element();
+		peekState.updateCameraFrames({ front: 'retained frame' });
+		connection.emit({ ...allowed, status: 'checking', cameraSourceIds: ['front'] });
+		await tick();
+		connection.emit({ ...allowed, status: 'authenticated' });
+		await tick();
+		expect(input.element()).toBe(previous);
+		await expect.element(input).toHaveValue('prior camera detail');
+		expect(peekState.cameraFrame('front')).toBe('retained frame');
 		peekState.updateCameraFrames({ garage: 'old cached frame' });
 		connection.emit({ ...allowed, status: 'checking' });
 		await tick();
