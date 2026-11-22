@@ -6,6 +6,11 @@ import type { AccessConnectionState, AccessSession } from '$lib/access';
 import AppShell from './AppShell.svelte';
 
 const connection = vi.hoisted(() => ({ emit: (_state: AccessConnectionState) => {} }));
+let peekState: import('$lib/peek-view-context.svelte').PeekViewState;
+vi.mock('$lib/peek-view-context.svelte', async (original) => {
+	const module = await original<typeof import('$lib/peek-view-context.svelte')>();
+	return { ...module, setPeekViewState: () => (peekState = module.setPeekViewState()) };
+});
 vi.mock('$app/paths', () => ({ resolve: (path: string) => path }));
 vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings') } }));
 vi.mock('$app/navigation', () => ({
@@ -45,6 +50,34 @@ function admin(principalId: string): AccessSession {
 }
 
 describe('workspace recovery', () => {
+	it('discards cached frames and the camera workspace when the same principal loses a camera', async () => {
+		const session = admin('viewer');
+		const allowed = { session, cameraSourceIds: ['front', 'garage'], generation: 1, message: null };
+		const children = createRawSnippet(() => ({
+			render: () => '<input aria-label="Camera work" />'
+		}));
+		const view = await render(AppShell, { props: { children } });
+		connection.emit({ ...allowed, status: 'authenticated' });
+		const input = page.getByRole('textbox', { name: 'Camera work' });
+		await input.fill('prior camera detail');
+		const previous = input.element();
+		peekState.updateCameraFrames({ garage: 'old cached frame' });
+		connection.emit({ ...allowed, status: 'checking' });
+		await tick();
+		expect(previous.closest('[inert]')).not.toBeNull();
+		connection.emit({
+			...allowed,
+			status: 'authenticated',
+			cameraSourceIds: ['front'],
+			generation: 2
+		});
+		await tick();
+		expect(peekState.cameraFrame('garage')).toBeNull();
+		expect(previous.isConnected).toBe(false);
+		await expect.element(input).toHaveValue('');
+		expect(input.element().closest('[inert]')).toBeNull();
+		await view.unmount();
+	});
 	it('retains a mounted draft for the same principal and unmounts it on identity change', async () => {
 		const children = createRawSnippet(() => ({
 			render: () => '<input aria-label="Unsaved setting" />'
@@ -65,6 +98,15 @@ describe('workspace recovery', () => {
 			const escape = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
 			window.dispatchEvent(escape);
 			expect(escape.defaultPrevented).toBe(true);
+			for (const key of [
+				{ key: 'Tab' },
+				{ key: 'r', ctrlKey: true },
+				{ key: '+', ctrlKey: true }
+			]) {
+				const event = new KeyboardEvent('keydown', { ...key, cancelable: true });
+				window.dispatchEvent(event);
+				expect(event.defaultPrevented).toBe(false);
+			}
 			expect(pageShortcut).not.toHaveBeenCalled();
 		} finally {
 			window.removeEventListener('keydown', pageShortcut);

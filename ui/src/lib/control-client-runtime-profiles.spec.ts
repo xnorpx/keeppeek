@@ -208,6 +208,38 @@ describe('RuntimeProfilesControlClient', () => {
 			)
 		);
 	});
+	it.each(['success', 'failure'])(
+		'ignores a prior connection registry %s before the new snapshot',
+		async (outcome) => {
+			let notify: (entries: readonly StateEntry[]) => void = () => {};
+			const client = new RuntimeProfilesControlClient({
+				watch: async (_namespace: string, options: { listener: typeof notify }) => {
+					notify = options.listener;
+					return { close: vi.fn() };
+				}
+			} as unknown as ControlClientStateStore);
+			const registry = { profiles: {}, revision: '3', active_profile_id: null };
+			const delayed = Promise.withResolvers<typeof registry>();
+			vi.spyOn(client, 'getRegistry')
+				.mockReturnValueOnce(delayed.promise)
+				.mockResolvedValue(registry);
+			const received = vi.fn();
+			const failed = vi.fn();
+			await client.watchRegistry(received, failed);
+			const entries = [entry('registry', runtimeProfilesRegistrySchema, {}, 3n)];
+			notify(entries);
+			client.handleConnectionClosed();
+			await client.handleConnectionOpened();
+			if (outcome === 'success') delayed.resolve(registry);
+			else delayed.reject(new Error('Old connection closed'));
+			await delayed.promise.catch(() => {});
+			await Promise.resolve();
+			expect(received).not.toHaveBeenCalled();
+			expect(failed).not.toHaveBeenCalled();
+			notify(entries);
+			await vi.waitFor(() => expect(received).toHaveBeenCalledExactlyOnceWith(registry));
+		}
+	);
 	it('reads stable camera targets without imposing the per-profile 127-target limit', async () => {
 		const cameras = Object.fromEntries(
 			Array.from({ length: 200 }, (_, index) => [

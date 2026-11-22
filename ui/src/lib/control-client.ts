@@ -2519,7 +2519,12 @@ export class ControlClient {
 			return;
 		}
 		this.#previousSession = sessionId;
-		this.publishAccessState({ status: 'checking', session: previous, message: null });
+		this.publishAccessState({
+			status: 'checking',
+			session: previous,
+			cameraSourceIds: access.cameraSourceIds,
+			message: null
+		});
 		// Session creation checks the current credential and capabilities restore all active watches.
 		void (async () => {
 			await connecting?.catch(() => undefined);
@@ -2561,6 +2566,18 @@ export class ControlClient {
 					);
 					return;
 				}
+				const cameraSourceIds = capabilities.cameras.map((camera) => camera.sourceId).toSorted();
+				const previousAccess = this.#accessState;
+				const nextSession = capabilities.accessSession
+					? accessSession(capabilities.accessSession)
+					: null;
+				if (
+					previousAccess.session &&
+					(nextSession?.principalId !== previousAccess.session.principalId ||
+						nextSession?.role !== previousAccess.session.role ||
+						previousAccess.cameraSourceIds?.some((id) => !cameraSourceIds.includes(id)))
+				)
+					this.revokeMediaUrls();
 				this.#serverCapabilities = capabilities;
 				for (const waiter of this.#capabilityWaiters) {
 					clearTimeout(waiter.timeout);
@@ -2568,10 +2585,11 @@ export class ControlClient {
 				}
 				this.#capabilityWaiters = [];
 				this.publishCapabilities(capabilities.capabilityIds);
-				if (capabilities.accessSession) {
+				if (nextSession) {
 					this.publishAccessState({
 						status: 'authenticated',
-						session: accessSession(capabilities.accessSession),
+						session: nextSession,
+						cameraSourceIds,
 						message: null
 					});
 				}
@@ -3009,6 +3027,7 @@ export class ControlClient {
 	private publishAccessState(
 		state: Omit<AccessConnectionState, 'generation'> & { generation?: number }
 	): void {
+		if (!state.session && this.#accessState.session) this.revokeMediaUrls();
 		const authenticatedSessionChanged =
 			state.status === 'authenticated' && state.session?.id !== this.#accessState.session?.id;
 		this.#accessState = {
@@ -3081,6 +3100,11 @@ export class ControlClient {
 		return current ?? previous ?? null;
 	}
 
+	private revokeMediaUrls(): void {
+		for (const url of this.#objectUrls) URL.revokeObjectURL(url);
+		this.#objectUrls.clear();
+	}
+
 	private releaseTransport(revokeObjectUrls: boolean): string | null {
 		this.#connecting = null;
 		const sessionId = this.#sessionId;
@@ -3107,10 +3131,9 @@ export class ControlClient {
 		for (const playback of this.#playbacks.values()) playback.dispose();
 		this.#playbacks.clear();
 		if (revokeObjectUrls) {
-			for (const url of this.#objectUrls) URL.revokeObjectURL(url);
-			this.#objectUrls.clear();
+			this.revokeMediaUrls();
+			this.publishCapabilities([]);
 		}
-		if (revokeObjectUrls) this.publishCapabilities([]);
 		this.#runtimeProfiles.handleConnectionClosed();
 		this.#stateStore.handleConnectionClosed();
 		this.failPending('WebRTC control connection closed.');

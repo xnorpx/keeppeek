@@ -181,6 +181,7 @@ function catalogCamera() {
 class FakeDataChannel {
 	static localAccess = false;
 	static omitAccessSession = false;
+	static omittedSource: string | undefined;
 	static absoluteExpiry = 1_777_086_400_000n;
 	readyState: RTCDataChannelState = 'connecting';
 	binaryType: BinaryType = 'blob';
@@ -1332,7 +1333,7 @@ class FakeDataChannel {
 										displayName: 'Garage',
 										ip: '192.0.2.11'
 									})
-								],
+								].filter((camera) => camera.sourceId !== FakeDataChannel.omittedSource),
 								sourceSessions: [
 									create(SourceSessionSchema, {
 										sourceSessionId: 'camera:front-door',
@@ -1534,6 +1535,7 @@ function appendTimingPeriod(
 afterEach(() => {
 	FakeDataChannel.localAccess = false;
 	FakeDataChannel.omitAccessSession = false;
+	FakeDataChannel.omittedSource = undefined;
 	FakeDataChannel.absoluteExpiry = 1_777_086_400_000n;
 	vi.useRealTimers();
 	vi.unstubAllGlobals();
@@ -2068,6 +2070,30 @@ describe('ControlClient', () => {
 		pending.resolve({ ...response, session_id: 'fresh' });
 		await vi.waitFor(() => expect(states.at(-1)).toEqual({ status: 'authenticated', principal }));
 		expect(api.createSession).toHaveBeenCalledTimes(2);
+		await client.close();
+	});
+
+	it('publishes the recorder-confirmed camera set after same-principal recovery', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'camera-set',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+		const states: { status: string; ids?: readonly string[] }[] = [];
+		client.onAccessState((state) =>
+			states.push({ status: state.status, ids: state.cameraSourceIds })
+		);
+		await client.signIn('camera-viewer');
+		expect(states.at(-1)).toEqual({ status: 'authenticated', ids: ['front-door', 'garage'] });
+		FakeDataChannel.omittedSource = 'garage';
+		FakePeerConnection.latest!.channels[0].close();
+		expect(states.at(-1)).toEqual({ status: 'checking', ids: ['front-door', 'garage'] });
+		await vi.waitFor(() =>
+			expect(states.at(-1)).toEqual({ status: 'authenticated', ids: ['front-door'] })
+		);
+		expect((await client.getCameras()).map((camera) => camera.id)).toEqual(['front-door']);
 		await client.close();
 	});
 

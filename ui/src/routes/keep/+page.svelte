@@ -221,6 +221,15 @@
 	}
 	let capabilitiesSeen = false;
 	let reconnectPending = false;
+	let interruptedPlayback: {
+		camera: string;
+		segment: RecordingSegment;
+		timestampMs: number;
+		play: boolean;
+		audioPreview?: number;
+		version: number;
+	} | null = null;
+	let openingAudioPreview: number | undefined;
 	let scrubUsesFragmentFallback = false;
 	let secondaryLoadsReady = $state(false);
 	let secondaryLoadsTimer: number | null = null;
@@ -428,11 +437,16 @@
 		});
 		const unsubscribeAccess = controlClient.onAccessState((access) => {
 			if (access.status === 'checking' && access.session) {
+				if (!interruptedPlayback) interruptStoredPlayback();
 				reconnectPending = true;
 				return;
 			}
 			if (access.status === 'authenticated' && reconnectPending) {
 				reconnectPending = false;
+				const interrupted = interruptedPlayback;
+				interruptedPlayback = null;
+				if (access.cameraSourceIds && !access.cameraSourceIds.includes(cameraId)) return;
+				if (interrupted) void resumeStoredPlayback(interrupted);
 				timelineRepository.revalidate();
 				if (latestTimelineViewport) void loadTimelineViewport(latestTimelineViewport);
 			}
@@ -1757,9 +1771,10 @@
 		play: boolean,
 		version: number,
 		previousPlayback: StoredMediaPlayback | null,
-		recordedAudioPreview?: 0
+		recordedAudioPreview?: number
 	): Promise<void> {
 		let playback: StoredMediaPlayback;
+		openingAudioPreview = recordedAudioPreview;
 		playbackOpenController?.abort();
 		const openController = new AbortController();
 		playbackOpenController = openController;
@@ -1850,6 +1865,55 @@
 		} finally {
 			if (playbackSourceCommitVersion === version) playbackSourceCommitVersion = null;
 		}
+	}
+
+	function interruptStoredPlayback() {
+		const target = retryPlaybackTarget;
+		if ((!storedPlayback && !playbackOpenController) || !target || mode === 'export') return;
+		const opening = playbackOpenController !== null;
+		const segment = opening ? target.segment : selected;
+		if (!segment) return;
+		interruptedPlayback = {
+			camera: cameraId,
+			segment,
+			timestampMs: opening
+				? segment.start_time_ms + target.offsetSeconds * 1_000
+				: (scrubTargetMs ?? playheadMs ?? segment.start_time_ms),
+			play: opening ? target.play : scrubbing ? scrubPlayIntent : playbackIntent(),
+			audioPreview: opening
+				? openingAudioPreview
+				: recordedAudio?.preview
+					? recordedAudio.appliedOffsetMs
+					: undefined,
+			version: ++playbackVersion
+		};
+		scrubVersion++;
+		scrubTargetMs = null;
+		scrubbing = false;
+		targetLoadVersion++;
+		targetLoadController?.abort();
+		clearColdSeek();
+		void closeStoredPlayback();
+	}
+
+	async function resumeStoredPlayback(target: NonNullable<typeof interruptedPlayback>) {
+		// Let an authority change unmount this page before opening another cursor.
+		await tick();
+		if (target.version !== playbackVersion || target.camera !== cameraId || mode === 'export')
+			return;
+		rememberPlaybackTarget(
+			target.segment,
+			(target.timestampMs - target.segment.start_time_ms) / 1_000,
+			target.play
+		);
+		await openStoredSegment(
+			target.segment,
+			target.timestampMs,
+			target.play,
+			++playbackVersion,
+			null,
+			target.audioPreview
+		);
 	}
 
 	async function closeStoredPlayback() {

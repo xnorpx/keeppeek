@@ -172,8 +172,15 @@
 		const closeAccessState = controlClient.onAccessState((state) => {
 			const wasAuthenticated = accessState.status === 'authenticated';
 			const previousPrincipalId = accessState.session?.principalId ?? null;
+			const previous = accessState;
+			const authorityChanged =
+				!!previous.session &&
+				(state.session?.principalId !== previousPrincipalId ||
+					state.session?.role !== previous.session.role ||
+					JSON.stringify(state.cameraSourceIds) !== JSON.stringify(previous.cameraSourceIds));
 			accessState = state;
-			if (!state.session || state.session.principalId !== previousPrincipalId) {
+			if (!state.session || authorityChanged) {
+				if (previous.session) void livePeer.close().catch(() => undefined);
 				peekViewState.reset();
 			}
 			const authenticated = state.status === 'authenticated';
@@ -269,7 +276,7 @@
 
 	function handleGlobalKeyboard(event: KeyboardEvent): void {
 		if (recovering) {
-			event.preventDefault();
+			if (event.key === 'Escape') event.preventDefault();
 			event.stopImmediatePropagation();
 			return;
 		}
@@ -688,7 +695,7 @@
 						? 'live-surface'
 						: 'workspace-surface'}"
 				>
-					{#key JSON.stringify([accessState.session?.principalId, accessState.session?.role])}
+					{#key JSON.stringify( [accessState.session?.principalId, accessState.session?.role, accessState.cameraSourceIds] )}
 						{#if liveViewActive}
 							<PeekPage view={viewerActive ? 'viewer' : 'dashboard'} />
 						{:else}

@@ -4,6 +4,11 @@ import { render } from 'vitest-browser-svelte';
 import { create } from '@bufbuild/protobuf';
 import { RecordedAudioTimingSchema, type RecordedAudioTiming } from '$lib/proto/webrtc_pb';
 import '../../app.css';
+import {
+	loadPlaybackPreferences,
+	savePlaybackPreferences,
+	withMediaPreferences
+} from '$lib/playback-preferences';
 import Keep from './+page.svelte';
 import { TimelineRepository } from '$lib/timeline-repository.svelte';
 
@@ -166,6 +171,50 @@ it('revalidates the mounted timeline only after retained access is confirmed aga
 		fixture.dispose();
 	}
 });
+
+it.each([true, false])(
+	'restores the cursor at its playhead with play intent %s and its audio preview',
+	async (playing) => {
+		const previous = loadPlaybackPreferences(window.localStorage);
+		savePlaybackPreferences(window.localStorage, withMediaPreferences(previous, { playing }));
+		const fixture = keepFixture(true);
+		try {
+			await fixture.mount();
+			await vi.waitFor(() => expect(document.querySelector('video')).not.toBeNull());
+			fixture.first.emitTiming(
+				create(RecordedAudioTimingSchema, { appliedOffsetMs: 137, preview: true })
+			);
+			const video = document.querySelector('video')!;
+			Object.defineProperty(video, 'currentTime', {
+				configurable: true,
+				value: 6.25,
+				writable: true
+			});
+			video.dispatchEvent(new Event('timeupdate'));
+			expect(fixture.open).toHaveBeenCalledWith(expect.objectContaining({ playing }));
+			const session = { principalId: 'viewer' };
+			fixture.emitAccess({ status: 'checking', session });
+			await vi.waitFor(() => expect(fixture.first.playback.close).toHaveBeenCalledOnce());
+			expect(fixture.open).toHaveBeenCalledTimes(1);
+			fixture.emitAccess({ status: 'authenticated', session });
+			await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledTimes(2));
+			expect(fixture.open).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					sourceId: 'front',
+					streamId: 'sub',
+					timestampMs: start + 6250,
+					playing,
+					recordedAudioPreview: 137
+				})
+			);
+			fixture.emitAccess({ status: 'authenticated', session });
+			expect(fixture.open).toHaveBeenCalledTimes(2);
+		} finally {
+			savePlaybackPreferences(window.localStorage, previous);
+			fixture.dispose();
+		}
+	}
+);
 
 function beginDrag() {
 	const playhead = page.getByRole('button', { name: /Playback position at/ }).element();

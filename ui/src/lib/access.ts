@@ -62,6 +62,8 @@ export type AccessAuditEvent = {
 };
 
 export type AccessConnectionState = {
+	/** Sorted camera sources granted by the current recorder session. */
+	cameraSourceIds?: readonly string[];
 	status: 'checking' | 'authenticated' | 'sign-in-required' | 'error';
 	session: AccessSession | null;
 	message: string | null;
