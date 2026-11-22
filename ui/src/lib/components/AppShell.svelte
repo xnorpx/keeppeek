@@ -276,6 +276,20 @@
 		);
 	}
 
+	function lockWorkspace(dialog: HTMLDialogElement) {
+		// A native modal also locks portaled controls and dialogs already in the top layer.
+		const previous = document.activeElement;
+		dialog.showModal();
+		return () => {
+			dialog.close();
+			queueMicrotask(() => {
+				if (previous instanceof HTMLElement && previous.isConnected) {
+					previous.focus({ preventScroll: true });
+				}
+			});
+		};
+	}
+
 	function handleGlobalKeyboard(event: KeyboardEvent): void {
 		if (recovering) {
 			if (event.key === 'Escape') event.preventDefault();
@@ -463,11 +477,16 @@
 {#if verificationWindow}
 	<AdministratorVerificationWindow />
 {:else if accessState.status === 'authenticated' || recovering}
-	{#if recovering}<p
-			role="status"
-			class="fixed top-2 right-2 z-50 rounded-md bg-background p-2 text-sm text-foreground"
-			>Reconnecting. Checking access…</p
-		>{/if}
+	{#if recovering}
+		<dialog
+			{@attach lockWorkspace}
+			aria-label="Checking access"
+			oncancel={(event) => event.preventDefault()}
+			class="m-auto rounded-md border border-hairline bg-background p-4 text-sm text-foreground shadow-lg backdrop:bg-black/40"
+		>
+			<p role="status">Reconnecting. Checking access…</p>
+		</dialog>
+	{/if}
 	{#if controlClient.externalAuthentication.error}
 		<p
 			role="alert"

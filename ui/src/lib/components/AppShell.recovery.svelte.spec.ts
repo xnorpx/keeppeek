@@ -1,9 +1,11 @@
 import { createRawSnippet, tick } from 'svelte';
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import type { AccessConnectionState, AccessSession } from '$lib/access';
 import AppShell from './AppShell.svelte';
+import CameraAccessDialog from './CameraAccessDialog.svelte';
+import { cameraAccessCapability } from '$lib/control-client-camera-access';
 
 const connection = vi.hoisted(() => ({ emit: (_state: AccessConnectionState) => {} }));
 let peekState: import('$lib/peek-view-context.svelte').PeekViewState;
@@ -85,6 +87,77 @@ describe('workspace recovery', () => {
 		await expect.element(input).toHaveValue('');
 		expect(input.element().closest('[inert]')).toBeNull();
 		await view.unmount();
+	});
+	it('locks a portaled camera access dialog and restores its unsaved draft on reconnect', async () => {
+		const children = createRawSnippet(() => ({ render: () => '<main>Settings</main>' }));
+		const session = admin('viewer');
+		const access = { session, generation: 1, message: null };
+		const shell = await render(AppShell, { props: { children } });
+		connection.emit({ ...access, status: 'authenticated' });
+		await tick();
+		const credential = { id: '11111111-1111-4111-8111-111111111111', name: 'Viewer' };
+		const save = vi.fn();
+		const close = vi.fn();
+		const modal = await render(CameraAccessDialog, {
+			props: {
+				credential,
+				controller: {
+					getCameras: vi.fn().mockResolvedValue([{ id: 'front', name: 'Front door' }]),
+					getCameraAccess: vi.fn().mockResolvedValue({
+						credentialId: credential.id,
+						allCameras: false,
+						cameraIds: [],
+						groupIds: [],
+						availableGroupIds: [],
+						revision: 1n
+					}),
+					saveCameraAccess: save,
+					onCapabilities: (listener) => {
+						listener([cameraAccessCapability]);
+						return () => {};
+					}
+				},
+				onclose: close,
+				onsaved: vi.fn()
+			}
+		});
+		try {
+			const checkbox = page.getByRole('checkbox', { name: 'Front door' });
+			await checkbox.click();
+			const input = checkbox.element();
+			const saveButton = page.getByRole('button', { name: 'Save access' }).element();
+			expect(input.closest('[data-keyboard-ready]')).toBeNull();
+			expect(input).toBe(document.activeElement);
+			connection.emit({ ...access, status: 'checking' });
+			const recovery = page.getByRole('dialog', { name: 'Checking access' });
+			await expect
+				.element(recovery.getByRole('status'))
+				.toHaveTextContent('Reconnecting. Checking access…');
+			const lock = recovery.element();
+			expect(lock.matches(':modal')).toBe(true);
+			saveButton.focus();
+			expect(lock.contains(document.activeElement)).toBe(true);
+			const bounds = saveButton.getBoundingClientRect();
+			const hit = document.elementFromPoint(
+				bounds.left + bounds.width / 2,
+				bounds.top + bounds.height / 2
+			);
+			expect(lock.contains(hit)).toBe(true);
+			await userEvent.keyboard('{Escape}');
+			expect(lock.matches(':modal')).toBe(true);
+			expect(save).not.toHaveBeenCalled();
+			expect(close).not.toHaveBeenCalled();
+			connection.emit({ ...access, generation: 2, status: 'authenticated' });
+			await expect.element(recovery).not.toBeInTheDocument();
+			await expect.element(checkbox).toBeChecked();
+			expect(checkbox.element()).toBe(input);
+			expect(document.activeElement).toBe(input);
+			await page.getByRole('button', { name: 'Save access' }).click();
+			expect(save).toHaveBeenCalledWith(expect.objectContaining({ cameraIds: ['front'] }));
+		} finally {
+			await modal.unmount();
+			await shell.unmount();
+		}
 	});
 	it('retains a mounted draft for the same principal and unmounts it on identity change', async () => {
 		const children = createRawSnippet(() => ({
