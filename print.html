@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-67f490a9.js";
+            window.path_to_searchindex_js = "searchindex-3aefaedd.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -2303,12 +2303,64 @@ compatible pre-migration configuration as well. Unknown identity schema versions
 <tr><td><code>event_pre_recording_duration_secs</code></td><td><code>u64</code></td><td>Shared default or <code>0</code></td><td>Range <code>0..30</code> seconds; <code>0</code> disables pre-roll allocation.</td></tr>
 <tr><td><code>event_recording_stream</code></td><td><code>EventRecordingStream</code></td><td>Shared default or <code>"main"</code></td><td><code>"main"</code> or <code>"sub"</code>; selects the event-only recording stream. EventBoost always boosts to main.</td></tr>
 <tr><td><code>events</code></td><td><code>EventConfig</code></td><td>Defaults below</td><td>Camera-native event policy, independent of video backend; configured through the file.</td></tr>
+<tr><td><code>recorded_audio</code></td><td><code>RecordedAudioSettings</code></td><td>All offsets inherit</td><td>Recorded-media correction only; fields and bounds below.</td></tr>
 </tbody>
 </table>
 </div>
 <p>These are stored configuration types, not promises that every camera supports every backend,
 transport, or recording capability. Discovery results such as <code>CameraCapabilities</code>, <code>CameraPorts</code>,
 <code>MediaProfile</code>, <code>VideoConfig</code>, and <code>AudioConfig</code> are not additional editable camera tables.</p>
+<h3 id="recorded-audio-timing"><a class="header" href="#recorded-audio-timing">Recorded-audio timing</a></h3>
+<p>Type: <code>RecordedAudioSettings</code>, section <code>[&lt;namespace&gt;.&lt;camera-key&gt;.recorded_audio]</code>, for example
+<code>[cameras.front_door.recorded_audio]</code>. Source:
+<a href="https://github.com/xnorpx/keeppeek/blob/main/src/cameras/recorded_audio.rs">recorded-audio settings</a>.
+These settings are independent of camera-native events and do not apply to live audio.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>default_offset_ms</code></td><td>Optional <code>i32</code></td><td>Zero when unset</td><td>Camera default correction in milliseconds.</td></tr>
+<tr><td><code>main_offset_ms</code></td><td>Optional <code>i32</code></td><td>Camera default</td><td>Main-stream override; explicit zero disables correction for this stream.</td></tr>
+<tr><td><code>sub_offset_ms</code></td><td>Optional <code>i32</code></td><td>Camera default</td><td>Sub-stream override; explicit zero disables correction for this stream.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Every provided offset must be an integer in the inclusive range <code>-5000..5000</code>. Positive values
+delay audio; negative values advance it. The editor warns when the magnitude exceeds 1000 ms.
+There is no <code>[camera_defaults]</code> audio offset. These numeric fields do not accept secret references.
+Unknown nested keys, fractional values, and out-of-range values fail validation before a save.</p>
+<pre><code class="language-toml">[cameras.front_door.recorded_audio]
+default_offset_ms = 125
+main_offset_ms = 0
+# The sub stream inherits the 125 ms camera default.
+</code></pre>
+<p>Saving only these settings does not restart camera ingress or recording writers. The typed camera
+update replaces the complete nested message: omission preserves it, and an empty message resets
+all overrides to inheritance. Ordinary camera edits and configuration plans preserve this table.
+Camera identity, secret references, profile state, source recordings, and catalog times remain
+unchanged.</p>
+<p>Recorded playback and newly created exports apply the resolved setting without re-encoding.
+Resolution follows the stream actually stored; EventBoost main-stream review uses the Sub
+recording and its offset. An export retry rejects a changed recording stream before retiring
+the previous attempt; create a new export for that source change.
+Negative corrections can clip complete leading audio samples; partial encoded-sample trimming is
+unsupported. Calibration previews belong to one playback cursor and do not change saved settings
+or export defaults. Export retries retain their original timing snapshot. Timing diagnostics refer
+to normalized container timestamps and do not prove camera/RTP clock accuracy or lip sync.
+Nonzero correction supports AAC with zero audio composition offset; other AAC composition
+offsets fail explicitly. Signed video composition offsets are supported. Corrected exports fetch
+neighboring audio and select complete packets by their corrected presentation start inside the
+selected video intervals. They do not partially trim a packet at the end. Export edge lookup is
+limited to 32 extra periods and 64 MiB of indexed edge ranges, with 512 total source periods.
+Nonzero corrected exports reject overlapping indexed source periods and conflicting metadata
+instead of merging overlapping recording files.</p>
+<p>To calibrate, open a recording in <strong>Keep</strong> and use <strong>Recorded audio preview</strong> to compare offsets
+while watching the same action. Reset the preview to compare against the captured saved value.
+An Administrator saves a permanent default or Main/Sub override in <strong>Camera / Audio</strong>. Reopen
+the recording after saving to use the updated setting. New exports capture the saved
+setting when created; a temporary preview does not affect them.</p>
 <h3 id="native-camera-events"><a class="header" href="#native-camera-events">Native camera events</a></h3>
 <p>Type: <code>EventConfig</code>, section <code>[&lt;namespace&gt;.&lt;camera-key&gt;.events]</code>, for example
 <code>[cameras.front_door.events]</code>. Source:
