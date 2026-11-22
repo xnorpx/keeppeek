@@ -58,7 +58,11 @@ const requiredBoards = [
 	53,
 	54,
 	55,
-	56
+	56,
+	57,
+	58,
+	59,
+	60
 ];
 const contractOnlyBoards = new Set([1, 2, 3, 5, 28, 32]);
 const supplementalScenarios = [
@@ -97,7 +101,19 @@ const supplementalScenarios = [
 	'sharing.guest.mobile320.expired',
 	'sharing.guest.desktop.unavailable',
 	'sharing.guest.mobile390.unavailable',
-	'sharing.guest.mobile320.unavailable'
+	'sharing.guest.mobile320.unavailable',
+	'audio.recorded.desktop.settings',
+	'audio.recorded.mobile390.settings',
+	'audio.recorded.mobile320.settings',
+	'audio.recorded.desktop.preview',
+	'audio.recorded.mobile390.preview',
+	'audio.recorded.mobile320.preview',
+	'audio.recorded.desktop.timing-export',
+	'audio.recorded.mobile390.timing-export',
+	'audio.recorded.mobile320.timing-export',
+	'audio.recorded.desktop.recovery',
+	'audio.recorded.mobile390.recovery',
+	'audio.recorded.mobile320.recovery'
 ];
 const maximumArtifactBytes = 64 * 1024 * 1024;
 // Concurrent Windows builds can stall disk reads while these tests hash the full export bundle.
@@ -212,6 +228,19 @@ describe('current NVR Paper reference snapshot', () => {
 			const widths = board!.references.map(({ width }) => width).toSorted((a, b) => a - b);
 			expect(widths).toEqual([320, 390, 1440]);
 			for (const reference of board!.references) expect(reference.status).toBe('proposal');
+		}
+	});
+
+	it('keeps recorded audio designs additive and includes desktop plus both narrow widths', () => {
+		for (const number of [57, 58, 59, 60]) {
+			const board = manifest.boards.find((candidate) => candidate.number === number);
+			expect(board, `Missing recorded audio board ${number}`).toBeDefined();
+			expect(board!.references.map((frame) => frame.width).toSorted((a, b) => a - b)).toEqual([
+				320,
+				390,
+				number === 57 ? 1440 : 1280
+			]);
+			expect(board!.references.every((frame) => frame.status === 'proposal')).toBe(true);
 		}
 	});
 

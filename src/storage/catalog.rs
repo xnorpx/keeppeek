@@ -3541,6 +3541,21 @@ pub(super) async fn media_fragments_in_range(
     start_ms: i64,
     end_ms: i64,
 ) -> anyhow::Result<Vec<CatalogMediaFragment>> {
+    media_fragments_in_range_with_limit(connection, stream_id, start_ms, end_ms, None).await
+}
+
+pub(super) async fn media_fragments_in_range_with_limit(
+    connection: &turso::Connection,
+    stream_id: &str,
+    start_ms: i64,
+    end_ms: i64,
+    maximum: Option<u32>,
+) -> anyhow::Result<Vec<CatalogMediaFragment>> {
+    anyhow::ensure!(
+        maximum.is_none_or(|maximum| (1..=32).contains(&maximum)),
+        "invalid bounded fragment limit"
+    );
+    let row_limit = maximum.map_or(-1, |maximum| i64::from(maximum) + 1);
     let mut rows = connection
         .query(
             "SELECT f.recording_id, r.started_at_ms, r.path, r.init_offset, r.init_len,
@@ -3551,8 +3566,8 @@ pub(super) async fn media_fragments_in_range(
                              AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
                AND f.start_ms < ?3
                AND f.start_ms + f.duration_ms > ?2
-             ORDER BY f.start_ms, f.sequence",
-            (stream_id, start_ms, end_ms),
+             ORDER BY f.start_ms, f.sequence LIMIT ?4",
+            (stream_id, start_ms, end_ms, row_limit),
         )
         .await?;
     let mut fragments = Vec::new();
@@ -3570,6 +3585,10 @@ pub(super) async fn media_fragments_in_range(
             byte_len: to_u64(row.get(9)?, "fragment byte length")?,
             archive: None,
         });
+        anyhow::ensure!(
+            maximum.is_none_or(|maximum| fragments.len() <= maximum as usize),
+            "recording fragment window exceeds bounded correction limit"
+        );
     }
     drop(rows);
     let mut archives: BTreeMap<String, Option<archive_playback::ArchiveRead>> = BTreeMap::new();

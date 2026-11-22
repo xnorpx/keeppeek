@@ -7,6 +7,16 @@ export type ServerCapabilityContract = {
 };
 
 export const serverCapabilityCatalog = {
+	'keeppeek.recorded-audio.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Bounded recorded audio correction, viewer previews, timing evidence and captured export settings',
+		unlocks: 'Recorded audio timing and explicit unadjusted preview recovery',
+		whenMissing:
+			'Initial correction failures cannot offer an unadjusted preview that an older server may ignore',
+		failureGuarantee:
+			'Unaccepted previews preserve saved settings and report the failure without rewriting recordings'
+	},
 	'keeppeek.local-archive.v1': {
 		delivery: 'ships',
 		serverOwns:
