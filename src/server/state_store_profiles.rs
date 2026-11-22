@@ -2661,24 +2661,34 @@ mod tests {
         fixture.add_camera(&camera_config("192.0.2.16".parse().unwrap()));
         let shutdown = crate::shutdown::Shutdown::new();
         let mut runtime = crate::keeppeek::KeepPeekLoop::new(shutdown.clone(), None);
-        let state = fixture.state.clone().with_camera_runtime(runtime.control());
         let path = fixture.config_path();
         let config = config::load_config(&path).unwrap();
+        runtime.set_runtime_profiles(config.runtime_profiles.clone());
+        let control = runtime.control();
+        let status = control.runtime_profile_status_handle();
+        let state = fixture.state.clone().with_camera_runtime(control);
         let (sent, observed) = std::sync::mpsc::channel();
-        runtime.set_runtime_profile_status_publisher(move || {
-            let _ = sent.send(());
-        });
         {
             let _guard = state.config_update.lock().unwrap();
             application::schedule(&state, &config.runtime_profiles);
-            fixture.add_camera(&camera_config("192.0.2.17".parse().unwrap()));
+            let added = fixture.add_camera(&camera_config("192.0.2.17".parse().unwrap()));
+            let inventory = config::load_config(&path)
+                .unwrap()
+                .camera_configurations()
+                .unwrap();
+            runtime.seed_profile_observations(inventory.values().flatten());
+            runtime.set_runtime_profile_status_publisher(move || {
+                let _ = sent.send(status.read().unwrap().cameras.contains_key(&added));
+            });
         }
         let worker = std::thread::spawn(move || runtime.run());
         let acknowledgement = observed.recv_timeout(Duration::from_secs(5));
         shutdown.cancel();
         worker.join().unwrap();
-        acknowledgement
-            .expect("the current selection must reach the recorder after the camera edit");
+        assert!(
+            acknowledgement
+                .expect("the current selection must reach the recorder after the camera edit")
+        );
     }
 
     #[test]
