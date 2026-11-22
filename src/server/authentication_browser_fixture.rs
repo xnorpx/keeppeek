@@ -11,6 +11,57 @@ struct BrowserFixture {
     origin: String,
     administrator: bool,
     available: bool,
+    guest_recording: Option<GuestRecording>,
+}
+
+struct GuestRecording {
+    catalog: Option<crate::storage::RecordingCatalog>,
+    directory: PathBuf,
+    start_ms: i64,
+}
+
+impl GuestRecording {
+    fn open(origin: &str) -> (ServerState, Self) {
+        let (directory, catalog, manager, mut state, request) =
+            export_storage_tests::setup(16 * 1024 * 1024);
+        let config_path =
+            export_provenance_tests::configured_source(&mut state, &directory, Uuid::new_v4());
+        let mut settings: toml::Table = std::fs::read_to_string(&config_path)
+            .unwrap()
+            .parse()
+            .unwrap();
+        settings.insert(
+            "sharing".into(),
+            toml::Value::try_from(config::sharing::SharingConfig {
+                enabled: true,
+                public_origin: Some(origin.to_owned()),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        config::write_configuration_table(&config_path, &settings).unwrap();
+        export_storage_tests::pin_metadata(&mut state, &manager);
+        state.sharing = Arc::new(sharing::Runtime::new(
+            &config::load_config(&config_path).unwrap(),
+        ));
+        state.sharing.open(&state.storage_config).unwrap();
+        let start_ms = required_timestamp_ms(request.start_time.as_ref(), "fixture start").unwrap();
+        (
+            state,
+            Self {
+                catalog: Some(catalog),
+                directory,
+                start_ms,
+            },
+        )
+    }
+}
+
+impl Drop for GuestRecording {
+    fn drop(&mut self) {
+        self.catalog.take().unwrap().shutdown();
+        std::fs::remove_dir_all(&self.directory).unwrap();
+    }
 }
 
 impl BrowserFixture {
@@ -22,8 +73,15 @@ impl BrowserFixture {
         let directory =
             std::env::temp_dir().join(format!("keeppeek-browser-auth-{}", Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
-        let mut state = ServerState::empty();
-        state.camera_config_path = Some(directory.join("config.toml"));
+        let (mut state, guest_recording) =
+            if std::env::var_os("KEEPPEEK_GUEST_E2E_RECORDING").is_some() {
+                let (state, recording) = GuestRecording::open(&origin);
+                (state, Some(recording))
+            } else {
+                let mut state = ServerState::empty();
+                state.camera_config_path = Some(directory.join("config.toml"));
+                (state, None)
+            };
         state.allowed_origins = Arc::new(HashSet::from([origin.clone()]));
         state.network_access = NetworkAccessPolicy::new(
             vec!["127.0.0.0/8".parse().unwrap(), "::1/128".parse().unwrap()],
@@ -42,6 +100,7 @@ impl BrowserFixture {
             origin,
             administrator: false,
             available: true,
+            guest_recording,
         };
         fixture.configure(false);
         fixture.state.access_manager = AccessManager::open_with_config_update(
@@ -54,12 +113,16 @@ impl BrowserFixture {
     }
 
     fn configure(&self, proxy: bool) {
-        let mut root = toml::Table::new();
+        let path = self.state.camera_config_path.as_ref().unwrap();
+        let mut root = if self.guest_recording.is_some() {
+            std::fs::read_to_string(path).unwrap().parse().unwrap()
+        } else {
+            toml::Table::new()
+        };
         root.insert(
             "external_auth".into(),
             toml::Value::try_from(self.settings(proxy)).unwrap(),
         );
-        let path = self.state.camera_config_path.as_ref().unwrap();
         config::write_configuration_table(path, &root).unwrap();
         let config = config::load_config(path).unwrap();
         let next = authentication::Registry::new(&config, self.state.api_session_policy);
@@ -260,6 +323,7 @@ fn issue123_browser_fixture() {
         serde_json::json!({
             "backend": backend, "issuer": fixture.provider.config.issuer,
             "certificate_path": certificate_path, "key_path": key_path,
+            "guest_recording_start_ms": fixture.guest_recording.as_ref().map(|r| r.start_ms),
         })
     );
     let commands = commands();

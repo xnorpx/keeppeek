@@ -2,14 +2,48 @@
 
 Issue: https://github.com/xnorpx/keeppeek/issues/132
 
-Local branch: `feat/132-guest-review`. Selection began at `dc76cec`; the local checkpoint
-is now rebased onto merged archive main `7f9e326`. Both archive and sharing contracts,
-playback readers, export metadata and Paper designs are preserved. The two separately
-validated archive browser regression fixes are also carried locally. The owner requested
-a PR after local validation. Its scope is the completed-export increment; full #132
-acceptance remains open, so publication uses a draft PR.
+The completed-export increment is tracked in [PR #312](https://github.com/xnorpx/keeppeek/pull/312).
+The following checks cover the current branch and the earlier archive integration checkpoint.
 
-## Final validated local checkpoint
+## Real HTTPS completed-export verification
+
+On 2026-11-21, all 30 independent runs passed on `1518ae7f2c225c01e97bd9bcfaeef152355c93ef`
+after merging main `74f8ef9`. Each run started an isolated loopback HTTPS fixture, recording
+catalog and browser contexts. An OIDC Administrator created an export of the seeded H.264
+recording, downloaded it, issued a guest playback/download grant, and opened Settings.
+A separate Chromium context opened the one-time link, decoded video, sought to the midpoint,
+and downloaded the same 31,910 bytes (verified by SHA-256). The test checked the guest
+page's no-store and no-referrer response headers and fragment removal. Revoking the grant
+from Settings ended the guest review and removed its player.
+
+The table compares the authenticated and guest paths of the same build. Download times span
+the Playwright click through the browser's saved file. Checksum calculation follows the timer.
+The last row spans Administrator confirmation through the guest's visible ended state and
+player removal. Percentiles use nearest-rank p95. This functional fixture ran alongside local
+Rust builds on Windows 11 Pro 26200, Ryzen 5 5600G, 16 GB installed RAM, NVMe storage,
+loopback networking, Rust 1.99.0 (debug test binary), Bun 1.4.0 and Playwright 1.64.0.
+
+| Measurement (ms), 30 runs              | Median |    p95 | Maximum |
+| -------------------------------------- | -----: | -----: | ------: |
+| Authenticated download completion      |  382.3 |  649.3 |   776.9 |
+| Guest download completion              |  192.1 |  293.6 |   302.2 |
+| Revocation through guest UI transition |  905.9 | 1601.6 |  1726.6 |
+
+The median and p95 guest download deltas were -190.2 ms and -355.7 ms respectively.
+No speed threshold was applied to these browser timings. Distinct transport first-byte,
+peak memory, throughput at maximum concurrency and active slow-client termination measurements
+remain outstanding. Exact recording derivatives, the event/bookmark/Keep-range entry points
+and the remaining multi-process retention, restart and cleanup qualifications remain open.
+
+Reproduce under `ui/` with the repository's Rust and Bun prerequisites. The test runner
+builds the fixture from the current checkout. Each passing run attaches the three timings
+and byte count as `guest-export-timings`.
+
+```sh
+bun run test:e2e:run -- --config e2e/fixtures/external-authentication.config.ts guest-export-https.e2e.ts --repeat-each=30 --workers=1 --reporter=json
+```
+
+## Earlier archive integration checkpoint
 
 Frozen source and tests at `fb250675d3d60947304b13c619a0091c204dde5f` passed the full
 Windows `check.bat` gate with Rust 1.99.0, incremental compilation disabled and slow

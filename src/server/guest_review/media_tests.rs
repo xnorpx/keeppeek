@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    config::{self, MetadataBinding},
+    config,
     shares::{BoundSession, CreateGrant, IssuerBinding},
     shutdown::Shutdown,
     storage::{RecordingCatalog, volumes::runtime::Manager},
@@ -35,7 +35,7 @@ impl Evidence {
         let mut config = config::load_config(&path).unwrap();
         config.sharing.enabled = true;
         config.sharing.public_origin = Some("https://keeppeek.example".into());
-        pin_metadata(&mut state, &manager);
+        super::super::super::export_storage_tests::pin_metadata(&mut state, &manager);
         state.sharing = Arc::new(sharing::Runtime::new(&config));
         state.sharing.open(&state.storage_config).unwrap();
         let principal = super::super::super::ApiPrincipal::local("127.0.0.1".parse().unwrap());
@@ -113,25 +113,6 @@ impl Drop for Evidence {
         }
         let _ = std::fs::remove_dir_all(&self.root);
     }
-}
-
-fn pin_metadata(state: &mut ServerState, manager: &Manager) {
-    let primary = &manager.configuration().volumes[0];
-    let root = crate::storage::volumes::root::Root::open(&primary.root).unwrap();
-    let identity = root.identity().clone();
-    let handoff = Uuid::new_v4();
-    let binding = MetadataBinding {
-        volume_id: primary.id.clone(),
-        catalog_file: format!("catalog-{handoff}.db"),
-        history_file: format!("exports-{handoff}.json"),
-        catalog_id: Uuid::new_v4().to_string(),
-        generation: 1,
-        filesystem: identity.filesystem,
-        root_identity: identity.directory,
-    };
-    root.initialize_history(&binding.history_file).unwrap();
-    state.storage_config.recording_catalog_path = primary.root.join(&binding.catalog_file);
-    state.storage_config.metadata = Some(binding);
 }
 
 fn binding(state: &ServerState) -> ExportBinding {
