@@ -142,6 +142,7 @@ impl Speaker {
             NextTimeout {
                 after: WRITE_TIMEOUT.into(),
                 reason: ureq::Timeout::SendBody,
+                ..NextTimeout::default()
             },
         )?;
         self.control.check()?;

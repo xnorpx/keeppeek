@@ -88,5 +88,5 @@ fn xml_element_to_string(el: &Element) -> Result<String, Error> {
 
 fn deserialize_fault(envelope: &Element) -> Result<soap_envelope::Fault, Error> {
     let string = xml_element_to_string(envelope)?;
-    yaserde::de::from_str(&string).map_err(Error::InternalError)
+    yaserde::de::from_str(&string).map_err(|error| Error::InternalError(error.to_string()))
 }

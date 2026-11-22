@@ -376,6 +376,26 @@ fn parse_media(base_url: &Url, media_description: &Media) -> Result<Stream, Stri
 
 use crate::mostly_ascii::MostlyAscii;
 
+fn parse_sdp(bytes: &[u8]) -> Result<sdp_types::Session, sdp_types::ParserError> {
+    match sdp_types::Session::parse(bytes) {
+        Err(error @ sdp_types::ParserError::FieldTrailingData(2, "Origin")) => {
+            // Some TP-Link firmware inserts an extra "1" before the origin network type.
+            let text = std::str::from_utf8(bytes).ok();
+            let repaired = text.and_then(|text| {
+                let (version, rest) = text.split_once('\n')?;
+                let (origin, session) = rest.split_once('\n')?;
+                if !session.starts_with("s=Session streamed by \"TP-LINK RTSP Server\"") {
+                    return None;
+                }
+                let (ids, address) = origin.split_once(" 1 IN IP4 ")?;
+                Some(format!("{version}\n{ids} IN IP4 {address}\n{session}"))
+            });
+            sdp_types::Session::parse(repaired.as_deref().ok_or(error)?.as_bytes())
+        }
+        result => result,
+    }
+}
+
 /// Parses a successful RTSP `DESCRIBE` response into a [Presentation].
 /// On error, returns a string which is expected to be packed into an `RtspProtocolError`.
 pub fn parse_describe(
@@ -400,7 +420,7 @@ pub fn parse_describe(
         }
     }
     let raw_sdp = MostlyAscii::new(&body[..]);
-    let sdp = sdp_types::Session::parse(raw_sdp.bytes)
+    let sdp = parse_sdp(raw_sdp.bytes)
         .map_err(|e| format!("Unable to parse SDP: {e}\n\n{raw_sdp:#?}",))?;
 
     // https://tools.ietf.org/html/rfc2326#appendix-C.1.1
@@ -773,6 +793,15 @@ mod tests {
         let (response, body) = sdp_response(include_bytes!("testdata/tplink_sdp.txt"));
         let p = super::parse_describe(url, &response, &body).unwrap();
         assert_eq!(p.streams.len(), 2);
+    }
+
+    #[test]
+    fn unknown_camera_with_an_extra_origin_field_is_rejected() {
+        let sdp = b"v=0\no=- 12 34 1 IN IP4 127.0.0.1\ns=Other camera\nt=0 0\n";
+        assert!(matches!(
+            super::parse_sdp(sdp),
+            Err(sdp_types::ParserError::FieldTrailingData(2, "Origin"))
+        ));
     }
 
     #[test]

@@ -6,7 +6,7 @@ pub fn serialize<S, W: Write>(
     default_name: &str,
     writer: &mut ser::Serializer<W>,
     ser_fn: impl FnOnce(&S) -> String,
-) -> Result<(), String> {
+) -> yaserde::Result<()> {
     let name = writer
         .get_start_event_name()
         .unwrap_or_else(|| default_name.to_string());
@@ -37,16 +37,16 @@ pub fn serialize<S, W: Write>(
 pub fn deserialize<S, R: Read>(
     reader: &mut de::Deserializer<R>,
     de_fn: impl FnOnce(&str) -> Result<S, String>,
-) -> Result<S, String> {
+) -> yaserde::Result<S> {
     if let Ok(yaserde::__xml::reader::XmlEvent::StartElement { .. }) = reader.peek() {
         reader.next_event()?;
     } else {
-        return Err("Start element not found".to_string());
+        return Err(yaserde::Error::custom("Start element not found"));
     }
 
-    if let Ok(yaserde::__xml::reader::XmlEvent::Characters(text)) = reader.peek() {
-        de_fn(text)
-    } else {
-        de_fn("")
-    }
+    let text = match reader.peek() {
+        Ok(yaserde::__xml::reader::XmlEvent::Characters(text)) => text,
+        _ => "",
+    };
+    de_fn(text).map_err(yaserde::Error::custom)
 }

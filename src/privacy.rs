@@ -718,6 +718,23 @@ mod tests {
     }
 
     #[test]
+    fn vancouver_privacy_window_keeps_utc_minus_seven_in_november_2026() {
+        let mut policy = schedule(PrivacyWindow {
+            weekdays: vec![1],
+            start: "09:00".into(),
+            end: "10:00".into(),
+        });
+        policy.timezone = "America/Vancouver".into();
+        let before = "2026-11-02T15:59:59Z".parse().unwrap();
+        let start = "2026-11-02T16:00:00Z".parse().unwrap();
+        let end = "2026-11-02T17:00:00Z".parse().unwrap();
+        assert_eq!(policy.next_transition(before).unwrap(), Some(start));
+        assert!(policy.is_active(start).unwrap());
+        assert_eq!(policy.next_transition(start).unwrap(), Some(end));
+        assert!(!policy.is_active(end).unwrap());
+    }
+
+    #[test]
     fn rejects_invalid_zone_time_and_window_count() {
         assert!(
             PrivacySchedule {

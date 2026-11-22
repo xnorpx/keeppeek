@@ -34,7 +34,9 @@ cap-fs-ext = { version = "=4.0.3", default-features = false, features = [
 ] }
 cap-std = { version = "=4.0.3", default-features = false }
 test-hikvision = { path = "crates/test-hikvision", version = "0.1.0" }
-chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+chrono = { package = "sad-chrono", version = "0.5.1", default-features = false, features = [
+  "std",
+] }
 isapi = { path = "crates/isapi", version = "0.1.0" }
 digest_auth = { version = "0.3.1", default-features = false }
 encoding_rs = { version = "0.8.35", default-features = false, features = [
@@ -48,11 +50,15 @@ serde_json = { version = "1.0.151", default-features = false, features = [
   "std",
 ] }
 subtle = { version = "2.6.1", default-features = false }
-ureq = { version = "=3.4.2", default-features = false }
+ureq = { version = "=3.5.2", default-features = false }
 url = { version = "2.5.8", default-features = false, features = ["std"] }
 xml = { version = "1.4.0", default-features = false }
+yaserde = "0.13.2"
+yaserde_derive = "0.13.2"
 
 [patch.crates-io]
+# Turso and oauth2 still request chrono by its original package name.
+chrono = { path = "crates/chrono-compat" }
 chunked_transfer = { path = "crates/chunked-transfer" }
 tiny_http = { path = "crates/tiny-http" }
 
@@ -130,8 +136,10 @@ mime = { workspace = true }
 anyhow = { version = "1.0.104" }
 base64 = { version = "0.23.1" }
 bytes = { version = "1.12.1" }
-chrono = { version = "0.4", default-features = false, features = ["std"] }
-chrono-tz = "0.10"
+chrono = { package = "sad-chrono", version = "0.5.1", default-features = false, features = [
+  "std",
+] }
+chrono-tz = { package = "sad-chrono-tz", version = "0.11.1" }
 clap = { version = "4.6.6", default-features = false, features = [
   "std",
   "derive",
@@ -187,7 +195,7 @@ subtle = "2"
 zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "=1.1.5", features = ["process", "fs"] }
+rustix = { version = "=1.1.6", features = ["process", "fs"] }
 
 [target.'cfg(windows)'.dependencies]
 str0m = { version = "0.23.0", default-features = false, features = [

@@ -45,6 +45,43 @@ updates:
           - "*"
     open-pull-requests-limit: 5
 
+  - package-ecosystem: bun
+    directory: /ui/visual-harness
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Etc/UTC
+    groups:
+      visual-harness-dependencies:
+        patterns:
+          - "*"
+    ignore:
+      # Keep Loki on Storybook 8 and its supported Svelte and Vite versions.
+      - dependency-name: "*storybook*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: vite
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@sveltejs/vite-plugin-svelte"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: svelte
+        update-types: ["version-update:semver-major"]
+      # The harness shares the UI's TypeScript 6 tooling.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:15"
+      timezone: Etc/UTC
+    groups:
+      container-base-images:
+        patterns:
+          - "*"
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

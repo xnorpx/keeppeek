@@ -7280,7 +7280,7 @@ fn query_stored_media_timeline(
                             })
                             .collect()
                     };
-                    physical_ranges.insert(stream_id.clone(), queried.clone());
+                    physical_ranges.insert(stream_id, queried.clone());
                     queried
                 };
                 ranges.extend(physical.into_iter().map(|(range_start, range_end)| {
