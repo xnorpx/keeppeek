@@ -40,17 +40,15 @@ const registryReadRetries = 2;
 const observedIndices = Array.from({ length: observedPartCount }, (_, index) => index);
 
 export class RuntimeProfilesControlClient {
-	private readonly activeWatch = new SharedProfileWatch<ActiveRuntimeProfile>();
+	private readonly activeWatch = new SharedProfileWatch<ActiveRuntimeProfile | null>();
 	private readonly statusWatch = new SharedProfileWatch<RuntimeProfileStatus | null>();
 	constructor(private readonly stateStore: ControlClientStateStore) {}
 
 	private connectionGeneration = 0;
-	private readonly shellDisconnectListeners = new Set<() => void>();
 
 	handleConnectionClosed(): void {
 		this.connectionGeneration++;
-		for (const disconnect of this.shellDisconnectListeners) disconnect();
-		this.activeWatch.pause();
+		this.activeWatch.pause(null);
 		this.statusWatch.pause(null);
 	}
 
@@ -306,39 +304,45 @@ export class RuntimeProfilesControlClient {
 	}
 
 	watchActive(
-		listener: (active: ReturnType<typeof runtimeProfileFromEntry>) => void
+		listener: (active: ActiveRuntimeProfile | null) => void,
+		onError?: (cause: unknown) => void
 	): Promise<ProfileSubscription> {
-		return this.watchHeader(listener);
+		return this.watchHeader(listener, onError);
 	}
 
 	private watchHeader(
-		listener: (header: ActiveRuntimeProfile) => void
+		listener: (header: ActiveRuntimeProfile | null) => void,
+		onError?: (cause: unknown) => void
 	): Promise<ProfileSubscription> {
-		return this.activeWatch.subscribe(listener, async (emit) => {
-			let retired = false;
-			const generation = this.connectionGeneration;
-			const watch = await this.watch(
-				runtimeProfilesActiveKey,
-				(entry) => emit(runtimeProfileHeaderFromEntry(entry)),
-				() => {
-					if (retired || generation !== this.connectionGeneration) return;
-					retired = true;
-					this.activeWatch.pause();
-					for (const disconnect of this.shellDisconnectListeners) disconnect();
-					void this.activeWatch.resume();
-				}
-			);
-			return {
-				close: async () => {
-					retired = true;
-					await watch.close();
-				}
-			};
-		});
+		return this.activeWatch.subscribe(
+			listener,
+			async (emit) => {
+				let retired = false;
+				const generation = this.connectionGeneration;
+				const watch = await this.watch(
+					runtimeProfilesActiveKey,
+					(entry) => emit(runtimeProfileHeaderFromEntry(entry)),
+					() => {
+						if (retired || generation !== this.connectionGeneration) return;
+						retired = true;
+						this.activeWatch.pause(null);
+						this.statusWatch.pause(null);
+						void Promise.all([this.activeWatch.resume(), this.statusWatch.resume()]);
+					}
+				);
+				return {
+					close: async () => {
+						retired = true;
+						await watch.close();
+					}
+				};
+			},
+			onError
+		);
 	}
 
 	async watchShellProfile(
-		listener: (profileId: string | null, degraded: number | null) => void
+		listener: (profileId: string | null | undefined, degraded: number | null) => void
 	): Promise<ProfileSubscription> {
 		let header: ActiveRuntimeProfile | undefined;
 		let closed = false;
@@ -358,33 +362,34 @@ export class RuntimeProfilesControlClient {
 					: (active.degradedCameras ?? null);
 			listener(active.profileId, count);
 		};
-		const disconnected = () => {
-			if (header) listener(null, null);
-			header = undefined;
-			void legacy.release();
-		};
-		const accept = (next: ActiveRuntimeProfile) => {
+		let interrupted = false;
+		const accept = (next: ActiveRuntimeProfile | null) => {
 			if (closed) return;
+			interrupted = next === null;
+			if (!next) {
+				header = undefined;
+				listener(undefined, null);
+				void legacy.release();
+				return;
+			}
 			header = next;
 			if (next.degradedCameras === undefined) legacy.open();
 			else void legacy.release();
 			notify(next);
 		};
-		this.shellDisconnectListeners.add(disconnected);
 		let active: ProfileSubscription | undefined;
 		const close = async () => {
 			closed = true;
-			this.shellDisconnectListeners.delete(disconnected);
 			await Promise.all([active?.close(), legacy.release()]);
 		};
 		try {
 			active = await this.watchHeader(accept);
-			if (!header) {
+			if (!header && !interrupted) {
 				const generation = this.connectionGeneration;
 				const fresh = runtimeProfileHeaderFromEntry(
 					await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesActiveKey)
 				);
-				if (!header) {
+				if (!header && !interrupted) {
 					if (generation !== this.connectionGeneration)
 						throw new Error('Recorder reconnected while reading the active profile.');
 					accept(fresh);

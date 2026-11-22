@@ -6,7 +6,10 @@ import type { RuntimeProfileRegistry, RuntimeProfileStatus } from '$lib/runtime-
 import type { CameraSettings } from '$lib/types';
 import RuntimeProfilesSectionFixture from './RuntimeProfilesSection.fixture.svelte';
 
-function recoveryClient(profileId: string | null, state: 'degraded' | 'pending' = 'degraded') {
+function recoveryClient(
+	profileId: string | null,
+	state: 'applied' | 'degraded' | 'pending' = 'degraded'
+) {
 	const registry: RuntimeProfileRegistry = {
 		revision: '3',
 		active_profile_id: profileId,
@@ -125,6 +128,30 @@ describe('RuntimeProfilesSection', () => {
 		expect(runtimeProfiles.watchStatus).toHaveBeenCalledTimes(2);
 		expect(runtimeProfiles.getRegistry).toHaveBeenCalledOnce();
 		expect(runtimeProfiles.getCameras).toHaveBeenCalledOnce();
+	});
+
+	it('withdraws Applied on header loss and retries both watches before restoring a matched generation', async () => {
+		const { client, runtimeProfiles, status } = recoveryClient('away', 'applied');
+		await render(RuntimeProfilesSectionFixture, { props: { client, cameras: [] } });
+		const applied = page.getByLabelText('applied policy application');
+		await expect.element(applied).toBeVisible();
+		const [withdraw, refused] = runtimeProfiles.watchActive.mock.calls[0]!;
+		withdraw(null);
+		runtimeProfiles.watchStatus.mock.calls[0]![0](status);
+		await expect.element(applied).not.toBeInTheDocument();
+		await expect.element(page.getByText('Pending', { exact: true })).toBeVisible();
+		refused(new Error('Header unavailable'));
+		await page.getByRole('button', { name: 'Retry camera status' }).click();
+		expect(runtimeProfiles.watchActive).toHaveBeenCalledTimes(2);
+		expect(runtimeProfiles.watchStatus).toHaveBeenCalledTimes(2);
+		const nextHeader = runtimeProfiles.watchActive.mock.calls[1]![0];
+		const nextStatus = runtimeProfiles.watchStatus.mock.calls[1]![0];
+		nextStatus(status);
+		await expect.element(applied).not.toBeInTheDocument();
+		nextHeader({ profileId: 'away', revision: '4' });
+		await expect.element(applied).not.toBeInTheDocument();
+		nextStatus({ ...status, revision: '4' });
+		await expect.element(applied).toBeVisible();
 	});
 
 	it('shows a recoverable watch error after opening and ignores callbacks from the retired watch', async () => {

@@ -539,11 +539,12 @@ fn watch_profiles(
         ));
     }
     if is_status_key(key_prefix) {
-        let identities = (!admin).then(|| camera_profile_ids(state).ok()).flatten();
         let status = state
             .runtime_profile_status
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _inventory = state.state_store_watches.lock_profile_views();
+        let identities = (!admin).then(|| camera_profile_ids(state).ok()).flatten();
         let entry =
             observed::snapshot_entry(state, principal, identities.as_ref(), &status, key_prefix)
                 .map_err(|error| registry_error(error, NAMESPACE, key_prefix))?;
@@ -568,11 +569,12 @@ fn watch_profiles(
             .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?;
         return register_profile_watch(state, session_id, request, entry);
     }
-    let identities = (!admin).then(|| camera_profile_ids(state).ok()).flatten();
     let status = state
         .runtime_profile_status
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _inventory = state.state_store_watches.lock_profile_views();
+    let identities = (!admin).then(|| camera_profile_ids(state).ok()).flatten();
     let entry =
         observed::header_snapshot(state, principal, identities.as_ref(), &registry, &status);
     let result = register_profile_watch(state, session_id, request, entry);
@@ -1873,17 +1875,16 @@ mod tests {
         std::sync::mpsc::SyncSender<()>,
         std::sync::mpsc::Receiver<()>,
     );
-    static STATUS_WATCH_PAUSE: std::sync::Mutex<Option<StatusWatchPause>> =
-        std::sync::Mutex::new(None);
+    static STATUS_WATCH_PAUSE: std::sync::Mutex<Vec<StatusWatchPause>> =
+        std::sync::Mutex::new(Vec::new());
 
     pub(super) fn pause_status_registration(watch_id: &str) {
         let pause = {
-            let mut slot = STATUS_WATCH_PAUSE.lock().unwrap();
-            if slot.as_ref().is_some_and(|pause| pause.0 == watch_id) {
-                slot.take()
-            } else {
-                None
-            }
+            let mut entries = STATUS_WATCH_PAUSE.lock().unwrap();
+            entries
+                .iter()
+                .position(|pause| pause.0 == watch_id)
+                .map(|i| entries.swap_remove(i))
         };
         if let Some((_, ready, resume)) = pause {
             ready.send(()).unwrap();
@@ -2297,7 +2298,10 @@ mod tests {
         let watch_id = "profile-status-snapshot-fence";
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
-        *STATUS_WATCH_PAUSE.lock().unwrap() = Some((watch_id.to_owned(), ready_tx, resume_rx));
+        STATUS_WATCH_PAUSE
+            .lock()
+            .unwrap()
+            .push((watch_id.to_owned(), ready_tx, resume_rx));
         let registration = std::thread::spawn(move || {
             super::super::dispatch(
                 &registration_state,
@@ -3574,13 +3578,42 @@ mod tests {
         let session = SessionId::from_u64(20_279);
         let principal = bind_scoped_viewer(state, session, ip);
         let mut pump = state.webrtc.stage_api_session_pump(session);
-        let result = super::super::dispatch(
-            state,
-            session,
-            &principal,
-            watch_profile_key("inventory", "observed/0"),
-        )
-        .unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+        STATUS_WATCH_PAUSE
+            .lock()
+            .unwrap()
+            .push(("inventory".to_owned(), ready_tx, resume_rx));
+        let registration_state = state.clone();
+        let registration = std::thread::spawn(move || {
+            super::super::dispatch(
+                &registration_state,
+                session,
+                &principal,
+                watch_profile_key("inventory", "observed/0"),
+            )
+        });
+        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let refresh_state = state.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        let refresh = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            refresh_state.activate_camera_entry(crate::server::camera_entry(&definition, None));
+            done_tx.send(()).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let blocked = matches!(
+            done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        resume_tx.send(()).unwrap();
+        let result = registration.join().unwrap().unwrap();
+        refresh.join().unwrap();
+        assert!(
+            blocked,
+            "inventory refresh completed before snapshot registration"
+        );
         let control_ok::Result::StateStoreResult(proto::StateStoreResult {
             result: Some(state_store_result::Result::Watch(snapshot)),
             ..
@@ -3589,7 +3622,6 @@ mod tests {
             panic!("watch snapshot");
         };
         assert!(status_camera_ids(&snapshot.entries[0]).is_empty());
-        state.activate_camera_entry(crate::server::camera_entry(&definition, None));
         let Some(proto::notification::Event::StateStoreWatchUpdate(update)) =
             single_watch_notification(pump())
         else {
