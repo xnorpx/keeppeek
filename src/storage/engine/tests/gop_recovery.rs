@@ -118,3 +118,59 @@ fn empty_rotations_into_distinct_long_term_roots_resume_in_both_writer_modes() {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[test]
+fn single_gop_rotation_discontinuity_and_shutdown_publish_each_finalized_duration() {
+    for direct in [true, false] {
+        let mut config = storage_config(&format!("single-gop-health-{}", uuid::Uuid::new_v4()));
+        let root = config.long_term_path.clone();
+        config.medium_term_duration = Duration::from_millis(150);
+        if direct {
+            config.short_term_duration = Duration::ZERO;
+            config.flush_interval = Duration::ZERO;
+        }
+        let mut worker = WriterWorker::new(config, RecordingDemand::new(Duration::ZERO), None);
+        let source = RecordingStreamIdentity::legacy("camera/main");
+        let start = Instant::now() - Duration::from_secs(4);
+        let recorded_ms = |worker: &WriterWorker| {
+            worker
+                .health
+                .snapshot()
+                .streams
+                .into_iter()
+                .find(|s| s.stream_id == source.storage_key)
+                .unwrap()
+                .recorded_duration_ms
+        };
+
+        for (ms, key) in [(0, true), (100, false), (200, true), (300, false)] {
+            worker.ingest(source.clone(), frame(start, ms, key, false));
+        }
+        worker.flush_all(true);
+        assert_eq!(recorded_ms(&worker), 200, "rotation, direct={direct}");
+        worker.finish_stream_before_gap(&source.storage_key);
+        assert_eq!(recorded_ms(&worker), 400, "discontinuity, direct={direct}");
+        for (ms, key) in [(400, true), (500, false)] {
+            worker.ingest(source.clone(), frame(start, ms, key, false));
+        }
+        worker.flush_all(true);
+        worker.finalize_all();
+        assert_eq!(recorded_ms(&worker), 600, "shutdown, direct={direct}");
+        let recordings = LongTermStore::new(root.clone())
+            .finalized_segments(&source.storage_key)
+            .unwrap();
+        assert_eq!(recordings.len(), 3);
+        for recording in recordings {
+            let mut media = mp4::read_mp4(File::open(recording).unwrap()).unwrap();
+            let (&id, track) = media.tracks().iter().next().unwrap();
+            let timescale = track.timescale();
+            assert_eq!(track.sample_count(), 2);
+            let ticks = (1..=2)
+                .map(|ordinal| u64::from(media.read_sample(id, ordinal).unwrap().unwrap().duration))
+                .sum::<u64>();
+            assert_eq!(ticks * 1_000 / u64::from(timescale), 200);
+        }
+        drop(worker);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

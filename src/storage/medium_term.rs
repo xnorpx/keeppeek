@@ -698,9 +698,14 @@ impl MediumTermWriter {
         Ok(self.finalize_recording()?.unwrap_or(path))
     }
 
+    pub(super) fn finalize_recording(self) -> std::io::Result<Option<PathBuf>> {
+        Ok(self.finalize_with_progress()?.map(|(path, _)| path))
+    }
+
     #[tracing::instrument(level = "trace", skip_all)]
-    pub(super) fn finalize_recording(mut self) -> std::io::Result<Option<PathBuf>> {
-        if matches!(self.state, WriterState::Preparing(_)) {
+    pub(super) fn finalize_with_progress(mut self) -> std::io::Result<Option<(PathBuf, Duration)>> {
+        let prepared = matches!(self.state, WriterState::Preparing(_));
+        if prepared {
             self.activate_prepared()?;
         }
         let state = std::mem::replace(&mut self.state, WriterState::WaitingForKeyframe);
@@ -720,6 +725,7 @@ impl MediumTermWriter {
                 let file = inner
                     .into_inner()
                     .map_err(std::io::IntoInnerError::into_error)?;
+                let mut unreported = Duration::ZERO;
                 if let Some(fragment) = final_fragment {
                     let start_dts = fragment_start_dts.ok_or_else(|| {
                         std::io::Error::other("final MP4 fragment has no start timestamp")
@@ -728,6 +734,11 @@ impl MediumTermWriter {
                         .unwrap_or(start_dts)
                         .saturating_add(u64::from(last_video_duration));
                     self.insert_catalog_fragment(fragment, start_dts, end_dts)?;
+                    // The first GOP was buffered during admission. Its samples become visible
+                    // to recording health only now, with the MP4's actual final sample duration.
+                    if prepared {
+                        unreported = ticks_to_duration(end_dts - start_dts, VIDEO_TIMESCALE);
+                    }
                 }
                 file.complete(
                     self.catalog.as_ref(),
@@ -735,7 +746,7 @@ impl MediumTermWriter {
                     &self.path,
                     &self.final_path,
                 )?;
-                Ok(Some(self.final_path))
+                Ok(Some((self.final_path, unreported)))
             }
             // No initialized segment exists to publish or relocate.
             _ => Ok(None),

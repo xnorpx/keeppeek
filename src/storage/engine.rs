@@ -1072,7 +1072,7 @@ impl WriterWorker {
             return;
         };
         let recording_id = writer.recording_id().to_owned();
-        match writer.finalize_recording() {
+        match finalize_pipeline_recording(writer, &self.health, storage_key) {
             Ok(None) => {}
             Ok(Some(path)) => {
                 if let Err(error) = self.move_to_long_term(storage_key, &path, &recording_id) {
@@ -1353,7 +1353,8 @@ impl WriterWorker {
         if needs_rotation && frame.is_video_keyframe() {
             let old = pipeline.medium_term.take().unwrap();
             let recording_id = old.recording_id().to_owned();
-            rotated = old.finalize_recording()?.map(|path| (path, recording_id));
+            rotated = finalize_pipeline_recording(old, &self.health, camera_id)?
+                .map(|path| (path, recording_id));
         }
 
         if pipeline.medium_term.is_none() {
@@ -1462,7 +1463,7 @@ impl WriterWorker {
                 .and_then(|p| p.medium_term.take())
             {
                 let recording_id = writer.recording_id().to_owned();
-                match writer.finalize_recording() {
+                match finalize_pipeline_recording(writer, &self.health, &id) {
                     Ok(None) => {}
                     Ok(Some(path)) => {
                         if let Err(e) = self.move_to_long_term(&id, &path, &recording_id) {
@@ -1565,6 +1566,19 @@ impl WriterWorker {
                 last_flush: Instant::now(),
             })
     }
+}
+
+fn finalize_pipeline_recording(
+    writer: MediumTermWriter,
+    health: &RecordingHealthRegistry,
+    stream: &str,
+) -> std::io::Result<Option<PathBuf>> {
+    Ok(writer.finalize_with_progress()?.map(|(path, duration)| {
+        if !duration.is_zero() {
+            health.note_progress(stream, duration);
+        }
+        path
+    }))
 }
 
 fn create_medium_term_writer(
