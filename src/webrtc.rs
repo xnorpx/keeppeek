@@ -4434,6 +4434,7 @@ const fn is_background_control_request(request: &crate::api::proto::Request) -> 
             command.action.as_ref(),
             Some(
                 crate::api::proto::stored_media_command::Action::Open(_)
+                    | crate::api::proto::stored_media_command::Action::StepFrame(_)
                     | crate::api::proto::stored_media_command::Action::Seek(_)
                     | crate::api::proto::stored_media_command::Action::Refill(_)
                     | crate::api::proto::stored_media_command::Action::SetPlayback(_)
@@ -4864,6 +4865,7 @@ fn control_data_group(command: Option<&crate::api::proto::request::Command>) -> 
             match command.action.as_ref()? {
                 Action::Open(open) => Some(format!("stored:{}", open.stored_media_id)),
                 Action::Seek(seek) => Some(format!("stored:{}", seek.stored_media_id)),
+                Action::StepFrame(step) => Some(format!("stored:{}", step.stored_media_id)),
                 Action::Close(close) => Some(format!("stored:{}", close.stored_media_id)),
                 Action::QueryTimeline(query) => Some(format!("query:{}", query.query_id)),
                 Action::CancelTimelineQuery(cancel) => Some(format!("query:{}", cancel.query_id)),

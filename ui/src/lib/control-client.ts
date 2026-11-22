@@ -1,3 +1,11 @@
+import { StoredFrameWindow, type PresentedStoredFrame } from './stored-frame-step';
+import {
+	StepStoredFrameSchema,
+	StoredFrameStepDirection,
+	type StepStoredFrame,
+	type StoredFrameStepResult,
+	type StoredFrameStepChunk
+} from './proto/webrtc_pb';
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { durationFromMs, timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt';
 import {
@@ -1191,7 +1199,22 @@ export class ControlClient {
 					mode,
 					recordedAudioPreview
 				),
-			() => this.closeStoredMedia(storedMediaId)
+			() => this.closeStoredMedia(storedMediaId),
+			this.#capabilityIds.includes('keeppeek.stored-frame-step.v1')
+				? async (step, signal) => {
+						const command = create(StoredMediaCommandSchema, {
+							action: { case: 'stepFrame', value: step }
+						});
+						const response = await this.request(
+							{ case: 'storedMediaCommand', value: command },
+							2000,
+							signal
+						);
+						if (response.case !== 'storedFrameStepResult')
+							throw new Error('Unexpected recorded frame response.');
+						return response.value;
+					}
+				: undefined
 		);
 		this.#playbacks.set(storedMediaId, playback);
 		try {
@@ -2595,6 +2618,9 @@ export class ControlClient {
 		if (stored.case === 'fragment') {
 			this.#playbacks.get(stored.value.storedMediaId)?.receiveFragment(stored.value);
 		}
+		if (stored.case === 'frameStepChunk') {
+			this.#playbacks.get(stored.value.storedMediaId)?.receiveFrameStepChunk(stored.value);
+		}
 		if (stored.case === 'keyFrame') {
 			this.#playbacks.get(stored.value.storedMediaId)?.receiveKeyFrame(stored.value);
 		}
@@ -3237,6 +3263,8 @@ export class StoredMediaPlayback {
 	#latestKeyFrame: StoredMediaKeyFramePreview | null = null;
 	#firstFragmentGenerations = new Set<bigint>();
 
+	#frameStep?: { abort: AbortController; window: StoredFrameWindow };
+
 	constructor(
 		id: string,
 		sourceId: string,
@@ -3249,7 +3277,11 @@ export class StoredMediaPlayback {
 			mode: StoredMediaMode | undefined,
 			recordedAudioPreview?: RecordedAudioPreview
 		) => Promise<StoredMediaState>,
-		close: () => Promise<void>
+		close: () => Promise<void>,
+		private readonly requestFrameStep?: (
+			step: StepStoredFrame,
+			signal: AbortSignal
+		) => Promise<StoredFrameStepResult>
 	) {
 		this.id = id;
 		this.sourceId = sourceId;
@@ -3264,6 +3296,69 @@ export class StoredMediaPlayback {
 		this.listenForSourceOpen();
 	}
 
+	get canStepExactly(): boolean {
+		return this.requestFrameStep !== undefined && typeof VideoDecoder !== 'undefined';
+	}
+
+	receiveFrameStepChunk(chunk: StoredFrameStepChunk): void {
+		this.#frameStep?.window.receive(chunk);
+	}
+
+	cancelFrameStep(): void {
+		this.#frameStep?.abort.abort();
+	}
+
+	async stepRecordedFrame(
+		direction: -1 | 1,
+		anchor: { displayedTimeNs: bigint } | { sampleToken: Uint8Array },
+		signal: AbortSignal
+	): Promise<PresentedStoredFrame> {
+		if (!this.requestFrameStep || !this.canStepExactly)
+			throw new Error('Exact picture decoding is unavailable.');
+		if (this.#closed || this.#playing || this.#frameStep)
+			throw new Error('Pause playback and finish the current picture request.');
+		signal.throwIfAborted();
+		const abort = new AbortController();
+		const cancel = () => abort.abort();
+		signal.addEventListener('abort', cancel, { once: true });
+		const stepId = crypto.randomUUID();
+		const window = new StoredFrameWindow(this.id, this.#generation, stepId);
+		this.#frameStep = { abort, window };
+		const startDeadline = setTimeout(cancel, 2000);
+		let decodeDeadline: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const request = create(StepStoredFrameSchema, {
+				storedMediaId: this.id,
+				sourceId: this.sourceId,
+				streamId: this.streamId,
+				generation: this.#generation,
+				stepId,
+				direction:
+					direction < 0 ? StoredFrameStepDirection.PREVIOUS : StoredFrameStepDirection.NEXT,
+				anchor:
+					'sampleToken' in anchor
+						? { case: 'sampleToken', value: anchor.sampleToken }
+						: {
+								case: 'displayedTime',
+								value: {
+									seconds: anchor.displayedTimeNs / 1_000_000_000n,
+									nanos: Number(anchor.displayedTimeNs % 1_000_000_000n)
+								}
+							}
+			});
+			const result = await this.requestFrameStep(request, abort.signal);
+			clearTimeout(startDeadline);
+			abort.signal.throwIfAborted();
+			decodeDeadline = setTimeout(cancel, 5000);
+			return await window.decode(result, abort.signal);
+		} finally {
+			clearTimeout(startDeadline);
+			clearTimeout(decodeDeadline);
+			signal.removeEventListener('abort', cancel);
+			this.#frameStep = undefined;
+		}
+	}
+
 	get contentType(): string | null {
 		return this.#contentType;
 	}
@@ -3274,6 +3369,7 @@ export class StoredMediaPlayback {
 			throw new Error('Server returned incomplete stored media state.');
 		}
 		if (this.#generation !== 0n && state.generation < this.#generation) return;
+		if (state.playing || this.#generation !== state.generation) this.cancelFrameStep();
 		this.recordedAudio = state.recordedAudio;
 		this.publishArchive(state.archive);
 		if (this.#generation !== 0n && state.generation !== this.#generation) {
@@ -3680,6 +3776,7 @@ export class StoredMediaPlayback {
 	}
 
 	dispose(): void {
+		this.cancelFrameStep();
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#chunks.clear();

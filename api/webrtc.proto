@@ -2060,6 +2060,7 @@ message StoredMediaCommand {
     QueryStoredMediaTimeline query_timeline = 5;
     CancelStoredMediaTimelineQuery cancel_timeline_query = 6;
     RefillStoredMedia refill = 7;
+    StepStoredFrame step_frame = 8;
   }
 }
 
@@ -2995,6 +2996,7 @@ message Ok {
     StorageVolumeResult storage_volume_result = 43;
     ArchiveResult archive_result = 44;
     ShareResult share_result = 45;
+    StoredFrameStepResult stored_frame_step_result = 46;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -4095,6 +4097,7 @@ message StoredMediaMessage {
     StoredMediaFragment fragment = 2;
     StoredMediaTimedData timed_data = 3;
     StoredMediaKeyFrame key_frame = 4;
+    StoredFrameStepChunk frame_step_chunk = 5;
   }
 }
 
@@ -4469,4 +4472,70 @@ message ShareResult {
     ShareGrantList grants = 5;
     RevokedShareEvidence revoked_evidence = 6;
   }
+}
+
+// Exact frame stepping on a paused, session-owned recorded-media cursor.
+message StepStoredFrame {
+  string stored_media_id = 1;
+  uint64 generation = 2;
+  string step_id = 3;
+  StoredFrameStepDirection direction = 4;
+  oneof anchor {
+    // The last picture actually presented by the recorded player, on its stored timeline.
+    google.protobuf.Timestamp displayed_time = 5;
+    // Returned for the last successfully presented exact picture on this cursor/generation.
+    bytes sample_token = 6;
+  }
+  // Repeat the cursor binding so current camera authorization is checked for every step.
+  string source_id = 7;
+  string stream_id = 8;
+}
+
+enum StoredFrameStepDirection {
+  STORED_FRAME_STEP_DIRECTION_UNSPECIFIED = 0;
+  STORED_FRAME_STEP_DIRECTION_PREVIOUS = 1;
+  STORED_FRAME_STEP_DIRECTION_NEXT = 2;
+}
+
+enum StoredFrameStepStatus {
+  STORED_FRAME_STEP_STATUS_UNSPECIFIED = 0;
+  STORED_FRAME_STEP_STATUS_READY = 1;
+  STORED_FRAME_STEP_STATUS_TIMING_UNAVAILABLE = 2;
+  STORED_FRAME_STEP_STATUS_AMBIGUOUS_ANCHOR = 3;
+  STORED_FRAME_STEP_STATUS_BOUNDARY = 4;
+  STORED_FRAME_STEP_STATUS_GAP = 5;
+  STORED_FRAME_STEP_STATUS_DISTANCE_LIMIT = 6;
+  STORED_FRAME_STEP_STATUS_STALE = 7;
+  STORED_FRAME_STEP_STATUS_DISCONTINUITY = 8;
+}
+
+// Only READY carries a target and a bounded encoded batch on the reliable channel.
+message StoredFrameStepResult {
+  string stored_media_id = 1;
+  uint64 generation = 2;
+  string step_id = 3;
+  StoredFrameStepStatus status = 4;
+  bytes sample_token = 5;
+  google.protobuf.Timestamp presentation_time = 6;
+  sint64 source_ticks = 7;
+  uint32 source_timescale = 8;
+  google.protobuf.Timestamp stored_time = 9;
+  uint32 target_presentation_rank = 10;
+  uint32 sample_count = 11;
+  uint32 encoded_bytes = 12;
+  MediaDataConfiguration configuration = 13;
+}
+
+// Each access unit has one decode index and one unique presentation rank, both zero-based.
+message StoredFrameStepChunk {
+  string stored_media_id = 1;
+  uint64 generation = 2;
+  string step_id = 3;
+  uint32 decode_index = 4;
+  uint32 presentation_rank = 5;
+  bool random_access = 6;
+  uint32 chunk_index = 7;
+  uint32 chunk_count = 8;
+  bytes payload = 9;
+  uint32 sample_bytes = 10;
 }
