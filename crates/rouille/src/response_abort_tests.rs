@@ -305,6 +305,15 @@ fn queued_response_abort_stops_delivery_before_prior_handler_releases() {
         server.poll_once_timeout(Duration::from_secs(2));
     }
     let handle = handle_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    // Enabling bounded writes is idempotent until the first write enters the response sequencer.
+    let queue_deadline = Instant::now() + Duration::from_secs(1);
+    while handle.enable_bounded_writes().is_ok() {
+        assert!(
+            Instant::now() < queue_deadline,
+            "second response did not enter its writer"
+        );
+        std::thread::yield_now();
+    }
     let started = Instant::now();
     assert!(!handle.is_finished().unwrap());
     let aborted = handle.abort().unwrap();
