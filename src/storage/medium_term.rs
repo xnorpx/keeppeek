@@ -805,7 +805,7 @@ pub(super) fn keyframe_budget_error() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidData,
         format!(
-            "pending recording reached the {PENDING_GOP_MIB} MiB keyframe limit; waiting for a video keyframe"
+            "pending recording reached the {PENDING_GOP_MIB} MiB keyframe limit between keyframes, skipping frames until the next video keyframe"
         ),
     )
 }

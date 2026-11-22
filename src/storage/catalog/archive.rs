@@ -713,7 +713,7 @@ async fn reserve_transfer(
         job.state == "copying" && !job.cancelled,
         "archive transfer is no longer pending"
     );
-    super::locations::ensure_fresh_observation(connection, capacity).await?;
+    super::locations::ensure_fresh_observation(connection, capacity, "archive transfer").await?;
     anyhow::ensure!(
         capacity.filesystem == job.binding.identity.filesystem
             && capacity.root_identity == job.binding.identity.directory,

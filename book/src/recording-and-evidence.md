@@ -235,13 +235,17 @@ exact totals.
 
 On Unix, KeepPeek can encounter two different files at the same active recording name
 while recovering a failed header write. The current occupant stays in place. The displaced
-entry and its `.origin` recovery record are retained in the same recording hour under
+entry, its `.origin` recovery record and the writer-owned `.pin` hard link are retained in the same recording hour under
 `.keeppeek-header-recovery-v1/`. The saved entry has exactly the original active filename.
-When that name is next requested, KeepPeek checks the saved identity. It removes a partial
+The hard link keeps the original inode allocated across a restart, including a restart before
+the move into recovery. When that name is next requested, KeepPeek checks the saved identity.
+It removes a partial
 file belonging to the failed write or restores a displaced entry to its vacant original name.
 For an older recording, stop writers for that directory and preserve the saved entry under a vacant
 recovery name. Inspect both files before changing either. A staged entry without a valid
-recovery record is left in place. Named storage volumes use their allocation ledger for
+recovery record is left in place. An inaccessible directory or one with untrusted ownership
+or permissions is skipped. New recordings still require a vacant active filename.
+Named storage volumes use their allocation ledger for
 recovery.
 
 ## Review events consistently

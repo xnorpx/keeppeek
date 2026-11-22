@@ -26,6 +26,15 @@ pub fn fixture(limit: u64) -> anyhow::Result<(PathBuf, RecordingCatalog, Manager
 
 pub fn create_root(path: &Path) -> anyhow::Result<()> {
     std::fs::create_dir(path)?;
+    protect_created_root(path)
+}
+
+pub fn protect_created_root(path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
     #[cfg(windows)]
     anyhow::ensure!(
         std::process::Command::new("powershell.exe")

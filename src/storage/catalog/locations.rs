@@ -27,11 +27,15 @@ const MAX_PENDING_ALLOCATIONS: i64 = 4_096;
 const OBSERVATION_LIFETIME: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
-struct StaleCapacity;
+struct StaleCapacity(&'static str);
 
 impl fmt::Display for StaleCapacity {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("storage capacity observation expired or superseded")
+        write!(
+            formatter,
+            "{} capacity observation expired or superseded",
+            self.0
+        )
     }
 }
 
@@ -40,12 +44,13 @@ impl std::error::Error for StaleCapacity {}
 pub(super) async fn ensure_fresh_observation(
     connection: &turso::Connection,
     capacity: &Capacity,
+    operation: &'static str,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         capacity.observed_at <= Instant::now()
             && capacity.observed_at.elapsed() <= OBSERVATION_LIFETIME
             && capacity.ledger_revision == revision(connection).await?,
-        StaleCapacity
+        StaleCapacity(operation)
     );
     Ok(())
 }
@@ -59,7 +64,7 @@ pub(super) async fn reserve_archive_restore(
     operation: &str,
     capacity: &Capacity,
 ) -> anyhow::Result<()> {
-    ensure_fresh_observation(connection, capacity).await?;
+    ensure_fresh_observation(connection, capacity, "archive restore reservation").await?;
     let mut rows=connection.query("SELECT object_id,volume_id,generation,relative_key,bytes,state FROM storage_volume_allocations WHERE operation=?1 AND kind='recording'",[operation]).await?;
     let row = rows
         .next()
@@ -806,7 +811,7 @@ async fn reserve(connection: &turso::Connection, allocation: &Allocation) -> any
         return Ok(reply);
     }
     let capacity = &allocation.capacity;
-    ensure_fresh_observation(connection, capacity).await?;
+    ensure_fresh_observation(connection, capacity, "storage allocation reservation").await?;
     let destination_path = admission(connection, allocation, true).await?;
     connection.execute("INSERT INTO storage_volume_allocations (operation, kind, object_id, volume_id, generation, relative_key, bytes, intent_bytes, state, destination_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'reserved', ?8)", turso::params![allocation.operation.clone(), allocation.object.kind.as_str(), allocation.object.id.clone(), allocation.volume.clone(), to_i64(allocation.generation, "volume generation")?, allocation.relative_key.clone(), to_i64(allocation.bytes, "allocation bytes")?, destination_path]).await?;
     bump_revision(connection).await?;
