@@ -28,7 +28,7 @@
 		type TimelineInterval,
 		type TimelineViewport
 	} from '$lib/timeline-repository.svelte';
-	import { createEventExportRange, type KeepMode } from '$lib/keep-modes';
+	import { createEventExportRange, exportSelectionKey, type KeepMode } from '$lib/keep-modes';
 	import {
 		keepMomentSearchParams,
 		parseKeepRoute,
@@ -2592,7 +2592,7 @@
 			/>
 		{:else if mode === 'export'}
 			<div class="space-y-3">
-				{#key `${selected?.url ?? 'empty-export'}:${exportSeedEvent?.id ?? ''}:${exportSeedEvent?.revision ?? ''}`}
+				{#key exportSelectionKey(cameraId, selected, exportSeedEvent)}
 					<KeepExportPanel
 						sourceId={cameraId}
 						sourceName={selectedCamera?.name ?? cameraId}
