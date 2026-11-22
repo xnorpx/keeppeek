@@ -187,3 +187,88 @@ fn native_close_rolls_back_updated_events_when_search_counter_write_fails() -> a
         Ok(())
     })
 }
+
+#[test]
+fn native_close_persists_every_binding_in_a_full_reverse_ordered_batch() -> anyhow::Result<()> {
+    pollster::block_on(async {
+        let connection = fixture().await?;
+        let mut endings = Vec::with_capacity(super::super::NATIVE_EVENT_CLOSE_BATCH_MAX);
+        for index in (0..super::super::NATIVE_EVENT_CLOSE_BATCH_MAX).rev() {
+            let id = format!("full-{index:02}");
+            let mut event = test_event(&id, 1000);
+            event.end_time_ms = None;
+            insert_event(&connection, event, None).await?;
+            endings.push((id, 2000 + i64::try_from(index)?));
+        }
+        let initial = maximum_search_revision(&connection).await?;
+        let before = stored(&connection).await?;
+        let updated = close_native_events(&connection, &endings).await?;
+        let after = stored(&connection).await?;
+        assert_eq!(updated.len(), endings.len());
+        for (index, ((id, end), result)) in endings.iter().zip(updated).enumerate() {
+            let event = result.expect("a new event closes at every position");
+            assert_eq!(&event.id, id);
+            assert_eq!(event.end_time_ms, Some(*end));
+            assert_eq!(
+                after[id],
+                StoredEvent {
+                    revision: before[id].revision + 1,
+                    end: Some(*end),
+                    search: initial + i64::try_from(index)? + 1,
+                }
+            );
+            assert_eq!(i64::try_from(event.revision)?, after[id].revision);
+        }
+        assert_eq!(
+            maximum_search_revision(&connection).await?,
+            initial + i64::try_from(endings.len())?
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn native_close_honors_the_persisted_event_revision_ceiling() -> anyhow::Result<()> {
+    pollster::block_on(async {
+        let connection = fixture().await?;
+        connection
+            .execute(
+                "UPDATE recording_events SET revision = ?1 WHERE id = 'alpha'",
+                turso::params![i64::MAX - 1],
+            )
+            .await?;
+        connection
+            .execute(
+                "UPDATE recording_events SET revision = ?1 WHERE id = 'zulu'",
+                turso::params![i64::MAX],
+            )
+            .await?;
+        let before = stored(&connection).await?;
+        let initial = maximum_search_revision(&connection).await?;
+        let entries = [("alpha".into(), 2000), ("zulu".into(), 2100)];
+        let error = close_native_events(&connection, &entries)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("event revision exceeded"));
+        assert_eq!(stored(&connection).await?, before);
+        assert_eq!(maximum_search_revision(&connection).await?, initial);
+        let updated = close_native_events(&connection, &entries[..1]).await?;
+        assert_eq!(updated.len(), 1);
+        assert_eq!(
+            updated[0].as_ref().unwrap().revision,
+            u64::try_from(i64::MAX)?
+        );
+        let after = stored(&connection).await?;
+        assert_eq!(
+            after["alpha"],
+            StoredEvent {
+                revision: i64::MAX,
+                end: Some(2000),
+                search: initial + 1
+            }
+        );
+        assert_eq!(after["zulu"], before["zulu"]);
+        assert_eq!(maximum_search_revision(&connection).await?, initial + 1);
+        Ok(())
+    })
+}
