@@ -9,6 +9,7 @@ import {
 import {
 	decodedRecordedAudio,
 	inspectRecordedAudio,
+	installRecordedAudioFrameProbe,
 	previewRecordedAudio,
 	recordedAudioBackendRoute
 } from './fixtures/recorded-audio-playback';
@@ -94,6 +95,7 @@ test('decodes recorded AAC through signed previews, reset, seek, and a second co
 	if (!manifest) throw new Error('The calibrated recording manifest is missing.');
 	const routeBackend = recordedAudioBackendRoute(new URL(baseURL).origin, fixture.url);
 	await context.route('**/*', routeBackend);
+	await installRecordedAudioFrameProbe(page);
 	await installRecordedAudioMseProbe(page);
 	const controlErrors = await installRecordedAudioControlProbe(page);
 	const errors: string[] = [];
@@ -133,5 +135,59 @@ test('decodes recorded AAC through signed previews, reset, seek, and a second co
 				await fixture.close();
 			}
 		}
+	}
+});
+
+test('witnesses a paused replacement recording before later assertions attach', async ({
+	page,
+	baseURL
+}) => {
+	if (!baseURL) throw new Error('Recorded audio calibration requires the configured UI origin.');
+	await installRecordedAudioFrameProbe(page);
+	await page.route('**/recorded-frame-witness', (route) =>
+		route.fulfill({
+			contentType: 'text/html',
+			body: '<video muted preload="auto" width="160" height="90"></video>'
+		})
+	);
+	await page.route('**/witness.mp4', (route) =>
+		route.fulfill({
+			contentType: 'video/mp4',
+			path: resolve(
+				import.meta.dirname,
+				'../../crates/test-camera/testdata/flash-tone-lead-200ms.mp4'
+			)
+		})
+	);
+	await page.goto(new URL('/recorded-frame-witness', baseURL).href);
+	const video = page.locator('video');
+	for (const time of [0, 1]) {
+		const source = await video.evaluate(async (element, time) => {
+			const video = element as HTMLVideoElement;
+			const url = URL.createObjectURL(await (await fetch('/witness.mp4')).blob());
+			video.addEventListener(
+				'loadedmetadata',
+				() => {
+					video.currentTime = time;
+				},
+				{ once: true }
+			);
+			video.src = url;
+			return url;
+		}, time);
+		await expect(video).toHaveAttribute('data-recorded-audio-presented-source', source);
+		const snapshot = () =>
+			video.evaluate((element) => {
+				const video = element as HTMLVideoElement;
+				return {
+					paused: video.paused,
+					currentTime: video.currentTime,
+					presented: Number(video.dataset.recordedAudioPresentedTime)
+				};
+			});
+		await expect.poll(snapshot).toMatchObject({ paused: true, currentTime: time });
+		await expect
+			.poll(async () => (await snapshot()).presented)
+			.toBeGreaterThanOrEqual(Math.max(0, time - 0.1));
 	}
 });
