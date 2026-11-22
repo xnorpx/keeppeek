@@ -145,6 +145,7 @@ test('durable activation, connected Settings revision and camera convergence', a
 				expect.soft(state.value?.revision).toBe(state.expectedRevision);
 				expect.soft(state.value?.count).toBe(size.cameras);
 				expect.soft(state.value?.pending).toEqual([]);
+				expect.soft(state.value?.degraded).toEqual([]);
 			}
 			expect(measured.length).toBe(count);
 			if (!smoke) {

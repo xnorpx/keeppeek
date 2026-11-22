@@ -111,10 +111,9 @@ describe('RuntimeProfilesControlClient', () => {
 		const profiles = Object.fromEntries(
 			Array.from({ length: 32 }, (_, i) => {
 				const id = 'p'.repeat(126) + String(i).padStart(2, '0');
-				return [
-					id,
-					{ id, name: 'ç•Œ'.repeat(26) + String(i).padStart(2, '0'), revision: '0', cameras: {} }
-				];
+				const name = '界'.repeat(26) + String(i).padStart(2, '0');
+				expect(new TextEncoder().encode(name).byteLength).toBe(80);
+				return [id, { id, name, revision: '0', cameras: {} }];
 			})
 		);
 		let stored = entry(
