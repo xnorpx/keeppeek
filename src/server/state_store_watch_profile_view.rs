@@ -143,10 +143,90 @@ impl Projection {
         };
         Self { event, fingerprint }
     }
+
+    pub(super) fn visible_revision(
+        &self,
+        watch: &mut Watch,
+        revisions: &mut HashMap<SessionId, u64>,
+    ) -> Option<u64> {
+        if self.event.namespace != profiles::NAMESPACE {
+            return Some(self.event.revision);
+        }
+        if let Some(fingerprint) = self.fingerprint {
+            if watch.profile_fingerprint == Some(fingerprint) {
+                return None;
+            }
+            watch.profile_fingerprint = Some(fingerprint);
+        }
+        let Some(session) = &watch.profile_session else {
+            return Some(self.event.revision);
+        };
+        // The watch lock serializes each session's snapshot and visible publications.
+        Some(*revisions.entry(watch.session_id).or_insert_with(|| {
+            let next = session
+                .profile_watch_revision
+                .load(Ordering::Relaxed)
+                .max(self.event.revision)
+                .checked_add(1)
+                .expect("profile watch revision space exhausted");
+            session
+                .profile_watch_revision
+                .store(next, Ordering::Relaxed);
+            next
+        }))
+    }
+}
+
+pub(super) struct Batch {
+    identities: Option<CameraProfileIds>,
+    scoped: HashMap<(SessionId, usize), Projection>,
+}
+
+impl Batch {
+    pub(super) fn new(
+        registry: &WatchRegistry,
+        state: &ServerState,
+        events: &[WatchEvent],
+        has_profiles: bool,
+    ) -> Self {
+        let needs_identities = has_profiles
+            && state
+                .api_session_owners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .values()
+                .any(|owner| owner.principal.role != AccessRole::Administrator);
+        let identities = needs_identities
+            .then(|| profiles::camera_profile_ids(state).ok())
+            .flatten();
+        let scoped = if has_profiles {
+            prepare(registry, state, events, identities.as_ref())
+        } else {
+            HashMap::new()
+        };
+        Self { identities, scoped }
+    }
+
+    pub(super) fn for_session<'a>(
+        &'a mut self,
+        state: &ServerState,
+        id: SessionId,
+        index: usize,
+        event: &WatchEvent,
+        unscoped: &'a mut Option<Projection>,
+    ) -> &'a Projection {
+        if !needs_projection(event) {
+            return unscoped.get_or_insert_with(|| Projection::new(event.clone()));
+        }
+        self.scoped.entry((id, index)).or_insert_with(|| {
+            // A watch registered after preparation still needs the session's camera scope.
+            Projection::new(SessionView::new(state, id, self.identities.as_ref()).project(event))
+        })
+    }
 }
 
 /// Prepare each watched key once per session, without holding the watch registry lock.
-pub(super) fn prepare(
+fn prepare(
     registry: &WatchRegistry,
     state: &ServerState,
     events: &[WatchEvent],

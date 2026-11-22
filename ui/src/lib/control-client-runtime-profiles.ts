@@ -523,23 +523,29 @@ export class RuntimeProfilesControlClient {
 		emit(null);
 		let published: ObservedPart | undefined;
 		const parts = new Map<number, ObservedPart>();
+		let admitted = false;
+		const publishComplete = () => {
+			if (!admitted || retired || generation !== this.connectionGeneration) return;
+			const status = assembleObservedParts(parts);
+			if (status) {
+				published = parts.get(0);
+				parts.clear();
+				emit(status);
+			}
+		};
 		const results = await Promise.allSettled(
 			observedIndices.map((index) =>
 				this.watch(
 					`observed/${index}`,
 					(entry) => {
+						if (retired || generation !== this.connectionGeneration) return;
 						const part = observedPartFromEntry(entry, index);
 						if (published && !sameObservationGeneration(published, part)) {
 							published = undefined;
 							emit(null);
 						}
 						parts.set(index, part);
-						const status = assembleObservedParts(parts);
-						if (status) {
-							parts.clear();
-							published = part;
-							emit(status);
-						}
+						publishComplete();
 					},
 					interrupt
 				)
@@ -552,9 +558,13 @@ export class RuntimeProfilesControlClient {
 			);
 		};
 		const failure = results.find((result) => result.status === 'rejected');
-		if (failure) {
+		try {
+			if (failure) throw failure.reason;
+			admitted = true;
+			publishComplete();
+		} catch (cause) {
 			await close();
-			throw failure.reason;
+			throw cause;
 		}
 		return { close };
 	}
