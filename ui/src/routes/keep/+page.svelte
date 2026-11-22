@@ -491,6 +491,7 @@
 	async function initialize(search = window.location.search): Promise<void> {
 		selectedWorkflowEvent = null;
 		const version = ++routeVersion;
+		const switchVersion = cameraSwitchVersion;
 		appliedSearch = search;
 		loadVersion += 1;
 		recordingLoadController?.abort();
@@ -539,7 +540,7 @@
 			}
 			await loadRouteRecordings(route, version);
 			if (version !== routeVersion) return;
-			await loadRouteEvent(route, version);
+			if (cameraSwitchVersion === switchVersion) await loadRouteEvent(route, version);
 			await healthPromise;
 		} catch (cause) {
 			if (version === routeVersion)
@@ -591,8 +592,9 @@
 
 	async function loadRouteEvent(route: KeepRoute, version: number): Promise<void> {
 		if (!route.eventId || route.timestampMs === null || !cameraId) return;
+		const switchVersion = cameraSwitchVersion;
 		const event = await resolveExportSeedEvent(route.eventId, cameraId, route.timestampMs);
-		if (version !== routeVersion) return;
+		if (version !== routeVersion || switchVersion !== cameraSwitchVersion) return;
 		exportSeedEvent = event;
 		if (event && mode === 'export') {
 			const range = createEventExportRange(event, selectedBitrateKbps);
@@ -1541,6 +1543,10 @@
 		const play = playbackIntent();
 		beginCameraSwitch(direction);
 		timelineRepository.deactivate();
+		selected = null;
+		exportSeedEvent = null;
+		exportRangeStartMs = null;
+		exportRangeEndMs = null;
 		cameraId = nextCameraId;
 		void loadRecordings(selectedDate || undefined, timestampMs, play, null, {
 			exactMoment: timestampMs !== undefined
