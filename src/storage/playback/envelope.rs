@@ -11,7 +11,7 @@ pub struct ExportMediaBounds {
 struct Timing {
     start: u64,
     duration: u32,
-    offset: i32,
+    offset: i64,
     timescale: u32,
 }
 

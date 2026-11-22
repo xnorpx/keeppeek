@@ -40,6 +40,14 @@ Those operations can discard the distinction between presentation and decode ord
 A recording produced on these paths cannot establish original camera B-frame timing
 through its MP4 timestamps alone.
 
+Replaying the twelve VFR pictures through the medium-term recorder preserved all twelve decoded
+picture IDs. Ten of the twelve stored presentation timestamps differed from the input. Reproduce
+with `cargo test --locked -p keeppeek --test exact_frame_step -- --nocapture`.
+
+Flat MP4 files written by older versions may carry unsigned version-0 composition offsets where
+the writer was given a negative value. Both encodings can have the same bits. The reader follows
+the file version. Qualifying original source timing for those files requires independent evidence.
+
 Exact stepping on recorded camera inputs remains under issue #120. An exact control
 needs a verified recording timing source, a stable recording and sample identity, and
 a decoder that returns the expected picture. Crossing a gap or a codec change requires

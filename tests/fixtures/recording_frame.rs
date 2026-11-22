@@ -2,7 +2,7 @@ use anyhow::{Context, Result, ensure};
 use keeppeek::storage::{MediaFrame, RecordingFrame, VideoCodec, VideoFrame};
 use std::time::{Duration, Instant};
 
-pub(super) fn parameter_sets(track: &mp4::Mp4Track, codec: VideoCodec) -> Result<Vec<u8>> {
+pub fn parameter_sets(track: &mp4::Mp4Track, codec: VideoCodec) -> Result<Vec<u8>> {
     let sets = match codec {
         VideoCodec::H264 => {
             let avc = track
@@ -53,7 +53,7 @@ pub(super) fn parameter_sets(track: &mp4::Mp4Track, codec: VideoCodec) -> Result
     Ok(data)
 }
 
-pub(super) fn frame(
+pub fn frame(
     codec: VideoCodec,
     dimensions: (u32, u32),
     sample: mp4::Mp4Sample,

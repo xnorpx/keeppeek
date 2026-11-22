@@ -7,7 +7,7 @@ use anyhow::{Context, bail};
 /// Rejects zero timescales, overflowing arithmetic and positive starts beyond the track clock.
 pub(super) fn audio_start(
     normalized_start_ticks: i128,
-    rendering_offset: i32,
+    rendering_offset: i64,
     offset_ms: i32,
     timescale: u32,
 ) -> anyhow::Result<Option<u64>> {

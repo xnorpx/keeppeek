@@ -27,6 +27,35 @@ use std::{
     time::Duration,
 };
 
+/// One ctts or trun box can encode either unsigned or signed 32-bit offsets.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum CompositionRange {
+    #[default]
+    Either,
+    Signed,
+    Unsigned,
+}
+
+impl CompositionRange {
+    pub fn including(self, offset: i64) -> Result<Self> {
+        match (i32::try_from(offset), u32::try_from(offset), self) {
+            (Ok(_), Ok(_), mode) => Ok(mode),
+            (Ok(_), Err(_), Self::Either | Self::Signed) => Ok(Self::Signed),
+            (Err(_), Ok(_), Self::Either | Self::Unsigned) => Ok(Self::Unsigned),
+            _ => Err(Error::InvalidData(
+                "composition offsets cannot share a 32-bit box version",
+            )),
+        }
+    }
+
+    pub const fn version(self) -> u8 {
+        match self {
+            Self::Signed => 1,
+            Self::Either | Self::Unsigned => 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackConfig {
     pub track_type: TrackType,
@@ -958,10 +987,7 @@ impl Mp4Track {
             Err(Error::EntryInStblNotFound(_, _, _)) => return Ok(None),
             Err(err) => return Err(err),
         };
-        let rendering_offset =
-            i32::try_from(self.composition_offset(sample_id)?).map_err(|_| {
-                Error::InvalidData("composition offset exceeds Mp4Sample rendering range")
-            })?;
+        let rendering_offset = self.composition_offset(sample_id)?;
         let is_sync = self.is_sync_sample(sample_id);
 
         Ok(Some(Mp4Sample {
@@ -1054,6 +1080,7 @@ pub struct Mp4TrackWriter {
     is_fixed_sample_size: bool,
     chunk_samples: u32,
     chunk_duration: u32,
+    composition_range: CompositionRange,
     chunk_buffer: BytesMut,
 
     samples_per_chunk: u32,
@@ -1121,6 +1148,7 @@ impl Mp4TrackWriter {
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             trak,
+            composition_range: CompositionRange::default(),
             chunk_buffer: BytesMut::new(),
             sample_id: 1,
             duration_per_chunk: timescale, // 1 second
@@ -1196,6 +1224,7 @@ impl Mp4TrackWriter {
             self.trak.mdia.minf.stbl.ctts.as_mut().unwrap()
         };
 
+        ctts.version = self.composition_range.version();
         if let Some(ref mut entry) = ctts.entries.last_mut()
             && entry.sample_offset == offset
         {
@@ -1251,12 +1280,13 @@ impl Mp4TrackWriter {
         sample: &Mp4Sample,
         movie_timescale: u32,
     ) -> Result<u64> {
+        self.composition_range = self.composition_range.including(sample.rendering_offset)?;
         self.chunk_buffer.extend_from_slice(&sample.bytes);
         self.chunk_samples += 1;
         self.chunk_duration += sample.duration;
         self.update_sample_sizes(sample.bytes.len() as u32);
         self.update_sample_times(sample.duration);
-        self.update_rendering_offsets(sample.rendering_offset);
+        self.update_rendering_offsets(sample.rendering_offset as i32);
         self.update_sync_samples(sample.is_sync);
         if self.is_chunk_full() {
             self.write_chunk(writer)?;

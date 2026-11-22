@@ -121,7 +121,7 @@ fn audio_sample(rate: u32, start_ms: u64, composition: i32, marker: u8) -> mp4::
     mp4::Mp4Sample {
         start_time: start_ms * u64::from(rate) / 1_000,
         duration: rate / 50,
-        rendering_offset: composition,
+        rendering_offset: i64::from(composition),
         is_sync: true,
         bytes: vec![marker, 0x55, 0xaa].into(),
     }
@@ -182,7 +182,7 @@ fn decode(output: &RemuxedFragment) -> Decoded {
     result
 }
 
-fn audio_timeline(output: &Decoded) -> Vec<(u64, i32, u32, u8)> {
+fn audio_timeline(output: &Decoded) -> Vec<(u64, i64, u32, u8)> {
     output
         .audio
         .iter()

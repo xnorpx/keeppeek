@@ -29,7 +29,7 @@ fn audio() -> mp4::TrackConfig {
     }
 }
 
-fn sample(start_time: u64, duration: u32, rendering_offset: i32) -> mp4::Mp4Sample {
+fn sample(start_time: u64, duration: u32, rendering_offset: i64) -> mp4::Mp4Sample {
     mp4::Mp4Sample {
         start_time,
         duration,

@@ -3,9 +3,11 @@ use keeppeek::storage::{VideoCodec, medium_term::MediumTermWriter};
 use std::{
     fs::File,
     path::Path,
-    process::Command,
     time::{Duration, Instant},
 };
+
+#[path = "fixtures/decoded_picture_ids.rs"]
+mod decoded_picture_ids;
 
 #[path = "fixtures/recording_frame.rs"]
 mod recording_frame;
@@ -56,36 +58,11 @@ fn replay_vfr_b_pictures_through_the_recorder_and_measure_presentation_timing() 
             changed += 1;
         }
     }
-    let decoded = Command::new("ffmpeg")
-        .args(["-v", "error", "-threads", "1", "-i"])
-        .arg(&path)
-        .args([
-            "-fps_mode",
-            "passthrough",
-            "-pix_fmt",
-            "gray",
-            "-f",
-            "rawvideo",
-            "pipe:1",
-        ])
-        .output()?;
-    ensure!(
-        decoded.status.success(),
-        "{}",
-        String::from_utf8_lossy(&decoded.stderr)
+    assert_eq!(
+        changed, 10,
+        "update the provenance qualification if the recorder preserves more timestamps"
     );
-    assert_eq!(decoded.stdout.len(), 12 * 64 * 32);
-    let ids: Vec<u8> = decoded
-        .stdout
-        .as_chunks::<{ 64 * 32 }>()
-        .0
-        .iter()
-        .map(|pixels| {
-            (0..4).fold(0_u8, |id, bit| {
-                id | (u8::from(pixels[16 * 64 + bit * 16 + 8] > 128) << bit)
-            })
-        })
-        .collect();
+    let ids = decoded_picture_ids::decoded_picture_ids(&path);
     assert_eq!(ids, (0..12).collect::<Vec<_>>());
     tracing::subscriber::with_default(
         tracing_subscriber::fmt().with_test_writer().finish(),
