@@ -14,6 +14,7 @@ pub struct Timeline {
     timestamp: i64,
     clock_rate: NonZeroU32,
     start: Option<u32>,
+    pub(super) play_origin: Option<u32>,
 
     /// The maximum forward jump to allow, in clock rate units.
     /// If this is absent, don't do any enforcement of sane time units.
@@ -44,6 +45,7 @@ impl Timeline {
         Ok(Self {
             timestamp: i64::from(start.unwrap_or(0)),
             start,
+            play_origin: start,
             clock_rate,
             max_forward_jump,
             max_forward_jump_secs: enforce_with_max_forward_jump_secs
