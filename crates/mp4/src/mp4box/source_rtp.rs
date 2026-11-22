@@ -10,7 +10,17 @@ pub(crate) const USER_TYPE: [u8; 16] = [
 const VERSION: u32 = 1;
 const RUN_BYTES: u64 = 4 + 4 + 16 + 4 + 8 + 4 + 8 + 8 + 16;
 pub(crate) const SCHEME: &str = "urn:keeppeek:original-rtp";
+// 512 single-sample runs at 72 bytes each fit in a 37 KiB event, including both headers.
+// Chunking bounds the parser allocation even when every packet starts a fresh source epoch.
 const EVENT_SAMPLES_MAX: usize = 512;
+const UUID_HEADER_BYTES: u64 = HEADER_SIZE + 16 + 4;
+// Per chunk: version-1 emsg header + fixed fields (32), scheme + NUL, decimal
+// u32 track ID + NUL (at most 11), and the 28-byte UUID header duplicated when
+// splitting a track across events. Their sum is below 100 bytes; 192 reserves
+// headroom without depending on a particular track ID or first-chunk discount.
+const EVENT_WRAPPER_BYTES_MAX: u64 = 192;
+pub(crate) const NEXT_SAMPLE_BYTES_MAX: u64 =
+    UUID_HEADER_BYTES + RUN_BYTES + EVENT_WRAPPER_BYTES_MAX;
 
 /// Native RTP clock evidence attached to one accepted recording access unit.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -103,8 +113,12 @@ pub(crate) struct SourceTiming {
 
 impl SourceTiming {
     pub(crate) fn add(&mut self, index: u32, value: SourceRtpTime) {
+        // Use the same run origins in memory and in each independently serialized event.
+        // After a split, two individually representable deltas can differ by more than i32.
+        let starts_event = self.samples.is_multiple_of(EVENT_SAMPLES_MAX as u64);
         self.samples += 1;
-        if let Some(run) = self.runs.last_mut()
+        if !starts_event
+            && let Some(run) = self.runs.last_mut()
             && run.end() == u64::from(index)
             && !value.discontinuity
             && value.anchor == run.first_time.anchor
@@ -147,8 +161,8 @@ impl SourceTiming {
 
     pub(crate) const fn event_budget(&self) -> (u64, u64) {
         let chunks = self.samples.div_ceil(EVENT_SAMPLES_MAX as u64);
-        // Each split can add a UUID header, a new clock anchor, and the surrounding emsg.
-        (self.size() + chunks * 192, chunks)
+        // The stored runs already include each chunk origin. Reserve its emsg and UUID headers.
+        (self.size() + chunks * EVENT_WRAPPER_BYTES_MAX, chunks)
     }
 
     /// One bounded ISO event can contain 512 one-sample runs even in the worst case.
@@ -244,9 +258,7 @@ impl SourceTiming {
         if self.runs.is_empty() {
             return 0;
         }
-        HEADER_SIZE
-            + 16
-            + 4
+        UUID_HEADER_BYTES
             + self.runs.len() as u64 * RUN_BYTES
             + (self.samples - self.runs.len() as u64) * 4
     }
@@ -369,6 +381,37 @@ mod tests {
         let mut reader = Cursor::new(bytes);
         let header = BoxHeader::read(&mut reader)?;
         SourceTiming::read(&mut reader, header.size)
+    }
+
+    #[test]
+    fn event_budget_includes_runs_reanchored_at_each_event_boundary() {
+        let packet = SourceRtpPacket {
+            session_id: [1; 16],
+            epoch_id: [2; 16],
+            timestamp: 0,
+            clock_rate: 90_000.try_into().unwrap(),
+        };
+        let timestamps = [i64::from(i32::MAX), 0, -2, 0];
+        let mut timing = SourceTiming::default();
+        let mut previous = None;
+        for index in 0..1_538 {
+            let timestamp = if index < 2 {
+                0
+            } else {
+                timestamps[((index - 2) % 4) as usize]
+            };
+            let clock = SourceRtpPacket {
+                timestamp,
+                ..packet
+            }
+            .recorded(previous, i64::from(index));
+            timing.add(index, clock);
+            previous = Some(clock);
+        }
+        let events = timing.events(1, 1, 90_000, 0).unwrap();
+        let (byte_bound, box_count) = timing.event_budget();
+        assert_eq!(events.len() as u64, box_count);
+        assert!(events.iter().map(Mp4Box::box_size).sum::<u64>() <= byte_bound);
     }
 
     #[test]

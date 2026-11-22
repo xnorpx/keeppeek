@@ -111,3 +111,110 @@ fn assert_finalized_metadata(config: &StorageConfig) {
         );
     });
 }
+
+#[test]
+fn restarted_catalog_recovers_failed_relocation_without_replacing_other_bytes() {
+    let mut config = storage_config(&format!("relocation-retry-{}", uuid::Uuid::new_v4()));
+    let root = config.long_term_path.clone();
+    config.medium_term_path = root.join("medium");
+    config.long_term_path = root.join("archive");
+    std::fs::create_dir_all(&config.medium_term_path).unwrap();
+    std::fs::write(&config.long_term_path, b"offline").unwrap();
+    let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+    let source = finalized_with_offline_destination(&config, &catalog);
+    let source = source.as_path();
+    let original = std::fs::read(source).unwrap();
+    let destination = config
+        .long_term_path
+        .join(source.strip_prefix(&config.medium_term_path).unwrap());
+    std::fs::remove_file(&config.long_term_path).unwrap();
+    std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+    let different = vec![0x5a; original.len()];
+    std::fs::write(&destination, &different).unwrap();
+    let mut worker = WriterWorker::new(
+        config.clone(),
+        RecordingDemand::new(Duration::ZERO),
+        Some(catalog.handle()),
+    );
+    let mut now = Instant::now();
+    for _ in 0..12 {
+        let delay = worker.retry_relocations(now).unwrap();
+        now += delay;
+    }
+    assert_eq!(std::fs::read(&destination).unwrap(), different);
+    assert_eq!(std::fs::read(source).unwrap(), original);
+    assert!(worker.health.snapshot().streams[0].last_error.is_some());
+    std::fs::remove_file(&destination).unwrap();
+
+    // A prior process has already staged the correct bytes, but publishing the
+    // new path in the catalog still fails. Playback continues opening the source.
+    block_test_path_update(&config, true);
+    std::fs::write(&destination, &original).unwrap();
+    let mut playback = std::fs::File::open(source).unwrap();
+    for _ in 0..12 {
+        let delay = worker.retry_relocations(now).unwrap();
+        now += delay;
+    }
+    assert_eq!(std::fs::read(source).unwrap(), original);
+    assert_eq!(std::fs::read(&destination).unwrap(), original);
+    block_test_path_update(&config, false);
+    for _ in 0..64 {
+        let Some(delay) = worker.retry_relocations(now) else {
+            break;
+        };
+        now += delay;
+    }
+    assert_eq!(std::fs::read(&destination).unwrap(), original);
+    let mut played = Vec::new();
+    std::io::Read::read_to_end(&mut playback, &mut played).unwrap();
+    assert_eq!(played, original);
+    drop(playback);
+    assert!(!source.exists());
+    assert!(worker.health.snapshot().streams[0].last_error.is_none());
+    assert_finalized_metadata(&config);
+    drop(worker);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn finalized_with_offline_destination(
+    config: &StorageConfig,
+    catalog: &RecordingCatalog,
+) -> PathBuf {
+    let mut worker = WriterWorker::new(
+        config.clone(),
+        RecordingDemand::new(Duration::ZERO),
+        Some(catalog.handle()),
+    );
+    let started = Instant::now() - Duration::from_secs(4);
+    for second in 0..3 {
+        worker.ingest(
+            RecordingStreamIdentity::legacy("front/main"),
+            key_frame(started + Duration::from_secs(second)),
+        );
+    }
+    worker.shutdown_flush();
+    worker.finalize_all();
+    let files = LongTermStore::new(config.medium_term_path.clone())
+        .finalized_segments("front/main")
+        .unwrap();
+    assert_eq!(files.len(), 1);
+    files[0].clone()
+}
+
+fn block_test_path_update(config: &StorageConfig, blocked: bool) {
+    pollster::block_on(async {
+        let db = turso::Builder::new_local(config.recording_catalog_path.to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
+        let sql = if blocked {
+            "CREATE TRIGGER fail_test_relocation BEFORE UPDATE OF path ON recording_files
+             WHEN NEW.path != OLD.path BEGIN SELECT RAISE(ABORT, 'test relocation unavailable'); END;"
+        } else {
+            "DROP TRIGGER fail_test_relocation"
+        };
+        conn.execute_batch(sql).await.unwrap();
+    });
+}

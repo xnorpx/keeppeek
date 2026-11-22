@@ -15,6 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 use uuid::Uuid;
+#[cfg(test)]
+mod source_timing_measurement;
 mod volume_file;
 use volume_file::WriterFile;
 
@@ -37,6 +39,7 @@ pub struct MediumTermWriter {
     write_buffer_bytes: usize,
     reservation: Option<Reservation>,
     named_volume: bool,
+    pub(super) recovery_limit_reached: bool,
 }
 
 enum WriterState {
@@ -183,6 +186,7 @@ impl MediumTermWriter {
             write_buffer_bytes,
             reservation,
             named_volume,
+            recovery_limit_reached: false,
         })
     }
 
@@ -205,7 +209,13 @@ impl MediumTermWriter {
             return Ok(Duration::ZERO);
         }
 
-        if matches!(self.state, WriterState::Preparing(_)) && rf.frame.is_video_keyframe() {
+        // Limit codec discovery to the largest GOP that could fit its sample table in one moof.
+        const PREPARATION_FRAMES_MAX: usize = (super::RECORDING_BOX_BYTES_MAX
+            / mp4::FragmentedMetadataUsage::SAMPLE_TABLE_ENTRY_BYTES_MAX)
+            as usize;
+        if matches!(&self.state, WriterState::Preparing(frames)
+            if rf.frame.is_video_keyframe() || frames.len() >= PREPARATION_FRAMES_MAX)
+        {
             self.activate_prepared()?;
         }
         match &mut self.state {
@@ -249,18 +259,22 @@ impl MediumTermWriter {
         self.append_one(frame)
     }
 
-    fn activate_prepared(&mut self) -> std::io::Result<()> {
+    pub(super) fn activate_prepared(&mut self) -> std::io::Result<Duration> {
+        if !matches!(self.state, WriterState::Preparing(_)) {
+            return Ok(Duration::ZERO);
+        }
         let state = std::mem::replace(&mut self.state, WriterState::WaitingForKeyframe);
         let WriterState::Preparing(frames) = state else {
             self.state = state;
-            return Ok(());
+            return Ok(Duration::ZERO);
         };
+        let before = self.recorded_duration;
         let active = self.init_mp4(&frames)?;
         self.state = WriterState::Active(Box::new(active));
         for frame in frames {
             self.write_frame(frame)?;
         }
-        Ok(())
+        Ok(self.recorded_duration.saturating_sub(before))
     }
 
     fn init_mp4(&mut self, frames: &[RecordingFrame]) -> std::io::Result<ActiveWriter> {
@@ -358,6 +372,17 @@ impl MediumTermWriter {
         let WriterState::Active(ref mut active) = self.state else {
             return Ok(());
         };
+        if self.recovery_limit_reached {
+            return Ok(());
+        }
+        if !recording_can_append_sample(active.writer.metadata_usage()) {
+            self.recovery_limit_reached = true;
+            tracing::warn!(
+                recording = self.recording_id,
+                "recording recovery budget exhausted; retaining valid prefix until the next keyframe"
+            );
+            return Ok(());
+        }
         let origin = self.segment_origin.unwrap();
         let elapsed = rf.received_at.saturating_duration_since(origin);
 
@@ -438,7 +463,9 @@ impl MediumTermWriter {
                             is_sync: video.is_keyframe,
                             bytes: video.data,
                         },
-                        rf.source_rtp,
+                        rf.source_rtp
+                            .as_ref()
+                            .map(super::segment::RecordingRtpTime::packet),
                     )
                     .map_err(mp4_err)?;
                 active.last_video_dts = Some(dts);
@@ -491,7 +518,9 @@ impl MediumTermWriter {
                             is_sync: true,
                             bytes: audio.data.slice(audio.data.len() - raw_aac.len()..),
                         },
-                        rf.source_rtp,
+                        rf.source_rtp
+                            .as_ref()
+                            .map(super::segment::RecordingRtpTime::packet),
                     )
                     .map_err(mp4_err)?;
                 active.next_audio_dts = Some(dts + u64::from(sample_duration));
@@ -660,20 +689,33 @@ impl MediumTermWriter {
     }
 
     /// Leave room for the final GOP when approaching the bounded recovery scanner's limits.
-    pub(super) fn needs_rotation(&self, duration: Duration) -> bool {
-        if self.elapsed() >= duration {
+    pub(super) fn needs_rotation(&self, received_at: Instant, duration: Duration) -> bool {
+        if self.recovery_limit_reached
+            || received_at.saturating_duration_since(self.started_at) >= duration
+        {
             return true;
         }
         let WriterState::Active(active) = &self.state else {
             return false;
         };
-        let (bytes, boxes) = active.writer.metadata_usage();
-        super::recording_metadata_rotation_due(bytes, boxes)
+        let usage = active.writer.metadata_usage();
+        super::recording_metadata_rotation_due(usage) || !recording_can_append_sample(usage)
     }
 
     pub fn elapsed(&self) -> Duration {
         self.started_at.elapsed()
     }
+}
+
+/// Reserve the worst cost of one more access unit before changing any pending samples.
+/// A keyframe may flush the previous moof/mdat then start a new pair, a track table,
+/// and one source event with a UUID header and a fresh discontinuity anchor.
+const fn recording_can_append_sample(usage: mp4::FragmentedMetadataUsage) -> bool {
+    let next = usage.with_next_sample();
+    next.bytes <= super::RECORDING_METADATA_BYTES_MAX
+        && next.boxes <= super::RECORDING_BOX_COUNT_MAX as u64
+        && next.fragments as usize <= super::RECORDING_FRAGMENT_COUNT_MAX
+        && next.pending_moof_bytes <= super::RECORDING_BOX_BYTES_MAX
 }
 
 pub(super) fn required_video_media_config(video: &VideoFrame) -> std::io::Result<mp4::MediaConfig> {
@@ -971,7 +1013,7 @@ mod tests {
         Ok(())
     }
 
-    fn video_frame(received_at: Instant, timestamp: Duration) -> RecordingFrame {
+    pub(super) fn video_frame(received_at: Instant, timestamp: Duration) -> RecordingFrame {
         RecordingFrame {
             source_rtp: None,
             received_at,
@@ -1010,7 +1052,9 @@ mod tests {
             ..video_clock
         };
         let mut first = video_frame(start, Duration::ZERO);
-        first.source_rtp = Some(video_clock);
+        first.source_rtp = Some(crate::storage::segment::RecordingRtpTime::from_packet(
+            video_clock,
+        ));
         let video_bytes = first.byte_len();
         buffers.push("camera", "main", first, start);
         let audio_data = Bytes::from_static(&[0xff, 0xf1, 0x4c, 0x40, 0, 0, 0, 0xaa]);
@@ -1019,7 +1063,9 @@ mod tests {
             "camera",
             "main",
             RecordingFrame {
-                source_rtp: Some(audio_clock),
+                source_rtp: Some(crate::storage::segment::RecordingRtpTime::from_packet(
+                    audio_clock,
+                )),
                 received_at: start,
                 timestamp: Some(Duration::ZERO),
                 frame: MediaFrame::Audio(AudioFrame {

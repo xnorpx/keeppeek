@@ -81,6 +81,39 @@ pub struct FragmentedMp4Writer<W> {
     committed_box_count: u64,
 }
 
+/// Upper bound on recovery work for the committed file and the current open fragment.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FragmentedMetadataUsage {
+    pub bytes: u64,
+    pub boxes: u64,
+    pub fragments: u32,
+    pub pending_moof_bytes: u64,
+}
+
+impl FragmentedMetadataUsage {
+    // The moof header (8) and full mfhd (16) total 24 bytes. Reserve 32.
+    const MOOF_HEADER_BYTES_MAX: u64 = 32;
+    // Excluding per-sample entries, the writer emits traf (8), tfhd (at most 32
+    // with a description index and all three defaults), version-1 tfdt (20)
+    // and trun (20, including data_offset). Reserve twice those 80 bytes.
+    const TRACK_TABLE_HEADER_BYTES_MAX: u64 = 160;
+    /// Duration, size, flags and composition offset can each consume one u32.
+    pub const SAMPLE_TABLE_ENTRY_BYTES_MAX: u64 = 4 * std::mem::size_of::<u32>() as u64;
+
+    /// Conservative usage after one access unit, including a possible new fragment and event.
+    pub const fn with_next_sample(self) -> Self {
+        let moof_bytes = Self::MOOF_HEADER_BYTES_MAX
+            + Self::TRACK_TABLE_HEADER_BYTES_MAX
+            + Self::SAMPLE_TABLE_ENTRY_BYTES_MAX;
+        Self {
+            bytes: self.bytes + moof_bytes + source_rtp::NEXT_SAMPLE_BYTES_MAX,
+            boxes: self.boxes + 3, // moof, mdat and emsg
+            fragments: self.fragments.saturating_add(1),
+            pending_moof_bytes: self.pending_moof_bytes + moof_bytes,
+        }
+    }
+}
+
 impl<W> FragmentedMp4Writer<W> {
     /// Returns the flushed `ftyp`/`moov` initialization range.
     pub const fn initialization(&self) -> Mp4ByteRange {
@@ -89,12 +122,17 @@ impl<W> FragmentedMp4Writer<W> {
 
     /// Conservative recording inspection cost, including the current unpublished fragment.
     /// Budgets bytes in MP4 box metadata rather than encoded media in mdat.
-    pub fn metadata_usage(&self) -> (u64, u64) {
-        let mut bytes = self.committed_metadata_bytes;
-        let mut boxes = self.committed_box_count;
+    pub fn metadata_usage(&self) -> FragmentedMetadataUsage {
+        let mut usage = FragmentedMetadataUsage {
+            bytes: self.committed_metadata_bytes,
+            boxes: self.committed_box_count,
+            fragments: self.sequence_number - 1,
+            pending_moof_bytes: 0,
+        };
         if self.has_pending_samples() {
-            bytes += 32;
-            boxes += 2;
+            usage.pending_moof_bytes = FragmentedMetadataUsage::MOOF_HEADER_BYTES_MAX;
+            usage.boxes += 2;
+            usage.fragments += 1;
         }
         for track in &self.tracks {
             let count = track.samples.len() as u64;
@@ -102,12 +140,14 @@ impl<W> FragmentedMp4Writer<W> {
                 continue;
             }
             // tfhd/tfdt/trun plus all four optional u32 table entries per sample.
-            bytes += 160 + 16 * count;
+            usage.pending_moof_bytes += FragmentedMetadataUsage::TRACK_TABLE_HEADER_BYTES_MAX
+                + FragmentedMetadataUsage::SAMPLE_TABLE_ENTRY_BYTES_MAX * count;
             let (event_bytes, event_count) = track.source_timing.event_budget();
-            bytes += event_bytes;
-            boxes += event_count;
+            usage.bytes += event_bytes;
+            usage.boxes += event_count;
         }
-        (bytes, boxes)
+        usage.bytes += usage.pending_moof_bytes;
+        usage
     }
 
     /// Consumes the fragmented writer and returns its underlying writer.
@@ -975,6 +1015,35 @@ mod tests {
     }
 
     #[test]
+    fn historical_sample_table_with_a_fragment_has_no_qualified_source_clock() {
+        let mut flat =
+            crate::Mp4Writer::write_start(Cursor::new(Vec::new()), &mp4_config()).unwrap();
+        flat.add_track(&video_track()).unwrap();
+        flat.write_sample(1, &sample(0, true, b"old sample"))
+            .unwrap();
+        flat.write_end().unwrap();
+        let mut bytes = flat.into_writer().into_inner();
+
+        let mut tail = FragmentedMp4Writer::write_start(
+            Cursor::new(Vec::new()),
+            &mp4_config(),
+            &[video_track()],
+        )
+        .unwrap();
+        tail.write_sample(1, sample(1_000, true, b"fragment"))
+            .unwrap();
+        let fragment = tail.write_end().unwrap().unwrap();
+        let offset = usize::try_from(fragment.range.offset).unwrap();
+        bytes.extend_from_slice(&tail.into_writer().into_inner()[offset..]);
+        let size = bytes.len() as u64;
+        let reader = Mp4Reader::read_header(Cursor::new(bytes), size).unwrap();
+        assert_eq!(reader.tracks()[&1].trak.mdia.minf.stbl.stsz.sample_count, 1);
+        assert_eq!(reader.tracks()[&1].trafs.len(), 1);
+        assert_eq!(reader.source_rtp_time(1, 1).unwrap(), None);
+        assert_eq!(reader.source_rtp_time(1, 2).unwrap(), None);
+    }
+
+    #[test]
     fn original_rtp_is_indexed_by_stored_track_ordinal_across_fragments() {
         let mut writer = FragmentedMp4Writer::write_start(
             Cursor::new(Vec::new()),
@@ -1467,6 +1536,87 @@ mod tests {
         let mut reader = Mp4Reader::read_header(buffer, size).unwrap();
         assert_eq!(reader.read_sample(1, 1).unwrap().unwrap().duration, 1_000);
         assert_eq!(reader.read_sample(1, 2).unwrap().unwrap().duration, 1_500);
+    }
+
+    #[test]
+    fn metadata_budget_bounds_serialized_track_tables_and_clock_events() {
+        let mut writer = FragmentedMp4Writer::write_start(
+            Cursor::new(Vec::new()),
+            &mp4_config(),
+            &[video_track(), audio_track()],
+        )
+        .unwrap();
+        let mut other_video = video_track().media_conf;
+        let MediaConfig::AvcConfig(avc) = &mut other_video else {
+            unreachable!()
+        };
+        avc.width = 640;
+        assert_eq!(writer.add_sample_description(1, other_video).unwrap(), 2);
+        let mut serialized_metadata = writer.initialization().size;
+        let mut serialized_boxes = 3;
+        for description in 1..=2 {
+            // At 513 samples each track needs two measured events. Signed composition offsets
+            // and the second video description exercise the largest trun and tfhd variants.
+            for ordinal in 0..513 {
+                for track in 1..=2 {
+                    let mut unit = sample(ordinal * 1_000, ordinal == 0, b"unit");
+                    unit.rendering_offset = -1;
+                    let packet = SourceRtpPacket {
+                        session_id: [1; 16],
+                        epoch_id: [track as u8; 16],
+                        clock_rate: 90_000.try_into().unwrap(),
+                        timestamp: ordinal as i64 * 1_000,
+                    };
+                    writer
+                        .write_sample_with_source_timing(
+                            track,
+                            if track == 1 { description } else { 1 },
+                            unit,
+                            Some(packet),
+                        )
+                        .unwrap();
+                }
+            }
+            let estimate = writer.metadata_usage();
+            let fragment = writer.flush_fragment().unwrap().unwrap();
+            let start = fragment.range.offset as usize;
+            let end = start + fragment.range.size as usize;
+            let bytes = &writer.writer.get_ref()[start..end];
+            let (metadata, boxes) = measured_fragment_boxes(bytes, estimate.pending_moof_bytes);
+            serialized_metadata += metadata;
+            serialized_boxes += boxes;
+            assert_eq!(estimate.fragments, description);
+            assert_eq!(estimate.boxes, serialized_boxes);
+            assert!(estimate.bytes >= serialized_metadata);
+            assert_eq!(writer.metadata_usage().bytes, serialized_metadata);
+        }
+    }
+
+    fn measured_fragment_boxes(bytes: &[u8], moof_bound: u64) -> (u64, u64) {
+        let mut metadata = 0;
+        let mut boxes = 0;
+        let mut at = 0;
+        let mut events = 0;
+        while at < bytes.len() {
+            let size = u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+            assert!(size >= HEADER_SIZE as usize && size <= bytes.len() - at);
+            match &bytes[at + 4..at + 8] {
+                b"moof" => {
+                    assert!(size as u64 <= moof_bound);
+                    metadata += size as u64;
+                }
+                b"emsg" => {
+                    events += 1;
+                    metadata += size as u64;
+                }
+                b"mdat" => assert_eq!(size, HEADER_SIZE as usize + 2 * 513 * 4),
+                other => panic!("unexpected fragment box {other:?}"),
+            }
+            at += size;
+            boxes += 1;
+        }
+        assert_eq!(events, 4);
+        (metadata, boxes)
     }
 
     #[test]

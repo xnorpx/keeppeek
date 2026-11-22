@@ -46,6 +46,7 @@ struct RecordingStreamHealth {
     last_failure: Option<Observation>,
     last_error: Option<String>,
     recorded_duration: std::time::Duration,
+    relocation_failed: Option<Observation>,
 }
 
 #[derive(Clone, Copy)]
@@ -110,6 +111,33 @@ impl RecordingHealthRegistry {
 
     pub(crate) fn note_failure(&self, stream_id: &str, error: &str) {
         self.note_failure_at(stream_id, error, Instant::now(), unix_time_ms());
+    }
+
+    pub(super) fn relocation_failed(&self, stream_id: &str) {
+        let mut streams = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        streams
+            .entry(stream_id.to_owned())
+            .or_default()
+            .relocation_failed
+            .get_or_insert(Observation {
+                at: Instant::now(),
+                at_ms: unix_time_ms(),
+            });
+    }
+
+    pub(super) fn finish_relocation_scan(&self, failing: &std::collections::HashSet<String>) {
+        let mut streams = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (id, stream) in streams.iter_mut() {
+            if !failing.contains(id) {
+                stream.relocation_failed = None;
+            }
+        }
     }
 
     pub(crate) fn snapshot(&self) -> RecordingHealthSnapshot {
@@ -187,9 +215,9 @@ impl RecordingHealthRegistry {
                 attempt_age_ms: observation_age_ms(stream.pending_since, now),
                 last_progress_at_ms: stream.last_progress.map(|observation| observation.at_ms),
                 progress_age_ms: observation_age_ms(stream.last_progress, now),
-                last_failure_at_ms: stream.last_failure.map(|observation| observation.at_ms),
-                failure_age_ms: observation_age_ms(stream.last_failure, now),
-                last_error: stream.last_error.clone(),
+                last_failure_at_ms: stream.last_failure.or(stream.relocation_failed).map(|observation| observation.at_ms),
+                failure_age_ms: observation_age_ms(stream.last_failure.or(stream.relocation_failed), now),
+                last_error: stream.last_error.clone().or_else(|| stream.relocation_failed.map(|_| "Finalized recording is retained locally while long-term storage is retried.".to_owned())),
                 recorded_duration_ms: stream
                     .recorded_duration
                     .as_millis()
