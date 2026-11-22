@@ -11,6 +11,7 @@ pub(super) struct SessionBandwidth {
     desired_bitrate_bps: Option<u64>,
     refresh_due: Option<Instant>,
     quality_report_due: Option<Instant>,
+    occupancy_report_due: Option<Instant>,
     pub(super) dirty: bool,
     connection: connection::ConnectionReporting,
 }

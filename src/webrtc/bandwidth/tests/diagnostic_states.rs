@@ -30,6 +30,70 @@ fn live_preview_changes_emit_timing_even_when_network_quality_is_stable() {
 }
 
 #[test]
+fn shared_queue_occupancy_is_sampled_while_drops_and_preview_are_reported_promptly() {
+    let mut fixture = SharedFixture::new(&[StreamQuality::Auto]);
+    fixture.prime();
+    fixture
+        .media
+        .report_live_quality(fixture.start + Duration::from_secs(1));
+    fixture.take_stream_states();
+
+    let source = fixture.media.tracks[0].runtime.subscription.active_source;
+    let mut other_viewer =
+        live_timing::Queue::new(fixture.session.inner.camera_timing(source.camera_ip));
+    other_viewer.set_preview(Some(-80));
+    let packet = |received, bytes| live_timing::Packet {
+        stream: source.stream,
+        format: live_timing::Format::Video(VideoCodec::H264),
+        received,
+        timestamp: None,
+        bytes,
+        payload_address: 1,
+    };
+    let mut notified_at = Vec::new();
+    for second in 2..=21 {
+        let now = fixture.start + Duration::from_secs(second);
+        let bytes = usize::try_from(second).unwrap();
+        other_viewer.clear();
+        assert!(other_viewer.admit((), packet(now, bytes), now).is_none());
+        match second {
+            4 => {
+                assert!(
+                    other_viewer
+                        .admit((), packet(now - Duration::from_secs(1), bytes), now)
+                        .is_none()
+                );
+            }
+            6 => {
+                assert!(
+                    other_viewer
+                        .admit((), packet(now, usize::MAX), now)
+                        .is_none()
+                );
+            }
+            8 => {
+                fixture.media.tracks[0].runtime.timing.set_preview(Some(40));
+            }
+            _ => {}
+        }
+        fixture.media.report_live_quality(now);
+        let states = fixture.take_stream_states();
+        if !states.is_empty() {
+            assert_eq!(states.len(), 1);
+            let timing = states[0].live_audio.unwrap();
+            assert_eq!(u64::from(timing.held_video_bytes), second);
+            assert_eq!(timing.held_video_frames, 1);
+            assert_eq!(timing.expired_drops, u64::from(second >= 4));
+            assert_eq!(timing.capacity_drops, u64::from(second >= 6));
+            assert_eq!(timing.preview, second >= 8);
+            notified_at.push(second);
+        }
+    }
+    assert_eq!(notified_at, [4, 6, 8, 10, 20]);
+    fixture.close();
+}
+
+#[test]
 fn live_quality_follows_holds_and_the_actual_keyframe_handoff() {
     let mut fixture = SharedFixture::new(&[StreamQuality::Auto]);
     fixture.prime();

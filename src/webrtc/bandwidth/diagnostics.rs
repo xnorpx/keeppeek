@@ -1,5 +1,32 @@
 use super::*;
-use crate::api::proto::{LiveQualityDiagnostics, LiveQualitySelectionReason, Notification};
+use crate::api::proto::{
+    LiveAudioTiming, LiveQualityDiagnostics, LiveQualitySelectionReason, Notification,
+};
+
+const OCCUPANCY_REPORT_INTERVAL: Duration = Duration::from_secs(10);
+
+fn timing_changed(
+    previous: Option<LiveAudioTiming>,
+    current: LiveAudioTiming,
+    sample_occupancy: bool,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    // Queue occupancy is shared across viewers and can change on every frame.
+    // Offsets, preview transitions, and dropped packets use the normal reporting cadence.
+    let comparable = if sample_occupancy {
+        current
+    } else {
+        LiveAudioTiming {
+            held_audio_bytes: previous.held_audio_bytes,
+            held_video_bytes: previous.held_video_bytes,
+            held_video_frames: previous.held_video_frames,
+            ..current
+        }
+    };
+    comparable != previous
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::webrtc) struct QualitySnapshot {
@@ -155,16 +182,21 @@ impl ApiMediaRuntime {
             return;
         }
         self.bandwidth.quality_report_due = Some(now + DESIRED_BITRATE_REFRESH);
+        let sample_occupancy = self
+            .bandwidth
+            .occupancy_report_due
+            .is_none_or(|due| now >= due);
+        if sample_occupancy {
+            self.bandwidth.occupancy_report_due = Some(now + OCCUPANCY_REPORT_INTERVAL);
+        }
         for index in 0..self.tracks.len() {
             let runtime = &self.tracks[index].runtime;
             let snapshot = QualitySnapshot::observe(runtime, self.bandwidth.transport_estimate_bps);
+            let timing = runtime
+                .timing
+                .report(runtime.subscription.active_source.stream);
             if runtime.reported_quality == Some(snapshot)
-                && runtime.reported_timing
-                    == Some(
-                        runtime
-                            .timing
-                            .report(runtime.subscription.active_source.stream),
-                    )
+                && !timing_changed(runtime.reported_timing, timing, sample_occupancy)
             {
                 continue;
             }
@@ -176,7 +208,7 @@ impl ApiMediaRuntime {
             let track = &self.audio_tracks[index];
             let runtime = &track.runtime;
             let timing = runtime.timing.report(runtime.source.stream);
-            if track.reported_timing == Some(timing) {
+            if !timing_changed(track.reported_timing, timing, sample_occupancy) {
                 continue;
             }
             let notification =
