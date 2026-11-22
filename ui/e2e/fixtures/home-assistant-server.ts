@@ -17,7 +17,10 @@ export const cardTestKeys = [
 export const cardAdminKey = '550e8400-e29b-41d4-a716-446655440004';
 export const cardSourceIds = ['192.0.2.101', '192.0.2.102'] as const;
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
+export type RuntimeProfileCapacity = { cameras: number; profiles: number };
 type FixtureOptions = {
+	profileCapacity?: RuntimeProfileCapacity;
+	releaseDirectory?: string;
 	trustedLocal?: boolean;
 	archiveFixture?: boolean;
 	calibrationFixture?: { mediaPath: string };
@@ -97,6 +100,7 @@ async function stop(child: ChildProcess): Promise<void> {
 }
 
 async function writeFixtureConfiguration(options: {
+	profileCapacity?: RuntimeProfileCapacity;
 	directory: string;
 	origin: string;
 	port: number;
@@ -120,14 +124,59 @@ allowed_origins = [${JSON.stringify(origin)}]
 short_term_secs = 5
 medium_term_secs = 60
 long_term_max_gb = 0
-${options.archiveFixture || options.calibrationFixture ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
+${options.archiveFixture || options.calibrationFixture || options.profileCapacity ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
 [access_credentials]
 version = 1
 ${[...cardTestKeys, cardAdminKey].map((key) => credentialRecord(key, key === cardAdminKey)).join('\n')}
-${configurations.map((configuration, index) => fixtureCameraConfiguration(configuration, index, options)).join('\n')}`,
+${options.profileCapacity ? capacityConfiguration(configurations, options.profileCapacity) : configurations.map((configuration, index) => fixtureCameraConfiguration(configuration, index, options)).join('\n')}`,
 		{ mode: 0o600 }
 	);
 	return configPath;
+}
+
+function capacityConfiguration(sources: string[], size: RuntimeProfileCapacity): string {
+	if (
+		!Number.isInteger(size.cameras) ||
+		size.cameras < 4 ||
+		size.cameras > 127 ||
+		!Number.isInteger(size.profiles) ||
+		size.profiles < 2 ||
+		size.profiles > 32
+	) {
+		throw new Error('Invalid runtime profile fixture dimensions.');
+	}
+	const identity = (index: number) =>
+		`00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`;
+	const cameras = Array.from({ length: size.cameras }, (_, index) => {
+		const source = sources[index % sources.length]!;
+		return (
+			source
+				.replace(/^\[test-camera\."[^"]+"\]$/m, `[cameras.source-${index}]`)
+				.replace(/^ip = "[^"]+"$/m, `ip = "127.0.2.${index + 1}"`) +
+			`\nprofile_identity = "${identity(index)}"\nevents = { mode = "disabled" }\n`
+		);
+	});
+	const fields = [
+		'availability = false',
+		'recording_mode = "sub"',
+		'privacy_enforced = true',
+		'notifications_suppressed = true'
+	];
+	const profiles = Array.from({ length: size.profiles }, (_, index) => {
+		const id = `qual-${String(index).padStart(2, '0')}`;
+		const prefix = `runtime_profiles.profiles.${id}`;
+		const overrides = fields.map(
+			(field, offset) =>
+				`[${prefix}.cameras."${identity((index * 5 + offset) % size.cameras)}"]\n${field}`
+		);
+		return [
+			`[${prefix}]\nid = "${id}"\nname = "Qualification ${index}"\nrevision = 1`,
+			...overrides
+		].join('\n');
+	});
+	return ['[runtime_profiles]\nidentity_schema = 1\nrevision = 0', ...profiles, ...cameras].join(
+		'\n'
+	);
 }
 
 function fixtureCameraConfiguration(configuration: string, index: number, options: FixtureOptions) {
@@ -321,7 +370,11 @@ async function preserveFixture(server: ChildProcess, directory: string, destinat
 
 export async function startHomeAssistantServer(origin: string, options: FixtureOptions = {}) {
 	const extension = process.platform === 'win32' ? '.exe' : '';
-	const binary = (name: string) => resolve(repositoryRoot, 'target/release', `${name}${extension}`);
+	const binary = (name: string) =>
+		resolve(
+			options.releaseDirectory ?? resolve(repositoryRoot, 'target/release'),
+			`${name}${extension}`
+		);
 	await Promise.all([access(binary('keeppeek')), access(binary('test_camera'))]);
 	const parent = process.platform === 'win32' ? tmpdir() : resolve(repositoryRoot, 'target');
 	const directory = await mkdtemp(resolve(parent, 'home-assistant-e2e-'));

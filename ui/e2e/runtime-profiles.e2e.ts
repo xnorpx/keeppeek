@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Route } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
+import { isolatedBackendRoute } from './fixtures/isolated-backend-route';
 import { mockControlPeer } from './fixtures/control-peer';
 import { startHomeAssistantServer } from './fixtures/home-assistant-server';
 
@@ -26,24 +27,6 @@ const config = {
 		estimated_retention_days: null
 	}
 };
-
-function isolatedBackendRoute(origin: string, backend: string) {
-	return async (route: Route) => {
-		const url = new URL(route.request().url());
-		if (
-			url.origin === origin &&
-			(url.pathname === '/create' ||
-				url.pathname.startsWith('/api/') ||
-				url.pathname.startsWith('/auth/') ||
-				url.pathname.startsWith('/config/') ||
-				url.pathname === '/metrics' ||
-				url.pathname === '/logs')
-		) {
-			const response = await route.fetch({ url: `${backend}${url.pathname}${url.search}` });
-			await route.fulfill({ response });
-		} else await route.continue();
-	};
-}
 
 async function expectLifecyclePolicy(section: Locator, profile: boolean) {
 	await expect(section).toContainText(`Active policy: ${profile ? 'Lifecycle Away' : 'Base'}`);
