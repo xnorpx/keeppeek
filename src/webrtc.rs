@@ -7956,6 +7956,7 @@ mod tests {
                 };
                 media
                     .enqueue(vec![OutboundDataMessage {
+                        permit: None,
                         target: DataChannelTarget::Reliable,
                         group: binding.stream_binding_id.clone(),
                         message: test_event_data_message(),
@@ -8002,6 +8003,7 @@ mod tests {
                 };
                 media
                     .enqueue(vec![OutboundDataMessage {
+                        permit: None,
                         target: DataChannelTarget::Reliable,
                         group: binding.stream_binding_id,
                         message: test_event_data_message(),
