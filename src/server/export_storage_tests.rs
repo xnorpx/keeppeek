@@ -150,7 +150,8 @@ fn write_source(
     frames: u32,
     spacing_ms: u64,
 ) -> (i64, i64) {
-    let started = Instant::now();
+    // All retained fixture samples must already exist when an export is requested.
+    let started = Instant::now() - Duration::from_millis(u64::from(frames) * spacing_ms);
     let mut writer = crate::storage::medium_term::MediumTermWriter::create_with_catalog(
         root,
         "front-door/sub",
