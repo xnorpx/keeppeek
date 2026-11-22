@@ -31,7 +31,7 @@ fn gap_accounts_for_prepared_media_and_stays_visible_after_buffered_recovery() {
         }
         if !direct {
             worker.ingest(source.clone(), frame(start, 300, true, false));
-            worker.flush_all();
+            worker.flush_all(false);
         }
         let health = worker
             .health
@@ -52,7 +52,7 @@ fn gap_accounts_for_prepared_media_and_stays_visible_after_buffered_recovery() {
         for at in [400, 500] {
             worker.ingest(source.clone(), frame(start, at, true, false));
         }
-        worker.flush_all();
+        worker.flush_all(false);
         let health = worker
             .health
             .snapshot()

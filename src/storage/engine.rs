@@ -1038,10 +1038,10 @@ impl WriterWorker {
                     self.ingest(identity, frame);
                 }
             }
-            Command::FlushAll => self.flush_all(),
+            Command::FlushAll => self.flush_all(false),
             Command::Shutdown => {
                 self.stop_event_recordings();
-                self.shutdown_flush();
+                self.flush_all(true);
                 self.finalize_all();
                 return true;
             }
@@ -1350,10 +1350,9 @@ impl WriterWorker {
     ) -> std::io::Result<WriteProgress> {
         let pipeline = self.pipelines.get_mut(camera_id).unwrap();
 
-        let needs_rotation = pipeline
-            .medium_term
-            .as_ref()
-            .is_some_and(|w| w.elapsed() >= self.config.medium_term_duration);
+        let needs_rotation = pipeline.medium_term.as_ref().is_some_and(|writer| {
+            writer.segment_age_at(frame.received_at) >= self.config.medium_term_duration
+        });
 
         let mut rotated = None;
         if needs_rotation && frame.is_video_keyframe() {
@@ -1377,7 +1376,7 @@ impl WriterWorker {
             tracing::info!(
                 camera = camera_id,
                 path = %writer.active_path().display(),
-                "new segment started (direct-write)",
+                "new recording segment started",
             );
             pipeline.medium_term = Some(writer);
         }
@@ -1409,7 +1408,7 @@ impl WriterWorker {
     ) -> std::io::Result<WriteProgress> {
         let pipeline = self.pipelines.get_mut(camera_id).unwrap();
         pipeline.last_flush = Instant::now();
-        let mut frames = if publish_all {
+        let frames = if publish_all {
             pipeline.short_term.drain_all()
         } else {
             Instant::now()
@@ -1418,108 +1417,28 @@ impl WriterWorker {
                     pipeline.short_term.drain_up_to_last_keyframe_before(cutoff)
                 })
         };
-        if frames.is_empty() {
-            return Ok(WriteProgress::default());
-        }
 
-        let needs_segment = pipeline
-            .medium_term
-            .as_ref()
-            .is_none_or(|writer| writer.elapsed() >= self.config.medium_term_duration);
-        let mut rotated = None;
-        let mut recorded_duration = Duration::ZERO;
-        let mut prefix_exceeded = false;
-        if needs_segment
-            && let Some(index) = frames.iter().position(RecordingFrame::is_video_keyframe)
-        {
-            if index > 0 {
-                let next = frames.split_off(index);
-                if let Some(writer) = &mut pipeline.medium_term {
-                    (recorded_duration, prefix_exceeded) = writer.append_bounded_batch(frames)?;
-                }
-                frames = next;
-            }
-            if let Some(old) = pipeline.medium_term.take() {
-                let recording_id = old.recording_id().to_owned();
-                rotated = old.finalize_recording()?.map(|path| (path, recording_id));
-            }
-            let writer = create_medium_term_writer(
-                &self.config,
-                self.catalog.as_ref(),
-                &pipeline.identity,
-                frames[0].received_at,
-                self.safety.recording_paused(),
-            )?;
-            tracing::info!(
-                camera = camera_id,
-                path = %writer.active_path().display(),
-                "new medium-term segment started"
-            );
-            pipeline.medium_term = Some(writer);
+        let mut progress = WriteProgress::default();
+        for frame in frames {
+            let written = self.write_frame_to_pipeline(camera_id, frame, false)?;
+            progress.wrote |= written.wrote;
+            progress.recorded_duration = progress
+                .recorded_duration
+                .saturating_add(written.recorded_duration);
+            progress.keyframe_gap |= written.keyframe_gap;
         }
-        let Some(writer) = &mut pipeline.medium_term else {
-            return Ok(WriteProgress::default());
-        };
-        let appended = writer.append_bounded_batch(frames);
-        let wrote = !writer.awaiting_recovery_keyframe();
-        if let Some((path, recording_id)) = rotated {
-            self.move_to_long_term(camera_id, &path, &recording_id)?;
-        }
-        let (duration, exceeded) = appended?;
-        Ok(WriteProgress {
-            wrote,
-            recorded_duration: recorded_duration.saturating_add(duration),
-            keyframe_gap: prefix_exceeded || exceeded,
-        })
+        Ok(progress)
     }
 
-    fn flush_all(&mut self) {
+    fn flush_all(&mut self, publish_all: bool) {
         let ids: Vec<String> = self.pipelines.keys().cloned().collect();
         for id in ids {
-            match self.flush_camera(&id, false) {
+            match self.flush_camera(&id, publish_all) {
                 Ok(progress) => progress.report(&self.health, &id),
-                Err(e) => tracing::error!(camera = %id, error = %e, "flush failed"),
-            }
-        }
-    }
-
-    fn shutdown_flush(&mut self) {
-        self.flush_all();
-
-        for (id, pipeline) in &mut self.pipelines {
-            let frames = pipeline.short_term.drain_all();
-            if frames.is_empty() {
-                continue;
-            }
-
-            let mut frames = frames;
-            if pipeline.medium_term.is_none() {
-                let Some(keyframe_index) =
-                    frames.iter().position(RecordingFrame::is_video_keyframe)
-                else {
-                    continue;
-                };
-                if keyframe_index > 0 {
-                    frames = frames.split_off(keyframe_index);
+                Err(error) => {
+                    self.health.note_failure(&id, &error.to_string());
+                    tracing::error!(camera = %id, %error, "flush failed");
                 }
-                let started_at = frames[0].received_at;
-                match create_medium_term_writer(
-                    &self.config,
-                    self.catalog.as_ref(),
-                    &pipeline.identity,
-                    started_at,
-                    self.safety.recording_paused(),
-                ) {
-                    Ok(writer) => pipeline.medium_term = Some(writer),
-                    Err(e) => {
-                        tracing::error!(camera = %id, error = %e, "failed to create segment on shutdown");
-                        continue;
-                    }
-                }
-            }
-
-            if let Err(e) = pipeline.medium_term.as_mut().unwrap().append_batch(frames) {
-                tracing::error!(camera = %id, error = %e, "failed to write remaining frames on shutdown");
             }
         }
     }

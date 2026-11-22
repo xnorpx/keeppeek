@@ -792,6 +792,11 @@ impl MediumTermWriter {
         &self.recording_id
     }
 
+    /// Segment boundaries follow the media receipt timeline, including queued and replayed frames.
+    pub(super) fn segment_age_at(&self, received: Instant) -> Duration {
+        received.saturating_duration_since(self.started_at)
+    }
+
     pub fn elapsed(&self) -> Duration {
         self.started_at.elapsed()
     }

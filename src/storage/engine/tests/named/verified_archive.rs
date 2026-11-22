@@ -13,6 +13,67 @@ const FPS: u32 = 15;
 const SECONDS: u32 = 30;
 
 #[test]
+fn queued_keyframes_rotate_at_media_boundaries_in_direct_and_buffered_writes() -> anyhow::Result<()>
+{
+    let start = Instant::now() - Duration::from_secs(60);
+    let fixture = video_fixture(VideoCodec::H264, "640x360");
+    for direct in [true, false] {
+        let (root, catalog, mut config) = named_fixture()?;
+        let camera = RecordingStreamIdentity::new("backlogged", "main", "backlogged");
+        config.medium_term_duration = Duration::from_secs(3);
+        let buffer = if direct {
+            Duration::ZERO
+        } else {
+            Duration::from_secs(60)
+        };
+        config.short_term_duration = buffer;
+        config.flush_interval = buffer;
+        let mut writer = WriterWorker::new(
+            config,
+            RecordingDemand::new(Duration::ZERO),
+            Some(catalog.handle()),
+        );
+        for tick in 0..12 {
+            let MediaFrame::Video(video) = &fixture[(tick % 2) as usize].frame else {
+                unreachable!("video fixture")
+            };
+            assert_eq!(video.is_keyframe, tick % 2 == 0);
+            let offset = Duration::from_millis(tick * 500);
+            writer.ingest(
+                camera.clone(),
+                RecordingFrame {
+                    received_at: start + offset,
+                    timestamp: Some(offset),
+                    frame: MediaFrame::Video(VideoFrame {
+                        codec: video.codec,
+                        is_keyframe: video.is_keyframe,
+                        width: video.width,
+                        height: video.height,
+                        data: video.data.clone(),
+                    }),
+                },
+            );
+        }
+        writer.flush_all(true);
+        writer.finalize_all();
+        let paths: BTreeSet<_> = catalog
+            .handle()
+            .media_fragments_in_range(&camera.storage_key, 0, i64::MAX)?
+            .into_iter()
+            .map(|fragment| fragment.path)
+            .collect();
+        assert_eq!(paths.len(), 2, "direct={direct}");
+        for path in paths {
+            assert_eq!(samples(Path::new(&path)), 6, "direct={direct}");
+        }
+        drop(writer);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn buffered_rotation_keeps_inter_frames_until_the_next_keyframe() -> anyhow::Result<()> {
     let (root, catalog, mut config) = named_fixture()?;
     config.flush_interval = Duration::from_secs(60);
@@ -279,8 +340,10 @@ fn run_fixture(
         report["frame_deadline_lateness_us"] = quantiles(lateness_us);
         Ok(report)
     })?;
+    let health = engine.health();
     engine.shutdown();
-    let recordings = check_recordings(&catalog_handle, &cameras)?;
+    let recordings = check_recordings(&catalog_handle, &cameras)
+        .with_context(|| format!("writers after queue drain: {:?}", health.snapshot().streams))?;
     if let Some(handle) = archive {
         wait_for_replicas(&handle, &recordings)?;
     }
@@ -569,10 +632,14 @@ fn check_recordings(
             .into_iter()
             .map(|f| (f.recording_id, f.path))
             .collect();
-        let recorded_samples: u32 = paths.values().map(|path| samples(Path::new(path))).sum();
+        let per_segment: Vec<_> = paths
+            .values()
+            .map(|path| samples(Path::new(path)))
+            .collect();
+        let recorded_samples: u32 = per_segment.iter().sum();
         ensure!(
             recorded_samples == FPS * SECONDS,
-            "{} retained {recorded_samples} samples",
+            "{} retained {recorded_samples} samples across segments {per_segment:?}",
             camera.storage_key
         );
         recordings.extend(paths.into_keys());
