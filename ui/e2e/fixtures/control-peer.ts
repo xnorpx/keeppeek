@@ -3768,6 +3768,9 @@ function cameraUpdate(
 	if (update.recordedAudio !== undefined) {
 		result.recorded_audio = recordedAudioSettings(update.recordedAudio);
 	}
+	if (update.liveAudio !== undefined) {
+		result.live_audio = recordedAudioSettings(update.liveAudio);
+	}
 	applyStringPatch(result, 'display_name', update.displayName);
 	applyStringPatch(result, 'manufacturer', update.manufacturer);
 	if (update.username !== undefined) result.username = update.username;

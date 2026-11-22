@@ -691,7 +691,7 @@
 							oncancel={closeConfiguration}
 							onsave={saveConfiguration}
 						/>
-						<div class="mt-4">
+						<div class="mt-4 space-y-4">
 							{#key cameraSettings.id}
 								<RecordedAudioSettings
 									camera={cameraSettings}
@@ -1231,7 +1231,7 @@
 							{/each}
 						</div>
 						{#if cameraSettings}
-							<div class="mt-4">
+							<div class="mt-4 space-y-4">
 								{#key cameraSettings.id}
 									<RecordedAudioSettings
 										camera={cameraSettings}

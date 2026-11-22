@@ -62,7 +62,7 @@
 		<label class="grid gap-1 text-xs"
 			>Preview offset (ms)<Input
 				class="h-11"
-				inputmode="numeric"
+				inputmode="text"
 				bind:value={previewInput}
 				aria-describedby={`${helpId} ${helpId}-preview-notice`}
 				aria-invalid={parsedPreview === null}

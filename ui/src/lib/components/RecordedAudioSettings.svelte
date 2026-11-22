@@ -187,7 +187,7 @@
 								<Input
 									aria-label={`${field.label} offset (ms)`}
 									class="h-11 w-full min-w-0 font-mono"
-									inputmode="numeric"
+									inputmode="text"
 									autocomplete="off"
 									aria-describedby={live ? `${helpId} ${helpId}-saved-latency` : helpId}
 									disabled={draft[field.key].mode === 'inherit'}
