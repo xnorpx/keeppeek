@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 pub mod inspection;
 
-pub(crate) fn legacy_stream(root: &Path, path: &Path) -> Option<String> {
+pub(super) fn legacy_stream(root: &Path, path: &Path) -> Option<String> {
     let relative = path.strip_prefix(root).ok()?;
     let name = relative.file_name()?.to_str()?.strip_suffix(".mp4")?;
     let hour = relative.parent()?;
