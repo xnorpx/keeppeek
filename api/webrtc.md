@@ -1704,7 +1704,9 @@ Range clients require this capability and send the same `ShareRecordingRange` wi
 The guard names the selected source and exact half-open Unix millisecond interval, up to two minutes.
 The recorder verifies that the export request named this source and interval, that the current camera
 has the captured identity, and that the measured media envelope fits wholly inside the selection.
-Codec preroll or a final sample extending past an edge makes the range unavailable. Missing footage
+Range previews and grant creation also verify the retained MP4 uses the guest viewer's supported
+H.264 video and optional AAC audio. Codec preroll or a final sample extending past an edge makes
+the range unavailable. Missing footage
 can shorten the file; the preview returns its measured bounds and reports catalog gaps. A successful
 grant binds the verified immutable file digest and these bounds for every guest access.
 

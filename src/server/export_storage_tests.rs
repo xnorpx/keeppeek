@@ -144,7 +144,11 @@ fn malformed_export_history_is_preserved_and_disables_creation() {
     catalog.shutdown();
 }
 
-fn write_source(root: &Path, catalog: RecordingCatalogHandle) -> (i64, i64) {
+fn write_source(
+    root: &Path,
+    catalog: RecordingCatalogHandle,
+    codec: crate::storage::VideoCodec,
+) -> (i64, i64) {
     let started = Instant::now();
     let mut writer = crate::storage::medium_term::MediumTermWriter::create_with_catalog(
         root,
@@ -154,8 +158,11 @@ fn write_source(root: &Path, catalog: RecordingCatalogHandle) -> (i64, i64) {
         catalog.clone(),
     )
     .unwrap();
-    let payload =
-        super::tests::fixture_video_keyframe("cc-4k-640x360-h264.mp4", mp4::MediaType::H264);
+    let (source, variant) = match codec {
+        crate::storage::VideoCodec::H264 => ("cc-4k-640x360-h264.mp4", mp4::MediaType::H264),
+        crate::storage::VideoCodec::H265 => ("cc-4k-640x360-h265.mp4", mp4::MediaType::H265),
+    };
+    let payload = super::tests::fixture_video_keyframe(source, variant);
     for offset in [0, 1000] {
         let elapsed = Duration::from_millis(offset);
         writer
@@ -163,7 +170,7 @@ fn write_source(root: &Path, catalog: RecordingCatalogHandle) -> (i64, i64) {
                 received_at: started + elapsed,
                 timestamp: Some(elapsed),
                 frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {
-                    codec: crate::storage::VideoCodec::H264,
+                    codec,
                     is_keyframe: true,
                     width: 640,
                     height: 368,
@@ -192,8 +199,21 @@ pub(super) fn setup(
     ServerState,
     proto::CreateExportJob,
 ) {
+    setup_for_codec(limit, crate::storage::VideoCodec::H264)
+}
+
+pub(super) fn setup_for_codec(
+    limit: u64,
+    codec: crate::storage::VideoCodec,
+) -> (
+    PathBuf,
+    RecordingCatalog,
+    Manager,
+    ServerState,
+    proto::CreateExportJob,
+) {
     let (root, catalog, manager) = fixture(limit).unwrap();
-    let (start, end) = write_source(&root.join("recordings"), catalog.handle());
+    let (start, end) = write_source(&root.join("recordings"), catalog.handle(), codec);
     let mut state = super::tests::media_test_state();
     state.catalog = Some(catalog.handle());
     state.storage_config.long_term_path = root.join("legacy");

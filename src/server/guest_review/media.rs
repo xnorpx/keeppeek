@@ -111,6 +111,19 @@ fn admission(
     })
 }
 
+pub(in crate::server) fn inspect_range_codec(file: OwnedFile, bytes: u64) -> io::Result<()> {
+    let started = Instant::now();
+    codecs::inspect(&mut PinnedReader(file), bytes, || verify_time_left(started))
+}
+
+fn verify_time_left(started: Instant) -> io::Result<()> {
+    if started.elapsed() >= VERIFY_TIMEOUT {
+        Err(io::Error::other("guest verification timed out"))
+    } else {
+        Ok(())
+    }
+}
+
 fn verified(
     state: &ServerState,
     binding: &ExportBinding,
@@ -118,15 +131,10 @@ fn verified(
 ) -> Result<(Verified<PinnedReader>, LeaseSet), Response> {
     let _permit = state.guest_review.reserve_hash().map_err(io_failure)?;
     let opened = sharing::open_guest(state, binding).map_err(control_failure)?;
-    let deadline = Instant::now()
-        .checked_add(VERIFY_TIMEOUT)
-        .ok_or_else(|| failure(503))?;
+    let started = Instant::now();
     let check = || {
         guard.check()?;
-        if Instant::now() >= deadline {
-            return Err(io::Error::other("guest verification timed out"));
-        }
-        Ok(())
+        verify_time_left(started)
     };
     let mut file = Verified::new(
         PinnedReader(opened.file),

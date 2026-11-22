@@ -54,7 +54,17 @@ pub(super) fn preview(
         }
     }
     let checked = live_evidence(state, &record, binding)?;
-    let _opened = open_guest(state, &checked.binding)?;
+    let opened = open_guest(state, &checked.binding)?;
+    if range.is_some() {
+        super::super::guest_review::inspect_range_codec(opened.file, checked.binding.bytes)
+            .map_err(|_| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Rejected,
+                    409,
+                    "the selected recording could not be verified as browser-compatible",
+                )
+            })?;
+    }
     Ok(checked)
 }
 

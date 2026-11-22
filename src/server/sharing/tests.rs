@@ -1,8 +1,8 @@
 use super::super::export_provenance_tests::{configured_source, current_record};
-use super::super::export_storage_tests::setup;
+use super::super::export_storage_tests::setup_for_codec;
 use super::*;
 use crate::shares::{CreateGrant, IssuerBinding, Mode};
-use crate::storage::RecordingCatalog;
+use crate::storage::{RecordingCatalog, VideoCodec};
 use proto::{share_command::Action, share_result::Result as Value};
 
 struct Fixture {
@@ -14,11 +14,12 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        Self::with_export(|_| {})
+        Self::with_export(VideoCodec::H264, |_| {})
     }
 
-    fn with_export(select: impl FnOnce(&mut proto::CreateExportJob)) -> Self {
-        let (root, catalog, manager, mut state, mut request) = setup(16 * 1024 * 1024);
+    fn with_export(codec: VideoCodec, select: impl FnOnce(&mut proto::CreateExportJob)) -> Self {
+        let (root, catalog, manager, mut state, mut request) =
+            setup_for_codec(16 * 1024 * 1024, codec);
         select(&mut request);
         state.export_history_path = Some(Arc::new(root.join("history.json")));
         let identity = Uuid::parse_str("b70a223d-3e4f-42e6-b950-c7a4e9429c77").unwrap();
@@ -159,9 +160,8 @@ fn wait_for_export(state: &ServerState, principal: &ApiPrincipal) {
     panic!("fixture export did not finish within ten seconds");
 }
 
-#[test]
-fn selected_interval_guards_preview_and_grant_creation() {
-    let fixture = Fixture::with_export(|request| {
+fn selected_export(codec: VideoCodec) -> (Fixture, ExportJobRecord, proto::ShareRecordingRange) {
+    let fixture = Fixture::with_export(codec, |request| {
         let start = required_timestamp_ms(request.start_time.as_ref(), "start").unwrap();
         let end = required_timestamp_ms(request.end_time.as_ref(), "end").unwrap();
         request.start_time = Some(millis_timestamp(start - 500));
@@ -169,11 +169,45 @@ fn selected_interval_guards_preview_and_grant_creation() {
         request.allow_partial = true;
     });
     let record = current_record(&fixture.state);
-    let selected = proto::ShareRecordingRange {
+    let selection = proto::ShareRecordingRange {
         source_id: record.job.source_id.clone(),
         start_ms: required_timestamp_ms(record.request.start_time.as_ref(), "start").unwrap(),
         end_ms: required_timestamp_ms(record.request.end_time.as_ref(), "end").unwrap(),
     };
+    (fixture, record, selection)
+}
+
+#[test]
+fn unsupported_range_codec_is_declined_before_disclosure() {
+    let (fixture, record, range) = selected_export(VideoCodec::H265);
+    let intent = fixture.intent();
+    for action in [
+        Action::PreviewExport(proto::PreviewShareExport {
+            export_job_id: record.job.job_id,
+            recording_range: Some(range.clone()),
+        }),
+        Action::Create(proto::CreateShareGrant {
+            recording_range: Some(range),
+            ..intent
+        }),
+    ] {
+        let error = dispatch(
+            &fixture.state,
+            &fixture.principal,
+            proto::ShareCommand {
+                action: Some(action),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+        assert!(error.message.contains("browser-compatible"));
+    }
+    assert!(fixture.list(1).grants.is_empty());
+}
+
+#[test]
+fn selected_interval_guards_preview_and_grant_creation() {
+    let (fixture, record, selected) = selected_export(VideoCodec::H264);
     let guarded_preview = |selected: &proto::ShareRecordingRange| {
         Action::PreviewExport(proto::PreviewShareExport {
             export_job_id: record.job.job_id.clone(),
