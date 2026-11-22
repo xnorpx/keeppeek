@@ -77,14 +77,15 @@ fn run(state: &ServerState) {
                 return;
             };
             drop(queue);
-            let (identities, submitted_config) = match current_identities(state, &desired) {
-                Ok(Some(ids)) => ids,
-                Ok(None) => continue,
-                Err(error) => {
-                    report_failure(state, &desired.registry, &error.to_string());
-                    continue;
-                }
-            };
+            let (identities, submitted_config) =
+                match current_identities(state, &desired.registry, &desired.camera_ids, None) {
+                    Ok(Some(ids)) => ids,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        report_failure(state, &desired.registry, &error.to_string());
+                        continue;
+                    }
+                };
             let runtime = state
                 .camera_runtime
                 .as_ref()
@@ -135,11 +136,12 @@ fn run(state: &ServerState) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .stalled_revision = None;
-        match current_identities(state, &desired) {
-            Ok(Some((_, current_config))) if current_config != submitted_config => {
-                // The camera edit owns newer observations even when profile and source IDs match.
-                publish_status_event(state, now_ms());
-            }
+        match current_identities(
+            state,
+            &desired.registry,
+            &desired.camera_ids,
+            Some(submitted_config),
+        ) {
             Ok(Some((ids, _))) => {
                 let result = result.and_then(|applications| {
                     apply_confirmed_privacy(state, &desired.registry, &ids, &applications, None)?;
@@ -159,22 +161,24 @@ fn run(state: &ServerState) {
                     Err(error) => report_failure(state, &desired.registry, &error.to_string()),
                 }
             }
-            Ok(None) => {}
+            Ok(None) => publish_status_event(state, now_ms()),
             Err(error) => report_failure(state, &desired.registry, &error.to_string()),
         }
     }
 }
 
-fn current_identities(
+pub(super) fn current_identities(
     state: &ServerState,
-    desired: &Desired,
+    registry: &ProfileRegistry,
+    expected_ids: &BTreeMap<IpAddr, String>,
+    submitted_fingerprint: Option<[u8; 32]>,
 ) -> anyhow::Result<Option<(crate::keeppeek::CameraProfileIds, [u8; 32])>> {
     if state
         .runtime_profiles
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .revision
-        != desired.registry.revision
+        != registry.revision
     {
         return Ok(None);
     }
@@ -185,12 +189,21 @@ fn current_identities(
     let config = config::load_config(path)?;
     let ids = config.camera_profile_identities()?;
     anyhow::ensure!(
-        config.runtime_profiles == desired.registry && ids == desired.camera_ids,
+        config.runtime_profiles == *registry,
+        "Camera configuration changed during application. Reapply the current profile to retry."
+    );
+    let fingerprint = camera_fingerprint(&config)?;
+    if submitted_fingerprint.is_some_and(|before| before != fingerprint || &ids != expected_ids) {
+        // The camera edit publishes its own observations under the same selection revision.
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        &ids == expected_ids,
         "Camera configuration changed during application. Reapply the current profile to retry."
     );
     Ok(Some((
         crate::keeppeek::CameraProfileIds::new(ids)?,
-        camera_fingerprint(&config)?,
+        fingerprint,
     )))
 }
 

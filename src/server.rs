@@ -8982,21 +8982,42 @@ impl ServerState {
         stop: bool,
         runtime: &KeepPeekControl,
     ) -> anyhow::Result<()> {
+        if let Some(reply) = self.submit_scheduled_camera(id, stop, runtime)? {
+            reply
+                .recv_timeout(crate::keeppeek::CAMERA_CONTROL_TIMEOUT)
+                .map_err(|error| {
+                    anyhow::anyhow!("Recorder did not acknowledge the privacy transition: {error}")
+                })??;
+        }
+        Ok(())
+    }
+
+    fn submit_scheduled_camera(
+        &self,
+        id: &str,
+        stop: bool,
+        runtime: &KeepPeekControl,
+    ) -> anyhow::Result<Option<std::sync::mpsc::Receiver<anyhow::Result<()>>>> {
         let _update = self
             .config_update
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // The schedule snapshot may predate a removal, credential edit, or renewed deny.
-        if self.privacy.decision(id, chrono::Utc::now())?.0 == stop
-            && let Some(entry) = self.camera(id)
-        {
-            if stop {
-                runtime.stop_camera(entry.configuration.ip)?;
-            } else if let Some(camera) = entry.runtime_camera {
-                runtime.start_camera(camera)?;
-            }
+        // The schedule snapshot may predate a removal, credential edit or renewed deny.
+        if self.privacy.decision(id, chrono::Utc::now())?.0 != stop {
+            return Ok(None);
         }
-        Ok(())
+        let Some(entry) = self.camera(id) else {
+            return Ok(None);
+        };
+        if stop {
+            return runtime
+                .submit_privacy_stop(entry.configuration.ip)
+                .map(Some);
+        }
+        entry
+            .runtime_camera
+            .map(|camera| runtime.submit_start_camera(camera))
+            .transpose()
     }
 
     fn camera(&self, id: &str) -> Option<CameraEntry> {
@@ -13473,6 +13494,36 @@ mod tests {
                 }
             }
         })
+    }
+
+    #[test]
+    fn pending_scheduled_camera_acknowledgement_leaves_configuration_writable() {
+        let state = media_test_state();
+        let camera = state.cameras.read().unwrap()[0].info.id.clone();
+        state
+            .privacy
+            .replace_profile_overrides(std::collections::BTreeMap::from([(camera.clone(), true)]))
+            .unwrap();
+        let runtime = crate::keeppeek::KeepPeekLoop::new(crate::shutdown::Shutdown::new(), None);
+        let receipt = state
+            .submit_scheduled_camera(&camera, true, &runtime.control())
+            .unwrap()
+            .unwrap();
+        let guard = state
+            .config_update
+            .try_lock()
+            .expect("camera acknowledgement must not hold configuration writes");
+        assert!(matches!(
+            receipt.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        drop(guard);
+        assert!(
+            state
+                .submit_scheduled_camera(&camera, false, &runtime.control())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -20507,8 +20558,8 @@ mod tests {
     #[test]
     fn export_range_is_limited_to_two_minutes_and_named_for_the_camera() {
         assert_eq!(
-            export_file_name(" Front / DÃƒÂ¸r ", 0, 120_000),
-            "Front-DÃƒÂ¸r_1970-01-01T00-00-00-000Z_to_1970-01-01T00-02-00-000Z.mp4"
+            export_file_name(" Front / Dør ", 0, 120_000),
+            "Front-Dør_1970-01-01T00-00-00-000Z_to_1970-01-01T00-02-00-000Z.mp4"
         );
         assert_eq!(
             export_file_name("///", 0, 1),

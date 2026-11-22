@@ -213,6 +213,17 @@ impl KeepPeekControl {
             .map_err(|_| anyhow::anyhow!("KeepPeek loop did not acknowledge camera removal"))?
     }
     pub fn start_camera(&self, camera: Camera) -> anyhow::Result<()> {
+        self.submit_start_camera(camera)?
+            .recv_timeout(CAMERA_CONTROL_TIMEOUT)
+            .map_err(|error| {
+                anyhow::anyhow!("KeepPeek loop did not accept the camera start request: {error}")
+            })?
+    }
+
+    pub(crate) fn submit_start_camera(
+        &self,
+        camera: Camera,
+    ) -> anyhow::Result<Receiver<anyhow::Result<()>>> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.tx
             .send(KeepPeekCommand::StartCamera {
@@ -220,11 +231,7 @@ impl KeepPeekControl {
                 reply: reply_tx,
             })
             .map_err(|_| anyhow::anyhow!("KeepPeek loop is no longer running"))?;
-        reply_rx
-            .recv_timeout(CAMERA_CONTROL_TIMEOUT)
-            .map_err(|error| {
-                anyhow::anyhow!("KeepPeek loop did not accept the camera start request: {error}")
-            })?
+        Ok(reply_rx)
     }
 
     pub fn restart_camera(&self, camera: Camera) -> anyhow::Result<()> {
