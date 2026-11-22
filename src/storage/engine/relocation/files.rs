@@ -1,8 +1,19 @@
 use std::{
     fs::{self, File},
-    io::{self, Read},
+    io::{self, Read, Write},
     path::Path,
+    sync::atomic::{AtomicBool, Ordering},
 };
+pub(super) fn check_running(stop: &AtomicBool) -> io::Result<()> {
+    if stop.load(Ordering::Acquire) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "recording relocation stopped",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn staged_name(id: uuid::Uuid) -> String {
     format!(".keeppeek-{id}.partial")
 }
@@ -32,7 +43,13 @@ pub(super) fn same_entry(source: &Path, destination: &Path) -> io::Result<bool> 
 }
 
 /// Keep the published source readable until its catalog pointer has switched.
-pub(super) fn stage_source(source: &Path, destination: &Path, stage: uuid::Uuid) -> io::Result<()> {
+pub(super) fn stage_source(
+    source: &Path,
+    destination: &Path,
+    stage: uuid::Uuid,
+    stop: &AtomicBool,
+) -> io::Result<()> {
+    check_running(stop)?;
     let parent = destination
         .parent()
         .ok_or_else(|| io::Error::other("missing recording directory"))?;
@@ -41,11 +58,11 @@ pub(super) fn stage_source(source: &Path, destination: &Path, stage: uuid::Uuid)
     match fs::hard_link(source, destination) {
         Ok(()) => return Ok(()),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            return verify_existing(source, destination);
+            return verify_existing(source, destination, stop);
         }
         Err(_) => {}
     }
-    copy_and_publish(source, destination, parent, stage)
+    copy_and_publish(source, destination, parent, stage, stop)
 }
 
 fn copy_and_publish(
@@ -53,6 +70,7 @@ fn copy_and_publish(
     destination: &Path,
     parent: &Path,
     stage: uuid::Uuid,
+    stop: &AtomicBool,
 ) -> io::Result<()> {
     let directory = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())?;
     let temporary = staged_name(stage);
@@ -72,8 +90,9 @@ fn copy_and_publish(
     }
     let mut staged = directory.open_with(&temporary, &options)?;
     let copied = (|| {
-        io::copy(&mut File::open(source)?, &mut staged)?;
+        copy_chunks(File::open(source)?, &mut staged, stop)?;
         staged.sync_all()?;
+        check_running(stop)?;
         let name = destination
             .file_name()
             .ok_or_else(|| io::Error::other("missing recording name"))?;
@@ -103,7 +122,7 @@ fn copy_and_publish(
     // error. The destination itself decides whether a previous publication can
     // be reused; its complete contents must agree with the retained source.
     match copied {
-        Err(_) if destination.try_exists()? => verify_existing(source, destination),
+        Err(_) if destination.try_exists()? => verify_existing(source, destination, stop),
         other => other,
     }
 }
@@ -125,7 +144,29 @@ fn publish_no_replace(
     }
 }
 
-pub(super) fn verify_existing(source: &Path, destination: &Path) -> io::Result<()> {
+fn copy_chunks(
+    mut source: impl Read,
+    mut destination: impl Write,
+    stop: &AtomicBool,
+) -> io::Result<()> {
+    let mut buffer = [0; 8192];
+    loop {
+        check_running(stop)?;
+        let count = source.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(());
+        }
+        check_running(stop)?;
+        destination.write_all(&buffer[..count])?;
+    }
+}
+
+pub(super) fn verify_existing(
+    source: &Path,
+    destination: &Path,
+    stop: &AtomicBool,
+) -> io::Result<()> {
+    check_running(stop)?;
     let metadata = fs::symlink_metadata(destination)?;
     let mut left = File::open(source)?;
     let original = left.metadata()?;
@@ -147,10 +188,12 @@ pub(super) fn verify_existing(source: &Path, destination: &Path) -> io::Result<(
     let mut left_buf = [0; 8192];
     let mut right_buf = [0; 8192];
     loop {
+        check_running(stop)?;
         let count = left.read(&mut left_buf)?;
         if count == 0 {
             return Ok(());
         }
+        check_running(stop)?;
         right.read_exact(&mut right_buf[..count])?;
         if left_buf[..count] != right_buf[..count] {
             return Err(io::Error::other("conflicting finalized recording contents"));

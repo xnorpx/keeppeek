@@ -47,7 +47,14 @@ fn cross_filesystem_copy_publishes_exact_bytes_and_preserves_a_conflicting_desti
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
     }
-    copy_and_publish(&source, &destination, &root, uuid::Uuid::new_v4()).unwrap();
+    copy_and_publish(
+        &source,
+        &destination,
+        &root,
+        uuid::Uuid::new_v4(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -60,15 +67,57 @@ fn cross_filesystem_copy_publishes_exact_bytes_and_preserves_a_conflicting_desti
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&destination, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(verify_existing(&source, &destination).is_err());
+        assert!(verify_existing(&source, &destination, &AtomicBool::new(false)).is_err());
         fs::set_permissions(&destination, fs::Permissions::from_mode(0o600)).unwrap();
     }
     assert_eq!(fs::read(&source).unwrap(), b"first recording");
     assert_eq!(fs::read(&destination).unwrap(), b"first recording");
-    copy_and_publish(&source, &destination, &root, uuid::Uuid::new_v4()).unwrap();
+    copy_and_publish(
+        &source,
+        &destination,
+        &root,
+        uuid::Uuid::new_v4(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     fs::write(&source, b"later recording").unwrap();
-    assert!(copy_and_publish(&source, &destination, &root, uuid::Uuid::new_v4()).is_err());
+    assert!(
+        copy_and_publish(
+            &source,
+            &destination,
+            &root,
+            uuid::Uuid::new_v4(),
+            &AtomicBool::new(false)
+        )
+        .is_err()
+    );
     assert_eq!(fs::read(&destination).unwrap(), b"first recording");
     assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn shutdown_stops_copy_at_the_next_chunk_and_refuses_further_verification() {
+    struct CancelAfterWrite<'a>(&'a AtomicBool, usize);
+    impl Write for CancelAfterWrite<'_> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.1 += bytes.len();
+            self.0.store(true, Ordering::Release);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let stop = AtomicBool::new(false);
+    let mut destination = CancelAfterWrite(&stop, 0);
+    let error = copy_chunks(io::repeat(0).take(128 * 1024), &mut destination, &stop).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert_eq!(destination.1, 8192);
+    assert_eq!(
+        verify_existing(Path::new("absent-source"), Path::new("absent-copy"), &stop)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::Interrupted
+    );
 }

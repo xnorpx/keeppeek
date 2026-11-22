@@ -937,8 +937,9 @@ impl WriterWorker {
     ) -> Self {
         let long_term = LongTermStore::new(config.long_term_path.clone());
         let safety = health.storage();
-        let relocation_scan =
-            relocation::Scan::new(config.medium_term_path != config.long_term_path);
+        let relocation_scan = relocation::Scan::new(
+            catalog.is_some() || config.medium_term_path != config.long_term_path,
+        );
         Self {
             config,
             demand,
@@ -957,7 +958,7 @@ impl WriterWorker {
     }
 
     fn run(&mut self, rx: StorageCommandReceiver) {
-        if self.config.medium_term_path != self.config.long_term_path {
+        if self.catalog.is_some() || self.config.medium_term_path != self.config.long_term_path {
             self.relocator = Some(relocation::Background::start(
                 self.config.clone(),
                 self.catalog.clone(),
@@ -1493,6 +1494,7 @@ impl WriterWorker {
             camera_id,
             path,
             recording_id,
+            &std::sync::atomic::AtomicBool::new(false),
         )?;
         if self.catalog.is_some() && self.config.has_safety_limits() {
             self.enforce_storage_limit(StorageCleanupTrigger::SegmentFinalized);

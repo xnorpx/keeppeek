@@ -12,6 +12,7 @@ use std::{
     fs::{self, ReadDir},
     io,
     path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 
@@ -22,6 +23,7 @@ const DIRECTORY_ENTRIES_PER_PAGE: usize = 32;
 
 #[derive(Default)]
 pub(super) struct Scan {
+    stop: Arc<AtomicBool>,
     due: Option<Instant>,
     directories: Vec<ReadDir>,
     failed: HashSet<String>,
@@ -40,6 +42,10 @@ impl Scan {
         }
     }
 
+    pub(super) fn take_published(&mut self) -> bool {
+        std::mem::take(&mut self.published)
+    }
+
     fn fail(&mut self, stream: &str, now: Instant) {
         self.failed.insert(stream.to_owned());
         self.due
@@ -47,6 +53,9 @@ impl Scan {
     }
 
     fn next(&mut self, source: &Path, destination: &Path) -> io::Result<Next> {
+        if source == destination {
+            return Ok(Next::Done);
+        }
         if self.directories.is_empty() {
             self.directories.push(fs::read_dir(source)?);
         }
@@ -159,10 +168,12 @@ impl Scan {
             match catalog.next_relocation(&self.journal_cursor) {
                 Ok(Some(job)) => {
                     self.journal_cursor = job.id.clone();
-                    if let Err(error) = recover_job(config, catalog, &job) {
+                    if let Err(error) = recover_job(catalog, &job, &self.stop) {
                         self.fail(&job.stream, now);
                         health.relocation_failed(&job.stream);
                         tracing::debug!(%error,"recording relocation journal retry deferred");
+                    } else {
+                        self.published = true;
                     }
                     self.due = Some(now.max(Instant::now()) + PAGE_DELAY);
                     return Some(PAGE_DELAY);
@@ -180,7 +191,7 @@ impl Scan {
         let page = self.next(&config.medium_term_path, &config.long_term_path);
         match page {
             Ok(Next::File(stream, path)) => {
-                if let Err(error) = retry_file(config, catalog, &stream, &path) {
+                if let Err(error) = retry_file(config, catalog, &stream, &path, &self.stop) {
                     self.fail(&stream, now);
                     health.relocation_failed(&stream);
                     tracing::warn!(camera = stream, %error, "recording relocation retry deferred");
@@ -219,6 +230,7 @@ fn retry_file(
     catalog: Option<&RecordingCatalogHandle>,
     stream: &str,
     path: &Path,
+    stop: &AtomicBool,
 ) -> io::Result<()> {
     // The writer joins the logical stream key (such as "front/main") in one step.
     // Rebuild that spelling after a directory walk: Windows enumeration returns
@@ -243,5 +255,5 @@ fn retry_file(
     } else {
         String::new()
     };
-    move_recording(config, catalog, stream, &path, &id).map(|_| ())
+    move_recording(config, catalog, stream, &path, &id, stop).map(|_| ())
 }
