@@ -1706,8 +1706,12 @@ Each batch requires an explicit Administrator confirmation. A recording with
 an evicted primary requires successful restore first. A completed export with
 an expired or unavailable primary retains its archive copy.
 Windows holds a read handle that excludes writers through archive removal. On Linux,
-the surviving primary must already have fs-verity enabled and the immutable inode flag set. On a filesystem without
-enforced write protection, KeepPeek keeps both copies and reports the blocked deletion. The job reports
+the surviving primary requires fs-verity and the immutable inode flag. An ordinary mutable Linux file,
+macOS and other server platforms retain both copies. After the job reaches `acknowledged`, a Linux
+filesystem administrator can verify the surviving primary's catalog identity and digest, then clear
+its immutable flag with `chattr -i -- /absolute/path/to/the/verified-primary.mp4` if normal moves or
+retention must resume. The file's fs-verity content protection persists. Leave the flag set while
+the job is queued, claimed or awaiting acknowledgement. The job reports
 `archive_primary_write_protection_required` when this prevents removal.
 The catalog retains an acknowledged deletion tombstone for that recording or export.
 Both automatic admission and the manual copy picker exclude its object identity.

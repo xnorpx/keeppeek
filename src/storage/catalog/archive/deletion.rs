@@ -1,6 +1,7 @@
 //! Bounded, administrator-confirmed deletion of redundant verified archive versions.
 
 use super::*;
+use crate::storage::archive::settings::ATTEMPTS_MAX;
 use crate::storage::catalog::{current_unix_time_ms, encode_lower_hex, maintenance::jobs::Nonce};
 use anyhow::{Context as _, ensure};
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,7 @@ use sha2::{Digest, Sha256};
 mod eligibility;
 mod execution;
 const PAGE_MAX: u16 = 16;
+const REVERIFICATION_BACKOFF_MS: i64 = 60_000;
 const PLAN_LIFETIME_MS: i64 = 10 * 60 * 1000;
 const HISTORY_MS: i64 = 30 * 86_400_000;
 
@@ -151,7 +153,7 @@ pub(super) async fn dispatch(
             maximum_attempts,
         } => {
             ensure!(
-                (1..=10).contains(&maximum_attempts),
+                (1..=ATTEMPTS_MAX).contains(&maximum_attempts),
                 "invalid archive reverification retry limit"
             );
             let mut rows = connection.query("SELECT a.job_id FROM archive_replicas a
@@ -179,11 +181,16 @@ pub(super) async fn dispatch(
             connection
                 .execute(
                     "INSERT INTO archive_reverification_retries(job_id,attempts,retry_after_ms)
-                SELECT job_id,1,?2+60000 FROM archive_replicas WHERE job_id=?1 AND state='ready'
+                SELECT job_id,1,?2+?3 FROM archive_replicas WHERE job_id=?1 AND state='ready'
                     AND NOT EXISTS(SELECT 1 FROM archive_verified_at v WHERE v.job_id=?1)
-                ON CONFLICT(job_id) DO UPDATE SET attempts=min(10,attempts+1),
-                    retry_after_ms=?2+60000*min(10,attempts+1)",
-                    (id.as_str(), now),
+                ON CONFLICT(job_id) DO UPDATE SET attempts=min(?4,attempts+1),
+                    retry_after_ms=?2+?3*min(?4,attempts+1)",
+                    (
+                        id.as_str(),
+                        now,
+                        REVERIFICATION_BACKOFF_MS,
+                        i64::from(ATTEMPTS_MAX),
+                    ),
                 )
                 .await?;
             connection.execute("UPDATE archive_replicas SET error='Archive reverification failed; check the target' WHERE job_id=?1 AND state='ready' AND NOT EXISTS(SELECT 1 FROM archive_verified_at WHERE job_id=?1)",[id.as_str()]).await?;

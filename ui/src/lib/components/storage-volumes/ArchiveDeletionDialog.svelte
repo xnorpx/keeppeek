@@ -134,8 +134,8 @@
 		{#if !plan.confirmed}
 			<p class="text-sm"
 				>Confirming queues removal of the selected archive copies. Each primary copy is verified
-				again before removal. If the filesystem cannot protect the primary from writes, KeepPeek
-				retains both copies.</p
+				again before removal. Windows protects the primary during removal. Linux requires fs-verity
+				and the immutable flag on the primary. macOS and other server platforms retain both copies.</p
 			>
 		{/if}
 		{#if !plan.confirmed && plan.selectedCount > 0}

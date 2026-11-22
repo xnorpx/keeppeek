@@ -192,7 +192,10 @@ pub(super) fn remove_replica(
             Ok(primary)
         };
         let prepared = if intent.phase == "queued" {
+            // A missing, changed or corrupt version must never acquire a catalog deletion fence.
+            verify_version(&target, &version, job.digest, work)?;
             let primary = verify_primary()?;
+            work.check()?;
             claim()?;
             Some(primary)
         } else {

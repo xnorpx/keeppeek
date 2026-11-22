@@ -142,8 +142,7 @@ async fn claims_pending(connection: &turso::Connection) -> Result<bool> {
     let mut rows = connection
         .query(
             "SELECT 1 FROM archive_replicas INDEXED BY archive_replicas_pending_eviction
-         WHERE kind='recording' AND local_evicted=2
-         UNION ALL SELECT 1 FROM archive_replicas INDEXED BY archive_deletion_claimed WHERE kind='recording' AND state='deleting' LIMIT 1",
+         WHERE kind='recording' AND local_evicted=2 LIMIT 1",
             (),
         )
         .await?;

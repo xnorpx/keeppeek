@@ -326,9 +326,11 @@ impl<'a> Retirement<'a> {
             self.sync()?;
             write_receipt(&self.directory, STAGED, &self.receipt)?;
         }
+        let _survivor = recheck()?;
+        // The primary check can read the entire recording. Validate the final namespace
+        // and deadline after it returns, with the verified primary still pinned.
         self.revalidate()?;
         verify_named(&self.directory, LEAF, &self.receipt.file)?;
-        let _survivor = recheck()?;
         remove(&self.directory, staged)?;
         anyhow::ensure!(
             absent(&self.directory, LEAF)? && absent(&self.root.directory, &self.receipt.key)?,

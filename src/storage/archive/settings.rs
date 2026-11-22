@@ -21,7 +21,7 @@ const SOURCE_BYTES_MAX: usize = 256;
 const AGE_SECS_MAX: u64 = 10 * 365 * 24 * 60 * 60;
 const PENDING_COUNT_MAX: u32 = 4096;
 const TIMEOUT_SECS_MAX: u64 = 3600;
-const ATTEMPTS_MAX: u32 = 10;
+pub(crate) const ATTEMPTS_MAX: u32 = 10;
 // Four-MiB chunk hashes for 64 GiB require at most 512 KiB of integrity metadata.
 const OBJECT_BYTES_MAX: u64 = 64 * 1024 * 1024 * 1024;
 

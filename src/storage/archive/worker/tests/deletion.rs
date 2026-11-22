@@ -51,6 +51,7 @@ fn copy(fixture: &Fixture, recording: &str) -> anyhow::Result<Job> {
 }
 
 fn retire_fixture_copy(context: &Context, job: &Job) -> anyhow::Result<bool> {
+    context.health(true, None);
     let pending = context.catalog.archive_job(&job.id)?;
     let result = context.process(pending, Instant::now() + Duration::from_secs(15));
     if cfg!(windows) {
@@ -63,6 +64,9 @@ fn retire_fixture_copy(context: &Context, job: &Job) -> anyhow::Result<bool> {
         error.is::<crate::storage::volumes::root::ArchiveSurvivorUnprotected>(),
         "{error:#}"
     );
+    let health = context.shared.health.lock().unwrap();
+    assert!(health.available && health.message.is_none());
+    drop(health);
     let retained = context.catalog.archive_job(&job.id)?;
     assert_eq!(retained.state, "ready");
     assert_eq!(retained.deletion.unwrap().phase, "blocked");
@@ -280,6 +284,40 @@ fn archive_deletion_retains_verified_replica_when_primary_bytes_change_after_con
     assert_eq!(retained.deletion.unwrap().phase, "blocked");
     assert_eq!(std::fs::read(target)?, original);
     assert_eq!(std::fs::read(path)?, changed);
+    drop(context);
+    fixture.close()
+}
+
+#[test]
+fn archive_deletion_declines_a_damaged_target_before_claiming_its_recording() -> anyhow::Result<()>
+{
+    let fixture = Fixture::new()?;
+    let (id, path) = fixture.recording("camera")?;
+    let original = std::fs::read(&path)?;
+    let job = copy(&fixture, &id)?;
+    let target = job.binding.root.join(format!("{}.mp4", job.object_id));
+    let plan = preview(&fixture, Selection::Explicit(job.id.clone()))?;
+    confirm(&fixture, &plan, "admin")?;
+    let mut damaged = original.clone();
+    damaged[0] ^= 1;
+    std::fs::write(&target, &damaged)?;
+    let context = fixture.context();
+    let pending = context.catalog.archive_job(&job.id)?;
+    assert!(
+        context
+            .process(pending, Instant::now() + Duration::from_secs(15))
+            .is_err()
+    );
+    let retained = context.catalog.archive_job(&job.id)?;
+    assert_eq!(retained.state, "ready");
+    assert_eq!(retained.deletion.unwrap().phase, "blocked");
+    assert_eq!(std::fs::read(target)?, damaged);
+    assert_eq!(std::fs::read(path)?, original);
+    context
+        .catalog
+        .archive(Request::Deletion(Deletion::EnsureNoActiveClaim(
+            job.binding.id,
+        )))?;
     drop(context);
     fixture.close()
 }

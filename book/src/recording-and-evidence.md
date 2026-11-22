@@ -173,8 +173,12 @@ Each additional page needs its own confirmation. Leaving retention days blank
 keeps copies indefinitely. Expiry alone performs no deletion.
 
 Windows holds a read handle that excludes writers through archive removal. On Linux,
-the surviving primary must already have fs-verity enabled and the immutable inode flag set. On a filesystem without
-enforced write protection, KeepPeek keeps both copies and reports the blocked deletion.
+the surviving primary requires fs-verity and the immutable inode flag. An ordinary mutable Linux file,
+macOS and other server platforms retain both copies. After the job reaches `acknowledged`, a Linux
+filesystem administrator can verify the surviving primary's catalog identity and digest, then clear
+its immutable flag with `chattr -i -- /absolute/path/to/the/verified-primary.mp4` if normal moves or
+retention must resume. The file's fs-verity content protection persists. Leave the flag set while
+the job is queued, claimed or awaiting acknowledgement.
 
 KeepPeek records each acknowledged deletion in the catalog. The retained primary remains
 available. The automatic archive worker and manual copy picker permanently exclude that

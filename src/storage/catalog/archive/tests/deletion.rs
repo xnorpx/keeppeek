@@ -186,6 +186,29 @@ fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_
             .await?;
         assert_eq!(rows.next().await?.unwrap().get::<String>(0)?, "recording");
         drop(rows);
+        // A single archive-only claim must not hold back a new recording policy for the fleet.
+        connection
+            .execute(
+                "UPDATE recording_retention_runtime SET request_pending=1,requested_json=?1",
+                [r#"{"default":{"continuous_days":2}}"#],
+            )
+            .await?;
+        for _ in 0..12 {
+            test_reconciliation_turn(&connection).await?;
+        }
+        let mut activation = connection.query("SELECT generation,request_pending,complete,
+                (SELECT retention_generation FROM recording_files WHERE id='z-other'),
+                (SELECT generation FROM archive_deletion_deferred_retention WHERE recording_id='recording')
+                FROM recording_retention_runtime WHERE singleton=1", ()).await?;
+        let row = activation.next().await?.unwrap();
+        let generation = row.get::<i64>(0)?;
+        assert!(generation > 0);
+        assert_eq!((row.get::<i64>(1)?, row.get::<i64>(2)?), (0, 1));
+        assert_eq!(
+            (row.get::<i64>(3)?, row.get::<i64>(4)?),
+            (generation, generation)
+        );
+        drop(activation);
         run(&connection, Deletion::Retired(id.clone())).await?;
         run(&connection, Deletion::Acknowledged(id.clone())).await?;
         run(&connection, Deletion::EnsureNoActiveClaim("cold".into())).await?;

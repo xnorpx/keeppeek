@@ -406,6 +406,9 @@ impl Context {
             *active = None;
         }
         if result.is_err() && !cancellation() {
+            let unprotected_primary = result.as_ref().is_err_and(|error| {
+                error.is::<crate::storage::volumes::root::ArchiveSurvivorUnprotected>()
+            });
             let request = if job.pending_deletion().is_some() {
                 use crate::storage::catalog::archive::deletion::Request as Deletion;
                 // A lost reply may already have persisted a filesystem claim. Re-read before releasing it.
@@ -416,15 +419,11 @@ impl Context {
                     .and_then(|current| current.deletion)
                     .map(|d| d.phase);
                 if phase.as_deref() == Some("queued") {
-                    Request::Deletion(
-                        if result.as_ref().is_err_and(|error| {
-                            error.is::<crate::storage::volumes::root::ArchiveSurvivorUnprotected>()
-                        }) {
-                            Deletion::UnprotectedPrimary(job.id.clone())
-                        } else {
-                            Deletion::Blocked(job.id.clone())
-                        },
-                    )
+                    Request::Deletion(if unprotected_primary {
+                        Deletion::UnprotectedPrimary(job.id.clone())
+                    } else {
+                        Deletion::Blocked(job.id.clone())
+                    })
                 } else {
                     Request::Deletion(Deletion::Failed(job.id.clone()))
                 }
@@ -459,10 +458,12 @@ impl Context {
                     "archive failure state could not be committed; journal retained"
                 );
             }
-            self.health(
-                false,
-                Some("Archive operation failed; check the target and retry"),
-            );
+            if !unprotected_primary {
+                self.health(
+                    false,
+                    Some("Archive operation failed; check the target and retry"),
+                );
+            }
         }
         result
     }
