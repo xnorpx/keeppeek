@@ -77,6 +77,7 @@ fn failed_camera_removal_retains_configuration_and_privacy_for_an_idempotent_ret
     let mut state = super::tests::media_test_state().with_camera_config_path(path.clone());
     config::write_private_file(&path, b"[cameras]\n").unwrap();
     let mut camera = state.camera(ip).unwrap().configuration;
+    camera.username = "operator".into();
     camera.main_rtsp_url = Some("rtsp://127.0.0.1:9/test".into());
     config::upsert_camera(&path, &camera).unwrap();
     let cameras = config::load_cameras(&path).unwrap();
@@ -136,6 +137,7 @@ fn restarting_an_edited_camera_rechecks_live_status_before_releasing_privacy() {
     let mut state = super::tests::media_test_state().with_camera_config_path(path.clone());
     config::write_private_file(&path, b"[cameras]\n").unwrap();
     let mut config = state.camera(ip).unwrap().configuration;
+    config.username = "operator".into();
     config.main_rtsp_url = Some("rtsp://127.0.0.1:9/original".into());
     config::upsert_camera(&path, &config).unwrap();
     let configured = config::load_cameras(&path).unwrap();
