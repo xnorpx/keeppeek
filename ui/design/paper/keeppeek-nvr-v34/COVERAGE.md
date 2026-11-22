@@ -57,7 +57,7 @@
 | `cameras.waiting.fleet-skeleton` | `visual-harness/.loki/reference/chrome.desktop/cameras.waiting.fleet-skeleton.png` | Approved `90f92f4835cdf61566f085539f3edd2583c49a40c28946c45ab735aa98f3b194` |
 | `events.empty.no-results`        | `visual-harness/.loki/reference/chrome.desktop/events.empty.no-results.png`        | Approved `a58881eb304c9f78e10d675547c68b16f4383754019192a4a162815038931189` |
 | `keep.desktop.calendar`          | `visual-harness/.loki/reference/chrome.desktop/keep.desktop.calendar.png`          | Approved `e192953cc22df1ef212112ae3a2293db3acaeb387f316d1f867655ad42cced40` |
-| `keep.desktop.export-lifecycle`  | `visual-harness/.loki/reference/chrome.desktop/keep.desktop.export-lifecycle.png`  | Approved `c045aad78865f1d3a5c8ebb8dd862018d3609711898a80b49fd4bc0fe307349d` |
+| `keep.desktop.export-lifecycle`  | `visual-harness/.loki/reference/chrome.desktop/keep.desktop.export-lifecycle.png`  | Approved `3e015bb135de79a85a3b661b11ceb073ff23e9a7c824dd42aeb2c4bc58b4290a` |
 | `keep.waiting.cold-seek`         | `visual-harness/.loki/reference/chrome.desktop/keep.waiting.cold-seek.png`         | Approved `85bcb594d11464d3f0c0a06fb525a85a8c2ce84c604288f794b3f7a20e13550b` |
 | `peek.desktop.focus-history`     | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.focus-history.png`     | Approved `d9df5deffcf00880c0ead49aa5b8056c525ab3042c4cefb38528697d09a9f5c3` |
 | `peek.desktop.history-keep`      | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.history-keep.png`      | Approved `353243f1de4363cf3d9d8f29d4d8f8d8eaa761b6e84d19f781d3df05df39648f` |

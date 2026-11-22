@@ -1435,20 +1435,20 @@
 					"sha256": "dde0bb83ff0ddb16a499bd5a88feb1af998c4a6f24838292e1dfe6b379a480e1",
 					"paperOverlay": {
 						"status": "accepted",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-11-21",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 20418,
+						"mismatchPixels": 42449,
 						"totalPixels": 531360,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 7765,
-						"varianceReason": "All four 342x369 cards, 41px headers, body insets, child lanes, status borders, actions, and progress segments match Paper. The residual is concentrated in two evidence-safe copy changes: partial export omits an unproven reconnect cause, and failed export omits an unproven 200 MB remedy; remaining pixels follow Paper and Chromium glyph and border antialiasing."
+						"highContrastMismatchPixels": 20720,
+						"varianceReason": "Compared the Linux candidate with the Paper overlay and the previously approved Linux image. All changed pixels against the previous Linux image fall within the ready card's timing notice (x=385..689, y=286..334). The other cards and their actions match the previous Linux image. Paper retains the earlier ready text, partial and failed explanations, and glyph rendering."
 					},
 					"lokiReference": {
 						"source": "visual-harness/.loki/reference/chrome.desktop/keep.desktop.export-lifecycle.png",
-						"bytes": 83608,
-						"sha256": "c045aad78865f1d3a5c8ebb8dd862018d3609711898a80b49fd4bc0fe307349d",
-						"approvedAt": "2026-08-21",
-						"approvedBy": "GitHub Copilot",
+						"bytes": 82982,
+						"sha256": "3e015bb135de79a85a3b661b11ceb073ff23e9a7c824dd42aeb2c4bc58b4290a",
+						"approvedAt": "2026-11-21",
+						"approvedBy": "Codex",
 						"paperTokenHash": "cf3b1cd7",
 						"paperReferenceSha256": "dde0bb83ff0ddb16a499bd5a88feb1af998c4a6f24838292e1dfe6b379a480e1",
 						"storybookStoryId": "keep.desktop.export-lifecycle"
