@@ -174,8 +174,10 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 			}
 			await region.getByRole('button', { name: 'Digital zoom in', exact: true }).click();
 			const zoom = region.getByRole('meter', { name: 'Digital zoom level' });
+			await expect
+				.poll(async () => Number(await zoom.getAttribute('aria-valuenow')))
+				.toBeGreaterThan(1);
 			const level = await zoom.getAttribute('aria-valuenow');
-			expect(Number(level)).toBeGreaterThan(1);
 			let { id } = await video.evaluate(observePicture, null);
 			for (const direction of [...Array<number>(12).fill(1), ...Array<number>(12).fill(-1)]) {
 				const button = direction > 0 ? next : previous;
