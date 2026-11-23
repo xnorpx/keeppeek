@@ -11093,21 +11093,25 @@ fn project_stream_snapshot(
 ) -> StreamHealth {
     let stream_id = normalized_video_stream_id(&stream.report.kind);
     let is_video = stream_id.is_some();
-    let expected = stream_id.is_none_or(|stream_id| {
+    let transport_stream_id = match stream.report.kind.as_str() {
+        "audio_main" => Some("main"),
+        "audio_sub" => Some("sub"),
+        _ => stream_id,
+    };
+    let expected = transport_stream_id.is_none_or(|stream_id| {
         context
             .expected_streams
             .iter()
             .any(|expected| expected == stream_id)
     });
-    let transport_connected = stream_id
-        .and_then(|stream_id| stream_transport_connected(stream_id, context.router_status))
-        .or_else(|| {
-            (!is_video).then(|| {
-                context
-                    .router_status
-                    .is_some_and(|status| status.lifecycle == CameraLifecycle::Connected)
-            })
-        });
+    let transport_connected = match transport_stream_id {
+        Some(id) => stream_transport_connected(id, context.router_status),
+        None => Some(
+            context
+                .router_status
+                .is_some_and(|status| status.lifecycle == CameraLifecycle::Connected),
+        ),
+    };
     let report_fresh = stream.report_age_ms <= STREAM_REPORT_FRESHNESS_THRESHOLD_MS;
     let frame_threshold_ms = frame_freshness_threshold_ms(stream.report.expected_fps);
     let frames_fresh = report_fresh
@@ -14203,6 +14207,80 @@ mod tests {
         assert_eq!(
             connected_video_stream_ids(Some(&known_empty)),
             Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn local_audio_health_uses_its_own_transport_without_counting_video() {
+        use crate::stats::{CameraReport, IngressStats, audio_report};
+
+        let state = media_test_state();
+        let mut ingress = IngressStats::new();
+        let previous = ingress.snapshot();
+        ingress.on_audio_frame(160);
+        let received = ingress.snapshot();
+        let audio = audio_report(&received, &received.rates_since(&previous), Some("AAC")).unwrap();
+        for source in [StreamKind::Main, StreamKind::Sub] {
+            state.health.publish_from(
+                CameraReport {
+                    ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    name: None,
+                    brand: None,
+                    port: 554,
+                    streams: vec![audio.clone()],
+                },
+                source,
+            );
+        }
+        let router_status = CameraStatus {
+            id: crate::api::CameraId::new("front-door"),
+            lifecycle: CameraLifecycle::Reconnecting,
+            expected_streams: vec!["main".into(), "sub".into()],
+            connected_streams: vec!["main".into()],
+            last_error: None,
+        };
+        let context = CameraProjectionContext {
+            router_status: Some(&router_status),
+            recording_health: &HashMap::new(),
+            battery_wake: None,
+            storage_config: &state.storage_config,
+            uptime_seconds: 60,
+        };
+        let camera = state.camera_entries().remove(0);
+        let project = |mut reports: Vec<crate::stats::CameraHealthReport>| {
+            project_camera_snapshot(
+                &camera,
+                state.camera_info(&camera),
+                reports.remove(0).streams,
+                &context,
+            )
+        };
+        let local = project(state.health.local_stream_snapshot());
+        let main = local
+            .streams
+            .iter()
+            .find(|s| s.ingress.report.kind == "audio_main")
+            .unwrap();
+        let sub = local
+            .streams
+            .iter()
+            .find(|s| s.ingress.report.kind == "audio_sub")
+            .unwrap();
+        assert_eq!(main.dimensions.transport_connected, Some(true));
+        assert_eq!(main.reason, CameraHealthReason::Healthy);
+        assert_eq!(sub.dimensions.transport_connected, Some(false));
+        assert_eq!(sub.reason, CameraHealthReason::TransportReconnecting);
+        assert!(!main.dimensions.recording_requested && !sub.dimensions.recording_requested);
+        assert_eq!(local.dimensions.reporting_video_streams, 0);
+        assert_eq!(local.dimensions.fresh_video_streams, 0);
+        assert_eq!(local.dimensions.decodable_video_streams, 0);
+
+        let public = project(state.health.snapshot());
+        assert_eq!(public.streams.len(), 1);
+        assert_eq!(public.streams[0].ingress.report.kind, "audio");
+        assert_eq!(
+            public.streams[0].dimensions.transport_connected,
+            Some(false)
         );
     }
 
