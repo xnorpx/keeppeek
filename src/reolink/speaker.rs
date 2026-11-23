@@ -18,6 +18,7 @@ const MAX_AGE: Duration = Duration::from_millis(250);
 pub(super) struct Talkback {
     channel: u8,
     stream_id: Option<u32>,
+    subscription_pending: bool,
     route: Option<TalkbackRoute>,
     queued_route: Option<TalkbackRoute>,
     pending: Option<AudioFrame>,
@@ -31,6 +32,7 @@ impl Talkback {
         Self {
             channel,
             stream_id: None,
+            subscription_pending: false,
             route: None,
             queued_route: None,
             pending: None,
@@ -45,6 +47,11 @@ impl Talkback {
         id: u32,
         session: &mut BcSession,
     ) -> Result<(), reo_proto::BcError> {
+        self.subscription_pending = false;
+        if self.route.is_none() {
+            return session
+                .handle_input(Input::Command(Command::UnsubscribeStream { stream_id: id }));
+        }
         self.stream_id = Some(id);
         session.handle_input(Input::Command(Command::Talk(TalkCommand::QueryAbility {
             channel: self.channel,
@@ -89,9 +96,9 @@ impl Talkback {
         self.pending = None;
         self.blocks = None;
         self.ready = false;
-        // An outstanding subscription reserves the route until its stream ID arrives.
+        self.route = None;
+        // Only the pending subscription itself reserves the channel until its ID arrives.
         if let Some(stream_id) = self.stream_id.take() {
-            self.route = None;
             session.handle_input(Input::Command(Command::Talk(TalkCommand::Reset {
                 channel: self.channel,
             })))?;
@@ -125,6 +132,9 @@ impl Talkback {
         );
         if live.talkback_route_is_current(source, &route) {
             wire.send(data)?;
+            if let Some(blocks) = self.blocks.as_mut() {
+                blocks.record_send(Instant::now());
+            }
         }
         Ok(())
     }
@@ -143,7 +153,8 @@ impl Talkback {
         {
             self.close(session)?;
         }
-        if self.route.is_none()
+        if !self.subscription_pending
+            && self.route.is_none()
             && let Some((route, frame)) = live.take_routed_talkback_audio(source, None)
         {
             self.route = Some(route);
@@ -158,6 +169,7 @@ impl Talkback {
                     expected_height: 0,
                 },
             )))?;
+            self.subscription_pending = true;
         }
         if !self.ready {
             return Ok(None);
@@ -276,8 +288,11 @@ impl SpeakerBlocks {
             .collect();
         let mut block = vec![0; 4 + self.block_len / 2];
         self.encoder.encode_block(&pcm, &mut block)?;
-        self.next_send = Some(now + self.period);
         Ok(Some(block))
+    }
+
+    fn record_send(&mut self, at: Instant) {
+        self.next_send = Some(at + self.period);
     }
 }
 
@@ -317,6 +332,46 @@ mod tests {
     }
 
     #[test]
+    fn late_speaker_subscription_is_removed_when_the_route_was_cancelled() {
+        use reo_proto::session::{BcSessionConfig, Event, Output};
+
+        let mut session = BcSession::new(BcSessionConfig::default_client(), Instant::now());
+        let mut transport_output = vec![0; reo_proto::DEFAULT_MEDIA_OUTPUT_BUFFER_SIZE];
+        let mut talkback = Talkback::new(2);
+        session
+            .handle_input(Input::Command(Command::SubscribeStream(
+                StreamSubscription {
+                    channel: 2,
+                    stream_type: StreamType::Extern,
+                    expected_width: 0,
+                    expected_height: 0,
+                },
+            )))
+            .unwrap();
+        talkback.subscription_pending = true;
+        talkback.close(&mut session).unwrap();
+        assert!(talkback.subscription_pending);
+        let stream_id = loop {
+            match session.poll_output(&mut transport_output).unwrap() {
+                Output::Event(Event::StreamSubscribed { stream_id, .. }) => break stream_id,
+                Output::TcpSend { .. } => {}
+                _ => panic!("expected pending speaker subscription"),
+            }
+        };
+        talkback.subscribed(stream_id, &mut session).unwrap();
+        assert!(!talkback.subscription_pending);
+        assert_eq!(talkback.stream_id, None);
+        assert!(
+            session
+                .handle_input(Input::Command(Command::Talk(TalkCommand::QueryAbility {
+                    channel: 2
+                })))
+                .is_err(),
+            "the external stream must already be withdrawn"
+        );
+    }
+
+    #[test]
     fn speaker_reset_discards_negotiated_audio_and_requests_fresh_ability() {
         use reo_proto::session::{BcSessionConfig, Output};
 
@@ -334,7 +389,7 @@ mod tests {
                 },
             )))
             .unwrap();
-        talkback.subscribed(1, &mut session).unwrap();
+        talkback.stream_id = Some(1);
         while !matches!(
             session.poll_output(&mut transport_output).unwrap(),
             Output::Timeout(_)
@@ -432,6 +487,7 @@ mod tests {
                         .unwrap();
                     assert_eq!(block, golden);
                     sent += len as usize;
+                    output.record_send(at);
                     assert!(output.next_block(at).unwrap().is_none());
                 }
             }
@@ -449,9 +505,12 @@ mod tests {
         output.push(&packet(&full, now), now);
         assert_eq!(output.samples.len(), 2_000);
         assert!(output.next_block(now).unwrap().is_some());
+        assert!(output.next_send.is_none());
+        let sent = now + Duration::from_millis(20);
+        output.record_send(sent);
         assert!(
             output
-                .next_block(now + Duration::from_millis(79))
+                .next_block(sent + Duration::from_millis(79))
                 .unwrap()
                 .is_none()
         );
@@ -461,6 +520,7 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        output.record_send(now + Duration::from_millis(170));
         assert!(
             output
                 .next_block(now + Duration::from_millis(171))
