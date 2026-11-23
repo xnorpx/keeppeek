@@ -54,7 +54,10 @@ test('the Talk control sends the browser microphone tone to the Hikvision speake
 			const page = await context.newPage();
 			await page.goto('/');
 			await expect.poll(observe).toEqual({ active: false, bytes: 0, audible: 0, crossings: 0 });
-			const talk = page.getByRole('button', { name: 'Talk to 127.0.0.1', exact: true }).first();
+			const tile = page.locator('[data-peek-camera="127.0.0.1"]');
+			await tile.getByRole('button', { name: /^Focus .* live view$/ }).click();
+			const focus = page.getByRole('region', { name: /focus$/ });
+			const talk = focus.getByRole('button', { name: 'Talk to 127.0.0.1', exact: true });
 			await expect(talk).toBeVisible({ timeout: 30_000 });
 			const started = performance.now();
 			await talk.click();
@@ -72,10 +75,7 @@ test('the Talk control sends the browser microphone tone to the Hikvision speake
 				contentType: 'application/json',
 				body: JSON.stringify({ ...speaker, hz, firstAudibleAfterMs })
 			});
-			await page
-				.getByRole('button', { name: 'Stop talkback to 127.0.0.1', exact: true })
-				.first()
-				.click();
+			await focus.getByRole('button', { name: 'Stop talkback to 127.0.0.1', exact: true }).click();
 			await expect.poll(async () => (await observe()).active).toBe(false);
 			await expect(talk).toBeVisible();
 			await talk.click();
