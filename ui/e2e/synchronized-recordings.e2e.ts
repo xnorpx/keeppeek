@@ -800,6 +800,7 @@ async function verifyPausedFrameCorrection(
 		await expect.poll(async () => (await read())?.latePicture).toBe(true);
 		if (scenario === 'stalled') {
 			const retry = tile.getByRole('button', { name: 'Retry recording' });
+			await expect(tile.getByRole('status')).toHaveText('Alignment paused. Retry recording.');
 			await expect(retry).toBeVisible();
 			await expect
 				.poll(read)

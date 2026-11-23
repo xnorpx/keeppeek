@@ -248,7 +248,11 @@
 		{/if}
 		{#if correctionMs !== null}
 			<span class="text-xs text-text-muted">
-				<span role="status">Synchronizing</span>
+				<span role="status"
+					>{retryAlignment && !playing
+						? 'Alignment paused. Retry recording.'
+						: 'Synchronizing'}</span
+				>
 				{Math.abs(correctionMs)} ms {correctionMs > 0 ? 'behind' : 'ahead'}
 				{#if retryAlignment && !playing}<button
 						class="min-h-11 px-2 underline"
