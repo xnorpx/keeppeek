@@ -41,6 +41,16 @@ pub struct Lease {
     file: Option<File>,
 }
 
+#[cfg(unix)]
+impl Drop for Lease {
+    fn drop(&mut self) {
+        // A concurrent fork can retain this open file description until its child execs.
+        if let Err(error) = self.lock.unlock() {
+            tracing::warn!(%error, "failed to release the catalog authority lock");
+        }
+    }
+}
+
 impl std::fmt::Debug for Lease {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Lease([REDACTED])")
@@ -218,8 +228,6 @@ impl Lease {
         let lock_identity = identity(&lock)?;
         lock.try_lock()
             .map_err(|_| anyhow::anyhow!("catalog authority lease is unavailable"))?;
-        lock.sync_all()?;
-        sync_directory(&directory)?;
         let lease = Self {
             path: parent.join(&name),
             directory,
@@ -229,6 +237,8 @@ impl Lease {
             lock_identity,
             file,
         };
+        lease.lock.sync_all()?;
+        sync_directory(&lease.directory)?;
         lease.revalidate()?;
         Ok(lease)
     }

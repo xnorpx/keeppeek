@@ -13,6 +13,44 @@ fn database(path: &Path) -> (Lease, turso::Connection, Authority) {
     (lease, connection, authority)
 }
 
+#[cfg(unix)]
+#[test]
+fn forked_descriptor_does_not_extend_the_final_catalog_lease() -> anyhow::Result<()> {
+    use std::process::{Command, Stdio};
+    use std::sync::Arc;
+
+    let root = fixture();
+    let path = root.join("catalog.db");
+    let owner = Arc::new(Lease::acquire(&path)?);
+    let reader = Arc::clone(&owner);
+    // Keep a forked copy of the open file description alive through the parent's reopen.
+    let mut child = Command::new("cat")
+        .stdin(Stdio::piped())
+        .stdout(owner.lock.try_clone()?)
+        .spawn()?;
+
+    drop(owner);
+    let admission_with_reader = Lease::acquire(&path);
+    drop(reader);
+    let replacement = Lease::acquire(&path);
+    drop(child.stdin.take());
+    assert!(child.wait()?.success());
+    assert_eq!(
+        admission_with_reader.unwrap_err().to_string(),
+        "catalog authority lease is unavailable"
+    );
+
+    let replacement = replacement?;
+    assert_eq!(
+        Lease::acquire(&path).unwrap_err().to_string(),
+        "catalog authority lease is unavailable"
+    );
+    drop(replacement);
+    drop(Lease::acquire(&path)?);
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 fn historical_builder_opens(path: &Path) -> anyhow::Result<()> {
     // A closed snapshot avoids both Turso's cache and its live writer lock.
     let snapshot = path.with_file_name(format!("historical-{}.db", uuid::Uuid::new_v4()));
