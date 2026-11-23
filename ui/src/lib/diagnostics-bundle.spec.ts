@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildDiagnosticsBundle, diagnosticsBundleFilename } from './diagnostics-bundle';
+import {
+	buildDiagnosticsBundle,
+	collectReportDiagnosticsBundle,
+	diagnosticsBundleFilename
+} from './diagnostics-bundle';
+import { reportLogWindow } from './report-log-window';
 import type { DiagnosticsBundleInput } from './diagnostics-bundle';
 import type { CameraListItem, SanitizedConfig, ServerHealthResponse } from './types';
 
@@ -179,4 +184,66 @@ describe('diagnostics bundle', () => {
 			'keeppeek-diagnostics-2026-08-25T12-00-00-000Z.json.gz'
 		);
 	});
+});
+
+it('packages only selected report-window entries and still scrubs its metadata', () => {
+	const fixture = input();
+	const report = reportLogWindow(
+		{ utcMs: 10, browserSequence: 1, server: { sequence: 1, generation: 'one' } },
+		{
+			utcMs: 20,
+			browserSequence: 1,
+			server: { sequence: 1, generation: 'one', filter: '192.168.1.22=debug' }
+		},
+		fixture.browser,
+		fixture.server,
+		false
+	);
+	const serialized = buildDiagnosticsBundle({ ...fixture, report });
+	const document = JSON.parse(serialized);
+	expect(document.server_logs).toEqual([]);
+	expect(document.browser_logs).toEqual([]);
+	expect(document.manifest.artifacts).toContain('report_window');
+	expect(document.report_window.serverCursors).toEqual({ start: 1, stop: 1 });
+	expect(serialized).not.toContain('192.168.1.22');
+	expect(JSON.parse(buildDiagnosticsBundle(fixture)).report_window).toBeUndefined();
+});
+
+it('identifies each unavailable report section without exposing transport errors in its warnings', async () => {
+	const data = input();
+	const position = { utcMs: 2, browserSequence: 0, server: { sequence: 1, generation: 'one' } };
+	const report = reportLogWindow(position, position, [], data.server, false);
+	const unavailable = () => Promise.reject(new Error('private diagnostic detail'));
+	const control = {
+		getLogSnapshot: async () => data.server,
+		getLoggingSettings: unavailable,
+		getHealth: async () => data.health,
+		getRuntimeConfiguration: async () => data.config,
+		getCameras: async () => data.cameras,
+		getMetricsSnapshot: unavailable
+	};
+	const signal = new AbortController().signal;
+	const partial = await collectReportDiagnosticsBundle(control, data.server, report, signal);
+	expect(partial.diagnostics).toBeInstanceOf(Blob);
+	expect(
+		partial.redactText?.('Replay front-door-private while saving to /Users/marcus/private')
+	).toBe('Replay camera-001 while saving to [REDACTED_PATH]');
+	expect(partial.warnings).toEqual([
+		'diagnostics-logging-settings-unavailable',
+		'diagnostics-metrics-unavailable'
+	]);
+	const blocked = await collectReportDiagnosticsBundle(
+		{ ...control, getCameras: unavailable },
+		data.server,
+		report,
+		signal
+	);
+	expect(blocked.diagnostics).toBeNull();
+	expect(blocked.redactText).toBeNull();
+	expect(blocked.warnings).toEqual([
+		'diagnostics-logging-settings-unavailable',
+		'diagnostics-cameras-unavailable',
+		'diagnostics-metrics-unavailable',
+		'diagnostics-package-unavailable'
+	]);
 });
