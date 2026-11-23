@@ -86,6 +86,33 @@ pub struct CameraRuntimeApplication {
     pub reason: Option<String>,
 }
 
+impl CameraRuntimeApplication {
+    pub(crate) fn observe_policy(
+        &mut self,
+        observation: anyhow::Result<EffectiveCameraPolicy>,
+    ) -> bool {
+        let mut policy = self.policy;
+        let mut changed = false;
+        match observation {
+            Ok(observed) => policy = observed,
+            Err(error) => {
+                policy.privacy_enforced = true;
+                policy.privacy_source = FieldSource::Base;
+                policy.recording_mode = CameraRecordingMode::Off;
+                policy.recording_mode_source = FieldSource::Base;
+                if self.state != RuntimeApplicationState::Degraded {
+                    self.state = RuntimeApplicationState::Degraded;
+                    self.reason = Some(error.to_string().chars().take(256).collect());
+                    changed = true;
+                }
+            }
+        }
+        changed |= self.policy != policy;
+        self.policy = policy;
+        changed
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeProfileStatus {

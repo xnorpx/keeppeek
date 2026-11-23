@@ -1282,6 +1282,7 @@ fn update_runtime_status(
         &configured_camera_ids,
         &mut cameras,
         identities.as_ref(),
+        configs.as_ref(),
     );
     *status = crate::profiles::RuntimeProfileStatus {
         revision: profiles.revision,
@@ -1373,39 +1374,27 @@ fn project_runtime_privacy(
     configured_camera_ids: &BTreeSet<String>,
     cameras: &mut BTreeMap<String, crate::profiles::CameraRuntimeApplication>,
     identities: Option<&crate::keeppeek::CameraProfileIds>,
+    configs: Option<&BTreeMap<String, crate::cameras::CameraConfig>>,
 ) {
+    let now = chrono::Utc::now();
     for application in cameras.values_mut() {
-        if !configured_camera_ids.contains(&application.camera_id) {
+        let id = &application.camera_id;
+        if !configured_camera_ids.contains(id) {
             continue;
         }
-        let privacy_active = identities
-            .and_then(|identities| identities.source(&application.camera_id))
+        let observation = identities
+            .and_then(|ids| ids.source_id(id))
+            .zip(configs.and_then(|configs| configs.get(id)))
             .ok_or_else(|| anyhow::anyhow!("camera profile source is unavailable"))
-            .and_then(|ip| state.privacy.decision(&ip.to_string(), chrono::Utc::now()));
-        match privacy_active {
-            Ok((active, _)) => {
-                application.policy.privacy_enforced = active;
-                application.policy.privacy_source = if active
-                    && profiles
-                        .active_profile_id
-                        .as_ref()
-                        .and_then(|profile_id| profiles.profiles.get(profile_id))
-                        .and_then(|profile| profile.cameras.get(&application.camera_id))
-                        .is_some_and(|camera| camera.privacy_enforced == Some(true))
-                {
-                    crate::profiles::FieldSource::Profile
-                } else {
-                    crate::profiles::FieldSource::Base
-                };
-            }
-            Err(error) => {
-                application.policy.privacy_enforced = true;
-                if application.state != crate::profiles::RuntimeApplicationState::Degraded {
-                    application.reason = Some(error.to_string().chars().take(256).collect());
-                }
-                application.state = crate::profiles::RuntimeApplicationState::Degraded;
-            }
-        }
+            .and_then(|(source, config)| {
+                state.privacy.observed_profile_policy(
+                    source,
+                    now,
+                    config.recording_mode,
+                    profiles.active_camera_override(id),
+                )
+            });
+        application.observe_policy(observation);
     }
 }
 
@@ -2462,6 +2451,86 @@ mod tests {
         assert!(
             !application.policy.privacy_enforced,
             "preserved live failure must still receive current privacy projection"
+        );
+    }
+
+    #[test]
+    fn privacy_postprocessing_resolves_schedule_and_held_profile_recording_provenance_together() {
+        use crate::cameras::CameraRecordingMode::{Main, Off};
+        use crate::profiles::FieldSource::{Base, Profile};
+        let (fixture, mut profiles, returned) = delayed_runtime_completion_fixture();
+        let id = returned.camera_id.clone();
+        let source = "192.0.2.1";
+        profiles.profiles.get_mut("away").unwrap().cameras.insert(
+            id.clone(),
+            crate::profiles::CameraProfileOverride {
+                recording_mode: Some(Main),
+                privacy_enforced: Some(true),
+                ..Default::default()
+            },
+        );
+        let privacy = &fixture.state.privacy;
+        privacy
+            .replace_profile_overrides([(source.to_owned(), true)].into())
+            .unwrap();
+        let schedule = crate::privacy::PrivacySchedule {
+            enabled: true,
+            timezone: "UTC".into(),
+            temporary_override: None,
+            keep_camera_connected: true,
+            windows: [("00:00", "12:00"), ("12:00", "00:00")]
+                .map(|(start, end)| crate::privacy::PrivacyWindow {
+                    weekdays: (1..=7).collect(),
+                    start: start.into(),
+                    end: end.into(),
+                })
+                .into(),
+        };
+        let projected = || {
+            update_runtime_status(
+                &fixture.state,
+                &profiles,
+                Some(vec![returned.clone()]),
+                None,
+                false,
+            );
+            fixture.state.runtime_profile_status.read().unwrap().cameras[&id].policy
+        };
+        privacy
+            .replace_schedules([(source.to_owned(), schedule)].into())
+            .unwrap();
+        let simultaneous = projected();
+        assert!(simultaneous.privacy_enforced);
+        assert_eq!(
+            (
+                simultaneous.privacy_source,
+                simultaneous.recording_mode,
+                simultaneous.recording_mode_source
+            ),
+            (Base, Off, Base)
+        );
+        privacy.replace_schedules(Default::default()).unwrap();
+        let held = projected();
+        assert_eq!(
+            (
+                held.privacy_source,
+                held.recording_mode,
+                held.recording_mode_source
+            ),
+            (Profile, Off, Profile)
+        );
+        privacy
+            .replace_profile_overrides(Default::default())
+            .unwrap();
+        let released = projected();
+        assert!(!released.privacy_enforced);
+        assert_eq!(
+            (
+                released.privacy_source,
+                released.recording_mode,
+                released.recording_mode_source
+            ),
+            (Base, Main, Profile)
         );
     }
 

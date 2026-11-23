@@ -29,9 +29,9 @@ pub(super) fn recording_request_state(
 
 impl KeepPeekLoop {
     pub(super) fn refresh_recording_runtime_status(&mut self) {
-        let Some(storage) = &self.storage else {
+        if self.storage.is_none() && self.privacy.is_none() {
             return;
-        };
+        }
         let now = Instant::now();
         if now < self.next_recording_status_check {
             return;
@@ -54,18 +54,42 @@ impl KeepPeekLoop {
             .as_deref()
             .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
         let mut last_source = None;
+        let observed_at = chrono::Utc::now();
         for (source, application) in status
             .cameras
             .range_mut::<str, _>((start, std::ops::Bound::Unbounded))
             .take(crate::profiles::MAX_PROFILE_TARGETS)
         {
             last_source = Some(source);
+            let Some(source_id) = self
+                .runtime_profile_camera_ids
+                .source_id(&application.camera_id)
+            else {
+                continue;
+            };
+            let camera = source_id
+                .parse::<IpAddr>()
+                .ok()
+                .and_then(|ip| self.camera_definitions.get(&ip));
+            if let (Some(privacy), Some(camera)) = (&self.privacy, camera) {
+                changed |= application.observe_policy(
+                    privacy.observed_profile_policy(
+                        source_id,
+                        observed_at,
+                        camera.config.recording_mode,
+                        self.runtime_profiles
+                            .active_camera_override(&application.camera_id),
+                    ),
+                );
+            }
             if application.state == RuntimeApplicationState::Applied
-                && application.policy.recording_mode != crate::cameras::CameraRecordingMode::Off
                 && self
-                    .runtime_profile_camera_ids
-                    .source_id(&application.camera_id)
-                    .is_some_and(|source| storage.recording_configuration_failed(source))
+                    .storage
+                    .as_ref()
+                    .is_some_and(|storage| storage.recording_configuration_failed(source_id))
+                && camera.map_or(application.policy.recording_mode, |camera| {
+                    self.effective_recording_mode(&camera.config)
+                }) != crate::cameras::CameraRecordingMode::Off
             {
                 application.state = RuntimeApplicationState::Degraded;
                 application.reason =
