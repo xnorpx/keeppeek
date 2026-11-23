@@ -120,11 +120,37 @@ test('rejects private public text and allows staged reports to be cancelled', as
 });
 
 test('the reporting service wire publishes one issue and permits only the configured recorder origin', async () => {
-	const { service, diagnostics, screen, create } = setup();
-	const { id, grant } = create();
+	const { service, diagnostics, screen, manifest } = setup();
 	const origin = 'https://recorder.invalid';
-	const root = `https://reporting.invalid/v1/reports/${id}`;
 	const handler = reportingRequestHandler(service, origin);
+	const create = (key: string, requestBody: string, requestOrigin?: string) =>
+		handler(
+			new Request('https://reporting.invalid/v1/reports', {
+				method: 'POST',
+				headers: {
+					Authorization: `Bearer ${key}`,
+					'Content-Type': 'application/json',
+					...(requestOrigin ? { Origin: requestOrigin } : {})
+				},
+				body: requestBody
+			})
+		);
+	const requestBody = JSON.stringify({ manifest, retentionDays: 30, idempotencyKey: 'report-one' });
+	expect((await create('wrong-key', requestBody)).status).toBe(401);
+	expect((await create(service.recorderKey, requestBody, origin)).status).toBe(403);
+	expect((await create(service.recorderKey, ' '.repeat(128 * 1024 + 1))).status).toBe(413);
+	const created = await create(service.recorderKey, requestBody);
+	expect(created.status).toBe(200);
+	expect(created.headers.get('Access-Control-Allow-Origin')).toBeNull();
+	expect(created.headers.get('Cache-Control')).toBe('no-store');
+	const issued = await created.json();
+	const { id, grant } = issued;
+	expect(await (await create(service.recorderKey, requestBody)).json()).toEqual(issued);
+	expect(
+		(await create(service.recorderKey, requestBody.replace('Cannot open', 'Cannot save'))).status
+	).toBe(409);
+	expect((await create(grant, requestBody)).status).toBe(401);
+	const root = `https://reporting.invalid/v1/reports/${id}`;
 	const authorized = { Origin: origin, Authorization: `Bearer ${grant}` };
 	const withArtifact = (kind: string, body: Blob) =>
 		handler(

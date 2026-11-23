@@ -262,19 +262,54 @@ function reportErrorStatus(code: string): number {
 		case 'expired-grant':
 			return 410;
 		case 'artifact-size-mismatch':
+		case 'manifest-too-large':
 			return 413;
 		case 'artifact-type-mismatch':
+		case 'manifest-type-mismatch':
 			return 415;
 		case 'report-terminal':
 		case 'incomplete-uploads':
 		case 'artifact-conflict':
+		case 'idempotency-conflict':
 			return 409;
 		default:
 			return 400;
 	}
 }
 
-/** Deterministic stand-in for the separate reporting service's browser-facing HTTPS surface. */
+const maxCreateBytes = 128 * 1024;
+
+async function receiveCreate(request: Request): Promise<Record<string, unknown>> {
+	requireReport(
+		request.headers.get('Content-Type') === 'application/json',
+		'manifest-type-mismatch'
+	);
+	const reader = request.body?.getReader();
+	requireReport(reader, 'invalid-manifest');
+	const decoder = new TextDecoder('utf-8', { fatal: true });
+	let bytes = 0;
+	let json = '';
+	try {
+		while (true) {
+			const chunk = await reader.read();
+			if (chunk.done) break;
+			bytes += chunk.value.byteLength;
+			requireReport(bytes <= maxCreateBytes, 'manifest-too-large');
+			json += decoder.decode(chunk.value, { stream: true });
+		}
+		request.signal.throwIfAborted();
+		return closedObject(JSON.parse(json + decoder.decode()), [
+			'idempotencyKey',
+			'manifest',
+			'retentionDays'
+		]);
+	} finally {
+		await reader.cancel().catch(() => undefined);
+		reader.releaseLock();
+	}
+}
+
+/** Deterministic wire fixture for the separate reporting service. */
 export function reportingRequestHandler(
 	service: ReturnType<typeof reportingService>,
 	recorderOrigin: string
@@ -289,9 +324,34 @@ export function reportingRequestHandler(
 	const empty = (status: number) => new Response(null, { status, headers: cors });
 
 	return async (request: Request): Promise<Response> => {
+		const path = new URL(request.url);
+		const grant = /^Bearer (\S+)$/.exec(request.headers.get('Authorization') ?? '')?.[1];
+		if (path.pathname === '/v1/reports' && !path.search) {
+			const headers = { 'Cache-Control': 'no-store' };
+			const reject = (status: number) => new Response(null, { status, headers });
+			if (request.headers.has('Origin')) return reject(403);
+			if (request.method !== 'POST') return reject(405);
+			if (grant !== service.recorderKey) {
+				await request.body?.cancel().catch(() => undefined);
+				return reject(401);
+			}
+			try {
+				const body = await receiveCreate(request);
+				requireReport(
+					typeof body.idempotencyKey === 'string' && typeof body.retentionDays === 'number',
+					'invalid-manifest'
+				);
+				return Response.json(
+					service.create(grant, body.idempotencyKey, body.manifest, body.retentionDays),
+					{ headers }
+				);
+			} catch (error) {
+				await request.body?.cancel().catch(() => undefined);
+				return reject(error instanceof ReportError ? reportErrorStatus(error.message) : 400);
+			}
+		}
 		if (request.headers.get('Origin') !== recorderOrigin)
 			return new Response(null, { status: 403 });
-		const path = new URL(request.url);
 		const match =
 			/^\/v1\/reports\/([A-Za-z0-9_-]{1,128})(?:\/(finalize|artifacts\/(diagnostics|screen)))?$/.exec(
 				path.pathname
@@ -299,7 +359,6 @@ export function reportingRequestHandler(
 		if (!match || path.search) return empty(404);
 		if (request.method === 'OPTIONS') return empty(204);
 		const [, id, suffix, kind] = match;
-		const grant = /^Bearer (\S+)$/.exec(request.headers.get('Authorization') ?? '')?.[1];
 		if (!grant) return empty(401);
 		try {
 			if (request.method === 'GET' && !suffix) {

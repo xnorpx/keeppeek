@@ -18,6 +18,8 @@ The reporting service is a separate HTTPS application. Every operation is scoped
 
 Service errors identify invalid manifests, missing authorization, expired grants, type mismatch, size mismatch, idempotency conflict, incomplete uploads, or an unavailable issue provider. Error responses avoid reproducing submitted fields, auth headers, artifact paths, and service internals.
 
+The recorder creates a grant with `POST /v1/reports`, a service bearer credential, and an `application/json` body containing `idempotencyKey`, `manifest`, and `retentionDays`. The service bounds the request body to 128 KiB and returns `id`, `grant`, and `expires` as Unix milliseconds. It rejects browser-origin requests and returns no CORS headers for grant creation.
+
 ## Browser requests
 
 The recorder supplies the configured HTTPS origin and an opaque grant for one report after confirmation. The browser uses a bearer authorization header and sends no cookies. It refuses redirects and sends no referrer.
