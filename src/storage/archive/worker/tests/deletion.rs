@@ -94,6 +94,54 @@ fn retire_fixture_copy(context: &Context, job: &Job) -> anyhow::Result<bool> {
 }
 
 #[test]
+fn queued_archive_deletion_keeps_its_bound_target_until_withdrawn() -> anyhow::Result<()> {
+    let fixture = Fixture::new()?;
+    let (id, primary) = fixture.recording("camera")?;
+    let job = copy(&fixture, &id)?;
+    let bytes = std::fs::read(&primary)?;
+    let target = job.binding.root.join(format!("{}.mp4", job.object_id));
+    let ctx = fixture.context();
+    let selection = Selection::Explicit(job.id.clone());
+    let plan = preview(&fixture, selection.clone())?;
+    confirm(&fixture, &plan, "admin")?;
+    let stale = ctx.catalog.archive_job(&job.id)?;
+    let fence = |next: Option<&Settings>| ctx.catalog.ensure_archive_recovery_binding(next);
+    assert!(fence(None).is_err());
+    fence(Some(&fixture.settings))?;
+    let mut changed = fixture.settings.clone();
+    changed.target_id.push_str("-replacement");
+    assert!(fence(Some(&changed)).is_err());
+    changed = fixture.settings.clone();
+    changed.root = changed.root.join("replacement");
+    assert!(fence(Some(&changed)).is_err());
+    ctx.catalog.archive(Request::Cancel(job.id.clone()))?;
+    let retained = ctx.catalog.archive_job(&job.id)?;
+    assert_eq!(retained.state, "ready");
+    assert!(retained.pending_deletion().is_none() && retained.error.is_none());
+    fence(None)?;
+    assert_eq!(confirm(&fixture, &plan, "admin")?.items[0].state, "blocked");
+    assert!(ctx.claim_deletion(&stale).is_err());
+    let next = preview(&fixture, selection)?;
+    confirm(&fixture, &next, "admin")?;
+    assert!(ctx.claim_deletion(&stale).is_err());
+    ctx.catalog
+        .archive(Request::Deletion(Deletion::RecordFailure {
+            job: job.id.clone(),
+            operation: stale.deletion.unwrap().operation,
+            unprotected_primary: false,
+        }))?;
+    assert_eq!(confirm(&fixture, &next, "admin")?.items[0].state, "queued");
+    assert!(fence(None).is_err());
+    ctx.catalog
+        .archive(Request::Deletion(Deletion::WithdrawQueued(job.id.clone())))?;
+    fence(None)?;
+    assert_eq!(std::fs::read(primary)?, bytes);
+    assert_eq!(std::fs::read(target)?, bytes);
+    drop(ctx);
+    fixture.close()
+}
+
+#[test]
 fn archive_retention_worker_reverifies_legacy_media_before_assigning_an_age() -> anyhow::Result<()>
 {
     let fixture = Fixture::new()?;
@@ -381,11 +429,7 @@ fn archive_deletion_declines_a_damaged_target_before_claiming_its_recording() ->
     assert_eq!(retained.deletion.unwrap().phase, "blocked");
     assert_eq!(std::fs::read(target)?, damaged);
     assert_eq!(std::fs::read(path)?, original);
-    context
-        .catalog
-        .archive(Request::Deletion(Deletion::EnsureNoActiveClaim(
-            job.binding.id,
-        )))?;
+    context.catalog.ensure_archive_recovery_binding(None)?;
     drop(context);
     fixture.close()
 }
@@ -466,8 +510,10 @@ fn archive_deletion_reconciles_a_lost_retirement_acknowledgement_after_restart()
     let plan = preview(&fixture, Selection::Explicit(job.id.clone()))?;
     confirm(&fixture, &plan, "admin")?;
     let catalog = fixture.catalog.handle();
+    let claimed_operation = catalog.archive_job(&job.id)?.deletion.unwrap().operation;
     catalog.archive(Request::Deletion(Deletion::Claim {
         job: job.id.clone(),
+        operation: claimed_operation.clone(),
         policy: Policy::from_settings(&fixture.settings)?,
     }))?;
     let pending = catalog.archive_job(&job.id)?;
@@ -509,7 +555,11 @@ fn archive_deletion_reconciles_a_lost_retirement_acknowledgement_after_restart()
     fixture
         .catalog
         .handle()
-        .archive(Request::Deletion(Deletion::Failed(job.id.clone())))?;
+        .archive(Request::Deletion(Deletion::RecordFailure {
+            job: job.id.clone(),
+            operation: claimed_operation,
+            unprotected_primary: false,
+        }))?;
     let replay = handle.get(&job.id)?;
     assert!(replay.error.is_none());
     assert_eq!(replay.deletion.unwrap().phase, "acknowledged");

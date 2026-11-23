@@ -6,6 +6,7 @@ pub(super) async fn claim(
     connection: &turso::Connection,
     readers: &readers::Registry,
     id: &str,
+    operation: &str,
     policy: &Policy,
 ) -> anyhow::Result<Reply> {
     let job = required(connection, id).await?;
@@ -14,7 +15,7 @@ pub(super) async fn claim(
         .as_ref()
         .context("archive deletion work unavailable")?;
     ensure!(
-        matches!(work.phase.as_str(), "queued" | "claimed"),
+        work.operation == operation && matches!(work.phase.as_str(), "queued" | "claimed"),
         "archive deletion is not pending"
     );
     let mut rows = connection.query("SELECT p.snapshot FROM archive_deletion_plans p JOIN archive_deletion_items i ON i.plan_id=p.id WHERE i.job_id=?1 AND p.confirmed_ms IS NOT NULL",[id]).await?;
@@ -103,7 +104,7 @@ pub(super) async fn acknowledged(
 pub(super) async fn blocked(
     connection: &turso::Connection,
     id: &str,
-    unprotected: bool,
+    error: Option<&str>,
 ) -> anyhow::Result<Reply> {
     let changed = connection
         .execute(
@@ -112,15 +113,10 @@ pub(super) async fn blocked(
         )
         .await?;
     ensure!(changed == 1, "archive deletion already claimed");
-    let message = if unprotected {
-        "archive_primary_write_protection_required"
-    } else {
-        BLOCKED_DELETION
-    };
     connection
         .execute(
             "UPDATE archive_replicas SET error=?2 WHERE job_id=?1 AND state='ready'",
-            (id, message),
+            (id, error),
         )
         .await?;
     Ok(Reply::Done)

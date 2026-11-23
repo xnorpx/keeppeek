@@ -220,6 +220,26 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("archive catalog reply timed out; reconcile by job ID"))?
     }
 
+    pub(crate) fn ensure_archive_recovery_binding(
+        &self,
+        next: Option<&crate::storage::archive::settings::Settings>,
+    ) -> anyhow::Result<()> {
+        let binding = next
+            .filter(|settings| settings.enabled)
+            .map(|settings| -> anyhow::Result<_> {
+                let root = settings
+                    .root
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!("invalid archive root encoding"))?;
+                Ok((settings.target_id.clone(), root.to_owned()))
+            })
+            .transpose()?;
+        self.archive(Request::Deletion(deletion::Request::EnsureRecoveryBinding(
+            binding,
+        )))?;
+        Ok(())
+    }
+
     pub(crate) fn archive_job(&self, id: &str) -> anyhow::Result<Job> {
         let Reply::Job(Some(job)) = self.archive(Request::Get(id.into()))? else {
             anyhow::bail!("archive job is unavailable");
@@ -667,6 +687,9 @@ async fn retry(connection: &turso::Connection, id: &str) -> anyhow::Result<Reply
 
 async fn cancel(connection: &turso::Connection, id: &str) -> anyhow::Result<Reply> {
     let job = required(connection, id).await?;
+    if job.pending_deletion().is_some() {
+        return deletion::withdraw_queued(connection, id).await;
+    }
     if job.state == "ready" {
         anyhow::ensure!(
             !job.action.is_empty(),

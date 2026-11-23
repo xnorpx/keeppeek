@@ -233,6 +233,11 @@ fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_
         let active = page(&connection, Some(2)).await?;
         confirm(&connection, &active, policy(Some(2))).await?;
         let id = admission().job_id;
+        let operation = required(&connection, &id)
+            .await?
+            .deletion
+            .unwrap()
+            .operation;
         assert_eq!(required(&connection, &id).await?.state, "ready");
         connection
             .execute(
@@ -247,13 +252,22 @@ fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_
                 &connection,
                 Deletion::Claim {
                     job: id.clone(),
+                    operation: operation.clone(),
                     policy: policy(Some(2))
                 }
             )
             .await
             .is_err()
         );
-        run(&connection, Deletion::Blocked(id.clone())).await?;
+        run(
+            &connection,
+            Deletion::RecordFailure {
+                job: id.clone(),
+                operation,
+                unprotected_primary: false,
+            },
+        )
+        .await?;
         assert!(required(&connection, &id).await?.error.is_some());
         assert_eq!(
             page(&connection, Some(2)).await?.items[0].state,
@@ -265,10 +279,16 @@ fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_
         let new_plan = page(&connection, Some(2)).await?;
         confirm(&connection, &new_plan, policy(Some(2))).await?;
         assert!(required(&connection, &id).await?.error.is_none());
+        let operation = required(&connection, &id)
+            .await?
+            .deletion
+            .unwrap()
+            .operation;
         run(
             &connection,
             Deletion::Claim {
                 job: id.clone(),
+                operation: operation.clone(),
                 policy: policy(Some(2)),
             },
         )
@@ -293,12 +313,13 @@ fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_
             &connection,
             Deletion::Claim {
                 job: id.clone(),
+                operation: operation.clone(),
                 policy: policy(Some(2)),
             },
         )
         .await?;
         assert!(
-            run(&connection, Deletion::EnsureNoActiveClaim("cold".into()))
+            run(&connection, Deletion::EnsureRecoveryBinding(None))
                 .await
                 .is_err()
         );
@@ -340,9 +361,16 @@ fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_
             (generation, generation)
         );
         drop(activation);
+        assert!(cancel(&connection, &id).await.is_err());
         run(&connection, Deletion::Retired(id.clone())).await?;
+        assert!(cancel(&connection, &id).await.is_err());
+        assert!(
+            run(&connection, Deletion::EnsureRecoveryBinding(None))
+                .await
+                .is_err()
+        );
         run(&connection, Deletion::Acknowledged(id.clone())).await?;
-        run(&connection, Deletion::EnsureNoActiveClaim("cold".into())).await?;
+        run(&connection, Deletion::EnsureRecoveryBinding(None)).await?;
         assert_eq!(test_reconciliation_turn(&connection).await?.evaluated, 1);
         let mut deferred = connection
             .query("SELECT 1 FROM archive_deletion_deferred_retention", ())

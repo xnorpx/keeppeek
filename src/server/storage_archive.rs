@@ -90,16 +90,18 @@ pub(super) fn sanitized(config: &Config) -> Option<Settings> {
 }
 
 pub(super) fn validate_claim_recovery(state: &ServerState, next: Option<&Settings>) -> Result<()> {
-    if let Some(handle) = &state.storage_config.archive_runtime {
-        handle.ensure_recovery_binding(next).map_err(|_| {
-            ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "reconcile the confirmed archive deletion before disabling or replacing its target",
-            )
-        })?;
-    }
-    Ok(())
+    let result = if let Some(handle) = &state.storage_config.archive_runtime {
+        handle.ensure_recovery_binding(next)
+    } else if let Some(catalog) = &state.catalog {
+        catalog.ensure_archive_recovery_binding(next)
+    } else {
+        return Ok(());
+    };
+    result.map_err(|_| ControlCommandError::new(
+        proto::ErrorCode::Rejected,
+        409,
+        "cancel queued archive deletions and finish any started retirement before disabling or replacing its target",
+    ))
 }
 
 pub(super) fn dispatch(
@@ -315,6 +317,21 @@ fn change(
     action: &str,
 ) -> Result<proto::ArchiveJob> {
     require_job_id(id)?;
+    if action == "cancel" && handle.is_none() {
+        use crate::storage::catalog::archive::{Reply, Request, deletion};
+        let reply = state
+            .catalog
+            .as_ref()
+            .ok_or_else(unavailable)?
+            .archive(Request::Deletion(deletion::Request::WithdrawQueued(
+                id.into(),
+            )))
+            .map_err(operation_failed)?;
+        let Reply::Job(Some(job)) = reply else {
+            return Err(unavailable());
+        };
+        return Ok(wire_job(target_names(state)?.as_ref(), *job));
+    }
     let handle = handle.ok_or_else(unavailable)?;
     let result = match action {
         "cancel" => handle.cancel(id),

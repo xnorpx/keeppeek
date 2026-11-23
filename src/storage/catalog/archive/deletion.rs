@@ -101,14 +101,18 @@ pub enum Request {
     },
     Claim {
         job: String,
+        operation: String,
         policy: Policy,
     },
     Retired(String),
     Acknowledged(String),
-    Blocked(String),
-    UnprotectedPrimary(String),
-    Failed(String),
-    EnsureNoActiveClaim(String),
+    WithdrawQueued(String),
+    RecordFailure {
+        job: String,
+        operation: String,
+        unprotected_primary: bool,
+    },
+    EnsureRecoveryBinding(Option<(String, String)>),
     NextLegacy {
         target: String,
         maximum_attempts: u32,
@@ -119,6 +123,14 @@ pub enum Request {
         job: String,
         version: String,
     },
+}
+
+pub(super) async fn withdraw_queued(
+    connection: &turso::Connection,
+    id: &str,
+) -> anyhow::Result<Reply> {
+    execution::blocked(connection, id, None).await?;
+    Ok(Reply::Job(Some(Box::new(required(connection, id).await?))))
 }
 
 pub(super) async fn dispatch(
@@ -156,17 +168,43 @@ pub(super) async fn dispatch(
             revision,
             nonce,
         } => confirm(connection, readers, actor, None, plan, revision, nonce).await,
-        Request::Claim { job, policy } => {
-            execution::claim(connection, readers, &job, &policy).await
-        }
+        Request::Claim {
+            job,
+            operation,
+            policy,
+        } => execution::claim(connection, readers, &job, &operation, &policy).await,
         Request::Retired(id) => execution::retired(connection, &id).await,
         Request::Acknowledged(id) => execution::acknowledged(connection, &id).await,
-        Request::Blocked(id) => execution::blocked(connection, &id, false).await,
-        Request::UnprotectedPrimary(id) => execution::blocked(connection, &id, true).await,
-        Request::Failed(id) => execution::failed(connection, &id).await,
-        Request::EnsureNoActiveClaim(target) => {
-            let mut rows=connection.query("SELECT 1 FROM archive_deletion_items d JOIN archive_replicas a ON a.job_id=d.job_id
-                WHERE a.target_id=?1 AND d.phase IN('claimed','retired') LIMIT 1",[target]).await?;
+        Request::WithdrawQueued(id) => withdraw_queued(connection, &id).await,
+        Request::RecordFailure {
+            job,
+            operation,
+            unprotected_primary,
+        } => {
+            // Reconcile a lost claim reply against its own confirmation in the same transaction.
+            let current = required(connection, &job).await?;
+            match current
+                .pending_deletion()
+                .filter(|work| work.operation == operation)
+            {
+                Some(work) if work.phase == "queued" => {
+                    let error = if unprotected_primary {
+                        "archive_primary_write_protection_required"
+                    } else {
+                        BLOCKED_DELETION
+                    };
+                    execution::blocked(connection, &job, Some(error)).await
+                }
+                Some(_) => execution::failed(connection, &job).await,
+                None => Ok(Reply::Done),
+            }
+        }
+        Request::EnsureRecoveryBinding(next) => {
+            let (target, root) = next.unzip();
+            let mut rows = connection.query("SELECT 1 FROM archive_deletion_items d
+                JOIN archive_replicas a ON a.job_id=d.job_id JOIN archive_bindings b ON b.id=a.target_id
+                WHERE d.phase IN('queued','claimed','retired')
+                AND (?1 IS NULL OR b.id!=?1 OR b.root!=?2) LIMIT 1", (target, root)).await?;
             ensure!(
                 rows.next().await?.is_none(),
                 "confirmed archive retirement still requires this target"

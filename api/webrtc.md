@@ -1701,7 +1701,12 @@ retirement and removes only the authorized archive version using a durable recei
 Item states include `eligible`, `retained`, `verification_date_unknown`,
 `restore_required`, `primary_unavailable`, `active_reader`, `preservation_hold`
 and `busy`. Confirmed items progress through `queued`, `claimed`, `retired`
-and `acknowledged`. An item blocked before claiming requires a new preview.
+and `acknowledged`. Before the worker claims an item, an Administrator can withdraw its
+queued deletion with `ArchiveCommand.cancel`. Withdrawal keeps both copies and returns
+the item to `blocked`. Deleting it later requires a new preview and confirmation.
+Disabling or replacing the target requires each queued deletion to be withdrawn or processed.
+A claimed or retired item keeps its target until its durable receipt is acknowledged.
+An item blocked before claiming also requires a new preview.
 Each batch requires an explicit Administrator confirmation. A recording with
 an evicted primary requires successful restore first. A completed export with
 an expired or unavailable primary retains its archive copy.

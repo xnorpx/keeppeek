@@ -109,16 +109,7 @@ impl std::fmt::Debug for Worker {
 
 impl Handle {
     pub(crate) fn ensure_recovery_binding(&self, next: Option<&Settings>) -> anyhow::Result<()> {
-        if !next.is_some_and(|s| {
-            s.enabled && s.target_id == self.settings.target_id && s.root == self.settings.root
-        }) {
-            self.catalog.archive(Request::Deletion(
-                crate::storage::catalog::archive::deletion::Request::EnsureNoActiveClaim(
-                    self.settings.target_id.clone(),
-                ),
-            ))?;
-        }
-        Ok(())
+        self.catalog.ensure_archive_recovery_binding(next)
     }
 
     pub(crate) fn deletion_policy(
@@ -410,24 +401,13 @@ impl Context {
             let unprotected_primary = result.as_ref().is_err_and(|error| {
                 error.is::<crate::storage::volumes::root::ArchiveSurvivorUnprotected>()
             });
-            let request = if job.pending_deletion().is_some() {
+            let request = if let Some(work) = job.pending_deletion() {
                 use crate::storage::catalog::archive::deletion::Request as Deletion;
-                // A lost reply may already have persisted a filesystem claim. Re-read before releasing it.
-                let phase = self
-                    .catalog
-                    .archive_job(&job.id)
-                    .ok()
-                    .and_then(|current| current.deletion)
-                    .map(|d| d.phase);
-                if phase.as_deref() == Some("queued") {
-                    Request::Deletion(if unprotected_primary {
-                        Deletion::UnprotectedPrimary(job.id.clone())
-                    } else {
-                        Deletion::Blocked(job.id.clone())
-                    })
-                } else {
-                    Request::Deletion(Deletion::Failed(job.id.clone()))
-                }
+                Request::Deletion(Deletion::RecordFailure {
+                    job: job.id.clone(),
+                    operation: work.operation.clone(),
+                    unprotected_primary,
+                })
             } else if job.state == "ready"
                 && job.action.is_empty()
                 && job.kind != "probe"
@@ -495,6 +475,11 @@ impl Context {
         };
         self.catalog.archive(Request::Deletion(Deletion::Claim {
             job: job.id.clone(),
+            operation: job
+                .pending_deletion()
+                .ok_or_else(|| anyhow::anyhow!("archive deletion is not pending"))?
+                .operation
+                .clone(),
             policy,
         }))?;
         Ok(())
