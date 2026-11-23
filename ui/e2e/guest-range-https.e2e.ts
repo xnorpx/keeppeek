@@ -253,11 +253,38 @@ for (const entry of ['Keep', 'Event'] as const) {
 				).toBeVisible();
 				await expect(ordinary.getByRole('button', { name: 'Sign out' })).toHaveCount(0);
 			} else {
+				const player = await viewer
+					.locator('video')
+					.evaluateHandle((element) => element as HTMLVideoElement);
+				const initialTime = await player.evaluate(async (video) => {
+					video.muted = true;
+					video.loop = true;
+					await video.play();
+					return video.currentTime;
+				});
+				await expect
+					.poll(() =>
+						player.evaluate(
+							(video, initial) =>
+								video.videoWidth > 0 &&
+								video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+								!video.paused &&
+								video.currentTime > initial + 0.05,
+							initialTime
+						)
+					)
+					.toBe(true);
 				await expect(viewer.getByText('The link expired. Playback has stopped.')).toBeVisible({
 					timeout: 50_000
 				});
 				expect(Date.now()).toBeGreaterThanOrEqual(expiry);
 				await expect(viewer.locator('video')).toHaveCount(0);
+				expect(
+					await player.evaluate(
+						(video) => video.paused && !video.isConnected && !video.hasAttribute('src')
+					)
+				).toBe(true);
+				await player.dispose();
 				await recipient.clearCookies();
 				const fresh = await recipient.newPage();
 				await openRecipient(fresh, url);
