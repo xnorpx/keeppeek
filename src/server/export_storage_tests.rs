@@ -1206,6 +1206,80 @@ fn confirmed_archive_receipt_replays_without_the_worker_but_new_confirmation_is_
 }
 
 #[test]
+fn administrator_can_withdraw_an_offline_queued_archive_deletion_before_changing_target() {
+    use crate::storage::catalog::{archive, maintenance::jobs::Nonce};
+    use proto::archive_command::Action;
+    let (root, catalog, manager, mut state) = completed_named_export();
+    let (worker, job) = archive_completed_export(&root, &catalog, &state);
+    let policy = worker.handle().deletion_policy().unwrap();
+    state.storage_config.archive_runtime = Some(worker.handle());
+    let administrator = ApiPrincipal::local("127.0.0.1".parse().unwrap());
+    let preview = archive_deletion_response(
+        &state,
+        &administrator,
+        Action::PreviewDeletion(proto::PreviewArchiveDeletion {
+            selection: Some(proto::preview_archive_deletion::Selection::JobId(
+                job.clone(),
+            )),
+        }),
+    )
+    .unwrap();
+    state.storage_config.archive_runtime = None;
+    worker.shutdown().unwrap();
+    // Persist the confirmation without waking a worker, as at a restart before its first claim.
+    catalog
+        .handle()
+        .archive(archive::Request::Deletion(
+            archive::deletion::Request::Confirm {
+                actor: administrator.id(),
+                policy,
+                plan: preview.plan_id.clone(),
+                revision: preview.revision.clone(),
+                nonce: Nonce::parse(&preview.confirmation_nonce).unwrap(),
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        super::storage_archive::validate_claim_recovery(&state, None)
+            .unwrap_err()
+            ._http_status,
+        409
+    );
+    let command = proto::ArchiveCommand {
+        action: Some(Action::Cancel(proto::CancelArchiveJob {
+            job_id: job.clone(),
+        })),
+    };
+    let proto::ok::Result::ArchiveResult(result) =
+        super::storage_archive::dispatch(&state, &administrator, command).unwrap()
+    else {
+        panic!("expected archived job");
+    };
+    let Some(proto::archive_result::Result::Job(retained)) = result.result else {
+        panic!("expected retained replica");
+    };
+    assert_eq!(retained.job_id, job);
+    assert_eq!(retained.state, "ready");
+    assert!(retained.action.is_empty() && retained.error_code.is_empty());
+    let receipt = archive_deletion_response(
+        &state,
+        &administrator,
+        Action::ConfirmDeletion(proto::ConfirmArchiveDeletion {
+            plan_id: preview.plan_id,
+            expected_revision: preview.revision,
+            confirmation_nonce: preview.confirmation_nonce,
+        }),
+    )
+    .unwrap();
+    assert_eq!(receipt.items[0].state, "blocked");
+    super::storage_archive::validate_claim_recovery(&state, None).unwrap();
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn archived_export_preserves_sharing_metadata_and_fences_typed_create_and_retry() {
     let (root, catalog, manager, mut state, request) = setup(16 * 1024 * 1024);
     let source_identity = Uuid::new_v4();
