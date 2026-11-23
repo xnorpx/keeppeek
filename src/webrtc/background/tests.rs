@@ -25,9 +25,8 @@ impl ControlRequestHandler for Handler {
                 request_id: request.request_id,
                 result: Some(control_response::Result::Ok(proto::Ok::default())),
             },
-            after_send: (request.request_id == 1).then(|| {
+            after_send: (request.request_id == 1).then(|| -> crate::webrtc::PostSendAction {
                 Box::new(|| panic!("superseded frame must never launch a transfer"))
-                    as crate::webrtc::PostSendAction
             }),
             data_messages: Vec::new(),
             notifications: Vec::new(),
