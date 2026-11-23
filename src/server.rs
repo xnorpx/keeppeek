@@ -14411,13 +14411,13 @@ mod tests {
 
     #[test]
     fn dashboard_health_keeps_live_data_when_event_history_is_unavailable() {
-        let folder = tempfile::tempdir().unwrap();
+        let folder = std::env::temp_dir().join(format!("keeppeek-tui-events-{}", Uuid::new_v4()));
+        std::fs::create_dir(&folder).unwrap();
         let catalog =
-            crate::storage::RecordingCatalog::open(&folder.path().join("recordings.db")).unwrap();
+            crate::storage::RecordingCatalog::open(&folder.join("recordings.db")).unwrap();
         let mut state = media_test_state();
-        state.events = Some(
-            crate::storage::events::EventStore::new(catalog.handle(), folder.path(), 1024).unwrap(),
-        );
+        state.events =
+            Some(EventStore::new(catalog.handle(), &folder.join("thumbnails"), 1024).unwrap());
         catalog.shutdown();
 
         let (router, tx) = crate::runtime::Router::new().unwrap();
@@ -14431,6 +14431,8 @@ mod tests {
                     .message
                     .starts_with("Operational event history is unavailable")
         }));
+        drop(state);
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]
