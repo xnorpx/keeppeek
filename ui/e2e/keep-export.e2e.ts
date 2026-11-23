@@ -1,8 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import type { MockControlPeerOptions } from './fixtures/control-peer';
-import { keepModeDate, keepModeDayStartMs, mockKeepModes } from './fixtures/keep-modes';
+import { mockControlPeer, type MockControlPeerOptions } from './fixtures/control-peer';
+import {
+	keepModeCameras,
+	keepModeDate,
+	keepModeDayStartMs,
+	mockKeepModes
+} from './fixtures/keep-modes';
 
 const mediaExportCapability = 'keeppeek.media-export.v1';
 const selectedStartMs = keepModeDayStartMs + 6 * 60 * 60_000 + 20 * 60_000;
@@ -524,4 +529,41 @@ test('reuses a matching ready server job without horizontal drift at the Paper m
 	expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
 	expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 	expect(noncanonicalRequests).toEqual([]);
+});
+
+test('downloads an existing completed export in a fresh session with no recording segments', async ({
+	page
+}) => {
+	const payload = Uint8Array.from([0, 0, 0, 8, 102, 116, 121, 112]);
+	const controls = await mockControlPeer(page, {
+		cameras: keepModeCameras(1),
+		storedRanges: [],
+		capabilityIds: [mediaExportCapability],
+		exportFile: payload,
+		exportJobs: [
+			{
+				jobId: 'original-export',
+				sourceId: 'front-door',
+				status: 'ready',
+				fileName: 'door-evidence.mp4',
+				bytesWritten: payload.length
+			},
+			{ jobId: 'expired-export', status: 'expired', fileName: 'expired.mp4' }
+		]
+	});
+	await page.goto(`/keep?camera=front-door&mode=export&date=${keepModeDate}`);
+	const panel = page.locator('[data-keep-export]');
+	await expect(panel.getByText('No recording segment selected.')).toBeVisible();
+	await panel.getByRole('button', { name: 'Find completed exports' }).click();
+	const list = panel.getByRole('list', { name: 'Completed exports' });
+	await expect(list.getByText('expired.mp4')).toHaveCount(0);
+	const downloadPromise = page.waitForEvent('download');
+	await list.getByRole('button', { name: 'Download door-evidence.mp4' }).click();
+	const download = await downloadPromise;
+	expect(download.suggestedFilename()).toBe('door-evidence.mp4');
+	expect(new Uint8Array(await readFile((await download.path())!))).toEqual(payload);
+	expect(controls.exportJobs).toEqual([
+		{ action: 'list' },
+		{ action: 'download', jobId: 'original-export' }
+	]);
 });
