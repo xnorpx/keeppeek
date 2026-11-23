@@ -1,5 +1,5 @@
 name: Manual main ARM qualification
-run-name: ARM image reservation at ${{ inputs.revision }}
+run-name: Full main ARM qualification at ${{ inputs.revision }}
 on:
   workflow_dispatch:
     inputs:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 jobs:
   verify:
-    name: Exercise thumbnail allocations on ARM64
+    name: Real ARM64 platform test suite
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 50
     env:
@@ -45,19 +45,27 @@ jobs:
       - name: Install application UI dependencies
         working-directory: ui
         run: bun install --no-save --registry=https://registry.npmjs.org/
-      - name: Repeat real catalog and thumbnail placement tests
+      - name: Install and verify Rolldown Linux ARM64 binding
+        working-directory: ui
+        shell: bash
+        run: |
+          binding='@rolldown/binding-linux-arm64-gnu'
+          binding_version="$(bun -e "const packageJson = await Bun.file('node_modules/rolldown/package.json').json(); console.log(packageJson.optionalDependencies['$binding'])")"
+          if [[ -z "$binding_version" || "$binding_version" == undefined ]]; then
+            echo "Unable to determine $binding version" >&2
+            exit 1
+          fi
+          bun add --no-save --exact "$binding@$binding_version" --registry=https://registry.npmjs.org/
+          bun -e "await import('rolldown')"
+      - name: Build workspace
+        run: cargo build --locked --all
+      - uses: ./.github/actions/setup-ffmpeg
+      - name: Run the full native ARM64 platform test suite
         shell: bash
         run: |
           results="$RUNNER_TEMP/arm-image"
           mkdir "$results"
-          failure=0
-          for round in 1 2 3; do
-            if ! cargo test --locked -p keeppeek --lib storage::events::placement_tests -- --nocapture \
-              2>&1 | tee "$results/round-$round.log"; then
-              failure=1
-            fi
-          done
-          test "$failure" -eq 0
+          cargo test --locked --all --lib --bins --tests 2>&1 | tee "$results/full-platform.log"
       - name: Retain ARM reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
