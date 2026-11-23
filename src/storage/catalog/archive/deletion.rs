@@ -280,7 +280,7 @@ async fn preview(
         .checked_add(PLAN_LIFETIME_MS)
         .context("archive deletion clock overflow")?;
     connection.execute("INSERT INTO archive_deletion_plans(id,actor,target_id,revision,nonce_hash,expires_ms,snapshot) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-        turso::params![id.as_str(), actor, policy.target, revision.as_str(), nonce.digest(), expires_ms, encoded]).await?;
+        turso::params![id.as_str(), actor, policy.target.as_str(), revision.as_str(), nonce.digest(), expires_ms, encoded]).await?;
     Ok(Reply::Deletion(Box::new(Plan {
         target: policy.target,
         id,
