@@ -742,9 +742,10 @@ impl WriterWorker {
                 continue;
             };
             let id = writer.recording_id().to_owned();
+            self.health
+                .discard_provisional_progress(&key, writer.discard_pending());
             let result = writer
-                .discard_pending()
-                .and_then(|()| writer.finalize_with_progress())
+                .finalize_with_progress()
                 .and_then(|output| self.publish_event_recording(&key, &id, output));
             if let Err(error) = result {
                 self.health.note_failure(&key, &error.to_string());
