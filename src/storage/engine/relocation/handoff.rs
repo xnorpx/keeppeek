@@ -1,5 +1,6 @@
 use super::{
     RecordingCatalogHandle, StorageConfig,
+    directories::{ensure_root, sync_parent, sync_recording},
     files::{check_running, remove_stage, same_entry, stage_source, staged_name, verify_existing},
     legacy_stream,
 };
@@ -32,10 +33,7 @@ pub(in crate::storage::engine) fn move_recording(
     if catalog.is_none() && same_entry(path, &destination)? {
         return Ok(destination);
     }
-    let parent = destination
-        .parent()
-        .ok_or_else(|| io::Error::other("missing recording directory"))?;
-    fs::create_dir_all(parent)?;
+    ensure_root(&config.long_term_path)?;
     if let Some(catalog) = catalog {
         if catalog
             .reader_leases()
@@ -77,8 +75,10 @@ pub(in crate::storage::engine) fn move_recording(
             uuid::Uuid::from_bytes(digest[..16].try_into().expect("SHA-256 contains 16 bytes"));
         let _attempt = Attempt::acquire(stage)?;
         stage_source(path, &destination, stage, stop)?;
+        sync_recording(&config.long_term_path, &destination)?;
         check_running(stop)?;
         fs::remove_file(path)?;
+        sync_parent(path)?;
     }
     Ok(destination)
 }
@@ -122,7 +122,7 @@ pub(super) fn recover_job(
 ) -> io::Result<()> {
     check_running(stop)?;
     let _attempt = Attempt::acquire(job.staged)?;
-    validate_reserved_paths(job)?;
+    let destination_root = validate_reserved_paths(job)?;
     let staged = job.destination.with_file_name(staged_name(job.staged));
     // The UUID was reserved by the catalog before even one media byte could be written.
     if !job.source.try_exists()? {
@@ -135,6 +135,7 @@ pub(super) fn recover_job(
         catalog
             .verify_published_relocation(job)
             .map_err(io::Error::other)?;
+        sync_recording(destination_root, &job.destination)?;
         protect_complete_stage(&job.destination, &staged, job.source_bytes, stop)?;
         remove_stage(&staged)?;
         sync_parent(&job.source)?;
@@ -158,6 +159,7 @@ pub(super) fn recover_job(
     }
     if job.destination_published && job.destination.try_exists()? {
         verify_existing(&job.source, &job.destination, stop)?;
+        sync_recording(destination_root, &job.destination)?;
     } else {
         if catalog
             .reader_leases()
@@ -168,8 +170,9 @@ pub(super) fn recover_job(
                 "active recording reader defers relocation",
             ));
         }
+        ensure_root(destination_root)?;
         stage_source(&job.source, &job.destination, job.staged, stop)?;
-        sync_parent(&job.destination)?;
+        sync_recording(destination_root, &job.destination)?;
         check_running(stop)?;
         let identity = qualified_identity(&job.destination, job.source_bytes)?;
         if identity != job.source_identity {
@@ -194,26 +197,22 @@ pub(super) fn recover_job(
     catalog.retire_relocation(job).map_err(io::Error::other)
 }
 
-fn validate_reserved_paths(job: &Move) -> io::Result<()> {
+fn validate_reserved_paths(job: &Move) -> io::Result<&Path> {
     // The catalog reserved these endpoints before publication. Complete that original
     // handoff across a configuration change without deriving a third path from new roots.
     let depth = Path::new(&job.stream).components().count() + 3;
-    let source_root = job.source.ancestors().nth(depth);
-    let destination_root = job.destination.ancestors().nth(depth);
+    let invalid = || io::Error::other("invalid recording relocation endpoints");
+    let source = job.source.ancestors().nth(depth).ok_or_else(invalid)?;
+    let destination = job.destination.ancestors().nth(depth).ok_or_else(invalid)?;
     if !Path::new(&job.stream)
         .components()
         .all(|part| matches!(part, std::path::Component::Normal(_)))
-        || !source_root
-            .zip(destination_root)
-            .is_some_and(|(source, destination)| {
-                legacy_stream(source, &job.source).as_deref() == Some(&job.stream)
-                    && job.source.strip_prefix(source).ok()
-                        == job.destination.strip_prefix(destination).ok()
-            })
+        || legacy_stream(source, &job.source).as_deref() != Some(&job.stream)
+        || job.source.strip_prefix(source).ok() != job.destination.strip_prefix(destination).ok()
     {
-        return Err(io::Error::other("invalid recording relocation endpoints"));
+        return Err(invalid());
     }
-    Ok(())
+    Ok(destination)
 }
 
 fn qualified_identity(path: &Path, bytes: u64) -> io::Result<String> {
@@ -251,14 +250,6 @@ fn protect_complete_stage(
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
-}
-
-fn sync_parent(path: &Path) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("missing recording directory"))?;
-    let directory = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())?;
-    crate::storage::long_term::inspection::removal::sync_directory(&directory)
 }
 
 // A kernel I/O call can outlive orderly shutdown. A restarted worker retries this

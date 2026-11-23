@@ -2,6 +2,7 @@
 use super::{RecordingCatalogHandle, RecordingHealthRegistry, StorageConfig, WriterWorker};
 use crate::storage::long_term::legacy_stream;
 mod background;
+mod directories;
 mod files;
 mod handoff;
 pub(super) use background::Background;
