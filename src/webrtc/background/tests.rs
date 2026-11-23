@@ -51,7 +51,7 @@ fn complete_worker(runtime: &ApiControlRuntime) {
     assert!(runtime.dispatch_tx.try_send(done).is_ok());
 }
 
-fn check_successor(action: Action, expected_group: &str) {
+fn check_successor(action: Action, expected_groups: &[&str]) {
     let control = test_background_control();
     control
         .background_operation_in_flight
@@ -68,7 +68,12 @@ fn check_successor(action: Action, expected_group: &str) {
         after_send: Vec::new(),
     };
     let mut media = ApiMediaRuntime::default();
-    for group in ["stored:cursor", "frame-step:cursor"] {
+    for group in [
+        "stored:cursor",
+        "frame-step:cursor",
+        "stored:another",
+        "frame-step:another",
+    ] {
         media
             .enqueue(vec![OutboundDataMessage {
                 target: DataChannelTarget::Reliable,
@@ -96,12 +101,12 @@ fn check_successor(action: Action, expected_group: &str) {
     dispatch(request(3, other), handler.clone(), &control, &mut runtime).unwrap();
     dispatch(request(2, action), handler, &control, &mut runtime).unwrap();
     assert!(received.is_empty());
-    assert_eq!(media.outbound.len(), 2);
+    assert_eq!(media.outbound.len(), 4);
     release.send(()).unwrap();
     complete_worker(&runtime);
     drain_pending_control_dispatches(&control, &mut runtime, &mut media).unwrap();
     assert_eq!(received.recv_timeout(Duration::from_secs(5)).unwrap(), 2);
-    assert_eq!(media.outbound.len(), 2);
+    assert_eq!(media.outbound.len(), 4);
     release.send(()).unwrap();
     complete_worker(&runtime);
     drain_pending_control_dispatches(&control, &mut runtime, &mut media).unwrap();
@@ -110,10 +115,8 @@ fn check_successor(action: Action, expected_group: &str) {
             .background_operation_in_flight
             .load(Ordering::Acquire)
     );
-    assert_eq!(media.outbound.len(), 1);
-    assert!(
-        matches!(media.outbound.front(), Some(QueuedApiData::Message(message)) if message.group == expected_group)
-    );
+    let remaining: Vec<_> = media.outbound.iter().map(QueuedApiData::group).collect();
+    assert_eq!(remaining, expected_groups);
     let replies = runtime
         .outbound
         .into_iter()
@@ -143,13 +146,13 @@ fn resume_and_cold_seek_before_frame_ready_wait_for_the_same_cursor_and_preserve
             playing: Some(true),
             ..Default::default()
         }),
-        "stored:cursor",
+        &["stored:cursor", "stored:another", "frame-step:another"],
     );
     check_successor(
         Action::Seek(proto::SeekStoredMedia {
             stored_media_id: "cursor".into(),
             ..Default::default()
         }),
-        "frame-step:cursor",
+        &["stored:another", "frame-step:another"],
     );
 }
