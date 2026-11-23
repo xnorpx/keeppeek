@@ -10,13 +10,31 @@ pub struct Description {
     pub metadata: String,
 }
 
+pub(super) async fn get(
+    connection: &turso::Connection,
+    requester: &str,
+    original_id: &str,
+) -> anyhow::Result<Reply> {
+    let rows = connection
+        .query(
+            "SELECT export_job_id,recording_id,digest,export_metadata FROM archive_replicas
+         WHERE export_job_id=?1 AND kind='export' AND state='ready' AND version IS NOT NULL
+           AND length(CAST(export_metadata AS BLOB)) BETWEEN 1 AND 65536
+           AND CASE WHEN json_valid(export_metadata)
+               THEN json_extract(export_metadata,'$.requester_id') END=?2",
+            turso::params![original_id, requester],
+        )
+        .await?;
+    descriptions(rows).await
+}
+
 pub(super) async fn list(
     connection: &turso::Connection,
     requester: &str,
     retained: &[String],
 ) -> anyhow::Result<Reply> {
     let retained = serde_json::to_string(retained)?;
-    let mut rows = connection
+    let rows = connection
         .query(
             "SELECT export_job_id,recording_id,digest,export_metadata
              FROM archive_replicas INDEXED BY archive_ready_export_owner
@@ -29,6 +47,10 @@ pub(super) async fn list(
             turso::params![requester, retained],
         )
         .await?;
+    descriptions(rows).await
+}
+
+async fn descriptions(mut rows: turso::Rows) -> anyhow::Result<Reply> {
     let mut descriptions = Vec::new();
     while let Some(row) = rows.next().await? {
         descriptions.push(Description {

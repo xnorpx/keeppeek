@@ -77,6 +77,10 @@ pub enum Request {
     Enqueue(Admission),
     Get(String),
     FindExport(String),
+    GetOwnerExport {
+        requester: String,
+        original_id: String,
+    },
     ListOwnerExports {
         requester: String,
         retained: Vec<String>,
@@ -214,7 +218,10 @@ pub(super) async fn execute(
         Instant::now() < deadline,
         "archive catalog deadline expired"
     );
-    let transaction = if matches!(request, Request::ListOwnerExports { .. }) {
+    let transaction = if matches!(
+        request,
+        Request::ListOwnerExports { .. } | Request::GetOwnerExport { .. }
+    ) {
         "BEGIN"
     } else {
         "BEGIN IMMEDIATE"

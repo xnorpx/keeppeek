@@ -346,6 +346,17 @@ fn archive_export_owner_index_filters_before_limiting() -> anyhow::Result<()> {
         };
         assert_eq!(other.len(), 1);
         assert_eq!(other[0].original_id, "job-071");
+        for (owner, id, count) in [
+            ("owner", "job-069", 0),
+            ("other", "job-066", 0),
+            ("owner", "job-066", 1),
+        ] {
+            let Reply::ExportDescriptions(rows) = exports::get(&connection, owner, id).await?
+            else {
+                panic!("expected exact owner description lookup");
+            };
+            assert_eq!(rows.len(), count);
+        }
         Ok(())
     })
 }

@@ -12,6 +12,10 @@ pub(super) async fn dispatch(
         Request::Enqueue(admission) => enqueue(connection, &admission).await,
         Request::Get(id) => Ok(Reply::Job(load(connection, &id).await?.map(Box::new))),
         Request::FindExport(id) => find_export(connection, &id).await,
+        Request::GetOwnerExport {
+            requester,
+            original_id,
+        } => exports::get(connection, &requester, &original_id).await,
         Request::ListOwnerExports {
             requester,
             retained,

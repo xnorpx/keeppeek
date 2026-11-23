@@ -149,13 +149,20 @@ pub(in crate::server) fn get(
     match export_job(state, requester, id) {
         Ok(job) => Ok(job),
         Err(missing) => {
-            let Some((record, _)) = snapshot(state, requester, id)? else {
+            let Some(catalog) = state.catalog.as_ref() else {
                 return Err(missing);
             };
-            if privacy_active_for_media(state, &record.job.source_id)? {
+            let query = Request::GetOwnerExport {
+                requester: requester.into(),
+                original_id: id.into(),
+            };
+            let Ok(Reply::ExportDescriptions(rows)) = catalog.archive(query) else {
+                return Err(unavailable("archive export description could not be read"));
+            };
+            let Some(row) = rows.first() else {
                 return Err(missing);
-            }
-            Ok(record.job)
+            };
+            discoverable(state, requester, row)?.ok_or(missing)
         }
     }
 }
@@ -187,26 +194,14 @@ pub(in crate::server) fn list(
 
     let mut remaining = budget;
     for row in descriptions {
-        let Ok(Some(record)) = verified_record(
-            requester,
-            &row.original_id,
-            &row.artifact_id,
-            row.digest,
-            &row.metadata,
-        ) else {
+        let Ok(Some(job)) = discoverable(state, requester, &row) else {
             continue;
         };
-        if !matches!(
-            privacy_active_for_media(state, &record.job.source_id),
-            Ok(false)
-        ) {
-            continue;
-        }
-        let size = record.job.encoded_len();
+        let size = job.encoded_len();
         let encoded = 1 + prost::length_delimiter_len(size) + size;
         if encoded <= remaining {
             remaining -= encoded;
-            result.jobs.push(record.job);
+            result.jobs.push(job);
         }
     }
     result.jobs.sort_unstable_by(|left, right| {
@@ -215,6 +210,27 @@ pub(in crate::server) fn list(
             .then_with(|| left.job_id.cmp(&right.job_id))
     });
     Ok(result)
+}
+
+fn discoverable(
+    state: &ServerState,
+    requester: &str,
+    row: &crate::storage::catalog::archive::exports::Description,
+) -> Result<Option<proto::ExportJob>, ControlCommandError> {
+    let Some(record) = verified_record(
+        requester,
+        &row.original_id,
+        &row.artifact_id,
+        row.digest,
+        &row.metadata,
+    )?
+    else {
+        return Ok(None);
+    };
+    if privacy_active_for_media(state, &record.job.source_id)? {
+        return Ok(None);
+    }
+    Ok(Some(record.job))
 }
 
 pub(in crate::server) fn payload(
