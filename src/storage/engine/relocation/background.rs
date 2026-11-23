@@ -63,7 +63,6 @@ impl Background {
 
 impl Drop for Background {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
         self.sender.take();
         if let Some(thread) = self.thread.take() {
             // File-system drivers may block inside even one read or fsync. The journal
@@ -71,6 +70,7 @@ impl Drop for Background {
             if self.finished.recv_timeout(Duration::from_millis(250))
                 == Err(mpsc::RecvTimeoutError::Timeout)
             {
+                self.stop.store(true, Ordering::Release);
                 tracing::warn!("recording relocation I/O still pending at shutdown");
             } else if thread.join().is_err() {
                 tracing::error!("recording relocation worker panicked");
@@ -92,8 +92,14 @@ fn run_background(
         ..Scan::new(true)
     };
     let mut dirty = false;
+    let mut closing = false;
     while !stop.load(Ordering::Acquire) {
-        let delay = scan.step(config, catalog, health, Instant::now());
+        let now = Instant::now();
+        if closing {
+            // The writer finalized every segment. Finish this pass without capture-time pacing.
+            scan.due = Some(now);
+        }
+        let delay = scan.step(config, catalog, health, now);
         if scan.take_published() {
             published.store(true, Ordering::Release);
         }
@@ -105,8 +111,13 @@ fn run_background(
             scan.due = Some(Instant::now());
             continue;
         }
-        if complete && delay.is_none() && config.medium_term_path == config.long_term_path {
+        if complete
+            && (closing || (delay.is_none() && config.medium_term_path == config.long_term_path))
+        {
             break;
+        }
+        if closing {
+            continue;
         }
         let received = delay.map_or_else(
             || rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
@@ -115,7 +126,8 @@ fn run_background(
         match received {
             Ok(()) if complete => scan.due = Some(Instant::now()),
             Ok(()) => dirty = true,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) if complete => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => closing = true,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     }
@@ -124,6 +136,50 @@ fn run_background(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn closing_relocation_worker_drains_coalesced_finalized_segments() {
+        let root = std::env::temp_dir().join(format!("keeppeek-drain-{}", uuid::Uuid::new_v4()));
+        let config = StorageConfig {
+            medium_term_path: root.join("capture"),
+            long_term_path: root.join("archive"),
+            ..StorageConfig::default()
+        };
+        let relative = std::path::Path::new("front/main/2026-11-22/01");
+        let source = config.medium_term_path.join(relative);
+        let destination = config.long_term_path.join(relative);
+        let media = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/crates/test-camera/testdata/flash-tone-lead-200ms.mp4"
+        ));
+        std::fs::create_dir_all(&source).unwrap();
+        for ordinal in 0..4 {
+            std::fs::write(source.join(format!("{ordinal:07}.mp4")), media).unwrap();
+        }
+        // The single pending wake represents all four finalizations before shutdown.
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender.send(()).unwrap();
+        drop(sender);
+        let published = AtomicBool::new(false);
+        run_background(
+            receiver,
+            &config,
+            None,
+            &RecordingHealthRegistry::default(),
+            &published,
+            Arc::default(),
+        );
+        assert!(published.load(Ordering::Acquire));
+        for ordinal in 0..4 {
+            let file = format!("{ordinal:07}.mp4");
+            assert!(!source.join(&file).exists());
+            assert_eq!(
+                std::fs::read(destination.join(file)).unwrap(),
+                media.as_slice()
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn blocked_worker_coalesces_capture_wakeups_without_waiting_for_the_copy() {
         let (sender, receiver) = mpsc::sync_channel(1);

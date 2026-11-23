@@ -393,6 +393,105 @@ fn worker_rejects_queued_media_after_a_complete_privacy_cycle() {
 }
 
 #[test]
+fn event_completion_credits_only_finalized_sample_time_and_preserves_writer_failure() {
+    use crate::storage::{MediaFrame, VideoCodec};
+
+    #[derive(Clone, Copy)]
+    enum Ending {
+        OneGop,
+        TwoGops,
+        MalformedSecondGop,
+        CancelSecondGop,
+    }
+    for (ending, expected_ms) in [
+        (Ending::OneGop, 150),
+        (Ending::TwoGops, 350),
+        (Ending::MalformedSecondGop, 200),
+        (Ending::CancelSecondGop, 200),
+    ] {
+        let malformed = matches!(ending, Ending::MalformedSecondGop);
+        let (handle, rx, mut worker, root) = configured_worker("event-finalized-health");
+        let source = RecordingStreamIdentity::legacy("camera/main");
+        let start = Instant::now() - Duration::from_millis(400);
+        handle.ingest_stream(source.clone(), key_frame(start));
+        worker.handle_command(rx.try_recv().unwrap());
+        handle.admission.note_event(&handle.tx, "camera", start);
+        worker.handle_command(rx.try_recv().unwrap());
+        worker.drain_event_outputs(start + Duration::from_millis(1));
+        let interframe = |ms| {
+            let mut frame = key_frame(start + Duration::from_millis(ms));
+            let MediaFrame::Video(video) = &mut frame.frame else {
+                unreachable!()
+            };
+            video.is_keyframe = false;
+            video.data = bytes::Bytes::from_static(&[0, 0, 0, 2, 0x41, 1]);
+            frame
+        };
+        worker.write_event_frame(source.clone(), interframe(100));
+        if !matches!(ending, Ending::OneGop) {
+            let mut key = key_frame(start + Duration::from_millis(200));
+            if malformed {
+                let MediaFrame::Video(video) = &mut key.frame else {
+                    unreachable!()
+                };
+                video.codec = VideoCodec::H265;
+                video.data = bytes::Bytes::from_static(&[0, 0, 0, 2, 0x26, 1]);
+            }
+            worker.write_event_frame(source.clone(), key);
+            if !malformed {
+                worker.write_event_frame(source.clone(), interframe(300));
+            }
+        }
+        if matches!(ending, Ending::CancelSecondGop) {
+            let snapshot = worker.health.snapshot();
+            let stream = snapshot
+                .streams
+                .iter()
+                .find(|s| s.stream_id == source.storage_key)
+                .unwrap();
+            assert_eq!(stream.recorded_duration_ms, 300);
+            worker.cancel_event_writer(&source.source_id);
+        } else if !malformed {
+            worker
+                .finish_event_recording(source.clone(), start + Duration::from_millis(expected_ms));
+        }
+        assert!(!worker.pipelines.contains_key(&source.storage_key));
+        let health = worker
+            .health
+            .snapshot()
+            .streams
+            .into_iter()
+            .find(|s| s.stream_id == source.storage_key)
+            .unwrap();
+        assert_eq!(health.last_error.is_some(), malformed);
+        let recordings = LongTermStore::new(root.clone())
+            .finalized_segments(&source.storage_key)
+            .unwrap();
+        assert_eq!(recordings.len(), 1);
+        let mut media = mp4::read_mp4(std::fs::File::open(&recordings[0]).unwrap()).unwrap();
+        let (&id, track) = media.tracks().iter().next().unwrap();
+        let (samples, scale) = (track.sample_count(), track.timescale());
+        assert_eq!(
+            samples,
+            if matches!(ending, Ending::TwoGops) {
+                4
+            } else {
+                2
+            }
+        );
+        let ticks = (1..=samples)
+            .map(|i| u64::from(media.read_sample(id, i).unwrap().unwrap().duration))
+            .sum::<u64>();
+        let actual_ms = ticks * 1000 / u64::from(scale);
+        assert_eq!(actual_ms, expected_ms);
+        assert_eq!(health.recorded_duration_ms, actual_ms);
+        drop(media);
+        drop(worker);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn deadline_finalization_clamps_the_last_mp4_video_sample() {
     let root =
         storage_config(&format!("event-clamped-end-{}", uuid::Uuid::new_v4())).long_term_path;
@@ -405,7 +504,8 @@ fn deadline_finalization_clamps_the_last_mp4_video_sample() {
     }
     let path = writer
         .finalize_before(start + Duration::from_millis(250))
-        .unwrap();
+        .expect("finalize the three-keyframe event fixture")
+        .expect("the accepted keyframes must publish a segment before the deadline");
     let mut media = mp4::read_mp4(std::fs::File::open(path).unwrap()).unwrap();
     let track = *media.tracks().keys().next().unwrap();
     assert_eq!(media.tracks()[&track].sample_count(), 3);
@@ -472,7 +572,7 @@ fn privacy_discard_preserves_written_fragments_without_writing_pending_video() {
     writer
         .append_received(key_frame(start + Duration::from_millis(100)))
         .unwrap();
-    writer.discard_pending().unwrap();
+    writer.discard_pending();
     let path = writer.finalize().unwrap();
     let media = mp4::read_mp4(std::fs::File::open(path).unwrap()).unwrap();
     let track = media.tracks().values().next().unwrap();
@@ -553,7 +653,7 @@ fn privacy_discard_during_preparation_leaves_no_recording_file() {
     let start = Instant::now();
     let mut writer = MediumTermWriter::create(&root, "camera/main", start, 8192).unwrap();
     writer.append_received(key_frame(start)).unwrap();
-    writer.discard_pending().unwrap();
+    writer.discard_pending();
     let path = writer.finalize().unwrap();
     assert!(!path.exists());
     assert!(
@@ -588,6 +688,55 @@ fn configured_worker(
         .unwrap();
     worker.handle_command(rx.try_recv().unwrap());
     (handle, rx, worker, root)
+}
+
+#[test]
+fn recoverable_keyframe_gap_preserves_the_event_window_without_a_new_trigger() {
+    let (handle, rx, mut worker, root) = configured_worker("event-keyframe-gap");
+    let start = Instant::now() - Duration::from_millis(150);
+    let source = RecordingStreamIdentity::legacy("camera/main");
+    handle.ingest_stream(source.clone(), key_frame(start));
+    worker.handle_command(rx.try_recv().unwrap());
+    handle.admission.note_event(&handle.tx, "camera", start);
+    worker.handle_command(rx.try_recv().unwrap());
+    worker.drain_event_outputs(start + Duration::from_millis(1));
+    let mut over = key_frame(start + Duration::from_millis(25));
+    let crate::storage::MediaFrame::Video(video) = &mut over.frame else {
+        unreachable!("video fixture")
+    };
+    video.is_keyframe = false;
+    video.data = vec![0_u8; 16 * 1024 * 1024].into();
+    worker.write_event_frame(source.clone(), over);
+    let gap = worker.health.snapshot();
+    assert!(gap.streams.iter().any(|s| {
+        s.last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("keyframe limit"))
+    }));
+    for offset in [50, 100] {
+        let now = start + Duration::from_millis(offset);
+        handle.ingest_stream(source.clone(), key_frame(now));
+        worker.handle_command(rx.try_recv().unwrap());
+        worker.drain_event_outputs(now);
+    }
+    assert!(
+        !worker
+            .health
+            .snapshot()
+            .streams
+            .iter()
+            .any(|s| s.last_error.is_some())
+    );
+    while worker.drain_event_outputs(start + Duration::from_secs(2)) == 32 {}
+    assert!(worker.pipelines.is_empty());
+    let recordings = LongTermStore::new(root.clone())
+        .finalized_segments("camera/main")
+        .unwrap();
+    assert_eq!(recordings.len(), 1);
+    let mp4 = mp4::read_mp4(std::fs::File::open(&recordings[0]).unwrap()).unwrap();
+    assert_eq!(mp4.tracks().values().next().unwrap().sample_count(), 3);
+    drop(mp4);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

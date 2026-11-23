@@ -15,7 +15,7 @@ use crate::{
         health::RecordingHealthRegistry,
         identity::RecordingStreamIdentity,
         long_term::LongTermStore,
-        medium_term::MediumTermWriter,
+        medium_term::{MediumTermWriter, WriteProgress},
         recording_policy::{AdmissionDecision, CameraRecordingPolicy},
         safety::{
             FilesystemCapacity, StorageCleanupReason, StorageCleanupTrigger,
@@ -359,10 +359,17 @@ struct CameraPipeline {
     last_flush: Instant,
 }
 
-#[derive(Default)]
-struct WriteProgress {
-    wrote: bool,
-    recorded_duration: Duration,
+impl WriteProgress {
+    fn report(self, health: &RecordingHealthRegistry, stream: &str) {
+        if self.accepted || !self.recorded_duration.is_zero() {
+            health.note_progress(stream, self.recorded_duration);
+        }
+        if self.keyframe_gap {
+            let error = super::medium_term::keyframe_budget_error();
+            health.note_failure(stream, &error.to_string());
+            tracing::warn!(camera = stream, %error, "recording gap");
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -1045,10 +1052,10 @@ impl WriterWorker {
                     self.ingest(identity, frame);
                 }
             }
-            Command::FlushAll => self.flush_all(),
+            Command::FlushAll => self.flush_all(false),
             Command::Shutdown => {
                 self.stop_event_recordings();
-                self.shutdown_flush();
+                self.flush_all(true);
                 self.finalize_all();
                 return true;
             }
@@ -1071,10 +1078,7 @@ impl WriterWorker {
         if !self.config.is_direct_write() {
             self.health.note_attempt(storage_key);
             match self.flush_camera(storage_key, true) {
-                Ok(progress) if progress.wrote => self
-                    .health
-                    .note_progress(storage_key, progress.recorded_duration),
-                Ok(_) => {}
+                Ok(progress) => progress.report(&self.health, storage_key),
                 Err(error) => {
                     self.health.note_failure(storage_key, &error.to_string());
                     tracing::error!(camera = storage_key, %error, "unable to flush recording before queue gap");
@@ -1089,8 +1093,9 @@ impl WriterWorker {
             return;
         };
         let recording_id = writer.recording_id().to_owned();
-        match writer.finalize() {
-            Ok(path) => {
+        match finalize_pipeline_recording(writer, &self.health, storage_key) {
+            Ok(None) => {}
+            Ok(Some(path)) => {
                 self.finish_relocation(storage_key, &path, &recording_id);
             }
             Err(error) => {
@@ -1293,10 +1298,7 @@ impl WriterWorker {
         if self.config.is_direct_write() {
             self.health.note_attempt(&storage_key);
             match self.direct_write(&storage_key, frame) {
-                Ok(progress) if progress.wrote => self
-                    .health
-                    .note_progress(&storage_key, progress.recorded_duration),
-                Ok(_) => {}
+                Ok(progress) => progress.report(&self.health, &storage_key),
                 Err(error) => {
                     self.health.note_failure(&storage_key, &error.to_string());
                     self.admission.note_writer_failure(&identity.source_id);
@@ -1308,16 +1310,15 @@ impl WriterWorker {
 
         let active = self.demand.is_active(&storage_key);
         let pipeline = self.pipelines.get_mut(&storage_key).unwrap();
-        pipeline.short_term.push(frame);
-        let needs_flush = active || pipeline.last_flush.elapsed() >= self.config.flush_interval;
+        let received_at = frame.received_at;
+        let expires = pipeline.short_term.push_for_recording(frame);
+        let needs_flush =
+            active || expires || pipeline.last_flush.elapsed() >= self.config.flush_interval;
 
         if needs_flush {
             self.health.note_attempt(&storage_key);
-            match self.flush_camera(&storage_key, active) {
-                Ok(progress) if progress.wrote => self
-                    .health
-                    .note_progress(&storage_key, progress.recorded_duration),
-                Ok(_) => {}
+            match self.flush_camera_at(&storage_key, active, Instant::now().max(received_at)) {
+                Ok(progress) => progress.report(&self.health, &storage_key),
                 Err(error) => {
                     self.health.note_failure(&storage_key, &error.to_string());
                     self.admission.note_writer_failure(&identity.source_id);
@@ -1368,18 +1369,21 @@ impl WriterWorker {
         frame: RecordingFrame,
         received_clock: bool,
     ) -> std::io::Result<WriteProgress> {
-        let mut activated = Duration::ZERO;
         if frame.is_video_keyframe()
             && let Some(pipeline) = self.pipelines.get_mut(camera_id)
             && let Some(writer) = &mut pipeline.medium_term
         {
             // The initial GOP can still be buffered for audio codec discovery.
-            activated = writer.activate_prepared()?;
+            let activated = writer.activate_for_rotation()?;
+            if !activated.is_zero() {
+                self.health.note_progress(camera_id, activated);
+            }
             if writer.needs_rotation(frame.received_at, self.config.medium_term_duration) {
                 let old = pipeline.medium_term.take().unwrap();
                 let recording_id = old.recording_id().to_owned();
-                let path = old.finalize()?;
-                self.finish_relocation(camera_id, &path, &recording_id);
+                if let Some(path) = finalize_pipeline_recording(old, &self.health, camera_id)? {
+                    self.finish_relocation(camera_id, &path, &recording_id);
+                }
             }
         }
 
@@ -1405,16 +1409,11 @@ impl WriterWorker {
         }
 
         let writer = pipeline.medium_term.as_mut().unwrap();
-        let recorded_duration = if received_clock {
-            writer.append_received(frame)?
+        if received_clock {
+            writer.append_received_bounded(frame)
         } else {
-            writer.append_one(frame)?
-        };
-
-        Ok(WriteProgress {
-            wrote: !activated.is_zero() || !writer.recovery_limit_reached,
-            recorded_duration: activated.saturating_add(recorded_duration),
-        })
+            writer.append_bounded(frame)
+        }
     }
 
     fn flush_camera(
@@ -1422,43 +1421,60 @@ impl WriterWorker {
         camera_id: &str,
         publish_all: bool,
     ) -> std::io::Result<WriteProgress> {
+        self.flush_camera_at(camera_id, publish_all, Instant::now())
+    }
+
+    fn flush_camera_at(
+        &mut self,
+        camera_id: &str,
+        publish_all: bool,
+        clock: Instant,
+    ) -> std::io::Result<WriteProgress> {
         let pipeline = self.pipelines.get_mut(camera_id).unwrap();
         pipeline.last_flush = Instant::now();
-        let mut progress = WriteProgress::default();
-
         let frames = if publish_all {
             pipeline.short_term.drain_all()
         } else {
-            Instant::now()
+            clock
                 .checked_sub(self.config.short_term_duration)
-                .map_or_else(Vec::new, |cutoff| {
-                    pipeline.short_term.drain_up_to_last_keyframe_before(cutoff)
-                })
+                .map_or_else(Vec::new, |cutoff| pipeline.short_term.drain_before(cutoff))
         };
+        // The per-frame writer skips undecodable history until its first video keyframe
+        // and keeps all subsequent references, including across scheduled flushes.
+        let mut progress = WriteProgress::default();
+        let mut first_error = None;
         for frame in frames {
-            let next = self.write_frame_to_pipeline(camera_id, frame, false)?;
-            progress.wrote |= next.wrote;
+            let written = match self.write_frame_to_pipeline(camera_id, frame, false) {
+                Ok(written) => written,
+                Err(error) => {
+                    // These frames have already left the buffer. Later frames can still
+                    // reach an open or replacement writer after an individual write fails.
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
+            progress.accepted |= written.accepted;
             progress.recorded_duration = progress
                 .recorded_duration
-                .saturating_add(next.recorded_duration);
+                .saturating_add(written.recorded_duration);
+            progress.keyframe_gap |= written.keyframe_gap;
+        }
+        if let Some(error) = first_error {
+            progress.report(&self.health, camera_id);
+            return Err(error);
         }
         Ok(progress)
     }
 
-    fn flush_all(&mut self) {
+    fn flush_all(&mut self, publish_all: bool) {
         let ids: Vec<String> = self.pipelines.keys().cloned().collect();
         for id in ids {
-            if let Err(e) = self.flush_camera(&id, false) {
-                tracing::error!(camera = %id, error = %e, "flush failed");
-            }
-        }
-    }
-
-    fn shutdown_flush(&mut self) {
-        let ids: Vec<_> = self.pipelines.keys().cloned().collect();
-        for id in ids {
-            if let Err(error) = self.flush_camera(&id, true) {
-                tracing::error!(camera = %id, %error, "failed to write remaining frames on shutdown");
+            match self.flush_camera(&id, publish_all) {
+                Ok(progress) => progress.report(&self.health, &id),
+                Err(error) => {
+                    self.health.note_failure(&id, &error.to_string());
+                    tracing::error!(camera = %id, %error, "flush failed");
+                }
             }
         }
     }
@@ -1472,8 +1488,9 @@ impl WriterWorker {
                 .and_then(|p| p.medium_term.take())
             {
                 let recording_id = writer.recording_id().to_owned();
-                match writer.finalize() {
-                    Ok(path) => {
+                match finalize_pipeline_recording(writer, &self.health, &id) {
+                    Ok(None) => {}
+                    Ok(Some(path)) => {
                         self.finish_relocation(&id, &path, &recording_id);
                     }
                     Err(e) => {
@@ -1524,6 +1541,17 @@ impl WriterWorker {
                 last_flush: Instant::now(),
             })
     }
+}
+
+fn finalize_pipeline_recording(
+    writer: MediumTermWriter,
+    health: &RecordingHealthRegistry,
+    stream: &str,
+) -> std::io::Result<Option<PathBuf>> {
+    Ok(writer.finalize_with_progress()?.map(|(path, duration)| {
+        health.credit_finalized_progress(stream, duration);
+        path
+    }))
 }
 
 fn create_medium_term_writer(
@@ -1614,6 +1642,7 @@ pub struct ShortTermStats {
 #[cfg(test)]
 mod tests {
     mod finalization;
+    mod gop_recovery;
     mod metadata_rotation;
     mod named;
 
@@ -1745,7 +1774,7 @@ mod tests {
 
         let progress = worker.flush_camera(&identity.storage_key, false).unwrap();
 
-        assert!(!progress.wrote);
+        assert!(!progress.accepted);
     }
 
     #[test]

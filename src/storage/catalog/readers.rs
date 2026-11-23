@@ -386,7 +386,14 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
         response
             .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => {
+                    anyhow::anyhow!("recording catalog read lease timed out")
+                }
+                mpsc::RecvTimeoutError::Disconnected => {
+                    anyhow::anyhow!("recording catalog stopped before replying")
+                }
+            })?
     }
 }
 

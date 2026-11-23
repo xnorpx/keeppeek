@@ -446,3 +446,84 @@ fn archive_worker_cancelled_restore_cleans_stage_retains_archive_and_can_restore
     drop(context);
     fixture.close()
 }
+
+#[test]
+fn archive_reopens_during_outage_and_drains_original_jobs_while_primary_recording_continues()
+-> anyhow::Result<()> {
+    let fixture = Fixture::new()?;
+    let context = fixture.context();
+    context.bind()?;
+    let mut pending = Vec::new();
+    for camera in ["front", "rear"] {
+        let (id, source) = fixture.recording(camera)?;
+        let job = admit(
+            &fixture.settings,
+            &context.catalog,
+            &id,
+            "recording",
+            &ObjectId::random().to_string(),
+        )?;
+        let original = std::fs::read(&source)?;
+        pending.push((job, source, original));
+    }
+    drop(context);
+    let offline = fixture.path.join("disconnected");
+    std::fs::write(fixture.settings.root.join("unrelated.txt"), b"keep")?;
+    std::fs::rename(&fixture.settings.root, &offline)?;
+    let fixture = fixture.reopen()?;
+    let worker = Worker::start(fixture.settings.clone(), fixture.catalog.handle())?;
+    let handle = worker.handle();
+    assert!(!wait_probe(&handle)?.available);
+    let (active_id, active_path) = fixture.recording("side")?;
+    let primary = mp4::read_mp4(std::fs::File::open(&active_path)?)?;
+    assert!(
+        primary
+            .tracks()
+            .values()
+            .any(|track| track.sample_count() == 2)
+    );
+    drop(primary);
+    assert!(!fixture.settings.root.exists());
+    for (job, path, original) in &pending {
+        assert_eq!(wait_state(&handle, &job.id, "failed")?.attempts, 0);
+        assert_eq!(&std::fs::read(path)?, original);
+    }
+    std::fs::rename(offline, &fixture.settings.root)?;
+    let intervening = handle.enqueue(&active_id, "recording", &ObjectId::random().to_string())?;
+    wait_state(&handle, &intervening.id, "ready")?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !handle.health().available {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "intervening transfer did not publish health"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    for (job, _, _) in &pending {
+        assert_eq!(handle.get(&job.id)?.state, "failed");
+    }
+    wait_available(&handle)?;
+    for (job, path, original) in &pending {
+        let ready = wait_state(&handle, &job.id, "ready")?;
+        assert_eq!(ready.object_id, job.object_id);
+        assert_eq!(ready.attempts, 1);
+        let archived = ready.binding.root.join(format!("{}.mp4", ready.object_id));
+        assert_eq!(&std::fs::read(archived)?, original);
+        assert_eq!(&std::fs::read(path)?, original);
+    }
+    assert_eq!(
+        handle
+            .list("", PAGE_SIZE)?
+            .iter()
+            .filter(|job| job.kind == "recording")
+            .count(),
+        pending.len() + 1
+    );
+    assert_eq!(
+        std::fs::read(fixture.settings.root.join("unrelated.txt"))?,
+        b"keep"
+    );
+    worker.shutdown()?;
+    drop(handle);
+    fixture.close()
+}

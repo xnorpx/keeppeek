@@ -60,7 +60,7 @@ fn verify_finalization(buffered: bool, relocate: bool) {
                 key_frame(started + Duration::from_secs(second)),
             );
         }
-        worker.shutdown_flush();
+        worker.flush_all(true);
         worker.finalize_all();
     });
     assert_eq!(count.load(Ordering::Relaxed), if relocate { 2 } else { 1 });
@@ -193,7 +193,7 @@ fn finalized_with_offline_destination(
             key_frame(started + Duration::from_secs(second)),
         );
     }
-    worker.shutdown_flush();
+    worker.flush_all(true);
     worker.finalize_all();
     let files = LongTermStore::new(config.medium_term_path.clone())
         .finalized_segments("front/main")

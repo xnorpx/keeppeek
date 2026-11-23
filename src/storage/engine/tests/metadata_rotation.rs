@@ -45,9 +45,9 @@ fn buffered_and_shutdown_batches_rotate_at_every_keyframe_without_source_metadat
             buffer.push(key_frame(start + Duration::from_millis(n)));
         }
         if shutdown {
-            worker.shutdown_flush();
+            worker.flush_all(true);
         } else {
-            assert!(worker.flush_camera("camera", true).unwrap().wrote);
+            assert!(worker.flush_camera("camera", true).unwrap().accepted);
         }
         worker.finalize_all();
         assert_eq!(recovered_counts(&dir), [(1_028, 1_028), (3_072, 3_072)]);
@@ -82,7 +82,7 @@ fn epoch_churn_preserves_the_prefix_before_the_hard_limit_and_resumes_at_a_keyfr
         }));
         buffer.push(frame);
     }
-    worker.shutdown_flush();
+    worker.flush_all(true);
     worker.finalize_all();
     let files = recovered_counts(&dir);
     assert_eq!(files.len(), 2);
@@ -115,9 +115,10 @@ fn buffered_receive_times_bound_segments_even_when_their_relocation_fails() {
     for seconds in [0, 30, 60, 90, 120, 150] {
         buffer.push(key_frame(start + Duration::from_secs(seconds)));
     }
-    worker.shutdown_flush();
+    worker.flush_all(true);
     worker.finalize_all();
     assert_eq!(recovered_counts(&dir), [(2, 2); 3]);
+    let duration_before = worker.health.snapshot().streams[0].recorded_duration_ms;
     worker
         .health
         .note_progress("camera", Duration::from_secs(150));
@@ -130,7 +131,7 @@ fn buffered_receive_times_bound_segments_even_when_their_relocation_fails() {
     );
     assert_eq!(
         worker.health.snapshot().streams[0].recorded_duration_ms,
-        150_000
+        duration_before + 150_000
     );
 
     // Even a new worker can rediscover the finalized source files without an in-memory queue.
@@ -193,9 +194,15 @@ fn health_includes_interframes_admitted_when_the_first_gop_activates() {
         let activated = worker
             .direct_write("camera", key_frame(start + Duration::from_millis(120)))
             .unwrap();
-        assert!(activated.wrote);
-        assert!(activated.recorded_duration >= Duration::from_millis(80));
+        assert!(activated.accepted);
+        activated.report(&worker.health, "camera");
+        assert!(worker.health.snapshot().streams[0].recorded_duration_ms >= 80);
         worker.finalize_all();
+        let samples: u32 = recovered_counts(&dir)
+            .iter()
+            .map(|(_, samples)| samples)
+            .sum();
+        assert_eq!(samples, 4);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

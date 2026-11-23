@@ -9,18 +9,31 @@ use crate::storage::{
     segment::RecordingFrame,
 };
 use std::{
-    fs::File,
     io::BufWriter,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use uuid::Uuid;
+mod initialization;
 #[cfg(test)]
 mod source_timing_measurement;
 mod volume_file;
 use volume_file::WriterFile;
 
 const VIDEO_TIMESCALE: u32 = 90_000;
+// Each simultaneous writer can retain one undecoded or uncommitted GOP. This caps eight
+// writers at 128 MiB of charged GOP data, independently of the shared event pre-roll budget.
+// At 16 Mbit/s the 16 MiB allowance lasts less than 8.4 s including sample bookkeeping.
+// Longer GOPs can produce a reported gap. Raising the limit increases memory per writer.
+const PENDING_GOP_MIB: usize = 16;
+const PENDING_GOP_BYTES: usize = PENDING_GOP_MIB * 1_048_576;
+
+#[derive(Default)]
+pub(super) struct WriteProgress {
+    pub(super) accepted: bool,
+    pub(super) recorded_duration: Duration,
+    pub(super) keyframe_gap: bool,
+}
 
 pub struct MediumTermWriter {
     state: WriterState,
@@ -35,7 +48,12 @@ pub struct MediumTermWriter {
     camera_timestamp_origin: Option<Duration>,
     frames_written: u64,
     bytes_written: u64,
-    recorded_duration: Duration,
+    committed_video_ticks: u64,
+    reported_video_ticks: u64,
+    // None after a rejected frame until a new video keyframe resumes this stream.
+    pending_gop_bytes: Option<usize>,
+    // Once the camera clock is discontinuous, advance from the committed boundary on receipt time.
+    gap_clock: Option<(Instant, u64)>,
     write_buffer_bytes: usize,
     reservation: Option<Reservation>,
     named_volume: bool,
@@ -60,6 +78,7 @@ struct ActiveWriter {
     last_video_duration: u32,
     fragment_start_dts: Option<u64>,
     next_audio_dts: Option<u64>,
+    audio_after_gap: bool,
 }
 
 impl MediumTermWriter {
@@ -182,7 +201,10 @@ impl MediumTermWriter {
             camera_timestamp_origin: None,
             frames_written: 0,
             bytes_written: 0,
-            recorded_duration: Duration::ZERO,
+            committed_video_ticks: 0,
+            reported_video_ticks: 0,
+            pending_gop_bytes: Some(0),
+            gap_clock: None,
             write_buffer_bytes,
             reservation,
             named_volume,
@@ -190,50 +212,210 @@ impl MediumTermWriter {
         })
     }
 
+    /// Append a caller-supplied batch while honoring the same GOP budget as single appends.
     pub fn append_batch(&mut self, frames: Vec<RecordingFrame>) -> std::io::Result<Duration> {
-        let mut recorded_duration = Duration::ZERO;
+        let mut exceeded = false;
+        let mut accepted = false;
         for rf in frames {
-            recorded_duration = recorded_duration.saturating_add(self.append_one(rf)?);
+            let progress = self.append_frame(rf)?;
+            exceeded |= progress.keyframe_gap;
+            accepted |= progress.accepted;
         }
-        Ok(recorded_duration)
+        if exceeded {
+            return Err(keyframe_budget_error());
+        }
+        Ok(if accepted {
+            self.take_video_progress()
+        } else {
+            Duration::ZERO
+        })
     }
 
     pub fn append_one(&mut self, rf: RecordingFrame) -> std::io::Result<Duration> {
-        let previous_duration = self.recorded_duration;
-        if matches!(self.state, WriterState::WaitingForKeyframe) {
-            if rf.frame.is_video_keyframe() {
-                self.segment_origin = Some(rf.received_at);
-                self.camera_timestamp_origin = rf.timestamp;
-                self.state = WriterState::Preparing(vec![rf]);
-            }
-            return Ok(Duration::ZERO);
+        let progress = self.append_frame(rf)?;
+        if progress.keyframe_gap {
+            return Err(keyframe_budget_error());
         }
-
-        // Limit codec discovery to the largest GOP that could fit its sample table in one moof.
-        const PREPARATION_FRAMES_MAX: usize = (super::RECORDING_BOX_BYTES_MAX
-            / mp4::FragmentedMetadataUsage::SAMPLE_TABLE_ENTRY_BYTES_MAX)
-            as usize;
-        if matches!(&self.state, WriterState::Preparing(frames)
-            if rf.frame.is_video_keyframe() || frames.len() >= PREPARATION_FRAMES_MAX)
-        {
-            self.activate_prepared()?;
-        }
-        match &mut self.state {
-            WriterState::Preparing(frames) => frames.push(rf),
-            WriterState::Active(_) => self.write_frame(rf)?,
-            WriterState::WaitingForKeyframe => {
-                return Err(std::io::Error::other(
-                    "fragmented MP4 writer lost its prepared state",
-                ));
-            }
-        }
-        Ok(self.recorded_duration.saturating_sub(previous_duration))
+        Ok(if progress.accepted {
+            self.take_video_progress()
+        } else {
+            Duration::ZERO
+        })
     }
 
-    pub(super) fn append_received(
+    #[cfg(test)]
+    pub(super) const fn awaiting_recovery_keyframe(&self) -> bool {
+        self.pending_gop_bytes.is_none()
+    }
+
+    pub(super) fn append_bounded(&mut self, rf: RecordingFrame) -> std::io::Result<WriteProgress> {
+        let mut progress = self.append_frame(rf)?;
+        if progress.accepted || progress.keyframe_gap {
+            progress.recorded_duration = self.take_video_progress();
+        }
+        Ok(progress)
+    }
+
+    fn take_video_progress(&mut self) -> Duration {
+        // Two observed DTS values establish elapsed time in the open fragment. Its terminal
+        // sample gets its definitive duration when the MP4 writer commits the fragment.
+        let open = match &self.state {
+            WriterState::Active(active) => active
+                .last_video_dts
+                .zip(active.fragment_start_dts)
+                .map_or(0, |(last, first)| last.saturating_sub(first)),
+            _ => 0,
+        };
+        let ticks = self.committed_video_ticks.saturating_add(open);
+        let before = ticks_to_duration(self.reported_video_ticks, VIDEO_TIMESCALE);
+        self.reported_video_ticks = self.reported_video_ticks.max(ticks);
+        ticks_to_duration(self.reported_video_ticks, VIDEO_TIMESCALE).saturating_sub(before)
+    }
+
+    fn append_frame(&mut self, rf: RecordingFrame) -> std::io::Result<WriteProgress> {
+        if self.recovery_limit_reached {
+            return Ok(WriteProgress::default());
+        }
+        let keyframe = rf.is_video_keyframe();
+        if keyframe && self.segment_origin.is_none() {
+            self.segment_origin = Some(rf.received_at);
+            self.camera_timestamp_origin = rf.timestamp;
+        }
+        let previous_bytes = if keyframe {
+            0
+        } else if matches!(self.state, WriterState::WaitingForKeyframe) {
+            return Ok(WriteProgress::default());
+        } else if let Some(bytes) = self.pending_gop_bytes {
+            bytes
+        } else {
+            return Ok(WriteProgress::default());
+        };
+        // Audio the muxer cannot use consumes no fragment memory and cannot signal writer progress.
+        if let MediaFrame::Audio(audio) = &rf.frame
+            && (audio.codec != AudioCodec::Aac
+                || adts::strip_adts(&audio.data).0.is_empty()
+                || matches!(&self.state, WriterState::Active(active) if active.audio_track.is_none()))
+        {
+            return Ok(WriteProgress::default());
+        }
+        // Charge frame metadata as well, so tiny or empty payloads cannot grow an unbounded Vec.
+        let bytes = previous_bytes
+            .saturating_add(rf.byte_len())
+            .saturating_add(size_of::<RecordingFrame>());
+        if bytes > PENDING_GOP_BYTES {
+            if self.pending_gop_bytes.take().is_none() {
+                return Ok(WriteProgress::default());
+            }
+            self.flush_before_keyframe_gap(&rf)?;
+            return Ok(WriteProgress {
+                accepted: false,
+                recorded_duration: Duration::ZERO,
+                keyframe_gap: true,
+            });
+        }
+        // A frame error can leave the old fragment pending. Only a successful new keyframe
+        // admits dependent frames, so failed boundaries cannot reset the previous GOP's budget.
+        self.pending_gop_bytes = None;
+        let accepted = if matches!(self.state, WriterState::WaitingForKeyframe) {
+            self.state = WriterState::Preparing(vec![rf]);
+            true
+        } else {
+            // Limit codec discovery to the largest GOP that could fit its sample table in one moof.
+            const PREPARATION_FRAMES_MAX: usize = (super::RECORDING_BOX_BYTES_MAX
+                / mp4::FragmentedMetadataUsage::SAMPLE_TABLE_ENTRY_BYTES_MAX)
+                as usize;
+            if matches!(&self.state, WriterState::Preparing(frames)
+                if keyframe || frames.len() >= PREPARATION_FRAMES_MAX)
+            {
+                self.activate_prepared()?;
+            }
+            match &mut self.state {
+                WriterState::Preparing(frames) => {
+                    frames.push(rf);
+                    true
+                }
+                WriterState::Active(_) => self.write_frame(rf)?,
+                WriterState::WaitingForKeyframe => {
+                    return Err(std::io::Error::other(
+                        "fragmented MP4 writer lost its prepared state",
+                    ));
+                }
+            }
+        };
+        self.pending_gop_bytes = Some(if accepted { bytes } else { previous_bytes });
+        Ok(WriteProgress {
+            accepted,
+            recorded_duration: Duration::ZERO,
+            keyframe_gap: false,
+        })
+    }
+
+    fn elapsed_at(&self, received: Instant) -> Duration {
+        self.gap_clock.map_or_else(
+            || received.saturating_duration_since(self.segment_origin.unwrap_or(self.started_at)),
+            |(dropped, end)| {
+                ticks_to_duration(end, VIDEO_TIMESCALE)
+                    .saturating_add(received.saturating_duration_since(dropped))
+            },
+        )
+    }
+
+    fn flush_before_keyframe_gap(&mut self, dropped: &RecordingFrame) -> std::io::Result<()> {
+        let elapsed = self.elapsed_at(dropped.received_at);
+        let timestamp = if dropped.frame.is_video() {
+            dropped.timestamp
+        } else {
+            None
+        };
+        let mut end = timestamp_ticks_or_fallback(
+            timestamp,
+            self.camera_timestamp_origin,
+            elapsed,
+            VIDEO_TIMESCALE,
+        );
+        self.activate_prepared()?;
+        if let WriterState::Active(active) = &mut self.state
+            && active.writer.has_pending_samples()
+        {
+            if active.last_video_dts.is_some_and(|last| end <= last) {
+                end = end.max(duration_to_ticks(elapsed, VIDEO_TIMESCALE));
+            }
+            end = resolve_video_dts(
+                active.last_video_dts,
+                end,
+                active.last_video_duration.max(1),
+            );
+            let fragment = active
+                .writer
+                .flush_fragment_before_sample(active.video_track, end)
+                .map_err(mp4_err)?
+                .ok_or_else(|| std::io::Error::other("pending MP4 fragment was unavailable"))?;
+            let start = active.fragment_start_dts.take().ok_or_else(|| {
+                std::io::Error::other("active MP4 fragment has no start timestamp")
+            })?;
+            active.last_video_dts = None;
+            active.last_video_duration = 0;
+            active.audio_after_gap = true;
+            self.commit_fragment(fragment, start, end)?;
+        }
+        self.gap_clock = Some((dropped.received_at, end));
+        self.camera_timestamp_origin = None;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn append_received(&mut self, frame: RecordingFrame) -> std::io::Result<Duration> {
+        let progress = self.append_received_bounded(frame)?;
+        if progress.keyframe_gap {
+            return Err(keyframe_budget_error());
+        }
+        Ok(progress.recorded_duration)
+    }
+
+    pub(super) fn append_received_bounded(
         &mut self,
         mut frame: RecordingFrame,
-    ) -> std::io::Result<Duration> {
+    ) -> std::io::Result<WriteProgress> {
         let origin = self.segment_origin.unwrap_or(frame.received_at);
         let elapsed = frame
             .received_at
@@ -256,25 +438,32 @@ impl MediumTermWriter {
                     )
                 })?,
         );
-        self.append_one(frame)
+        self.append_bounded(frame)
     }
 
-    pub(super) fn activate_prepared(&mut self) -> std::io::Result<Duration> {
+    pub(super) fn activate_for_rotation(&mut self) -> std::io::Result<Duration> {
         if !matches!(self.state, WriterState::Preparing(_)) {
             return Ok(Duration::ZERO);
+        }
+        self.activate_prepared()?;
+        Ok(self.take_video_progress())
+    }
+
+    fn activate_prepared(&mut self) -> std::io::Result<()> {
+        if !matches!(self.state, WriterState::Preparing(_)) {
+            return Ok(());
         }
         let state = std::mem::replace(&mut self.state, WriterState::WaitingForKeyframe);
         let WriterState::Preparing(frames) = state else {
             self.state = state;
-            return Ok(Duration::ZERO);
+            return Ok(());
         };
-        let before = self.recorded_duration;
         let active = self.init_mp4(&frames)?;
         self.state = WriterState::Active(Box::new(active));
         for frame in frames {
             self.write_frame(frame)?;
         }
-        Ok(self.recorded_duration.saturating_sub(before))
+        Ok(())
     }
 
     fn init_mp4(&mut self, frames: &[RecordingFrame]) -> std::io::Result<ActiveWriter> {
@@ -309,11 +498,26 @@ impl MediumTermWriter {
         let audio = audio_config.as_ref().map(|config| config.timescale);
         let mut track_configs = vec![video_config];
         track_configs.extend(audio_config);
-        let file = self.open_writer_file()?;
-        let file = BufWriter::with_capacity(self.write_buffer_bytes, file);
-        let writer = mp4::FragmentedMp4Writer::write_start(file, &mp4_config, &track_configs)
-            .map_err(mp4_err)?;
-        self.catalog_initialization(writer.initialization())?;
+        let reservation = self.reservation.take();
+        let initialize = |file| {
+            let buffered = BufWriter::with_capacity(self.write_buffer_bytes, file);
+            let writer =
+                mp4::FragmentedMp4Writer::write_start(buffered, &mp4_config, &track_configs)
+                    .map_err(mp4_err)?;
+            self.catalog_initialization(writer.initialization())?;
+            Ok(writer)
+        };
+        let writer = match reservation {
+            Some(reservation) => initialize(WriterFile::Named(Box::new(
+                reservation.open().map_err(std::io::Error::other)?,
+            )))?,
+            None if !self.named_volume => initialization::legacy(&self.path, initialize)?,
+            None => {
+                return Err(std::io::Error::other(
+                    "named recording reservation is no longer available",
+                ));
+            }
+        };
         tracing::debug!(
             path = %self.path.display(),
             audio = audio.is_some(),
@@ -333,19 +537,8 @@ impl MediumTermWriter {
             last_video_duration: 0,
             fragment_start_dts: None,
             next_audio_dts: None,
+            audio_after_gap: false,
         })
-    }
-
-    fn open_writer_file(&mut self) -> std::io::Result<WriterFile> {
-        match self.reservation.take() {
-            Some(reservation) => Ok(WriterFile::Named(Box::new(
-                reservation.open().map_err(std::io::Error::other)?,
-            ))),
-            None if !self.named_volume => Ok(WriterFile::Legacy(File::create_new(&self.path)?)),
-            None => Err(std::io::Error::other(
-                "named recording reservation is no longer available",
-            )),
-        }
     }
 
     fn catalog_initialization(&self, initialization: mp4::Mp4ByteRange) -> std::io::Result<()> {
@@ -368,12 +561,13 @@ impl MediumTermWriter {
         Ok(())
     }
 
-    fn write_frame(&mut self, rf: RecordingFrame) -> std::io::Result<()> {
+    fn write_frame(&mut self, rf: RecordingFrame) -> std::io::Result<bool> {
+        let elapsed = self.elapsed_at(rf.received_at);
         let WriterState::Active(ref mut active) = self.state else {
-            return Ok(());
+            return Ok(false);
         };
         if self.recovery_limit_reached {
-            return Ok(());
+            return Ok(false);
         }
         if !recording_can_append_sample(active.writer.metadata_usage()) {
             self.recovery_limit_reached = true;
@@ -381,12 +575,9 @@ impl MediumTermWriter {
                 recording = self.recording_id,
                 "recording recovery budget exhausted; retaining valid prefix until the next keyframe"
             );
-            return Ok(());
+            return Ok(false);
         }
-        let origin = self.segment_origin.unwrap();
-        let elapsed = rf.received_at.saturating_duration_since(origin);
 
-        let mut completed_fragment = None;
         match rf.frame {
             MediaFrame::Video(video) => {
                 let camera_dts = timestamp_ticks_or_fallback(
@@ -397,7 +588,8 @@ impl MediumTermWriter {
                 );
                 let fallback_duration = active.last_video_duration.max(1);
                 let previous_dts = active.last_video_dts;
-                let dts = resolve_video_dts(previous_dts, camera_dts, fallback_duration);
+                let dts = resolve_video_dts(previous_dts, camera_dts, fallback_duration)
+                    .max(self.gap_clock.map_or(0, |(_, end)| end));
                 if video.is_keyframe && active.writer.has_pending_samples() {
                     let fragment_start_dts = active.fragment_start_dts.ok_or_else(|| {
                         std::io::Error::other("active MP4 fragment has no start timestamp")
@@ -406,10 +598,14 @@ impl MediumTermWriter {
                         .writer
                         .flush_fragment_before_sample(active.video_track, dts)
                         .map_err(mp4_err)?;
-                    completed_fragment =
-                        fragment.map(|fragment| (fragment, fragment_start_dts, dts));
-                    active.fragment_start_dts = Some(dts);
+                    active.fragment_start_dts = None;
+                    if let Some(fragment) = fragment {
+                        self.commit_fragment(fragment, fragment_start_dts, dts)?;
+                    }
                 }
+                let WriterState::Active(active) = &mut self.state else {
+                    unreachable!("indexing a flushed fragment keeps its writer active");
+                };
                 if video.is_keyframe {
                     if let Some(media_config) = video_media_config(&video)? {
                         active.video_sample_description_index = active
@@ -444,7 +640,6 @@ impl MediumTermWriter {
                         ));
                     }
                 }
-                active.fragment_start_dts.get_or_insert(dts);
                 let duration = active
                     .last_video_dts
                     .and_then(|last| u32::try_from(dts - last).ok())
@@ -468,28 +663,26 @@ impl MediumTermWriter {
                             .map(super::segment::RecordingRtpTime::packet),
                     )
                     .map_err(mp4_err)?;
+                active.fragment_start_dts.get_or_insert(dts);
                 active.last_video_dts = Some(dts);
                 active.last_video_duration = duration;
-                self.recorded_duration = self
-                    .recorded_duration
-                    .saturating_add(ticks_to_duration(u64::from(duration), VIDEO_TIMESCALE));
                 self.frames_written += 1;
                 self.bytes_written += data_len as u64;
             }
             MediaFrame::Audio(audio) => {
                 if audio.codec != AudioCodec::Aac {
-                    return Ok(());
+                    return Ok(false);
                 }
 
                 let (raw_aac, _) = adts::strip_adts(&audio.data);
                 if raw_aac.is_empty() {
-                    return Ok(());
+                    return Ok(false);
                 }
 
                 let Some(track) = active.audio_track else {
-                    return Ok(());
+                    return Ok(false);
                 };
-                let camera_dts = rf.timestamp.map(|_| {
+                let camera_dts = (rf.timestamp.is_some() || active.audio_after_gap).then(|| {
                     timestamp_ticks_or_fallback(
                         rf.timestamp,
                         self.camera_timestamp_origin,
@@ -524,14 +717,25 @@ impl MediumTermWriter {
                     )
                     .map_err(mp4_err)?;
                 active.next_audio_dts = Some(dts + u64::from(sample_duration));
+                active.audio_after_gap = false;
 
                 self.frames_written += 1;
                 self.bytes_written += raw_aac.len() as u64;
             }
         }
-        if let Some((fragment, start_dts, end_dts)) = completed_fragment {
-            self.insert_catalog_fragment(fragment, start_dts, end_dts)?;
-        }
+        Ok(true)
+    }
+
+    fn commit_fragment(
+        &mut self,
+        fragment: mp4::Mp4FragmentInfo,
+        start_dts: u64,
+        end_dts: u64,
+    ) -> std::io::Result<()> {
+        self.insert_catalog_fragment(fragment, start_dts, end_dts)?;
+        self.committed_video_ticks = self
+            .committed_video_ticks
+            .saturating_add(end_dts.saturating_sub(start_dts));
         Ok(())
     }
 
@@ -578,11 +782,18 @@ impl MediumTermWriter {
         }
     }
 
+    pub fn finalize(self) -> std::io::Result<PathBuf> {
+        let path = self.final_path.clone();
+        Ok(self.finalize_recording()?.unwrap_or(path))
+    }
+
+    pub(super) fn finalize_recording(self) -> std::io::Result<Option<PathBuf>> {
+        Ok(self.finalize_with_progress()?.map(|(path, _)| path))
+    }
+
     #[tracing::instrument(level = "trace", skip_all)]
-    pub fn finalize(mut self) -> std::io::Result<PathBuf> {
-        if matches!(self.state, WriterState::Preparing(_)) {
-            self.activate_prepared()?;
-        }
+    pub(super) fn finalize_with_progress(mut self) -> std::io::Result<Option<(PathBuf, Duration)>> {
+        self.activate_prepared()?;
         let state = std::mem::replace(&mut self.state, WriterState::WaitingForKeyframe);
         match state {
             WriterState::Active(active) => {
@@ -607,7 +818,7 @@ impl MediumTermWriter {
                     let end_dts = last_video_dts
                         .unwrap_or(start_dts)
                         .saturating_add(u64::from(last_video_duration));
-                    self.insert_catalog_fragment(fragment, start_dts, end_dts)?;
+                    self.commit_fragment(fragment, start_dts, end_dts)?;
                 }
                 file.complete(
                     self.catalog.as_ref(),
@@ -615,18 +826,18 @@ impl MediumTermWriter {
                     &self.path,
                     &self.final_path,
                 )?;
-                Ok(self.final_path)
+                let unreported = self.take_video_progress();
+                Ok(Some((self.final_path, unreported)))
             }
-            _ => {
-                if !self.named_volume {
-                    let _ = std::fs::remove_file(&self.path);
-                }
-                Ok(self.final_path)
-            }
+            // No initialized segment exists to publish or relocate.
+            _ => Ok(None),
         }
     }
 
-    pub(super) fn discard_pending(&mut self) -> std::io::Result<()> {
+    pub(super) fn discard_pending(&mut self) -> Duration {
+        if let Some(bytes) = &mut self.pending_gop_bytes {
+            *bytes = 0;
+        }
         match &mut self.state {
             WriterState::Active(active) => {
                 active.writer.discard_pending_samples();
@@ -636,14 +847,32 @@ impl MediumTermWriter {
             }
             _ => self.state = WriterState::WaitingForKeyframe,
         }
-        Ok(())
+        // Append-time observations include elapsed samples in the open fragment.
+        // Cancellation retains only committed fragments. Preserve any committed
+        // duration that has yet to be reported after a failed append.
+        let previous = ticks_to_duration(self.reported_video_ticks, VIDEO_TIMESCALE);
+        self.reported_video_ticks = self.reported_video_ticks.min(self.committed_video_ticks);
+        previous.saturating_sub(ticks_to_duration(
+            self.reported_video_ticks,
+            VIDEO_TIMESCALE,
+        ))
     }
 
-    pub(super) fn finalize_before(mut self, end: Instant) -> std::io::Result<PathBuf> {
+    #[cfg(test)]
+    pub(super) fn finalize_before(self, end: Instant) -> std::io::Result<Option<PathBuf>> {
+        Ok(self
+            .finalize_before_with_progress(end)?
+            .map(|(path, _)| path))
+    }
+
+    pub(super) fn finalize_before_with_progress(
+        mut self,
+        end: Instant,
+    ) -> std::io::Result<Option<(PathBuf, Duration)>> {
         self.activate_prepared()?;
-        let limit = self.segment_origin.map(|origin| {
-            duration_to_ticks(end.saturating_duration_since(origin), VIDEO_TIMESCALE)
-        });
+        let limit = self
+            .segment_origin
+            .map(|_| duration_to_ticks(self.elapsed_at(end), VIDEO_TIMESCALE));
         let mut completed = None;
         if let WriterState::Active(active) = &mut self.state
             && let (Some(limit), Some(last), Some(start)) =
@@ -663,9 +892,9 @@ impl MediumTermWriter {
                 .map(|fragment| (fragment, start, end_dts));
         }
         if let Some((fragment, start, end)) = completed {
-            self.insert_catalog_fragment(fragment, start, end)?;
+            self.commit_fragment(fragment, start, end)?;
         }
-        self.finalize()
+        self.finalize_with_progress()
     }
 
     pub const fn bytes_written(&self) -> u64 {
@@ -690,9 +919,7 @@ impl MediumTermWriter {
 
     /// Leave room for the final GOP when approaching the bounded recovery scanner's limits.
     pub(super) fn needs_rotation(&self, received_at: Instant, duration: Duration) -> bool {
-        if self.recovery_limit_reached
-            || received_at.saturating_duration_since(self.started_at) >= duration
-        {
+        if self.recovery_limit_reached || self.segment_age_at(received_at) >= duration {
             return true;
         }
         let WriterState::Active(active) = &self.state else {
@@ -702,6 +929,12 @@ impl MediumTermWriter {
         super::recording_metadata_rotation_due(usage) || !recording_can_append_sample(usage)
     }
 
+    /// Segment boundaries follow the media receipt timeline, including queued and replayed frames.
+    pub(super) fn segment_age_at(&self, received: Instant) -> Duration {
+        received.saturating_duration_since(self.started_at)
+    }
+
+    /// Wall time since the writer started. Segment rotation uses received media time.
     pub fn elapsed(&self) -> Duration {
         self.started_at.elapsed()
     }
@@ -716,6 +949,15 @@ const fn recording_can_append_sample(usage: mp4::FragmentedMetadataUsage) -> boo
         && next.boxes <= super::RECORDING_BOX_COUNT_MAX as u64
         && next.fragments as usize <= super::RECORDING_FRAGMENT_COUNT_MAX
         && next.pending_moof_bytes <= super::RECORDING_BOX_BYTES_MAX
+}
+
+pub(super) fn keyframe_budget_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!(
+            "pending recording reached the {PENDING_GOP_MIB} MiB keyframe limit between keyframes, skipping frames until the next video keyframe"
+        ),
+    )
 }
 
 pub(super) fn required_video_media_config(video: &VideoFrame) -> std::io::Result<mp4::MediaConfig> {
@@ -958,6 +1200,32 @@ mod tests {
     }
 
     #[test]
+    fn failed_catalog_initialization_leaves_no_legacy_active_segment() -> anyhow::Result<()> {
+        let root = std::env::temp_dir().join(format!("keeppeek-writer-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)?;
+        let catalog = RecordingCatalog::open(&root.join("catalog.db"))?;
+        let start = Instant::now();
+        let mut writer = MediumTermWriter::create_with_catalog(
+            &root,
+            "camera/main",
+            start,
+            1,
+            catalog.handle(),
+        )?;
+        catalog.shutdown();
+        let path = writer.path.clone();
+        assert!(
+            writer
+                .init_mp4(&[video_frame(start, Duration::ZERO)])
+                .is_err()
+        );
+        assert!(!path.exists());
+        assert!(writer.finalize_recording()?.is_none());
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn named_volume_writer_reserves_before_creation_and_publishes_complete_mp4()
     -> anyhow::Result<()> {
         use crate::storage::{
@@ -1113,6 +1381,60 @@ mod tests {
         );
         drop(parsed);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn timestamp_free_aac_after_a_gop_gap_preserves_audio_end_and_real_elapsed_time() {
+        for (recovered_ms, expected_ms) in [(40, 120), (250, 250)] {
+            let root =
+                std::env::temp_dir().join(format!("keeppeek-audio-gap-{}", uuid::Uuid::new_v4()));
+            let start = Instant::now();
+            let mut writer = MediumTermWriter::create(&root, "camera/main", start, 8192).unwrap();
+            let audio = |ms| RecordingFrame {
+                source_rtp: None,
+                received_at: start + Duration::from_millis(ms),
+                timestamp: None,
+                frame: MediaFrame::Audio(AudioFrame {
+                    codec: AudioCodec::Aac,
+                    sample_rate: 16000,
+                    duration: Duration::from_millis(110),
+                    data: Bytes::from_static(&[0xff, 0xf1, 0x60, 0x40, 0, 0, 0, 0xaa]),
+                }),
+            };
+            writer
+                .append_one(video_frame(start, Duration::ZERO))
+                .unwrap();
+            writer.append_one(audio(10)).unwrap();
+            let mut overflow =
+                video_frame(start + Duration::from_millis(25), Duration::from_millis(25));
+            let MediaFrame::Video(v) = &mut overflow.frame else {
+                unreachable!("video fixture")
+            };
+            v.is_keyframe = false;
+            v.data = vec![0; 16 * 1024 * 1024].into();
+            assert!(writer.append_one(overflow).is_err());
+            writer
+                .append_one(video_frame(
+                    start + Duration::from_millis(recovered_ms - 1),
+                    Duration::ZERO,
+                ))
+                .unwrap();
+            writer.append_one(audio(recovered_ms)).unwrap();
+            let path = writer.finalize().unwrap();
+            let mut media = mp4::read_mp4(File::open(path).unwrap()).unwrap();
+            let (&id, track) = media
+                .tracks()
+                .iter()
+                .find(|(_, t)| t.track_type().unwrap() == mp4::TrackType::Audio)
+                .unwrap();
+            let scale = u64::from(track.timescale());
+            let first = media.read_sample(id, 1).unwrap().unwrap();
+            let second = media.read_sample(id, 2).unwrap().unwrap();
+            assert!(second.start_time >= first.start_time + u64::from(first.duration));
+            assert_eq!(second.start_time * 1000 / scale, expected_ms);
+            drop(media);
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
@@ -1459,6 +1781,149 @@ mod tests {
         assert_eq!(video.sample_description_index(3).unwrap(), 1);
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn append_reports_progress_only_for_frames_it_buffers_or_writes() -> anyhow::Result<()> {
+        let dir = std::env::temp_dir().join(format!("keeppeek-progress-{}", uuid::Uuid::new_v4()));
+        let start = Instant::now();
+        let mut writer = MediumTermWriter::create(&dir, "camera/main", start, 8192)?;
+        let key = |ms| video_frame(start + Duration::from_millis(ms), Duration::from_millis(ms));
+        let mut predictive = key(0);
+        let MediaFrame::Video(video) = &mut predictive.frame else {
+            unreachable!()
+        };
+        video.is_keyframe = false;
+        assert!(!writer.append_bounded(predictive)?.accepted);
+        assert!(writer.append_bounded(key(40))?.accepted);
+        let audio = |codec, data| RecordingFrame {
+            source_rtp: None,
+            received_at: start + Duration::from_millis(120),
+            timestamp: None,
+            frame: MediaFrame::Audio(AudioFrame {
+                codec,
+                sample_rate: 16_000,
+                duration: Duration::from_millis(20),
+                data,
+            }),
+        };
+        assert!(
+            !writer
+                .append_bounded(audio(AudioCodec::G711Alaw, Bytes::from_static(&[1])))?
+                .accepted
+        );
+        assert!(
+            !writer
+                .append_bounded(audio(AudioCodec::Aac, Bytes::new()))?
+                .accepted
+        );
+        assert!(writer.append_bounded(key(80))?.accepted);
+        // The prepared stream had no AAC track. Late audio must not consume its GOP budget.
+        let charged = writer.pending_gop_bytes;
+        let ignored =
+            writer.append_received_bounded(audio(AudioCodec::Aac, Bytes::from_static(&[1])))?;
+        assert!(!ignored.accepted && !ignored.keyframe_gap && ignored.recorded_duration.is_zero());
+        assert_eq!(writer.pending_gop_bytes, charged);
+        let path = writer.finalize()?;
+        let reader = mp4::read_mp4(File::open(path)?)?;
+        assert_eq!(reader.tracks().values().next().unwrap().sample_count(), 2);
+        drop(reader);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn failed_gop_boundary_blocks_predictive_frames_until_a_successful_keyframe()
+    -> anyhow::Result<()> {
+        let dir = std::env::temp_dir().join(format!("keeppeek-boundary-{}", uuid::Uuid::new_v4()));
+        let start = Instant::now();
+        let mut writer = MediumTermWriter::create(&dir, "camera/main", start, 8192)?;
+        let key = |ms| video_frame(start + Duration::from_millis(ms), Duration::from_millis(ms));
+        let mut encoded = vec![0; 9 * 1024 * 1024];
+        let nalu_size = u32::try_from(encoded.len() - 4)?;
+        encoded[..4].copy_from_slice(&nalu_size.to_be_bytes());
+        encoded[4] = 0x41;
+        let payload = Bytes::from(encoded);
+        let predictive = |ms| {
+            let mut frame = key(ms);
+            let MediaFrame::Video(video) = &mut frame.frame else {
+                unreachable!()
+            };
+            video.is_keyframe = false;
+            video.data = payload.clone();
+            frame
+        };
+        writer.append_one(key(0))?;
+        writer.append_one(key(40))?;
+        writer.append_one(predictive(80))?;
+        let accepted = writer.bytes_written();
+        for ms in [100, 120] {
+            // This gap cannot fit the previous sample's 32-bit MP4 duration. Its 9 MiB
+            // predictive frame remains pending after both failed attempts to close the GOP.
+            let mut rejected = key(ms);
+            rejected.timestamp = Some(Duration::from_secs(100_000));
+            assert!(writer.append_one(rejected).is_err());
+            assert!(writer.awaiting_recovery_keyframe());
+            assert_eq!(writer.append_one(predictive(ms + 1))?, Duration::ZERO);
+            assert_eq!(writer.bytes_written(), accepted);
+        }
+        writer.append_one(key(160))?;
+        let path = writer.finalize()?;
+        let mut reader = mp4::read_mp4(File::open(path)?)?;
+        let (&id, track) = reader.tracks().iter().next().unwrap();
+        assert_eq!(track.sample_count(), 4);
+        let times = (1..=track.sample_count())
+            .map(|sample| reader.read_sample(id, sample).unwrap().unwrap().start_time)
+            .collect::<Vec<_>>();
+        assert_eq!(times, [0, 3600, 7200, 14400]);
+        drop(reader);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_boundary_keyframe_keeps_its_preceding_fragment_indexed() -> anyhow::Result<()> {
+        let dir = std::env::temp_dir().join(format!("keeppeek-boundary-{}", uuid::Uuid::new_v4()));
+        let catalog = RecordingCatalog::open(&dir.join("recordings.db"))?;
+        let handle = catalog.handle();
+        let start = Instant::now();
+        let mut writer = MediumTermWriter::create_with_catalog(
+            &dir,
+            "camera/main",
+            start,
+            8192,
+            handle.clone(),
+        )?;
+        let key = |ms| video_frame(start + Duration::from_millis(ms), Duration::from_millis(ms));
+        writer.append_one(key(0))?;
+        writer.append_one(key(40))?;
+        let mut bad = key(80);
+        let MediaFrame::Video(video) = &mut bad.frame else {
+            unreachable!()
+        };
+        video.data = Bytes::from_static(&[0, 0, 0, 8, 0x67, 0x42, 0, 0x1f, 0xe5, 0x88, 0x68, 0x40]);
+        assert_eq!(
+            writer.append_one(bad).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        writer.append_one(key(120))?;
+        let path = writer.finalize()?;
+        let fragments = handle.media_fragments_in_range("camera/main", 0, i64::MAX)?;
+        assert_eq!(fragments.len(), 3);
+        let first = fragments[0].start_ms;
+        assert_eq!(
+            fragments
+                .iter()
+                .map(|f| (f.start_ms - first, f.duration_ms))
+                .collect::<Vec<_>>(),
+            [(0, 40), (40, 40), (120, 80)]
+        );
+        let reader = mp4::read_mp4(File::open(path)?)?;
+        assert_eq!(reader.tracks().values().next().unwrap().sample_count(), 3);
+        drop(reader);
+        catalog.shutdown();
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
     }
 
     #[test]

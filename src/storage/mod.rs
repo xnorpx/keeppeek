@@ -25,6 +25,8 @@ pub(crate) mod sample_index;
 pub mod search;
 pub mod segment;
 pub mod short_term;
+#[cfg(test)]
+mod test_media;
 pub mod volumes;
 
 const RECORDING_METADATA_BYTES_MAX: u64 = 8 * 1024 * 1024;

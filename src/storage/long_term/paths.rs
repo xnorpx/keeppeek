@@ -40,13 +40,17 @@ pub(super) fn recording_relative<'a>(root: &Path, path: &'a Path) -> Option<&'a 
     Some(relative)
 }
 
-pub(super) fn contains_exports(path: &Path) -> bool {
+pub(super) fn contains_private_directory(path: &Path) -> bool {
     path.components().any(|part| {
-        if cfg!(windows) {
-            part.as_os_str().eq_ignore_ascii_case(".exports")
-        } else {
-            part.as_os_str() == ".exports"
-        }
+        [".exports", super::layout::HEADER_RECOVERY_DIRECTORY]
+            .iter()
+            .any(|name| {
+                if cfg!(windows) {
+                    part.as_os_str().eq_ignore_ascii_case(name)
+                } else {
+                    part.as_os_str() == *name
+                }
+            })
     })
 }
 
@@ -93,6 +97,13 @@ mod tests {
         let store = LongTermStore::for_recording_roots(&archive, &capture);
         let alternate = root.join("ARCHIVE/front/main/2026-11-22/17/0000001.mp4");
         let output = root.join("ARCHIVE/.EXPORTS/keep.mp4");
+        let recovery = archive
+            .join(super::super::layout::HEADER_RECOVERY_DIRECTORY.to_ascii_uppercase())
+            .join("keep.mp4");
+        fs::create_dir_all(recovery.parent().unwrap()).unwrap();
+        fs::write(&recovery, b"held").unwrap();
+        assert!(store.remove_catalog_recording(&recovery).is_err());
+        assert!(recovery.is_file());
         assert!(store.contains_cleanup_path(&alternate, "front/main"));
         assert!(!store.contains_cleanup_path(&pending, "front/main"));
         assert!(!store.contains_cleanup_path(&output, "front/main"));
