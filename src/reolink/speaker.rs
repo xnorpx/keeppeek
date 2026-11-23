@@ -67,7 +67,7 @@ impl Talkback {
                         )))?;
                     }
                     Err(error) => {
-                        tracing::warn!(channel = self.channel, %error, "no compatible Reolink speaker profile")
+                        tracing::warn!(channel = self.channel, %error, "no compatible Reolink speaker profile");
                     }
                 }
             }
