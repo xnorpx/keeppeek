@@ -1926,6 +1926,32 @@ describe('ControlClient', () => {
 		expect(states).toEqual(['checking']);
 	});
 
+	it('aborts a transmitted health request when report collection is cancelled', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'report-health-abort',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+		try {
+			await client.getServerCapabilities();
+			const channel = FakePeerConnection.latest!.channels.find(
+				(item) => item.label === 'control-channel'
+			)!;
+			const sent = Promise.withResolvers<void>();
+			vi.spyOn(channel, 'send').mockImplementationOnce(() => sent.resolve());
+			const controller = new AbortController();
+			const reason = new Error('Report collection was cancelled');
+			const rejected = expect(client.getHealth(controller.signal)).rejects.toBe(reason);
+			await sent.promise;
+			controller.abort(reason);
+			await rejected;
+			await expect(client.getHealth()).resolves.toMatchObject({ status: 'degraded' });
+		} finally {
+			await client.close();
+		}
+	});
+
 	it('preserves verified access on snapshot collection failures and clears it on actual authorization loss', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({
