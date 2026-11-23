@@ -85,9 +85,7 @@ async function playGuestEvidence(dialog: Locator, recipient: BrowserContext) {
 	await dialog.getByRole('button', { name: 'Create guest link', exact: true }).click();
 	const url = await dialog.getByLabel('One-time guest link').inputValue();
 	const viewer = await recipient.newPage();
-	await viewer.goto(url).catch(() => {
-		throw new Error('The guest page did not load.');
-	});
+	await openRecipient(viewer, url);
 	await expect(viewer.getByRole('heading', { name: 'Selected recording' })).toBeVisible();
 	const target = await viewer.locator('video').evaluate(async (element) => {
 		const video = element as HTMLVideoElement;
@@ -182,10 +180,14 @@ async function openCreatorRange(
 		await page.goto(`${origin}/keep?camera=127.0.0.1&stream=sub&at=${start}&mode=export`);
 		const panel = page.locator('[data-keep-export]');
 		await panel.getByRole('button', { name: 'Share recording range' }).click();
-		return {
-			start: Number(await panel.getAttribute('data-export-start-ms')),
-			end: Number(await panel.getAttribute('data-export-end-ms'))
-		};
+		const startText = await panel.getAttribute('data-export-start-ms');
+		const endText = await panel.getAttribute('data-export-end-ms');
+		if (!startText?.trim() || !endText?.trim()) throw new Error('Keep export bounds are missing.');
+		const from = Number(startText);
+		const to = Number(endText);
+		if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from >= to)
+			throw new Error('Keep export bounds are invalid.');
+		return { start: from, end: to };
 	}
 	const date = new Date(start - 500).toISOString().slice(0, 10);
 	await page.goto(`${origin}/events?date=${date}`);
@@ -198,9 +200,25 @@ async function openCreatorRange(
 }
 
 async function openRecipient(page: Page, url: string) {
-	await page.goto(url).catch(() => {
-		throw new Error('The guest evidence page did not load.');
-	});
+	try {
+		await page.goto(url);
+	} catch (error) {
+		// Playwright's raw error and cause include the one-time bearer URL.
+		const details = error instanceof Error ? error.message : '';
+		const code = [
+			'ERR_CONNECTION_REFUSED',
+			'ERR_CONNECTION_RESET',
+			'ERR_NAME_NOT_RESOLVED',
+			'ERR_CERT_AUTHORITY_INVALID',
+			'ERR_CERT_DATE_INVALID',
+			'ERR_TIMED_OUT',
+			'ERR_ABORTED'
+		].find((value) => details.includes(`net::${value}`));
+		const reason =
+			code ??
+			(error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'navigation error');
+		throw new Error(`The guest evidence page did not load (${reason}).`);
+	}
 }
 
 async function verifyGuestExpiresDuringPlayback(viewer: Page, url: string, expiry: number) {
@@ -225,11 +243,26 @@ async function verifyGuestExpiresDuringPlayback(viewer: Page, url: string, expir
 			)
 		)
 		.toBe(true);
+	const timeout = 50_000;
+	const expired = await viewer.waitForResponse(
+		async (response) => {
+			if (
+				response.request().method() !== 'GET' ||
+				new URL(response.url()).pathname !== '/guest/session' ||
+				!response.ok()
+			)
+				return false;
+			return (await response.json()).status === 'expired';
+		},
+		{ timeout }
+	);
+	// The grant is aligned to a whole UTC second, the precision of the recorder's HTTP Date.
+	const recorderDate = await expired.headerValue('date');
+	expect(Date.parse(recorderDate ?? '')).toBeGreaterThanOrEqual(expiry);
 	await expect(viewer.getByText('The link expired. Playback has stopped.')).toBeVisible({
-		timeout: 50_000
+		timeout
 	});
-	expect(Date.now()).toBeGreaterThanOrEqual(expiry);
-	await expect(viewer.locator('video')).toHaveCount(0);
+	await expect(viewer.locator('video')).toHaveCount(0, { timeout });
 	expect(
 		await player.evaluate(
 			(video) => video.paused && !video.isConnected && !video.hasAttribute('src')
@@ -241,7 +274,7 @@ async function verifyGuestExpiresDuringPlayback(viewer: Page, url: string, expir
 	const fresh = await recipient.newPage();
 	await openRecipient(fresh, url);
 	await expect(fresh.getByRole('heading', { name: 'This link is unavailable.' })).toBeVisible();
-	await expect(fresh.locator('video')).toHaveCount(0);
+	await expect(fresh.locator('video')).toHaveCount(0, { timeout });
 }
 
 for (const entry of ['Keep', 'Event'] as const) {
