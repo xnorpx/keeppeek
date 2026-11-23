@@ -524,13 +524,20 @@
 			const nextCameras = await cameraProfilesPromise;
 			if (version !== routeVersion) return;
 			cameras = nextCameras;
-			if (route.cameraId && !cameras.some((camera) => camera.id === route.cameraId)) {
-				throw new Error(
-					'The requested camera is unavailable or you are not authorized to view it. Select an available camera.'
-				);
-			}
 			cameraId = route.cameraId || cameras[0]?.id || '';
-			if (route.streamPreference && cameraId) {
+			if (route.cameraId && !cameras.some((camera) => camera.id === route.cameraId)) {
+				const fallback =
+					route.mode === 'timeline'
+						? route.review?.cameraIds.find((id) => cameras.some((camera) => camera.id === id))
+						: undefined;
+				if (!fallback) {
+					throw new Error(
+						'The requested camera is unavailable or you are not authorized to view it. Select an available camera.'
+					);
+				}
+				cameraId = fallback;
+			}
+			if (route.streamPreference && cameraId && (!route.cameraId || cameraId === route.cameraId)) {
 				playbackPreferences = withRecordedPreference(
 					playbackPreferences,
 					cameraId,
@@ -538,7 +545,7 @@
 				);
 			}
 			if (route.review && route.timestampMs !== null) {
-				reviewRoute = route;
+				reviewRoute = { ...route, cameraId };
 				return;
 			}
 			await loadRouteRecordings(route, version);

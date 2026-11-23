@@ -55,6 +55,10 @@ camera selection, focus, audio, marked range and shared time.
 
 On a compact screen, up to two recordings can decode. A hidden browser tab
 releases the comparison players and reopens visible footage on return.
+If the connection drops during playback, the sign-in screen clears the camera
+views. After reconnecting, the comparison opens paused at the last shared UTC
+time. A comparison link still opens its authorized cameras when a selected camera
+is unavailable. Focus moves to the first available selection when needed.
 
 ### Use Keep on a phone
 

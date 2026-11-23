@@ -7,6 +7,12 @@ import {
 	reviewSourceIds,
 	startHomeAssistantServer
 } from './fixtures/home-assistant-server';
+import {
+	installCardProbe,
+	interruptCardPeer,
+	readCardProbe,
+	readRecordedCursorBudget
+} from './fixtures/home-assistant-browser';
 import { recordedAudioBackendRoute } from './fixtures/recorded-audio-playback';
 import type { RecordingCoverageResponse } from '../src/lib/types';
 
@@ -73,6 +79,7 @@ async function overlappingMoment(page: Page, backend: string) {
 }
 
 async function checkLimitedDecoder(page: Page) {
+	await installCardProbe(page);
 	await page.addInitScript(() =>
 		Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', {
 			configurable: true,
@@ -90,6 +97,33 @@ async function checkLimitedDecoder(page: Page) {
 	await expect(
 		page.getByRole('article', { name: 'card-camera-0' }).getByText('Waiting for a decoder')
 	).toBeVisible();
+	const budget = () => readRecordedCursorBudget(page);
+	await expect.poll(async () => (await budget()).active).toEqual([cardSourceIds[1]]);
+	await page.evaluate(() => {
+		Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+		document.dispatchEvent(new Event('visibilitychange'));
+	});
+	await expect(page.locator('article video')).toHaveCount(0);
+	await expect.poll(async () => (await budget()).active).toEqual([]);
+	await page.evaluate(() => {
+		Reflect.deleteProperty(document, 'visibilityState');
+		document.dispatchEvent(new Event('visibilitychange'));
+	});
+	await expect(page.getByRole('article', { name: 'card-camera-1' }).locator('video')).toHaveCount(
+		1
+	);
+	await expect.poll(budget).toEqual({
+		peers: 1,
+		active: [cardSourceIds[1]],
+		peakCursors: 1,
+		maximumRequestedBufferMs: 10_000
+	});
+	await test
+		.info()
+		.attach('compact-cursor-budget', {
+			body: JSON.stringify(await budget()),
+			contentType: 'application/json'
+		});
 }
 
 async function checkSharedPlayAndPause(page: Page, tiles: Locator) {
@@ -263,6 +297,7 @@ test('add and remove four authorized sources and seek their common UTC without t
 	test.setTimeout(90_000);
 	page.setDefaultTimeout(8_000);
 	if (!baseURL) throw new Error('The comparison fixture requires a UI origin.');
+	await installCardProbe(page);
 	await page.setViewportSize({ width: 1440, height: 1100 });
 	await page.addInitScript(() =>
 		Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', {
@@ -287,6 +322,19 @@ test('add and remove four authorized sources and seek their common UTC without t
 		await expect(add).toHaveCount(0);
 		await expect(page.locator('article')).toHaveCount(4);
 		await expect(page.locator('article video')).toHaveCount(4);
+		await expect
+			.poll(async () => (await readRecordedCursorBudget(page)).active.toSorted())
+			.toEqual([...reviewSourceIds].toSorted());
+		const resources = await readRecordedCursorBudget(page);
+		expect(resources.peers).toBe(1);
+		expect(resources.peakCursors).toBe(4);
+		expect(resources.maximumRequestedBufferMs).toBe(10_000);
+		await test
+			.info()
+			.attach('four-camera-cursor-budget', {
+				body: JSON.stringify(resources),
+				contentType: 'application/json'
+			});
 		await page.getByRole('button', { name: 'Play recordings', pressed: false }).click();
 		await expect
 			.poll(() =>
@@ -487,6 +535,112 @@ test('a browser decoder failure releases only its tile and retry rejoins the adv
 		await expect
 			.poll(async () => (await presentedDrift(page)) ?? Infinity)
 			.toBeLessThanOrEqual(250);
+	} finally {
+		try {
+			await context.unroute('**/*', redirect);
+		} finally {
+			await server.close();
+		}
+	}
+});
+
+test('an interrupted comparison clears old frames and returns paused at its last shared moment', async ({
+	page,
+	context,
+	baseURL
+}) => {
+	test.setTimeout(75_000);
+	if (!baseURL) throw new Error('The interrupted comparison requires a UI origin.');
+	await installCardProbe(page);
+	const origin = new URL(baseURL).origin;
+	const server = await startHomeAssistantServer(origin, {
+		trustedLocal: true,
+		reviewFixture: true
+	});
+	const redirect = recordedAudioBackendRoute(origin, server.url);
+	try {
+		await context.route('**/*', redirect);
+		const at = await overlappingMoment(page, server.url);
+		const query = new URLSearchParams({
+			camera: cardSourceIds[0],
+			at: String(at),
+			stream: 'sub',
+			audio: cardSourceIds[1]
+		});
+		for (const id of cardSourceIds) query.append('compare', id);
+		await page.goto('/keep?' + query);
+		const play = page.getByRole('button', { name: 'Play recordings' });
+		const videos = page.locator('article video');
+		const firstTime = () =>
+			page
+				.locator('article time')
+				.first()
+				.evaluate((node) => Date.parse(node.getAttribute('datetime') ?? ''));
+		await expect(videos).toHaveCount(2, { timeout: 30_000 });
+		await play.click();
+		await expect.poll(firstTime).toBeGreaterThan(at + 1_400);
+		const seen = await firstTime();
+		await interruptCardPeer(page);
+		await expect(videos).toHaveCount(0);
+		await page.getByRole('button', { name: 'Retry sign-in', exact: true }).click({ timeout: 8000 });
+		await expect(videos).toHaveCount(2, { timeout: 15_000 });
+		await expect(play).toHaveAttribute('aria-pressed', 'false');
+		await expect(page.getByRole('combobox', { name: 'Audio source', exact: true })).toHaveValue(
+			cardSourceIds[1]
+		);
+		await expect.poll(firstTime).toBeGreaterThanOrEqual(seen - 250);
+		const peers = await readCardProbe(page);
+		expect(peers.created - peers.closed).toBe(1);
+		expect(peers.overflow).toBe(false);
+	} finally {
+		try {
+			await context.unroute('**/*', redirect);
+		} finally {
+			await server.close();
+		}
+	}
+});
+
+test('a comparison with an unavailable focused camera keeps its authorized recordings playable', async ({
+	page,
+	context,
+	baseURL
+}) => {
+	test.setTimeout(45_000);
+	if (!baseURL) throw new Error('The partial comparison requires a UI origin.');
+	await installCardProbe(page);
+	const origin = new URL(baseURL).origin;
+	const server = await startHomeAssistantServer(origin, {
+		trustedLocal: true,
+		reviewFixture: true
+	});
+	const redirect = recordedAudioBackendRoute(origin, server.url);
+	try {
+		await context.route('**/*', redirect);
+		const at = await overlappingMoment(page, server.url);
+		const missing = 'removed-recorded-camera';
+		const query = new URLSearchParams({
+			camera: missing,
+			at: String(at),
+			stream: 'sub',
+			audio: cardSourceIds[1]
+		});
+		for (const id of [missing, ...cardSourceIds]) query.append('compare', id);
+		await page.goto('/keep?' + query);
+		const videos = page.locator('article video');
+		await expect(videos).toHaveCount(2, { timeout: 10000 });
+		const unavailable = page.getByRole('article', { name: 'Unavailable camera' });
+		await expect(unavailable).toBeVisible();
+		await expect(unavailable.locator('video')).toHaveCount(0);
+		await expect(page.getByRole('combobox', { name: 'Focused camera' })).toHaveValue(
+			cardSourceIds[0]
+		);
+		await expect(page.getByRole('combobox', { name: 'Audio source', exact: true })).toHaveValue(
+			cardSourceIds[1]
+		);
+		await checkSharedPlayAndPause(page, videos);
+		const peers = await readCardProbe(page);
+		expect(peers.created - peers.closed).toBe(1);
 	} finally {
 		try {
 			await context.unroute('**/*', redirect);
