@@ -20612,7 +20612,7 @@ mod tests {
         assert_eq!(bounded.code, proto::ErrorCode::Unavailable);
         duplicate.guest_range_preparation = Some(false);
         assert_eq!(
-            create_export_job(&state, "owner", duplicate.clone())
+            create_export_job(&state, "owner", duplicate)
                 .unwrap()
                 .job_id,
             "active-export"

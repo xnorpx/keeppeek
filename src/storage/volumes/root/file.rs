@@ -12,7 +12,7 @@ use std::{
 
 /// The recorded leaf is absent from its still-valid, bound volume root.
 #[derive(Debug)]
-pub(crate) struct MissingOwnedLeaf;
+pub struct MissingOwnedLeaf;
 
 impl std::fmt::Display for MissingOwnedLeaf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
