@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildDiagnosticsBundle, diagnosticsBundleFilename } from './diagnostics-bundle';
+import { reportLogWindow } from './report-log-window';
 import type { DiagnosticsBundleInput } from './diagnostics-bundle';
 import type { CameraListItem, SanitizedConfig, ServerHealthResponse } from './types';
 
@@ -179,4 +180,27 @@ describe('diagnostics bundle', () => {
 			'keeppeek-diagnostics-2026-08-25T12-00-00-000Z.json.gz'
 		);
 	});
+});
+
+it('packages only selected report-window entries and still scrubs its metadata', () => {
+	const fixture = input();
+	const report = reportLogWindow(
+		{ utcMs: 10, browserSequence: 1, server: { sequence: 1, generation: 'one' } },
+		{
+			utcMs: 20,
+			browserSequence: 1,
+			server: { sequence: 1, generation: 'one', filter: '192.168.1.22=debug' }
+		},
+		fixture.browser,
+		fixture.server,
+		false
+	);
+	const serialized = buildDiagnosticsBundle({ ...fixture, report });
+	const document = JSON.parse(serialized);
+	expect(document.server_logs).toEqual([]);
+	expect(document.browser_logs).toEqual([]);
+	expect(document.manifest.artifacts).toContain('report_window');
+	expect(document.report_window.serverCursors).toEqual({ start: 1, stop: 1 });
+	expect(serialized).not.toContain('192.168.1.22');
+	expect(JSON.parse(buildDiagnosticsBundle(fixture)).report_window).toBeUndefined();
 });

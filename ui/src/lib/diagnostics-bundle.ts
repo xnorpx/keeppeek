@@ -1,5 +1,6 @@
 import { createDiagnosticRedactor, type DiagnosticPrivateValue } from './diagnostic-redaction';
 import type { ControlClient } from './control-client';
+import type { ReportLogWindow } from './report-log-window';
 import type {
 	BrowserLogEntry,
 	CameraListItem,
@@ -10,6 +11,7 @@ import type {
 } from './types';
 
 export interface DiagnosticsBundleInput {
+	report?: ReportLogWindow;
 	server: LogSnapshot;
 	browser: BrowserLogEntry[];
 	logging?: LoggingSettings;
@@ -84,10 +86,13 @@ export function buildDiagnosticsBundle(input: DiagnosticsBundleInput): string {
 	}
 	const generatedAt = input.generatedAt ?? new Date();
 	const redactor = createDiagnosticRedactor(privateValues(input));
+	const serverEntries = input.report?.serverEntries ?? input.server.entries;
+	const browserEntries = input.report?.browserEntries ?? input.browser;
 	const artifacts = [
 		'server_logs',
 		'browser_logs',
 		'log_buffer',
+		...(input.report ? ['report_window'] : []),
 		...(input.logging ? ['logging_settings'] : []),
 		...(input.health ? ['health'] : []),
 		...(input.config ? ['runtime_config'] : []),
@@ -105,15 +110,16 @@ export function buildDiagnosticsBundle(input: DiagnosticsBundleInput): string {
 			generated_at: generatedAt.toISOString(),
 			privacy: 'scrubbed',
 			redaction_context: 'complete',
-			server_log_entries: input.server.entries.length,
-			browser_log_entries: input.browser.length,
+			server_log_entries: serverEntries.length,
+			browser_log_entries: browserEntries.length,
 			server_snapshot_truncated: input.server.truncated,
 			artifacts,
 			notice:
 				'Known private values and recognized sensitive patterns were scrubbed before compression. Review before sharing because no automated scrubber can guarantee removal of every free-form private value.'
 		},
-		server_logs: input.server.entries,
-		browser_logs: input.browser,
+		...(input.report ? { report_window: input.report.manifest } : {}),
+		server_logs: serverEntries,
+		browser_logs: browserEntries,
 		log_buffer: {
 			oldest_sequence: input.server.oldest_sequence,
 			newest_sequence: input.server.newest_sequence,

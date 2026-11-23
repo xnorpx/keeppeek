@@ -58,6 +58,7 @@
           "server-log-filter-active",
           "server-log-stream-gap",
           "server-log-generation-changed",
+          "server-log-generation-unverified",
           "server-logs-unavailable"
         ]
       }
