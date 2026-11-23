@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { gzipSync } from 'node:zlib';
-import { reportingService } from './reporting-service';
+import { reportingRequestHandler, reportingService } from './reporting-service';
 
 const day = 86_400_000;
 
@@ -117,4 +117,92 @@ test('rejects private public text and allows staged reports to be cancelled', as
 	expect(service.cancel(id, grant)).toEqual({ state: 'cancelled' });
 	expect(service.finalize(id, grant)).toEqual({ state: 'cancelled' });
 	expect(service.createdIssues()).toEqual([]);
+});
+
+test('the reporting service wire publishes one issue and permits only the configured recorder origin', async () => {
+	const { service, diagnostics, screen, create } = setup();
+	const { id, grant } = create();
+	const origin = 'https://recorder.invalid';
+	const root = `https://reporting.invalid/v1/reports/${id}`;
+	const handler = reportingRequestHandler(service, origin);
+	const authorized = { Origin: origin, Authorization: `Bearer ${grant}` };
+	const withArtifact = (kind: string, body: Blob) =>
+		handler(
+			new Request(`${root}/artifacts/${kind}`, {
+				method: 'PUT',
+				headers: { ...authorized, 'Content-Type': body.type },
+				body
+			})
+		);
+	const finish = () =>
+		handler(new Request(`${root}/finalize`, { method: 'POST', headers: authorized }));
+	expect(
+		(
+			await handler(
+				new Request(root, { headers: { ...authorized, Origin: 'https://other.invalid' } })
+			)
+		).status
+	).toBe(403);
+	const preflight = await handler(
+		new Request(`${root}/artifacts/diagnostics`, { method: 'OPTIONS', headers: { Origin: origin } })
+	);
+	expect(preflight.status).toBe(204);
+	expect(preflight.headers.get('Access-Control-Allow-Origin')).toBe(origin);
+	expect(preflight.headers.get('Access-Control-Allow-Credentials')).toBeNull();
+	expect((await handler(new Request(root, { headers: { Origin: origin } }))).status).toBe(401);
+	expect((await finish()).status).toBe(409);
+	expect((await withArtifact('diagnostics', diagnostics)).status).toBe(204);
+	expect((await withArtifact('screen', screen)).status).toBe(204);
+	const result = await (await finish()).json();
+	expect(result).toMatchObject({ state: 'complete' });
+	expect(await (await finish()).json()).toEqual(result);
+	expect(
+		(await handler(new Request(`${root}/artifacts/screen`, { headers: authorized }))).status
+	).toBe(405);
+	expect(service.createdIssues()).toHaveLength(1);
+});
+
+test('checks upload bytes before accepting a streamed artifact and exposes no private errors', async () => {
+	const { service, diagnostics, create } = setup();
+	const { id, grant } = create();
+	const origin = 'https://recorder.invalid';
+	const handler = reportingRequestHandler(service, origin);
+	const root = `https://reporting.invalid/v1/reports/${id}`;
+	const headers = {
+		Origin: origin,
+		Authorization: `Bearer ${grant}`,
+		'Content-Type': diagnostics.type
+	};
+	let cancelled = false;
+	const body = new ReadableStream({
+		start(controller) {
+			controller.enqueue(new Uint8Array(diagnostics.size + 1));
+		},
+		cancel() {
+			cancelled = true;
+		}
+	});
+	const request: RequestInit & { duplex: 'half' } = {
+		method: 'PUT',
+		headers,
+		body,
+		duplex: 'half'
+	};
+	const oversized = await handler(new Request(`${root}/artifacts/diagnostics`, request));
+	expect(oversized.status).toBe(413);
+	expect(await oversized.text()).toBe('');
+	expect(cancelled).toBe(true);
+	const wrongType = await handler(
+		new Request(`${root}/artifacts/diagnostics`, {
+			method: 'PUT',
+			headers: { ...headers, 'Content-Type': 'text/plain' },
+			body: diagnostics
+		})
+	);
+	expect(wrongType.status).toBe(415);
+	expect(await wrongType.text()).toBe('');
+	expect((await handler(new Request(`${root}/finalize`, { method: 'POST', headers }))).status).toBe(
+		409
+	);
+	expect(service.createdIssues()).toHaveLength(0);
 });
