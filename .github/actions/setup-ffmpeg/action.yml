@@ -32,8 +32,8 @@ runs:
       shell: pwsh
       run: |
         function Test-MediaTools {
-          return (Get-Command ffmpeg -ErrorAction SilentlyContinue) -and
-            (Get-Command ffprobe -ErrorAction SilentlyContinue)
+          return (Get-Command ffmpeg.exe -CommandType Application -ErrorAction SilentlyContinue) -and
+            (Get-Command ffprobe.exe -CommandType Application -ErrorAction SilentlyContinue)
         }
         if (-not (Test-MediaTools)) {
           $attempt = 1
@@ -47,7 +47,15 @@ runs:
         }
         if (-not (Test-MediaTools)) {
           winget install --id Gyan.FFmpeg --exact --source winget --silent --accept-source-agreements --accept-package-agreements
+          if (-not (Test-MediaTools)) {
+            $env:PATH += ";$env:LOCALAPPDATA/Microsoft/WinGet/Links;$env:ProgramFiles/WinGet/Links"
+          }
         }
-        ffmpeg -version
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        ffprobe -version
+        $tools = Get-Command -Name ffmpeg.exe, ffprobe.exe -CommandType Application -ErrorAction Stop
+        foreach ($tool in $tools) {
+          & $tool.Path -version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
+        # WinGet can expose the applications in this shell before later steps inherit their directories.
+        $tools | ForEach-Object { Split-Path -Parent $_.Path } |
+          Sort-Object -Unique | Add-Content -LiteralPath $env:GITHUB_PATH -Encoding utf8
