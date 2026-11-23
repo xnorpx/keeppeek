@@ -163,7 +163,7 @@
 	let cameraProfilesPromise: Promise<CameraListItem[]> | null = null;
 	let playing = $state(false);
 	let playbackRate = $state(1);
-	let pendingSeekSeconds = 0;
+	let pendingSeekSeconds: number | null = null;
 	let pendingPlay = false;
 	let loadVersion = 0;
 	let shuttleDirection = $state<-1 | 0 | 1>(0);
@@ -1765,7 +1765,6 @@
 			await selectExportSegment(segment, requestedTimestampMs);
 			return;
 		}
-		const requestedOffsetSeconds = (requestedTimestampMs - segment.start_time_ms) / 1_000;
 		playerError = null;
 		if (sameSegment) {
 			await seekWithinSelectedSegment(segment, requestedTimestampMs, play);
@@ -1780,38 +1779,77 @@
 			coldSeekElapsedMs = 0;
 			coldSeekStartedAt = performance.now();
 		}
-		if (reusablePlayback && previousPlayback) {
-			await reuseStoredSegment(previousPlayback, segment, requestedTimestampMs, play, version);
-		} else await openStoredSegment(segment, requestedTimestampMs, play, version, previousPlayback);
+		playbackSourceCommitVersion = version;
+		pendingPlay = play;
+		playing = play;
+		try {
+			if (reusablePlayback && previousPlayback) {
+				await reuseStoredSegment(previousPlayback, segment, requestedTimestampMs, version);
+			} else
+				await openStoredSegment(segment, requestedTimestampMs, play, version, previousPlayback);
+		} finally {
+			if (playbackSourceCommitVersion === version) playbackSourceCommitVersion = null;
+		}
+	}
+
+	async function applyPlaybackSource(
+		playback: StoredMediaPlayback,
+		version: number
+	): Promise<void> {
+		await tick();
+		if (version !== playbackVersion || playback !== storedPlayback) return;
+		playbackSourceCommitVersion = null;
+		playback.setPlaying(playing);
+		applyPendingSeek();
+	}
+
+	function pauseFailedPlaybackSource(): void {
+		pendingPlay = false;
+		pendingSeekSeconds = null;
+		playing = false;
+		shuttleDirection = 0;
+		storedPlayback?.setPlaying(false);
+		video?.pause();
+		if (
+			video &&
+			video.currentSrc === playbackUrl &&
+			video.readyState >= HTMLMediaElement.HAVE_METADATA
+		) {
+			playheadMs = playbackAnchorMs + video.currentTime * 1_000;
+		}
+	}
+
+	function rejectPlaybackSeek(
+		playback: StoredMediaPlayback,
+		version: number,
+		cause: unknown
+	): void {
+		if (version !== playbackVersion || playback !== storedPlayback) return;
+		pauseFailedPlaybackSource();
+		clearColdSeek();
+		playerError = storedPlaybackError(cause);
 	}
 
 	async function reuseStoredSegment(
 		playback: StoredMediaPlayback,
 		segment: RecordingSegment,
 		timestampMs: number,
-		play: boolean,
 		version: number
 	): Promise<void> {
 		try {
 			await playback.seek(timestampMs);
 		} catch (cause) {
-			if (version !== playbackVersion || playback !== storedPlayback) return;
-			clearColdSeek();
-			playerError = storedPlaybackError(cause);
+			rejectPlaybackSeek(playback, version, cause);
 			return;
 		}
 		if (version !== playbackVersion) return;
 		selected = segment;
-		pendingPlay = play;
-		playing = play;
 		playheadMs = timestampMs;
 		playbackUrl = playback.url;
 		playbackAnchorMs = playback.anchorTimeMs;
 		pendingSeekSeconds = playback.initialOffsetSeconds;
 		playback.setPlaybackRate(playbackRate);
-		playback.setPlaying(play);
-		await tick();
-		applyPendingSeek();
+		await applyPlaybackSource(playback, version);
 	}
 
 	async function openStoredSegment(
@@ -1841,13 +1879,15 @@
 			});
 		} catch (cause) {
 			if (openController.signal.aborted || version !== playbackVersion) return;
+			const resume = pendingPlay;
+			pauseFailedPlaybackSource();
 			clearColdSeek();
 			await handlePlaybackFailure(
 				storedPlaybackError(cause),
 				version,
 				segment,
 				requestedTimestampMs,
-				play
+				resume
 			);
 			return;
 		} finally {
@@ -1858,8 +1898,6 @@
 			return;
 		}
 		selected = segment;
-		pendingPlay = play;
-		playing = play;
 		playheadMs = requestedTimestampMs;
 		storedPlayback = playback;
 		attachKeyFramePreview(playback);
@@ -1867,8 +1905,7 @@
 		playbackUrl = playback.url;
 		playbackAnchorMs = playback.anchorTimeMs;
 		pendingSeekSeconds = playback.initialOffsetSeconds;
-		await tick();
-		applyPendingSeek();
+		await applyPlaybackSource(playback, version);
 		if (previousPlayback && previousPlayback !== playback) {
 			await previousPlayback.close().catch(() => undefined);
 		}
@@ -1904,14 +1941,9 @@
 				playbackAnchorMs = playback.anchorTimeMs;
 				pendingSeekSeconds = playback.initialOffsetSeconds;
 			}
-			await tick();
-			if (version !== playbackVersion || playback !== storedPlayback) return;
-			playbackSourceCommitVersion = null;
-			applyPendingSeek();
+			await applyPlaybackSource(playback, version);
 		} catch (cause) {
-			if (version !== playbackVersion || playback !== storedPlayback) return;
-			clearColdSeek();
-			playerError = storedPlaybackError(cause);
+			rejectPlaybackSeek(playback, version, cause);
 		} finally {
 			if (playbackSourceCommitVersion === version) playbackSourceCommitVersion = null;
 		}
@@ -1928,6 +1960,7 @@
 		keyFrameUnsubscribe?.();
 		keyFrameUnsubscribe = null;
 		storedPlayback = null;
+		pendingSeekSeconds = null;
 		recordedAudio = undefined;
 		audioPreviewOpen = false;
 		scrubUsesFragmentFallback = false;
@@ -1961,6 +1994,7 @@
 				await tick();
 				if (version === playbackVersion && playback === storedPlayback) {
 					playbackSourceCommitVersion = null;
+					playback.setPlaying(playing);
 					applyPendingSeek();
 					observePlaybackStartup(playback, version, segment, timestampMs);
 				}
@@ -2004,6 +2038,8 @@
 			await selectSegment(target.segment, offset, target.play);
 		else {
 			rememberPlaybackTarget(target.segment, offset, target.play);
+			pendingPlay = target.play;
+			playing = target.play;
 			await openStoredSegment(
 				target.segment,
 				target.segment.start_time_ms + offset * 1000,
@@ -2148,6 +2184,11 @@
 	function setPlaying(nextPlaying: boolean): void {
 		playing = nextPlaying;
 		rememberPlayIntent(nextPlaying);
+		if (playbackSourceCommitVersion === playbackVersion) {
+			pendingPlay = nextPlaying;
+			if (!nextPlaying) video?.pause();
+			return;
+		}
 		storedPlayback?.setPlaying(nextPlaying);
 		if (!video) {
 			pendingPlay = nextPlaying;
@@ -2227,44 +2268,50 @@
 	}
 
 	function applyPendingSeek() {
-		if (
-			playbackSourceCommitVersion === playbackVersion ||
-			!video ||
-			!selected ||
-			video.getAttribute('src') !== playbackUrl
-		)
-			return;
+		if (playbackSourceCommitVersion === playbackVersion) return;
+		if (!video || !selected || video.getAttribute('src') !== playbackUrl) return;
+		const hasMetadata = video.readyState >= HTMLMediaElement.HAVE_METADATA;
+		if (hasMetadata && video.currentSrc !== video.src) return;
 		video.playbackRate = playbackRate;
 		video.muted = scrubbing || playbackMuted;
-		const requestedTime = Math.max(
-			0,
-			Math.min(pendingSeekSeconds, video.duration || pendingSeekSeconds)
-		);
-		video.currentTime = requestedTime;
-		if (Math.abs(video.currentTime - requestedTime) < 0.001) {
-			playheadMs = playbackAnchorMs + video.currentTime * 1_000;
+		if (pendingSeekSeconds !== null) {
+			const requestedTime = hasMetadata
+				? Math.max(0, Math.min(pendingSeekSeconds, video.duration || pendingSeekSeconds))
+				: pendingSeekSeconds;
+			// Before metadata, currentTime sets the new source's default playback start.
+			if (video.currentTime !== requestedTime) video.currentTime = requestedTime;
+			if (hasMetadata && Math.abs(video.currentTime - requestedTime) < 0.001) {
+				playheadMs = playbackAnchorMs + video.currentTime * 1_000;
+				if (requestedTime >= pendingSeekSeconds) pendingSeekSeconds = null;
+				storedPlayback?.observe(video.currentTime);
+			}
 		}
-		storedPlayback?.observe(video.currentTime);
-		if (pendingPlay) void startReplay();
-		pendingPlay = false;
+		if (pendingPlay) {
+			pendingPlay = false;
+			void startReplay();
+		}
 	}
 
 	async function startReplay(): Promise<void> {
 		const player = video;
+		const version = playbackVersion;
 		if (!player) return;
 		try {
 			await player.play();
 		} catch {
-			if (video !== player) return;
+			if (video !== player || version !== playbackVersion || !playing) return;
 			player.muted = true;
 			playbackMuted = true;
 			playbackPreferences = withMediaPreferences(playbackPreferences, { muted: true });
 			savePlaybackPreferences(window.localStorage, playbackPreferences);
-			await player.play().catch(() => (playing = false));
+			await player.play().catch(() => {
+				if (video === player && version === playbackVersion) playing = false;
+			});
 		}
 	}
 
 	function updatePlayhead() {
+		if (pendingSeekSeconds !== null) return;
 		if (!video || !selected || playbackSourceCommitVersion !== null) return;
 		playheadMs = playbackAnchorMs + video.currentTime * 1_000;
 		storedPlayback?.observe(video.currentTime);
@@ -2297,6 +2344,7 @@
 	}
 
 	function handlePlay() {
+		if (video?.paused || playbackSourceCommitVersion === playbackVersion) return;
 		playing = true;
 		rememberPlayIntent(true);
 		shuttleDirection = 1;
@@ -2304,10 +2352,12 @@
 	}
 
 	function handlePause() {
+		if (video && !video.paused) return;
 		if (ignoreNextPauseEvent) {
 			ignoreNextPauseEvent = false;
 			return;
 		}
+		if (playbackSourceCommitVersion === playbackVersion) return;
 		playing = false;
 		rememberPlayIntent(false);
 		if (shuttleDirection === 1) shuttleDirection = 0;
