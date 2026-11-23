@@ -942,7 +942,8 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent): void {
-		if (event.key !== 'Escape') return;
+		if (event.key !== 'Escape' || event.defaultPrevented) return;
+		if (event.target instanceof Element && event.target.closest('dialog, [role="dialog"]')) return;
 		if (eventContextActions !== null) eventContextActions = null;
 		else if (selectedRecord !== null) closeDetail();
 	}
@@ -1584,6 +1585,8 @@
 
 {#if bookmarkLibraryOpen && workflowIdentity}
 	<EventBookmarkLibrary
+		rangeSharing={workflowIdentity.administrator &&
+			capabilities.supports(capabilityActions.shareRecordingRange.capability)}
 		date={filters.date}
 		{cameras}
 		{workflow}
@@ -1600,6 +1603,9 @@
 		onclick={closeDetail}
 	></button>
 	<EventDetailDrawer
+		sharingController={capabilities.supports(capabilityActions.shareRecordingRange.capability)
+			? controlClient
+			: undefined}
 		record={workflowRecord(selectedRecord)}
 		{workflow}
 		{workflowIdentity}
