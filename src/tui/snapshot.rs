@@ -126,12 +126,7 @@ impl Snapshot {
             .issues
             .into_iter()
             .take(MAX_ISSUES)
-            .map(|i| {
-                // Bound the complete line after combining the individually redacted fields.
-                let severity = for_terminal(hub, &i.severity);
-                let message = for_terminal(hub, &i.message);
-                for_terminal(hub, &format!("{severity}  {message}"))
-            })
+            .map(|issue| warning_line(hub, &issue))
             .collect();
         let storage = &health.storage.safety;
         Self {
@@ -169,6 +164,13 @@ fn display_id(hub: &LogHub, id: &str) -> String {
         "camera-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         digest[0], digest[1], digest[2], digest[3], digest[4], digest[5]
     )
+}
+
+fn warning_line(hub: &LogHub, issue: &HealthIssue) -> String {
+    let scope = display_id(hub, &issue.scope);
+    let severity = for_terminal(hub, &issue.severity);
+    let message = for_terminal(hub, &issue.message);
+    for_terminal(hub, &format!("{severity}  {scope}  {message}"))
 }
 
 fn severity(issue: &HealthIssue) -> u8 {
@@ -337,6 +339,33 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn warnings_distinguish_redacted_camera_scopes_with_the_same_message() {
+        let hub = LogHub::default();
+        let message = "One or more streams are not receiving fresh frames";
+        let line = |scope: &str| {
+            warning_line(
+                &hub,
+                &HealthIssue {
+                    severity: "warning".into(),
+                    scope: scope.into(),
+                    message: message.into(),
+                    operational_event_id: None,
+                    timeline_start_ms: None,
+                    timeline_end_ms: None,
+                },
+            )
+        };
+        let first = line("rtsp://operator:canary-one@host/live");
+        let second = line("rtsp://operator:canary-two@host/live");
+        assert_ne!(first, second);
+        for value in [first, second] {
+            assert!(value.contains("camera-") && value.ends_with(message));
+            assert!(!value.contains("canary") && !value.contains("operator"));
+        }
+        assert!(line("storage").contains("storage"));
     }
 
     #[test]

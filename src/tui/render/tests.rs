@@ -86,6 +86,41 @@ fn wide_camera_labels_leave_health_columns_visible_and_overflow_explicit() {
 }
 
 #[test]
+fn compact_video_details_show_recording_state_and_progress_age() {
+    let mut snapshot = fixture(1);
+    let row = &mut snapshot.rows[0];
+    row.codec = Some("H264".into());
+    row.resolution = Some("1920x1080".into());
+    row.expected_fps = Some(25.0);
+    row.measurement = Some(Measurement {
+        connected: Some(true),
+        observed_fps: Some(25.0),
+        kbit_per_second: 1500.0,
+        report_freshness_ms: 1000,
+        frames: Some(200),
+        bytes: Some(2048),
+        drops: Some(0),
+        errors: Some(0),
+        reconnects: Some(0),
+        keyframe_age_ms: Some(1000),
+        keyframes_per_second: Some(1.0),
+        session_ms: 8100,
+        report_age_ms: 0,
+        frame_age_ms: Some(40),
+        recording_requested: Some(true),
+        recording_progress: Some(true),
+        recording_age_ms: Some(2000),
+    });
+    let compact = screen(80, 24, &snapshot, &mut Navigation::default());
+    let detail = compact
+        .iter()
+        .find(|line| line.contains("Recording recording"))
+        .unwrap();
+    assert!(detail.contains("Progress 8s"));
+    assert!(detail.contains("H264 1920x1080") && detail.contains("FPS 25.0/25"));
+}
+
+#[test]
 fn small_and_empty_terminals_keep_exit_controls_visible() {
     let mut nav = Navigation::default();
     let empty = fixture(0);

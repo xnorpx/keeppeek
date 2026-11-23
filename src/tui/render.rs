@@ -7,6 +7,8 @@ use ratatui::{
 };
 use std::time::{Duration, Instant};
 
+const WIDE_COLUMNS: u16 = 100;
+
 #[derive(Default)]
 pub(super) struct Navigation {
     pub selected: usize,
@@ -188,7 +190,7 @@ pub(super) fn draw(
     let mut y =
         height.saturating_sub(u16::try_from(detail_lines + warnings + 2).unwrap_or_default());
     if let Some(row) = s.rows.get(nav.selected) {
-        for detail in details(row, elapsed).into_iter().take(detail_lines) {
+        for detail in details(row, elapsed, width).into_iter().take(detail_lines) {
             line(frame, y, &detail, plain);
             y += 1;
         }
@@ -219,7 +221,7 @@ pub(super) fn draw(
 
 fn stream_table(frame: &mut Frame<'_>, rows: &[StreamRow], selected: usize, elapsed: Duration) {
     let area = frame.area();
-    let wide = area.width >= 100;
+    let wide = area.width >= WIDE_COLUMNS;
     let mut widths = vec![
         Constraint::Min(8),
         Constraint::Length(10),
@@ -287,25 +289,32 @@ fn received_rate(m: &Measurement, elapsed: Duration) -> String {
     }
 }
 
-fn details(row: &StreamRow, elapsed: Duration) -> [String; 4] {
+fn details(row: &StreamRow, elapsed: Duration, width: u16) -> [String; 4] {
     let m = row.measurement.as_ref();
     let state = m
         .and_then(|m| m.connected)
         .map_or("unknown", |v| if v { "connected" } else { "disconnected" });
+    let codec = row.codec.as_deref().unwrap_or("—");
+    let resolution = row.resolution.as_deref().unwrap_or("—");
+    let observed = value(m.and_then(|m| m.observed_fps).map(|v| format!("{v:.1}")));
+    let expected = value(row.expected_fps);
+    let record = m.map_or("—", recording);
+    let progress = age(m.and_then(|m| m.recording_age_ms), elapsed);
+    let media = if width < WIDE_COLUMNS {
+        format!(
+            "Recording {record}   Progress {progress}   {codec} {resolution}   FPS {observed}/{expected}"
+        )
+    } else {
+        format!(
+            "Codec {codec}   Resolution {resolution}   Ingest FPS {observed}/{expected} expected   Recording {record}   Progress {progress}"
+        )
+    };
     [
         format!(
             "{}   {}/{}   {state}   {}   {}",
             row.id, row.stream, row.medium, row.health, row.reason
         ),
-        format!(
-            "Codec {}   Resolution {}   Ingest FPS {}/{} expected   Recording {}   Progress {}",
-            row.codec.as_deref().unwrap_or("—"),
-            row.resolution.as_deref().unwrap_or("—"),
-            value(m.and_then(|m| m.observed_fps).map(|v| format!("{v:.1}"))),
-            value(row.expected_fps),
-            m.map_or("—", recording),
-            age(m.and_then(|m| m.recording_age_ms), elapsed)
-        ),
+        media,
         format!(
             "Frames {}   Bytes {}   Drops {}   Errors {}   Reconnects {}",
             value(m.and_then(|m| m.frames)),
