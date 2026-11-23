@@ -38,6 +38,49 @@ fn download(id: &str) -> ExportAction {
 
 #[test]
 fn fresh_requester_discovers_archived_export_after_history_pruning() {
+    rehearse_discovery(false);
+}
+
+#[test]
+#[ignore = "paired requester export listing latency on a real verified archive fixture"]
+fn measure_requester_export_listing_after_archive_verification() {
+    rehearse_discovery(true);
+}
+
+fn measure_lists(handler: &ServerControlHandler, owner: &ApiPrincipal, phase: &str) {
+    let mut history_only = Vec::new();
+    let mut with_archive = Vec::new();
+    for ordinal in 0..43 {
+        for legacy in [ordinal % 2 == 0, ordinal % 2 != 0] {
+            let start = Instant::now();
+            if legacy {
+                cleanup_expired_exports(&handler.state);
+                std::hint::black_box(export_jobs(&handler.state, &owner.id()));
+            } else {
+                std::hint::black_box(list(handler, owner));
+            }
+            let elapsed = start.elapsed().as_secs_f64() * 1_000_000.0;
+            if ordinal >= 3 {
+                if legacy {
+                    history_only.push(elapsed);
+                } else {
+                    with_archive.push(elapsed);
+                }
+            }
+        }
+    }
+    for (mode, mut samples) in [("history", history_only), ("archive", with_archive)] {
+        samples.sort_by(f64::total_cmp);
+        assert_eq!(samples.len(), 40);
+        let median = (samples[19] + samples[20]) / 2.0;
+        println!(
+            "fixture={phase} mode={mode} n=40 list_us_median={median:.1} list_us_p95={:.1}",
+            samples[37]
+        );
+    }
+}
+
+fn rehearse_discovery(measure: bool) {
     let (root, catalog, manager, mut state, request) = setup(16 * 1024 * 1024);
     let creator = ApiPrincipal::local("127.0.0.1".parse().unwrap());
     let original_id = request.job_id.clone();
@@ -55,6 +98,9 @@ fn fresh_requester_discovers_archived_export_after_history_pruning() {
     let before = list(&existing, &creator);
     assert_eq!(before.len(), 1);
     assert_eq!(before[0], record.job);
+    if measure {
+        measure_lists(&existing, &creator, "retained");
+    }
 
     state
         .export_jobs
@@ -118,6 +164,9 @@ fn fresh_requester_discovers_archived_export_after_history_pruning() {
     let (_, messages) = handle(&handler, &fresh, download(&original_id)).unwrap();
     assert_eq!(downloaded_bytes(messages), original);
     let rows = list(&handler, &fresh);
+    if measure {
+        measure_lists(&handler, &fresh, "pruned");
+    }
     let lookup = handle(&handler, &fresh, get(&original_id));
     println!(
         "pruned_history=0 original_download_bytes={} transfer_id_download=404 artifact_id_download=404 owner_list_rows={} owner_get={:?}",
