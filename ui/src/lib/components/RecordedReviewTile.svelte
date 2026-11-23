@@ -43,6 +43,7 @@
 	let issue = $state('');
 	let ready = $state(false);
 	let tail = Promise.resolve();
+	const correctionIntervalMs = 750;
 	let lastCorrection = 0;
 	let tile = $state<HTMLElement>();
 	let attempt = $state(0);
@@ -69,24 +70,74 @@
 	});
 
 	let presented = $state<number | null>(null);
+	let correctionMs = $state<number | null>(null);
+	let retryAlignment = $state(false);
 
 	$effect(() => {
 		const element = video,
 			cursor = playback;
 		presented = null;
+		correctionMs = null;
+		retryAlignment = false;
 		if (!element || !cursor || !element.requestVideoFrameCallback) return;
 		let handle = 0;
+		let retry: ReturnType<typeof setTimeout> | undefined;
 		let last = -Infinity;
+		let pausedAttempts = 0;
+		let lastAttempt = -Infinity;
+		function schedulePausedCorrection() {
+			if (retry !== undefined || !element?.paused || playing) return;
+			const due = Math.max(lastCorrection, lastAttempt) + correctionIntervalMs;
+			retry = setTimeout(
+				() => {
+					retry = undefined;
+					if (
+						cursor !== playback ||
+						element !== video ||
+						!element?.paused ||
+						playing ||
+						correctionMs === null
+					)
+						return;
+					if (pausedAttempts === 2) {
+						retryAlignment = true;
+						return;
+					}
+					pausedAttempts++;
+					lastAttempt = performance.now();
+					if (!element.seeking) align('paused-frame');
+					schedulePausedCorrection();
+				},
+				Math.max(0, due - performance.now()) + 1
+			);
+		}
 		function frame(now: number, data: VideoFrameCallbackMetadata) {
-			if (!element || !cursor) return;
-			if (now - last >= 100 || element.paused) {
-				presented = Math.round(cursor.anchorTimeMs + data.mediaTime * 1000);
+			if (!element || !cursor || element !== video || cursor !== playback) return;
+			const actual = Math.round(cursor.anchorTimeMs + data.mediaTime * 1000);
+			const drift = Math.round(position() - actual);
+			const outsideTolerance = needsGridDriftCorrection(drift);
+			// Publish the first real frame on either side of a correction immediately.
+			if (now - last >= 100 || element.paused || outsideTolerance !== (correctionMs !== null)) {
+				presented = actual;
+				correctionMs = outsideTolerance ? drift : null;
 				last = now;
+			}
+			if (outsideTolerance) {
+				if (!retryAlignment) schedulePausedCorrection();
+			} else {
+				clearTimeout(retry);
+				retry = undefined;
+				pausedAttempts = 0;
+				lastAttempt = -Infinity;
+				retryAlignment = false;
 			}
 			handle = element.requestVideoFrameCallback(frame);
 		}
 		handle = element.requestVideoFrameCallback(frame);
-		return () => element.cancelVideoFrameCallback(handle);
+		return () => {
+			element.cancelVideoFrameCallback(handle);
+			clearTimeout(retry);
+		};
 	});
 
 	$effect(() => {
@@ -160,17 +211,20 @@
 		tail = tail.then(() => cursor.close().catch(() => undefined));
 	}
 
-	function align(initial = false) {
+	function align(reason: 'playback' | 'load' | 'paused-frame' = 'playback') {
 		if (!playback || !video || !video.buffered.length) return;
 		const offset = Math.max(0, (position() - playback.anchorTimeMs) / 1000);
 		const driftMs = (offset - video.currentTime) * 1000;
+		const pausedCorrection = reason === 'paused-frame';
 		if (
-			initial ||
-			(playing && needsGridDriftCorrection(driftMs) && performance.now() - lastCorrection > 750)
+			reason === 'load' ||
+			((pausedCorrection || (playing && needsGridDriftCorrection(driftMs))) &&
+				performance.now() - lastCorrection >= correctionIntervalMs)
 		) {
 			for (let index = 0; index < video.buffered.length; index++) {
 				if (offset >= video.buffered.start(index) && offset < video.buffered.end(index)) {
-					if (Math.abs(driftMs) > 1) video.currentTime = offset;
+					// A seek may update currentTime before Chromium actually presents that picture.
+					if (Math.abs(driftMs) > 1 || pausedCorrection) video.currentTime = offset;
 					lastCorrection = performance.now();
 					break;
 				}
@@ -192,6 +246,16 @@
 				{new Date(presented).toISOString().slice(11, 23)} UTC
 			</time>
 		{/if}
+		{#if correctionMs !== null}
+			<span class="text-xs text-text-muted">
+				<span role="status">Synchronizing</span>
+				{Math.abs(correctionMs)} ms {correctionMs > 0 ? 'behind' : 'ahead'}
+				{#if retryAlignment && !playing}<button
+						class="min-h-11 px-2 underline"
+						onclick={() => attempt++}>Retry recording</button
+					>{/if}
+			</span>
+		{/if}
 		<button class="min-h-11 px-2 text-sm underline" aria-label={'Remove ' + name} onclick={onremove}
 			>Remove</button
 		>
@@ -206,7 +270,7 @@
 			preload="auto"
 			class="aspect-video w-full bg-black object-contain"
 			onloadeddata={() => {
-				align(true);
+				align('load');
 				ready = true;
 			}}
 			onerror={(event) => {
