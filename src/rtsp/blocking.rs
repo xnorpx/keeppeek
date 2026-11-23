@@ -1,14 +1,15 @@
+use super::audio::ObservedAudio;
 use crate::{
-    cameras::{AudioEncoding, SessionTimestampNormalizer, VideoEncoding},
-    keeppeek::{AudioMeta, KeepPeekEvent, StreamKind, VideoMeta},
+    cameras::{SessionTimestampNormalizer, VideoEncoding},
+    keeppeek::{KeepPeekEvent, StreamKind, VideoMeta},
     shutdown::Shutdown,
     stats::{
         CameraReport, HealthRegistry, IngressSnapshot, IngressStats, REPORT_INTERVAL, audio_report,
         log_camera_report, video_report,
     },
     storage::{
-        AudioCodec, AudioFrame, MediaFrame, RecordingFrame, RecordingStreamIdentity, StorageHandle,
-        VideoCodec, VideoFrame,
+        AudioFrame, MediaFrame, RecordingFrame, RecordingStreamIdentity, StorageHandle, VideoCodec,
+        VideoFrame,
     },
     webrtc::{
         Publisher, Source,
@@ -568,7 +569,6 @@ pub struct RtspLoop {
     pub password: String,
     pub transport: RtspTransport,
     pub video_meta: VideoMeta,
-    pub audio_meta: Option<AudioMeta>,
     pub storage: Option<StorageHandle>,
     pub live: Option<Publisher>,
     pub health: HealthRegistry,
@@ -725,6 +725,7 @@ impl RtspLoop {
         );
         let mut video_continuity = VideoContinuity::new();
         let mut video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
+        let mut audio_track = None;
         let mut pending_talkback = None;
         let mut talkback_session: Option<IsapiTalk> = None;
         let mut talkback_speaker: Option<IsapiSpeaker> = None;
@@ -743,7 +744,14 @@ impl RtspLoop {
                 Ok(None) => break Ok(()),
                 Err(error) => break Err(error),
             };
-            self.report_if_due(stats, previous, last_report, driver.streams(), session);
+            self.report_if_due(
+                stats,
+                previous,
+                last_report,
+                driver.streams(),
+                audio_track,
+                session,
+            );
             match item {
                 CodecItem::VideoFrame(frame) => {
                     video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
@@ -804,67 +812,61 @@ impl RtspLoop {
                     }
                 }
                 CodecItem::AudioFrame(frame) => {
-                    if let Some(audio_meta) = &self.audio_meta {
-                        let timestamp = frame.timestamp().elapsed_duration();
-                        let duration = frame.duration();
-                        let data = frame.data().to_vec();
-                        stats.on_audio_frame(data.len());
-                        let frame_codec = match audio_meta.encoding {
-                            AudioEncoding::AAC => Some(AudioCodec::Aac),
-                            AudioEncoding::G711 => Some(AudioCodec::G711Alaw),
-                            _ => None,
-                        };
-                        if let Some(codec) = frame_codec {
-                            let sample_rate = audio_meta
-                                .sample_rate
-                                .unwrap_or_else(|| codec.default_sample_rate());
-                            let web_codec = match codec {
-                                AudioCodec::Aac => Some(WebRtcAudioCodec::Aac),
-                                AudioCodec::G711Alaw => Some(WebRtcAudioCodec::G711Alaw),
-                                AudioCodec::G711Ulaw => Some(WebRtcAudioCodec::G711Ulaw),
-                                AudioCodec::Adpcm => None,
-                            };
-                            if let Some(live) = &self.live
-                                && let Some(web_codec) = web_codec
-                            {
-                                live.publish_audio(
-                                    Source {
-                                        camera_ip: self.camera_ip,
-                                        stream: self.stream,
-                                    },
-                                    WebRtcAudioFrame {
-                                        codec: web_codec,
-                                        sample_rate_hz: sample_rate,
-                                        channel_count: 1,
-                                        timestamp,
-                                        received_at: Instant::now(),
-                                        data: Bytes::from(data.clone()),
-                                    },
-                                );
-                            }
-                            let frame = MediaFrame::Audio(AudioFrame {
-                                codec,
-                                sample_rate,
-                                duration,
-                                data: data.into(),
-                            });
-                            if let Some(storage) = &self.storage {
-                                let timestamp = timestamp
-                                    .map(|timestamp| audio_timestamps.normalize(timestamp));
-                                storage.ingest_stream(
-                                    RecordingStreamIdentity::new(
-                                        self.camera_ip.to_string(),
-                                        self.stream.to_string(),
-                                        &self.storage_label(),
-                                    ),
-                                    RecordingFrame {
-                                        received_at: Instant::now(),
-                                        timestamp,
-                                        frame,
-                                    },
-                                );
-                            }
-                        }
+                    let track_id = frame.stream_id();
+                    let Some(audio) = driver
+                        .streams()
+                        .get(track_id)
+                        .and_then(ObservedAudio::from_track)
+                    else {
+                        continue;
+                    };
+                    // A camera profile exposes one audio variant. Never mix alternative RTP tracks.
+                    if *audio_track.get_or_insert(track_id) != track_id {
+                        continue;
+                    }
+                    let timestamp = frame.timestamp().elapsed_duration();
+                    let duration = frame.duration();
+                    let data = Bytes::copy_from_slice(frame.data());
+                    stats.on_audio_frame(data.len());
+                    let received_at = Instant::now();
+                    if let Some(live) = &self.live {
+                        live.publish_audio_with_config(
+                            Source {
+                                camera_ip: self.camera_ip,
+                                stream: self.stream,
+                            },
+                            WebRtcAudioFrame {
+                                codec: audio.live_codec,
+                                sample_rate_hz: audio.sample_rate,
+                                channel_count: audio.channels,
+                                timestamp,
+                                received_at,
+                                data: data.clone(),
+                            },
+                            audio.decoder_config,
+                        );
+                    }
+                    if let Some(storage) = &self.storage {
+                        let timestamp =
+                            timestamp.map(|timestamp| audio_timestamps.normalize(timestamp));
+                        storage.ingest_stream(
+                            RecordingStreamIdentity::new(
+                                self.camera_ip.to_string(),
+                                self.stream.to_string(),
+                                &self.storage_label(),
+                            ),
+                            RecordingFrame {
+                                received_at,
+                                timestamp,
+                                frame: MediaFrame::Audio(AudioFrame {
+                                    codec: audio.storage_codec,
+                                    sample_rate: audio.sample_rate,
+                                    channels: audio.channels,
+                                    duration,
+                                    data,
+                                }),
+                            },
+                        );
                     }
                 }
                 CodecItem::MessageFrame(frame) => {
@@ -1000,6 +1002,7 @@ impl RtspLoop {
         previous: &mut IngressSnapshot,
         last_report: &mut Instant,
         tracks: &[retina::client::Stream],
+        audio_track: Option<usize>,
         session: uuid::Uuid,
     ) {
         if last_report.elapsed() < REPORT_INTERVAL {
@@ -1023,9 +1026,10 @@ impl RtspLoop {
         if let Some(audio) = audio_report(
             &snapshot,
             &rates,
-            self.audio_meta
-                .as_ref()
-                .map(|audio| audio.encoding.to_string())
+            audio_track
+                .and_then(|index| tracks.get(index))
+                .and_then(ObservedAudio::from_track)
+                .map(|audio| audio.storage_codec.to_string())
                 .as_deref(),
         ) {
             streams.push(audio);
@@ -1056,6 +1060,8 @@ impl RtspLoop {
 
 #[cfg(test)]
 mod tests {
+    mod audio;
+
     use super::{BlockingRtsp, RtspTransport, VideoContinuity, probe_rtsp_video};
     use crate::shutdown::Shutdown;
     use base64::{Engine as _, engine::general_purpose::STANDARD};

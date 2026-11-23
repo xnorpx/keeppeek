@@ -99,6 +99,7 @@ fn write_source(root: &Path, catalog: RecordingCatalogHandle) -> PathBuf {
             MediaFrame::Audio(AudioFrame {
                 codec: AudioCodec::Aac,
                 sample_rate: 16_000,
+                channels: 1,
                 duration: Duration::from_millis(20),
                 data: bytes::Bytes::from_static(&[0x11, 0x22, 0x33]),
             })

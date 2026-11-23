@@ -2351,23 +2351,42 @@ impl Publisher {
     }
 
     pub(crate) fn publish_audio(&self, source: Source, frame: WebRtcAudioFrame) {
+        self.publish_audio_with_config(source, frame, &[]);
+    }
+
+    pub(crate) fn publish_audio_with_config(
+        &self,
+        source: Source,
+        frame: WebRtcAudioFrame,
+        decoder_config: &[u8],
+    ) {
         if frame.sample_rate_hz == 0 || frame.channel_count == 0 || frame.data.is_empty() {
             return;
         }
-        self.inner
+        let mut capabilities = self
+            .inner
             .audio_capabilities
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let codec = audio_codec_name(frame.codec);
+        if capabilities.get(&source).is_none_or(|capability| {
+            capability.codec != codec
+                || capability.sample_rate_hz != frame.sample_rate_hz
+                || capability.channel_count != frame.channel_count
+                || capability.decoder_config != decoder_config
+        }) {
+            capabilities.insert(
                 source,
                 LiveAudioSourceCapability {
                     stream: source.stream,
-                    codec: audio_codec_name(frame.codec),
+                    codec,
                     sample_rate_hz: frame.sample_rate_hz,
                     channel_count: frame.channel_count,
-                    decoder_config: Vec::new(),
+                    decoder_config: decoder_config.to_vec(),
                 },
             );
+        }
+        drop(capabilities);
         let mut subscribers = self
             .inner
             .audio_subscribers

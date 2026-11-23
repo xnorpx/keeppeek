@@ -56,6 +56,7 @@ pub struct VideoFrame {
 pub struct AudioFrame {
     pub codec: AudioCodec,
     pub sample_rate: u32,
+    pub channels: u8,
     pub duration: Duration,
     pub data: Bytes,
 }

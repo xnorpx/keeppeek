@@ -1049,7 +1049,16 @@ fn audio_track_config(frames: &[RecordingFrame]) -> Option<mp4::TrackConfig> {
         let timescale = adts_info
             .as_ref()
             .map_or(audio.sample_rate, |info| info.sample_rate);
-        let channels = adts_info.as_ref().map_or(1, |info| info.channels);
+        let channel_config = if let Some(info) = adts_info {
+            mp4::ChannelConfig::try_from(info.channels).unwrap_or(mp4::ChannelConfig::Mono)
+        } else {
+            let config = match audio.channels {
+                1..=6 => audio.channels,
+                8 => 7,
+                _ => return None,
+            };
+            mp4::ChannelConfig::try_from(config).ok()?
+        };
         Some(mp4::TrackConfig {
             track_type: mp4::TrackType::Audio,
             timescale,
@@ -1058,10 +1067,7 @@ fn audio_track_config(frames: &[RecordingFrame]) -> Option<mp4::TrackConfig> {
                 bitrate: 64_000,
                 profile: mp4::AudioObjectType::AacLowComplexity,
                 freq_index: sample_freq_index(timescale),
-                chan_conf: match channels {
-                    2 => mp4::ChannelConfig::Stereo,
-                    _ => mp4::ChannelConfig::Mono,
-                },
+                chan_conf: channel_config,
             }),
         })
     })
@@ -1108,6 +1114,28 @@ mod tests {
         io::{Read, Seek, SeekFrom},
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn raw_rtsp_aac_preserves_the_negotiated_stereo_layout_and_clock() {
+        let frame = RecordingFrame {
+            received_at: Instant::now(),
+            timestamp: Some(Duration::ZERO),
+            frame: MediaFrame::Audio(AudioFrame {
+                codec: AudioCodec::Aac,
+                sample_rate: 48_000,
+                channels: 2,
+                duration: Duration::from_micros(21_333),
+                data: Bytes::from_static(&[0x21, 0x10]),
+            }),
+        };
+        let track = super::audio_track_config(&[frame]).unwrap();
+        assert_eq!(track.timescale, 48_000);
+        let mp4::MediaConfig::AacConfig(aac) = track.media_conf else {
+            panic!("expected an AAC sample description");
+        };
+        assert_eq!(aac.chan_conf, mp4::ChannelConfig::Stereo);
+        assert_eq!(aac.freq_index, mp4::SampleFreqIndex::Freq48000);
+    }
 
     #[test]
     fn writer_creation_preserves_an_existing_active_path() {
@@ -1252,6 +1280,7 @@ mod tests {
                 frame: MediaFrame::Audio(AudioFrame {
                     codec: AudioCodec::Aac,
                     sample_rate: 16000,
+                    channels: 1,
                     duration: Duration::from_millis(20),
                     data: audio_data,
                 }),
@@ -1300,6 +1329,7 @@ mod tests {
                 frame: MediaFrame::Audio(AudioFrame {
                     codec: AudioCodec::Aac,
                     sample_rate: 16000,
+                    channels: 1,
                     duration: Duration::from_millis(110),
                     data: Bytes::from_static(&[0xff, 0xf1, 0x60, 0x40, 0, 0, 0, 0xaa]),
                 }),
@@ -1357,6 +1387,7 @@ mod tests {
                     frame: MediaFrame::Audio(AudioFrame {
                         codec: AudioCodec::Aac,
                         sample_rate: 16000,
+                        channels: 1,
                         duration: Duration::from_millis(20),
                         data: Bytes::from_static(&[0xff, 0xf1, 0x60, 0x40, 0, 0, 0, 0xaa]),
                     }),
@@ -1700,6 +1731,7 @@ mod tests {
             frame: MediaFrame::Audio(AudioFrame {
                 codec,
                 sample_rate: 16_000,
+                channels: 1,
                 duration: Duration::from_millis(20),
                 data,
             }),
@@ -2189,6 +2221,7 @@ mod tests {
                 frame: MediaFrame::Audio(AudioFrame {
                     codec: AudioCodec::Aac,
                     sample_rate: 48_000,
+                    channels: 1,
                     duration: Duration::from_millis(20),
                     data: vec![0xFF, 0xF1, 0x4C, 0x40, 0, 0, 0, 0xAA].into(),
                 }),
@@ -2201,6 +2234,7 @@ mod tests {
                 frame: MediaFrame::Audio(AudioFrame {
                     codec: AudioCodec::Aac,
                     sample_rate: 48_000,
+                    channels: 1,
                     duration: Duration::from_millis(20),
                     data: vec![0xFF, 0xF1, 0x4C, 0x40, 0, 0, 0, 0xBB].into(),
                 }),
@@ -2213,6 +2247,7 @@ mod tests {
                 frame: MediaFrame::Audio(AudioFrame {
                     codec: AudioCodec::Aac,
                     sample_rate: 48_000,
+                    channels: 1,
                     duration: Duration::from_millis(20),
                     data: vec![0xFF, 0xF1, 0x4C, 0x40, 0, 0, 0, 0xCC].into(),
                 }),
