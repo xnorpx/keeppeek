@@ -400,6 +400,7 @@ enum InactiveCameraReason {
     AwaitingStart,
     MissingCredentials,
     PrivacyPaused(crate::cameras::CameraRecordingMode),
+    PrivacyFailed(String),
 }
 
 struct InactiveCamera {
@@ -427,11 +428,28 @@ impl InactiveCamera {
         let mut camera = Self::from_config(config);
         if matches!(camera.reason, InactiveCameraReason::AwaitingStart)
             && let Some(row) = application
-            && row.state == crate::profiles::RuntimeApplicationState::Applied
         {
-            camera.reason = InactiveCameraReason::PrivacyPaused(configured_mode);
+            use crate::profiles::RuntimeApplicationState;
+            camera.reason = match row.state {
+                RuntimeApplicationState::Applied => {
+                    InactiveCameraReason::PrivacyPaused(configured_mode)
+                }
+                RuntimeApplicationState::Degraded => InactiveCameraReason::PrivacyFailed(
+                    row.reason
+                        .clone()
+                        .unwrap_or_else(|| "camera runtime degraded before privacy pause".into()),
+                ),
+                RuntimeApplicationState::Pending => InactiveCameraReason::AwaitingStart,
+            };
         }
         camera
+    }
+
+    const fn acknowledged_recording_mode(&self) -> Option<crate::cameras::CameraRecordingMode> {
+        match self.reason {
+            InactiveCameraReason::PrivacyPaused(mode) => Some(mode),
+            _ => None,
+        }
     }
 
     fn application_state(
@@ -444,6 +462,7 @@ impl InactiveCamera {
             InactiveCameraReason::MissingCredentials => {
                 Err("camera credentials are not configured".into())
             }
+            InactiveCameraReason::PrivacyFailed(reason) => Err(reason.clone()),
             InactiveCameraReason::PrivacyPaused(acknowledged_mode)
                 if acknowledged_mode == configured_mode
                     && (policy.privacy_enforced || !policy.available) =>
@@ -690,7 +709,13 @@ impl KeepPeekLoop {
                 camera.recording_mode,
                 self.runtime_profiles.active_camera_override(&id),
             );
-            let state = camera.application_state(&policy, configured_mode);
+            let mut state = camera.application_state(&policy, configured_mode);
+            if matches!(state, Ok(crate::profiles::RuntimeApplicationState::Applied))
+                && configured_mode != crate::cameras::CameraRecordingMode::Off
+                && self.recording_writer_failed(&ip.to_string())
+            {
+                state = Err(recording::ACTIVE_RECORDING_WRITE_FAILURE.into());
+            }
             observations.push(self.camera_runtime_application(ip, policy, state));
         }
         observations
