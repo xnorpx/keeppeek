@@ -230,11 +230,18 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 
 			const handoff = video.evaluate((element) => {
 				if (!(element instanceof HTMLVideoElement)) throw new Error('Missing resumed video');
-				return new Promise<{ picture: number; mediaTime: number }>((resolve, reject) => {
+				return new Promise<{
+					picture: number;
+					mediaTime: number;
+					requestedTime: number;
+					presentedFrames: number;
+					paused: boolean;
+				}>((resolve, reject) => {
 					const timer = setTimeout(() => reject(new Error('No decoded resume picture')), 5000);
 					element.addEventListener(
 						'seeking',
 						() => {
+							const requestedTime = element.currentTime;
 							element.requestVideoFrameCallback((_now, metadata) => {
 								const canvas = document.createElement('canvas');
 								canvas.width = 64;
@@ -246,7 +253,13 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 									if (ctx.getImageData(8 + 16 * bit, 16, 1, 1).data[0] > 128) picture |= 1 << bit;
 								}
 								clearTimeout(timer);
-								resolve({ picture, mediaTime: metadata.mediaTime });
+								resolve({
+									picture,
+									mediaTime: metadata.mediaTime,
+									requestedTime,
+									presentedFrames: metadata.presentedFrames,
+									paused: element.paused
+								});
 							});
 						},
 						{ once: true }
@@ -255,7 +268,7 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 			});
 			await region.getByRole('button', { name: 'Play recording', exact: true }).click();
 			const resumed = await handoff;
-			expect(resumed.picture).toBe(extra);
+			expect(resumed.picture, JSON.stringify(resumed)).toBe(extra);
 			await expect(selected).toBeHidden();
 			await expect(video).toHaveJSProperty('paused', false);
 			await page.getByRole('button', { name: 'Export', exact: true }).click();

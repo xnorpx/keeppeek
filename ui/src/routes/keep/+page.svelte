@@ -2102,12 +2102,16 @@
 			const precise = frames.selection.storedTimeNs;
 			const cursor = storedPlayback;
 			const storedMs = Number(precise / 1_000_000n) + Number(precise % 1_000_000n) / 1e6;
-			frames.clear();
-			if (!cursor || !video || !cursor.canSeekLocally(storedMs)) {
+			if (!cursor || !video) return;
+			if (!cursor.canSeekLocally(storedMs)) {
 				seekToTimestamp(storedMs, true);
 				return;
 			}
-			video.currentTime = Number(precise - BigInt(cursor.anchorTimeMs) * 1_000_000n) / 1e9;
+			const element = video;
+			void frames.alignForPlay(element, cursor).then((aligned) => {
+				if (aligned && cursor === storedPlayback && element === video) setPlaying(true);
+			});
+			return;
 		}
 		if (nextPlaying && frames.busy) frames.clear();
 		playing = nextPlaying;

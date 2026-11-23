@@ -15,9 +15,12 @@ export class RecordedFramePlayer {
 	unsupported = $state(false);
 	displayedNs = $state<bigint>();
 	private active?: AbortController;
+	private handoff?: AbortController;
 	private pendingSteps = 0;
 
 	clear(): void {
+		this.handoff?.abort();
+		this.handoff = undefined;
 		this.active?.abort();
 		this.active = undefined;
 		this.pendingSteps = 0;
@@ -55,7 +58,7 @@ export class RecordedFramePlayer {
 			handle = video.requestVideoFrameCallback(presented);
 		};
 		const seeking = () => {
-			this.clear();
+			if (!this.handoff) this.clear();
 			observe();
 		};
 		const seeked = () => {
@@ -77,6 +80,58 @@ export class RecordedFramePlayer {
 		};
 	}
 
+	async alignForPlay(video: HTMLVideoElement, cursor: Cursor): Promise<boolean> {
+		const sample = this.selection;
+		if (!sample || this.handoff || !video.paused || video.currentSrc !== cursor.url) return false;
+		const relativeNs = sample.storedTimeNs - BigInt(cursor.anchorTimeMs) * 1_000_000n;
+		const targetUs = Math.round(Number(relativeNs) / 1_000);
+		const controller = new AbortController();
+		this.handoff = controller;
+		this.active?.abort();
+		this.pendingSteps = 0;
+		this.notice = '';
+		try {
+			const displayed = await new Promise<boolean>((resolve) => {
+				const signal = controller.signal;
+				let callback: number;
+				let presented = false;
+				const done = (success: boolean) => {
+					clearTimeout(timer);
+					video.cancelVideoFrameCallback(callback);
+					video.removeEventListener('seeked', settled);
+					signal.removeEventListener('abort', cancelled);
+					resolve(success);
+				};
+				const settled = () => {
+					if (presented && !video.seeking) done(true);
+				};
+				const cancelled = () => done(false);
+				const inspect: VideoFrameRequestCallback = (_now, { mediaTime }) => {
+					if (video.currentSrc !== cursor.url || !video.paused) return done(false);
+					presented = Math.abs(Math.round(mediaTime * 1_000_000) - targetUs) <= 1;
+					if (presented && !video.seeking) done(true);
+					else callback = video.requestVideoFrameCallback(inspect);
+				};
+				const timer = setTimeout(() => done(false), 5_000);
+				video.addEventListener('seeked', settled);
+				signal.addEventListener('abort', cancelled, { once: true });
+				callback = video.requestVideoFrameCallback(inspect);
+				// Enter the target sample after the browser's microsecond time conversion.
+				video.currentTime = (targetUs + 1) / 1_000_000;
+			});
+			if (controller.signal.aborted || this.selection !== sample) return false;
+			if (!displayed) {
+				this.notice =
+					'Playback could not resume on this recorded picture. Select another playback position.';
+				return false;
+			}
+			this.selection = undefined;
+			return true;
+		} finally {
+			if (this.handoff === controller) this.handoff = undefined;
+		}
+	}
+
 	async step(
 		direction: Direction,
 		cursor: Cursor,
@@ -84,6 +139,7 @@ export class RecordedFramePlayer {
 	): Promise<void> {
 		if (
 			this.unsupported ||
+			this.handoff ||
 			!cursor.canStepExactly ||
 			(!this.selection && this.displayedNs === undefined)
 		)

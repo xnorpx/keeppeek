@@ -138,7 +138,12 @@ function observedVideo() {
 	let url = 'blob:recording';
 	Object.defineProperties(video, {
 		currentSrc: { get: () => url },
-		currentTime: { get: () => position },
+		currentTime: {
+			get: () => position,
+			set: (time: number) => {
+				position = time;
+			}
+		},
 		seeking: { get: () => seeking },
 		requestVideoFrameCallback: {
 			value: (cb: VideoFrameRequestCallback) => {
@@ -202,4 +207,30 @@ test('uses a witnessed paused frame when the compositor callback precedes seeked
 	fixture.settle();
 	expect(player.displayedNs).toBeUndefined();
 	cleanup();
+});
+
+test('resuming waits for the selected compositor picture and a settled seek, and ignores cancelled work', async () => {
+	const fixture = observedVideo();
+	const player = new RecordedFramePlayer();
+	const sample = picture(1);
+	sample.frame.close();
+	const cursor = {
+		url: fixture.video.currentSrc,
+		anchorTimeMs: 0,
+		canStepExactly: true,
+		stepRecordedFrame: () => Promise.resolve(picture(1))
+	};
+	player.selection = sample;
+	const align = player.alignForPlay(fixture.video, cursor);
+	fixture.seek(0.041001);
+	fixture.callback()(0.03);
+	fixture.callback()(0.041);
+	expect(player.selection).toBeDefined();
+	fixture.settle();
+	expect(await align).toBe(true);
+	expect(player.selection).toBeUndefined();
+	player.selection = sample;
+	const cancelled = player.alignForPlay(fixture.video, cursor);
+	player.clear();
+	expect(await cancelled).toBe(false);
 });
