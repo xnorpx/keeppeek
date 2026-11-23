@@ -102,10 +102,18 @@ export class ReportSubmission {
 			...(review.screen ? [['screen', review.screen] as const] : [])
 		];
 		this.#total = diagnostics.bytes + (screen?.bytes ?? 0);
+		const warningRules = schema.properties.evidenceWarnings;
+		const warnings = [...new Set(review.evidenceWarnings)];
+		if (
+			warnings.length > warningRules.maxItems ||
+			warnings.some((warning) => !warningRules.items.enum.includes(warning))
+		) {
+			throw new Error('The report contains an unrecognized evidence warning.');
+		}
 		this.#manifest = {
 			version: 1,
 			...textDescription(review.text),
-			evidenceWarnings: [...review.evidenceWarnings],
+			evidenceWarnings: warnings,
 			artifacts: { diagnostics, ...(screen ? { screen } : {}) }
 		};
 		this.#key = crypto.randomUUID();

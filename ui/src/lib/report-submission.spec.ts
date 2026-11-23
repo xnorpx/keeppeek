@@ -148,3 +148,16 @@ it('carries safe diagnostics warnings into the submitted issue manifest', async 
 	await expect(submission.submit(() => {})).resolves.toMatchObject({ state: 'complete' });
 	expect(service.createdIssues()[0]).toContain('diagnostics-logging-settings-unavailable');
 });
+
+it('rejects a private or unknown evidence warning before contacting the service', () => {
+	const { transport, text, diagnostics, keys } = setup();
+	expect(
+		() =>
+			new ReportSubmission(transport, {
+				text,
+				diagnostics,
+				evidenceWarnings: ['unrecognized-private-canary']
+			})
+	).toThrow('unrecognized evidence warning');
+	expect(keys).toHaveLength(0);
+});

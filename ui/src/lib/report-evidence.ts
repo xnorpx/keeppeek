@@ -5,19 +5,24 @@ export async function boundedReportEvidence<T>(
 	timeoutMs = 4_000
 ): Promise<T> {
 	owner.throwIfAborted();
-	const timeout = new AbortController();
-	const signal = AbortSignal.any([owner, timeout.signal]);
+	const controller = new AbortController();
+	const onOwnerAbort = () => controller.abort(owner.reason);
+	owner.addEventListener('abort', onOwnerAbort, { once: true });
 	const timer = setTimeout(
-		() => timeout.abort(new DOMException('Evidence deadline exceeded', 'TimeoutError')),
+		() => controller.abort(new DOMException('Evidence deadline exceeded', 'TimeoutError')),
 		timeoutMs
 	);
-	const cancelled = Promise.withResolvers<never>();
-	const abort = () => cancelled.reject(signal.reason);
-	signal.addEventListener('abort', abort, { once: true });
+	let rejectCancellation!: (reason: unknown) => void;
+	const cancellation = new Promise<never>((_resolve, reject) => {
+		rejectCancellation = reject;
+	});
+	const abort = () => rejectCancellation(controller.signal.reason);
+	controller.signal.addEventListener('abort', abort, { once: true });
 	try {
-		return await Promise.race([cancelled.promise, operation(signal)]);
+		return await Promise.race([cancellation, operation(controller.signal)]);
 	} finally {
 		clearTimeout(timer);
-		signal.removeEventListener('abort', abort);
+		owner.removeEventListener('abort', onOwnerAbort);
+		controller.signal.removeEventListener('abort', abort);
 	}
 }
