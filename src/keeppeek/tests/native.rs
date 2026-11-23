@@ -304,8 +304,8 @@ fn final_native_drain_stops_without_progress_and_retains_all_pending_ids() {
         recorder.set_event_store(available);
         let started = Instant::now();
         // This part verifies recovery of all IDs. Disk sync may consume a production shutdown window.
-        let remaining =
-            recorder.drain_retired_native_events_until(started + Duration::from_secs(60));
+        let remaining = recorder
+            .drain_retired_native_events_until(|| started.elapsed() >= Duration::from_secs(60));
         assert_eq!(
             remaining,
             0,
@@ -333,26 +333,20 @@ fn final_native_drain_checks_deadline_between_backpressured_commits() {
             .collect();
         commit_native_changes(&mut recorder, owner, &lifetime, &changes);
         lifetime.store(false, Ordering::Release);
-        assert_eq!(
-            recorder.drain_retired_native_events_until(Instant::now()),
-            3
-        );
-        // Finish the durable close before timing publication backpressure. A slow fsync
-        // can legitimately use the entire deadline before the first callback runs.
-        recorder.stage_retired_native_events().unwrap();
+        assert_eq!(recorder.drain_retired_native_events_until(|| true), 3);
         let (sent, published) = mpsc::channel();
-        let (_release, blocked) = mpsc::sync_channel::<()>(1);
-        let blocked = std::sync::Mutex::new(blocked);
-        let deadline = Instant::now() + Duration::from_millis(250);
+        // Advance the test deadline inside the first publication. Storage may legitimately
+        // take longer than a scheduler-based timeout on a busy machine.
+        let expired = Arc::new(AtomicBool::new(false));
+        let publish_expired = Arc::clone(&expired);
         recorder.set_event_publisher(move |event| {
             sent.send(event.clone()).unwrap();
-            let result = blocked
-                .lock()
-                .unwrap()
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()));
-            assert_eq!(result, Err(mpsc::RecvTimeoutError::Timeout));
+            publish_expired.store(true, Ordering::Release);
         });
-        assert_eq!(recorder.drain_retired_native_events_until(deadline), 2);
+        assert_eq!(
+            recorder.drain_retired_native_events_until(|| expired.load(Ordering::Acquire)),
+            2
+        );
         assert_eq!(published.try_iter().count(), 1);
         recorder.set_event_publisher(|_| {});
         assert_eq!(recorder.drain_retired_native_events(), 0);
@@ -411,9 +405,10 @@ fn retirement_batch_preserves_committed_endings_across_publication_deadline() {
         let (sent, published) = mpsc::channel();
         let resumed = sent.clone();
         let catalog = store.clone();
-        let (_release, blocked) = mpsc::sync_channel::<()>(1);
-        let blocked = std::sync::Mutex::new(blocked);
-        let deadline = Instant::now() + Duration::from_millis(250);
+        // Advance the test deadline inside the first publication. Storage may legitimately
+        // take longer than a scheduler-based timeout on a busy machine.
+        let expired = Arc::new(AtomicBool::new(false));
+        let publish_expired = Arc::clone(&expired);
         recorder.set_event_publisher(move |event| {
             for index in 0..3 {
                 let stored = catalog
@@ -428,15 +423,12 @@ fn retirement_batch_preserves_committed_endings_across_publication_deadline() {
                 assert_eq!(stored.revision, 2);
             }
             sent.send(event.clone()).unwrap();
-            assert_eq!(
-                blocked
-                    .lock()
-                    .unwrap()
-                    .recv_timeout(deadline.saturating_duration_since(Instant::now()),),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            );
+            publish_expired.store(true, Ordering::Release);
         });
-        assert_eq!(recorder.drain_retired_native_events_until(deadline), 2);
+        assert_eq!(
+            recorder.drain_retired_native_events_until(|| expired.load(Ordering::Acquire)),
+            2
+        );
         let first = published.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(published.try_recv().is_err());
         recorder.set_event_publisher(move |event| {
