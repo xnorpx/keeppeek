@@ -744,15 +744,10 @@ impl WriterWorker {
             let id = writer.recording_id().to_owned();
             let result = writer
                 .discard_pending()
-                .and_then(|()| writer.finalize_recording());
-            match result {
-                Ok(Some(path)) => {
-                    if let Err(error) = self.move_to_long_term(&key, &path, &id) {
-                        self.health.note_failure(&key, &error.to_string());
-                    }
-                }
-                Ok(_) => {}
-                Err(error) => self.health.note_failure(&key, &error.to_string()),
+                .and_then(|()| writer.finalize_with_progress())
+                .and_then(|output| self.publish_event_recording(&key, &id, output));
+            if let Err(error) = result {
+                self.health.note_failure(&key, &error.to_string());
             }
         }
     }
@@ -827,15 +822,29 @@ impl WriterWorker {
             return;
         };
         let id = writer.recording_id().to_owned();
-        let result = writer.finalize_before(end).and_then(|path| {
-            path.map(|path| self.move_to_long_term(&identity.storage_key, &path, &id))
-                .transpose()
-        });
+        let result = writer
+            .finalize_before_with_progress(end)
+            .and_then(|output| self.publish_event_recording(&identity.storage_key, &id, output));
         if let Err(error) = result {
             self.health
                 .note_failure(&identity.storage_key, &error.to_string());
             self.invalidate_event_source(&identity.source_id, PreRecordReason::WriterFailure);
         }
+    }
+
+    fn publish_event_recording(
+        &mut self,
+        stream: &str,
+        recording_id: &str,
+        output: Option<(PathBuf, Duration)>,
+    ) -> std::io::Result<()> {
+        if let Some((path, duration)) = output {
+            if !duration.is_zero() {
+                self.health.credit_finalized_progress(stream, duration);
+            }
+            self.move_to_long_term(stream, &path, recording_id)?;
+        }
+        Ok(())
     }
 
     fn event_output_allowed(&mut self, source: &str) -> bool {

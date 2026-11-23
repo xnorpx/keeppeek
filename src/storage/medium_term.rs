@@ -804,7 +804,17 @@ impl MediumTermWriter {
         Ok(())
     }
 
-    pub(super) fn finalize_before(mut self, end: Instant) -> std::io::Result<Option<PathBuf>> {
+    #[cfg(test)]
+    pub(super) fn finalize_before(self, end: Instant) -> std::io::Result<Option<PathBuf>> {
+        Ok(self
+            .finalize_before_with_progress(end)?
+            .map(|(path, _)| path))
+    }
+
+    pub(super) fn finalize_before_with_progress(
+        mut self,
+        end: Instant,
+    ) -> std::io::Result<Option<(PathBuf, Duration)>> {
         self.activate_prepared()?;
         let limit = self
             .segment_origin
@@ -830,7 +840,7 @@ impl MediumTermWriter {
         if let Some((fragment, start, end)) = completed {
             self.commit_fragment(fragment, start, end)?;
         }
-        self.finalize_recording()
+        self.finalize_with_progress()
     }
 
     pub const fn bytes_written(&self) -> u64 {
