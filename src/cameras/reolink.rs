@@ -883,15 +883,15 @@ impl ReolinkClient {
                 .and_then(|value| value.get("support"))
                 .and_then(Value::as_u64)
                 .is_some_and(|value| value != 0);
-        let audio = self.api_call(
+        let audio_reply = self.api_call(
             "GetAudioCfg",
             Some(serde_json::json!({ "channel": channel })),
         )?;
-        let audio = audio.get("AudioCfg").filter(|cfg| {
-            reply_channel_matches(&audio, channel) && reply_channel_matches(cfg, channel)
+        let audio_config = audio_reply.get("AudioCfg").filter(|cfg| {
+            reply_channel_matches(&audio_reply, channel) && reply_channel_matches(cfg, channel)
         });
         let volume = |name: &str| {
-            audio
+            audio_config
                 .and_then(|cfg| cfg.get(name))
                 .and_then(Value::as_u64)
                 .and_then(|value| u8::try_from(value).ok())
@@ -948,7 +948,7 @@ impl ReolinkClient {
             chime,
             visitor_volume: volume("visitorVolume"),
             talk_and_reply_volume: volume("talkAndReplyVolume"),
-            visitor_loudspeaker: audio
+            visitor_loudspeaker: audio_config
                 .and_then(|cfg| cfg.get("visitorLoudspeaker"))
                 .and_then(Value::as_u64)
                 .map(|value| value != 0),
@@ -1924,6 +1924,7 @@ mod tests {
                     "application/json",
                     vec![b'x'; usize::try_from(CGI_RESPONSE_BYTES_MAX + 1).unwrap()],
                 ),
+                "Unavailable" => rouille::Response::text(CANARY).with_status_code(503),
                 "Redirect" => rouille::Response::text(CANARY)
                     .with_status_code(307)
                     .with_unique_header("Location", "/redirected"),
@@ -1947,6 +1948,7 @@ mod tests {
             "PrivateError",
             "LargeResponse",
             "Redirect",
+            "Unavailable",
         ]
         .map(|command| client.api_call(command, None).unwrap_err().to_string());
         let valid = client.api_call("ValidResponse", None).unwrap();
@@ -1961,6 +1963,7 @@ mod tests {
         assert!(errors[4].contains("error code 3"));
         assert!(errors[5].contains("unavailable or too large"));
         assert!(errors[6].contains("status 307"));
+        assert!(errors[7].contains("HTTP status 503"));
         assert!(errors.iter().all(|error| !error.contains(CANARY)));
         assert_eq!(redirects.load(Ordering::Relaxed), 0);
         assert_eq!(valid["verified"], true);
