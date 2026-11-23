@@ -43,6 +43,7 @@
 	let issue = $state('');
 	let ready = $state(false);
 	let tail = Promise.resolve();
+	const correctionIntervalMs = 750;
 	let lastCorrection = 0;
 	let tile = $state<HTMLElement>();
 	let attempt = $state(0);
@@ -69,24 +70,44 @@
 	});
 
 	let presented = $state<number | null>(null);
+	let correctionMs = $state<number | null>(null);
 
 	$effect(() => {
 		const element = video,
 			cursor = playback;
 		presented = null;
+		correctionMs = null;
 		if (!element || !cursor || !element.requestVideoFrameCallback) return;
 		let handle = 0;
+		let retry: ReturnType<typeof setTimeout> | undefined;
 		let last = -Infinity;
 		function frame(now: number, data: VideoFrameCallbackMetadata) {
-			if (!element || !cursor) return;
-			if (now - last >= 100 || element.paused) {
-				presented = Math.round(cursor.anchorTimeMs + data.mediaTime * 1000);
+			if (!element || !cursor || element !== video || cursor !== playback) return;
+			const actual = Math.round(cursor.anchorTimeMs + data.mediaTime * 1000);
+			const drift = Math.round(position() - actual);
+			const outsideTolerance = needsGridDriftCorrection(drift);
+			// Publish the first real frame on either side of a correction immediately.
+			if (now - last >= 100 || element.paused || outsideTolerance !== (correctionMs !== null)) {
+				presented = actual;
+				correctionMs = outsideTolerance ? drift : null;
 				last = now;
+			}
+			if (element.paused && outsideTolerance && retry === undefined) {
+				const remaining = Math.max(0, lastCorrection + correctionIntervalMs - performance.now());
+				retry = setTimeout(() => {
+					retry = undefined;
+					if (cursor === playback && element === video && element.paused && correctionMs !== null) {
+						align(false, true);
+					}
+				}, remaining + 1);
 			}
 			handle = element.requestVideoFrameCallback(frame);
 		}
 		handle = element.requestVideoFrameCallback(frame);
-		return () => element.cancelVideoFrameCallback(handle);
+		return () => {
+			element.cancelVideoFrameCallback(handle);
+			clearTimeout(retry);
+		};
 	});
 
 	$effect(() => {
@@ -160,13 +181,15 @@
 		tail = tail.then(() => cursor.close().catch(() => undefined));
 	}
 
-	function align(initial = false) {
+	function align(initial = false, pausedCorrection = false) {
 		if (!playback || !video || !video.buffered.length) return;
 		const offset = Math.max(0, (position() - playback.anchorTimeMs) / 1000);
 		const driftMs = (offset - video.currentTime) * 1000;
 		if (
 			initial ||
-			(playing && needsGridDriftCorrection(driftMs) && performance.now() - lastCorrection > 750)
+			((playing || pausedCorrection) &&
+				needsGridDriftCorrection(driftMs) &&
+				performance.now() - lastCorrection >= correctionIntervalMs)
 		) {
 			for (let index = 0; index < video.buffered.length; index++) {
 				if (offset >= video.buffered.start(index) && offset < video.buffered.end(index)) {
@@ -191,6 +214,12 @@
 			<time class="font-mono text-xs text-text-muted" datetime={new Date(presented).toISOString()}>
 				{new Date(presented).toISOString().slice(11, 23)} UTC
 			</time>
+		{/if}
+		{#if correctionMs !== null}
+			<span class="text-xs text-text-muted">
+				<span role="status">Synchronizing</span>
+				{Math.abs(correctionMs)} ms {correctionMs > 0 ? 'behind' : 'ahead'}
+			</span>
 		{/if}
 		<button class="min-h-11 px-2 text-sm underline" aria-label={'Remove ' + name} onclick={onremove}
 			>Remove</button

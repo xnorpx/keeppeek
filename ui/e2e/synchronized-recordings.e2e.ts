@@ -603,3 +603,113 @@ test('a comparison with an unavailable focused camera keeps its authorized recor
 		}
 	}
 });
+
+test('a late paused picture stays identifiable until a corrected camera frame is presented', async ({
+	page,
+	context,
+	baseURL
+}) => {
+	test.setTimeout(75_000);
+	if (!baseURL) throw new Error('The frame alignment fixture requires a UI origin.');
+	const origin = new URL(baseURL).origin;
+	const server = await startHomeAssistantServer(origin, {
+		trustedLocal: true,
+		reviewFixture: true
+	});
+	const redirect = recordedAudioBackendRoute(origin, server.url);
+	try {
+		await context.route('**/*', redirect);
+		const at = await overlappingMoment(page, server.url);
+		const query = new URLSearchParams({ camera: cardSourceIds[0], at: String(at), stream: 'sub' });
+		for (const id of cardSourceIds) query.append('compare', id);
+		await page.goto('/keep?' + query);
+		const tile = page.getByRole('article', { name: 'card-camera-0' });
+		const video = tile.locator('video');
+		const play = page.getByRole('button', { name: 'Play recordings' });
+		await play.click({ timeout: 30_000 });
+		await expect
+			.poll(() =>
+				video.evaluate((v: HTMLVideoElement) =>
+					v.buffered.length ? v.currentTime - v.buffered.start(0) : 0
+				)
+			)
+			.toBeGreaterThan(1.6);
+		await play.click();
+		await expect.poll(async () => (await displayed(video)).paused).toBe(true);
+		const target = Number(new URL(page.url()).searchParams.get('at'));
+		await tile.evaluate((el, pausedMoment) => {
+			const observation = {
+				latePicture: false,
+				marked: false,
+				recovered: false,
+				lateFrameMs: 0,
+				recoveredFrameErrorMs: 0,
+				elapsedMs: 0
+			};
+			let began: number | undefined;
+			(el as HTMLElement & { alignmentWitness?: typeof observation }).alignmentWitness =
+				observation;
+			const observer = new MutationObserver(() => {
+				const time = Date.parse(el.querySelector('time')?.dateTime ?? '');
+				const correction = el.querySelector('header [role=status]');
+				if (time < pausedMoment - 450) {
+					observation.latePicture = true;
+					if (began === undefined) {
+						began = performance.now();
+						observation.lateFrameMs = pausedMoment - time;
+					}
+					if (correction?.textContent?.includes('Synchronizing')) observation.marked = true;
+				}
+				if (observation.marked && Math.abs(time - pausedMoment) <= 250 && !correction) {
+					observation.recovered = true;
+					observation.elapsedMs = Math.round(performance.now() - (began ?? performance.now()));
+					observation.recoveredFrameErrorMs = Math.abs(time - pausedMoment);
+					observer.disconnect();
+				}
+			});
+			observer.observe(el, {
+				subtree: true,
+				childList: true,
+				characterData: true,
+				attributes: true
+			});
+		}, target);
+		// Seek this actual paused decoder backwards while the other camera and shared clock hold their moment.
+		await video.evaluate((v: HTMLVideoElement) => {
+			v.currentTime -= 0.75;
+		});
+		const observed = () =>
+			tile.evaluate(
+				(el) =>
+					(
+						el as HTMLElement & {
+							alignmentWitness?: {
+								latePicture: boolean;
+								marked: boolean;
+								recovered: boolean;
+								elapsedMs: number;
+								lateFrameMs: number;
+								recoveredFrameErrorMs: number;
+							};
+						}
+					).alignmentWitness
+			);
+		await expect.poll(async () => (await observed())?.latePicture).toBe(true);
+		await expect.poll(observed).toMatchObject({ latePicture: true, marked: true, recovered: true });
+		const measured = await observed();
+		expect(measured?.elapsedMs).toBeLessThanOrEqual(1_500);
+		await test
+			.info()
+			.attach('paused-frame-correction', {
+				contentType: 'application/json',
+				body: JSON.stringify(measured)
+			});
+		await expect(play).toHaveAttribute('aria-pressed', 'false');
+	} finally {
+		try {
+			await context.unroute('**/*', redirect);
+		} finally {
+			await server.close();
+		}
+	}
+});
