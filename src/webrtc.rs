@@ -42,6 +42,7 @@ use str0m::{
     net::{Protocol, Receive},
 };
 
+mod background;
 mod bandwidth;
 mod session_registry;
 mod subscriptions;
@@ -723,6 +724,7 @@ struct ApiSessionControl {
 }
 
 struct ApiControlRuntime {
+    selection: background::Selection,
     dispatch_tx: Sender<BackgroundControlDispatch>,
     dispatch_rx: Receiver<BackgroundControlDispatch>,
     control_output_ready: bool,
@@ -3498,6 +3500,7 @@ fn run_api_session(
     let mut media = ApiMediaRuntime::default();
     let (dispatch_tx, dispatch_rx) = bounded(1);
     let mut control_runtime = ApiControlRuntime {
+        selection: Default::default(),
         dispatch_tx,
         dispatch_rx,
         control_output_ready: false,
@@ -3577,7 +3580,7 @@ fn drive_api_session(
             break;
         }
         drain_api_session_commands(deps.data_rx, media);
-        if drain_pending_control_dispatches(control_runtime, media)? {
+        if drain_pending_control_dispatches(deps.control, control_runtime, media)? {
             next_timeout = drain_api_outputs(
                 rtc,
                 socket,
@@ -3632,7 +3635,7 @@ fn drive_api_session(
             &mut events,
             Some(next_timeout.saturating_duration_since(Instant::now())),
         )?;
-        if drain_pending_control_dispatches(control_runtime, media)? {
+        if drain_pending_control_dispatches(deps.control, control_runtime, media)? {
             next_timeout = drain_api_outputs(
                 rtc,
                 socket,
@@ -4313,37 +4316,7 @@ fn drain_api_outputs(
                     && is_background_control_request(&request)
                     && let Some(handler) = handler.clone()
                 {
-                    let request_id = request.request_id;
-                    if control
-                        .background_operation_in_flight
-                        .swap(true, Ordering::AcqRel)
-                    {
-                        enqueue_control_dispatch(
-                            envelope_dispatch(failed_control_dispatch(
-                                request_id,
-                                ErrorCode::Rejected,
-                                "another background control operation is already in progress",
-                            )),
-                            control_runtime,
-                        )?;
-                    } else if let Err(error) = spawn_background_control_operation(
-                        request,
-                        handler,
-                        control,
-                        control_runtime.dispatch_tx.clone(),
-                    ) {
-                        control
-                            .background_operation_in_flight
-                            .store(false, Ordering::Release);
-                        enqueue_control_dispatch(
-                            envelope_dispatch(failed_control_dispatch(
-                                request_id,
-                                ErrorCode::Unavailable,
-                                format!("unable to start background control operation: {error}"),
-                            )),
-                            control_runtime,
-                        )?;
-                    }
+                    background::dispatch(request, handler, control, control_runtime)?;
                     continue;
                 }
                 let reply =
@@ -4387,11 +4360,13 @@ fn drain_api_outputs(
 }
 
 fn drain_pending_control_dispatches(
+    control: &ApiSessionControl,
     control_runtime: &mut ApiControlRuntime,
     media: &mut ApiMediaRuntime,
 ) -> anyhow::Result<bool> {
     let mut dispatched = false;
-    while let Ok(background) = control_runtime.dispatch_rx.try_recv() {
+    while let Ok(mut background) = control_runtime.dispatch_rx.try_recv() {
+        let deferred = control_runtime.selection.finish(&mut background.dispatch);
         if matches!(
             background.dispatch.response.result.as_ref(),
             Some(control_response::Result::Ok(_))
@@ -4403,6 +4378,9 @@ fn drain_pending_control_dispatches(
         background
             .operation_in_flight
             .store(false, Ordering::Release);
+        if let Some((request, handler)) = deferred {
+            background::dispatch(request, handler, control, control_runtime)?;
+        }
         dispatched = true;
     }
     Ok(dispatched)
@@ -7057,7 +7035,7 @@ mod tests {
             .expect_err("a missing session must not accept notifications");
     }
 
-    fn test_background_control() -> ApiSessionControl {
+    pub(super) fn test_background_control() -> ApiSessionControl {
         ApiSessionControl {
             session_id: SessionId(1),
             inner: Arc::new(Inner::default()),
@@ -7223,6 +7201,7 @@ mod tests {
     fn completed_background_media_replaces_only_its_data_group() {
         let (dispatch_tx, dispatch_rx) = bounded(1);
         let mut runtime = ApiControlRuntime {
+            selection: Default::default(),
             dispatch_tx,
             dispatch_rx,
             control_output_ready: false,
@@ -7263,7 +7242,10 @@ mod tests {
                 })
                 .is_ok()
         );
-        assert!(drain_pending_control_dispatches(&mut runtime, &mut media).unwrap());
+        assert!(
+            drain_pending_control_dispatches(&test_background_control(), &mut runtime, &mut media)
+                .unwrap()
+        );
         assert!(!operation_in_flight.load(Ordering::Acquire));
         assert_eq!(media.outbound.len(), 1);
         assert!(matches!(media.outbound.front(),
@@ -7280,7 +7262,10 @@ mod tests {
                 })
                 .is_ok()
         );
-        assert!(drain_pending_control_dispatches(&mut runtime, &mut media).unwrap());
+        assert!(
+            drain_pending_control_dispatches(&test_background_control(), &mut runtime, &mut media)
+                .unwrap()
+        );
         assert_eq!(media.outbound.len(), 1);
     }
 
@@ -7351,6 +7336,7 @@ mod tests {
 
         let (dispatch_tx, dispatch_rx) = bounded(1);
         let mut control_runtime = ApiControlRuntime {
+            selection: Default::default(),
             dispatch_tx,
             dispatch_rx,
             control_output_ready: false,
