@@ -650,8 +650,8 @@ impl ReolinkClient {
             )
         })?;
         anyhow::ensure!(
-            rsp.cmd.as_deref().is_none_or(|returned| returned == cmd),
-            "{cmd} camera response names a different command"
+            rsp.cmd.as_deref() == Some(cmd),
+            "{cmd} camera response does not name the requested command"
         );
         if let Some(code) = rsp.error.and_then(|error| error.rsp_code)
             && code != 0
@@ -1038,11 +1038,20 @@ impl ReolinkClient {
             .get("abilityChn")
             .and_then(Value::as_array)
             .and_then(|entries| {
-                usize::try_from(channel)
-                    .ok()
-                    .and_then(|index| entries.get(index))
-            })
-            .filter(|entry| reply_channel_matches(entry, channel));
+                let channel_is_labeled = |entry: &Value| {
+                    entry.get("channel").is_some() || entry.get("channelId").is_some()
+                };
+                entries
+                    .iter()
+                    .find(|entry| {
+                        channel_is_labeled(entry) && reply_channel_matches(entry, channel)
+                    })
+                    .or_else(|| {
+                        entries
+                            .get(channel as usize)
+                            .filter(|entry| !channel_is_labeled(entry))
+                    })
+            });
         let chn_has = |key: &str| -> bool {
             channel_ability
                 .and_then(|ch| ch.get(key))
@@ -1902,6 +1911,12 @@ mod tests {
                 "WrongCommand" => rouille::Response::json(&serde_json::json!([
                     {"cmd": "OtherCommand", "code": 0, "value": {"token": CANARY}}
                 ])),
+                "MissingCommand" => rouille::Response::json(&serde_json::json!([
+                    {"code": 0, "value": {"token": CANARY}}
+                ])),
+                "NullCommand" => rouille::Response::json(&serde_json::json!([
+                    {"cmd": null, "code": 0, "value": {"token": CANARY}}
+                ])),
                 "PrivateError" => rouille::Response::json(&serde_json::json!([
                     {"cmd": command, "code": 1, "error": {"rspCode": 3, "detail": CANARY}}
                 ])),
@@ -1927,6 +1942,8 @@ mod tests {
         let errors = [
             "InvalidJson",
             "WrongCommand",
+            "MissingCommand",
+            "NullCommand",
             "PrivateError",
             "LargeResponse",
             "Redirect",
@@ -1936,10 +1953,14 @@ mod tests {
         stop.send(()).unwrap();
         worker.join().unwrap();
         assert!(errors[0].contains("invalid at line"));
-        assert!(errors[1].contains("different command"));
-        assert!(errors[2].contains("error code 3"));
-        assert!(errors[3].contains("unavailable or too large"));
-        assert!(errors[4].contains("status 307"));
+        assert!(
+            errors[1..4]
+                .iter()
+                .all(|error| error.contains("does not name the requested command"))
+        );
+        assert!(errors[4].contains("error code 3"));
+        assert!(errors[5].contains("unavailable or too large"));
+        assert!(errors[6].contains("status 307"));
         assert!(errors.iter().all(|error| !error.contains(CANARY)));
         assert_eq!(redirects.load(Ordering::Relaxed), 0);
         assert_eq!(valid["verified"], true);
@@ -1970,9 +1991,10 @@ mod tests {
                 }),
                 "GetAbility" => serde_json::json!({
                     "Ability": {"abilityChn": [
-                        {"talkCfg": {"permit": 0}},
                         {"channel": 1, "talkCfg": {"permit": 1}},
-                        {"channel": 1, "talkCfg": {"permit": 1}}
+                        {"channelId": 0, "talkCfg": {"permit": 0}},
+                        {"channel": 99, "talkCfg": {"permit": 1}},
+                        {"talkCfg": {"permit": 1}}
                     ]},
                 }),
                 _ => serde_json::json!({}),
@@ -1986,7 +2008,7 @@ mod tests {
         let (worker, stop) = server.stoppable();
         let client = ReolinkClient::new_with_http_port(IpAddr::V4(Ipv4Addr::LOCALHOST), Some(port));
         let result =
-            [0, 1, 2].map(|channel| client.get_doorbell_capabilities(channel, "test").unwrap());
+            [0, 1, 2, 3].map(|channel| client.get_doorbell_capabilities(channel, "test").unwrap());
         stop.send(()).unwrap();
         worker.join().unwrap();
         assert!(result[0].visitor_events);
@@ -1998,6 +2020,7 @@ mod tests {
         assert!(result[1].talkback);
         assert!(result[2].visitor_events);
         assert!(!result[2].talkback);
+        assert!(result[3].talkback);
     }
 
     #[test]
