@@ -391,7 +391,7 @@ test.each([false, true])(
 	}
 );
 
-test('a retained cold picture waits for the replacement source and verifies before the canvas is removed', async () => {
+async function verifyReplacement(order: 'clock after data' | 'data recovery after clock') {
 	const fixture = observedVideo();
 	const player = new RecordedFramePlayer();
 	let publishClock: (() => void) | undefined;
@@ -435,8 +435,16 @@ test('a retained cold picture waits for the replacement source and verifies befo
 	await Promise.resolve();
 	expect(hidden).toBe(0);
 	expect(publishClock).toBeDefined();
+	// A cold seek may lose current data after loadeddata and settle before the decoder recovers.
+	if (order === 'data recovery after clock') ready = false;
 	clockReady = true;
 	publishClock?.();
+	if (order === 'data recovery after clock') {
+		fixture.settle();
+		expect(publishClock).toBeDefined();
+		ready = true;
+		fixture.video.dispatchEvent(new Event('canplay'));
+	}
 	await Promise.resolve();
 	expect(publishClock).toBeUndefined();
 	fixture.callback()(0.041);
@@ -456,4 +464,9 @@ test('a retained cold picture waits for the replacement source and verifies befo
 	fixture.video.dispatchEvent(new Event('loadeddata'));
 	expect(await abandoned).toBe(false);
 	expect(hidden).toBe(1);
-});
+}
+
+test.each(['clock after data', 'data recovery after clock'] as const)(
+	'a cold replacement waits for %s and verifies before removing the canvas',
+	verifyReplacement
+);

@@ -40,6 +40,7 @@ function pausedSourceReady(video: HTMLVideoElement, cursor: Cursor, retained: Re
 			clearTimeout(timer);
 			unsubscribe();
 			video.removeEventListener('loadeddata', loaded);
+			video.removeEventListener('canplay', loaded);
 			video.removeEventListener('seeked', loaded);
 			video.removeEventListener('error', failed);
 			signal.removeEventListener('abort', failed);
@@ -54,6 +55,7 @@ function pausedSourceReady(video: HTMLVideoElement, cursor: Cursor, retained: Re
 		// A replacement video's loadeddata can run before the appended fragment publishes its clock.
 		const unsubscribe = cursor.onFrameClockUpdate(loaded);
 		video.addEventListener('loadeddata', loaded);
+		video.addEventListener('canplay', loaded);
 		video.addEventListener('seeked', loaded);
 		video.addEventListener('error', failed);
 		signal.addEventListener('abort', failed, { once: true });
