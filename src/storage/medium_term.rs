@@ -3,7 +3,7 @@ use crate::storage::volumes::runtime::Reservation;
 use crate::storage::{
     adts,
     catalog::{CatalogFragment, CatalogKeyframe, CatalogRecording, RecordingCatalogHandle},
-    frame::{AudioCodec, MediaFrame, VideoCodec, VideoFrame},
+    frame::{AudioCodec, AudioFrame, MediaFrame, VideoCodec, VideoFrame},
     identity::RecordingStreamIdentity,
     layout, nal,
     segment::RecordingFrame,
@@ -69,13 +69,35 @@ struct ActiveWriter {
     video_codec: VideoCodec,
     video_media_config: mp4::MediaConfig,
     video_sample_description_index: u32,
-    audio_track: Option<u32>,
-    audio_timescale: u32,
+    audio_track: Option<RecordingAudioTrack>,
     last_video_dts: Option<u64>,
     last_video_duration: u32,
     fragment_start_dts: Option<u64>,
     next_audio_dts: Option<u64>,
     audio_after_gap: bool,
+}
+
+struct RecordingAudioTrack {
+    timescale: u32,
+    description: mp4::AacConfig,
+}
+
+impl RecordingAudioTrack {
+    fn accepts(&self, audio: &AudioFrame) -> bool {
+        audio
+            .raw_aac_config
+            .as_ref()
+            .is_none_or(|negotiated| negotiated == &self.description)
+    }
+
+    fn track_config(&self) -> mp4::TrackConfig {
+        mp4::TrackConfig {
+            track_type: mp4::TrackType::Audio,
+            timescale: self.timescale,
+            language: String::from("und"),
+            media_conf: mp4::MediaConfig::AacConfig(self.description.clone()),
+        }
+    }
 }
 
 impl MediumTermWriter {
@@ -286,8 +308,8 @@ impl MediumTermWriter {
         // Audio the muxer cannot use consumes no fragment memory and cannot signal writer progress.
         if let MediaFrame::Audio(audio) = &rf.frame
             && (audio.codec != AudioCodec::Aac
-                || adts::strip_adts(&audio.data).0.is_empty()
-                || matches!(&self.state, WriterState::Active(active) if active.audio_track.is_none()))
+                || audio.aac_payload().is_empty()
+                || matches!(&self.state, WriterState::Active(active) if !active.audio_track.as_ref().is_some_and(|track| track.accepts(audio))))
         {
             return Ok(WriteProgress::default());
         }
@@ -466,10 +488,9 @@ impl MediumTermWriter {
             language: String::from("und"),
             media_conf: media_conf.clone(),
         };
-        let audio_config = audio_track_config(frames);
-        let audio = audio_config.as_ref().map(|config| config.timescale);
+        let audio_track = audio_track_config(frames);
         let mut track_configs = vec![video_config];
-        track_configs.extend(audio_config);
+        track_configs.extend(audio_track.as_ref().map(RecordingAudioTrack::track_config));
         let reservation = self.reservation.take();
         let initialize = |file| {
             let buffered = BufWriter::with_capacity(self.write_buffer_bytes, file);
@@ -492,7 +513,7 @@ impl MediumTermWriter {
         };
         tracing::debug!(
             path = %self.path.display(),
-            audio = audio.is_some(),
+            audio = audio_track.is_some(),
             init_bytes = writer.initialization().size,
             "fragmented MP4 segment initialized",
         );
@@ -503,8 +524,7 @@ impl MediumTermWriter {
             video_codec: video.codec,
             video_media_config: media_conf,
             video_sample_description_index: 1,
-            audio_track: audio.map(|_| 2),
-            audio_timescale: audio.unwrap_or(0),
+            audio_track,
             last_video_dts: None,
             last_video_duration: 0,
             fragment_start_dts: None,
@@ -632,12 +652,16 @@ impl MediumTermWriter {
                     return Ok(());
                 }
 
-                let (raw_aac, _) = adts::strip_adts(&audio.data);
+                let raw_aac = audio.aac_payload();
                 if raw_aac.is_empty() {
                     return Ok(());
                 }
 
-                let Some(track) = active.audio_track else {
+                let Some(track) = active
+                    .audio_track
+                    .as_ref()
+                    .filter(|track| track.accepts(audio))
+                else {
                     return Ok(());
                 };
                 let camera_dts = (rf.timestamp.is_some() || active.audio_after_gap).then(|| {
@@ -645,22 +669,21 @@ impl MediumTermWriter {
                         rf.timestamp,
                         self.camera_timestamp_origin,
                         elapsed,
-                        active.audio_timescale,
+                        track.timescale,
                     )
                 });
                 let dts = match (active.next_audio_dts, camera_dts) {
                     (Some(next), Some(camera)) => next.max(camera),
                     (Some(next), None) => next,
                     (None, Some(camera)) => camera,
-                    (None, None) => duration_to_ticks(elapsed, active.audio_timescale),
+                    (None, None) => duration_to_ticks(elapsed, track.timescale),
                 };
-                let sample_duration =
-                    audio_sample_duration(audio.duration, active.audio_timescale)?;
+                let sample_duration = audio_sample_duration(audio.duration, track.timescale)?;
 
                 active
                     .writer
                     .write_sample(
-                        track,
+                        2,
                         mp4::Mp4Sample {
                             start_time: dts,
                             duration: sample_duration,
@@ -1034,41 +1057,36 @@ fn catalog_err(error: anyhow::Error) -> std::io::Error {
     std::io::Error::other(error.to_string())
 }
 
-fn audio_track_config(frames: &[RecordingFrame]) -> Option<mp4::TrackConfig> {
+fn audio_track_config(frames: &[RecordingFrame]) -> Option<RecordingAudioTrack> {
     frames.iter().find_map(|frame| {
         let MediaFrame::Audio(audio) = &frame.frame else {
             return None;
         };
-        if audio.codec != AudioCodec::Aac {
+        if audio.codec != AudioCodec::Aac || audio.aac_payload().is_empty() {
             return None;
         }
-        let (raw_aac, adts_info) = adts::strip_adts(&audio.data);
-        if raw_aac.is_empty() {
-            return None;
+        if let Some(description) = &audio.raw_aac_config {
+            return Some(RecordingAudioTrack {
+                timescale: description.freq_index.freq(),
+                description: description.clone(),
+            });
         }
-        let timescale = adts_info
+        let adts = adts::parse_adts(&audio.data);
+        let timescale = adts
             .as_ref()
             .map_or(audio.sample_rate, |info| info.sample_rate);
-        let channel_config = if let Some(info) = adts_info {
-            mp4::ChannelConfig::try_from(info.channels).unwrap_or(mp4::ChannelConfig::Mono)
-        } else {
-            let config = match audio.channels {
-                1..=6 => audio.channels,
-                8 => 7,
-                _ => return None,
-            };
-            mp4::ChannelConfig::try_from(config).ok()?
-        };
-        Some(mp4::TrackConfig {
-            track_type: mp4::TrackType::Audio,
+        let chan_conf = adts
+            .as_ref()
+            .and_then(|info| mp4::ChannelConfig::try_from(info.channels).ok())
+            .unwrap_or(mp4::ChannelConfig::Mono);
+        Some(RecordingAudioTrack {
             timescale,
-            language: String::from("und"),
-            media_conf: mp4::MediaConfig::AacConfig(mp4::AacConfig {
+            description: mp4::AacConfig {
                 bitrate: 64_000,
                 profile: mp4::AudioObjectType::AacLowComplexity,
                 freq_index: sample_freq_index(timescale),
-                chan_conf: channel_config,
-            }),
+                chan_conf,
+            },
         })
     })
 }
@@ -1128,18 +1146,76 @@ mod tests {
             frame: MediaFrame::Audio(AudioFrame {
                 codec: AudioCodec::Aac,
                 sample_rate: 48_000,
-                channels: 2,
+                raw_aac_config: Some(mp4::AacConfig {
+                    chan_conf: mp4::ChannelConfig::Stereo,
+                    freq_index: mp4::SampleFreqIndex::Freq48000,
+                    profile: mp4::AudioObjectType::AacMain,
+                    bitrate: 64_000,
+                }),
                 duration: Duration::from_micros(21_333),
                 data: Bytes::from_static(&[0x21, 0x10]),
             }),
         };
         let track = super::audio_track_config(&[frame]).unwrap();
         assert_eq!(track.timescale, 48_000);
-        let mp4::MediaConfig::AacConfig(aac) = track.media_conf else {
-            panic!("expected an AAC sample description");
-        };
+        let aac = track.description;
+        assert_eq!(aac.profile, mp4::AudioObjectType::AacMain);
         assert_eq!(aac.chan_conf, mp4::ChannelConfig::Stereo);
         assert_eq!(aac.freq_index, mp4::SampleFreqIndex::Freq48000);
+    }
+
+    #[test]
+    fn raw_rtsp_aac_cannot_change_the_open_sample_description() -> anyhow::Result<()> {
+        let dir =
+            std::env::temp_dir().join(format!("keeppeek-rtsp-audio-{}", uuid::Uuid::new_v4()));
+        let start = Instant::now();
+        let mut writer = MediumTermWriter::create(&dir, "camera/main", start, 8192)?;
+        let key = |ms| video_frame(start + Duration::from_millis(ms), Duration::from_millis(ms));
+        let config = mp4::AacConfig {
+            profile: mp4::AudioObjectType::AacMain,
+            chan_conf: mp4::ChannelConfig::Stereo,
+            freq_index: mp4::SampleFreqIndex::Freq48000,
+            bitrate: 64_000,
+        };
+        let packet = |ms, description, data| RecordingFrame {
+            received_at: start + Duration::from_millis(ms),
+            timestamp: Some(Duration::from_millis(ms)),
+            frame: MediaFrame::Audio(AudioFrame {
+                codec: AudioCodec::Aac,
+                sample_rate: 48_000,
+                raw_aac_config: Some(description),
+                duration: Duration::from_millis(20),
+                data: Bytes::from_static(data),
+            }),
+        };
+        // Raw AAC can begin with a sequence that also looks like an ADTS header.
+        let first = &[0xff, 0xf1, 0x4c, 0x40, 0, 0, 0, 0xab];
+        writer.append_bounded(key(0))?;
+        writer.append_bounded(packet(10, config.clone(), first))?;
+        writer.append_bounded(key(40))?;
+        let mut changed = config.clone();
+        changed.chan_conf = mp4::ChannelConfig::Mono;
+        assert!(
+            !writer
+                .append_bounded(packet(50, changed, &[0xaa]))?
+                .accepted
+        );
+        assert!(writer.append_bounded(packet(60, config, &[0xbb]))?.accepted);
+        let path = writer.finalize()?;
+        let mut file = mp4::read_mp4(File::open(path)?)?;
+        let (&id, track) = file
+            .tracks()
+            .iter()
+            .find(|(_, track)| track.track_type().ok() == Some(mp4::TrackType::Audio))
+            .unwrap();
+        assert_eq!(track.audio_profile()?, mp4::AudioObjectType::AacMain);
+        assert_eq!(track.channel_config()?, mp4::ChannelConfig::Stereo);
+        assert_eq!(track.sample_count(), 2);
+        assert_eq!(file.read_sample(id, 1)?.unwrap().bytes.as_ref(), first);
+        assert_eq!(file.read_sample(id, 2)?.unwrap().bytes.as_ref(), [0xbb]);
+        drop(file);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
     }
 
     #[test]
@@ -1285,7 +1361,7 @@ mod tests {
                 frame: MediaFrame::Audio(AudioFrame {
                     codec: AudioCodec::Aac,
                     sample_rate: 16000,
-                    channels: 1,
+                    raw_aac_config: None,
                     duration: Duration::from_millis(20),
                     data: audio_data,
                 }),
@@ -1334,7 +1410,7 @@ mod tests {
                 frame: MediaFrame::Audio(AudioFrame {
                     codec: AudioCodec::Aac,
                     sample_rate: 16000,
-                    channels: 1,
+                    raw_aac_config: None,
                     duration: Duration::from_millis(110),
                     data: Bytes::from_static(&[0xff, 0xf1, 0x60, 0x40, 0, 0, 0, 0xaa]),
                 }),
@@ -1392,7 +1468,7 @@ mod tests {
                     frame: MediaFrame::Audio(AudioFrame {
                         codec: AudioCodec::Aac,
                         sample_rate: 16000,
-                        channels: 1,
+                        raw_aac_config: None,
                         duration: Duration::from_millis(20),
                         data: Bytes::from_static(&[0xff, 0xf1, 0x60, 0x40, 0, 0, 0, 0xaa]),
                     }),
@@ -1736,7 +1812,7 @@ mod tests {
             frame: MediaFrame::Audio(AudioFrame {
                 codec,
                 sample_rate: 16_000,
-                channels: 1,
+                raw_aac_config: None,
                 duration: Duration::from_millis(20),
                 data,
             }),
@@ -2226,7 +2302,7 @@ mod tests {
                 frame: MediaFrame::Audio(AudioFrame {
                     codec: AudioCodec::Aac,
                     sample_rate: 48_000,
-                    channels: 1,
+                    raw_aac_config: None,
                     duration: Duration::from_millis(20),
                     data: vec![0xFF, 0xF1, 0x4C, 0x40, 0, 0, 0, 0xAA].into(),
                 }),
@@ -2239,7 +2315,7 @@ mod tests {
                 frame: MediaFrame::Audio(AudioFrame {
                     codec: AudioCodec::Aac,
                     sample_rate: 48_000,
-                    channels: 1,
+                    raw_aac_config: None,
                     duration: Duration::from_millis(20),
                     data: vec![0xFF, 0xF1, 0x4C, 0x40, 0, 0, 0, 0xBB].into(),
                 }),
@@ -2252,7 +2328,7 @@ mod tests {
                 frame: MediaFrame::Audio(AudioFrame {
                     codec: AudioCodec::Aac,
                     sample_rate: 48_000,
-                    channels: 1,
+                    raw_aac_config: None,
                     duration: Duration::from_millis(20),
                     data: vec![0xFF, 0xF1, 0x4C, 0x40, 0, 0, 0, 0xCC].into(),
                 }),

@@ -586,7 +586,7 @@ mod tests {
             received_at: now,
             timestamp,
             frame: MediaFrame::Audio(crate::storage::frame::AudioFrame {
-                channels: 1,
+                raw_aac_config: None,
                 codec: crate::storage::frame::AudioCodec::Aac,
                 sample_rate: 16000,
                 duration: Duration::from_millis(duration_ms),

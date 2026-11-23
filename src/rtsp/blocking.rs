@@ -726,6 +726,7 @@ impl RtspLoop {
         let mut video_continuity = VideoContinuity::new();
         let mut video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
         let mut audio_track = None;
+        let mut reported_unsupported_recording_audio = false;
         let mut pending_talkback = None;
         let mut talkback_session: Option<IsapiTalk> = None;
         let mut talkback_speaker: Option<IsapiSpeaker> = None;
@@ -847,6 +848,17 @@ impl RtspLoop {
                         );
                     }
                     if let Some(storage) = &self.storage {
+                        let raw_aac_config = audio.recording_aac_config();
+                        if audio.storage_codec == crate::storage::AudioCodec::Aac
+                            && raw_aac_config.is_none()
+                        {
+                            if !reported_unsupported_recording_audio {
+                                tracing::warn!(stream = %self.stream, sample_rate = audio.sample_rate, channels = audio.channels,
+                                    "RTSP AAC recording unavailable for this decoder configuration");
+                                reported_unsupported_recording_audio = true;
+                            }
+                            continue;
+                        }
                         let timestamp =
                             timestamp.map(|timestamp| audio_timestamps.normalize(timestamp));
                         storage.ingest_stream(
@@ -861,7 +873,7 @@ impl RtspLoop {
                                 frame: MediaFrame::Audio(AudioFrame {
                                     codec: audio.storage_codec,
                                     sample_rate: audio.sample_rate,
-                                    channels: audio.channels,
+                                    raw_aac_config,
                                     duration,
                                     data,
                                 }),

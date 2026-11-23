@@ -1,7 +1,7 @@
 use crate::{
     api::{CameraId, CameraLifecycle, CameraStatus},
     battery_wake::BatteryWakeHandle,
-    cameras::{Camera, CameraBackend, CameraTransport, VideoEncoding},
+    cameras::{AudioEncoding, Camera, CameraBackend, CameraTransport, VideoEncoding},
     event_forwarder::{Handle as EventForwarderHandle, model::EventTransition},
     notifications::{
         Handle as NotificationHandle, Lifecycle as NotificationLifecycle,
@@ -114,6 +114,12 @@ pub struct VideoMeta {
     pub width: u32,
     pub height: u32,
     pub framerate: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AudioMeta {
+    pub encoding: AudioEncoding,
+    pub sample_rate: Option<u32>,
 }
 
 #[derive(Clone)]

@@ -1037,7 +1037,7 @@ impl ReolinkLoop {
                                     let frame = MediaFrame::Audio(AudioFrame {
                                         codec: fc,
                                         sample_rate,
-                                        channels: 1,
+                                        raw_aac_config: None,
                                         duration,
                                         data: data.to_vec().into(),
                                     });

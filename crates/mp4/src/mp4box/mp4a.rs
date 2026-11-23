@@ -28,10 +28,7 @@ impl Mp4aBox {
     pub const fn new(config: &AacConfig) -> Self {
         Self {
             data_reference_index: 1,
-            channelcount: match config.chan_conf {
-                ChannelConfig::SevenOne => 8,
-                layout => layout as u16,
-            },
+            channelcount: config.chan_conf.channel_count() as u16,
             samplesize: 16,
             samplerate: FixedPointU16::new(config.freq_index.freq() as u16),
             esds: Some(EsdsBox::new(config)),

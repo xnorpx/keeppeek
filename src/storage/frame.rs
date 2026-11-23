@@ -56,9 +56,20 @@ pub struct VideoFrame {
 pub struct AudioFrame {
     pub codec: AudioCodec,
     pub sample_rate: u32,
-    pub channels: u8,
+    /// Raw access units accompanied by the exact sample description negotiated over RTSP.
+    pub raw_aac_config: Option<mp4::AacConfig>,
     pub duration: Duration,
     pub data: Bytes,
+}
+
+impl AudioFrame {
+    pub(super) fn aac_payload(&self) -> &[u8] {
+        if self.raw_aac_config.is_some() {
+            &self.data
+        } else {
+            super::adts::strip_adts(&self.data).0
+        }
+    }
 }
 
 pub enum MediaFrame {
