@@ -7,6 +7,8 @@ use super::Secret;
 pub const MAX_ACTIVE_GRANTS: usize = 256;
 pub const MAX_CREATOR_GRANTS: usize = 32;
 pub const MAX_GRANT_RECORDS: usize = 4_096;
+/// Maximum terminal records removed in one scheduled maintenance transaction.
+pub const AUDIT_PURGE_BATCH: u32 = 256;
 pub const MAX_GRANT_LIFETIME_MS: i64 = 86_400_000;
 pub const AUDIT_RETENTION_MS: i64 = 30 * MAX_GRANT_LIFETIME_MS;
 pub const MAX_MEDIA_BYTES: u64 = 512 * 1_024 * 1_024;
