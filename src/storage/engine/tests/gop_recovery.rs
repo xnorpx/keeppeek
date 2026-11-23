@@ -179,8 +179,61 @@ fn single_gop_rotation_discontinuity_and_shutdown_publish_each_finalized_duratio
         let active_duration = recorded_ms(&worker);
         assert!(active_duration > 600);
         worker.finalize_all();
-        assert_eq!(recorded_ms(&worker), active_duration);
+        // Four 100 ms samples are now finalized, including the last sample of the open GOP.
+        assert_eq!(recorded_ms(&worker), 1_000);
         drop(worker);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn malformed_keyframe_keeps_the_committed_gop_health_credit() {
+    for resume in [false, true] {
+        let mut config =
+            storage_config(&format!("failed-keyframe-health-{}", uuid::Uuid::new_v4()));
+        let root = config.long_term_path.clone();
+        config.short_term_duration = Duration::ZERO;
+        config.flush_interval = Duration::ZERO;
+        config.medium_term_duration = Duration::from_secs(60);
+        let mut worker = WriterWorker::new(config, RecordingDemand::new(Duration::ZERO), None);
+        let source = RecordingStreamIdentity::legacy("camera/main");
+        let start = Instant::now();
+        worker.ingest(source.clone(), frame(start, 0, true, false));
+        worker.ingest(source.clone(), frame(start, 100, false, false));
+        let mut broken = frame(start, 200, true, false);
+        let MediaFrame::Video(video) = &mut broken.frame else {
+            unreachable!()
+        };
+        video.codec = VideoCodec::H265;
+        video.data = Bytes::from_static(&[0, 0, 0, 2, 0x26, 1]);
+        worker.ingest(source.clone(), broken);
+        assert!(worker.health.snapshot().streams[0].last_error.is_some());
+        if resume {
+            worker.ingest(source.clone(), frame(start, 300, true, false));
+            worker.ingest(source.clone(), frame(start, 400, false, false));
+            assert!(worker.health.snapshot().streams[0].recorded_duration_ms >= 200);
+        }
+        worker.finalize_all();
+        let recordings = LongTermStore::new(root.clone())
+            .finalized_segments(&source.storage_key)
+            .unwrap();
+        assert_eq!(recordings.len(), 1);
+        let mut mp4 = mp4::read_mp4(File::open(&recordings[0]).unwrap()).unwrap();
+        let (&track_id, track) = mp4.tracks().iter().next().unwrap();
+        let timescale = track.timescale();
+        let samples = track.sample_count();
+        assert_eq!(samples, if resume { 4 } else { 2 });
+        let ticks = (1..=samples)
+            .map(|i| u64::from(mp4.read_sample(track_id, i).unwrap().unwrap().duration))
+            .sum::<u64>();
+        let actual = ticks * 1000 / u64::from(timescale);
+        assert_eq!(actual, if resume { 400 } else { 200 });
+        assert_eq!(
+            worker.health.snapshot().streams[0].recorded_duration_ms,
+            actual
+        );
+        drop(mp4);
+        drop(worker);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

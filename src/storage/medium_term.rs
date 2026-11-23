@@ -46,7 +46,8 @@ pub struct MediumTermWriter {
     camera_timestamp_origin: Option<Duration>,
     frames_written: u64,
     bytes_written: u64,
-    recorded_duration: Duration,
+    committed_video_ticks: u64,
+    reported_video_ticks: u64,
     // None after a rejected frame until a new video keyframe resumes this stream.
     pending_gop_bytes: Option<usize>,
     // Once the camera clock is discontinuous, advance from the committed boundary on receipt time.
@@ -197,7 +198,8 @@ impl MediumTermWriter {
             camera_timestamp_origin: None,
             frames_written: 0,
             bytes_written: 0,
-            recorded_duration: Duration::ZERO,
+            committed_video_ticks: 0,
+            reported_video_ticks: 0,
             pending_gop_bytes: Some(0),
             gap_clock: None,
             write_buffer_bytes,
@@ -208,25 +210,33 @@ impl MediumTermWriter {
 
     /// Append a caller-supplied batch while honoring the same GOP budget as single appends.
     pub fn append_batch(&mut self, frames: Vec<RecordingFrame>) -> std::io::Result<Duration> {
-        let mut recorded_duration = Duration::ZERO;
         let mut exceeded = false;
+        let mut accepted = false;
         for rf in frames {
-            let progress = self.append_bounded(rf)?;
-            recorded_duration = recorded_duration.saturating_add(progress.recorded_duration);
+            let progress = self.append_frame(rf)?;
             exceeded |= progress.keyframe_gap;
+            accepted |= progress.accepted;
         }
         if exceeded {
             return Err(keyframe_budget_error());
         }
-        Ok(recorded_duration)
+        Ok(if accepted {
+            self.take_video_progress()
+        } else {
+            Duration::ZERO
+        })
     }
 
     pub fn append_one(&mut self, rf: RecordingFrame) -> std::io::Result<Duration> {
-        let progress = self.append_bounded(rf)?;
+        let progress = self.append_frame(rf)?;
         if progress.keyframe_gap {
             return Err(keyframe_budget_error());
         }
-        Ok(progress.recorded_duration)
+        Ok(if progress.accepted {
+            self.take_video_progress()
+        } else {
+            Duration::ZERO
+        })
     }
 
     #[cfg(test)]
@@ -235,7 +245,30 @@ impl MediumTermWriter {
     }
 
     pub(super) fn append_bounded(&mut self, rf: RecordingFrame) -> std::io::Result<WriteProgress> {
-        let previous_duration = self.recorded_duration;
+        let mut progress = self.append_frame(rf)?;
+        if progress.accepted || progress.keyframe_gap {
+            progress.recorded_duration = self.take_video_progress();
+        }
+        Ok(progress)
+    }
+
+    fn take_video_progress(&mut self) -> Duration {
+        // Two observed DTS values establish elapsed time in the open fragment. Its terminal
+        // sample gets its definitive duration when the MP4 writer commits the fragment.
+        let open = match &self.state {
+            WriterState::Active(active) => active
+                .last_video_dts
+                .zip(active.fragment_start_dts)
+                .map_or(0, |(last, first)| last.saturating_sub(first)),
+            _ => 0,
+        };
+        let ticks = self.committed_video_ticks.saturating_add(open);
+        let unreported = ticks.saturating_sub(self.reported_video_ticks);
+        self.reported_video_ticks = self.reported_video_ticks.max(ticks);
+        ticks_to_duration(unreported, VIDEO_TIMESCALE)
+    }
+
+    fn append_frame(&mut self, rf: RecordingFrame) -> std::io::Result<WriteProgress> {
         let keyframe = rf.is_video_keyframe();
         if keyframe && self.segment_origin.is_none() {
             self.segment_origin = Some(rf.received_at);
@@ -269,7 +302,7 @@ impl MediumTermWriter {
             self.flush_before_keyframe_gap(&rf)?;
             return Ok(WriteProgress {
                 accepted: false,
-                recorded_duration: self.recorded_duration.saturating_sub(previous_duration),
+                recorded_duration: Duration::ZERO,
                 keyframe_gap: true,
             });
         }
@@ -295,7 +328,7 @@ impl MediumTermWriter {
         self.pending_gop_bytes = Some(bytes);
         Ok(WriteProgress {
             accepted: true,
-            recorded_duration: self.recorded_duration.saturating_sub(previous_duration),
+            recorded_duration: Duration::ZERO,
             keyframe_gap: false,
         })
     }
@@ -346,7 +379,7 @@ impl MediumTermWriter {
             active.last_video_dts = None;
             active.last_video_duration = 0;
             active.audio_after_gap = true;
-            self.insert_catalog_fragment(fragment, start, end)?;
+            self.commit_fragment(fragment, start, end)?;
         }
         self.gap_clock = Some((dropped.received_at, end));
         self.camera_timestamp_origin = None;
@@ -528,7 +561,7 @@ impl MediumTermWriter {
                         .map_err(mp4_err)?;
                     active.fragment_start_dts = None;
                     if let Some(fragment) = fragment {
-                        self.insert_catalog_fragment(fragment, fragment_start_dts, dts)?;
+                        self.commit_fragment(fragment, fragment_start_dts, dts)?;
                     }
                 }
                 let WriterState::Active(active) = &mut self.state else {
@@ -591,9 +624,6 @@ impl MediumTermWriter {
                 active.fragment_start_dts.get_or_insert(dts);
                 active.last_video_dts = Some(dts);
                 active.last_video_duration = duration;
-                self.recorded_duration = self
-                    .recorded_duration
-                    .saturating_add(ticks_to_duration(u64::from(duration), VIDEO_TIMESCALE));
                 self.frames_written += 1;
                 self.bytes_written += data_len as u64;
             }
@@ -647,6 +677,19 @@ impl MediumTermWriter {
                 self.bytes_written += raw_aac.len() as u64;
             }
         }
+        Ok(())
+    }
+
+    fn commit_fragment(
+        &mut self,
+        fragment: mp4::Mp4FragmentInfo,
+        start_dts: u64,
+        end_dts: u64,
+    ) -> std::io::Result<()> {
+        self.insert_catalog_fragment(fragment, start_dts, end_dts)?;
+        self.committed_video_ticks = self
+            .committed_video_ticks
+            .saturating_add(end_dts.saturating_sub(start_dts));
         Ok(())
     }
 
@@ -704,10 +747,7 @@ impl MediumTermWriter {
 
     #[tracing::instrument(level = "trace", skip_all)]
     pub(super) fn finalize_with_progress(mut self) -> std::io::Result<Option<(PathBuf, Duration)>> {
-        let prepared = matches!(self.state, WriterState::Preparing(_));
-        if prepared {
-            self.activate_prepared()?;
-        }
+        self.activate_prepared()?;
         let state = std::mem::replace(&mut self.state, WriterState::WaitingForKeyframe);
         match state {
             WriterState::Active(active) => {
@@ -725,7 +765,6 @@ impl MediumTermWriter {
                 let file = inner
                     .into_inner()
                     .map_err(std::io::IntoInnerError::into_error)?;
-                let mut unreported = Duration::ZERO;
                 if let Some(fragment) = final_fragment {
                     let start_dts = fragment_start_dts.ok_or_else(|| {
                         std::io::Error::other("final MP4 fragment has no start timestamp")
@@ -733,12 +772,7 @@ impl MediumTermWriter {
                     let end_dts = last_video_dts
                         .unwrap_or(start_dts)
                         .saturating_add(u64::from(last_video_duration));
-                    self.insert_catalog_fragment(fragment, start_dts, end_dts)?;
-                    // The first GOP was buffered during admission. Its samples become visible
-                    // to recording health only now, with the MP4's actual final sample duration.
-                    if prepared {
-                        unreported = ticks_to_duration(end_dts - start_dts, VIDEO_TIMESCALE);
-                    }
+                    self.commit_fragment(fragment, start_dts, end_dts)?;
                 }
                 file.complete(
                     self.catalog.as_ref(),
@@ -746,6 +780,7 @@ impl MediumTermWriter {
                     &self.path,
                     &self.final_path,
                 )?;
+                let unreported = self.take_video_progress();
                 Ok(Some((self.final_path, unreported)))
             }
             // No initialized segment exists to publish or relocate.
@@ -793,7 +828,7 @@ impl MediumTermWriter {
                 .map(|fragment| (fragment, start, end_dts));
         }
         if let Some((fragment, start, end)) = completed {
-            self.insert_catalog_fragment(fragment, start, end)?;
+            self.commit_fragment(fragment, start, end)?;
         }
         self.finalize_recording()
     }
