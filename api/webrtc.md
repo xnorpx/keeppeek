@@ -1744,6 +1744,15 @@ recorder cannot establish their display order, it returns `AMBIGUOUS_ANCHOR`. Gi
 encoded chunk its sample's unique rank as the WebCodecs timestamp, then match the returned
 VideoFrame timestamp to the target rank. Keep the source time with the sample token.
 
+Chunk zero of each sample can carry `stored_time` and `stored_end_time` in
+absolute recording time. The start comes from its MP4 presentation timestamp.
+The exclusive end comes from that timestamp plus the sample’s stored duration,
+converted with the track timescale. When the measured endpoints map to the same
+nanosecond, the end is absent.
+Later chunks omit both coordinates. Older servers can omit both on every chunk.
+A client can use these bounds to probe a paused seek and confirm the selected
+picture with a presentation callback before resuming playback.
+
 One player may have one active operation and up to 32 coalesced repeats. The decoder window
 is limited to 4,096 samples, 10 seconds and 32 MiB encoded, including any reorder lookahead.
 The client retains at most one decoder and two output VideoFrames. The first-response deadline

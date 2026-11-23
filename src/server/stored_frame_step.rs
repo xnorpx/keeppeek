@@ -568,8 +568,13 @@ impl Plan {
             }
             let chunks = data.chunks(DATA_MESSAGE_CHUNK_BYTES);
             let total = chunks.len() as u32;
+            let end = (picture.stored_end_ns > picture.stored_ns)
+                .then(|| message_time(picture.stored_end_ns))
+                .transpose()?;
+            let mut bounds = Some((Some(message_time(picture.stored_ns)?), end));
             for (part, payload) in chunks.enumerate() {
                 work.check().map_err(|_| Unavailable::Stale)?;
+                let (stored_time, stored_end_time) = bounds.take().unwrap_or_default();
                 let chunk = proto::StoredFrameStepChunk {
                     stored_media_id: self.result.stored_media_id.clone(),
                     generation: self.result.generation,
@@ -581,6 +586,8 @@ impl Plan {
                     chunk_count: total,
                     payload: payload.to_vec(),
                     sample_bytes: picture.size,
+                    stored_time,
+                    stored_end_time,
                 };
                 messages.push(OutboundDataMessage {
                     target: DataChannelTarget::Reliable,

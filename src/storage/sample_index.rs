@@ -16,6 +16,7 @@ pub(crate) const MAX_MOOF_BYTES: usize = 1_024 * 1_024;
 pub(crate) struct Picture {
     pub ordinal: u32,
     pub stored_ns: i128,
+    pub stored_end_ns: i128,
     pub source: Option<mp4::SourceRtpTime>,
     pub presentation_ns: Option<i128>,
     pub offset: u64,
@@ -131,9 +132,14 @@ pub(crate) fn fragment(
                 Ok(origin + anchored + ticks_to_ns(delta, clock.clock_rate.get())?)
             })
             .transpose()?;
+        let end_ticks = timing
+            .presentation_time
+            .checked_add(i128::from(timing.duration))
+            .context("stored picture end overflow")?;
         pictures.push(Picture {
             ordinal,
             stored_ns: origin + ticks_to_ns(timing.presentation_time, track.timescale())?,
+            stored_end_ns: origin + ticks_to_ns(end_ticks, track.timescale())?,
             source: measured,
             presentation_ns,
             offset,

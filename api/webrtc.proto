@@ -4538,4 +4538,8 @@ message StoredFrameStepChunk {
   uint32 chunk_count = 8;
   bytes payload = 9;
   uint32 sample_bytes = 10;
+  // Absolute MP4 presentation bounds on the stored clock, only on chunk zero of a sample.
+  google.protobuf.Timestamp stored_time = 11;
+  // Exclusive end when the stored sample has a positive duration representable in nanoseconds.
+  google.protobuf.Timestamp stored_end_time = 12;
 }

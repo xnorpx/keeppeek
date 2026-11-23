@@ -28,6 +28,15 @@ fn recording_with_width(
     times: &[Option<i64>],
     width: u16,
 ) -> Vec<CatalogMediaFragment> {
+    write_recording(path, times, width, 6)
+}
+
+fn write_recording(
+    path: &Path,
+    times: &[Option<i64>],
+    width: u16,
+    first_sample_bytes: usize,
+) -> Vec<CatalogMediaFragment> {
     let config = mp4::Mp4Config {
         major_brand: "iso6".parse().unwrap(),
         minor_version: 1,
@@ -54,19 +63,17 @@ fn recording_with_width(
     let mut fragments = Vec::new();
     for (index, &stamp) in times.iter().enumerate() {
         let sync = index % 3 == 0;
+        let size = if index == 0 { first_sample_bytes } else { 6 };
+        let mut payload = vec![0; size];
+        payload[..4].copy_from_slice(&u32::try_from(size - 4).unwrap().to_be_bytes());
+        payload[4] = if sync { 0x65 } else { 0x41 };
+        payload[5] = index as u8;
         let sample = mp4::Mp4Sample {
             start_time: index as u64 * 40,
             duration: 40,
             rendering_offset: 0,
             is_sync: sync,
-            bytes: bytes::Bytes::from(vec![
-                0,
-                0,
-                0,
-                2,
-                if sync { 0x65 } else { 0x41 },
-                index as u8,
-            ]),
+            bytes: payload.into(),
         };
         let packet = stamp.map(|timestamp| mp4::SourceRtpPacket {
             session_id: [1; 16],
@@ -106,6 +113,42 @@ fn work() -> Work<'static> {
     Work {
         deadline: Instant::now() + Duration::from_secs(2),
         cancelled: &|| false,
+    }
+}
+
+#[test]
+fn first_chunk_carries_measured_stored_presentation_bounds_for_each_sample() {
+    let directory = RecordingDirectory::new();
+    let fragments = write_recording(
+        &directory.0.join("measured.mp4"),
+        &[Some(0), Some(80), Some(40)],
+        320,
+        DATA_MESSAGE_CHUNK_BYTES + 1,
+    );
+    let window = target_window(&fragments, 10_000_000_000, None, true, &work()).unwrap();
+    let transfer = plan(window, &proto::StepStoredFrame::default(), &work()).unwrap();
+    let messages = transfer.messages(&work()).unwrap();
+    assert_eq!(messages.len(), 4);
+    for (outbound, (sample, part)) in messages.into_iter().zip([(0, 0), (0, 1), (1, 0), (2, 0)]) {
+        let Some(proto::message::Message::StoredMedia(media)) = outbound.message.message else {
+            panic!("expected stored media");
+        };
+        let Some(proto::stored_media_message::Message::FrameStepChunk(chunk)) = media.message
+        else {
+            panic!("expected a frame step chunk");
+        };
+        let bytes = prost::Message::encode_to_vec(&chunk);
+        let wire = <proto::StoredFrameStepChunk as prost::Message>::decode(&bytes[..]).unwrap();
+        assert_eq!((wire.decode_index, wire.chunk_index), (sample, part));
+        let start = 10_000_000_000 + i128::from(sample) * 40_000_000;
+        assert_eq!(
+            wire.stored_time.as_ref().and_then(time_ns),
+            (part == 0).then_some(start)
+        );
+        assert_eq!(
+            wire.stored_end_time.as_ref().and_then(time_ns),
+            (part == 0).then_some(start + 40_000_000)
+        );
     }
 }
 
