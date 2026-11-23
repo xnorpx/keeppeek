@@ -2414,10 +2414,11 @@
 
 	function applyPendingSeek() {
 		if (!video || !selected || video.getAttribute('src') !== playbackUrl) return;
+		const hasMetadata = video.readyState >= HTMLMediaElement.HAVE_METADATA;
+		if (hasMetadata && video.currentSrc !== video.src) return;
 		video.playbackRate = playbackRate;
 		video.muted = scrubbing || playbackMuted;
-		const hasMetadata = video.readyState >= HTMLMediaElement.HAVE_METADATA;
-		if (pendingSeekSeconds !== null && (!hasMetadata || video.currentSrc === video.src)) {
+		if (pendingSeekSeconds !== null) {
 			const requestedTime = hasMetadata
 				? Math.max(0, Math.min(pendingSeekSeconds, video.duration || pendingSeekSeconds))
 				: pendingSeekSeconds;

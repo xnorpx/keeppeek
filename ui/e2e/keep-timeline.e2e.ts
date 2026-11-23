@@ -160,6 +160,30 @@ test('defaults to the compatible H.264 main stream and autoplays when no stream 
 	await expect(page.locator('video')).toHaveAttribute('data-play-requested', 'true');
 });
 
+test('queues autoplay until metadata from the previous recording is gone', async ({ page }) => {
+	const controls = await mockKeepTimeline(page);
+	await page.addInitScript(() => {
+		Object.defineProperties(HTMLMediaElement.prototype, {
+			readyState: { configurable: true, get: () => HTMLMediaElement.HAVE_METADATA },
+			currentSrc: { configurable: true, get: () => location.origin + '/previous-recording' }
+		});
+	});
+	await page.goto(`/keep?camera=front-door&date=${date}`);
+	await expect.poll(() => controls.storedOpens.map((open) => open.streamId)).toEqual(['main']);
+	const video = page.locator('video');
+	await expect(video).toHaveAttribute('src', /^blob:/);
+	await video.evaluate((element) => element.dispatchEvent(new Event('loadedmetadata')));
+	await expect(video).not.toHaveAttribute('data-play-requested', 'true');
+	await video.evaluate((element) => {
+		Object.defineProperties(element, {
+			readyState: { configurable: true, value: HTMLMediaElement.HAVE_NOTHING },
+			currentSrc: { configurable: true, value: '' }
+		});
+		element.dispatchEvent(new Event('durationchange'));
+	});
+	await expect(video).toHaveAttribute('data-play-requested', 'true');
+});
+
 test('selects the newest indexed day before querying an implicit empty current day', async ({
 	page
 }) => {
