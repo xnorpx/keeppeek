@@ -189,7 +189,7 @@ fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_
         assert_eq!(required(&connection, &id).await?.state, "ready");
         connection
             .execute(
-                "UPDATE recording_files SET source_id='camera' WHERE id='recording'",
+                "UPDATE recording_files SET source_id='camera',logical_stream_id='main' WHERE id='recording'",
                 (),
             )
             .await?;
@@ -255,8 +255,8 @@ fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_
                 .await
                 .is_err()
         );
-        connection.execute_batch("INSERT INTO recording_files(id,stream_id,source_id,started_at_ms,ended_at_ms,path,init_offset,init_len,finalized,finalized_at_ms,file_identity,file_bytes)
-            SELECT 'z-other',stream_id,'other-camera',1,2,'/hot/z-other.mp4',0,1,1,2,'other-file',4 FROM recording_files WHERE id='recording';
+        connection.execute_batch("INSERT INTO recording_files(id,stream_id,source_id,logical_stream_id,started_at_ms,ended_at_ms,path,init_offset,init_len,finalized,finalized_at_ms,file_identity,file_bytes)
+            SELECT 'z-other',stream_id,'other-camera',logical_stream_id,1,2,'/hot/z-other.mp4',0,1,1,2,'other-file',4 FROM recording_files WHERE id='recording';
             UPDATE recording_retention_runtime SET complete=0,cursor=NULL,high_water='z-other';").await?;
         use crate::storage::catalog::retention::runtime::test_reconciliation_turn;
         assert_eq!(test_reconciliation_turn(&connection).await?.evaluated, 0);
@@ -302,6 +302,16 @@ fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_
             .await?;
         assert!(deferred.next().await?.is_none());
         drop(deferred);
+        let mut decisions = connection
+            .query(
+                "SELECT COUNT(*) FROM recording_retention_decisions d
+            JOIN recording_files r ON r.id=d.recording_id WHERE r.id IN ('recording','z-other')
+                AND r.retention_error IS NULL AND d.runtime_generation=?1",
+                [generation],
+            )
+            .await?;
+        assert_eq!(decisions.next().await?.unwrap().get::<i64>(0)?, 2);
+        drop(decisions);
         assert_eq!(required(&connection, &id).await?.state, "deleted");
         check_retired_copy_selection(&connection).await?;
         connection
