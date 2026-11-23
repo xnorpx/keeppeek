@@ -1719,6 +1719,25 @@
 		} else retryPlaybackTarget = null;
 	}
 
+	async function selectExportSegment(
+		segment: RecordingSegment,
+		timestampMs: number
+	): Promise<void> {
+		// Keep the chosen stream and draft while Export has no mounted video.
+		cameraSwitchPending = false;
+		cameraSwitchAnimating = false;
+		clearCameraSwitchFrame();
+		playbackVersion += 1;
+		selected = segment;
+		playheadMs = timestampMs;
+		playing = false;
+		pendingPlay = false;
+		playerError = null;
+		playbackStartupPhase = 'idle';
+		releaseSecondaryLoads();
+		await closeStoredPlayback();
+	}
+
 	async function selectSegment(segment: RecordingSegment | null, offsetSeconds = 0, play = false) {
 		rememberPlaybackTarget(segment, offsetSeconds, play);
 		if (!segment) {
@@ -1754,20 +1773,7 @@
 			exportRangeEndMs = null;
 		}
 		if (mode === 'export') {
-			// No video element is mounted here. A playback fallback must not change
-			// the operator's chosen stream or discard its draft and one-time link.
-			cameraSwitchPending = false;
-			cameraSwitchAnimating = false;
-			clearCameraSwitchFrame();
-			playbackVersion += 1;
-			selected = segment;
-			playheadMs = requestedTimestampMs;
-			playing = false;
-			pendingPlay = false;
-			playerError = null;
-			playbackStartupPhase = 'idle';
-			releaseSecondaryLoads();
-			await closeStoredPlayback();
+			await selectExportSegment(segment, requestedTimestampMs);
 			return;
 		}
 		const requestedOffsetSeconds = (requestedTimestampMs - segment.start_time_ms) / 1_000;
@@ -1800,8 +1806,9 @@
 		try {
 			await playback.seek(timestampMs);
 		} catch (cause) {
+			if (version !== playbackVersion || playback !== storedPlayback) return;
 			clearColdSeek();
-			if (version === playbackVersion) playerError = storedPlaybackError(cause);
+			playerError = storedPlaybackError(cause);
 			return;
 		}
 		if (version !== playbackVersion) return;
@@ -1844,8 +1851,8 @@
 				recordedAudioPreview
 			});
 		} catch (cause) {
-			clearColdSeek();
 			if (openController.signal.aborted || version !== playbackVersion) return;
+			clearColdSeek();
 			await handlePlaybackFailure(
 				storedPlaybackError(cause),
 				version,

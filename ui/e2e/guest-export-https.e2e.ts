@@ -160,17 +160,30 @@ async function verifyPrivatePage(page: Page, values: string[], verifyConsole: ()
 
 async function playAndSeek(viewer: Page) {
 	const video = viewer.locator('video');
-	await video.evaluate(async (v) => {
-		const media = v as HTMLVideoElement;
+	const target = await video.evaluate(async (element) => {
+		const media = element as HTMLVideoElement;
 		media.muted = true;
 		await media.play();
 		media.pause();
-		media.currentTime = media.duration / 2;
+		const target = media.duration / 2;
+		media.currentTime = target;
+		return target;
 	});
+	expect(target).toBeGreaterThan(0);
 	await expect
-		.poll(() => video.evaluate((v) => (v as HTMLVideoElement).videoWidth))
-		.toBeGreaterThan(0);
-	await expect.poll(() => video.evaluate((v) => !(v as HTMLVideoElement).seeking)).toBe(true);
+		.poll(() =>
+			video.evaluate((element, target) => {
+				const media = element as HTMLVideoElement;
+				return (
+					!media.seeking &&
+					media.paused &&
+					media.videoWidth > 0 &&
+					media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+					Math.abs(media.currentTime - target) < 0.05
+				);
+			}, target)
+		)
+		.toBe(true);
 }
 
 async function firstDownloadChunk(viewer: Page, expectedBytes: number) {

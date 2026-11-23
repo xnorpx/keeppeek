@@ -86,7 +86,8 @@ function cursor(id: string) {
 function controller(
 	first: ReturnType<typeof cursor>,
 	next: ReturnType<typeof cursor>,
-	audioSupported: boolean
+	audioSupported: boolean,
+	segments: (typeof recording)[]
 ) {
 	const open = vi.fn().mockResolvedValueOnce(first.playback).mockResolvedValue(next.playback);
 	context.control.mockReturnValue({
@@ -106,18 +107,18 @@ function controller(
 		],
 		getHealth: async () => null,
 		getRecordingDates: async () => ['2026-10-15'],
-		getRecordingsInRange: async () => [{ segments: [recording], events: [] }],
+		getRecordingsInRange: async () => [{ segments, events: [] }],
 		queryStoredTimeline: async () => ({ ranges: [], events: [] }),
 		openStoredMedia: open
 	});
 	return open;
 }
 
-function keepFixture(audioSupported = false) {
+function keepFixture(audioSupported = false, segments = [recording]) {
 	const original = window.location.href;
 	const first = cursor('first');
 	const next = cursor('replacement');
-	const open = controller(first, next, audioSupported);
+	const open = controller(first, next, audioSupported, segments);
 	return {
 		first,
 		next,
@@ -315,6 +316,43 @@ it('tracks the retained cursor across cold seeks and ignores a replaced cursor c
 			.element(page.getByRole('region', { name: 'Archive playback', exact: true }))
 			.not.toBeInTheDocument();
 	} finally {
+		dispose();
+	}
+});
+
+it('keeps the current seek indicator when a previous cross-clip seek fails', async () => {
+	const second = {
+		...recording,
+		url: 'stored:front:sub:second',
+		start_time_ms: recording.end_time_ms,
+		end_time_ms: recording.end_time_ms + recording.duration_ms
+	};
+	const { first, mount, dispose } = keepFixture(false, [recording, second]);
+	const stale = Promise.withResolvers<void>();
+	const current = Promise.withResolvers<void>();
+	first.playback.seek
+		.mockImplementationOnce(() => stale.promise)
+		.mockImplementationOnce(() => current.promise);
+	try {
+		await mount();
+		const slider = page.getByRole('slider', { name: 'Recording position', exact: true });
+		await expect.element(slider).toBeEnabled();
+		const player = document.querySelector('[data-keep-player] video');
+		expect(player).toBeInstanceOf(HTMLVideoElement);
+		player!.dispatchEvent(new Event('ended'));
+		await vi.waitFor(() => expect(first.playback.seek).toHaveBeenCalledTimes(1));
+		await slider.click();
+		await vi.waitFor(() => expect(first.playback.seek).toHaveBeenCalledTimes(2));
+		const indicator = page.getByText(
+			'The current frame stays until the requested recording arrives'
+		);
+		await expect.element(indicator).toBeVisible();
+		stale.reject(new Error('Previous recording request failed'));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await expect.element(indicator).toBeVisible();
+	} finally {
+		stale.resolve();
+		current.resolve();
 		dispose();
 	}
 });
