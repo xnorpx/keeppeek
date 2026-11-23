@@ -81,7 +81,7 @@ fn record_batch(
             ingest_timings.push(ingest_start.elapsed().as_secs_f64() * 1_000.0);
         }
     }
-    worker.shutdown_flush();
+    worker.flush_all(true);
     let mut files = Vec::with_capacity(identities.len());
     for identity in &identities {
         let writer = worker
