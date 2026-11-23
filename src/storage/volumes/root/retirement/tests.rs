@@ -110,6 +110,7 @@ fn archive_retirement_honors_long_configured_verification_deadlines() -> anyhow:
     )?;
     assert_eq!(receipt.deadline, deadline);
     receipt.finish()?;
+    drop(receipt);
     fixture.close()
 }
 
