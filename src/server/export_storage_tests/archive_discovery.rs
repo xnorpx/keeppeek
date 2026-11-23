@@ -50,6 +50,11 @@ fn fresh_requester_discovers_archived_export_after_history_pruning() {
     let original = std::fs::read(record.path.as_ref().unwrap()).unwrap();
     let (worker, transfer) = archive_completed_export(&root, &catalog, &state);
     state.storage_config.archive_runtime = Some(worker.handle());
+    let (_, sender) = crate::runtime::Router::new().unwrap();
+    let existing = ServerControlHandler::new(state.clone(), sender);
+    let before = list(&existing, &creator);
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0], record.job);
 
     state
         .export_jobs
@@ -60,10 +65,10 @@ fn fresh_requester_discovers_archived_export_after_history_pruning() {
         .job
         .expires_at = Some(millis_timestamp(0));
     export_storage::history::expire(&state);
-    assert_eq!(
-        export_record(&state).job.status,
-        proto::ExportJobStatus::Expired as i32
-    );
+    let expired = export_record(&state).job;
+    assert_eq!(expired.status, proto::ExportJobStatus::Expired as i32);
+    assert_eq!(list(&existing, &creator), [expired]);
+    drop(existing);
     state
         .export_jobs
         .lock()

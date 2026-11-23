@@ -301,3 +301,51 @@ fn restore_reservation_preserves_its_recording_index() -> anyhow::Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn archive_export_owner_index_filters_before_limiting() -> anyhow::Result<()> {
+    pollster::block_on(async {
+        let connection = fixture().await?;
+        bind(&connection, &binding()).await?;
+        connection
+            .execute_batch("DROP INDEX archive_ready_export_owner")
+            .await?;
+        let insert = "INSERT INTO archive_replicas(job_id,recording_id,kind,target_id,object_id,
+            source_path,source_identity,bytes,digest,source_root,source_filesystem,source_root_identity,
+            source_relative_key,source_operation,state,export_job_id,export_metadata)
+            VALUES('archive-'||?1,'artifact-'||?1,'export','cold','object-'||?1,'source','inode',1,
+            zeroblob(32),'/hot','fs','root','key','operation',?2,?1,?3)";
+        for i in 0..72 {
+            let id = format!("job-{i:03}");
+            let owner = if i == 71 { "other" } else { "owner" };
+            let state = if i == 70 { "cancelled" } else { "ready" };
+            let json = if i == 69 {
+                "{".to_string()
+            } else {
+                serde_json::json!({"requester_id":owner,"created_at_ms":i}).to_string()
+            };
+            connection
+                .execute(insert, turso::params![id, state, json])
+                .await?;
+        }
+        initialize(&connection).await?;
+        let retained = vec!["job-068".to_owned(), "job-067".to_owned()];
+        let Reply::ExportDescriptions(found) =
+            exports::list(&connection, "owner", &retained).await?
+        else {
+            panic!("expected export descriptions");
+        };
+        assert_eq!(found.len(), 64);
+        assert_eq!(found[0].original_id, "job-066");
+        assert_eq!(found[0].artifact_id, "artifact-job-066");
+        assert_eq!(found.last().unwrap().original_id, "job-003");
+        assert!(found.iter().all(|row| !retained.contains(&row.original_id)));
+        let Reply::ExportDescriptions(other) = exports::list(&connection, "other", &[]).await?
+        else {
+            panic!("expected the other owner's descriptions");
+        };
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].original_id, "job-071");
+        Ok(())
+    })
+}
