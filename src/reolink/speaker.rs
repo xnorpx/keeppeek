@@ -1,5 +1,5 @@
 use crate::webrtc::{
-    Publisher,
+    Publisher, TalkbackRoute,
     audio::{AudioCodec, AudioFrame},
 };
 use reo_proto::{
@@ -8,7 +8,6 @@ use reo_proto::{
     stream::{StreamSubscription, StreamType},
     talk::{ImaAdpcmEncoder, TalkAbility, TalkCommand, TalkConfig, TalkEvent},
 };
-use std::sync::Arc;
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
@@ -19,8 +18,8 @@ const MAX_AGE: Duration = Duration::from_millis(250);
 pub(super) struct Talkback {
     channel: u8,
     stream_id: Option<u32>,
-    route: Option<Arc<()>>,
-    queued_route: Option<Arc<()>>,
+    route: Option<TalkbackRoute>,
+    queued_route: Option<TalkbackRoute>,
     pending: Option<AudioFrame>,
     blocks: Option<SpeakerBlocks>,
     ready: bool,
@@ -72,6 +71,15 @@ impl Talkback {
                 }
             }
             TalkEvent::Configured => self.ready = self.blocks.is_some(),
+            TalkEvent::Reset if self.stream_id.is_some() => {
+                self.ready = false;
+                self.blocks = None;
+                self.pending = None;
+                self.sequence = 0;
+                session.handle_input(Input::Command(Command::Talk(TalkCommand::QueryAbility {
+                    channel: self.channel,
+                })))?;
+            }
             TalkEvent::Reset | TalkEvent::Ability(_) => {}
         }
         Ok(())
@@ -92,8 +100,9 @@ impl Talkback {
         Ok(())
     }
 
-    // The actor drains protocol output before drive(). Flush the one new audio
-    // command before another input can coalesce unrelated packets with it.
+    // The actor drains protocol output before drive(), and SendAdpcm queues
+    // exactly one packet. poll_output drains sends before events or deadlines.
+    // Keep this check before another protocol input can coalesce packets.
     pub(super) fn flush(
         &mut self,
         session: &mut BcSession,
@@ -172,7 +181,7 @@ impl Talkback {
                 data,
             })))?;
             self.sequence = self.sequence.wrapping_add(1);
-            self.queued_route = Some(Arc::clone(route));
+            self.queued_route = Some(route.clone());
             return Ok(Some(now));
         }
         Ok(Some(now + Duration::from_millis(20)))
@@ -308,6 +317,49 @@ mod tests {
     }
 
     #[test]
+    fn speaker_reset_discards_negotiated_audio_and_requests_fresh_ability() {
+        use reo_proto::session::{BcSessionConfig, Output};
+
+        let now = Instant::now();
+        let mut session = BcSession::new(BcSessionConfig::default_client(), now);
+        let mut transport_output = vec![0; reo_proto::DEFAULT_MEDIA_OUTPUT_BUFFER_SIZE];
+        let mut talkback = Talkback::new(2);
+        session
+            .handle_input(Input::Command(Command::SubscribeStream(
+                StreamSubscription {
+                    channel: 2,
+                    stream_type: StreamType::Extern,
+                    expected_width: 0,
+                    expected_height: 0,
+                },
+            )))
+            .unwrap();
+        talkback.subscribed(1, &mut session).unwrap();
+        while !matches!(
+            session.poll_output(&mut transport_output).unwrap(),
+            Output::Timeout(_)
+        ) {}
+
+        talkback.blocks = Some(speaker(8_000, 320));
+        talkback.pending = Some(packet(&[1, 2], now));
+        talkback.sequence = 9;
+        talkback.ready = true;
+        talkback.observe(TalkEvent::Reset, &mut session).unwrap();
+
+        assert!(!talkback.ready);
+        assert!(talkback.blocks.is_none());
+        assert!(talkback.pending.is_none());
+        assert_eq!(talkback.sequence, 0);
+        let Output::TcpSend { data } = session.poll_output(&mut transport_output).unwrap() else {
+            panic!("expected fresh capabilities request");
+        };
+        assert_eq!(
+            PacketHeader::parse(data).unwrap().0.msg_id,
+            reo_proto::COMMAND_TALK_CAPABILITIES
+        );
+    }
+
+    #[test]
     fn rejects_unplayable_talkback_profiles_before_allocating_blocks() {
         let mut ability = TalkAbility::default();
         ability.duplex_modes.push("fullDuplex".try_into().unwrap());
@@ -328,6 +380,10 @@ mod tests {
             },
             TalkAudioProfile {
                 length_per_encoder: 4_002,
+                ..valid.clone()
+            },
+            TalkAudioProfile {
+                length_per_encoder: 1,
                 ..valid.clone()
             },
             TalkAudioProfile {
