@@ -2933,10 +2933,17 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
                  model_id TEXT NOT NULL,
                  dimensions INTEGER NOT NULL,
                  embedding BLOB NOT NULL,
+                 event_revision INTEGER,
                  PRIMARY KEY(event_id, model_id)
              );
              CREATE INDEX IF NOT EXISTS recording_event_embeddings_model
-                 ON recording_event_embeddings(model_id, dimensions, event_id);",
+                 ON recording_event_embeddings(model_id, dimensions, event_id);
+             CREATE TRIGGER IF NOT EXISTS recording_event_embeddings_invalidate_revision
+             AFTER UPDATE OF revision ON recording_events
+             WHEN NEW.revision <> OLD.revision
+             BEGIN
+                 DELETE FROM recording_event_embeddings WHERE event_id = OLD.id;
+             END;",
         )
         .await?;
     ensure_column(connection, "recording_files", "source_id", "TEXT").await?;
@@ -2979,6 +2986,13 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     )
     .await?;
     ensure_column(connection, "recording_events", "publication_id", "TEXT").await?;
+    ensure_column(
+        connection,
+        "recording_event_embeddings",
+        "event_revision",
+        "INTEGER",
+    )
+    .await?;
     ensure_column(
         connection,
         "recording_events",
@@ -5237,11 +5251,14 @@ async fn set_event_embedding(
         connection
             .execute(
                 "INSERT INTO recording_event_embeddings (
-                     event_id, model_id, dimensions, embedding
-                 ) VALUES (?1, ?2, ?3, vector32(?4))
+                     event_id, model_id, dimensions, embedding, event_revision
+                 )
+                 SELECT id, ?2, ?3, vector32(?4), revision
+                 FROM recording_events WHERE id = ?1
                  ON CONFLICT(event_id, model_id) DO UPDATE SET
                      dimensions = excluded.dimensions,
-                     embedding = excluded.embedding",
+                     embedding = excluded.embedding,
+                     event_revision = excluded.event_revision",
                 turso::params![event_id, embedding.model_id, dimensions, encoded],
             )
             .await?;
@@ -5666,9 +5683,11 @@ async fn search_event_semantic_snapshot(
     let dimensions = i64::try_from(query.embedding.values.len())?;
     let encoded = serde_json::to_string(&query.embedding.values)?;
     let source_id = query.source_id;
+    // A legacy embedding without a revision is valid only for an event that has never changed.
     let mut from_sql = String::from(
         "FROM recording_event_embeddings AS s JOIN recording_events AS e ON e.id = s.event_id
-         WHERE s.model_id = ?2 AND s.dimensions = ?3 AND (?4 IS NULL OR e.camera_id = ?5)
+         WHERE COALESCE(s.event_revision, 1) = e.revision
+             AND s.model_id = ?2 AND s.dimensions = ?3 AND (?4 IS NULL OR e.camera_id = ?5)
              AND (e.stream IS NULL OR e.stream = ?6) AND e.start_time_ms < ?8
              AND COALESCE(e.end_time_ms, e.start_time_ms + 1) > ?7
              AND e.rowid <= ?9 AND s.rowid <= ?10",

@@ -1088,7 +1088,6 @@ mod tests {
         assert_eq!(page.hits.len(), 1);
         assert_eq!(page.hits[0].event_id, "event-vehicle");
 
-
         let text_window_error = search
             .search_text(EventTextSearchQuery::new(
                 "alice",
