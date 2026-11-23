@@ -262,3 +262,33 @@ test('ordinary viewers cannot start a bug report from administrator routes', asy
 	await expect(page.getByRole('button', { name: 'Report a bug' })).toHaveCount(0);
 	await expect(page.getByRole('complementary', { name: 'Bug report in progress' })).toHaveCount(0);
 });
+
+test('keeps the report and available diagnostics when metrics collection fails', async ({
+	page
+}) => {
+	await installLoggingMocks(page);
+	await page.route('**/metrics', (route) =>
+		route.fulfill({
+			status: 503,
+			contentType: 'text/plain',
+			body: 'upstream error private-response-canary'
+		})
+	);
+	await page.goto('/settings');
+	await page.getByRole('button', { name: 'Report a bug' }).click();
+	const dialog = page.getByRole('dialog');
+	await dialog.getByRole('button', { name: 'Collect logs only' }).click();
+	const indicator = page.getByRole('complementary', { name: 'Bug report in progress' });
+	await expect(indicator).toBeVisible();
+	await page.evaluate(() => console.info('report-retained-marker'));
+	await indicator.getByRole('button', { name: 'Stop', exact: true }).click();
+	await expect(dialog).toHaveAccessibleName('Review bug report');
+	await expect(dialog.getByText('Recorder metrics could not be collected.')).toBeVisible();
+	const downloaded = page.waitForEvent('download');
+	await dialog.getByRole('button', { name: 'Download report diagnostics' }).click();
+	const path = await (await downloaded).path();
+	if (!path) throw new Error('Expected a downloadable report');
+	const evidence = gunzipSync(await readFile(path)).toString('utf8');
+	expect(evidence).toContain('report-retained-marker');
+	expect(evidence).not.toContain('private-response-canary');
+});
