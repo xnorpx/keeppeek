@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-1b0c7731.js";
+            window.path_to_searchindex_js = "searchindex-136fed69.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -321,6 +321,16 @@ the primary. Timeline and seek metadata remain indexed. Open archived recordings
 normal Keep timeline; the player displays <strong>ARCHIVE — Playing from archive. Startup and seeking may take longer.</strong> It reads
 the required archive ranges directly, without a full restore or an artificial delay. Existing
 waiting, failure, seek, and cancellation controls still apply.</p>
+<p>After an export expires and its local history is pruned, a new session under the same account
+can find its recent verified archives in <strong>Keep → Export</strong>. When no recording segment is
+selected, choose <strong>Find completed exports</strong>, identify the file by its camera, stream and UTC
+start time, then <strong>Download</strong>. When a segment is selected, choose the same stream, range and
+export options to use an existing matching export. A current camera privacy restriction hides
+the archived entry and blocks its download.</p>
+<p>The export list preserves local history and considers up to 64 additional verified exports, newest
+creation first, within the response size limit. Requesting an older export by its original job ID
+still works. Listing reads the local catalog. Downloading opens and verifies the target, so a
+disconnected destination can prevent retrieval.</p>
 <p><strong>Restore primary</strong> queues a verified transfer back to the original primary destination.
 Cancellation stops cancellable copy or restore work and cleans up partial staging.
 <strong>Retry / finish cleanup</strong> retains the cancelled copy’s job identity. Copying resumes only after
