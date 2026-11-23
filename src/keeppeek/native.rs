@@ -171,6 +171,9 @@ impl KeepPeekLoop {
         self.drain_retired_native_events_until(move || Instant::now() >= deadline)
     }
 
+    /// Polls `expired` before staging a batch and between synchronous publications.
+    /// Supply a monotonic stop predicate. Its first true result ends further work
+    /// and is retained for the shutdown report, even if the underlying clock changes.
     pub(super) fn drain_retired_native_events_until(
         &mut self,
         mut expired: impl FnMut() -> bool,
@@ -183,7 +186,9 @@ impl KeepPeekLoop {
                 break;
             }
             let completed = self.close_retired_native_events_until(|| {
-                deadline_reached = deadline_reached || expired();
+                if !deadline_reached && expired() {
+                    deadline_reached = true;
+                }
                 deadline_reached
             });
             if completed == 0 {
@@ -202,6 +207,8 @@ impl KeepPeekLoop {
         remaining
     }
 
+    /// Closes one batch, polling the stop predicate before staging and before
+    /// each publication. A synchronous publication already in progress finishes.
     fn close_retired_native_events_until(&mut self, mut expired: impl FnMut() -> bool) -> usize {
         if expired() {
             return 0;
