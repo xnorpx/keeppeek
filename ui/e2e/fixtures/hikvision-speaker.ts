@@ -26,7 +26,10 @@ export function observeSpeaker(
 			finish(new Error('Hikvision fixture exited before its speaker observation'));
 		const onData = (chunk: Buffer) => {
 			totalBytes += chunk.length;
-			if (totalBytes > 4_096) return finish(new Error('Oversized speaker observation output'));
+			if (totalBytes > 4_096)
+				return finish(
+					new Error(`Oversized speaker observation output (${totalBytes} bytes, limit 4096)`)
+				);
 			output += chunk.toString();
 			const end = output.lastIndexOf('\n');
 			if (end === -1) return;
@@ -37,7 +40,9 @@ export function observeSpeaker(
 				.find((item) => item.startsWith('speaker '));
 			output = output.slice(end + 1);
 			if (!line) return;
-			if (Buffer.byteLength(line) > 160) return finish(new Error('Oversized speaker observation'));
+			const lineBytes = Buffer.byteLength(line);
+			if (lineBytes > 160)
+				return finish(new Error(`Oversized speaker observation (${lineBytes} bytes, limit 160)`));
 			const match = /^speaker (true|false) (\d+) (\d+) (\d+) (\d+)$/.exec(line.trimEnd());
 			if (!match) {
 				const shape = line
@@ -48,7 +53,7 @@ export function observeSpeaker(
 					);
 				return finish(
 					new Error(
-						`Malformed speaker observation (${Buffer.byteLength(line)} bytes, fields ${shape.join(', ')})`
+						`Malformed speaker observation (${lineBytes} bytes, fields ${shape.join(', ')})`
 					)
 				);
 			}

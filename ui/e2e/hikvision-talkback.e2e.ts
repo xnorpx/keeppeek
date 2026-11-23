@@ -1,6 +1,7 @@
 import { chromium, expect, test } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { startHomeAssistantServer } from './fixtures/home-assistant-server';
 import { recordedAudioBackendRoute } from './fixtures/recorded-audio-playback';
 
