@@ -342,6 +342,11 @@ fn paused_cursor_steps_under_historical_access_rules_and_invalidates_previous_to
             ._http_status,
         400
     );
+    let timed_out = step_until(&state, session, request.clone(), Instant::now())
+        .err()
+        .unwrap();
+    assert_eq!(timed_out.code, proto::ErrorCode::Timeout);
+    assert_eq!(state.frame_step_workers.load(Ordering::Acquire), 0);
     let delivery = dispatch(session, Action::StepFrame(request.clone())).unwrap();
     let Some(control_ok::Result::StoredFrameStepResult(first)) = delivery.result else {
         panic!("missing selected picture")

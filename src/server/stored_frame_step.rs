@@ -688,6 +688,15 @@ pub(super) fn step(
     session: SessionId,
     request: proto::StepStoredFrame,
 ) -> Result<StoredMediaDispatch, ControlCommandError> {
+    step_until(state, session, request, Instant::now() + FIRST_RESPONSE)
+}
+
+fn step_until(
+    state: &ServerState,
+    session: SessionId,
+    request: proto::StepStoredFrame,
+    deadline: Instant,
+) -> Result<StoredMediaDispatch, ControlCommandError> {
     validate_client_id(&request.source_id, "stored frame source ID")?;
     if !matches!(request.stream_id.as_str(), "main" | "sub") {
         return Err(ControlCommandError::new(
@@ -705,7 +714,6 @@ pub(super) fn step(
     {
         return Err(rejected("frame request needs a direction and anchor"));
     }
-    let deadline = Instant::now() + FIRST_RESPONSE;
     let check_access = || {
         let access = camera_access::for_session(state, session)?;
         camera_access::require_camera(&access, &request.source_id)
@@ -769,6 +777,13 @@ pub(super) fn step(
     check_access()?;
     if op.cancelled() {
         return Err(rejected("stored media cursor changed"));
+    }
+    if Instant::now() >= deadline {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Timeout,
+            504,
+            "frame step selection timed out",
+        ));
     }
     let (result, frame_transfer) = match prepared {
         Ok((plan, snapshot)) => {
