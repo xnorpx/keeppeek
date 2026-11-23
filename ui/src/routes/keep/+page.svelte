@@ -27,7 +27,7 @@
 		type TimelineInterval,
 		type TimelineViewport
 	} from '$lib/timeline-repository.svelte';
-	import { createEventExportRange, type KeepMode } from '$lib/keep-modes';
+	import { createEventExportRange, exportSelectionKey, type KeepMode } from '$lib/keep-modes';
 	import {
 		keepMomentSearchParams,
 		parseKeepRoute,
@@ -173,6 +173,7 @@
 	let exportRangeStartMs: number | null = $state(null);
 	let exportRangeEndMs: number | null = $state(null);
 	let exportSeedEvent = $state.raw<RecordingEvent | null>(null);
+	const exportKey = $derived(exportSelectionKey(cameraId, selected, exportSeedEvent));
 	let exportReturnHref = $state<string | null>(null);
 	let configuredFrameRates = $state.raw<ReadonlyMap<string, number>>(new Map());
 	let coldSeekTimestampMs: number | null = $state(null);
@@ -193,7 +194,7 @@
 	let keyFrameUnsubscribe: (() => void) | null = null;
 	let scrubbing = $state(false);
 	let scrubTargetMs: number | null = null;
-	let scrubPump: Promise<void> | null = null;
+	let scrubPump: { version: number; done: Promise<void> } | null = null;
 	let scrubVersion = 0;
 	let scrubPlayIntent = false;
 	let scrubOpenController: AbortController | null = null;
@@ -402,12 +403,12 @@
 	});
 
 	$effect(() => {
-		if (shuttleDirection !== -1 || !selected) return;
+		if (mode === 'export' || shuttleDirection !== -1 || !selected) return;
 		const reverse = () => {
 			const current = playheadMs ?? selected?.start_time_ms;
 			if (current !== undefined) seekToTimestamp(current - shuttleSpeed * 250, false);
 		};
-		reverse();
+		untrack(reverse);
 		const timer = window.setInterval(reverse, 250);
 		return () => window.clearInterval(timer);
 	});
@@ -592,9 +593,16 @@
 	}
 
 	async function loadRouteEvent(route: KeepRoute, version: number): Promise<void> {
-		if (!route.eventId || route.timestampMs === null || !cameraId) return;
-		const event = await resolveExportSeedEvent(route.eventId, cameraId, route.timestampMs);
-		if (version !== routeVersion) return;
+		const sourceId = cameraId;
+		if (
+			!route.eventId ||
+			route.timestampMs === null ||
+			!sourceId ||
+			(route.cameraId && route.cameraId !== sourceId)
+		)
+			return;
+		const event = await resolveExportSeedEvent(route.eventId, sourceId, route.timestampMs);
+		if (version !== routeVersion || sourceId !== cameraId) return;
 		exportSeedEvent = event;
 		if (event && mode === 'export') {
 			const range = createEventExportRange(event, selectedBitrateKbps);
@@ -1052,22 +1060,26 @@
 		scrubTargetMs = timestampMs;
 		playheadMs = timestampMs;
 		showNearestCachedPreview(timestampMs);
-		if (!scrubPump) {
-			const version = scrubVersion;
-			scrubPump = drainTimelineScrub(version)
-				.catch((cause) => {
-					if (version !== scrubVersion) return;
-					clearColdSeek();
-					playerError = storedPlaybackError(cause);
-				})
-				.finally(() => {
-					scrubPump = null;
-					if (scrubTargetMs !== null && version === scrubVersion) {
-						void queueTimelineScrub(scrubTargetMs);
-					}
-				});
-		}
-		return scrubPump;
+		const version = scrubVersion;
+		if (scrubPump?.version === version) return scrubPump.done;
+		const previous = scrubPump;
+		const drain = previous
+			? previous.done.then(() => drainTimelineScrub(version))
+			: drainTimelineScrub(version);
+		const done = drain
+			.catch((cause) => {
+				if (version !== scrubVersion) return;
+				clearColdSeek();
+				playerError = storedPlaybackError(cause);
+			})
+			.finally(() => {
+				if (scrubPump?.version !== version) return;
+				scrubPump = null;
+				if (version === scrubVersion && scrubTargetMs !== null)
+					void queueTimelineScrub(scrubTargetMs);
+			});
+		scrubPump = { version, done };
+		return done;
 	}
 
 	async function drainTimelineScrub(version: number): Promise<void> {
@@ -1179,7 +1191,7 @@
 	async function finishTimelineScrub(timestampMs: number): Promise<void> {
 		const version = scrubVersion;
 		await queueTimelineScrub(timestampMs);
-		await scrubPump;
+		await scrubPump?.done;
 		if (version !== scrubVersion) return;
 		const playback = storedPlayback;
 		if (!playback) {
@@ -1540,8 +1552,12 @@
 		timestampMs = playheadMs ?? undefined
 	): void {
 		if (nextCameraId === cameraId) return;
-		const play = playbackIntent();
-		beginCameraSwitch(direction);
+		const play = mode === 'export' ? false : playbackIntent();
+		exportSeedEvent = null;
+		exportRangeStartMs = null;
+		exportRangeEndMs = null;
+		if (mode === 'export') void selectSegment(null);
+		else beginCameraSwitch(direction);
 		timelineRepository.deactivate();
 		cameraId = nextCameraId;
 		void loadRecordings(selectedDate || undefined, timestampMs, play, null, {
@@ -1568,7 +1584,33 @@
 
 	function switchMode(nextMode: KeepMode): void {
 		if (nextMode === mode) return;
+		const scrubTarget =
+			nextMode === 'export' && scrubbing && playheadMs !== null
+				? recordingTarget(orderedSegments, playheadMs)
+				: null;
+		if (nextMode === 'export') {
+			shuttleDirection = 0;
+			scrubVersion += 1;
+			scrubTargetMs = null;
+			scrubbing = false;
+			scrubPlayIntent = false;
+			targetLoadVersion += 1;
+			targetLoadController?.abort();
+			clearColdSeek();
+		}
 		mode = nextMode;
+		if (scrubTarget) {
+			void selectSegment(scrubTarget.segment, scrubTarget.offsetSeconds);
+		} else if (nextMode === 'export' || (nextMode === 'timeline' && selected && !storedPlayback)) {
+			const target = retryPlaybackTarget;
+			if (target?.cameraId === cameraId && target.segment.date === selectedDate) {
+				const offset =
+					selected?.url === target.segment.url && playheadMs !== null
+						? (playheadMs - target.segment.start_time_ms) / 1000
+						: target.offsetSeconds;
+				void selectSegment(target.segment, offset);
+			} else void selectSegment(null);
+		}
 		updateUrl();
 	}
 
@@ -1673,6 +1715,25 @@
 		} else retryPlaybackTarget = null;
 	}
 
+	async function selectExportSegment(
+		segment: RecordingSegment,
+		timestampMs: number
+	): Promise<void> {
+		// Keep the chosen stream and draft while Export has no mounted video.
+		cameraSwitchPending = false;
+		cameraSwitchAnimating = false;
+		clearCameraSwitchFrame();
+		playbackVersion += 1;
+		selected = segment;
+		playheadMs = timestampMs;
+		playing = false;
+		pendingPlay = false;
+		playerError = null;
+		playbackStartupPhase = 'idle';
+		releaseSecondaryLoads();
+		await closeStoredPlayback();
+	}
+
 	async function selectSegment(segment: RecordingSegment | null, offsetSeconds = 0, play = false) {
 		rememberPlaybackTarget(segment, offsetSeconds, play);
 		if (!segment) {
@@ -1685,11 +1746,12 @@
 			clearPlaybackStartupTimer();
 			detachPlaybackObservers();
 			playbackStartupPhase = 'idle';
-			await closeStoredPlayback();
 			selected = null;
 			playheadMs = null;
 			playing = false;
+			pendingPlay = false;
 			releaseSecondaryLoads();
+			await closeStoredPlayback();
 			return;
 		}
 		const requestedTimestampMs =
@@ -1705,6 +1767,10 @@
 		if (selected?.url !== segment.url) {
 			exportRangeStartMs = null;
 			exportRangeEndMs = null;
+		}
+		if (mode === 'export') {
+			await selectExportSegment(segment, requestedTimestampMs);
+			return;
 		}
 		const requestedOffsetSeconds = (requestedTimestampMs - segment.start_time_ms) / 1_000;
 		playerError = null;
@@ -1736,8 +1802,9 @@
 		try {
 			await playback.seek(timestampMs);
 		} catch (cause) {
+			if (version !== playbackVersion || playback !== storedPlayback) return;
 			clearColdSeek();
-			if (version === playbackVersion) playerError = storedPlaybackError(cause);
+			playerError = storedPlaybackError(cause);
 			return;
 		}
 		if (version !== playbackVersion) return;
@@ -1780,8 +1847,8 @@
 				recordedAudioPreview
 			});
 		} catch (cause) {
-			clearColdSeek();
 			if (openController.signal.aborted || version !== playbackVersion) return;
+			clearColdSeek();
 			await handlePlaybackFailure(
 				storedPlaybackError(cause),
 				version,
@@ -2150,6 +2217,7 @@
 		if (event.key.startsWith('Arrow') && target?.closest('[data-digital-pan-active]')) return;
 		const playerFocused = target?.closest('[data-keep-player]') !== null;
 		const key = event.key.toLowerCase();
+		if (mode === 'export' && key !== '[' && key !== ']') return;
 		if (key === 'j') shuttle(-1);
 		else if (key === 'k') pauseTransport();
 		else if (key === 'l') shuttle(1);
@@ -2660,7 +2728,7 @@
 				/>
 			{:else if mode === 'export'}
 				<div class="space-y-3">
-					{#key `${selected?.url ?? 'empty-export'}:${exportSeedEvent?.id ?? ''}:${exportSeedEvent?.revision ?? ''}`}
+					{#key exportKey}
 						<KeepExportPanel
 							sourceId={cameraId}
 							sourceName={selectedCamera?.name ?? cameraId}
