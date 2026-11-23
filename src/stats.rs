@@ -456,7 +456,7 @@ impl HealthRegistry {
         let mut reports = cameras
             .iter()
             .map(|(ip, camera)| {
-                let mut streams = camera
+                let streams = camera
                     .streams
                     .values()
                     .filter(|s| match s.report.kind.as_str() {
@@ -494,17 +494,24 @@ impl HealthRegistry {
                         }
                     })
                     .collect::<Vec<_>>();
-                streams.sort_unstable_by(|left, right| left.report.kind.cmp(&right.report.kind));
                 CameraHealthReport {
                     ip: *ip,
                     name: camera.name.clone(),
                     brand: camera.brand.clone(),
                     port: camera.port,
                     streams,
-                    events: self.events.snapshot(*ip),
+                    events: None,
                 }
             })
             .collect::<Vec<_>>();
+        drop(cameras);
+        // Event evidence and presentation order are independent of ingest publication.
+        for camera in &mut reports {
+            camera.events = self.events.snapshot(camera.ip);
+            camera
+                .streams
+                .sort_unstable_by(|left, right| left.report.kind.cmp(&right.report.kind));
+        }
         reports.sort_unstable_by_key(|report| report.ip);
         reports
     }

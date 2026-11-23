@@ -30,7 +30,9 @@ use sysinfo::{ProcessesToUpdate, System};
 const CAMERAS: u8 = 127;
 const PAIRS: usize = 30;
 const TICK: Duration = Duration::from_millis(40);
-const TICKS: usize = 100;
+const WARMUP_SECONDS: u64 = 2;
+const MEASURE_SECONDS: u64 = 20;
+const TOTAL_SECONDS: u64 = WARMUP_SECONDS + MEASURE_SECONDS;
 const CHILD_MODE: &str = "KEEPPEEK_TUI_BENCHMARK_CHILD";
 const MARKER: &str = "KEEPPEEK_TUI_SAMPLE ";
 
@@ -158,7 +160,7 @@ fn collect_samples(
 ) -> Sample {
     let redactor = LogHub::default();
     let mut metrics = Sample::default();
-    for second in [0, 2, 4] {
+    for second in (0..TOTAL_SECONDS).step_by(2) {
         wait_until(start, second);
         let collect = Instant::now();
         let health = dashboard_health(sender, state);
@@ -171,7 +173,7 @@ fn collect_samples(
         let mut slot = latest.lock().unwrap();
         *slot = Some(next);
         metrics.pending_snapshots = metrics.pending_snapshots.max(slot.iter().count());
-        if second >= 2 {
+        if second >= WARMUP_SECONDS {
             metrics.collector_us.push(collector_us);
             metrics.projection_us.push(projection_us);
         }
@@ -183,7 +185,7 @@ fn render_samples(start: Instant, latest: Latest) -> Vec<u64> {
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
     let mut nav = render::Navigation::default();
     let mut durations = Vec::new();
-    for second in 0..6 {
+    for second in 0..TOTAL_SECONDS {
         wait_until(start, second);
         let current = latest.lock().unwrap().clone();
         let elapsed = current
@@ -193,7 +195,7 @@ fn render_samples(start: Instant, latest: Latest) -> Vec<u64> {
         terminal
             .draw(|frame| render::draw(frame, current.as_deref(), &mut nav, elapsed))
             .unwrap();
-        if second >= 2 {
+        if second >= WARMUP_SECONDS {
             assert!(
                 current.is_some(),
                 "dashboard did not present its first observation"
@@ -210,12 +212,14 @@ fn ingress_samples(
     registry: &HealthRegistry,
     system: &mut System,
 ) -> (Vec<u64>, u64, u64) {
-    // Warm up for two seconds, then measure 100 fleet batches while staggering the ten-second reports.
-    let warmup_ticks = 50;
-    let mut ingress_batch_ns = Vec::with_capacity(TICKS);
+    // Include two complete ten-second reporting periods after warm-up in each paired sample.
+    let ticks_per_second = 1_000 / TICK.as_millis();
+    let warmup_ticks = usize::try_from(u128::from(WARMUP_SECONDS) * ticks_per_second).unwrap();
+    let measured_ticks = usize::try_from(u128::from(MEASURE_SECONDS) * ticks_per_second).unwrap();
+    let mut ingress_batch_ns = Vec::with_capacity(measured_ticks);
     let mut cpu_start = 0;
     let mut rss_bytes = 0;
-    for tick in 0..warmup_ticks + TICKS {
+    for tick in 0..warmup_ticks + measured_ticks {
         thread::sleep(
             (start + TICK * u32::try_from(tick).unwrap()).saturating_duration_since(Instant::now()),
         );
@@ -237,7 +241,9 @@ fn ingress_samples(
             rss_bytes = rss_bytes.max(process_sample(system).1);
         }
     }
-    thread::sleep((start + Duration::from_secs(6)).saturating_duration_since(Instant::now()));
+    thread::sleep(
+        (start + Duration::from_secs(TOTAL_SECONDS)).saturating_duration_since(Instant::now()),
+    );
     let (cpu_end, rss_end) = process_sample(system);
     let process_cpu_ms = cpu_end.saturating_sub(cpu_start);
     rss_bytes = rss_bytes.max(rss_end);
@@ -343,7 +349,7 @@ fn observation(enabled: bool) -> Sample {
 }
 
 #[test]
-#[ignore = "30 paired release samples, approximately six minutes"]
+#[ignore = "30 paired release samples, approximately 22 minutes"]
 fn dashboard_overhead() {
     assert!(
         !std::hint::black_box(cfg!(debug_assertions)),
@@ -419,7 +425,7 @@ fn dashboard_overhead() {
         println!(
             "{}",
             serde_json::json!({
-                "percentile": p, "units": ["fleet_ingress_ns", "process_cpu_ms_per_4s", "process_rss_bytes"],
+                "percentile": p, "units": ["fleet_ingress_ns", "process_cpu_ms_per_20s", "process_rss_bytes"],
                 "off": off, "on": on, "delta": delta, "ingress_change_percent": 100.0 * delta[0] as f64 / off[0] as f64,
                 "paired_ingress_change_percent_interval": [paired_changes[9], paired_changes[20]],
             "collector_us": percentile(&collectors, p), "projection_us": percentile(&projections, p),
