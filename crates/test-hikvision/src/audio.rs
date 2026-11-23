@@ -139,6 +139,7 @@ fn send(
                     state.audio_output.len() + count <= 2_400_000,
                     "fake audio capture exceeds its limit"
                 );
+                state.speaker_signal.record(&buffer[..count]);
                 state.audio_output.extend_from_slice(&buffer[..count]);
                 shared.changed.notify_all();
             }
@@ -164,5 +165,44 @@ fn note_peer_closure(shared: &Shared) {
     if shared.observe_upload_closure && !shared.stopped.load(Ordering::Acquire) {
         let mut state = shared.state.lock().unwrap();
         state.audio_uploads_closed_by_peer = state.audio_uploads_closed_by_peer.saturating_add(1);
+    }
+}
+
+#[derive(Default)]
+pub(super) struct SpeakerSignal {
+    pub(super) audible: usize,
+    pub(super) crossings: usize,
+    previous_positive: Option<bool>,
+}
+
+impl SpeakerSignal {
+    fn record(&mut self, samples: &[u8]) {
+        // The fixture negotiates mu-law. Exact zero has two sign encodings.
+        // Keep those samples in the elapsed time without counting their signs.
+        for &sample in samples {
+            let magnitude = sample & 0x7f;
+            self.audible += usize::from(magnitude < 0x60);
+            if magnitude != 0x7f {
+                let positive = sample & 0x80 != 0;
+                self.crossings +=
+                    usize::from(self.previous_positive.is_some_and(|last| last != positive));
+                self.previous_positive = Some(positive);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod speaker_tests {
+    use super::*;
+
+    #[test]
+    fn speaker_crossings_ignore_signed_zero_and_span_upload_chunks() {
+        let mut signal = SpeakerSignal::default();
+        signal.record(&[0x80, 0x7f, 0xff, 0xfe]);
+        signal.record(&[0x7e, 0xff]);
+        signal.record(&[0x00, 0x80]);
+        assert_eq!(signal.crossings, 2);
+        assert_eq!(signal.audible, 3);
     }
 }

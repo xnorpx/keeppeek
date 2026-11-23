@@ -14,6 +14,7 @@ export function observeSpeaker(
 ): Promise<SpeakerObservation> {
 	return new Promise((resolve, reject) => {
 		let output = '';
+		let totalBytes = 0;
 		const finish = (error?: Error, result?: SpeakerObservation) => {
 			clearTimeout(timer);
 			child.stdout.off('data', onData);
@@ -24,13 +25,22 @@ export function observeSpeaker(
 		const onExit = () =>
 			finish(new Error('Hikvision fixture exited before its speaker observation'));
 		const onData = (chunk: Buffer) => {
+			totalBytes += chunk.length;
+			if (totalBytes > 4_096) return finish(new Error('Oversized speaker observation output'));
 			output += chunk.toString();
-			if (Buffer.byteLength(output) > 160)
-				return finish(new Error('Oversized speaker observation'));
-			if (!output.endsWith('\n')) return;
-			const match = /^speaker (true|false) (\d+) (\d+) (\d+) (\d+)$/.exec(output.trim());
+			const end = output.lastIndexOf('\n');
+			if (end === -1) return;
+			const line = output
+				.slice(0, end)
+				.split('\n')
+				.reverse()
+				.find((item) => item.startsWith('speaker '));
+			output = output.slice(end + 1);
+			if (!line) return;
+			if (Buffer.byteLength(line) > 160) return finish(new Error('Oversized speaker observation'));
+			const match = /^speaker (true|false) (\d+) (\d+) (\d+) (\d+)$/.exec(line.trimEnd());
 			if (!match) {
-				const shape = output
+				const shape = line
 					.trim()
 					.split(/\s+/, 8)
 					.map((field) =>
@@ -38,7 +48,7 @@ export function observeSpeaker(
 					);
 				return finish(
 					new Error(
-						`Malformed speaker observation (${Buffer.byteLength(output)} bytes, fields ${shape.join(', ')})`
+						`Malformed speaker observation (${Buffer.byteLength(line)} bytes, fields ${shape.join(', ')})`
 					)
 				);
 			}

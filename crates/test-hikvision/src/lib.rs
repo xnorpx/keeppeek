@@ -211,6 +211,7 @@ impl Builder {
                 audio_session: None,
                 next_audio_session: 1,
                 audio_output: Vec::new(),
+                speaker_signal: audio::SpeakerSignal::default(),
                 audio_uploads_closed_by_peer: 0,
                 audio_input: vec![0xff; 160],
                 audio_input_after_output: 0,
@@ -349,6 +350,18 @@ impl FakeHikvision {
             .audio_uploads_closed_by_peer
     }
 
+    /// Returns a consistent snapshot of the speaker fixture's counters.
+    pub fn speaker_observation(&self) -> SpeakerObservation {
+        let state = self.shared.state.lock().unwrap();
+        SpeakerObservation {
+            active: state.audio_session.is_some(),
+            bytes: state.audio_output.len(),
+            audible: state.speaker_signal.audible,
+            crossings: state.speaker_signal.crossings,
+            peer_closed_uploads: state.audio_uploads_closed_by_peer,
+        }
+    }
+
     /// Returns the original speaker bytes received after the latest audio handshake.
     pub fn audio_output(&self) -> Vec<u8> {
         self.shared.state.lock().unwrap().audio_output.clone()
@@ -456,6 +469,20 @@ struct Shared {
     password: String,
     digest: bool,
 }
+/// Aggregate evidence from the fake camera's G.711 speaker.
+pub struct SpeakerObservation {
+    /// Whether the two-way audio channel is open.
+    pub active: bool,
+    /// Every received encoded sample, including quiet samples and zeros.
+    pub bytes: usize,
+    /// Encoded samples above the fixture's audible threshold.
+    pub audible: usize,
+    /// Polarity changes across the entire signal, ignoring the sign of exact zero.
+    pub crossings: usize,
+    /// Upload connections closed by the client since fixture startup.
+    pub peer_closed_uploads: u64,
+}
+
 struct State {
     scripts: VecDeque<Reply>,
     streams: VecDeque<Reply>,
@@ -467,6 +494,7 @@ struct State {
     audio_session: Option<u64>,
     next_audio_session: u64,
     audio_output: Vec<u8>,
+    speaker_signal: audio::SpeakerSignal,
     audio_uploads_closed_by_peer: u64,
     audio_input: Vec<u8>,
     audio_input_after_output: usize,

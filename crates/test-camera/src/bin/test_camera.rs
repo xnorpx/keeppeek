@@ -223,26 +223,14 @@ fn observe_hikvision_speaker(camera: &test_camera::hikvision::FakeHikvision) -> 
         match command[0] {
             b'q' => break,
             b's' => {
-                let samples = camera.audio_output();
-                // The fixture negotiates G.711 mu-law. Count quiet codes separately from signal polarity changes.
-                let mut previous = None;
-                let mut audible = 0;
-                let mut crossings = 0;
-                for sample in samples.iter().copied() {
-                    let magnitude = sample & 0x7f;
-                    audible += usize::from(magnitude < 0x60);
-                    // Exact zero has two encodings. Skip its sign while retaining its time.
-                    if magnitude != 0x7f {
-                        let positive = sample & 0x80 != 0;
-                        crossings += usize::from(previous.is_some_and(|last| last != positive));
-                        previous = Some(positive);
-                    }
-                }
+                let speaker = camera.speaker_observation();
                 println!(
-                    "speaker {} {} {audible} {crossings} {}",
-                    camera.audio_active(),
-                    samples.len(),
-                    camera.audio_uploads_closed_by_peer()
+                    "speaker {} {} {} {} {}",
+                    speaker.active,
+                    speaker.bytes,
+                    speaker.audible,
+                    speaker.crossings,
+                    speaker.peer_closed_uploads,
                 );
                 std::io::stdout().flush()?;
             }
