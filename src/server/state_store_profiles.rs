@@ -447,17 +447,13 @@ fn watch_profiles(
     }
     super::super::validate_client_id(&request.watch_id, "watch ID")?;
     let admin = principal.role == AccessRole::Administrator;
-    let key_prefix = request.key_prefix.as_str();
+    let key_prefix = if request.key_prefix.is_empty() && admin {
+        ACTIVE_KEY
+    } else {
+        request.key_prefix.as_str()
+    };
     if key_prefix.is_empty() {
-        return Err(state_store_error(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "runtime profile watches require an exact key",
-            NAMESPACE,
-            &request.watch_id,
-            proto::StateStoreErrorCode::KeyInvalid,
-            None,
-        ));
+        return Err(registry_error(Error::NotAuthorized, NAMESPACE, ACTIVE_KEY));
     }
     if !viewer_watch_key(key_prefix) && (key_prefix != REGISTRY_KEY || !admin) {
         return Err(registry_error(
@@ -523,12 +519,6 @@ fn register_profile_watch(
         snapshot_revision: entry.revision,
         entries: vec![proto_entry(&entry)],
     };
-    check_snapshot_bounds(
-        message.entries.len(),
-        message.encoded_len(),
-        NAMESPACE,
-        &request.watch_id,
-    )?;
     let lifecycle = state
         .api_session_owners
         .lock()
@@ -537,7 +527,7 @@ fn register_profile_watch(
         .map_or_else(std::sync::Arc::default, |session| {
             std::sync::Arc::clone(&session.lifecycle)
         });
-    message.snapshot_revision = state
+    state
         .state_store_watches
         .register_snapshot(
             session_id,
@@ -545,6 +535,10 @@ fn register_profile_watch(
             entry.key.clone(),
             request.watch_id.clone(),
             Some((&entry, lifecycle)),
+            |cursor| {
+                message.snapshot_revision = cursor;
+                super::validate_snapshot_bounds(message.entries.len(), message.encoded_len())
+            },
         )
         .map_err(|error| registry_error(error, NAMESPACE, &request.watch_id))?;
     Ok(proto::StateStoreResult {
@@ -3048,6 +3042,90 @@ mod tests {
                 .state
                 .state_store_watches
                 .owns_watch(session, "active")
+        );
+    }
+
+    #[test]
+    fn administrator_empty_watch_prefix_keeps_active_profile_shorthand() {
+        let fixture = Fixture::new();
+        let session = SessionId::from_u64(20_205);
+        let mut principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let request = watch_profile_key("legacy", "");
+        let response =
+            super::super::dispatch(&fixture.state, session, &principal, request.clone()).unwrap();
+        let control_ok::Result::StateStoreResult(response) = response else {
+            panic!("state-store result expected");
+        };
+        let Some(state_store_result::Result::Watch(snapshot)) = response.result else {
+            panic!("snapshot expected");
+        };
+        assert!(snapshot.key_prefix.is_empty());
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(snapshot.entries[0].key, ACTIVE_KEY);
+
+        principal.role = AccessRole::User;
+        assert!(
+            super::super::dispatch(
+                &fixture.state,
+                SessionId::from_u64(20_206),
+                &principal,
+                request
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn profile_watch_rejects_a_snapshot_that_exceeds_the_limit_at_the_final_cursor() {
+        use std::sync::atomic::Ordering;
+
+        let fixture = Fixture::new();
+        let session_id = SessionId::from_u64(20_207);
+        let session = super::super::super::tests::local_test_session();
+        session
+            .lifecycle
+            .profile_watch_revision
+            .store(128, Ordering::Relaxed);
+        fixture
+            .state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(session_id, session);
+        let request = proto::WatchState {
+            watch_id: "bounded".to_owned(),
+            namespace: NAMESPACE.to_owned(),
+            key_prefix: ACTIVE_KEY.to_owned(),
+        };
+        let mut entry = StoredEntry {
+            namespace: NAMESPACE.to_owned(),
+            key: ACTIVE_KEY.to_owned(),
+            schema: ACTIVE_SCHEMA.to_owned(),
+            value: Struct::default(),
+            revision: 127,
+            updated_ms: 0,
+            expires_ms: None,
+            owner_id: "x".repeat(60_000),
+        };
+        let mut message = proto::StateWatchSnapshot {
+            watch_id: request.watch_id.clone(),
+            namespace: request.namespace.clone(),
+            key_prefix: request.key_prefix.clone(),
+            snapshot_revision: entry.revision,
+            entries: vec![proto_entry(&entry)],
+        };
+        entry
+            .owner_id
+            .push_str(&"x".repeat(MAX_WATCH_SNAPSHOT_BYTES - message.encoded_len()));
+        message.entries[0] = proto_entry(&entry);
+        assert_eq!(message.encoded_len(), MAX_WATCH_SNAPSHOT_BYTES);
+        let result = register_profile_watch(&fixture.state, session_id, request, entry);
+        assert!(result.is_err());
+        assert!(
+            !fixture
+                .state
+                .state_store_watches
+                .owns_watch(session_id, "bounded")
         );
     }
 
