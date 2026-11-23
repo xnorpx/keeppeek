@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { basename, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
+import { observeSpeaker, type SpeakerObservation } from './hikvision-speaker';
 import { seedCalibrationRecording } from './calibration-recording';
 
 export const cardTestKeys = [
@@ -18,6 +19,7 @@ export const cardAdminKey = '550e8400-e29b-41d4-a716-446655440004';
 export const cardSourceIds = ['192.0.2.101', '192.0.2.102'] as const;
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
 type FixtureOptions = {
+	hikvisionSpeaker?: boolean;
 	trustedLocal?: boolean;
 	archiveFixture?: boolean;
 	calibrationFixture?: { mediaPath: string };
@@ -332,7 +334,7 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 	};
 	try {
 		const port = await availablePort();
-		const { configPath, archive, calibration } = await prepareFixture(
+		const { configPath, archive, calibration, speakerObservation } = await prepareFixture(
 			binary('test_camera'),
 			directory,
 			origin,
@@ -359,6 +361,7 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 			backendProcessId: () => server.pid,
 			...archive,
 			calibration,
+			speakerObservation,
 			close,
 			preserveArchiveEvidence: (destination: string) =>
 				preserveFixture(server, directory, destination),
@@ -389,11 +392,24 @@ async function prepareFixture(
 	if (options.archiveFixture && options.calibrationFixture) {
 		throw new Error('Archive and calibration recording seeds must use separate fixtures.');
 	}
-	const configurations = await fixtureCameras(
-		binary,
-		children,
-		Boolean(options.archiveFixture || options.calibrationFixture)
-	);
+	let configurations: string[];
+	let speakerObservation: (() => Promise<SpeakerObservation>) | undefined;
+	if (options.hikvisionSpeaker) {
+		const media = resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4');
+		const camera = spawn(binary, ['hikvision', '--media', media, '--speaker-observations'], {
+			stdio: ['pipe', 'pipe', 'ignore'],
+			windowsHide: true
+		});
+		children.push(camera);
+		configurations = [await cameraConfig(camera)];
+		speakerObservation = () => observeSpeaker(camera);
+	} else {
+		configurations = await fixtureCameras(
+			binary,
+			children,
+			Boolean(options.archiveFixture || options.calibrationFixture)
+		);
+	}
 	const configPath = await writeFixtureConfiguration({
 		directory,
 		origin,
@@ -417,5 +433,5 @@ async function prepareFixture(
 				options.calibrationFixture.mediaPath
 			)
 		: undefined;
-	return { configPath, archive, calibration };
+	return { configPath, archive, calibration, speakerObservation };
 }
