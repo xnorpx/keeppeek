@@ -33,7 +33,7 @@ struct Screen {
 }
 
 impl Screen {
-    fn enter() -> io::Result<Self> {
+    fn prepare() -> io::Result<Self> {
         let mut guard = Self {
             _console: ConsolePause::acquire()?,
             modes: 0,
@@ -47,12 +47,15 @@ impl Screen {
         });
         terminal::enable_raw_mode()?;
         guard.remember(RAW);
-        // Record each output command first so a partially written command gets a cleanup attempt.
-        guard.remember(ALTERNATE);
-        execute!(io::stdout(), EnterAlternateScreen)?;
-        guard.remember(HIDDEN);
-        execute!(io::stdout(), Hide)?;
         Ok(guard)
+    }
+
+    fn show(&mut self) -> io::Result<()> {
+        // Remember a mode before emitting it so cleanup retries a partially written command.
+        self.remember(ALTERNATE);
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        self.remember(HIDDEN);
+        execute!(io::stdout(), Hide)
     }
 
     fn remember(&mut self, mode: u8) {
@@ -113,21 +116,104 @@ fn viewport(columns: u16, rows: u16) -> Rect {
     Rect::new(0, 0, columns.min(500), rows.min(200))
 }
 
+enum Input {
+    Resize,
+    Rows(isize),
+    Pages(isize),
+}
+
+fn read_input(
+    sender: &std::sync::mpsc::SyncSender<Input>,
+    stop: &Shutdown,
+    server: &Shutdown,
+) -> io::Result<()> {
+    while !stop.is_cancelled() && !server.is_cancelled() {
+        if !event::poll(Duration::from_millis(100))? {
+            continue;
+        }
+        let input = match event::read()? {
+            Event::Resize(_, _) => Input::Resize,
+            Event::Key(key)
+                if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat =>
+            {
+                match key.code {
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        server.cancel();
+                        break;
+                    }
+                    KeyCode::Char('q') => break,
+                    KeyCode::Up => Input::Rows(-1),
+                    KeyCode::Down => Input::Rows(1),
+                    KeyCode::PageUp => Input::Pages(-1),
+                    KeyCode::PageDown => Input::Pages(1),
+                    _ => continue,
+                }
+            }
+            _ => continue,
+        };
+        // Input must still reach q or Ctrl+C when output is stalled and navigation is backed up.
+        if matches!(
+            sender.try_send(input),
+            Err(std::sync::mpsc::TrySendError::Disconnected(_))
+        ) {
+            break;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn present(
     latest: &Latest,
     stop: &Shutdown,
     server: &Shutdown,
     start_collector: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
+    let restored = Shutdown::new();
+    std::thread::scope(|scope| {
+        let _restoration = super::CancelOnDrop(restored.clone());
+        let mut screen = Screen::prepare()?;
+        let (sender, receiver) = std::sync::mpsc::sync_channel(32);
+        let restoration = &restored;
+        let input = std::thread::Builder::new()
+            .name("terminal-input".into())
+            .spawn_scoped(scope, move || {
+                let result = read_input(&sender, stop, server);
+                stop.cancel();
+                if !restoration.wait_timeout(Duration::from_millis(150)) {
+                    restore_before_exit();
+                }
+                result
+            })?;
+        let _input_lifetime = super::CancelOnDrop(stop.clone());
+        let result = screen.show().and_then(|()| {
+            start_collector()?;
+            render_until_closed(latest, stop, server, &receiver)
+        });
+        stop.cancel();
+        drop(screen);
+        restored.cancel();
+        result.and(
+            input
+                .join()
+                .map_err(|_| io::Error::other("terminal input worker panicked"))?,
+        )
+    })
+}
+
+fn render_until_closed(
+    latest: &Latest,
+    stop: &Shutdown,
+    server: &Shutdown,
+    receiver: &std::sync::mpsc::Receiver<Input>,
+) -> io::Result<()> {
     let (w, h) = terminal::size()?;
-    let _screen = Screen::enter()?;
+    let mut area = viewport(w, h);
     let mut terminal: Terminal<CrosstermBackend<Stdout>> = Terminal::with_options(
         CrosstermBackend::new(io::stdout()),
         TerminalOptions {
-            viewport: Viewport::Fixed(viewport(w, h)),
+            viewport: Viewport::Fixed(area),
         },
     )?;
-    start_collector()?;
     let mut nav = Navigation::default();
     let mut redraw = true;
     let mut last = Instant::now();
@@ -137,6 +223,12 @@ pub(super) fn present(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         if redraw || last.elapsed() >= Duration::from_secs(1) {
+            let (w, h) = terminal::size()?;
+            let actual = viewport(w, h);
+            if area != actual {
+                terminal.resize(actual)?;
+                area = actual;
+            }
             let age = data
                 .as_ref()
                 .map_or(Duration::ZERO, |snap| snap.collected.elapsed());
@@ -144,37 +236,16 @@ pub(super) fn present(
             last = Instant::now();
             redraw = false;
         }
-        if !event::poll(Duration::from_millis(100))? {
-            continue;
-        }
-        // Coalesce input bursts without delaying shutdown or the next snapshot indefinitely.
-        for _ in 0..32 {
-            match event::read()? {
-                Event::Resize(w, h) => {
-                    terminal.resize(viewport(w, h))?;
-                    redraw = true;
+        if let Ok(first) = receiver.recv_timeout(Duration::from_millis(100)) {
+            let rows = data.as_ref().map_or(0, |snap| snap.rows.len());
+            for command in std::iter::once(first).chain(receiver.try_iter().take(31)) {
+                match command {
+                    Input::Rows(n) => nav.step(n, rows),
+                    Input::Pages(n) => nav.step(n * nav.page as isize, rows),
+                    Input::Resize => {}
                 }
-                Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    let count = data.as_ref().map_or(0, |snap| snap.rows.len());
-                    match key.code {
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            server.cancel();
-                            return Ok(());
-                        }
-                        KeyCode::Char('q') => return Ok(()),
-                        KeyCode::Up => nav.step(-1, count),
-                        KeyCode::Down => nav.step(1, count),
-                        KeyCode::PageUp => nav.step(-(nav.page as isize), count),
-                        KeyCode::PageDown => nav.step(nav.page as isize, count),
-                        _ => {}
-                    }
-                    redraw = true;
-                }
-                _ => {}
             }
-            if !event::poll(Duration::ZERO)? {
-                break;
-            }
+            redraw = true;
         }
     }
     Ok(())

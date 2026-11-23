@@ -89,10 +89,11 @@ fn mib(bytes: Option<u64>) -> String {
 
 fn recording(m: &Measurement) -> &'static str {
     match (m.recording_requested, m.recording_progress) {
-        (false, _) => "off",
-        (true, Some(true)) => "recording",
-        (true, Some(false)) => "stalled",
-        (true, None) => "unknown",
+        (None, _) => "n/a",
+        (Some(false), _) => "off",
+        (Some(true), Some(true)) => "recording",
+        (Some(true), Some(false)) => "stalled",
+        (Some(true), None) => "unknown",
     }
 }
 

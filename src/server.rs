@@ -43,7 +43,7 @@ use crate::{
         FacadeSendError, FacadeSender, RouterError, RouterMessage, RouterQuery, RouterResponse,
     },
     shutdown::{Restart, Shutdown},
-    stats::{HealthRegistry, REPORT_INTERVAL, StreamHealthReport},
+    stats::{HealthRegistry, StreamHealthReport},
     storage::{
         CatalogMediaFragment, DEFAULT_PREVIEW_AFTER_MS, DEFAULT_PREVIEW_BEFORE_MS, EventEmbedding,
         EventImageFilter, EventMetadataQuery, EventSearch, EventSearchField, EventSearchTerm,
@@ -11217,7 +11217,7 @@ fn project_camera_snapshot(
     let expected_streams = expected_video_stream_ids(camera, context.router_status, &streams);
     let connected_streams = connected_video_stream_ids(context.router_status);
     let uptime_ms = context.uptime_seconds.saturating_mul(1_000);
-    let startup_grace = context.uptime_seconds < REPORT_INTERVAL.as_secs() * 2;
+    let startup_grace = crate::health::in_startup_grace(context.uptime_seconds);
     let battery_configured = camera.battery_uid.is_some();
     let battery_source = context.battery_wake.zip(camera.battery_uid.as_deref());
     let battery_health = battery_source.map(|(wake, uid)| wake.health(uid));
@@ -11529,20 +11529,31 @@ fn server_health(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
 ) -> ServerHealthResponse {
-    collect_server_health(router_tx, state, HealthRegistry::snapshot)
+    collect_server_health(
+        router_tx,
+        state,
+        HealthRegistry::snapshot,
+        state.catalog.as_ref(),
+    )
 }
 
 pub(crate) fn dashboard_health(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
 ) -> ServerHealthResponse {
-    collect_server_health(router_tx, state, HealthRegistry::local_stream_snapshot)
+    collect_server_health(
+        router_tx,
+        state,
+        HealthRegistry::local_stream_snapshot,
+        None,
+    )
 }
 
 fn collect_server_health(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
     ingress_snapshot: impl FnOnce(&HealthRegistry) -> Vec<crate::stats::CameraHealthReport>,
+    history_catalog: Option<&RecordingCatalogHandle>,
 ) -> ServerHealthResponse {
     let uptime_seconds = state.started_at.elapsed().as_secs();
     let system = state
@@ -11673,23 +11684,20 @@ fn collect_server_health(
         cameras.push(camera_health);
     }
 
-    let catalog = state
-        .catalog
-        .as_ref()
-        .and_then(|catalog| match catalog.stats() {
-            Ok(stats) => Some(stats),
-            Err(error) => {
-                issues.push(HealthIssue {
-                    severity: "warning".to_owned(),
-                    scope: "storage".to_owned(),
-                    message: format!("Recording catalog statistics are unavailable: {error}"),
-                    operational_event_id: None,
-                    timeline_start_ms: None,
-                    timeline_end_ms: None,
-                });
-                None
-            }
-        });
+    let catalog = history_catalog.and_then(|catalog| match catalog.stats() {
+        Ok(stats) => Some(stats),
+        Err(error) => {
+            issues.push(HealthIssue {
+                severity: "warning".to_owned(),
+                scope: "storage".to_owned(),
+                message: format!("Recording catalog statistics are unavailable: {error}"),
+                operational_event_id: None,
+                timeline_start_ms: None,
+                timeline_end_ms: None,
+            });
+            None
+        }
+    });
     let catalog_bytes = std::fs::metadata(&state.storage_config.recording_catalog_path)
         .ok()
         .map(|metadata| metadata.len());
@@ -14227,6 +14235,27 @@ mod tests {
         assert_eq!(camera.state, CameraHealthState::Healthy);
         assert_eq!(camera.reason, CameraHealthReason::Healthy);
         assert_eq!(server_health_status(&external_findings), "degraded");
+    }
+
+    #[test]
+    fn dashboard_health_skips_recording_catalog_history() {
+        let path = std::env::temp_dir().join(format!("keeppeek-tui-catalog-{}", Uuid::new_v4()));
+        std::fs::create_dir(&path).unwrap();
+        let catalog = crate::storage::RecordingCatalog::open(&path.join("recordings.db")).unwrap();
+        let mut state = media_test_state();
+        state.catalog = Some(catalog.handle());
+        let (router, tx) = crate::runtime::Router::new().unwrap();
+        let worker = spawn_router_query_worker(router);
+        let dashboard = dashboard_health(&tx, &state);
+        assert_eq!(worker.join().unwrap(), 1);
+        assert!(dashboard.storage.catalog.is_none());
+        let (router, tx) = crate::runtime::Router::new().unwrap();
+        let worker = spawn_router_query_worker(router);
+        assert!(server_health(&tx, &state).storage.catalog.is_some());
+        assert_eq!(worker.join().unwrap(), 1);
+        drop(state);
+        catalog.shutdown();
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

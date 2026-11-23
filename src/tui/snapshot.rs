@@ -58,7 +58,7 @@ pub(super) struct Measurement {
     pub session_ms: u64,
     pub report_age_ms: u64,
     pub frame_age_ms: Option<u64>,
-    pub recording_requested: bool,
+    pub recording_requested: Option<bool>,
     pub recording_progress: Option<bool>,
     pub recording_age_ms: Option<u64>,
 }
@@ -98,7 +98,8 @@ impl Snapshot {
                     if rows.len() == MAX_ROWS {
                         continue;
                     }
-                    let mut row = StreamRow::new(camera, source, medium, hub, report);
+                    let mut row =
+                        StreamRow::new(camera, source, medium, hub, report, health.uptime_seconds);
                     if let Some(profile) = profile {
                         if medium == "video" {
                             row.codec = row.codec.or_else(|| {
@@ -186,10 +187,25 @@ impl StreamRow {
         medium: &'static str,
         hub: &LogHub,
         stream: Option<&StreamHealth>,
+        uptime: u64,
     ) -> Self {
         let video = medium == "video";
         let r = stream.map(|s| &s.ingress.report);
-        let reason = stream.map_or(camera.reason, |s| s.reason);
+        let (health, reason) = stream.map_or_else(
+            || {
+                missing_stream_health(
+                    camera.state,
+                    camera.reason,
+                    camera
+                        .dimensions
+                        .connected_video_stream_ids
+                        .as_ref()
+                        .map(|ids| ids.iter().any(|id| id == source)),
+                    uptime,
+                )
+            },
+            |s| (s.state, s.reason),
+        );
         let measurement = stream.map(|s| {
             let r = &s.ingress.report;
             Measurement {
@@ -207,7 +223,7 @@ impl StreamRow {
                 session_ms: r.session_duration_ms,
                 report_age_ms: s.ingress.report_age_ms,
                 frame_age_ms: s.ingress.frame_age_ms,
-                recording_requested: s.dimensions.recording_requested,
+                recording_requested: video.then_some(s.dimensions.recording_requested),
                 recording_progress: s.dimensions.recording_progressing,
                 recording_age_ms: s.dimensions.recording_progress_age_ms,
             }
@@ -217,7 +233,7 @@ impl StreamRow {
             id: display_id(hub, &camera.id),
             stream: source,
             medium,
-            health: stream.map_or(camera.state, |s| s.state).as_str(),
+            health: health.as_str(),
             reason: reason.as_str().to_owned(),
             codec: r
                 .and_then(|r| r.codec.as_deref())
@@ -231,6 +247,49 @@ impl StreamRow {
     }
 }
 
+fn missing_stream_health(
+    camera: crate::health::CameraHealthState,
+    reason: crate::health::CameraHealthReason,
+    connected: Option<bool>,
+    uptime: u64,
+) -> (
+    crate::health::CameraHealthState,
+    crate::health::CameraHealthReason,
+) {
+    use crate::{
+        api::CameraLifecycle,
+        health::{CameraHealthEvidence, CameraHealthState, project_camera_health},
+    };
+    if matches!(
+        camera,
+        CameraHealthState::Starting | CameraHealthState::Stopped
+    ) {
+        return (camera, reason);
+    }
+    let projection = project_camera_health(&CameraHealthEvidence {
+        expected: true,
+        lifecycle: connected.map(|yes| {
+            if yes {
+                CameraLifecycle::Connected
+            } else {
+                CameraLifecycle::Reconnecting
+            }
+        }),
+        startup_grace: crate::health::in_startup_grace(uptime),
+        report_age_ms: None,
+        frames_fresh: None,
+        decodable: None,
+        frame_rate_healthy: None,
+        recent_reconnects: 0,
+        recent_drops: 0,
+        recent_errors: 0,
+        recording_requested: false,
+        recording_progressing: None,
+        battery_sleeping: None,
+    });
+    (projection.state, projection.reason)
+}
+
 // IngressRates calculates bits per 1024; display the decimal network unit used in the header.
 fn decimal_kbit_per_second(kibit_per_second: f64) -> f64 {
     kibit_per_second * 1024.0 / 1000.0
@@ -239,6 +298,46 @@ fn decimal_kbit_per_second(kibit_per_second: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_expected_stream_uses_its_own_evidence() {
+        use crate::health::{CameraHealthReason as Reason, CameraHealthState as State};
+        for (camera, reason, connected, uptime, expected) in [
+            (
+                State::Healthy,
+                Reason::Healthy,
+                Some(true),
+                60,
+                (State::Stale, Reason::NoStreamReport),
+            ),
+            (
+                State::Healthy,
+                Reason::Healthy,
+                Some(true),
+                1,
+                (State::Starting, Reason::Starting),
+            ),
+            (
+                State::Healthy,
+                Reason::Healthy,
+                None,
+                60,
+                (State::Unknown, Reason::EvidenceUnavailable),
+            ),
+            (
+                State::Stopped,
+                Reason::BatterySleeping,
+                None,
+                60,
+                (State::Stopped, Reason::BatterySleeping),
+            ),
+        ] {
+            assert_eq!(
+                missing_stream_health(camera, reason, connected, uptime),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn decimal_rate_preserves_zero_and_scales_incoming_kibibits() {

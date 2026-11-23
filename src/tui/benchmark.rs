@@ -7,12 +7,12 @@ use crate::{
     config::Config,
     keeppeek::StreamKind,
     logging::LogHub,
-    runtime::{Router, RouterMessage},
+    runtime::{FacadeSender, Router, RouterMessage},
     server::{ServerState, dashboard_health},
     stats::{
         CameraReport, HealthRegistry, IngressSnapshot, IngressStats, audio_report, video_report,
     },
-    storage::{RecordingDemand, StorageConfig},
+    storage::{RecordingDemand, RecordingHealthRegistry, StorageConfig},
     webrtc::WebRtc,
 };
 use ratatui::{Terminal, backend::TestBackend};
@@ -118,11 +118,11 @@ fn process_sample(system: &mut System) -> (u64, u64) {
     (process.accumulated_cpu_time(), process.memory())
 }
 
-fn run_observation(enabled: bool) -> Sample {
-    let cameras: Vec<CameraConfig> = (1..=CAMERAS)
+fn fleet(count: u8) -> (ServerState, HealthRegistry, Vec<Source>) {
+    let cameras: Vec<CameraConfig> = (1..=count)
         .map(|n| {
             serde_json::from_value(serde_json::json!({
-                "ip": IpAddr::V4(Ipv4Addr::new(192, 0, 2, n)), "name": format!("camera-{n:03}"),
+                "ip": IpAddr::V4(Ipv4Addr::new(192, 0, 2, n)), "name": format!("camera-{n:03}"), "recording_mode": "both",
             }))
             .unwrap()
         })
@@ -147,6 +147,105 @@ fn run_observation(enabled: bool) -> Sample {
         WebRtc::new(),
     )
     .with_health_registry(registry.clone());
+    (state, registry, sources)
+}
+
+fn collect_samples(
+    start: Instant,
+    latest: Latest,
+    sender: &FacadeSender<RouterMessage>,
+    state: &ServerState,
+) -> Sample {
+    let redactor = LogHub::default();
+    let mut metrics = Sample::default();
+    for second in [0, 2, 4] {
+        wait_until(start, second);
+        let collect = Instant::now();
+        let health = dashboard_health(sender, state);
+        let collector_us = micros(collect);
+        let projection = Instant::now();
+        let next = Arc::new(Snapshot::from_health(health, &redactor));
+        let projection_us = micros(projection);
+        assert_eq!(next.rows.len(), usize::from(CAMERAS) * 4);
+        metrics.snapshot_rows = metrics.snapshot_rows.max(next.rows.len());
+        let mut slot = latest.lock().unwrap();
+        *slot = Some(next);
+        metrics.pending_snapshots = metrics.pending_snapshots.max(slot.iter().count());
+        if second >= 2 {
+            metrics.collector_us.push(collector_us);
+            metrics.projection_us.push(projection_us);
+        }
+    }
+    metrics
+}
+
+fn render_samples(start: Instant, latest: Latest) -> Vec<u64> {
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    let mut nav = render::Navigation::default();
+    let mut durations = Vec::new();
+    for second in 0..6 {
+        wait_until(start, second);
+        let current = latest.lock().unwrap().clone();
+        let elapsed = current
+            .as_ref()
+            .map_or(Duration::ZERO, |s| s.collected.elapsed());
+        let draw = Instant::now();
+        terminal
+            .draw(|frame| render::draw(frame, current.as_deref(), &mut nav, elapsed))
+            .unwrap();
+        if second >= 2 {
+            assert!(
+                current.is_some(),
+                "dashboard did not present its first observation"
+            );
+            durations.push(micros(draw));
+        }
+    }
+    durations
+}
+
+fn ingress_samples(
+    start: Instant,
+    sources: &mut [Source],
+    registry: &HealthRegistry,
+    system: &mut System,
+) -> (Vec<u64>, u64, u64) {
+    // Warm up for two seconds, then measure 100 fleet batches while staggering the ten-second reports.
+    let warmup_ticks = 50;
+    let mut ingress_batch_ns = Vec::with_capacity(TICKS);
+    let mut cpu_start = 0;
+    let mut rss_bytes = 0;
+    for tick in 0..warmup_ticks + TICKS {
+        thread::sleep(
+            (start + TICK * u32::try_from(tick).unwrap()).saturating_duration_since(Instant::now()),
+        );
+        if tick == warmup_ticks {
+            cpu_start = process_sample(system).0;
+        }
+        let begin = Instant::now();
+        for (i, source) in sources.iter_mut().enumerate() {
+            source.receive(tick + 1);
+            if (tick + i).is_multiple_of(250) {
+                source.publish(registry);
+            }
+        }
+        let elapsed = u64::try_from(begin.elapsed().as_nanos()).unwrap();
+        if tick >= warmup_ticks {
+            ingress_batch_ns.push(elapsed);
+        }
+        if tick >= warmup_ticks && tick.is_multiple_of(25) {
+            rss_bytes = rss_bytes.max(process_sample(system).1);
+        }
+    }
+    thread::sleep((start + Duration::from_secs(6)).saturating_duration_since(Instant::now()));
+    let (cpu_end, rss_end) = process_sample(system);
+    let process_cpu_ms = cpu_end.saturating_sub(cpu_start);
+    rss_bytes = rss_bytes.max(rss_end);
+    (ingress_batch_ns, process_cpu_ms, rss_bytes)
+}
+
+fn run_observation(enabled: bool) -> Sample {
+    let (state, registry, mut sources) = fleet(CAMERAS);
     let (mut router, sender) = Router::new().unwrap();
     let router_thread = thread::spawn(move || {
         while !router.is_shutting_down() {
@@ -155,108 +254,54 @@ fn run_observation(enabled: bool) -> Sample {
     });
     let mut system = System::new().expect("process metrics must be available for qualification");
     let start = Instant::now();
-    // Both conditions get two seconds of warm-up, then receive the same 100
-    // fleet batches. Stagger the production ten-second reporting cadence.
-    let warmup_ticks = 50;
-    let mut ingress_batch_ns = Vec::with_capacity(TICKS);
-    let mut cpu_start = 0;
-    let mut rss_bytes = 0;
-    let mut process_cpu_ms = 0;
-    let mut sample = thread::scope(|scope| {
+    let result = thread::scope(|scope| {
         let latest = Latest::default();
         let collector = enabled.then(|| {
-            let latest = latest.clone();
-            let sender = &sender;
-            let state = &state;
-            scope.spawn(move || {
-                let redactor = LogHub::default();
-                let mut metrics = Sample::default();
-                for second in [0, 2, 4] {
-                    wait_until(start, second);
-                    let collect = Instant::now();
-                    let health = dashboard_health(sender, state);
-                    let collector_us = micros(collect);
-                    let projection = Instant::now();
-                    let next = Arc::new(Snapshot::from_health(health, &redactor));
-                    let projection_us = micros(projection);
-                    assert_eq!(next.rows.len(), usize::from(CAMERAS) * 4);
-                    metrics.snapshot_rows = metrics.snapshot_rows.max(next.rows.len());
-                    let mut slot = latest.lock().unwrap();
-                    *slot = Some(next);
-                    metrics.pending_snapshots = metrics.pending_snapshots.max(slot.iter().count());
-                    if second >= 2 {
-                        metrics.collector_us.push(collector_us);
-                        metrics.projection_us.push(projection_us);
-                    }
-                }
-                metrics
-            })
+            let slot = latest.clone();
+            let (sender, state) = (&sender, &state);
+            scope.spawn(move || collect_samples(start, slot, sender, state))
         });
-        let renderer = enabled.then(|| {
-            scope.spawn(move || {
-                let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-                let mut nav = render::Navigation::default();
-                let mut durations = Vec::new();
-                for second in 0..6 {
-                    wait_until(start, second);
-                    let current = latest.lock().unwrap().clone();
-                    let elapsed = current
-                        .as_ref()
-                        .map_or(Duration::ZERO, |s| s.collected.elapsed());
-                    let draw = Instant::now();
-                    terminal
-                        .draw(|frame| render::draw(frame, current.as_deref(), &mut nav, elapsed))
-                        .unwrap();
-                    if second >= 2 {
-                        assert!(
-                            current.is_some(),
-                            "dashboard did not present its first observation"
-                        );
-                        durations.push(micros(draw));
-                    }
-                }
-                durations
-            })
-        });
-        for tick in 0..warmup_ticks + TICKS {
-            thread::sleep(
-                (start + TICK * u32::try_from(tick).unwrap())
-                    .saturating_duration_since(Instant::now()),
-            );
-            if tick == warmup_ticks {
-                cpu_start = process_sample(&mut system).0;
-            }
-            let begin = Instant::now();
-            for (i, source) in sources.iter_mut().enumerate() {
-                source.receive(tick + 1);
-                if (tick + i).is_multiple_of(250) {
-                    source.publish(&registry);
-                }
-            }
-            let elapsed = u64::try_from(begin.elapsed().as_nanos()).unwrap();
-            if tick >= warmup_ticks {
-                ingress_batch_ns.push(elapsed);
-            }
-            if tick >= warmup_ticks && tick.is_multiple_of(25) {
-                rss_bytes = rss_bytes.max(process_sample(&mut system).1);
-            }
-        }
-        thread::sleep((start + Duration::from_secs(6)).saturating_duration_since(Instant::now()));
-        let (cpu_end, rss_end) = process_sample(&mut system);
-        process_cpu_ms = cpu_end.saturating_sub(cpu_start);
-        rss_bytes = rss_bytes.max(rss_end);
+        let renderer = enabled.then(|| scope.spawn(move || render_samples(start, latest)));
+        let (ingress_batch_ns, process_cpu_ms, rss_bytes) =
+            ingress_samples(start, &mut sources, &registry, &mut system);
         let mut sample = collector.map_or_else(Sample::default, |thread| thread.join().unwrap());
         if let Some(renderer) = renderer {
             sample.render_us = renderer.join().unwrap();
         }
+        sample.ingress_batch_ns = ingress_batch_ns;
+        sample.process_cpu_ms = process_cpu_ms;
+        sample.rss_bytes = rss_bytes;
         sample
     });
     sender.send(RouterMessage::Shutdown).unwrap();
     router_thread.join().unwrap();
-    sample.ingress_batch_ns = ingress_batch_ns;
-    sample.process_cpu_ms = process_cpu_ms;
-    sample.rss_bytes = rss_bytes;
-    sample
+    result
+}
+
+#[test]
+fn audio_rows_leave_container_recording_evidence_with_video() {
+    let (state, _, _) = fleet(1);
+    let writers = RecordingHealthRegistry::default();
+    for source in ["main", "sub"] {
+        writers.note_progress(&format!("camera-001/{source}"), Duration::from_secs(1));
+    }
+    let state = state.with_recording_health(writers);
+    let (mut router, sender) = Router::new().unwrap();
+    let worker = thread::spawn(move || {
+        while !router.is_shutting_down() {
+            router.wait_and_drain(None).unwrap();
+        }
+    });
+    let snapshot = Snapshot::from_health(dashboard_health(&sender, &state), &LogHub::default());
+    sender.send(RouterMessage::Shutdown).unwrap();
+    worker.join().unwrap();
+    assert_eq!(snapshot.rows.len(), 4);
+    for row in snapshot.rows {
+        let measurement = row.measurement.unwrap();
+        let video_recording = (row.medium == "video").then_some(true);
+        assert_eq!(measurement.recording_requested, video_recording);
+        assert_eq!(measurement.recording_progress, video_recording);
+    }
 }
 
 fn percentile(values: &[u64], percent: usize) -> u64 {

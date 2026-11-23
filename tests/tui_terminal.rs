@@ -28,12 +28,17 @@ impl Drop for Recorder {
 }
 
 struct TerminalOutput {
+    input: Box<dyn Write + Send>,
     chunks: Receiver<Vec<u8>>,
+    #[cfg(windows)]
+    query: [u8; 4],
     pending: Vec<u8>,
 }
 
 impl TerminalOutput {
-    fn new(mut input: Box<dyn Read + Send>) -> Self {
+    fn new(master: &dyn portable_pty::MasterPty) -> Result<Self> {
+        let mut input = master.try_clone_reader()?;
+        let terminal_input = master.take_writer()?;
         let (writer, chunks) = sync_channel(16);
         thread::spawn(move || {
             let mut buffer = [0; 2048];
@@ -43,10 +48,13 @@ impl TerminalOutput {
                 }
             }
         });
-        Self {
+        Ok(Self {
+            input: terminal_input,
             chunks,
+            #[cfg(windows)]
+            query: [0; 4],
             pending: Vec::new(),
-        }
+        })
     }
 
     fn through(&mut self, marker: &[u8]) -> Result<()> {
@@ -71,6 +79,16 @@ impl TerminalOutput {
                         String::from_utf8_lossy(marker)
                     )
                 })?;
+            #[cfg(windows)]
+            for byte in &chunk {
+                // ConPTY requests the host terminal's cursor position at attach and resize.
+                self.query.rotate_left(1);
+                self.query[3] = *byte;
+                if self.query == *b"\x1b[6n" {
+                    self.input.write_all(b"\x1b[1;1R")?;
+                    self.input.flush()?;
+                }
+            }
             self.pending.extend_from_slice(&chunk);
             ensure!(
                 Instant::now() <= deadline,
@@ -89,16 +107,7 @@ fn terminal_size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
-fn foreground_lifecycle(detach: bool) -> Result<()> {
-    let pair = native_pty_system().openpty(terminal_size(100, 30))?;
-    #[cfg(unix)]
-    let initial_flags = pair
-        .master
-        .get_termios()
-        .context("initial terminal modes")?
-        .local_flags;
-    let mut output = TerminalOutput::new(pair.master.try_clone_reader()?);
-    let mut input = pair.master.take_writer()?;
+fn start_recorder(slave: &dyn portable_pty::SlavePty) -> Result<(Recorder, u16)> {
     let port = TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port();
     let directory = std::env::temp_dir().join(format!("keeppeek-tui-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&directory)?;
@@ -115,10 +124,41 @@ fn foreground_lifecycle(detach: bool) -> Result<()> {
     cmd.env("XDG_CONFIG_HOME", &directory);
     cmd.env("TERM", "xterm-256color");
     cmd.env("NO_COLOR", "1");
-    let mut recorder = Recorder {
-        child: pair.slave.spawn_command(cmd)?,
+    let recorder = Recorder {
+        child: slave.spawn_command(cmd)?,
         directory,
     };
+    Ok((recorder, port))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Exit {
+    Detach,
+    Raw,
+    #[cfg(unix)]
+    BlockedOutput,
+}
+
+#[cfg(unix)]
+struct PausedOutput(fs::File);
+
+#[cfg(unix)]
+impl Drop for PausedOutput {
+    fn drop(&mut self) {
+        let _ = rustix::termios::tcflow(&self.0, rustix::termios::Action::OOn);
+    }
+}
+
+fn foreground_lifecycle(exit: Exit) -> Result<()> {
+    let pair = native_pty_system().openpty(terminal_size(100, 30))?;
+    #[cfg(unix)]
+    let initial_flags = pair
+        .master
+        .get_termios()
+        .context("initial terminal modes")?
+        .local_flags;
+    let mut output = TerminalOutput::new(pair.master.as_ref())?;
+    let (mut recorder, port) = start_recorder(pair.slave.as_ref())?;
     drop(pair.slave);
 
     output.through(b"Uptime")?;
@@ -128,9 +168,9 @@ fn foreground_lifecycle(detach: bool) -> Result<()> {
     output.through(b"details")?;
     pair.master.resize(terminal_size(80, 24))?;
     output.through(b"Uptime")?;
-    if detach {
-        input.write_all(b"q")?;
-        input.flush()?;
+    if exit == Exit::Detach {
+        output.input.write_all(b"q")?;
+        output.input.flush()?;
         output.through(b"\x1b[?1049l")?;
         #[cfg(unix)]
         assert_eq!(
@@ -151,9 +191,21 @@ fn foreground_lifecycle(detach: bool) -> Result<()> {
             "recorder did not remain healthy after detachment"
         );
     }
-    input.write_all(b"\x03")?;
-    input.flush()?;
-    if !detach {
+    #[cfg(unix)]
+    let _pause = if exit == Exit::BlockedOutput {
+        let device = pair.master.tty_name().context("slave terminal path")?;
+        let pause = PausedOutput(fs::OpenOptions::new().write(true).open(device)?);
+        rustix::termios::tcflow(&pause.0, rustix::termios::Action::OOff)?;
+        pair.master.resize(terminal_size(38, 8))?;
+        // Allow a full refresh interval for the renderer to enter its blocked write.
+        thread::sleep(Duration::from_millis(1_100));
+        Some(pause)
+    } else {
+        None
+    };
+    output.input.write_all(b"\x03")?;
+    output.input.flush()?;
+    if exit == Exit::Raw {
         output.through(b"\x1b[?1049l")?;
     }
     let deadline = Instant::now() + TIMEOUT;
@@ -175,10 +227,16 @@ fn foreground_lifecycle(detach: bool) -> Result<()> {
 
 #[test]
 fn detaching_restores_the_terminal_and_leaves_the_recorder_serving() -> Result<()> {
-    foreground_lifecycle(true)
+    foreground_lifecycle(Exit::Detach)
 }
 
 #[test]
 fn raw_terminal_ctrl_c_restores_the_screen_and_stops_the_server() -> Result<()> {
-    foreground_lifecycle(false)
+    foreground_lifecycle(Exit::Raw)
+}
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_stops_the_recorder_while_the_pty_cannot_transmit_output() -> Result<()> {
+    foreground_lifecycle(Exit::BlockedOutput)
 }
