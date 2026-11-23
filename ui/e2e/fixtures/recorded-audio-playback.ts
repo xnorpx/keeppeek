@@ -7,7 +7,6 @@ export function recordedAudioBackendRoute(origin: string, backend: string) {
 		const url = new URL(route.request().url());
 		const applicationRequest =
 			url.pathname === '/create' ||
-			url.pathname === '/delete' ||
 			['/api/', '/auth/', '/config/'].some((prefix) => url.pathname.startsWith(prefix));
 		if (url.origin === origin && applicationRequest) {
 			await route.fulfill({
