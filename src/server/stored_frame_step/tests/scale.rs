@@ -130,7 +130,7 @@ fn series(catalog: &RecordingCatalogHandle, sources: usize, forward: bool) -> Co
     let cost = previous.unwrap();
     // Nearest-rank p50 and p95 for exactly 30 observations, in microseconds.
     println!(
-        "frame-window sources={sources} forward={forward} trials={TRIALS} catalog_commands_per_trial=1         catalog_us_p50_p95={}/{} first_response_work_us_p50_p95={}/{} payload_us_p50_p95={}/{} cost={cost:?}",
+        "frame-window sources={sources} forward={forward} trials={TRIALS} catalog_commands_per_trial=1 catalog_us_p50_p95={}/{} first_response_work_us_p50_p95={}/{} payload_us_p50_p95={}/{} cost={cost:?}",
         query_us[14],
         query_us[28],
         selection_us[14],
@@ -158,4 +158,108 @@ fn frame_window_scale_one_and_127_sources() {
     assert_eq!(series(handle, 127, false), base_reverse);
     drop(state);
     catalog.shutdown();
+}
+
+#[test]
+fn full_4k_avc_and_hevc_gops_fit_the_source_selection_and_payload_limits() {
+    for codec in ["h264", "h265"] {
+        let filename = format!("cc-4k-3840x2160-{codec}.mp4");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/test-camera/testdata")
+            .join(filename);
+        let mut input = mp4::read_mp4(std::fs::File::open(source).unwrap()).unwrap();
+        let video = &input.tracks()[&1];
+        assert_eq!(
+            (video.width(), video.height(), video.sample_count()),
+            (3840, 2160, 15)
+        );
+        let rate = video.timescale();
+        let track = mp4::TrackConfig {
+            track_type: mp4::TrackType::Video,
+            timescale: rate,
+            language: "und".into(),
+            media_conf: video.media_config_for_description(1).unwrap(),
+        };
+        let directory = RecordingDirectory::new();
+        let path = directory.0.join("4k.mp4");
+        let mut writer = mp4::FragmentedMp4Writer::write_start(
+            std::fs::File::create(&path).unwrap(),
+            &mp4::Mp4Config {
+                major_brand: "iso6".parse().unwrap(),
+                minor_version: 1,
+                compatible_brands: vec!["iso6".parse().unwrap()],
+                timescale: rate,
+            },
+            &[track],
+        )
+        .unwrap();
+        let mut encoded_bytes = 0;
+        let mut timestamps = Vec::new();
+        for ordinal in 1..=15 {
+            let timing = input.tracks()[&1].sample_timing(ordinal).unwrap().unwrap();
+            let timestamp = i64::try_from(timing.presentation_time).unwrap();
+            let mut sample = input.read_sample(1, ordinal).unwrap().unwrap();
+            encoded_bytes += sample.bytes.len();
+            timestamps.push((timestamp, ordinal));
+            sample.rendering_offset = 0;
+            writer
+                .write_sample_with_source_timing(
+                    1,
+                    1,
+                    sample,
+                    Some(mp4::SourceRtpPacket {
+                        session_id: [1; 16],
+                        epoch_id: [2; 16],
+                        clock_rate: rate.try_into().unwrap(),
+                        timestamp,
+                    }),
+                )
+                .unwrap();
+        }
+        let fragment = writer.flush_fragment().unwrap().unwrap();
+        writer.write_end().unwrap();
+        let entries = [CatalogMediaFragment {
+            recording_id: codec.into(),
+            recording_started_at_ms: 10_000,
+            path: path.to_str().unwrap().into(),
+            init_offset: 0,
+            init_len: fragment.range.offset,
+            sequence: u64::from(fragment.sequence_number),
+            start_ms: 10_000,
+            duration_ms: 1_000,
+            byte_offset: fragment.range.offset,
+            byte_len: fragment.range.size,
+            archive: None,
+        }];
+        let request = proto::StepStoredFrame {
+            step_id: "4k".into(),
+            generation: 1,
+            stored_media_id: "stored".into(),
+            ..Default::default()
+        };
+        let mut selected = None;
+        timestamps.sort_unstable();
+        assert_eq!(timestamps[0].1, 1);
+        for (forward, at) in [(true, 1), (false, 0)] {
+            let anchor = selected
+                .as_ref()
+                .map_or(10_000_000_000, |sample: &Selected| sample.stored_ns);
+            let window =
+                target_window(&entries, anchor, selected.as_ref(), forward, &work()).unwrap();
+            let output = plan(window, &request, &work()).unwrap();
+            assert_eq!(
+                (output.result.source_ticks, output.selected.ordinal),
+                timestamps[at]
+            );
+            assert_eq!(output.result.sample_count, 15);
+            assert_eq!(output.result.encoded_bytes as usize, encoded_bytes);
+            let parts = output.messages(&work()).unwrap();
+            assert!(parts.len() >= 15);
+            println!(
+                "4K {codec} forward={forward} samples=15 encoded_bytes={encoded_bytes} chunks={}",
+                parts.len()
+            );
+            selected = Some(output.selected);
+        }
+    }
 }
