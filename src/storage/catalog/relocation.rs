@@ -207,6 +207,7 @@ impl RecordingCatalogHandle {
     pub(crate) fn next_relocation(&self, after: &str) -> Result<Option<Move>> {
         self.relocation(Request::Next(after.to_owned()))
     }
+    #[tracing::instrument(name = "update_recording_path", level = "trace", skip_all)]
     pub(crate) fn publish_relocation(
         &self,
         job: &Move,
