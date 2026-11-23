@@ -86,6 +86,7 @@ export async function decodedRecordedAudio(
 					const sample = await decodedSnapshot(video);
 					return (
 						sample.source !== previousSource &&
+						!sample.paused &&
 						sample.width === 160 &&
 						sample.height === 90 &&
 						sample.frames > minimumFrames &&
