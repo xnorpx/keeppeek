@@ -4,6 +4,8 @@
 	import { capabilityActions } from '$lib/capability-actions';
 	import { useCapabilityState } from '$lib/capability-context';
 	import CapabilityGate from '$lib/components/CapabilityGate.svelte';
+	import CompletedExportDownloads from '$lib/components/CompletedExportDownloads.svelte';
+	import { saveExportDownload } from '$lib/save-export-download';
 	import GuestShareExportButton from '$lib/components/GuestShareExportButton.svelte';
 	import RecordedAudioTimingDetails from '$lib/components/RecordedAudioTimingDetails.svelte';
 	import { useControlClient } from '$lib/control-context';
@@ -337,14 +339,7 @@
 		operationError = null;
 		try {
 			const download = await controlClient.downloadExport(job.id);
-			const url = URL.createObjectURL(download.blob);
-			const anchor = document.createElement('a');
-			anchor.href = url;
-			anchor.download = download.job.fileName ?? 'keeppeek-export.mp4';
-			document.body.append(anchor);
-			anchor.click();
-			anchor.remove();
-			setTimeout(() => URL.revokeObjectURL(url), 0);
+			saveExportDownload(download);
 		} catch (cause) {
 			operationError = errorMessage(cause, 'The export could not be downloaded.');
 		} finally {
@@ -986,5 +981,6 @@
 				</p>
 			</div>
 		</div>
+		{#if exportSupported}<CompletedExportDownloads controller={controlClient} />{/if}
 	{/if}
 </section>
