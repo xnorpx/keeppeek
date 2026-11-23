@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-136fed69.js";
+            window.path_to_searchindex_js = "searchindex-e50ad4ef.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -1997,6 +1997,7 @@ Root fields must appear before a table header or they belong to that table.</p>
 <tbody>
 <tr><td>Root fields</td><td><code>Config</code></td><td>Operator settings</td></tr>
 <tr><td><code>[sharing]</code></td><td><code>sharing::SharingConfig</code></td><td>Guest review deployment policy; server-owned revision</td></tr>
+<tr><td><code>[reporting]</code></td><td><code>reporting::Settings</code></td><td>Optional bug reporting service settings</td></tr>
 <tr><td><code>[access]</code></td><td><code>AccessConfig</code></td><td>Administrator security policy</td></tr>
 <tr><td><code>[direct_card]</code></td><td><code>DirectCardConfig</code></td><td>Exact browser-origin allowlist</td></tr>
 <tr><td><code>[storage]</code></td><td><code>StorageToml</code></td><td>Recording paths, retention, and safety</td></tr>
@@ -2774,6 +2775,24 @@ valid saved filter takes precedence over <code>RUST_LOG</code>; the built-in fal
 usable source. This diagnostic setting is outside the two-file configuration ZIP. Preserve it with
 the configuration directory if you need it during a recovery rehearsal. Source:
 <a href="https://github.com/xnorpx/keeppeek/blob/main/src/logging.rs">logging service</a>.</p>
+<h2 id="bug-reporting-service"><a class="header" href="#bug-reporting-service">Bug reporting service</a></h2>
+<p>The optional <code>[reporting]</code> section configures the recorder’s reporting service. Omit it to keep
+bug reports local. The configuration loader validates the section. Remote submission is pending
+recorder integration.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>origin</code></td><td>String</td><td>Required</td><td>Canonical HTTPS origin up to 512 bytes, with an optional port.</td></tr>
+<tr><td><code>credential</code></td><td>Optional string</td><td>Absent</td><td>A single <code>{secret:KEY}</code> reference in <code>secrets.toml</code> when the service requires a credential.</td></tr>
+<tr><td><code>retention_days</code></td><td><code>u8</code></td><td><code>7</code></td><td>Requested retention for the private evidence, from 1 to 30 days.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Keep the reusable credential in <code>secrets.toml</code>. The loader preserves the reference in
+<code>config.toml</code> and validates its syntax without resolving it at recorder startup.</p>
 <h2 id="operational-events"><a class="header" href="#operational-events">Operational events</a></h2>
 <p>Type: <code>OperationalEventsConfig</code>, section <code>[operational_events]</code>.</p>
 <div class="table-wrapper">
