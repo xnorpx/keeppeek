@@ -15,13 +15,13 @@ const PLAN_LIFETIME_MS: i64 = 10 * 60 * 1000;
 const HISTORY_MS: i64 = 30 * 86_400_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) enum Selection {
+pub enum Selection {
     Explicit(String),
     Retention { after: String, limit: u16 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct Policy {
+pub struct Policy {
     pub target: String,
     pub days: Option<u32>,
     pub configuration_revision: String,
@@ -40,7 +40,7 @@ impl Policy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct Item {
+pub struct Item {
     pub job_id: String,
     pub object_id: String,
     pub kind: String,
@@ -61,7 +61,7 @@ struct Snapshot {
 }
 
 #[derive(Debug)]
-pub(crate) struct Plan {
+pub struct Plan {
     pub target: String,
     pub id: String,
     pub revision: String,
@@ -73,14 +73,14 @@ pub(crate) struct Plan {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct WorkItem {
+pub struct WorkItem {
     pub operation: String,
     pub phase: String,
     pub attempts: u32,
 }
 
 #[derive(Debug)]
-pub(crate) enum Request {
+pub enum Request {
     Preview {
         actor: String,
         policy: Policy,

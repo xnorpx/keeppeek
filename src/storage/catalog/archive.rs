@@ -9,7 +9,7 @@ use std::{
 };
 
 mod decode;
-pub(crate) mod deletion;
+pub mod deletion;
 mod dispatch;
 use dispatch::dispatch;
 

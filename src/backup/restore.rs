@@ -16,7 +16,7 @@ use std::{
 };
 use zip::ZipArchive;
 
-pub(crate) mod archive_deletion;
+pub(super) mod archive_deletion;
 mod owned_storage;
 
 const RESTORE_PLAN_TTL_MS: u64 = 10 * 60 * 1_000;

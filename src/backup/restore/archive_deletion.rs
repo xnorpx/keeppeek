@@ -4,10 +4,7 @@ use super::*;
 use crate::storage::archive::settings::Settings;
 
 /// Called under the same configuration update lock as restore staging and archive claims.
-pub(crate) fn check_staged_archive_deletion(
-    config_path: &Path,
-    active: &Settings,
-) -> anyhow::Result<()> {
+pub fn check_staged_archive_deletion(config_path: &Path, active: &Settings) -> anyhow::Result<()> {
     let path = restore_journal_path(config_path);
     if !path.try_exists()? {
         return Ok(());

@@ -697,7 +697,7 @@ fn archived_export_download_survives_expiry_history_prune_and_source_retirement(
             .deletion(Request::Preview {
                 actor: "admin".into(),
                 policy: handle.deletion_policy().unwrap(),
-                selection: Selection::Explicit(archive_job_id.clone()),
+                selection: Selection::Explicit(archive_job_id),
             })
             .unwrap();
         assert_eq!(preview.items[0].state, "primary_unavailable");

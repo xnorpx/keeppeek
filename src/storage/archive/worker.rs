@@ -289,6 +289,7 @@ impl Handle {
 }
 
 impl Worker {
+    #[cfg(test)]
     pub fn start(settings: Settings, catalog: RecordingCatalogHandle) -> anyhow::Result<Self> {
         Self::start_inner(settings, catalog, None)
     }
@@ -443,9 +444,7 @@ impl Context {
                 // The target is reachable and this row now has durable backoff. Other
                 // unverified copies may proceed on the next bounded scheduling pass.
                 self.catalog.archive(Request::Deletion(
-                    crate::storage::catalog::archive::deletion::Request::LegacyFailed(
-                        job.id.clone(),
-                    ),
+                    crate::storage::catalog::archive::deletion::Request::LegacyFailed(job.id),
                 ))?;
                 return Ok(());
             } else if job.cancelled {
