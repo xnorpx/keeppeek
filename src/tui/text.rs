@@ -7,12 +7,24 @@ pub(super) fn for_terminal(hub: &LogHub, source: &str) -> String {
     if source.len() > 4096 {
         return "[value omitted]".into();
     }
-    visible_text(&hub.redact_output(source))
+    let redacted = hub.redact_output(source);
+    let normalized = visible_text(&redacted);
+    // Removing a control sequence may join previously separated portions of a private value.
+    let mut safe = if normalized == redacted {
+        redacted
+    } else {
+        hub.redact_output(&normalized)
+    };
+    if let Some((end, _)) = safe.char_indices().nth(MAX_VISIBLE_CHARS) {
+        safe.truncate(end);
+        safe.pop();
+        safe.push('\u{2026}');
+    }
+    safe
 }
 
 fn visible_text(input: &str) -> String {
     let mut output = String::new();
-    let mut count = 0;
     let mut chars = input.chars();
     while let Some(ch) = chars.next() {
         match ch {
@@ -37,16 +49,10 @@ fn visible_text(input: &str) -> String {
             }
             _ => {}
         }
-        if count == MAX_VISIBLE_CHARS {
-            output.pop();
-            output.push('…');
-            break;
-        }
         let hidden = ch.is_control()
             || matches!(ch,
             '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}');
         output.push(if hidden { ' ' } else { ch });
-        count += 1;
     }
     output
 }
@@ -79,7 +85,28 @@ mod tests {
             visible_text("a\u{9d}title\u{9c}b\x1bPdiscard\x1b\\c"),
             "abc"
         );
-        assert_eq!(visible_text(&"猫".repeat(257)), "猫".repeat(255) + "…");
+        assert_eq!(
+            for_terminal(&LogHub::default(), &"猫".repeat(257)),
+            "猫".repeat(255) + "…"
+        );
+    }
+
+    #[test]
+    fn normalized_private_values_are_redacted_before_clipping() {
+        let hub = LogHub::default();
+        hub.set_sensitive_values(["sample-private-value".to_owned()]);
+        let formatted = "sample-\x1b[31mprivate-value";
+        assert_eq!(
+            for_terminal(&hub, formatted),
+            for_terminal(&hub, "sample-private-value")
+        );
+        let prefix = "x".repeat(MAX_VISIBLE_CHARS - 10);
+        let line = for_terminal(&hub, &format!("{prefix}{formatted}"));
+        assert_eq!(
+            line,
+            for_terminal(&hub, &format!("{prefix}sample-private-value"))
+        );
+        assert!(!line.contains("sample-"));
     }
 
     #[test]
