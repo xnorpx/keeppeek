@@ -1387,6 +1387,7 @@ fn project_runtime_privacy(
             .zip(configs.and_then(|configs| configs.get(id)))
             .ok_or_else(|| anyhow::anyhow!("camera profile source is unavailable"))
             .and_then(|(source, config)| {
+                state.privacy.decision(source, now)?;
                 state.privacy.observed_profile_policy(
                     source,
                     now,
@@ -2486,6 +2487,9 @@ mod tests {
                 })
                 .into(),
         };
+        let evidence = |p: crate::profiles::EffectiveCameraPolicy| {
+            (p.privacy_source, p.recording_mode, p.recording_mode_source)
+        };
         let projected = || {
             update_runtime_status(
                 &fixture.state,
@@ -2501,37 +2505,16 @@ mod tests {
             .unwrap();
         let simultaneous = projected();
         assert!(simultaneous.privacy_enforced);
-        assert_eq!(
-            (
-                simultaneous.privacy_source,
-                simultaneous.recording_mode,
-                simultaneous.recording_mode_source
-            ),
-            (Base, Off, Base)
-        );
+        assert_eq!(evidence(simultaneous), (Base, Off, Base));
         privacy.replace_schedules(Default::default()).unwrap();
         let held = projected();
-        assert_eq!(
-            (
-                held.privacy_source,
-                held.recording_mode,
-                held.recording_mode_source
-            ),
-            (Profile, Off, Profile)
-        );
+        assert_eq!(evidence(held), (Profile, Off, Profile));
         privacy
             .replace_profile_overrides(Default::default())
             .unwrap();
         let released = projected();
         assert!(!released.privacy_enforced);
-        assert_eq!(
-            (
-                released.privacy_source,
-                released.recording_mode,
-                released.recording_mode_source
-            ),
-            (Base, Main, Profile)
-        );
+        assert_eq!(evidence(released), (Base, Main, Profile));
     }
 
     #[test]
