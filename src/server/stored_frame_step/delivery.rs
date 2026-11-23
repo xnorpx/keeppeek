@@ -6,7 +6,6 @@ pub(in crate::server) struct Delivery {
     pub(super) plan: Plan,
     pub(super) snapshot: Snapshot,
     pub(super) source: String,
-    pub(super) first_deadline: Instant,
 }
 
 impl Delivery {
@@ -87,9 +86,8 @@ impl Delivery {
 
     pub(in crate::server) fn after_send(self: Box<Self>) -> PostSendAction {
         Box::new(move || {
-            if Instant::now() >= self.first_deadline {
-                return;
-            }
+            // The ready reply has already been sent. Queue delay before this callback
+            // cannot shorten the separate transfer and decode window.
             let deadline = Instant::now() + DECODE_WINDOW;
             if let Err(error) = std::thread::Builder::new()
                 .name("stored-frame-step".into())

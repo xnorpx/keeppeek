@@ -795,7 +795,6 @@ fn step_until(
                     plan,
                     snapshot,
                     source: request.source_id,
-                    first_deadline: deadline,
                 })),
             )
         }
