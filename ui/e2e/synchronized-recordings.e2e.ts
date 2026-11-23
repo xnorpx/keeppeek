@@ -604,6 +604,118 @@ test('a comparison with an unavailable focused camera keeps its authorized recor
 	}
 });
 
+type PausedFrameObservation = {
+	latePicture: boolean;
+	marked: boolean;
+	recovered: boolean;
+	lateFrameMs: number;
+	recoveredFrameErrorMs: number;
+	elapsedMs: number;
+	seekRequests: number;
+};
+type ObservedReviewTile = HTMLElement & {
+	alignmentWitness?: PausedFrameObservation;
+	disposeAlignmentWitness?: () => void;
+};
+
+type PausedDecoderCase = 'native' | 'ahead-clock' | 'stalled';
+
+async function verifyPausedFrameCorrection(
+	tile: Locator,
+	target: number,
+	scenario: PausedDecoderCase
+) {
+	await tile.evaluate(
+		(element, options) => {
+			const el = element as ObservedReviewTile;
+			const video = el.querySelector('video')!;
+			const native = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+			if (!native?.get || !native.set)
+				throw new Error('The browser must expose its native media clock.');
+			const before = video.currentTime;
+			const observation: PausedFrameObservation = {
+				latePicture: false,
+				marked: false,
+				recovered: false,
+				elapsedMs: 0,
+				lateFrameMs: 0,
+				recoveredFrameErrorMs: 0,
+				seekRequests: 0
+			};
+			el.alignmentWitness = observation;
+			if (options.scenario !== 'native') {
+				// Emulate an updated seek clock while Chromium still presents its earlier, real MP4 frame.
+				Object.defineProperty(video, 'currentTime', {
+					configurable: true,
+					get: () => before,
+					set: (value: number) => {
+						observation.seekRequests++;
+						if (options.scenario !== 'stalled') native.set!.call(video, value);
+					}
+				});
+			}
+			let began: number | undefined;
+			const observer = new MutationObserver(() => {
+				const time = Date.parse(el.querySelector('time')?.dateTime ?? '');
+				const correction = el.querySelector('header [role=status]');
+				if (time < options.target - 450) {
+					observation.latePicture = true;
+					if (began === undefined) {
+						began = performance.now();
+						observation.lateFrameMs = options.target - time;
+					}
+					if (correction?.textContent?.includes('Synchronizing')) observation.marked = true;
+				}
+				if (observation.marked && Math.abs(time - options.target) <= 250 && !correction) {
+					observation.recovered = true;
+					observation.elapsedMs = Math.round(performance.now() - began!);
+					observation.recoveredFrameErrorMs = Math.abs(time - options.target);
+					observer.disconnect();
+				}
+			});
+			observer.observe(el, {
+				subtree: true,
+				childList: true,
+				characterData: true,
+				attributes: true
+			});
+			el.disposeAlignmentWitness = () => {
+				observer.disconnect();
+				if (options.scenario !== 'native') Reflect.deleteProperty(video, 'currentTime');
+				delete el.alignmentWitness;
+				delete el.disposeAlignmentWitness;
+			};
+			native.set.call(video, before - 0.75);
+		},
+		{ target, scenario }
+	);
+	try {
+		const read = () => tile.evaluate((el) => (el as ObservedReviewTile).alignmentWitness);
+		await expect.poll(async () => (await read())?.latePicture).toBe(true);
+		if (scenario === 'stalled') {
+			const retry = tile.getByRole('button', { name: 'Retry recording' });
+			await expect(retry).toBeVisible();
+			await expect
+				.poll(read)
+				.toMatchObject({ latePicture: true, marked: true, recovered: false, seekRequests: 2 });
+			await retry.click();
+		}
+		await expect.poll(read).toMatchObject({ latePicture: true, marked: true, recovered: true });
+		const measured = await read();
+		expect(measured?.elapsedMs).toBeLessThanOrEqual(scenario === 'stalled' ? 5_000 : 1_500);
+		if (scenario !== 'native') {
+			expect(measured?.seekRequests).toBeGreaterThan(0);
+			expect(measured?.seekRequests).toBeLessThanOrEqual(2);
+		}
+		await test.info().attach('paused-frame-' + scenario, {
+			contentType: 'application/json',
+			body: JSON.stringify(measured)
+		});
+	} finally {
+		await tile.evaluate((el) => (el as ObservedReviewTile).disposeAlignmentWitness?.());
+	}
+}
+
 test('a late paused picture stays identifiable until a corrected camera frame is presented', async ({
 	page,
 	context,
@@ -637,73 +749,9 @@ test('a late paused picture stays identifiable until a corrected camera frame is
 		await play.click();
 		await expect.poll(async () => (await displayed(video)).paused).toBe(true);
 		const target = Number(new URL(page.url()).searchParams.get('at'));
-		await tile.evaluate((el, pausedMoment) => {
-			const observation = {
-				latePicture: false,
-				marked: false,
-				recovered: false,
-				lateFrameMs: 0,
-				recoveredFrameErrorMs: 0,
-				elapsedMs: 0
-			};
-			let began: number | undefined;
-			(el as HTMLElement & { alignmentWitness?: typeof observation }).alignmentWitness =
-				observation;
-			const observer = new MutationObserver(() => {
-				const time = Date.parse(el.querySelector('time')?.dateTime ?? '');
-				const correction = el.querySelector('header [role=status]');
-				if (time < pausedMoment - 450) {
-					observation.latePicture = true;
-					if (began === undefined) {
-						began = performance.now();
-						observation.lateFrameMs = pausedMoment - time;
-					}
-					if (correction?.textContent?.includes('Synchronizing')) observation.marked = true;
-				}
-				if (observation.marked && Math.abs(time - pausedMoment) <= 250 && !correction) {
-					observation.recovered = true;
-					observation.elapsedMs = Math.round(performance.now() - (began ?? performance.now()));
-					observation.recoveredFrameErrorMs = Math.abs(time - pausedMoment);
-					observer.disconnect();
-				}
-			});
-			observer.observe(el, {
-				subtree: true,
-				childList: true,
-				characterData: true,
-				attributes: true
-			});
-		}, target);
-		// Seek this actual paused decoder backwards while the other camera and shared clock hold their moment.
-		await video.evaluate((v: HTMLVideoElement) => {
-			v.currentTime -= 0.75;
-		});
-		const observed = () =>
-			tile.evaluate(
-				(el) =>
-					(
-						el as HTMLElement & {
-							alignmentWitness?: {
-								latePicture: boolean;
-								marked: boolean;
-								recovered: boolean;
-								elapsedMs: number;
-								lateFrameMs: number;
-								recoveredFrameErrorMs: number;
-							};
-						}
-					).alignmentWitness
-			);
-		await expect.poll(async () => (await observed())?.latePicture).toBe(true);
-		await expect.poll(observed).toMatchObject({ latePicture: true, marked: true, recovered: true });
-		const measured = await observed();
-		expect(measured?.elapsedMs).toBeLessThanOrEqual(1_500);
-		await test
-			.info()
-			.attach('paused-frame-correction', {
-				contentType: 'application/json',
-				body: JSON.stringify(measured)
-			});
+		await verifyPausedFrameCorrection(tile, target, 'native');
+		await verifyPausedFrameCorrection(tile, target, 'ahead-clock');
+		await verifyPausedFrameCorrection(tile, target, 'stalled');
 		await expect(play).toHaveAttribute('aria-pressed', 'false');
 	} finally {
 		try {

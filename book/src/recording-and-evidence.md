@@ -43,6 +43,8 @@ time of its most recently presented frame. When a playing camera falls more than
 is buffered. A camera outside that tolerance shows **Synchronizing** with its measured
 distance ahead of or behind the shared time. The label clears when the browser presents
 a frame within tolerance. Keep waits at least 750 ms between corrections for the same player.
+If two paused corrections cannot present the selected moment, **Retry recording** reopens just
+that camera.
 A camera with a gap shows its own status and rejoins when the playhead reaches
 playable footage again. **Single camera** opens the focused camera at that moment.
 

@@ -71,16 +71,46 @@
 
 	let presented = $state<number | null>(null);
 	let correctionMs = $state<number | null>(null);
+	let retryAlignment = $state(false);
 
 	$effect(() => {
 		const element = video,
 			cursor = playback;
 		presented = null;
 		correctionMs = null;
+		retryAlignment = false;
 		if (!element || !cursor || !element.requestVideoFrameCallback) return;
 		let handle = 0;
 		let retry: ReturnType<typeof setTimeout> | undefined;
 		let last = -Infinity;
+		let pausedAttempts = 0;
+		let lastAttempt = -Infinity;
+		function schedulePausedCorrection() {
+			if (retry !== undefined || !element?.paused || playing) return;
+			const due = Math.max(lastCorrection, lastAttempt) + correctionIntervalMs;
+			retry = setTimeout(
+				() => {
+					retry = undefined;
+					if (
+						cursor !== playback ||
+						element !== video ||
+						!element?.paused ||
+						playing ||
+						correctionMs === null
+					)
+						return;
+					if (pausedAttempts === 2) {
+						retryAlignment = true;
+						return;
+					}
+					pausedAttempts++;
+					lastAttempt = performance.now();
+					if (!element.seeking) align('paused-frame');
+					schedulePausedCorrection();
+				},
+				Math.max(0, due - performance.now()) + 1
+			);
+		}
 		function frame(now: number, data: VideoFrameCallbackMetadata) {
 			if (!element || !cursor || element !== video || cursor !== playback) return;
 			const actual = Math.round(cursor.anchorTimeMs + data.mediaTime * 1000);
@@ -92,14 +122,14 @@
 				correctionMs = outsideTolerance ? drift : null;
 				last = now;
 			}
-			if (element.paused && outsideTolerance && retry === undefined) {
-				const remaining = Math.max(0, lastCorrection + correctionIntervalMs - performance.now());
-				retry = setTimeout(() => {
-					retry = undefined;
-					if (cursor === playback && element === video && element.paused && correctionMs !== null) {
-						align(false, true);
-					}
-				}, remaining + 1);
+			if (outsideTolerance) {
+				if (!retryAlignment) schedulePausedCorrection();
+			} else {
+				clearTimeout(retry);
+				retry = undefined;
+				pausedAttempts = 0;
+				lastAttempt = -Infinity;
+				retryAlignment = false;
 			}
 			handle = element.requestVideoFrameCallback(frame);
 		}
@@ -181,19 +211,20 @@
 		tail = tail.then(() => cursor.close().catch(() => undefined));
 	}
 
-	function align(initial = false, pausedCorrection = false) {
+	function align(reason: 'playback' | 'load' | 'paused-frame' = 'playback') {
 		if (!playback || !video || !video.buffered.length) return;
 		const offset = Math.max(0, (position() - playback.anchorTimeMs) / 1000);
 		const driftMs = (offset - video.currentTime) * 1000;
+		const pausedCorrection = reason === 'paused-frame';
 		if (
-			initial ||
-			((playing || pausedCorrection) &&
-				needsGridDriftCorrection(driftMs) &&
+			reason === 'load' ||
+			((pausedCorrection || (playing && needsGridDriftCorrection(driftMs))) &&
 				performance.now() - lastCorrection >= correctionIntervalMs)
 		) {
 			for (let index = 0; index < video.buffered.length; index++) {
 				if (offset >= video.buffered.start(index) && offset < video.buffered.end(index)) {
-					if (Math.abs(driftMs) > 1) video.currentTime = offset;
+					// A seek may update currentTime before Chromium actually presents that picture.
+					if (Math.abs(driftMs) > 1 || pausedCorrection) video.currentTime = offset;
 					lastCorrection = performance.now();
 					break;
 				}
@@ -219,6 +250,10 @@
 			<span class="text-xs text-text-muted">
 				<span role="status">Synchronizing</span>
 				{Math.abs(correctionMs)} ms {correctionMs > 0 ? 'behind' : 'ahead'}
+				{#if retryAlignment && !playing}<button
+						class="min-h-11 px-2 underline"
+						onclick={() => attempt++}>Retry recording</button
+					>{/if}
 			</span>
 		{/if}
 		<button class="min-h-11 px-2 text-sm underline" aria-label={'Remove ' + name} onclick={onremove}
@@ -235,7 +270,7 @@
 			preload="auto"
 			class="aspect-video w-full bg-black object-contain"
 			onloadeddata={() => {
-				align(true);
+				align('load');
 				ready = true;
 			}}
 			onerror={(event) => {
