@@ -2,6 +2,7 @@ pub use crate::access::AccessKey;
 pub(crate) mod metadata;
 #[cfg(test)]
 mod recorded_audio_tests;
+pub(crate) mod reporting;
 pub(crate) mod sharing;
 mod storage_volumes;
 use crate::{
@@ -121,6 +122,9 @@ pub struct Config {
 
     #[serde(default)]
     pub(crate) sharing: sharing::SharingConfig,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reporting: Option<reporting::Settings>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) external_auth: Option<crate::access::external::Config>,
@@ -1036,6 +1040,7 @@ impl Default for Config {
             access_key: AccessKey::unset(),
             access: AccessConfig::default(),
             sharing: sharing::SharingConfig::default(),
+            reporting: None,
             external_auth: None,
             direct_card: DirectCardConfig::default(),
             storage: StorageToml::default(),
@@ -1943,6 +1948,10 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
         }
     }
     let mut runtime = root.clone();
+    let reporting = runtime
+        .remove("reporting")
+        .map(reporting::parse_settings)
+        .transpose()?;
     if let Some(value) = runtime.get_mut("runtime_profiles") {
         *value = runtime_profile_value_without_identity_schema(value)?;
     }
@@ -1958,6 +1967,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     let mut resolved = toml::Value::Table(runtime);
     resolve_toml_secret_references(&mut resolved, secrets)?;
     let mut config: Config = resolved.try_into()?;
+    config.reporting = reporting;
     config.runtime_profiles.validate()?;
     config.sharing.validate()?;
     config.storage.validate_pre_recording_budgets()?;
@@ -2494,6 +2504,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
         namespace,
         "access"
             | "sharing"
+            | "reporting"
             | "external_auth"
             | "external_identities"
             | "access_credentials"
