@@ -87,7 +87,7 @@ initial_secret_pending = false
 }
 
 async function stop(child: ChildProcess): Promise<void> {
-	if (child.exitCode !== null || child.signalCode !== null) return;
+	if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
 	const exited = once(child, 'exit');
 	child.kill('SIGINT');
 	const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
@@ -401,6 +401,7 @@ async function prepareFixture(
 			windowsHide: true
 		});
 		children.push(camera);
+		await once(camera, 'spawn');
 		configurations = [await cameraConfig(camera)];
 		speakerObservation = () => observeSpeaker(camera);
 	} else {

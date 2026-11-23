@@ -83,7 +83,14 @@ test('the Talk control sends the browser microphone tone to the Hikvision speake
 			await page.close();
 			await expect.poll(async () => (await observe()).active).toBe(false);
 		} finally {
-			await fixture.close();
+			try {
+				await info.attach('recorder-log', {
+					body: fixture.logs(),
+					contentType: 'text/plain'
+				});
+			} finally {
+				await fixture.close();
+			}
 		}
 	} finally {
 		await browser.close();
