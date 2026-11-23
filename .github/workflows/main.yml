@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   verify:
-    name: 30 paired release benchmark observations
+    name: 30 paired 80-second release benchmark observations
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -32,6 +32,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "0"
       NEXTEST_TEST_THREADS: "2"
       KEEPPEEK_RUN_SLOW_TESTS: "1"
+      KEEPPEEK_TUI_BENCHMARK_MEASURE_SECONDS: "80"
       EXPECTED_REVISION: ${{ inputs.revision }}
     steps:
       - name: Verify the pull request and requested commit
@@ -75,3 +76,11 @@ jobs:
           test "$(grep -c '^{.*"pair":' "$RUNNER_TEMP/dashboard-release.log")" = 30
           grep '^{' "$RUNNER_TEMP/dashboard-release.log" | tail -2 >> "$GITHUB_STEP_SUMMARY"
           test -z "$(git status --porcelain --untracked-files=no)"
+      - name: Retain paired measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: dashboard-paired-measurements
+          path: ${{ runner.temp }}/dashboard-release.log
+          if-no-files-found: warn
+          retention-days: 14
