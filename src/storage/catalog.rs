@@ -1813,6 +1813,7 @@ fn run_catalog(
             Command::Relocation { request, reply } => {
                 let _ = reply.send(pollster::block_on(relocation::dispatch(
                     &connection,
+                    &readers,
                     request,
                 )));
             }

@@ -97,7 +97,11 @@ const COLUMNS: &str = "id,stream,source,destination,stage,source_identity,
     EXISTS(SELECT 1 FROM recording_files f WHERE f.id=legacy_recording_relocations.id AND f.path=legacy_recording_relocations.destination),
     (SELECT file_bytes FROM recording_files f WHERE f.id=legacy_recording_relocations.id)";
 
-pub(super) async fn dispatch(db: &turso::Connection, request: Request) -> Result<Option<Move>> {
+pub(super) async fn dispatch(
+    db: &turso::Connection,
+    readers: &super::readers::Registry,
+    request: Request,
+) -> Result<Option<Move>> {
     match request {
         Request::Next(after) => {
             let mut rows=db.query(format!("SELECT {COLUMNS} FROM legacy_recording_relocations WHERE id>?1 ORDER BY id LIMIT 1"),[after]).await?;
@@ -146,6 +150,9 @@ pub(super) async fn dispatch(db: &turso::Connection, request: Request) -> Result
             destination_identity,
             bytes,
         } => {
+            // Leases and path changes are resolved by this same catalog worker. A
+            // reader can acquire the source while its replacement is being staged.
+            super::readers::ensure_recording_idle(db, readers, &id, "").await?;
             // Only the path and filesystem identity change. The finalized size and media index
             // were established before relocation and remain the authority after a restart.
             let changed = db.execute(
