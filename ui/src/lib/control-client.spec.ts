@@ -2719,7 +2719,7 @@ describe('ControlClient', () => {
 			endMs: 5000
 		};
 		const capacity = 'event search task limit is reached';
-		channel.eventSearchRefusals.push(capacity, capacity);
+		channel.eventSearchRefusals.push(capacity, capacity.toUpperCase() + '.');
 		const page = await client.searchEventMetadata(options);
 		expect(page.hits.map((hit) => hit.eventId)).toContain('event-42');
 		expect(channel.eventSearchQueries).toHaveLength(3);
@@ -2739,6 +2739,45 @@ describe('ControlClient', () => {
 		await expect(client.searchEventMetadata(options)).rejects.toThrow(capacity);
 		expect(channel.eventSearchQueries).toHaveLength(11);
 		await client.close();
+	});
+
+	it('preserves the supplied abort reason for an outstanding playback control response', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		vi.stubGlobal('MediaSource', class extends EventTarget {});
+		vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:stored-abort');
+		api.createSession.mockResolvedValue({
+			session_id: 'playback-abort-reason',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+		await client.getServerCapabilities();
+		const channel = FakePeerConnection.latest!.channels.find(
+			(item) => item.label === 'control-channel'
+		)!;
+		let sent!: () => void;
+		const transmitted = new Promise<void>((resolve) => {
+			sent = resolve;
+		});
+		vi.spyOn(channel, 'send').mockImplementationOnce(() => sent());
+		const controller = new AbortController();
+		const reason = new Error('The active playback selection was replaced.');
+		try {
+			const opened = client.openStoredMedia({
+				sourceId: 'front-door',
+				streamId: 'main',
+				timestampMs: 1,
+				endTimeMs: 5000,
+				playing: false,
+				playbackRate: 1,
+				signal: controller.signal
+			});
+			const rejected = expect(opened).rejects.toBe(reason);
+			await transmitted;
+			controller.abort(reason);
+			await rejected;
+		} finally {
+			await client.close();
+		}
 	});
 
 	it('cancels a search between connection readiness and control send without allocating a response', async () => {

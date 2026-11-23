@@ -2328,7 +2328,7 @@ export class ControlClient {
 			if (!pending) return;
 			clearTimeout(pending.timeout);
 			this.#pending.delete(requestId);
-			pending.reject(timelineAbortError());
+			pending.reject(signal?.reason ?? timelineAbortError());
 		};
 		signal?.addEventListener('abort', abort, { once: true });
 		const envelope = create(ControlEnvelopeSchema, {
@@ -4004,7 +4004,7 @@ function controlResponseError(command: Request['command'], error: ControlError):
 		command.case === 'eventSearchCommand' &&
 		command.value.action.case === 'query' &&
 		error.code === ErrorCode.REJECTED &&
-		error.message === 'event search task limit is reached'
+		/^event search task limit is reached[.!]?$/i.test(error.message.trim())
 	) {
 		return new EventSearchCapacityError(error.message);
 	}

@@ -48,7 +48,11 @@ runs:
         if (-not (Test-MediaTools)) {
           winget install --id Gyan.FFmpeg --exact --source winget --silent --accept-source-agreements --accept-package-agreements
           if (-not (Test-MediaTools)) {
-            $env:PATH += ";$env:LOCALAPPDATA/Microsoft/WinGet/Links;$env:ProgramFiles/WinGet/Links"
+            $links = @(
+              (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links')
+              (Join-Path $env:ProgramFiles 'WinGet\Links')
+            )
+            $env:PATH = (@($env:PATH) + $links) -join [IO.Path]::PathSeparator
           }
         }
         $tools = Get-Command -Name ffmpeg.exe, ffprobe.exe -CommandType Application -ErrorAction Stop

@@ -202,7 +202,6 @@ test('witnesses a paused replacement recording before later assertions attach', 
 	test.setTimeout(60_000);
 	if (!baseURL) throw new Error('Recorded audio calibration requires the configured UI origin.');
 	await installRecordedAudioFrameProbe(page);
-	await installRecordedAudioFrameProbe(page);
 	await page.route('**/recorded-frame-witness', (route) =>
 		route.fulfill({
 			contentType: 'text/html',
