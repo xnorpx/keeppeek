@@ -33,6 +33,7 @@
 		events?: RecordingEvent[];
 		selectedUrl: string | null;
 		playheadMs: number | null;
+		exactPicture?: boolean;
 		dayStartMs: number;
 		nowMs?: number;
 		followRequest?: number;
@@ -51,6 +52,7 @@
 		events = [],
 		selectedUrl,
 		playheadMs,
+		exactPicture = false,
 		dayStartMs,
 		nowMs,
 		followRequest = 0,
@@ -69,7 +71,7 @@
 	let scroller: HTMLDivElement | null = $state(null);
 	let viewportLeftPx = $state(0);
 	let viewportExtentPx = $state(0);
-	let dragPointerId: number | null = null;
+	let dragPointerId = $state<number | null>(null);
 	let dragStartX = 0;
 	let dragStartScrollLeft = 0;
 	let suppressClick = false;
@@ -90,9 +92,11 @@
 	let renderEndMs = $derived(timestampAtLeft(renderRightPx));
 	let viewportStartMs = $derived(timestampAtLeft(viewportLeftPx));
 	let viewportEndMs = $derived(timestampAtLeft(viewportLeftPx + viewportExtentPx));
-	let markerTimestampMs = $derived(
+	let scrollTimestampMs = $derived(
 		timestampAtLeft(viewportLeftPx + Math.max(0, viewportExtentPx / 2))
 	);
+	let exactMarker = $derived(exactPicture && dragPointerId === null ? playheadMs : null);
+	let markerTimestampMs = $derived(exactMarker ?? scrollTimestampMs);
 	let availability = $derived(
 		buildTimelineAvailability(segments, renderStartMs, Math.max(renderStartMs + 1, renderEndMs))
 	);
@@ -188,7 +192,7 @@
 		dragStartScrollLeft = scroller.scrollLeft;
 		suppressClick = false;
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-		onScrubStart?.(markerTimestampMs);
+		onScrubStart?.(scrollTimestampMs);
 	}
 
 	function moveDrag(event: PointerEvent): void {
@@ -197,7 +201,7 @@
 		if (Math.abs(delta) > 3) suppressClick = true;
 		scroller.scrollLeft = dragStartScrollLeft - delta;
 		syncViewport(scroller);
-		onScrub?.(markerTimestampMs);
+		onScrub?.(scrollTimestampMs);
 	}
 
 	function endDrag(event: PointerEvent): void {
@@ -205,8 +209,8 @@
 		dragPointerId = null;
 		const target = event.currentTarget as HTMLElement;
 		if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
-		if (onScrubEnd) onScrubEnd(markerTimestampMs);
-		else onSeek(markerTimestampMs);
+		if (onScrubEnd) onScrubEnd(scrollTimestampMs);
+		else onSeek(scrollTimestampMs);
 	}
 
 	function cancelDrag(event: PointerEvent): void {
@@ -291,6 +295,13 @@
 			// A cancelled frame must leave the next playback update free to center.
 			centeredDayStartMs = selectedDayStartMs;
 		});
+		return () => cancelAnimationFrame(frame);
+	});
+
+	$effect(() => {
+		const timestamp = exactMarker;
+		if (timestamp === null || !scroller || viewportExtentPx <= 0) return;
+		const frame = requestAnimationFrame(() => centerTimestamp(timestamp));
 		return () => cancelAnimationFrame(frame);
 	});
 
@@ -475,7 +486,8 @@
 		</div>
 	</div>
 	<div
-		class="pointer-events-none absolute top-10 bottom-0 left-1/2 z-30 w-0.5 -translate-x-1/2 bg-red-500"
+		style:left={exactMarker === null ? '50%' : `${timestampLeft(exactMarker) - viewportLeftPx}px`}
+		class="pointer-events-none absolute top-10 bottom-0 z-30 w-0.5 -translate-x-1/2 bg-red-500"
 	>
 		<span
 			class="absolute top-1 left-1/2 -translate-x-1/2 rounded-sm bg-red-500 px-1 py-0.5 font-mono text-[9px] font-semibold text-white"

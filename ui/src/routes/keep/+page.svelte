@@ -2995,6 +2995,7 @@
 						{events}
 						selectedUrl={selected?.url ?? null}
 						{playheadMs}
+						exactPicture={!!frames.selection}
 						{dayStartMs}
 						followRequest={timelineFollowRequest}
 						loading={timelineRepository.loading}

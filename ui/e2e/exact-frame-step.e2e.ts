@@ -67,8 +67,8 @@ function observePlaybackPresentation() {
 }
 
 function witnessHandoff(surface: Element) {
-	const video = surface.parentElement?.querySelector('video');
-	if (!(surface instanceof HTMLCanvasElement) || !video || surface.hidden)
+	const region = surface.closest('[aria-label="Recorded video player"]');
+	if (!(surface instanceof HTMLCanvasElement) || !region || surface.hidden)
 		throw new Error('The exact picture and underlying paused video must both be present.');
 	return new Promise<{
 		picture: number;
@@ -78,7 +78,10 @@ function witnessHandoff(surface: Element) {
 		paused: boolean;
 	}>((resolve, reject) => {
 		const observer = new MutationObserver(() => {
-			if (!surface.hidden) return;
+			const visibleSurface = region.querySelector('canvas[aria-label="Selected recorded picture"]');
+			const video = region.querySelector('video');
+			if (!(visibleSurface instanceof HTMLCanvasElement) || !visibleSurface.hidden || !video)
+				return;
 			observer.disconnect();
 			clearTimeout(timer);
 			const canvas = document.createElement('canvas');
@@ -100,9 +103,19 @@ function witnessHandoff(surface: Element) {
 		});
 		const timer = setTimeout(() => {
 			observer.disconnect();
-			reject(new Error('No verified resume picture: ' + video.dataset.presentationHistory));
+			reject(
+				new Error(
+					'No verified resume picture: ' +
+						region.querySelector('video')?.dataset.presentationHistory
+				)
+			);
 		}, 8_000);
-		observer.observe(surface, { attributes: true, attributeFilter: ['hidden'] });
+		observer.observe(region, {
+			subtree: true,
+			childList: true,
+			attributes: true,
+			attributeFilter: ['hidden']
+		});
 	});
 }
 
@@ -309,8 +322,55 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 				const actual = await panel.getByLabel(label, { exact: true }).inputValue();
 				expect(Date.parse('1970-01-01T' + actual + 'Z')).toBe(Math.floor(value) % 86_400_000);
 			}
+			let coldResume;
+			if (fixture === 'cfr') {
+				// Open on a later GOP, then step behind the cursor's first buffered picture.
+				const later = start + 2_200;
+				await page.goto(
+					`/keep?camera=${encodeURIComponent(source)}&stream=sub&at=${later}&date=${new Date(later).toISOString().slice(0, 10)}`
+				);
+				await expect
+					.poll(async () => Number(await video.getAttribute('data-presented-pictures')), {
+						timeout: 20_000
+					})
+					.toBeGreaterThan(0);
+				if (!(await video.evaluate((v) => (v as HTMLVideoElement).paused))) await pause.click();
+				await expect(previous).toBeEnabled();
+				const before = await region.evaluate((r) => {
+					const element = r.querySelector('video')!;
+					return {
+						url: element.currentSrc,
+						origin:
+							Number(r.getAttribute('data-recording-playhead-ms')) - element.currentTime * 1_000
+					};
+				});
+				let coldId = (await video.evaluate(observePicture, null)).id;
+				let coldTime = Infinity;
+				for (let i = 0; i < 24 && coldTime >= before.origin - 1; i++) {
+					coldId = (coldId + 11) % 12;
+					await Promise.all([selected.evaluate(observePicture, coldId), previous.click()]);
+					coldTime = timestampMs((await clock.getAttribute('datetime'))!);
+				}
+				expect(coldTime).toBeLessThan(before.origin - 1);
+				const decoded = selected.evaluate(witnessHandoff);
+				await region.getByRole('button', { name: 'Play recording', exact: true }).click();
+				coldResume = await decoded;
+				expect(coldResume.picture, JSON.stringify(coldResume)).toBe(coldId);
+				expect(coldResume.paused).toBe(true);
+				await expect
+					.poll(() => video.evaluate((v) => (v as HTMLVideoElement).currentSrc))
+					.not.toBe(before.url);
+				await expect(video).toHaveJSProperty('paused', false);
+			}
 			await testInfo.attach('input-to-recorded-picture', {
-				body: JSON.stringify({ fixture, measurements, bounds, resumed, reorderedHandoffs }),
+				body: JSON.stringify({
+					fixture,
+					measurements,
+					bounds,
+					resumed,
+					reorderedHandoffs,
+					coldResume
+				}),
 				contentType: 'application/json'
 			});
 		} finally {
