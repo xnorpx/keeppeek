@@ -8,7 +8,7 @@ use url::Url;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Settings {
+pub struct Settings {
     pub(crate) origin: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) credential: Option<String>,
