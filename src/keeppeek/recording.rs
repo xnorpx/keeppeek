@@ -91,6 +91,11 @@ impl KeepPeekLoop {
             .parse::<IpAddr>()
             .ok()
             .and_then(|ip| self.camera_definitions.get(&ip));
+        let writer_failed = application.state == RuntimeApplicationState::Applied
+            && self
+                .storage
+                .as_ref()
+                .is_some_and(|storage| storage.recording_configuration_failed(source_id));
         if let (Some(privacy), Some(camera)) = (&self.privacy, camera) {
             changed |= application.observe_policy(
                 privacy.observed_profile_policy(
@@ -102,11 +107,7 @@ impl KeepPeekLoop {
                 ),
             );
         }
-        if application.state == RuntimeApplicationState::Applied
-            && self
-                .storage
-                .as_ref()
-                .is_some_and(|storage| storage.recording_configuration_failed(source_id))
+        if writer_failed
             && camera.map_or(application.policy.recording_mode, |camera| {
                 self.effective_recording_mode(&camera.config)
             }) != crate::cameras::CameraRecordingMode::Off
