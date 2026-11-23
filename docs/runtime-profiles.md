@@ -34,6 +34,12 @@ before calling the server and holds a read fence through queue admission. Status
 the same fence through watch registration to prevent a missed update. Existing session authorization
 and camera visibility projections apply to these notifications.
 
+A camera configured without credentials stays Degraded at startup and after a profile change.
+Other configured cameras remain Pending until the recorder attempts to start them. During a
+header interruption the shell and Settings show Pending until they receive fresh selection data.
+Camera inventory changes, scoped watch registration and publication are serialized so a newly
+visible camera reaches existing viewers and newly opened watches.
+
 Saved targets absent from the configured cameras remain degraded with `configured camera is missing`
 after startup, profile completion and live removal. Restoring the same saved identity replaces this
 placeholder with its application result; a newly added camera has a different identity. Activating
@@ -102,7 +108,7 @@ arbitrary user metadata are not valid profile fields.
 
 | Boundary                                                                                | Current behavior                                                                                                                                                     | Remaining acceptance                                                                                                                |
 | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Durable state and watches                                                               | Config-backed CAS, bounded definition parts/staged writes, loop-owned coalesced status publication and registration fencing.                                         | Combined quota, multipart observed layout, retained memory and final transport performance.                                         |
+| Durable state and watches                                                               | Config-backed CAS, bounded definition and observation parts, scoped active-header and status watches.                                                                | Combined storage quota, retained memory and release-build transport performance.                                                    |
 | Camera identity                                                                         | Per-camera UUIDs, atomic legacy migration, explicit missing targets and source mapping at runtime boundaries.                                                        | Full cross-platform upgrade/restore qualification; ambiguous active source routing fails closed.                                    |
 | Recording                                                                               | Admission, queue acceptance, writer acknowledgement and covered later input write failures report per-camera status. Same-policy recovery retains desired selection. | Cleanup/finalization, periodic FlushAll, shutdown, producer queues, storage-pressure failures and complete media recovery evidence. |
 | Camera availability                                                                     | Loop-owned worker start/stop preserves Base definitions and accepted event edits.                                                                                    | Worker stop has no deadline; caller timeout does not preempt in-progress work.                                                      |
@@ -164,7 +170,7 @@ profile privacy before media workers start; the schedule boundary still wins ove
 
 All persisted revision and generation fields are decimal strings in `0..=i64::MAX` to
 preserve exact values through protobuf `Struct`, JavaScript, and the existing TOML adapter.
-Names are limited to 80 UTF-8 bytes, profile IDs to 1â€“128 ASCII bytes (`A-Z`, `a-z`, `0-9`,
+Names are limited to 80 UTF-8 bytes, profile IDs to 1–128 ASCII bytes (`A-Z`, `a-z`, `0-9`,
 `._-`), and camera IDs to 256 bytes. Profile IDs `.` and `..` are invalid. Use the valid
 namespace `service/runtime-profiles/`; an unqualified namespace is rejected by the existing
 state store. Reject control characters, unknown fields, unknown write schemas, duplicate cameras,
@@ -178,14 +184,14 @@ fields. Current recording modes also include `event-only`, added after the issue
 The complete field classification must still resolve each candidate explicitly; omitting it or
 routing event modes through the legacy admission map would misrepresent current recording behavior.
 
-| Document             | Fields and limits                                                                                                                                                                                                          |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `registry`           | Up to 32 summaries: ID, name, definition revision, target count. No camera overrides.                                                                                                                                      |
-| Profile manifest     | ID, name, generation, expected prior definition revision, target count, and up to eight part hashes.                                                                                                                       |
-| Definition part      | Generation, part index, and at most 16 camera overrides. Each override contains camera ID and optional availability, recording mode, privacy, and notification suppression fields.                                         |
-| Draft parts          | At most four Administrator-owned drafts and 8 MiB total staged data. Each draft holds at most 256 parts of at most 16 camera overrides each. Drafts expire after two minutes and are never persisted as accepted profiles. |
-| `active`             | Base or profile ID, definition generation, desired generation, and expected observed-part count.                                                                                                                           |
-| Eight observed parts | Up to 16 cameras each, desired generation, pending/applied/degraded state, effective values, Base/profile provenance flags, bounded retry count, and error code of at most 96 bytes.                                       |
+| Document             | Fields and limits                                                                                                                                                                                                                                  |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `registry`           | Up to 32 summaries: ID, name, definition revision, target count. No camera overrides.                                                                                                                                                              |
+| Profile manifest     | ID, name, generation, expected prior definition revision, target count, and up to eight part hashes.                                                                                                                                               |
+| Definition part      | Generation, part index, and at most 16 camera overrides. Each override contains camera ID and optional availability, recording mode, privacy, and notification suppression fields.                                                                 |
+| Draft parts          | At most four Administrator-owned drafts and 8 MiB total staged data. Each draft holds at most 256 parts of at most 16 camera overrides each. Drafts expire after two minutes and are never persisted as accepted profiles.                         |
+| `active`             | `profile_id` (empty for Base), `revision`, `definition_revision`, `observed_parts`, and optional scoped `degraded_cameras`. The entry revision is the compare-and-set value.                                                                       |
+| Eight observed parts | Up to 48 visible cameras per part (383 total), desired revision, application state, effective policy, field provenance, and a reason of at most 96 bytes. Compact parts with 33–40 rows allow 64 reason bytes, and parts with 41–48 rows allow 24. |
 
 Retain current and previous definition parts, one current manifest per profile, and the
 bounded draft area. The upper bound is 544 definition entries + 72 draft entries + 10
@@ -193,10 +199,28 @@ registry/active/observed entries = 626 entries. Actual protobuf sizes, including
 metadata and enclosing messages, must be measured before registering this schema.
 
 The full view uses ten narrow watches: registry, active, and eight observed parts. The
-shell uses only the two header watches. Definition reads use at most four concurrent Gets
+shell shares one active-header watch with Settings and receives a camera-filtered degraded count. Definition reads use at most four concurrent Gets
 and two retries if generation collection races a read. A client assembles at most two
-observed generations and never presents mixed generations as applied. A broad snapshot
-must fail explicitly when it exceeds transport bounds; it is not paginated implicitly.
+observed generations and never presents mixed generations as applied. The keys `observed/0` through `observed/7` carry opaque generation identifiers which can
+change as workers converge at the same desired revision. For Administrators, an empty watch
+prefix selects only the `active` entry and is echoed as empty in the initial snapshot. Other
+viewers must use an explicit permitted key and receive `NOT_AUTHORIZED` for an empty prefix.
+Existing clients can read or watch the legacy `status` projection while it fits 16 KiB. A larger
+legacy projection returns `VALUE_TOO_LARGE` on Get or initial Watch.
+
+Up to 256 configured cameras and 127 retained missing targets use the same eight observed keys.
+The recorder filters to the viewer's permitted cameras before hashing or assigning rows to a
+part. The ordinary fleet uses 16 rows per part. A larger union uses up to 48. When a part's
+full form exceeds 16 KiB, `keeppeek.runtime-profiles.observed.v2` encodes each camera as
+`[state, recording_mode, flags, reason]` under its camera ID. In ascending bit order, flags
+carry availability, privacy, notifications and the four profile-provenance flags for
+availability, recording mode, privacy and notifications. A cleared provenance bit means Base.
+
+A watch snapshot and its update envelopes use a namespace cursor that advances even for a
+health-only change. The desired revision in the document and entry remains the CAS value.
+A hidden-only change leaves the visible documents and subscriptions untouched. An unknown
+visibility policy yields an unavailable degraded count. Settings shows Pending while parts
+are changing and keeps profile management available during convergence.
 
 ## Commit and runtime ordering
 

@@ -3,6 +3,8 @@ name: Main
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
@@ -20,7 +22,6 @@ env:
 jobs:
   codeql-rust:
     name: CodeQL (Rust)
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

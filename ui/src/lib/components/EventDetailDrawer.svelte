@@ -15,6 +15,8 @@
 	import EventPreview from './EventPreview.svelte';
 	import EventIcon from './EventIcon.svelte';
 	import CopyMomentLink from './CopyMomentLink.svelte';
+	import GuestShareExportButton from './GuestShareExportButton.svelte';
+	import type { ControlClient } from '$lib/control-client';
 	import EventWorkflowControls from './EventWorkflowControls.svelte';
 	import EventWorkflowNotice from './EventWorkflowNotice.svelte';
 	import type { EventWorkflow } from '$lib/event-workflow.svelte';
@@ -26,6 +28,7 @@
 		paperFrame?: boolean;
 		returnHref?: string | null;
 		alreadyExported?: boolean;
+		sharingController?: ControlClient;
 		onclose?: () => void;
 		onpreviewretry?: () => void;
 		workflow?: EventWorkflow;
@@ -39,6 +42,7 @@
 		paperFrame = false,
 		returnHref = null,
 		alreadyExported = false,
+		sharingController,
 		onclose,
 		onpreviewretry,
 		workflow,
@@ -278,6 +282,19 @@
 				<ExternalLinkIcon class="size-3.5" />Open at this moment
 			</a>
 			<CopyMomentLink getLink={() => new URL(keepHref(), window.location.origin).href} />
+			{#if sharingController}
+				<GuestShareExportButton
+					controller={sharingController}
+					range={{
+						client: sharingController,
+						target: {
+							sourceId: record.camera.id,
+							startMs: record.event.start_time_ms,
+							endMs: record.event.end_time_ms
+						}
+					}}
+				/>
+			{/if}
 			<CapabilityGate {...capabilityActions.exportMoment}>
 				<a
 					href={keepHref('export')}

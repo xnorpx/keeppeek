@@ -8,7 +8,9 @@ use test_hikvision::{
 };
 
 use super::super::DeliveryTimeout;
-use super::{Input, finish, producer};
+use super::{
+    Input, LeaseClock, assert_unsubscribed_after_first_pull, finish, producer, subscription,
+};
 
 fn camera() -> FakeOnvif {
     FakeOnvif::builder()
@@ -60,7 +62,9 @@ fn full_queue_and_reset_share_one_bounded_pressure_wait() {
         producer.run();
         Ok(())
     });
+    let pulled = fake.wait_for_pulls(1, Duration::from_secs(5));
     let (finished, result) = finish(handle, &shutdown, Duration::from_millis(2300));
+    assert!(pulled, "worker did not reach its first pull: {result:?}");
 
     assert!(
         finished,
@@ -68,7 +72,7 @@ fn full_queue_and_reset_share_one_bounded_pressure_wait() {
     );
     result.unwrap();
     assert_eq!(fake.pull_count(), 1);
-    assert_eq!(fake.renew_count(), 0);
+    assert_unsubscribed_after_first_pull(&fake);
     assert_eq!(fake.subscription_count(), 1);
     assert_eq!(fake.unsubscribe_count(), 1);
     assert_eq!(fake.active_subscriptions(), 0);
@@ -76,6 +80,41 @@ fn full_queue_and_reset_share_one_bounded_pressure_wait() {
     assert_eq!(evidence.state, "delivery-stalled");
     assert_eq!(evidence.queue_drops, 2);
     assert_eq!(evidence.delivery_stalls, 2);
+}
+
+#[test]
+fn an_early_renewal_precedes_the_pull_that_stalls() {
+    let fake = camera();
+    let (producer, _received) = producer(&fake);
+    for _ in 0..32 {
+        assert!(producer.slot.try_send(Input::MetadataLost).is_ok());
+    }
+    let (mut client, subscription, started) = subscription(&fake);
+    // A failed synchronization request asks for a renewal before the first pull.
+    fake.next_response(Reply::http(503, "text/plain", "unavailable"))
+        .unwrap();
+    let shutdown = producer.shutdown.clone();
+    let handle = thread::spawn(move || {
+        let mut clock = LeaseClock::new(subscription.lease(), started);
+        let result = producer.observe(&mut client, &subscription, &mut clock);
+        producer.unsubscribe(&mut client, &subscription, clock)?;
+        result
+    });
+    let pulled = fake.wait_for_pulls(1, Duration::from_secs(5));
+    let (finished, result) = finish(handle, &shutdown, Duration::from_millis(2300));
+
+    assert!(
+        pulled && finished,
+        "worker did not finish its stalled pull: {result:?}"
+    );
+    assert!(result.is_err_and(|error| error.is::<DeliveryTimeout>()));
+    assert_eq!(fake.pull_count(), 1);
+    assert!(
+        fake.renew_count() >= 1,
+        "synchronization failure must renew the lease"
+    );
+    assert_eq!(fake.unsubscribe_count(), 1);
+    assert_unsubscribed_after_first_pull(&fake);
 }
 
 #[test]
@@ -88,12 +127,14 @@ fn closed_receiver_stops_worker_and_unsubscribes_without_renewal_loop() {
         producer.run();
         Ok(())
     });
+    let pulled = fake.wait_for_pulls(1, Duration::from_secs(5));
     let (finished, result) = finish(handle, &shutdown, Duration::from_millis(2300));
+    assert!(pulled, "worker did not reach its first pull: {result:?}");
 
     assert!(finished, "closed receiver kept the producer alive");
     result.unwrap();
     assert_eq!(fake.pull_count(), 1);
-    assert_eq!(fake.renew_count(), 0);
+    assert_unsubscribed_after_first_pull(&fake);
     assert_eq!(fake.subscription_count(), 1);
     assert_eq!(fake.unsubscribe_count(), 1);
     assert_eq!(fake.active_subscriptions(), 0);
