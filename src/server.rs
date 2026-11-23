@@ -11569,6 +11569,58 @@ fn collect_server_health(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .snapshot(&state.storage_config.long_term_path);
+    let HealthAcquisition {
+        lifecycle,
+        operational_events,
+        mut issues,
+        complete,
+    } = acquire_health_sources(router_tx, state);
+    let ingress = ingress_snapshot(&state.health);
+    let recording = state.recording_health.snapshot();
+    let (totals, cameras) = collect_camera_health(
+        state,
+        ingress,
+        recording.streams,
+        &lifecycle,
+        &operational_events,
+        uptime_seconds,
+        &mut issues,
+    );
+    let storage = collect_storage_health(state, history_catalog, recording.storage, &mut issues);
+    let webrtc = state.webrtc.health_snapshot();
+    append_server_health_issues(&system, &storage, &webrtc, &mut issues);
+    let status = server_health_status(&issues);
+
+    (
+        ServerHealthResponse {
+            status: status.to_owned(),
+            health_contract_version: CAMERA_HEALTH_CONTRACT_VERSION,
+            generated_at_ms: unix_time_ms(),
+            uptime_seconds,
+            version: env!("CARGO_PKG_VERSION"),
+            totals,
+            system,
+            storage,
+            webrtc,
+            cameras,
+            issues,
+            operational_events,
+        },
+        complete,
+    )
+}
+
+struct HealthAcquisition {
+    lifecycle: HashMap<String, CameraStatus>,
+    operational_events: Vec<crate::operational_events::OperationalEvent>,
+    issues: Vec<HealthIssue>,
+    complete: bool,
+}
+
+fn acquire_health_sources(
+    router_tx: &FacadeSender<RouterMessage>,
+    state: &ServerState,
+) -> HealthAcquisition {
     let mut issues = Vec::new();
     let mut complete = true;
     let operational_events = state.events.as_ref().map_or_else(Vec::new, |events| {
@@ -11618,14 +11670,28 @@ fn collect_server_health(
             HashMap::new()
         }
     };
-    let mut ingress = ingress_snapshot(&state.health)
+    HealthAcquisition {
+        lifecycle,
+        operational_events,
+        issues,
+        complete,
+    }
+}
+
+fn collect_camera_health(
+    state: &ServerState,
+    ingress: Vec<crate::stats::CameraHealthReport>,
+    recording: Vec<RecordingStreamHealthSnapshot>,
+    lifecycle: &HashMap<String, CameraStatus>,
+    operational_events: &[crate::operational_events::OperationalEvent],
+    uptime_seconds: u64,
+    issues: &mut Vec<HealthIssue>,
+) -> (HealthTotals, Vec<CameraHealth>) {
+    let mut ingress = ingress
         .into_iter()
         .map(|report| (report.ip, report))
         .collect::<HashMap<_, _>>();
-    let recording_snapshot = state.recording_health.snapshot();
-    let storage_safety = recording_snapshot.storage;
-    let recording_health = recording_snapshot
-        .streams
+    let recording_health = recording
         .into_iter()
         .map(|stream| (stream.stream_id.clone(), stream))
         .collect::<HashMap<_, _>>();
@@ -11641,7 +11707,7 @@ fn collect_server_health(
         let ip = camera.info.ip.parse::<IpAddr>().ok();
         let report = ip.and_then(|ip| ingress.remove(&ip));
         let streams = report.map_or_else(Vec::new, |report| report.streams);
-        health_snapshot::aggregate_video_streams(camera, &streams, &mut totals, &mut issues);
+        health_snapshot::aggregate_video_streams(camera, &streams, &mut totals, issues);
 
         let router_status = lifecycle.get(&camera.recording_label);
         let projection_context = CameraProjectionContext {
@@ -11696,6 +11762,15 @@ fn collect_server_health(
         cameras.push(camera_health);
     }
 
+    (totals, cameras)
+}
+
+fn collect_storage_health(
+    state: &ServerState,
+    history_catalog: Option<&RecordingCatalogHandle>,
+    safety: crate::storage::safety::StorageSafetyHealthSnapshot,
+    issues: &mut Vec<HealthIssue>,
+) -> StorageHealth {
     let catalog = history_catalog.and_then(|catalog| match catalog.stats() {
         Ok(stats) => Some(stats),
         Err(error) => {
@@ -11713,7 +11788,7 @@ fn collect_server_health(
     let catalog_bytes = std::fs::metadata(&state.storage_config.recording_catalog_path)
         .ok()
         .map(|metadata| metadata.len());
-    let storage = StorageHealth {
+    StorageHealth {
         medium_term_path: state.config.storage.medium_term_path.clone(),
         long_term_path: state.config.storage.long_term_path.clone(),
         paths_are_same: state.storage_config.medium_term_path
@@ -11730,9 +11805,17 @@ fn collect_server_health(
         cleanup_hysteresis_bytes: state.storage_config.cleanup_hysteresis_bytes,
         catalog_bytes,
         catalog,
-        safety: storage_safety,
+        safety,
         demand: state.recording_demand.health_snapshot(),
-    };
+    }
+}
+
+fn append_server_health_issues(
+    system: &crate::health::SystemHealth,
+    storage: &StorageHealth,
+    webrtc: &crate::webrtc::WebRtcHealth,
+    issues: &mut Vec<HealthIssue>,
+) {
     if storage.safety.recording_state.as_str() == "paused" {
         issues.push(HealthIssue {
             severity: "critical".to_owned(),
@@ -11774,7 +11857,6 @@ fn collect_server_health(
             timeline_end_ms: None,
         });
     }
-    let webrtc = state.webrtc.health_snapshot();
     if webrtc.queue_drops > 0 {
         issues.push(HealthIssue {
             severity: "info".to_owned(),
@@ -11790,25 +11872,6 @@ fn collect_server_health(
             timeline_end_ms: None,
         });
     }
-    let status = server_health_status(&issues);
-
-    (
-        ServerHealthResponse {
-            status: status.to_owned(),
-            health_contract_version: CAMERA_HEALTH_CONTRACT_VERSION,
-            generated_at_ms: unix_time_ms(),
-            uptime_seconds,
-            version: env!("CARGO_PKG_VERSION"),
-            totals,
-            system,
-            storage,
-            webrtc,
-            cameras,
-            issues,
-            operational_events,
-        },
-        complete,
-    )
 }
 
 fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerState) -> Response {

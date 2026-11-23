@@ -58,6 +58,7 @@ impl TerminalOutput {
     }
 
     fn through(&mut self, marker: &[u8]) -> Result<()> {
+        ensure!(!marker.is_empty(), "terminal marker must be nonempty");
         let deadline = Instant::now() + TIMEOUT;
         loop {
             if let Some(index) = self

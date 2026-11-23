@@ -128,6 +128,28 @@ pub(super) fn draw(
         );
         return;
     };
+    draw_sample_heading(frame, s, elapsed, failure);
+    if height < 10 || width < 46 {
+        line(frame, 1, "Enlarge terminal for stream details", plain);
+        line(
+            frame,
+            height.saturating_sub(1),
+            "q logs   Ctrl+C stop",
+            plain,
+        );
+        return;
+    }
+    draw_server_summary(frame, s);
+    draw_stream_page(frame, s, nav, elapsed);
+}
+
+fn draw_sample_heading(
+    frame: &mut Frame<'_>,
+    s: &Snapshot,
+    elapsed: Duration,
+    failure: Option<String>,
+) {
+    let strong = Style::new().add_modifier(Modifier::BOLD);
     let stale = if elapsed >= Duration::from_secs(5) {
         "  STALE"
     } else {
@@ -156,16 +178,10 @@ pub(super) fn draw(
         ),
         strong,
     );
-    if height < 10 || width < 46 {
-        line(frame, 1, "Enlarge terminal for stream details", plain);
-        line(
-            frame,
-            height.saturating_sub(1),
-            "q logs   Ctrl+C stop",
-            plain,
-        );
-        return;
-    }
+}
+
+fn draw_server_summary(frame: &mut Frame<'_>, s: &Snapshot) {
+    let plain = Style::new();
     line(
         frame,
         1,
@@ -192,6 +208,13 @@ pub(super) fn draw(
         ),
         plain,
     );
+}
+
+fn draw_stream_page(frame: &mut Frame<'_>, s: &Snapshot, nav: &mut Navigation, elapsed: Duration) {
+    let plain = Style::new();
+    let strong = plain.add_modifier(Modifier::BOLD);
+    let height = frame.area().height;
+    let width = frame.area().width;
     let warnings = (usize::from(height) / 5).min(s.warnings.len()).min(6);
     let detail_lines = if height >= 15 { 4 } else { 1 };
     let table_top: u16 = 4;
@@ -222,6 +245,18 @@ pub(super) fn draw(
         line(frame, y, warning, strong);
         y += 1;
     }
+    draw_stream_footer(frame, s, start, end, warnings);
+}
+
+fn draw_stream_footer(
+    frame: &mut Frame<'_>,
+    s: &Snapshot,
+    start: usize,
+    end: usize,
+    warnings: usize,
+) {
+    let plain = Style::new();
+    let height = frame.area().height;
     let extra = s.omitted_warnings + s.warnings.len() - warnings;
     let omitted = s.total_rows - s.rows.len();
     let mut footer = format!(

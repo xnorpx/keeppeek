@@ -21,7 +21,7 @@ fn help_version_and_configuration_keep_plain_output_with_a_dashboard_request() {
         assert!(output.status.success(), "{args:?}");
         assert!(!output.stdout.is_empty());
         assert!(output.stderr.is_empty());
-        assert!(!output.stdout.contains(&0x1b));
+        assert!(!output.stdout.contains(&b'\x1b'));
     }
     let help = String::from_utf8(run(&["--help"]).stdout).unwrap();
     assert!(
