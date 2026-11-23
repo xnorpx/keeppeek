@@ -92,6 +92,8 @@ CREATE TABLE IF NOT EXISTS archive_deletion_items (
     phase TEXT NOT NULL CHECK(phase IN('queued','claimed','retired','acknowledged','blocked')),
     attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts>=0)
 );
+CREATE INDEX IF NOT EXISTS archive_pending_deletions_by_job ON archive_deletion_items(job_id)
+    WHERE phase IN('queued','claimed','retired');
 CREATE INDEX IF NOT EXISTS archive_deletion_items_plan ON archive_deletion_items(plan_id);
 CREATE TABLE IF NOT EXISTS archive_deletion_deferred_retention (
     recording_id TEXT PRIMARY KEY REFERENCES recording_files(id) ON DELETE CASCADE,

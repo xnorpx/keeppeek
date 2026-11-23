@@ -138,13 +138,7 @@ pub(super) fn dispatch(
         Some(Action::List(request)) => Wire::Jobs(list(state, handle, request)?),
         Some(Action::Get(request)) => {
             require_job_id(&request.job_id)?;
-            Wire::Job(wire_job(
-                target_names(state)?.as_ref(),
-                handle
-                    .ok_or_else(unavailable)?
-                    .get(&request.job_id)
-                    .map_err(operation_failed)?,
-            ))
+            Wire::Job(get(state, handle, &request.job_id)?)
         }
         Some(Action::Copy(request)) => {
             Wire::Job(copy(state, handle.ok_or_else(unavailable)?, request)?)
@@ -212,6 +206,27 @@ fn status(handle: Option<&Handle>) -> proto::ArchiveStatus {
     }
 }
 
+fn get(state: &ServerState, handle: Option<&Handle>, job_id: &str) -> Result<proto::ArchiveJob> {
+    if let Some(worker) = handle {
+        return Ok(wire_job(
+            target_names(state)?.as_ref(),
+            worker.get(job_id).map_err(operation_failed)?,
+        ));
+    }
+    use crate::storage::catalog::archive::{Reply, Request};
+    let catalog = state.catalog.as_ref().ok_or_else(unavailable)?;
+    let reply = catalog
+        .archive(Request::Get(job_id.into()))
+        .map_err(operation_failed)?;
+    let Reply::Job(Some(job)) = reply else {
+        return Err(unavailable());
+    };
+    if job.pending_deletion().is_none() {
+        return Err(unavailable());
+    }
+    Ok(wire_job(None, *job))
+}
+
 fn list(
     state: &ServerState,
     handle: Option<&Handle>,
@@ -228,18 +243,30 @@ fn list(
     if !request.after_job_id.is_empty() {
         require_job_id(&request.after_job_id)?;
     }
-    let Some(handle) = handle else {
-        return Ok(proto::ArchiveJobList {
-            status: Some(status(None)),
-            ..Default::default()
-        });
-    };
-    let jobs = handle
-        .list(
-            &request.after_job_id,
-            u16::try_from(limit).expect("validated archive page limit fits u16"),
+    let page_limit = u16::try_from(limit).expect("validated archive page limit fits u16");
+    let (jobs, names) = if let Some(worker) = handle {
+        (
+            worker
+                .list(&request.after_job_id, page_limit)
+                .map_err(operation_failed)?,
+            target_names(state)?,
         )
-        .map_err(operation_failed)?;
+    } else if let Some(catalog) = &state.catalog {
+        use crate::storage::catalog::archive::{Reply, Request, deletion};
+        let request = deletion::Request::ListPending {
+            after: request.after_job_id,
+            limit: page_limit,
+        };
+        let Reply::Jobs(jobs) = catalog
+            .archive(Request::Deletion(request))
+            .map_err(operation_failed)?
+        else {
+            return Err(unavailable());
+        };
+        (jobs, None)
+    } else {
+        (Vec::new(), None)
+    };
     let next_after_job_id =
         if jobs.len() == usize::try_from(limit).expect("validated archive page limit fits usize") {
             jobs.last()
@@ -249,7 +276,6 @@ fn list(
         } else {
             String::new()
         };
-    let names = target_names(state)?;
     Ok(proto::ArchiveJobList {
         jobs: jobs
             .into_iter()
@@ -257,7 +283,7 @@ fn list(
             .map(|job| wire_job(names.as_ref(), job))
             .collect(),
         next_after_job_id,
-        status: Some(status(Some(handle))),
+        status: Some(status(handle)),
     })
 }
 
@@ -346,7 +372,7 @@ fn change(
         let Reply::Job(Some(job)) = reply else {
             return Err(unavailable());
         };
-        return Ok(wire_job(target_names(state)?.as_ref(), *job));
+        return Ok(wire_job(None, *job));
     }
     let handle = handle.ok_or_else(unavailable)?;
     let result = match action {

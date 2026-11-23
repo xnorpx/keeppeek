@@ -107,6 +107,10 @@ pub enum Request {
     Retired(String),
     Acknowledged(String),
     WithdrawQueued(String),
+    ListPending {
+        after: String,
+        limit: u16,
+    },
     RecordFailure {
         job: String,
         operation: String,
@@ -175,6 +179,7 @@ pub(super) async fn dispatch(
         } => execution::claim(connection, readers, &job, &operation, &policy).await,
         Request::Retired(id) => execution::retired(connection, &id).await,
         Request::Acknowledged(id) => execution::acknowledged(connection, &id).await,
+        Request::ListPending { after, limit } => super::page(connection, &after, limit, true).await,
         Request::WithdrawQueued(id) => {
             if load(connection, &id)
                 .await?

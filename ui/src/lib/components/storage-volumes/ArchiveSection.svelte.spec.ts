@@ -522,50 +522,56 @@ it('retries verification of a legacy archive and requires a fresh preview for a 
 		.toHaveAccessibleDescription(/Age starts when a replica is verified/);
 });
 
-it('withdraws only queued archive deletions and keeps claimed and retired work intact', async () => {
-	const control = controller();
-	const queued = { jobId: 'queued', objectId: 'retained-clip', state: 'ready', action: 'delete' };
-	const claimed = { ...queued, jobId: 'claimed', state: 'deleting' };
-	const retired = { ...queued, jobId: 'retired', state: 'deleted' };
-	control.archive.mockImplementation(async (request) =>
-		create(ArchiveResultSchema, {
-			result:
-				request.action.case === 'list'
-					? {
-							case: 'jobs',
-							value: { status: { runtimeAvailable: true }, jobs: [queued, claimed, retired] }
-						}
-					: { case: 'job', value: { ...queued, action: '' } }
-		})
-	);
-	await render(ArchiveSection, {
-		config: fixture(),
-		controller: control,
-		retentionAvailable: true,
-		onsaved: vi.fn()
-	});
-	const row = page.getByRole('article', { name: 'Archive job queued' });
-	await expect
-		.element(row.getByText('Recording · Archive deletion queued', { exact: true }))
-		.toBeVisible();
-	for (const id of ['claimed', 'retired']) {
+it.each([true, false])(
+	'withdraws only queued archive deletions with runtime available %s',
+	async (runtimeAvailable) => {
+		const control = controller();
+		const queued = { jobId: 'queued', objectId: 'retained-clip', state: 'ready', action: 'delete' };
+		const claimed = { ...queued, jobId: 'claimed', state: 'deleting' };
+		const retired = { ...queued, jobId: 'retired', state: 'deleted' };
+		control.archive.mockImplementation(async (request) =>
+			create(ArchiveResultSchema, {
+				result:
+					request.action.case === 'list'
+						? {
+								case: 'jobs',
+								value: { status: { runtimeAvailable }, jobs: [queued, claimed, retired] }
+							}
+						: { case: 'job', value: { ...queued, action: '' } }
+			})
+		);
+		await render(ArchiveSection, {
+			config: fixture(),
+			controller: control,
+			retentionAvailable: true,
+			onsaved: vi.fn()
+		});
+		const row = page.getByRole('article', { name: 'Archive job queued' });
 		await expect
-			.element(
-				page
-					.getByRole('article', { name: 'Archive job ' + id })
-					.getByRole('button', { name: /cancel/i })
-			)
-			.not.toBeInTheDocument();
+			.element(row.getByText('Recording · Archive deletion queued', { exact: true }))
+			.toBeVisible();
+		for (const id of ['claimed', 'retired']) {
+			await expect
+				.element(
+					page
+						.getByRole('article', { name: 'Archive job ' + id })
+						.getByRole('button', { name: /cancel/i })
+				)
+				.not.toBeInTheDocument();
+		}
+		const withdraw = row.getByRole('button', {
+			name: 'Cancel queued archive deletion retained-clip'
+		});
+		await withdraw.click();
+		expect(control.archive.mock.calls.map(([request]) => request.action)).toContainEqual(
+			expect.objectContaining({
+				case: 'cancel',
+				value: expect.objectContaining({ jobId: 'queued' })
+			})
+		);
+		await expect.element(withdraw).not.toBeInTheDocument();
+		const preview = row.getByRole('button', { name: 'Preview archive deletion retained-clip' });
+		if (runtimeAvailable) await expect.element(preview).toBeVisible();
+		else await expect.element(row.getByRole('button')).not.toBeInTheDocument();
 	}
-	const withdraw = row.getByRole('button', {
-		name: 'Cancel queued archive deletion retained-clip'
-	});
-	await withdraw.click();
-	expect(control.archive.mock.calls.map(([request]) => request.action)).toContainEqual(
-		expect.objectContaining({ case: 'cancel', value: expect.objectContaining({ jobId: 'queued' }) })
-	);
-	await expect.element(withdraw).not.toBeInTheDocument();
-	await expect
-		.element(row.getByRole('button', { name: 'Preview archive deletion retained-clip' }))
-		.toBeVisible();
-});
+);

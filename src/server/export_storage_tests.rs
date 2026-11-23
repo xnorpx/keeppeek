@@ -1205,6 +1205,61 @@ fn confirmed_archive_receipt_replays_without_the_worker_but_new_confirmation_is_
     std::fs::remove_dir_all(root).unwrap();
 }
 
+fn offline_archive_jobs(
+    state: &ServerState,
+    admin: &ApiPrincipal,
+    after: &str,
+) -> proto::ArchiveJobList {
+    let command = proto::ArchiveCommand {
+        action: Some(proto::archive_command::Action::List(
+            proto::ListArchiveJobs {
+                after_job_id: after.into(),
+                limit: 1,
+            },
+        )),
+    };
+    let proto::ok::Result::ArchiveResult(result) =
+        super::storage_archive::dispatch(state, admin, command).unwrap()
+    else {
+        panic!("expected archive response")
+    };
+    let Some(proto::archive_result::Result::Jobs(page)) = result.result else {
+        panic!("expected archive job page")
+    };
+    assert!(!page.status.as_ref().unwrap().runtime_available);
+    page
+}
+
+fn discover_offline_archive_job(state: &ServerState, admin: &ApiPrincipal) -> String {
+    let page = offline_archive_jobs(state, admin, "");
+    let [job] = page.jobs.as_slice() else {
+        panic!("expected only the pending deletion")
+    };
+    assert_eq!(job.action, "delete");
+    assert_eq!(job.target_id, "unavailable-target");
+    assert_eq!(page.next_after_job_id, job.job_id);
+    assert!(
+        offline_archive_jobs(state, admin, &page.next_after_job_id)
+            .jobs
+            .is_empty()
+    );
+    let command = proto::ArchiveCommand {
+        action: Some(proto::archive_command::Action::Get(proto::GetArchiveJob {
+            job_id: job.job_id.clone(),
+        })),
+    };
+    let proto::ok::Result::ArchiveResult(result) =
+        super::storage_archive::dispatch(state, admin, command).unwrap()
+    else {
+        panic!("expected archive response")
+    };
+    let Some(proto::archive_result::Result::Job(found)) = result.result else {
+        panic!("expected archive job")
+    };
+    assert_eq!(&found, job);
+    found.job_id
+}
+
 #[test]
 fn administrator_can_withdraw_an_offline_queued_archive_deletion_before_changing_target() {
     use crate::storage::catalog::{archive, maintenance::jobs::Nonce};
@@ -1226,6 +1281,11 @@ fn administrator_can_withdraw_an_offline_queued_archive_deletion_before_changing
     .unwrap();
     state.storage_config.archive_runtime = None;
     worker.shutdown().unwrap();
+    assert!(
+        offline_archive_jobs(&state, &administrator, "")
+            .jobs
+            .is_empty()
+    );
     let ordinary_cancel = proto::ArchiveCommand {
         action: Some(Action::Cancel(proto::CancelArchiveJob {
             job_id: job.clone(),
@@ -1260,7 +1320,7 @@ fn administrator_can_withdraw_an_offline_queued_archive_deletion_before_changing
     super::storage_archive::validate_saved_binding_change(&state, None, None).unwrap();
     let command = proto::ArchiveCommand {
         action: Some(Action::Cancel(proto::CancelArchiveJob {
-            job_id: job.clone(),
+            job_id: discover_offline_archive_job(&state, &administrator),
         })),
     };
     let proto::ok::Result::ArchiveResult(result) =
@@ -1272,6 +1332,11 @@ fn administrator_can_withdraw_an_offline_queued_archive_deletion_before_changing
         panic!("expected retained replica");
     };
     assert_eq!(retained.job_id, job);
+    assert!(
+        offline_archive_jobs(&state, &administrator, "")
+            .jobs
+            .is_empty()
+    );
     assert_eq!(retained.state, "ready");
     assert!(retained.action.is_empty() && retained.error_code.is_empty());
     let receipt = archive_deletion_response(

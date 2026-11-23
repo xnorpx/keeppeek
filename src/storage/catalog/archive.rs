@@ -821,14 +821,20 @@ async fn candidates(
     Ok(Reply::Candidates(values))
 }
 
-async fn page(connection: &turso::Connection, after: &str, limit: u16) -> anyhow::Result<Reply> {
+async fn page(
+    connection: &turso::Connection,
+    after: &str,
+    limit: u16,
+    pending_deletions_only: bool,
+) -> anyhow::Result<Reply> {
     anyhow::ensure!((1..=64).contains(&limit), "invalid archive job page size");
-    let mut rows = connection
-        .query(
-            "SELECT job_id FROM archive_replicas WHERE job_id>?1 ORDER BY job_id LIMIT ?2",
-            (after, i64::from(limit)),
-        )
-        .await?;
+    let query = if pending_deletions_only {
+        "SELECT job_id FROM archive_deletion_items WHERE phase IN('queued','claimed','retired')
+         AND job_id>?1 ORDER BY job_id LIMIT ?2"
+    } else {
+        "SELECT job_id FROM archive_replicas WHERE job_id>?1 ORDER BY job_id LIMIT ?2"
+    };
+    let mut rows = connection.query(query, (after, i64::from(limit))).await?;
     let mut ids = Vec::with_capacity(usize::from(limit));
     while let Some(row) = rows.next().await? {
         ids.push(row.get::<String>(0)?);

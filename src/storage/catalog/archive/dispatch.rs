@@ -13,7 +13,7 @@ pub(super) async fn dispatch(
         Request::Enqueue(admission) => enqueue(connection, &admission).await,
         Request::Get(id) => Ok(Reply::Job(load(connection, &id).await?.map(Box::new))),
         Request::FindExport(id) => find_export(connection, &id).await,
-        Request::List { after, limit } => page(connection, &after, limit).await,
+        Request::List { after, limit } => page(connection, &after, limit, false).await,
         Request::Pending { after, limit } => pending(connection, &after, limit).await,
         Request::Candidates {
             after,

@@ -259,7 +259,7 @@
 							onclick={() => action('cancel', job)}
 							>{queuedDeletion ? 'Cancel queued archive deletion' : 'Cancel'}</Button
 						>{/if}
-					{#if job.state === 'failed' || job.state === 'cancelled' || (job.errorCode && job.action) || job.errorCode === 'archive_reverification_failed'}<Button
+					{#if status?.runtimeAvailable && (job.state === 'failed' || job.state === 'cancelled' || (job.errorCode && job.action) || job.errorCode === 'archive_reverification_failed')}<Button
 							class="min-h-11 sm:min-h-0"
 							type="button"
 							size="sm"
@@ -269,7 +269,7 @@
 							onclick={() => action('retry', job)}
 							>{job.state === 'cancelled' ? 'Retry / finish cleanup' : 'Retry'}</Button
 						>{/if}
-					{#if job.state === 'ready' && !job.action}
+					{#if status?.runtimeAvailable && job.state === 'ready' && !job.action}
 						{#if retentionAvailable}<Button
 								type="button"
 								size="sm"
