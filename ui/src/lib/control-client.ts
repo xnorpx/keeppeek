@@ -2553,6 +2553,7 @@ export class ControlClient {
 				const capabilities = envelope.message.value.event.value;
 				this.#serverCapabilities = capabilities;
 				void this.#stateStore.handleConnectionOpened();
+				void this.#runtimeProfiles.handleConnectionOpened();
 				for (const waiter of this.#capabilityWaiters) {
 					clearTimeout(waiter.timeout);
 					waiter.resolve(capabilities);
@@ -3095,6 +3096,7 @@ export class ControlClient {
 			this.#objectUrls.clear();
 		}
 		this.publishCapabilities([]);
+		this.#runtimeProfiles.handleConnectionClosed();
 		this.#stateStore.handleConnectionClosed();
 		this.failPending('WebRTC control connection closed.');
 		return sessionId;
