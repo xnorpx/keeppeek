@@ -106,7 +106,7 @@ impl FragmentedMetadataUsage {
             + Self::TRACK_TABLE_HEADER_BYTES_MAX
             + Self::SAMPLE_TABLE_ENTRY_BYTES_MAX;
         Self {
-            bytes: self.bytes + moof_bytes + source_rtp::NEXT_SAMPLE_BYTES_MAX,
+            bytes: self.bytes + moof_bytes + HEADER_SIZE + source_rtp::NEXT_SAMPLE_BYTES_MAX,
             boxes: self.boxes + 3, // moof, mdat and emsg
             fragments: self.fragments.saturating_add(1),
             pending_moof_bytes: self.pending_moof_bytes + moof_bytes,
@@ -121,7 +121,7 @@ impl<W> FragmentedMp4Writer<W> {
     }
 
     /// Conservative recording inspection cost, including the current unpublished fragment.
-    /// Budgets bytes in MP4 box metadata rather than encoded media in mdat.
+    /// Includes the mdat header and excludes its encoded sample payload.
     pub fn metadata_usage(&self) -> FragmentedMetadataUsage {
         let mut usage = FragmentedMetadataUsage {
             bytes: self.committed_metadata_bytes,
@@ -131,6 +131,7 @@ impl<W> FragmentedMp4Writer<W> {
         };
         if self.has_pending_samples() {
             usage.pending_moof_bytes = FragmentedMetadataUsage::MOOF_HEADER_BYTES_MAX;
+            usage.bytes += HEADER_SIZE; // mdat
             usage.boxes += 2;
             usage.fragments += 1;
         }
@@ -530,11 +531,11 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
                 "fragmented MP4 mdat exceeds 32-bit box size",
             ));
         }
-        let metadata_size =
-            moof.box_size() + source_events.iter().map(Mp4Box::box_size).sum::<u64>();
-        let mut payload_offset = metadata_size
-            .checked_add(HEADER_SIZE)
-            .ok_or(Error::InvalidData("fragmented MP4 data offset overflow"))?;
+        let metadata_size = (moof.box_size()
+            + source_events.iter().map(Mp4Box::box_size).sum::<u64>())
+        .checked_add(HEADER_SIZE)
+        .ok_or(Error::InvalidData("fragmented MP4 data offset overflow"))?;
+        let mut payload_offset = metadata_size;
         let mut video_keyframe = None;
         for (traf, track) in moof
             .trafs
@@ -1488,7 +1489,11 @@ mod tests {
                     events += 1;
                     metadata += size as u64;
                 }
-                b"mdat" => assert_eq!(size, HEADER_SIZE as usize + 2 * 513 * 4),
+                b"mdat" => {
+                    let sample_payload = 2 * 513 * 4;
+                    assert_eq!(size, HEADER_SIZE as usize + sample_payload);
+                    metadata += (size - sample_payload) as u64;
+                }
                 other => panic!("unexpected fragment box {other:?}"),
             }
             at += size;
