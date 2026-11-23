@@ -152,6 +152,7 @@ import {
 	type MotionDetectionResult,
 	type QueryEvents,
 	type Request,
+	type Error as ControlError,
 	type Response as ControlResponse,
 	type ServerCapabilities,
 	type StoredMediaFragment,
@@ -2341,44 +2342,7 @@ export class ControlClient {
 			onSent?.();
 			const reply = await response;
 			if (reply.result.case === 'error') {
-				// The existing recorder uses REJECTED for both an occupied search slot and a duplicate ID.
-				if (
-					command.case === 'eventSearchCommand' &&
-					command.value.action.case === 'query' &&
-					reply.result.value.code === ErrorCode.REJECTED &&
-					reply.result.value.message === 'event search task limit is reached'
-				) {
-					throw new EventSearchCapacityError(reply.result.value.message);
-				}
-				const stateStoreError = decodeStateStoreRequestError(reply.result.value);
-				if (stateStoreError) throw stateStoreError;
-				const configurationError = decodeConfigurationRequestError(reply.result.value);
-				if (configurationError) throw configurationError;
-				const workflowError = decodeEventWorkflowError(reply.result.value);
-				if (workflowError) throw workflowError;
-				const conflict = reply.result.value.details.find(
-					(detail) => detail.typeUrl === 'type.keeppeek.dev/notification-rule-conflict.v1'
-				);
-				if (conflict) {
-					try {
-						const detail: unknown = JSON.parse(new TextDecoder().decode(conflict.value));
-						if (
-							detail &&
-							typeof detail === 'object' &&
-							'active_revision' in detail &&
-							'draft_revision' in detail
-						) {
-							throw new NotificationConflictError(
-								reply.result.value.message,
-								BigInt(String(detail.active_revision)),
-								BigInt(String(detail.draft_revision))
-							);
-						}
-					} catch (error) {
-						if (error instanceof NotificationConflictError) throw error;
-					}
-				}
-				throw new Error(reply.result.value.message);
+				throw controlResponseError(command, reply.result.value);
 			}
 			if (reply.result.case !== 'ok') throw new Error('Server returned an empty control response.');
 			return reply.result.value.result;
@@ -4032,6 +3996,47 @@ function waitForEventSearchSlot(delayMs: number, signal?: AbortSignal): Promise<
 		}, delayMs);
 		signal?.addEventListener('abort', abort, { once: true });
 	});
+}
+
+function controlResponseError(command: Request['command'], error: ControlError): Error {
+	// The existing recorder uses REJECTED for both an occupied search slot and a duplicate ID.
+	if (
+		command.case === 'eventSearchCommand' &&
+		command.value.action.case === 'query' &&
+		error.code === ErrorCode.REJECTED &&
+		error.message === 'event search task limit is reached'
+	) {
+		return new EventSearchCapacityError(error.message);
+	}
+	const stateStoreError = decodeStateStoreRequestError(error);
+	if (stateStoreError) return stateStoreError;
+	const configurationError = decodeConfigurationRequestError(error);
+	if (configurationError) return configurationError;
+	const workflowError = decodeEventWorkflowError(error);
+	if (workflowError) return workflowError;
+	const conflict = error.details.find(
+		(detail) => detail.typeUrl === 'type.keeppeek.dev/notification-rule-conflict.v1'
+	);
+	if (conflict) {
+		try {
+			const detail: unknown = JSON.parse(new TextDecoder().decode(conflict.value));
+			if (
+				detail &&
+				typeof detail === 'object' &&
+				'active_revision' in detail &&
+				'draft_revision' in detail
+			) {
+				return new NotificationConflictError(
+					error.message,
+					BigInt(String(detail.active_revision)),
+					BigInt(String(detail.draft_revision))
+				);
+			}
+		} catch {
+			// A malformed optional detail falls back to the recorder's error message.
+		}
+	}
+	return new Error(error.message);
 }
 
 function timelineAbortError(): DOMException {
