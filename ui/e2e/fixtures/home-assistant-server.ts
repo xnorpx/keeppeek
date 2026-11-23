@@ -144,22 +144,30 @@ function fixtureCameraConfiguration(configuration: string, index: number, option
 }
 
 async function waitForFixture(server: ChildProcess, url: string): Promise<void> {
-	for (let attempt = 0; attempt < 100; attempt += 1) {
-		if (server.exitCode !== null)
-			throw new Error('The isolated KeepPeek fixture exited before readiness.');
+	const deadline = performance.now() + 30_000;
+	let lastResult = 'no response';
+	while (performance.now() < deadline) {
+		if (server.exitCode !== null || server.signalCode !== null) {
+			throw new Error(
+				`The isolated KeepPeek fixture exited before readiness (exit ${server.exitCode}, signal ${server.signalCode}).`
+			);
+		}
 		try {
-			const response = await fetch(`${url}/metrics`, {
+			// The authenticated log snapshot is available as soon as the listener is serving.
+			const response = await fetch(`${url}/logs/snapshot`, {
 				headers: { Authorization: `Bearer ${cardAdminKey}` },
-				signal: AbortSignal.timeout(500)
+				signal: AbortSignal.timeout(1_000)
 			});
 			await response.body?.cancel();
 			if (response.ok) return;
+			lastResult = `HTTP ${response.status}`;
 		} catch (error) {
 			if (!(error instanceof TypeError) && !(error instanceof DOMException)) throw error;
+			lastResult = error.name;
 		}
 		await delay(100);
 	}
-	throw new Error('The isolated KeepPeek fixture did not become ready.');
+	throw new Error(`The isolated KeepPeek fixture did not become ready (${lastResult}).`);
 }
 
 async function startFixtureRecorder(options: {
