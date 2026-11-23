@@ -13,13 +13,14 @@ import {
 
 test.use({
 	actionTimeout: 15_000,
+	timezoneId: 'Pacific/Auckland',
 	ignoreHTTPSErrors: true,
 	trace: 'off',
 	screenshot: 'off',
 	video: 'off'
 });
 
-async function signInRangeOwner(page: Page, fixture: AuthenticationFixture) {
+async function signInRangeOwnerAndGetStartMs(page: Page, fixture: AuthenticationFixture) {
 	await fixture.command('administrator');
 	await page.goto(fixture.origin);
 	await page.getByRole('button', { name: 'Continue with Fixture sign-in' }).click();
@@ -131,7 +132,7 @@ test('the selected Keep, event and bookmark intervals reach the same guarded HTT
 	const recipient = await browser.newContext({ ignoreHTTPSErrors: true });
 	try {
 		await page.setViewportSize({ width: 1440, height: 900 });
-		const start = await signInRangeOwner(page, fixture);
+		const start = await signInRangeOwnerAndGetStartMs(page, fixture);
 		await page.goto(`${fixture.origin}/keep?camera=127.0.0.1&stream=sub&at=${start}&mode=export`);
 		const panel = page.locator('[data-keep-export]');
 		const dialog = page.getByRole('dialog', { name: 'Create guest link', exact: true });
@@ -206,7 +207,9 @@ async function openCreatorRange(
 		.getByRole('dialog', { name: 'Create guest link', exact: true })
 		.getByText(/Selected interval/);
 	await expect(selected).toBeVisible();
-	const dates = (await selected.innerText()).match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g);
+	const dates = (await selected.innerText()).match(
+		/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z/g
+	);
 	if (dates?.length !== 2) throw new Error('The event preview must show both interval edges.');
 	const from = Date.parse(dates[0]!);
 	const to = Date.parse(dates[1]!);
@@ -295,6 +298,7 @@ async function verifyGuestExpiresDuringPlayback(
 		timeout
 	});
 	await expect(viewer.locator('video')).toHaveCount(0, { timeout });
+	// clearMedia pauses the retained element and removes its source before Svelte detaches it.
 	expect(
 		await player.evaluate(
 			(video) => video.paused && !video.isConnected && !video.hasAttribute('src')
@@ -318,7 +322,7 @@ for (const entry of ['Keep', 'Event'] as const) {
 		const fixture = await startAuthenticationFixture(true);
 		const recipient = await browser.newContext({ ignoreHTTPSErrors: true });
 		try {
-			const start = await signInRangeOwner(page, fixture);
+			const start = await signInRangeOwnerAndGetStartMs(page, fixture);
 			const selection = await openCreatorRange(page, fixture.origin, start, entry);
 			const dialog = page.getByRole('dialog', { name: 'Create guest link', exact: true });
 			const selected = dialog.getByText(/Selected interval/);
