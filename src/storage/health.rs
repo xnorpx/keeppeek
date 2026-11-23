@@ -54,6 +54,21 @@ struct Observation {
     at_ms: u64,
 }
 
+impl RecordingStreamHealth {
+    const fn credit_duration(
+        &mut self,
+        recorded_duration: std::time::Duration,
+        observation: Observation,
+    ) {
+        self.recorded_duration = self.recorded_duration.saturating_add(recorded_duration);
+        if self.last_failure.is_none() {
+            self.last_attempt = Some(observation);
+            self.pending_since = None;
+            self.last_progress = Some(observation);
+        }
+    }
+}
+
 impl RecordingHealthRegistry {
     #[cfg(feature = "event-preroll-benchmark-current")]
     pub(crate) fn benchmark_failure_count(&self) -> u64 {
@@ -108,6 +123,47 @@ impl RecordingHealthRegistry {
         self.note_progress_at(stream_id, recorded_duration, Instant::now(), unix_time_ms());
     }
 
+    pub(super) fn discard_provisional_progress(
+        &self,
+        stream_id: &str,
+        duration: std::time::Duration,
+    ) {
+        if !duration.is_zero()
+            && let Some(stream) = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_mut(stream_id)
+        {
+            stream.recorded_duration = stream.recorded_duration.saturating_sub(duration);
+        }
+    }
+
+    /// Finalization can publish bytes from before the last rejected append.
+    pub(crate) fn credit_finalized_progress(
+        &self,
+        stream_id: &str,
+        recorded_duration: std::time::Duration,
+    ) {
+        if recorded_duration.is_zero() {
+            return;
+        }
+        let mut streams = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        streams
+            .entry(stream_id.to_owned())
+            .or_default()
+            .credit_duration(
+                recorded_duration,
+                Observation {
+                    at: Instant::now(),
+                    at_ms: unix_time_ms(),
+                },
+            );
+    }
+
     pub(crate) fn note_failure(&self, stream_id: &str, error: &str) {
         self.note_failure_at(stream_id, error, Instant::now(), unix_time_ms());
     }
@@ -143,13 +199,9 @@ impl RecordingHealthRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let stream = streams.entry(stream_id.to_owned()).or_default();
-        let observation = Observation { at, at_ms };
-        stream.last_attempt = Some(observation);
-        stream.pending_since = None;
-        stream.last_progress = Some(observation);
         stream.last_failure = None;
         stream.last_error = None;
-        stream.recorded_duration = stream.recorded_duration.saturating_add(recorded_duration);
+        stream.credit_duration(recorded_duration, Observation { at, at_ms });
     }
 
     fn note_failure_at(&self, stream_id: &str, error: &str, at: Instant, at_ms: u64) {

@@ -10,6 +10,7 @@ use crate::storage::{
 mod drain_performance;
 mod failure_isolation;
 mod performance;
+mod verified_archive;
 
 fn named_fixture() -> anyhow::Result<(PathBuf, RecordingCatalog, StorageConfig)> {
     let (root, catalog, manager) = runtime::tests::fixture(8 * MEBIBYTE_BYTES)?;

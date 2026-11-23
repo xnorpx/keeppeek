@@ -530,6 +530,9 @@ fn dispatch(context: &Context, scan: &mut Scan, command: Command) {
                     false,
                     Some("Archive probe failed; check the target and retry"),
                 );
+            } else {
+                // Revisit earlier outage failures even if another transfer restored health.
+                scan.next_periodic = Instant::now();
             }
             if let Ok(mut health) = context.shared.health.lock() {
                 health.probe_pending = false;
