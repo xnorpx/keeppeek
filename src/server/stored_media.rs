@@ -171,6 +171,7 @@ pub(super) fn dispatch(
             let (state_message, messages) = seek_stored_media(state, session_id, seek)?;
             let notifications = terminal_stored_media_notification(&state_message);
             Ok(StoredMediaDispatch {
+                frame_transfer: None,
                 result: Some(control_ok::Result::StoredMediaState(state_message)),
                 messages,
                 notifications,
@@ -180,6 +181,7 @@ pub(super) fn dispatch(
             let (state_message, messages) = refill_stored_media(state, session_id, refill)?;
             let notifications = terminal_stored_media_notification(&state_message);
             Ok(StoredMediaDispatch {
+                frame_transfer: None,
                 result: Some(control_ok::Result::StoredMediaState(state_message)),
                 messages,
                 notifications,
@@ -188,6 +190,7 @@ pub(super) fn dispatch(
         Some(stored_media_command::Action::SetPlayback(update)) => {
             let (state_message, messages) = set_stored_media_playback(state, session_id, update)?;
             Ok(StoredMediaDispatch {
+                frame_transfer: None,
                 result: Some(control_ok::Result::StoredMediaState(state_message)),
                 messages,
                 notifications: Vec::new(),
@@ -198,6 +201,7 @@ pub(super) fn dispatch(
             query_timeline(state, session_id, query)
         }
         Some(stored_media_command::Action::CancelTimelineQuery(_)) => Ok(StoredMediaDispatch {
+            frame_transfer: None,
             result: None,
             messages: Vec::new(),
             notifications: Vec::new(),
@@ -234,6 +238,7 @@ fn close_cursor(
         ));
     }
     Ok(StoredMediaDispatch {
+        frame_transfer: None,
         result: None,
         messages: Vec::new(),
         notifications: Vec::new(),
@@ -253,6 +258,7 @@ fn open_cursor(
     reservation.commit(cursor)?;
     let notifications = terminal_stored_media_notification(&state_message);
     Ok(StoredMediaDispatch {
+        frame_transfer: None,
         result: Some(control_ok::Result::StoredMediaState(state_message)),
         messages,
         notifications,
@@ -267,6 +273,7 @@ fn query_timeline(
     let access = super::camera_access::for_session(state, session_id)?;
     let (delivery, messages) = query_stored_media_timeline(state, query, &access)?;
     Ok(StoredMediaDispatch {
+        frame_transfer: None,
         result: Some(control_ok::Result::StoredMediaQueryDelivery(delivery)),
         messages,
         notifications: Vec::new(),

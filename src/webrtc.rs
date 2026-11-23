@@ -2597,19 +2597,39 @@ impl WebRtc {
         message: OutboundDataMessage,
         cancelled: Arc<AtomicBool>,
     ) -> anyhow::Result<()> {
+        self.enqueue_api_data_until(session_id, message, cancelled, None)
+    }
+
+    pub(crate) fn enqueue_api_data_until(
+        &self,
+        session_id: SessionId,
+        message: OutboundDataMessage,
+        cancelled: Arc<AtomicBool>,
+        deadline: Option<Instant>,
+    ) -> anyhow::Result<()> {
         let control = self
             .live
             .inner
             .sessions
             .api_control(session_id)
             .ok_or_else(|| anyhow::anyhow!("API WebRTC session is unavailable"))?;
-        control
-            .data_tx
-            .send(ApiSessionCommand::Data {
-                message: Box::new(message),
-                cancelled,
-            })
-            .map_err(|_| anyhow::anyhow!("API WebRTC session data queue is closed"))?;
+        let command = ApiSessionCommand::Data {
+            message: Box::new(message),
+            cancelled,
+        };
+        if let Some(deadline) = deadline {
+            control
+                .data_tx
+                .send_deadline(command, deadline)
+                .map_err(|_| {
+                    anyhow::anyhow!("API WebRTC session data queue closed or timed out")
+                })?;
+        } else {
+            control
+                .data_tx
+                .send(command)
+                .map_err(|_| anyhow::anyhow!("API WebRTC session data queue is closed"))?;
+        }
         control.poller.notify()?;
         Ok(())
     }

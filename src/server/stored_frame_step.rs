@@ -1,4 +1,6 @@
 //! Exact frame step on an already-authorized paused playback cursor.
+mod delivery;
+pub(super) use delivery::Delivery;
 #[cfg(test)]
 mod tests;
 use super::*;
@@ -24,15 +26,15 @@ struct Selected {
     stored_ns: i128,
 }
 
-struct Operation<'a> {
-    state: &'a ServerState,
+struct Operation {
+    state: ServerState,
     key: (SessionId, String),
     generation: u64,
     incarnation: Uuid,
     active: Uuid,
 }
 
-impl Operation<'_> {
+impl Operation {
     fn current(&self, cursor: &StoredMediaCursor) -> bool {
         cursor.incarnation == self.incarnation
             && cursor.generation == self.generation
@@ -53,8 +55,9 @@ impl Operation<'_> {
     }
 }
 
-impl Drop for Operation<'_> {
+impl Drop for Operation {
     fn drop(&mut self) {
+        self.state.frame_step_workers.fetch_sub(1, Ordering::AcqRel);
         let mut cursors = self
             .state
             .stored_media_cursors
@@ -392,17 +395,22 @@ fn picture_payload(
     )
 }
 
-struct Prepared {
+const FIRST_RESPONSE: Duration = Duration::from_secs(2);
+const DECODE_WINDOW: Duration = Duration::from_secs(5);
+const MAX_FRAME_STEP_WORKERS: usize = 4;
+
+struct Plan {
     result: proto::StoredFrameStepResult,
-    messages: Vec<OutboundDataMessage>,
     selected: Selected,
+    samples: Vec<index::Picture>,
+    ranks: Vec<u32>,
 }
 
-fn encode(
+fn plan(
     window: Window<'_>,
     request: &proto::StepStoredFrame,
     work: &crate::storage::archive::target::Work<'_>,
-) -> Result<Prepared, Unavailable> {
+) -> Result<Plan, Unavailable> {
     let Window {
         fragment,
         index,
@@ -446,44 +454,9 @@ fn encode(
     if max - min > index::MAX_SPAN_NS {
         return Err(Unavailable::Limit);
     }
-    let mut messages = Vec::new();
-    let mut target_digest = None;
-    for (i, picture) in samples.iter().enumerate() {
-        let data = picture_payload(fragment, picture, work)?;
-        if first + i == target {
-            target_digest = Some(<[u8; 32]>::from(Sha256::digest(&data)))
-        }
-        let chunks = data.chunks(DATA_MESSAGE_CHUNK_BYTES);
-        let total = chunks.len() as u32;
-        for (part, payload) in chunks.enumerate() {
-            work.check().map_err(|_| Unavailable::Stale)?;
-            let chunk = proto::StoredFrameStepChunk {
-                stored_media_id: request.stored_media_id.clone(),
-                generation: request.generation,
-                step_id: request.step_id.clone(),
-                decode_index: i as u32,
-                presentation_rank: ranks[i],
-                random_access: picture.sync,
-                chunk_index: part as u32,
-                chunk_count: total,
-                payload: payload.to_vec(),
-                sample_bytes: picture.size,
-            };
-            messages.push(OutboundDataMessage {
-                target: DataChannelTarget::Reliable,
-                group: format!("stored:{}", request.stored_media_id),
-                message: proto::Message {
-                    message: Some(proto::message::Message::StoredMedia(
-                        proto::StoredMediaMessage {
-                            message: Some(proto::stored_media_message::Message::FrameStepChunk(
-                                chunk,
-                            )),
-                        },
-                    )),
-                },
-            });
-        }
-    }
+    // Only the selected picture's identity is needed to answer the control request.
+    // Read the rest of the bounded GOP after that response has reached the transport.
+    let target_digest = Sha256::digest(picture_payload(fragment, target_picture, work)?).into();
     let selected = Selected {
         token: Uuid::new_v4(),
         generation: request.generation,
@@ -491,7 +464,7 @@ fn encode(
         witness,
         ordinal: target_picture.ordinal,
         metadata: index.fingerprint,
-        picture: target_digest.ok_or(Unavailable::Timing)?,
+        picture: target_digest,
         stored_ns: target_picture.stored_ns,
     };
     let decoder = index.decoder;
@@ -526,11 +499,60 @@ fn encode(
             configuration_revision: request.generation,
         }),
     };
-    Ok(Prepared {
+    Ok(Plan {
         result,
-        messages,
         selected,
+        samples: samples.to_vec(),
+        ranks,
     })
+}
+
+impl Plan {
+    fn messages(
+        &self,
+        work: &crate::storage::archive::target::Work<'_>,
+    ) -> Result<Vec<OutboundDataMessage>, Unavailable> {
+        let mut messages = Vec::new();
+        for (i, picture) in self.samples.iter().enumerate() {
+            let data = picture_payload(&self.selected.catalog_entry, picture, work)?;
+            if picture.ordinal == self.selected.ordinal
+                && <[u8; 32]>::from(Sha256::digest(&data)) != self.selected.picture
+            {
+                return Err(Unavailable::Stale);
+            }
+            let chunks = data.chunks(DATA_MESSAGE_CHUNK_BYTES);
+            let total = chunks.len() as u32;
+            for (part, payload) in chunks.enumerate() {
+                work.check().map_err(|_| Unavailable::Stale)?;
+                let chunk = proto::StoredFrameStepChunk {
+                    stored_media_id: self.result.stored_media_id.clone(),
+                    generation: self.result.generation,
+                    step_id: self.result.step_id.clone(),
+                    decode_index: i as u32,
+                    presentation_rank: self.ranks[i],
+                    random_access: picture.sync,
+                    chunk_index: part as u32,
+                    chunk_count: total,
+                    payload: payload.to_vec(),
+                    sample_bytes: picture.size,
+                };
+                messages.push(OutboundDataMessage {
+                    target: DataChannelTarget::Reliable,
+                    group: format!("stored:{}", self.result.stored_media_id),
+                    message: proto::Message {
+                        message: Some(proto::message::Message::StoredMedia(
+                            proto::StoredMediaMessage {
+                                message: Some(
+                                    proto::stored_media_message::Message::FrameStepChunk(chunk),
+                                ),
+                            },
+                        )),
+                    },
+                });
+            }
+        }
+        Ok(messages)
+    }
 }
 
 fn window_failure(error: anyhow::Error) -> Unavailable {
@@ -541,14 +563,54 @@ fn window_failure(error: anyhow::Error) -> Unavailable {
     }
 }
 
+struct Snapshot {
+    stream: String,
+    anchor_ms: i64,
+    revision: u64,
+    fragments: Vec<CatalogMediaFragment>,
+    _leases: crate::storage::catalog::readers::LeaseSet,
+}
+
+impl Snapshot {
+    fn check(
+        &self,
+        op: &Operation,
+        selected: &Selected,
+        deadline: Instant,
+    ) -> Result<(), Unavailable> {
+        let catalog = op.state.catalog.as_ref().ok_or(Unavailable::Timing)?;
+        if catalog
+            .frame_catalog_revision(deadline)
+            .map_err(|_| Unavailable::Stale)?
+            != self.revision
+        {
+            // Writes on unrelated streams can advance the revision during preparation or transfer.
+            let (_, mut latest, _latest_lease) = catalog
+                .frame_step_window(&self.stream, self.anchor_ms, deadline)
+                .map_err(window_failure)?;
+            latest.sort_by_key(|f| (f.start_ms, f.sequence));
+            if latest != self.fragments {
+                return Err(Unavailable::Stale);
+            }
+        }
+        if witness(&selected.catalog_entry)? != selected.witness
+            || op.cancelled()
+            || Instant::now() >= deadline
+        {
+            return Err(Unavailable::Stale);
+        }
+        Ok(())
+    }
+}
+
 fn run(
-    op: &Operation<'_>,
+    op: &Operation,
     request: &proto::StepStoredFrame,
     stream: &str,
     previous: Option<&Selected>,
     bounds: CursorBounds,
     deadline: Instant,
-) -> Result<Prepared, Unavailable> {
+) -> Result<(Plan, Snapshot), Unavailable> {
     use proto::step_stored_frame::Anchor;
     let (anchor, previous) = match request.anchor.as_ref() {
         Some(Anchor::DisplayedTime(time)) => {
@@ -591,28 +653,16 @@ fn run(
     {
         return Err(Unavailable::Boundary);
     }
-    let source = window.fragment;
-    let prepared = encode(window, request, &work)?;
-    if catalog
-        .frame_catalog_revision(deadline)
-        .map_err(|_| Unavailable::Stale)?
-        != revision
-    {
-        // Recording on another camera also advances the catalog revision. Revalidate the
-        // leased stream interval so unrelated writes cannot starve a paused viewer.
-        let (_, mut latest, _latest_lease) = catalog
-            .frame_step_window(stream, now, deadline)
-            .map_err(window_failure)?;
-        latest.sort_by_key(|f| (f.start_ms, f.sequence));
-        if latest != fragments {
-            return Err(Unavailable::Stale);
-        }
-    }
-    if witness(source)? != prepared.selected.witness {
-        return Err(Unavailable::Stale);
-    }
-    work.check().map_err(|_| Unavailable::Stale)?;
-    Ok(prepared)
+    let prepared = plan(window, request, &work)?;
+    let snapshot = Snapshot {
+        stream: stream.into(),
+        anchor_ms: now,
+        revision,
+        fragments,
+        _leases,
+    };
+    snapshot.check(op, &prepared.selected, deadline)?;
+    Ok((prepared, snapshot))
 }
 
 struct CursorBounds {
@@ -626,6 +676,14 @@ pub(super) fn step(
     session: SessionId,
     request: proto::StepStoredFrame,
 ) -> Result<StoredMediaDispatch, ControlCommandError> {
+    validate_client_id(&request.source_id, "stored frame source ID")?;
+    if !matches!(request.stream_id.as_str(), "main" | "sub") {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "stored frame stream must be main or sub",
+        ));
+    }
     validate_client_id(&request.stored_media_id, "stored media cursor ID")?;
     validate_client_id(&request.step_id, "stored picture request ID")?;
     if !matches!(
@@ -635,7 +693,7 @@ pub(super) fn step(
     {
         return Err(rejected("frame request needs a direction and anchor"));
     }
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + FIRST_RESPONSE;
     let check_access = || {
         let access = camera_access::for_session(state, session)?;
         camera_access::require_camera(&access, &request.source_id)
@@ -659,11 +717,23 @@ pub(super) fn step(
         {
             return Err(rejected("frame request requires the current paused cursor"));
         }
+        state
+            .frame_step_workers
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < MAX_FRAME_STEP_WORKERS).then_some(n + 1)
+            })
+            .map_err(|_| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Rejected,
+                    429,
+                    "too many active frame steps",
+                )
+            })?;
         let active = Uuid::new_v4();
         c.frames.active = Some(active);
         (
             Operation {
-                state,
+                state: state.clone(),
                 key,
                 generation: c.generation,
                 incarnation: c.incarnation,
@@ -680,18 +750,22 @@ pub(super) fn step(
     };
     let prepared = run(&op, &request, &stream, previous.as_ref(), bounds, deadline);
     check_access()?;
-    let mut cursors = state
-        .stored_media_cursors
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let cursor = cursors
-        .get_mut(&op.key)
-        .filter(|c| op.current(c))
-        .ok_or_else(|| rejected("stored media cursor changed"))?;
-    let (result, messages) = match prepared {
-        Ok(prepared) => {
-            cursor.frames.last = Some(prepared.selected);
-            (prepared.result, prepared.messages)
+    if op.cancelled() {
+        return Err(rejected("stored media cursor changed"));
+    }
+    let (result, frame_transfer) = match prepared {
+        Ok((plan, snapshot)) => {
+            let result = plan.result.clone();
+            (
+                result,
+                Some(Box::new(Delivery {
+                    op,
+                    plan,
+                    snapshot,
+                    source: request.source_id,
+                    first_deadline: deadline,
+                })),
+            )
         }
         Err(reason) => (
             proto::StoredFrameStepResult {
@@ -701,12 +775,13 @@ pub(super) fn step(
                 status: unavailable(reason) as i32,
                 ..Default::default()
             },
-            Vec::new(),
+            None,
         ),
     };
     Ok(StoredMediaDispatch {
         result: Some(control_ok::Result::StoredFrameStepResult(result)),
-        messages,
+        frame_transfer,
+        messages: Vec::new(),
         notifications: Vec::new(),
     })
 }

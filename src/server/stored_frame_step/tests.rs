@@ -114,7 +114,7 @@ fn returns_the_source_adjacent_sample_and_reverses_across_a_fragment() {
     };
     let next = target_window(&fragments, 10_000_000_000, None, true, &work()).unwrap();
     assert_eq!(next.index.pictures[next.target].ordinal, 3);
-    let decoded = encode(next, &request, &work()).unwrap();
+    let decoded = plan(next, &request, &work()).unwrap();
     assert_eq!(decoded.result.source_ticks, 40);
     assert_eq!(decoded.result.target_presentation_rank, 1);
     assert_eq!(decoded.result.sample_count, 3);
@@ -312,13 +312,58 @@ fn paused_cursor_steps_under_historical_access_rules_and_invalidates_previous_to
         ..request.clone()
     };
     assert!(dispatch(session, Action::StepFrame(wrong_stream)).is_err());
+    for (source, stream) in [
+        ("", "main"),
+        ("invalid source", "main"),
+        ("127.0.0.1", ""),
+        ("127.0.0.1", "main/unsafe"),
+    ] {
+        let invalid = proto::StepStoredFrame {
+            source_id: source.into(),
+            stream_id: stream.into(),
+            ..request.clone()
+        };
+        assert_eq!(
+            dispatch(session, Action::StepFrame(invalid))
+                .err()
+                .unwrap()
+                ._http_status,
+            400
+        );
+    }
+    let oversized = proto::StepStoredFrame {
+        source_id: "x".repeat(65),
+        ..request.clone()
+    };
+    assert_eq!(
+        dispatch(session, Action::StepFrame(oversized))
+            .err()
+            .unwrap()
+            ._http_status,
+        400
+    );
     let delivery = dispatch(session, Action::StepFrame(request.clone())).unwrap();
     let Some(control_ok::Result::StoredFrameStepResult(first)) = delivery.result else {
         panic!("missing selected picture")
     };
     assert_eq!(first.status(), proto::StoredFrameStepStatus::Ready);
     assert_eq!(first.source_ticks, 40);
-    assert!(!delivery.messages.is_empty());
+    assert!(delivery.messages.is_empty());
+    let transfer = delivery
+        .frame_transfer
+        .expect("ready reply precedes GOP production");
+    // The first response has already arrived. A transfer can still deliver after its
+    // original two-second control budget, inside the independently enforced decode budget.
+    let decode_deadline = Instant::now() + DECODE_WINDOW;
+    std::thread::sleep(FIRST_RESPONSE + Duration::from_millis(25));
+    let mut chunks = Vec::new();
+    transfer
+        .deliver(decode_deadline, |message| {
+            chunks.push(message);
+            Ok(())
+        })
+        .unwrap();
+    assert!(!chunks.is_empty());
     let previous = proto::StepStoredFrame {
         step_id: "reverse".into(),
         direction: proto::StoredFrameStepDirection::Previous as i32,
@@ -331,16 +376,56 @@ fn paused_cursor_steps_under_historical_access_rules_and_invalidates_previous_to
         Some(control_ok::Result::StoredFrameStepResult(result)) => result,
         _ => panic!("missing step result"),
     };
-    let second = step_result(dispatch(session, Action::StepFrame(previous.clone())).unwrap());
+    let expired = dispatch(session, Action::StepFrame(previous.clone())).unwrap();
+    assert!(
+        expired
+            .frame_transfer
+            .unwrap()
+            .deliver(Instant::now(), |_| panic!("expired delivery sent data"))
+            .is_err()
+    );
+    let mut ready = dispatch(session, Action::StepFrame(previous.clone())).unwrap();
+    ready
+        .frame_transfer
+        .take()
+        .unwrap()
+        .deliver(Instant::now() + DECODE_WINDOW, |_| Ok(()))
+        .unwrap();
+    let second = step_result(ready);
     assert_eq!(second.source_ticks, 0);
     assert_eq!(second.status(), proto::StoredFrameStepStatus::Ready);
     assert_ne!(second.sample_token, first.sample_token);
-    let stale = dispatch(session, Action::StepFrame(previous)).unwrap();
+    let stale = dispatch(session, Action::StepFrame(previous.clone())).unwrap();
     assert!(stale.messages.is_empty());
     assert_eq!(
         step_result(stale).status(),
         proto::StoredFrameStepStatus::Stale
     );
+    let pending = proto::StepStoredFrame {
+        anchor: Some(proto::step_stored_frame::Anchor::SampleToken(
+            second.sample_token,
+        )),
+        direction: proto::StoredFrameStepDirection::Next as i32,
+        ..previous
+    };
+    let ready = dispatch(session, Action::StepFrame(pending)).unwrap();
+    dispatch(
+        session,
+        Action::Close(proto::CloseStoredMedia {
+            stored_media_id: "playback".into(),
+        }),
+    )
+    .unwrap();
+    assert!(
+        ready
+            .frame_transfer
+            .unwrap()
+            .deliver(Instant::now() + DECODE_WINDOW, |_| panic!(
+                "closed cursor sent a chunk"
+            ))
+            .is_err()
+    );
+    assert_eq!(state.frame_step_workers.load(Ordering::Acquire), 0);
     drop(state);
     catalog.shutdown();
 }
@@ -442,7 +527,7 @@ fn duplicate_source_timestamps_step_in_codec_display_order_in_both_directions() 
     ] {
         let window =
             target_window(&fragments, anchor, previous.as_ref(), forward, &work()).unwrap();
-        let step = encode(window, &request, &work()).unwrap();
+        let step = plan(window, &request, &work()).unwrap();
         assert_eq!(
             (
                 step.selected.ordinal,
