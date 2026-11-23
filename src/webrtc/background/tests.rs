@@ -16,6 +16,20 @@ struct Handler {
     started: Sender<u64>,
     release: Receiver<()>,
 }
+
+fn blocked_handler() -> (Arc<Handler>, Receiver<u64>, Sender<()>) {
+    let (started, received) = bounded(1);
+    let (release, proceed) = bounded(0);
+    (
+        Arc::new(Handler {
+            started,
+            release: proceed,
+        }),
+        received,
+        release,
+    )
+}
+
 impl ControlRequestHandler for Handler {
     fn handle(&self, request: Request) -> ControlDispatch {
         self.started.send(request.request_id).unwrap();
@@ -82,24 +96,47 @@ fn check_successor(action: Action, expected_groups: &[&str]) {
             }])
             .unwrap();
     }
-    let (started, received) = bounded(1);
-    let (release, proceed) = bounded(0);
-    let handler = Arc::new(Handler {
-        started,
-        release: proceed,
-    });
+    let (handler, received, release) = blocked_handler();
     let step = Action::StepFrame(proto::StepStoredFrame {
         stored_media_id: "cursor".into(),
         ..Default::default()
     });
     dispatch(request(1, step), handler.clone(), &control, &mut runtime).unwrap();
     assert_eq!(received.recv_timeout(Duration::from_secs(5)).unwrap(), 1);
+    let (share, share_started, release_share) = blocked_handler();
+    let preview = Request {
+        request_id: 4,
+        command: Some(Command::ShareCommand(proto::ShareCommand {
+            action: Some(proto::share_command::Action::PreviewExport(
+                proto::PreviewShareExport {
+                    recording_range: Some(proto::ShareRecordingRange::default()),
+                    ..Default::default()
+                },
+            )),
+        })),
+    };
+    dispatch(preview, share, &control, &mut runtime).unwrap();
+    assert_eq!(
+        share_started.recv_timeout(Duration::from_secs(5)).unwrap(),
+        4
+    );
     let other = Action::Seek(proto::SeekStoredMedia {
         stored_media_id: "another".into(),
         ..Default::default()
     });
     dispatch(request(3, other), handler.clone(), &control, &mut runtime).unwrap();
     dispatch(request(2, action), handler, &control, &mut runtime).unwrap();
+    release_share.send(()).unwrap();
+    complete_worker(&runtime);
+    drain_pending_control_dispatches(&control, &mut runtime, &mut media).unwrap();
+    assert!(!control.share_inspection_in_flight.load(Ordering::Acquire));
+    assert!(
+        control
+            .background_operation_in_flight
+            .load(Ordering::Acquire)
+    );
+    assert_eq!(runtime.selection.cursor.as_deref(), Some("cursor"));
+    assert!(runtime.selection.deferred.is_some());
     assert!(received.is_empty());
     assert_eq!(media.outbound.len(), 4);
     release.send(()).unwrap();
@@ -135,7 +172,7 @@ fn check_successor(action: Action, expected_groups: &[&str]) {
             )
         })
         .collect::<Vec<_>>();
-    assert_eq!(replies, [(3, false), (1, false), (2, true)]);
+    assert_eq!(replies, [(3, false), (4, true), (1, false), (2, true)]);
 }
 
 #[test]

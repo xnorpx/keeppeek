@@ -721,6 +721,7 @@ struct ApiSessionControl {
     pending_event_count: Arc<AtomicUsize>,
     media_camera_ips: Mutex<HashSet<IpAddr>>,
     background_operation_in_flight: Arc<AtomicBool>,
+    share_inspection_in_flight: Arc<AtomicBool>,
 }
 
 struct ApiControlRuntime {
@@ -2961,6 +2962,7 @@ impl WebRtc {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         });
         self.live
             .inner
@@ -3538,7 +3540,7 @@ fn run_api_session(
     data_rx: Receiver<ApiSessionCommand>,
 ) -> anyhow::Result<()> {
     let mut media = ApiMediaRuntime::default();
-    let (dispatch_tx, dispatch_rx) = bounded(1);
+    let (dispatch_tx, dispatch_rx) = bounded(2);
     let mut control_runtime = ApiControlRuntime {
         selection: Default::default(),
         dispatch_tx,
@@ -4406,7 +4408,14 @@ fn drain_pending_control_dispatches(
 ) -> anyhow::Result<bool> {
     let mut dispatched = false;
     while let Ok(mut background) = control_runtime.dispatch_rx.try_recv() {
-        let deferred = control_runtime.selection.finish(&mut background.dispatch);
+        let deferred = if Arc::ptr_eq(
+            &background.operation_in_flight,
+            &control.background_operation_in_flight,
+        ) {
+            control_runtime.selection.finish(&mut background.dispatch)
+        } else {
+            None
+        };
         if matches!(
             background.dispatch.response.result.as_ref(),
             Some(control_response::Result::Ok(_))
@@ -4522,11 +4531,36 @@ const fn is_background_control_request(request: &crate::api::proto::Request) -> 
                     | crate::api::proto::stored_media_command::Action::SetPlayback(_)
             )
         ),
+        Some(crate::api::proto::request::Command::ShareCommand(command)) => {
+            match command.action.as_ref() {
+                Some(crate::api::proto::share_command::Action::PreviewExport(request)) => {
+                    request.recording_range.is_some()
+                }
+                Some(crate::api::proto::share_command::Action::Create(request)) => {
+                    request.recording_range.is_some()
+                }
+                _ => false,
+            }
+        }
         Some(crate::api::proto::request::Command::ExportCommand(command)) => matches!(
             command.action.as_ref(),
             Some(crate::api::proto::export_command::Action::Download(_))
         ),
         _ => false,
+    }
+}
+
+const fn background_operation_slot<'a>(
+    control: &'a ApiSessionControl,
+    request: &crate::api::proto::Request,
+) -> &'a Arc<AtomicBool> {
+    if matches!(
+        request.command.as_ref(),
+        Some(crate::api::proto::request::Command::ShareCommand(_))
+    ) {
+        &control.share_inspection_in_flight
+    } else {
+        &control.background_operation_in_flight
     }
 }
 
@@ -4538,7 +4572,7 @@ fn spawn_background_control_operation(
 ) -> std::io::Result<()> {
     let session_id = control.session_id;
     let poller = control.poller.clone();
-    let operation_in_flight = control.background_operation_in_flight.clone();
+    let operation_in_flight = background_operation_slot(control, &request).clone();
     let data_group = control_data_group(request.command.as_ref());
     std::thread::Builder::new()
         .name(format!("webrtc-control-operation-{session_id}"))
@@ -5258,6 +5292,7 @@ impl WebRtc {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         });
         self.live.inner.sessions.insert_api(session_id, control);
         let mut media = ApiMediaRuntime::default();
@@ -6634,6 +6669,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         };
         let mut media = ApiMediaRuntime::default();
         media
@@ -6730,6 +6766,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         });
         webrtc
             .live
@@ -6808,6 +6845,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         });
         webrtc
             .live
@@ -6916,6 +6954,7 @@ mod tests {
                 pending_event_count: Arc::new(AtomicUsize::new(0)),
                 media_camera_ips: Mutex::new(media_camera_ips),
                 background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+                share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
             })
         };
         let affected = api_control(SessionId::from_u64(7), HashSet::from([camera_ip]));
@@ -6959,6 +6998,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         });
         webrtc.live.inner.sessions.insert_api(session_id, control);
         data_rx
@@ -7075,6 +7115,43 @@ mod tests {
             .expect_err("a missing session must not accept notifications");
     }
 
+    #[test]
+    fn only_guarded_share_previews_and_creations_use_the_bounded_worker() {
+        use crate::api::proto::{self, share_command::Action};
+        for range in [None, Some(proto::ShareRecordingRange::default())] {
+            let background = range.is_some();
+            for action in [
+                Action::PreviewExport(proto::PreviewShareExport {
+                    recording_range: range.clone(),
+                    ..Default::default()
+                }),
+                Action::Create(proto::CreateShareGrant {
+                    recording_range: range,
+                    ..Default::default()
+                }),
+            ] {
+                let request = proto::Request {
+                    request_id: 1,
+                    command: Some(proto::request::Command::ShareCommand(proto::ShareCommand {
+                        action: Some(action),
+                    })),
+                };
+                assert_eq!(is_background_control_request(&request), background);
+                if background {
+                    let control = test_background_control();
+                    let slot = background_operation_slot(&control, &request);
+                    assert!(
+                        control
+                            .background_operation_in_flight
+                            .load(Ordering::Acquire)
+                    );
+                    assert!(!slot.swap(true, Ordering::AcqRel));
+                    assert!(slot.swap(true, Ordering::AcqRel));
+                }
+            }
+        }
+    }
+
     pub(super) fn test_background_control() -> ApiSessionControl {
         ApiSessionControl {
             session_id: SessionId(1),
@@ -7089,6 +7166,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(true)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -7469,6 +7547,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         };
         let mut media = ApiMediaRuntime {
             bandwidth: bandwidth::SessionBandwidth::default(),
@@ -7631,6 +7710,7 @@ mod tests {
             pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
         };
         let mut media = ApiMediaRuntime::default();
         let request = crate::api::proto::SubscribeMedia {

@@ -3,6 +3,8 @@ use crate::{profiles::RuntimeApplicationState, storage::RecordingConfiguration};
 use std::time::Instant;
 
 const RECORDING_ACK_TIMEOUT: Duration = Duration::from_millis(200);
+pub(super) const ACTIVE_RECORDING_WRITE_FAILURE: &str =
+    "recording writer reported an active write failure";
 
 pub(super) type RecordingRequest = Result<Option<RecordingConfiguration>, String>;
 
@@ -29,9 +31,9 @@ pub(super) fn recording_request_state(
 
 impl KeepPeekLoop {
     pub(super) fn refresh_recording_runtime_status(&mut self) {
-        let Some(storage) = &self.storage else {
+        if self.storage.is_none() && self.privacy.is_none() {
             return;
-        };
+        }
         let now = Instant::now();
         if now < self.next_recording_status_check {
             return;
@@ -54,24 +56,14 @@ impl KeepPeekLoop {
             .as_deref()
             .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
         let mut last_source = None;
+        let observed_at = chrono::Utc::now();
         for (source, application) in status
             .cameras
             .range_mut::<str, _>((start, std::ops::Bound::Unbounded))
             .take(crate::profiles::MAX_PROFILE_TARGETS)
         {
             last_source = Some(source);
-            if application.state == RuntimeApplicationState::Applied
-                && application.policy.recording_mode != crate::cameras::CameraRecordingMode::Off
-                && self
-                    .runtime_profile_camera_ids
-                    .source_id(&application.camera_id)
-                    .is_some_and(|source| storage.recording_configuration_failed(source))
-            {
-                application.state = RuntimeApplicationState::Degraded;
-                application.reason =
-                    Some("recording writer reported an active write failure".to_owned());
-                changed = true;
-            }
+            changed |= self.observe_recording_application(application, observed_at);
         }
         self.recording_status_cursor = last_source.cloned();
         if self.recording_status_cursor.as_ref()
@@ -83,6 +75,58 @@ impl KeepPeekLoop {
         if changed {
             self.publish_runtime_profile_status();
         }
+    }
+
+    fn observe_recording_application(
+        &self,
+        application: &mut crate::profiles::CameraRuntimeApplication,
+        observed_at: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
+        let mut changed = false;
+        let Some(source_id) = self
+            .runtime_profile_camera_ids
+            .source_id(&application.camera_id)
+        else {
+            return false;
+        };
+        let ip = source_id.parse::<IpAddr>().ok();
+        let camera = ip.and_then(|ip| self.camera_definitions.get(&ip));
+        let writer_failed = application.state == RuntimeApplicationState::Applied
+            && self.recording_writer_failed(source_id);
+        if let (Some(privacy), Some(camera)) = (&self.privacy, camera) {
+            changed |= application.observe_policy(
+                privacy.observed_profile_policy(
+                    source_id,
+                    observed_at,
+                    camera.config.recording_mode,
+                    self.runtime_profiles
+                        .active_camera_override(&application.camera_id),
+                ),
+            );
+        }
+        if application.state != RuntimeApplicationState::Applied || !writer_failed {
+            return changed;
+        }
+        let configured_mode = camera.map_or_else(
+            || {
+                ip.and_then(|ip| self.inactive_configurations.get(&ip))
+                    .and_then(InactiveCamera::acknowledged_recording_mode)
+                    .unwrap_or(application.policy.recording_mode)
+            },
+            |camera| self.effective_recording_mode(&camera.config),
+        );
+        if configured_mode == crate::cameras::CameraRecordingMode::Off {
+            return changed;
+        }
+        application.state = RuntimeApplicationState::Degraded;
+        application.reason = Some(ACTIVE_RECORDING_WRITE_FAILURE.to_owned());
+        true
+    }
+
+    pub(super) fn recording_writer_failed(&self, source_id: &str) -> bool {
+        self.storage
+            .as_ref()
+            .is_some_and(|storage| storage.recording_configuration_failed(source_id))
     }
 
     pub(super) fn configure_profile_recording(
@@ -113,7 +157,7 @@ impl KeepPeekLoop {
 
     pub(super) fn camera_runtime_application(
         &self,
-        camera: &Camera,
+        ip: IpAddr,
         policy: crate::profiles::EffectiveCameraPolicy,
         result: Result<RuntimeApplicationState, String>,
     ) -> crate::profiles::CameraRuntimeApplication {
@@ -127,7 +171,7 @@ impl KeepPeekLoop {
             }
         });
         crate::profiles::CameraRuntimeApplication {
-            camera_id: self.runtime_profile_camera_ids.camera_id(camera.config.ip),
+            camera_id: self.runtime_profile_camera_ids.camera_id(ip),
             state: result
                 .as_ref()
                 .cloned()
@@ -145,7 +189,7 @@ impl KeepPeekLoop {
         result: Result<RuntimeApplicationState, String>,
     ) {
         let application = self.camera_runtime_application(
-            camera,
+            camera.config.ip,
             self.effective_camera_policy(&camera.config),
             result,
         );
@@ -156,8 +200,7 @@ impl KeepPeekLoop {
         if status.revision > self.runtime_profiles.revision {
             return;
         }
-        status.revision = self.runtime_profiles.revision;
-        status.active_profile_id = self.runtime_profiles.active_profile_id.clone();
+        status.set_selection(&self.runtime_profiles);
         status
             .cameras
             .insert(application.camera_id.clone(), application);

@@ -165,6 +165,16 @@ impl SourceTiming {
         (self.size() + chunks * EVENT_WRAPPER_BYTES_MAX, chunks)
     }
 
+    pub(crate) fn event_bytes(&self, track_id: u32) -> u64 {
+        let chunks = self.samples.div_ceil(EVENT_SAMPLES_MAX as u64);
+        if chunks == 0 {
+            return 0;
+        }
+        // size() already includes one UUID header and the runs start fresh at each event.
+        let wrapper = EmsgBox::size_without_message(1, SCHEME, &track_id.to_string());
+        self.size() + (chunks - 1) * UUID_HEADER_BYTES + chunks * wrapper
+    }
+
     /// One bounded ISO event can contain 512 one-sample runs even in the worst case.
     pub(crate) fn events(
         &self,

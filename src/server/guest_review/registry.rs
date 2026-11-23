@@ -139,7 +139,7 @@ impl Registry {
             cancelled,
         })
     }
-    pub(super) fn reserve_hash(self: &Arc<Self>) -> io::Result<HashPermit> {
+    pub(in crate::server) fn reserve_hash(self: &Arc<Self>) -> io::Result<HashPermit> {
         let mut state = self.lock()?;
         if state.hash_readers >= MAX_HASH_READERS {
             return Err(io::Error::new(
@@ -417,7 +417,7 @@ impl TransferGuard {
     }
 }
 
-pub(super) struct HashPermit(Arc<Registry>);
+pub(in crate::server) struct HashPermit(Arc<Registry>);
 
 impl Drop for HashPermit {
     fn drop(&mut self) {

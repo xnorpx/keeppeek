@@ -1,4 +1,5 @@
 import { create, type MessageInitShape } from '@bufbuild/protobuf';
+import { insideRecordingRange, type RecordingRangeGuard } from './sharing-range';
 import {
 	ShareCommandSchema,
 	CreateShareGrantSchema,
@@ -16,7 +17,9 @@ import {
 export const sharingCapability = 'keeppeek.guest-review.v1';
 export type ShareCreateInput = MessageInitShape<typeof CreateShareGrantSchema>;
 export type SharePolicyInput = MessageInitShape<typeof SharePolicySettingsSchema>;
-type Send = (command: Request['command']) => Promise<Ok['result']>;
+type Send = (command: Request['command'], timeoutMs?: number) => Promise<Ok['result']>;
+// Disk verification can consume 25 seconds before the control response returns.
+const rangeVerificationTimeoutMs = 30_000;
 const responseError = 'Server returned an invalid sharing response.';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const checksum = /^[0-9a-f]{64}$/i;
@@ -47,12 +50,21 @@ export class SharingControlClient {
 		return validPolicy(result.value);
 	}
 
-	async previewExport(exportJobId: string): Promise<ShareEvidence> {
+	async previewExport(
+		exportJobId: string,
+		recordingRange?: RecordingRangeGuard
+	): Promise<ShareEvidence> {
 		if (!text(exportJobId, 64)) throw new Error('Select a completed export.');
-		const result = await this.request({ case: 'previewExport', value: { exportJobId } });
+		const result = await this.request({
+			case: 'previewExport',
+			value: { exportJobId, recordingRange }
+		});
 		if (result.case !== 'evidence' || result.value.exportJobId !== exportJobId)
 			throw new Error(responseError);
-		return validEvidence(result.value);
+		const evidence = validEvidence(result.value);
+		if (recordingRange && !insideRecordingRange(evidence, recordingRange))
+			throw new Error('The file includes footage outside the selected range.');
+		return evidence;
 	}
 
 	async create(input: ShareCreateInput, expectedOrigin: string): Promise<IssuedShareGrant> {
@@ -69,6 +81,7 @@ export class SharingControlClient {
 			grant.evidence?.exportJobId !== intent.exportJobId ||
 			grant.evidence.artifactId !== intent.artifactId ||
 			grant.evidence.sha256 !== intent.expectedSha256 ||
+			(intent.recordingRange && !insideRecordingRange(grant.evidence, intent.recordingRange)) ||
 			grant.expiresAtMs !== intent.expiresAtMs ||
 			grant.allowStream !== intent.allowStream ||
 			grant.allowDownload !== intent.allowDownload ||
@@ -166,10 +179,16 @@ export class SharingControlClient {
 	private async request(
 		action: MessageInitShape<typeof ShareCommandSchema>['action']
 	): Promise<ShareResult['result']> {
-		const result = await this.send({
-			case: 'shareCommand',
+		const command = {
+			case: 'shareCommand' as const,
 			value: create(ShareCommandSchema, { action })
-		});
+		};
+		const guarded =
+			(action?.case === 'create' || action?.case === 'previewExport') &&
+			action.value?.recordingRange !== undefined;
+		const result = guarded
+			? await this.send(command, rangeVerificationTimeoutMs)
+			: await this.send(command);
 		if (result.case !== 'shareResult' || result.value.result.case === undefined)
 			throw new Error(responseError);
 		return result.value.result;

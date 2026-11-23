@@ -307,6 +307,7 @@ fn session_control(handler: &Arc<dyn ControlRequestHandler>) -> ApiSessionContro
         pending_event_count: Arc::new(AtomicUsize::new(0)),
         media_camera_ips: Mutex::new(HashSet::new()),
         background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+        share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
     }
 }
 

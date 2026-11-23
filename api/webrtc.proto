@@ -1157,6 +1157,8 @@ message CreateExportJob {
   bool allow_partial = 6;
   bool burn_in_timestamp = 7;
   optional EventExportSeed event_seed = 8;
+  // Negotiated by keeppeek.guest-range.v1. Bound writes to the guest evidence limit.
+  optional bool guest_range_preparation = 9;
 }
 
 message EventExportSeed {
@@ -4368,6 +4370,14 @@ message ConfigureSharePolicy {
 
 message PreviewShareExport {
   string export_job_id = 1;
+  ShareRecordingRange recording_range = 2;
+}
+
+// Selected recording interval, in half-open Unix milliseconds.
+message ShareRecordingRange {
+  string source_id = 1;
+  int64 start_ms = 2;
+  int64 end_ms = 3;
 }
 
 message ShareEvidence {
@@ -4396,6 +4406,7 @@ message CreateShareGrant {
   bool allow_download = 9;
   optional uint32 max_views = 10;
   optional uint32 max_downloads = 11;
+  ShareRecordingRange recording_range = 12;
 }
 
 message ListShareGrants {
