@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 
+/// Private Unix header disposal and crash-recovery entries inside a recording hour.
+pub(crate) const HEADER_RECOVERY_DIRECTORY: &str = ".keeppeek-header-recovery-v1";
+
 pub fn camera_dir(root: &Path, camera_id: &str) -> PathBuf {
     root.join(camera_id)
 }
