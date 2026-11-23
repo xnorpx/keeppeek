@@ -55,7 +55,7 @@ struct Observation {
 }
 
 impl RecordingStreamHealth {
-    fn credit_duration(
+    const fn credit_duration(
         &mut self,
         recorded_duration: std::time::Duration,
         observation: Observation,
