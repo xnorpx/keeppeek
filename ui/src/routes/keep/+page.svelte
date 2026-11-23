@@ -2119,6 +2119,7 @@
 	}
 
 	function setPlaybackSpeed(speed: number): void {
+		frames.cancelHandoff();
 		shuttleSpeed = speed;
 		playbackRate = speed;
 		playbackPreferences = withMediaPreferences(playbackPreferences, { playbackRate: speed });
@@ -2128,6 +2129,7 @@
 	}
 
 	function cancelFrameResume(): void {
+		frames.cancelHandoff();
 		frameResume?.abort();
 		frameResume = undefined;
 		coldPicture = undefined;
@@ -2392,6 +2394,7 @@
 	}
 
 	function updatePlaybackRate() {
+		if (frames.preparingPlayback) return;
 		if (!video) return;
 		playbackRate = video.playbackRate;
 		playbackPreferences = withMediaPreferences(playbackPreferences, { playbackRate });
@@ -2400,6 +2403,7 @@
 	}
 
 	function updateMutedPreference(): void {
+		if (frames.preparingPlayback) return;
 		if (!video || scrubbing || video.muted === playbackMuted) return;
 		playbackMuted = video.muted;
 		playbackPreferences = withMediaPreferences(playbackPreferences, { muted: playbackMuted });
@@ -2407,6 +2411,7 @@
 	}
 
 	function togglePlaybackMute(): void {
+		frames.cancelHandoff();
 		if (!video) return;
 		video.muted = !playbackMuted;
 		updateMutedPreference();
@@ -2418,6 +2423,7 @@
 	}
 
 	function handlePlay() {
+		if (frames.preparingPlayback || video?.paused) return;
 		playing = true;
 		rememberPlayIntent(true);
 		shuttleDirection = 1;
@@ -2425,6 +2431,7 @@
 	}
 
 	function handlePause() {
+		if (frames.preparingPlayback || (video && !video.paused)) return;
 		if (ignoreNextPauseEvent) {
 			ignoreNextPauseEvent = false;
 			return;
@@ -2448,6 +2455,7 @@
 	}
 
 	function handleEnded() {
+		if (frames.preparingPlayback) return;
 		playing = false;
 		playNext();
 	}

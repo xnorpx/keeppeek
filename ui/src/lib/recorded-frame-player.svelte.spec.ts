@@ -278,6 +278,58 @@ test('probes recorded GOP intervals and exposes only the matching paused picture
 	expect(player.notice).toContain('could not resume');
 });
 
+test.each([false, true])(
+	'a playing decoder can witness a missing paused picture and respects cancellation (%s)',
+	async (cancel) => {
+		const fixture = observedVideo();
+		const player = new RecordedFramePlayer();
+		const sample = picture(1);
+		sample.frame.close();
+		sample.resumeTimesNs = [41_001_000n, 1_000n];
+		const cursor = {
+			url: fixture.video.currentSrc,
+			...clock(0),
+			canStepExactly: true,
+			stepRecordedFrame: () => Promise.resolve(picture(1))
+		};
+		let paused = true;
+		Object.defineProperties(fixture.video, {
+			paused: { get: () => paused },
+			play: {
+				value: async () => {
+					paused = false;
+				}
+			},
+			pause: {
+				value: () => {
+					paused = true;
+				}
+			}
+		});
+		fixture.video.playbackRate = 1.5;
+		player.selection = sample;
+		const alignment = player.alignForPlay(fixture.video, cursor);
+		fixture.callback()(0.08);
+		await Promise.resolve();
+		fixture.callback()(0);
+		await Promise.resolve();
+		expect(player.preparingPlayback).toBe(true);
+		fixture.settle();
+		expect(fixture.video.paused).toBe(false);
+		expect(fixture.video.muted).toBe(true);
+		fixture.callback()(0.02);
+		expect(player.selection).toBeDefined();
+		if (cancel) player.cancelHandoff();
+		else fixture.callback()(0.041);
+		expect(await alignment).toBe(!cancel);
+		expect(player.selection === undefined).toBe(!cancel);
+		expect(fixture.video.paused).toBe(true);
+		expect(fixture.video.muted).toBe(false);
+		expect(fixture.video.playbackRate).toBe(1.5);
+		expect(player.preparingPlayback).toBe(false);
+	}
+);
+
 test('a retained cold picture waits for the replacement source and verifies before the canvas is removed', async () => {
 	const fixture = observedVideo();
 	const player = new RecordedFramePlayer();

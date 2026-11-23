@@ -94,6 +94,65 @@ function probePausedPicture(
 	});
 }
 
+// A paused seek can skip a reordered picture that the same decoder presents during playback.
+// Keep the selected canvas visible and normal playback paused at the witnessed target.
+function presentWhileDecoding(
+	video: HTMLVideoElement,
+	url: string,
+	startUs: number,
+	targetUs: number,
+	signal: AbortSignal,
+	budgetMs: number
+): Promise<boolean> {
+	return new Promise((resolve) => {
+		let done = false;
+		let frame = 0;
+		const muted = video.muted;
+		const rate = video.playbackRate;
+		const finish = (success: boolean) => {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			video.removeEventListener('seeked', start);
+			video.removeEventListener('error', failed);
+			video.removeEventListener('ended', failed);
+			signal.removeEventListener('abort', failed);
+			if (frame) video.cancelVideoFrameCallback(frame);
+			if (video.currentSrc === url) video.pause();
+			video.muted = muted;
+			video.playbackRate = rate;
+			resolve(success);
+		};
+		const failed = () => finish(false);
+		const displayed: VideoFrameRequestCallback = (_now, metadata) => {
+			if (done) return;
+			if (signal.aborted || video.currentSrc !== url) return failed();
+			if (!video.seeking && Math.abs(Math.round(metadata.mediaTime * 1_000_000) - targetUs) <= 1) {
+				finish(true);
+			} else {
+				frame = video.requestVideoFrameCallback(displayed);
+			}
+		};
+		const start = () => {
+			if (done || signal.aborted || video.currentSrc !== url) return failed();
+			frame = video.requestVideoFrameCallback(displayed);
+			void video.play().catch(failed);
+		};
+		const timer = setTimeout(failed, budgetMs);
+		signal.addEventListener('abort', failed, { once: true });
+		video.addEventListener('error', failed, { once: true });
+		video.addEventListener('ended', failed, { once: true });
+		video.addEventListener('seeked', start, { once: true });
+		video.muted = true;
+		video.playbackRate = 0.75;
+		try {
+			video.currentTime = startUs / 1_000_000;
+		} catch {
+			failed();
+		}
+	});
+}
+
 export class RecordedFramePlayer {
 	selection = $state.raw<Selection>();
 	busy = $state(false);
@@ -102,6 +161,15 @@ export class RecordedFramePlayer {
 	displayedNs = $state<bigint>();
 	private active?: AbortController;
 	private handoff?: AbortController;
+	private preroll = false;
+
+	get preparingPlayback(): boolean {
+		return this.preroll;
+	}
+
+	cancelHandoff(): void {
+		this.handoff?.abort();
+	}
 	private pendingSteps = 0;
 
 	clear(): void {
@@ -194,47 +262,67 @@ export class RecordedFramePlayer {
 		this.notice = '';
 		const deadline = performance.now() + 5_000;
 		try {
-			for (const coordinate of coordinates) {
-				const remaining = deadline - performance.now();
-				if (
-					remaining <= 0 ||
-					controller.signal.aborted ||
-					!ownsPicture() ||
-					video.currentSrc !== url ||
-					cursor.url !== url ||
-					!video.paused
-				)
-					break;
-				const coordinateUs = cursor.mediaUsForStoredNs(coordinate);
-				if (
-					coordinateUs === undefined ||
-					coordinateUs < 0 ||
-					coordinateUs / 1_000_000 > video.duration
-				)
-					continue;
-				const displayed = await probePausedPicture(
+			const positions = coordinates
+				.map((coordinate) => cursor.mediaUsForStoredNs(coordinate))
+				.filter(
+					(us): us is number =>
+						us !== undefined &&
+						us >= 0 &&
+						(!Number.isFinite(video.duration) || us <= video.duration * 1_000_000)
+				);
+			const current = () =>
+				!controller.signal.aborted &&
+				ownsPicture() &&
+				cursor.url === url &&
+				video.currentSrc === url;
+			let displayed = false;
+			const seekDeadline = positions.length > 1 ? deadline - 2_500 : deadline;
+			for (const position of positions) {
+				const remaining = seekDeadline - performance.now();
+				if (remaining <= 0 || !current() || !video.paused) break;
+				displayed = await probePausedPicture(
 					video,
 					url,
-					coordinateUs,
+					position,
 					targetUs,
 					controller.signal,
-					Math.min(remaining, coordinates.length === 1 ? 5_000 : 350)
+					Math.min(remaining, positions.length === 1 ? 5_000 : 350)
 				);
-				if (displayed && !controller.signal.aborted && ownsPicture() && cursor.url === url) {
-					this.displayedNs = sample.storedTimeNs;
-					if (retained && !retained.verified()) return false;
-					this.selection = undefined;
-					// Let the verified paused video replace the canvas before Play can advance it.
-					await new Promise<void>((resolve) =>
-						requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
-					);
-					return (
-						!controller.signal.aborted &&
-						cursor.url === url &&
-						video.currentSrc === url &&
-						video.paused
-					);
+				if (displayed) break;
+			}
+			if (!displayed && positions.length > 1 && current() && video.paused) {
+				const startUs = Math.max(Math.min(...positions), targetUs - 1_000_000);
+				const remaining = deadline - performance.now();
+				if (startUs < targetUs && remaining > 0) {
+					this.preroll = true;
+					try {
+						displayed = await presentWhileDecoding(
+							video,
+							url,
+							startUs,
+							targetUs,
+							controller.signal,
+							remaining
+						);
+					} finally {
+						this.preroll = false;
+					}
 				}
+			}
+			if (displayed && current() && video.paused) {
+				this.displayedNs = sample.storedTimeNs;
+				if (retained && !retained.verified()) return false;
+				this.selection = undefined;
+				// Paint the verified paused video before ordinary Play can advance it.
+				await new Promise<void>((resolve) =>
+					requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+				);
+				return (
+					!controller.signal.aborted &&
+					cursor.url === url &&
+					video.currentSrc === url &&
+					video.paused
+				);
 			}
 			if (!controller.signal.aborted && ownsPicture())
 				this.notice =

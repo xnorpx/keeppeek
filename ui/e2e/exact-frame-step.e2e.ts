@@ -41,6 +41,18 @@ function observePicture(element: Element, expected: number | null) {
 
 function observePlaybackPresentation() {
 	document.addEventListener(
+		'click',
+		(event) => {
+			if (!(event.target instanceof Element)) return;
+			const name = event.target.closest('button')?.getAttribute('aria-label');
+			if (name === 'Previous recorded frame' || name === 'Next recorded frame') {
+				performance.clearMarks('frame-step-click');
+				performance.mark('frame-step-click');
+			}
+		},
+		true
+	);
+	document.addEventListener(
 		'loadedmetadata',
 		(event) => {
 			const element = event.target;
@@ -235,13 +247,6 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 			let { id } = await video.evaluate(observePicture, null);
 			for (const direction of [...Array<number>(12).fill(1), ...Array<number>(12).fill(-1)]) {
 				const button = direction > 0 ? next : previous;
-				await button.evaluate((element) => {
-					performance.clearMarks('frame-step-click');
-					element.addEventListener('click', () => performance.mark('frame-step-click'), {
-						once: true,
-						capture: true
-					});
-				});
 				id = (id + direction + 12) % 12;
 				const [presented] = await Promise.all([
 					selected.evaluate(observePicture, id),
@@ -283,11 +288,14 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 			await expect(next).toBeFocused();
 
 			// Observe the visible canvas-to-video transition, while normal playback is still paused.
+			await region.getByRole('combobox', { name: 'Playback speed' }).selectOption('0.5');
+			await expect(video).toHaveJSProperty('playbackRate', 0.5);
 			const handoff = selected.evaluate(witnessHandoff);
 			await region.getByRole('button', { name: 'Play recording', exact: true }).click();
 			const resumed = await handoff;
 			expect(resumed.picture, JSON.stringify(resumed)).toBe(extra);
 			expect(resumed.paused).toBe(true);
+			await expect(video).toHaveJSProperty('playbackRate', 0.5);
 			await expect(selected).toBeHidden();
 			await expect(video).toHaveJSProperty('paused', false);
 			const reorderedHandoffs = [];
