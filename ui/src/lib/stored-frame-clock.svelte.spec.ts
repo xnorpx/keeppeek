@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { create } from '@bufbuild/protobuf';
 import { timestampFromDate, durationFromMs } from '@bufbuild/protobuf/wkt';
 import cameraFixture from '../../../tests/fixtures/exact_frame_step/fractional-origin.mp4?url';
@@ -24,7 +24,9 @@ async function fractionalFixture() {
 	return { init: input.slice(0, split), fragment: input.slice(split) };
 }
 
-test('a paused multiplexed picture maps back to its fractional 90 kHz timestamp through real sequence MSE', async () => {
+async function qualifyFractionalPicture(
+	arrival: 'before configuration' | 'during the native update event'
+) {
 	const { init, fragment } = await fractionalFixture();
 
 	const now = 1_700_000_000_000;
@@ -65,6 +67,27 @@ test('a paused multiplexed picture maps back to its fractional 90 kHz timestamp 
 			initializationId: 1n,
 			chunkCount: 1
 		};
+		const deliverFragment = () =>
+			cursor.receiveFragment(
+				create(StoredMediaFragmentSchema, {
+					...common,
+					sequence: 1n,
+					startTime: start,
+					duration: durationFromMs(1000),
+					payload: fragment
+				})
+			);
+		if (arrival === 'during the native update event') {
+			const append = SourceBuffer.prototype.appendBuffer;
+			vi.spyOn(SourceBuffer.prototype, 'appendBuffer').mockImplementationOnce(function (
+				this: SourceBuffer,
+				data
+			) {
+				// The browser clears updating before it delivers this append's updateend.
+				this.addEventListener('update', deliverFragment, { once: true });
+				return append.call(this, data);
+			});
+		}
 		cursor.receiveInitialization(
 			create(StoredMediaInitializationSchema, {
 				...common,
@@ -72,15 +95,7 @@ test('a paused multiplexed picture maps back to its fractional 90 kHz timestamp 
 				payload: init
 			})
 		);
-		cursor.receiveFragment(
-			create(StoredMediaFragmentSchema, {
-				...common,
-				sequence: 1n,
-				startTime: start,
-				duration: durationFromMs(1000),
-				payload: fragment
-			})
-		);
+		if (arrival === 'before configuration') deliverFragment();
 		cursor.configure(state);
 		const us = Math.round((await displayed) * 1_000_000);
 		expect(video.paused).toBe(true);
@@ -93,10 +108,16 @@ test('a paused multiplexed picture maps back to its fractional 90 kHz timestamp 
 		expect(Math.abs(Number(actual! - stored))).toBeLessThan(1_000);
 		expect(Math.abs(cursor.mediaUsForStoredNs(stored)! - us)).toBeLessThanOrEqual(1);
 	} finally {
+		vi.restoreAllMocks();
 		cursor.dispose();
 		video.remove();
 	}
-});
+}
+
+test.each(['before configuration', 'during the native update event'] as const)(
+	'a paused multiplexed picture maps to its fractional 90 kHz timestamp when the fragment arrives %s',
+	qualifyFractionalPicture
+);
 
 test('new recording periods retain distinct absolute video clocks until the cursor resets', async () => {
 	const { init, fragment } = await fractionalFixture();

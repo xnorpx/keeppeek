@@ -4044,7 +4044,8 @@ export class StoredMediaPlayback {
 
 	private flushAppendQueue(): void {
 		const sourceBuffer = this.#sourceBuffer;
-		if (!sourceBuffer || sourceBuffer.updating || this.#closed) {
+		// updating becomes false before updateend publishes this append's video clock.
+		if (!sourceBuffer || this.#appending || sourceBuffer.updating || this.#closed) {
 			return;
 		}
 		if (this.#appendQueue.length === 0) {
@@ -4073,6 +4074,7 @@ export class StoredMediaPlayback {
 			this.#appending = next;
 			sourceBuffer.appendBuffer(ownedArrayBuffer(next.payload));
 		} catch (error) {
+			this.#appending = undefined;
 			this.fail(error instanceof Error ? error.message : 'Unable to append stored media bytes.');
 		}
 	}
@@ -4082,6 +4084,7 @@ export class StoredMediaPlayback {
 			!this.#ended ||
 			this.#closed ||
 			this.#mediaSource.readyState !== 'open' ||
+			this.#appending ||
 			this.#sourceBuffer?.updating ||
 			this.#appendQueue.length > 0 ||
 			this.#chunks.size > 0 ||
