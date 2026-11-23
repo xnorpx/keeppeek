@@ -24,6 +24,8 @@ pub(crate) mod safety;
 pub mod search;
 pub mod segment;
 pub mod short_term;
+#[cfg(test)]
+mod test_media;
 pub mod volumes;
 
 pub use catalog::{
