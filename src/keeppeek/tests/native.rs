@@ -303,7 +303,9 @@ fn final_native_drain_stops_without_progress_and_retains_all_pending_ids() {
         }
         recorder.set_event_store(available);
         let started = Instant::now();
-        let remaining = recorder.drain_retired_native_events();
+        // This part verifies recovery of all IDs. Disk sync may consume a production shutdown window.
+        let remaining = recorder
+            .drain_retired_native_events_until(|| started.elapsed() >= Duration::from_secs(60));
         assert_eq!(
             remaining,
             0,

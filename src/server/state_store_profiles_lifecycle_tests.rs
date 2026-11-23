@@ -485,6 +485,7 @@ fn maximum_degraded_status() -> crate::profiles::RuntimeProfileStatus {
     crate::profiles::RuntimeProfileStatus {
         revision: i64::MAX as u64,
         active_profile_id: Some("a".repeat(128)),
+        definition_revision: Some(i64::MAX as u64),
         cameras: (1..=127)
             .map(|index| {
                 let camera_id = format!("00000000-0000-4000-8000-{index:012x}");
@@ -502,6 +503,202 @@ fn maximum_degraded_status() -> crate::profiles::RuntimeProfileStatus {
                 (camera_id, application)
             })
             .collect(),
+    }
+}
+
+#[test]
+fn observed_parts_cover_all_degraded_cameras_and_fit_document_and_snapshot_budgets() {
+    let lifecycle = Lifecycle::new(false);
+    let status = maximum_degraded_status();
+    let expected = status.cameras.keys().cloned().collect::<BTreeSet<_>>();
+    *lifecycle.state.runtime_profile_status.write().unwrap() = status;
+    let admin = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+    let session = SessionId::from_u64(20_274);
+    lifecycle
+        .state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .insert(session, super::super::super::tests::local_test_session());
+    let mut pump = lifecycle.state.webrtc.stage_api_session_pump(session);
+    for (watch_id, prefix, expected_key) in [
+        (ACTIVE_KEY, ACTIVE_KEY, ACTIVE_KEY),
+        (REGISTRY_KEY, REGISTRY_KEY, REGISTRY_KEY),
+        ("legacy-active", "", ACTIVE_KEY),
+    ] {
+        let result = super::super::dispatch(
+            &lifecycle.state,
+            session,
+            &admin,
+            proto::StateStoreCommand {
+                action: Some(state_store_command::Action::Watch(proto::WatchState {
+                    watch_id: watch_id.into(),
+                    namespace: NAMESPACE.into(),
+                    key_prefix: prefix.into(),
+                })),
+            },
+        )
+        .unwrap();
+        let control_ok::Result::StateStoreResult(watch) = &result else {
+            panic!("expected a runtime profile watch");
+        };
+        let Some(state_store_result::Result::Watch(snapshot)) = &watch.result else {
+            panic!("expected a runtime profile snapshot");
+        };
+        assert_eq!(snapshot.key_prefix, prefix);
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(snapshot.entries[0].key, expected_key);
+        assert!(response_envelope(result).encoded_len() <= 48 * 1024);
+    }
+    let mut seen = BTreeSet::new();
+    let mut generations = BTreeSet::new();
+    let mut max_document = 0;
+    let mut max_snapshot = 0;
+    for index in 0..8 {
+        let key = format!("observed/{index}");
+        let control_ok::Result::StateStoreResult(get) = super::super::dispatch(
+            &lifecycle.state,
+            SessionId::from_u64(20_274),
+            &admin,
+            proto::StateStoreCommand {
+                action: Some(state_store_command::Action::Get(proto::GetState {
+                    namespace: NAMESPACE.into(),
+                    key: key.clone(),
+                })),
+            },
+        )
+        .unwrap() else {
+            panic!("expected observed part")
+        };
+        let Some(state_store_result::Result::Entry(entry)) = get.result else {
+            panic!("expected observed part entry")
+        };
+        assert_eq!(entry.key, key);
+        assert_eq!(entry.revision, i64::MAX as u64);
+        let value = entry.value.as_ref().unwrap();
+        max_document = max_document.max(value.encoded_len());
+        assert!(value.encoded_len() <= 16 * 1024);
+        let json = super::super::super::peek_layouts::struct_to_json(value.clone());
+        generations.insert(json["generation"].as_str().unwrap().to_owned());
+        assert_eq!(
+            json["definition_revision"].as_str().unwrap(),
+            i64::MAX.to_string()
+        );
+        assert_eq!(json["part_index"].as_f64(), Some(f64::from(index)));
+        let cameras = json["cameras"].as_object().unwrap();
+        assert_eq!(cameras.len(), if index == 7 { 15 } else { 16 });
+        for (id, camera) in cameras {
+            assert!(seen.insert(id.clone()));
+            assert_eq!(camera["reason"].as_str().unwrap().len(), 96);
+        }
+        let control_ok::Result::StateStoreResult(watch) = super::super::dispatch(
+            &lifecycle.state,
+            SessionId::from_u64(20_274),
+            &admin,
+            proto::StateStoreCommand {
+                action: Some(state_store_command::Action::Watch(proto::WatchState {
+                    watch_id: format!("status-{index}"),
+                    namespace: NAMESPACE.into(),
+                    key_prefix: key,
+                })),
+            },
+        )
+        .unwrap() else {
+            panic!("expected observed part snapshot")
+        };
+        assert!(
+            response_envelope(control_ok::Result::StateStoreResult(watch.clone())).encoded_len()
+                <= 48 * 1024
+        );
+        let Some(state_store_result::Result::Watch(snapshot)) = watch.result else {
+            panic!("expected snapshot")
+        };
+        max_snapshot = max_snapshot.max(snapshot.encoded_len());
+        assert!(snapshot.encoded_len() <= 48 * 1024);
+        assert_eq!(snapshot.entries, [entry]);
+    }
+    eprintln!(
+        "127-camera Degraded status: max document={max_document}, max watch snapshot={max_snapshot}"
+    );
+    assert_eq!(seen, expected);
+    assert_eq!(generations.len(), 1);
+    publish_status_event(&lifecycle.state, 1);
+    assert!(pump().is_empty());
+    let next_generation = {
+        let mut observed_status = lifecycle.state.runtime_profile_status.write().unwrap();
+        observed_status.cameras.values_mut().next().unwrap().state =
+            RuntimeApplicationState::Applied;
+        observed::generation(&observed_status).unwrap()
+    };
+    publish_status_event(&lifecycle.state, 2);
+    let mut keys = BTreeSet::new();
+    for bytes in pump() {
+        assert!(bytes.len() <= 48 * 1024);
+        let message = proto::ControlEnvelope::decode(bytes.as_slice())
+            .unwrap()
+            .message
+            .unwrap();
+        let proto::control_envelope::Message::Notification(notification) = message else {
+            panic!("notification expected")
+        };
+        let Some(proto::notification::Event::StateStoreWatchUpdate(update)) = notification.event
+        else {
+            panic!("watch update expected")
+        };
+        let entry = update.entry.unwrap();
+        assert!(keys.insert(entry.key.clone()));
+        if entry.key != ACTIVE_KEY {
+            let json = super::super::super::peek_layouts::struct_to_json(entry.value.unwrap());
+            assert_eq!(json["generation"].as_str(), Some(next_generation.as_str()));
+        }
+    }
+    let expected_keys: BTreeSet<_> = (0..8).map(|i| format!("observed/{i}")).collect();
+    assert_eq!(keys, expected_keys);
+}
+
+#[test]
+fn observed_parts_cover_configured_and_retained_missing_targets_at_the_union_limit() {
+    for extra in [1, 127, 200, 256] {
+        let mut status = maximum_degraded_status();
+        for index in 0..extra {
+            let mut camera = status.cameras.values().next().unwrap().clone();
+            camera.camera_id = format!("{}-{index:03}", "m".repeat(252));
+            status.cameras.insert(camera.camera_id.clone(), camera);
+        }
+        let generation = observed::generation(&status).unwrap();
+        let mut seen = BTreeSet::new();
+        let mut compact_count = 0;
+        for index in 0..observed::PART_COUNT {
+            let part = observed::part_entry(&status, index, &generation).unwrap();
+            assert!(part.value.encoded_len() <= PROFILE_DOCUMENT_BYTES_MAX);
+            let value = super::super::super::peek_layouts::struct_to_json(part.value);
+            let cameras = value["cameras"].as_object().unwrap();
+            assert!(cameras.len() <= 48);
+            for (id, payload) in cameras {
+                assert!(seen.insert(id.clone()));
+                if part.schema.ends_with(".v2") {
+                    compact_count += 1;
+                    assert_eq!(payload.as_array().unwrap().len(), 4);
+                    assert_eq!(payload[0], "degraded");
+                    assert_eq!(payload[1], "off");
+                    assert_eq!(payload[2].as_f64(), Some(123.0));
+                    assert_eq!(
+                        payload[3].as_str().unwrap().len(),
+                        if cameras.len() > 40 {
+                            24
+                        } else if cameras.len() > 32 {
+                            64
+                        } else {
+                            96
+                        }
+                    );
+                }
+            }
+        }
+        assert_eq!(seen, status.cameras.keys().cloned().collect());
+        if extra >= 127 {
+            assert!(compact_count > 0);
+        }
     }
 }
 
@@ -529,57 +726,26 @@ fn status_watch_command() -> proto::StateStoreCommand {
 }
 
 #[test]
-fn runtime_profile_full_degraded_status_fits_get_and_watch_transport() {
+fn legacy_status_rejects_oversize_get_and_watch_with_typed_error() {
     let lifecycle = Lifecycle::new(false);
-    let status = maximum_degraded_status();
-    let entry = status_entry(status.clone()).unwrap();
-    *lifecycle.state.runtime_profile_status.write().unwrap() = status;
+    *lifecycle.state.runtime_profile_status.write().unwrap() = maximum_degraded_status();
     let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
-    let get = super::super::dispatch(
-        &lifecycle.state,
-        SessionId::from_u64(20_251),
-        &principal,
-        proto::StateStoreCommand {
-            action: Some(state_store_command::Action::Get(proto::GetState {
-                namespace: NAMESPACE.to_owned(),
-                key: STATUS_KEY.to_owned(),
-            })),
-        },
-    )
-    .unwrap();
-    let get_bytes = response_envelope(get).encoded_len();
-    let snapshot = proto::StateWatchSnapshot {
-        watch_id: "status-size-qualification".to_owned(),
-        namespace: NAMESPACE.to_owned(),
-        key_prefix: STATUS_KEY.to_owned(),
-        snapshot_revision: entry.revision,
-        entries: vec![proto_entry(&entry)],
+    let get = proto::StateStoreCommand {
+        action: Some(state_store_command::Action::Get(proto::GetState {
+            namespace: NAMESPACE.to_owned(),
+            key: STATUS_KEY.to_owned(),
+        })),
     };
-    let snapshot_bytes = snapshot.encoded_len();
-    let watch_bytes = response_envelope(control_ok::Result::StateStoreResult(
-        proto::StateStoreResult {
-            result: Some(state_store_result::Result::Watch(snapshot)),
-        },
-    ))
-    .encoded_len();
-    let watch = super::super::dispatch(
-        &lifecycle.state,
-        SessionId::from_u64(20_252),
-        &principal,
-        status_watch_command(),
-    );
-    eprintln!(
-        "127-target Degraded status: value={} Get={get_bytes} snapshot={snapshot_bytes} watch={watch_bytes}; watch accepted={}",
-        entry.value.encoded_len(),
-        watch.is_ok()
-    );
-    assert!(
-        get_bytes <= MAX_VALUE_BYTES,
-        "full Get exceeds 64 KiB: {get_bytes}"
-    );
-    assert!(
-        watch_bytes <= MAX_VALUE_BYTES,
-        "full watch exceeds 64 KiB: {watch_bytes}"
-    );
-    assert!(watch.is_ok(), "full Degraded status watch must be admitted");
+    for command in [get, status_watch_command()] {
+        let error = super::super::dispatch(
+            &lifecycle.state,
+            SessionId::from_u64(20_251),
+            &principal,
+            command,
+        )
+        .unwrap_err();
+        let detail = proto::StateStoreError::decode(error.details[0].value.as_slice()).unwrap();
+        assert_eq!(detail.code(), proto::StateStoreErrorCode::ValueTooLarge);
+        assert_eq!(detail.key, STATUS_KEY);
+    }
 }
