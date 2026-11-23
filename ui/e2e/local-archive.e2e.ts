@@ -14,8 +14,8 @@ import {
 	startHomeAssistantServer
 } from './fixtures/home-assistant-server';
 import {
+	archiveLiveFrame,
 	installArchiveVideoProbe,
-	liveFrames,
 	measureArchivePlayback
 } from './fixtures/archive-playback';
 import type { RecordingCoverageResponse } from '../src/lib/types';
@@ -86,7 +86,7 @@ async function refreshUntil(archive: Locator, job: Locator, text: string) {
 	await expect(async () => {
 		await archive.getByRole('button', { name: 'Refresh archive jobs' }).click();
 		latest = await job.innerText();
-		expect(latest.includes(text) || latest.includes('· failed')).toBe(true);
+		expect(latest.includes(text) || latest.includes('Ã‚Â· failed')).toBe(true);
 	}).toPass({ timeout: 30_000, intervals: [250, 500, 1000] });
 	expect(latest).toContain(text);
 }
@@ -199,24 +199,58 @@ async function recordingProgress(page: Page, backend: string) {
 	};
 }
 
-async function continuitySnapshot(live: Page, backend: string) {
-	await expect.poll(() => liveFrames(live), { timeout: 20_000 }).toBeGreaterThan(0);
+async function continuityBaseline(live: Page, backend: string, previousSession = '') {
+	let sessionId = '';
+	let firstFrames = 0;
+	let frames = 0;
+	await expect
+		.poll(
+			async () => {
+				const current = await archiveLiveFrame(live);
+				if (!current || current.sessionId === previousSession) return false;
+				if (sessionId !== current.sessionId) {
+					sessionId = current.sessionId;
+					firstFrames = current.frames;
+				}
+				frames = current.frames;
+				return frames > firstFrames;
+			},
+			{
+				timeout: 20_000,
+				message:
+					'An admitted live session must decode advancing camera frames before the archive operation'
+			}
+		)
+		.toBe(true);
 	await expect
 		.poll(async () => (await recordingProgress(live, backend)).lastWriteAtMs, { timeout: 20_000 })
 		.toBeGreaterThan(0);
-	return { frames: await liveFrames(live), ...(await recordingProgress(live, backend)) };
+	return { sessionId, reading: { frames, ...(await recordingProgress(live, backend)) } };
 }
 
 async function expectContinuity(
 	live: Page,
 	backend: string,
-	before: Awaited<ReturnType<typeof continuitySnapshot>>
+	before: Awaited<ReturnType<typeof continuityBaseline>>
 ) {
-	await expect.poll(() => liveFrames(live), { timeout: 20_000 }).toBeGreaterThan(before.frames);
+	let frames = 0;
+	await expect
+		.poll(
+			async () => {
+				const current = await archiveLiveFrame(live);
+				frames = current?.sessionId === before.sessionId ? current.frames : 0;
+				return frames;
+			},
+			{
+				timeout: 20_000,
+				message: 'The same live session must decode new frames during the archive operation'
+			}
+		)
+		.toBeGreaterThan(before.reading.frames);
 	await expect
 		.poll(async () => (await recordingProgress(live, backend)).lastWriteAtMs, { timeout: 20_000 })
-		.toBeGreaterThan(before.lastWriteAtMs);
-	return { before, after: await continuitySnapshot(live, backend) };
+		.toBeGreaterThan(before.reading.lastWriteAtMs);
+	return { before: before.reading, after: { frames, ...(await recordingProgress(live, backend)) } };
 }
 
 type ArchiveFixture = Awaited<ReturnType<typeof startHomeAssistantServer>>;
@@ -236,13 +270,13 @@ async function copyAndEvict(
 	await page.goto('/settings#storage');
 	await live.goto('/');
 	const archive = page.getByRole('region', { name: 'Local archive', exact: true });
-	const baseline = await continuitySnapshot(live, fixture.url);
 	const objectId = fixture.seededObjectId;
 	expect(await selectSeededRecording(archive, objectId)).toBe(true);
+	const baseline = await continuityBaseline(live, fixture.url);
 	const startedAt = performance.now();
 	await archive.getByRole('button', { name: 'Queue archive copy' }).click();
 	const job = archive.getByRole('article').first();
-	await refreshUntil(archive, job, '· ready');
+	await refreshUntil(archive, job, 'Ã‚Â· ready');
 	evidence.transfers.push({
 		operation: 'copy',
 		elapsed_ms: performance.now() - startedAt,
@@ -260,15 +294,18 @@ async function copyAndEvict(
 	await captureResponsive(info, page, eviction, 'archive-eviction-confirmation');
 	await eviction.getByRole('button', { name: 'Evict primary', exact: true }).click();
 	await refreshUntil(archive, job, 'Primary evicted; archive retained.');
+	return baseline.sessionId;
 }
 
 async function observeArchivedPlayback(
 	page: Page,
+	live: Page,
 	fixture: ArchiveFixture,
 	info: TestInfo,
 	evidence: ArchiveEvidence
 ) {
 	await fixture.restart();
+	await live.reload();
 	await reportBackendProcess(info, fixture);
 	evidence.timings.push(
 		await measureArchivePlayback(page, fixture.seededAtMs + 5000, 'archive-initial')
@@ -289,13 +326,12 @@ async function restorePrimary(
 	live: Page,
 	fixture: ArchiveFixture,
 	info: TestInfo,
-	evidence: ArchiveEvidence
+	evidence: ArchiveEvidence,
+	previousSession: string
 ) {
 	await page.goto('/settings#storage');
-	await live.reload();
 	const archive = page.getByRole('region', { name: 'Local archive', exact: true });
 	const job = archive.getByRole('article').first();
-	const baseline = await continuitySnapshot(live, fixture.url);
 	await expect(job).toContainText('Primary evicted; archive retained.');
 	await job
 		.getByRole('button', { name: `Preview archive deletion ${fixture.seededObjectId}` })
@@ -305,6 +341,7 @@ async function restorePrimary(
 	await expect(blocked.getByRole('button', { name: 'Confirm archive deletion' })).toHaveCount(0);
 	await blocked.getByRole('button', { name: 'Close', exact: true }).click();
 	await job.getByRole('button', { name: `Restore primary ${fixture.seededObjectId}` }).click();
+	const baseline = await continuityBaseline(live, fixture.url, previousSession);
 	const startedAt = performance.now();
 	await page
 		.getByRole('dialog', { name: 'Restore primary copy?' })
@@ -322,8 +359,10 @@ async function restorePrimary(
 	});
 	await fixture.restart();
 	if (info) await reportBackendProcess(info, fixture);
-	await page.reload();
+	// Restart invalidates the operator and live spectator sessions.
+	await Promise.all([page.reload(), live.reload()]);
 	await expect(job).toContainText('Primary copy retained.');
+	return baseline.sessionId;
 }
 
 async function attachArchiveEvidence(
@@ -381,9 +420,16 @@ test('local archive survives restart and plays evicted media before restoring it
 		const archive = page.getByRole('region', { name: 'Local archive', exact: true });
 		await configureArchive(page, archive, fixture, info);
 		evidence.timings.push(await measureArchivePlayback(page, fixture.seededAtMs + 5000, 'local'));
-		await copyAndEvict(page, live, fixture, info, evidence);
-		await observeArchivedPlayback(page, fixture, info, evidence);
-		await restorePrimary(page, live, fixture, info, evidence);
+		const previousSession = await copyAndEvict(page, live, fixture, info, evidence);
+		await observeArchivedPlayback(page, live, fixture, info, evidence);
+		const restoredSession = await restorePrimary(
+			page,
+			live,
+			fixture,
+			info,
+			evidence,
+			previousSession
+		);
 		evidence.timings.push(
 			await measureArchivePlayback(page, fixture.seededAtMs + 5000, 'local-restored')
 		);
@@ -395,7 +441,7 @@ test('local archive survives restart and plays evicted media before restoring it
 		const deletion = page.getByRole('dialog', { name: 'Archive deletion preview' });
 		await expect(deletion).toContainText('1 selected');
 		await expect(deletion).toContainText(fixture.seededObjectId);
-		const beforeDeletion = await continuitySnapshot(live, fixture.url);
+		const beforeDeletion = await continuityBaseline(live, fixture.url, restoredSession);
 		const startedAt = performance.now();
 		await deletion.getByRole('button', { name: 'Confirm archive deletion' }).click();
 		await expect(deletion).toContainText('Batch confirmed');
@@ -461,7 +507,7 @@ test('live, recording and primary timeline playback continue when the bound arch
 		const pid = fixture.backendProcessId();
 		for (const mode of ['missing', 'replaced'] as const) {
 			await page.goto('/settings#storage');
-			const before = await continuitySnapshot(live, fixture.url);
+			const before = await continuityBaseline(live, fixture.url);
 			const detached = root + '.detached';
 			await rename(root, detached);
 			try {
