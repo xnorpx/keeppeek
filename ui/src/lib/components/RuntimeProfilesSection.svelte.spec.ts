@@ -58,6 +58,54 @@ function recoveryClient(
 }
 
 describe('RuntimeProfilesSection', () => {
+	it.each(['already open', 'opening'] as const)(
+		'retires all %s watches when the control connection refuses cleanup after unmount',
+		async (phase) => {
+			const { client, runtimeProfiles } = recoveryClient('away');
+			const refusal = new Error('Control channel closed.');
+			let unhandled = 0;
+			const observe = (event: PromiseRejectionEvent) => {
+				if (event.reason === refusal) unhandled++;
+			};
+			const methods = [
+				runtimeProfiles.watchActive,
+				runtimeProfiles.watchStatus,
+				runtimeProfiles.watchRegistry
+			];
+			const watches = methods.map((method) => {
+				const released = vi.fn();
+				const close = () => {
+					released();
+					return Promise.reject(refusal);
+				};
+				const opened = Promise.withResolvers<{ close: typeof close }>();
+				method.mockReturnValueOnce(opened.promise);
+				if (phase === 'already open') opened.resolve({ close });
+				return { close, opened, released };
+			});
+			window.addEventListener('unhandledrejection', observe);
+			try {
+				const view = await render(RuntimeProfilesSectionFixture, {
+					props: { client, cameras: [] }
+				});
+				await expect.element(page.getByLabelText('Display name')).toBeVisible();
+				await view.unmount();
+				if (phase === 'opening') {
+					for (const { opened, close } of watches) opened.resolve({ close });
+				}
+				await vi.waitFor(() => {
+					for (const { released } of watches) expect(released).toHaveBeenCalledOnce();
+				});
+				await new Promise<void>((resolve) =>
+					requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+				);
+				expect(unhandled).toBe(0);
+			} finally {
+				window.removeEventListener('unhandledrejection', observe);
+			}
+		}
+	);
+
 	it('keeps profile management available while observations converge', async () => {
 		const { client, runtimeProfiles, status } = recoveryClient('away');
 		runtimeProfiles.getStatus.mockResolvedValueOnce(null);
