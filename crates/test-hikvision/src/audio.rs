@@ -169,7 +169,7 @@ fn note_peer_closure(shared: &Shared) {
 }
 
 #[derive(Default)]
-pub(super) struct SpeakerSignal {
+pub struct SpeakerSignal {
     pub(super) audible: usize,
     pub(super) crossings: usize,
     previous_positive: Option<bool>,
