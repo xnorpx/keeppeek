@@ -32,21 +32,44 @@ class Relay:
         self.clients = set()
         self.accepted = 0
         self.open = True
+        self.epoch = 0
+        self.media_epoch = -1
+        self.attempts = []
 
     async def accept(self, reader, writer):
         try:
+            epoch = self.epoch
+            evidence = dict(epoch=epoch, playing=False, client_bytes=0, camera_bytes=0,
+                            camera_bytes_after_play=0, error=None)
+            self.attempts.append(evidence)
             if not self.open:
+                evidence["error"] = "fixture disconnected"
                 return
             upstream, out = await asyncio.open_connection('127.0.0.1', self.port)
+            if not self.open or epoch != self.epoch:
+                out.close()
+                evidence["error"] = "fixture disconnected during attach"
+                return
             self.accepted += 1
             self.clients.add(writer)
             self.clients.add(out)
-            async def copy(src, dst):
+            async def copy(src, dst, from_camera):
+                tail = b""
                 while data := await src.read(65536):
+                    if from_camera:
+                        evidence["camera_bytes"] += len(data)
+                        if evidence["playing"]:
+                            evidence["camera_bytes_after_play"] += len(data)
+                            if epoch == self.epoch and evidence["camera_bytes_after_play"] >= 8192:
+                                self.media_epoch = epoch
+                    else:
+                        evidence["client_bytes"] += len(data)
+                        evidence["playing"] |= b"PLAY " in tail + data
+                        tail = data[-4:]
                     dst.write(data)
                     await dst.drain()
-            a = asyncio.create_task(copy(reader, out))
-            b = asyncio.create_task(copy(upstream, writer))
+            a = asyncio.create_task(copy(reader, out, False))
+            b = asyncio.create_task(copy(upstream, writer, True))
             try:
                 await asyncio.wait([a,b], return_when=asyncio.FIRST_COMPLETED)
             finally:
@@ -55,14 +78,15 @@ class Relay:
                 await asyncio.gather(a,b,return_exceptions=True)
                 out.close()
                 self.clients.discard(out)
-        except (ConnectionError, OSError):
-            pass
+        except (ConnectionError, OSError) as error:
+            evidence["error"] = type(error).__name__
         finally:
             writer.close()
             self.clients.discard(writer)
 
     def disconnect(self):
         self.open = False
+        self.epoch += 1
         for conn in list(self.clients):
             conn.transport.abort()
 
@@ -176,7 +200,7 @@ async def main(work):
             carry=raw[-4000:]
         loop.add_reader(master,drain)
         for _ in range(90):
-            if b'Uptime' in markers and all(r.accepted>0 for r in relays.values()):break
+            if b'Uptime' in markers and all(r.media_epoch == 0 for r in relays.values()):break
             assert all(p.returncode is None for p in procs), (
                 'fixture stopped during startup', [p.returncode for p in procs],
                 (work/'camera.log').read_text(errors='replace')[-4000:],
@@ -184,9 +208,8 @@ async def main(work):
                 carry.decode(errors='backslashreplace'),
             )
             await asyncio.sleep(1)
-        assert b'Uptime' in markers and all(r.accepted>0 for r in relays.values()), (markers,{str(k):r.accepted for k,r in relays.items()})
+        assert b'Uptime' in markers and all(r.media_epoch == 0 for r in relays.values()), (markers,{str(k):r.accepted for k,r in relays.items()})
         start=time.monotonic()
-        before={}
         while (elapsed:=time.monotonic()-start)<DURATION:
             assert all(p.returncode is None for p in procs), 'fixture stopped during soak'
             iteration=len(samples)
@@ -194,15 +217,16 @@ async def main(work):
             window(master,34 if iteration%3==0 else 120,7 if iteration%3==0 else 40)
             os.write(master,[b'\x1b[B',b'\x1b[6~',b'\x1b[5~'][iteration%3])
             if iteration in (DURATION // INTERVAL * 4 // 15, DURATION // INTERVAL * 3 // 5):
-                before={k:r.accepted for k,r in relays.items()}
                 forced.append([time.time(),None])
                 for r in relays.values():r.disconnect()
             if iteration in (DURATION // INTERVAL * 4 // 15 + 1, DURATION // INTERVAL * 3 // 5 + 1):
                 for r in relays.values():r.open=True
-            if forced and forced[-1][1] is None and all(r.accepted>before[k] for k,r in relays.items()):
+            if forced and forced[-1][1] is None and all(r.media_epoch == r.epoch for r in relays.values()):
                 forced[-1][1]=time.time()
             if iteration%12==0:
-                print('soak',samples[-1],'sessions',{str(k):r.accepted for k,r in relays.items()},flush=True)
+                print('soak', samples[-1], 'sessions',
+                      {str(k): (r.accepted, r.media_epoch, r.epoch) for k,r in relays.items()},
+                      flush=True)
             await asyncio.sleep(max(0,min(INTERVAL*(iteration+1),DURATION)-(time.monotonic()-start)))
         assert len(forced)==2 and all(end for _,end in forced),forced
         assert b'Enlarge' in markers
@@ -232,6 +256,21 @@ async def main(work):
             gaps=value["gaps_outside_reconnect"]
             print(key, "decoded frames", value["frames"], "gaps over 85ms outside forced reconnects", len(gaps), "first ten", gaps[:10], flush=True)
         print("RSS delta median early / late", report["early_median_rss_delta"], report["late_median_rss_delta"], flush=True)
+    except Exception:
+        evidence = {f"{mode}/{source}": relay.attempts for (mode, source), relay in relays.items()}
+        for key, attempts in evidence.items():
+            print("RTSP relay", key, json.dumps(attempts[-12:]), flush=True)
+        for log in (work / "camera.log", work / "off" / "server.log"):
+            if log.is_file():
+                with log.open("rb") as handle:
+                    handle.seek(max(0, log.stat().st_size - 6000))
+                    text = handle.read().decode(errors="replace")
+                print(log.name, text.replace("test:test@", "[redacted]@"), flush=True)
+        print("foreground terminal tail", carry.decode(errors="backslashreplace")[-1800:], flush=True)
+        (Path(os.environ["RUNNER_TEMP"]) / "dashboard-soak.json").write_text(
+            json.dumps({"complete": False, "forced_disconnects": forced, "relays": evidence}, indent=2)
+        )
+        raise
     finally:
         for p in reversed(procs):
             if p.returncode is None:
