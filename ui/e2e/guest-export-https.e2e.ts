@@ -64,7 +64,6 @@ function observeGuestNetwork(context: BrowserContext, origin: string, privateVal
 	context.on('request', onRequest);
 	context.on('response', onResponse);
 	return async () => {
-		await Promise.all(context.pages().map((page) => page.close()));
 		context.off('request', onRequest);
 		context.off('response', onResponse);
 		await Promise.all(checks);
