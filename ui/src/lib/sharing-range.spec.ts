@@ -287,6 +287,22 @@ describe('recording range sharing', () => {
 		});
 		expect(recorder.createExport).not.toHaveBeenCalled();
 	});
+	it('prepares a locally retained clip when the matching listed export is archive-only', async () => {
+		const recorder = client();
+		recorder.listExports.mockResolvedValue([{ ...ready, id: 'archive-only', expiresAtMs: null }]);
+
+		const selected = await prepareRangeShare({ client: recorder, target }, signal());
+
+		expect(selected).toEqual({ exportJobId: ready.id, streamId: 'sub', guard, reused: false });
+		expect(recorder.createExport).toHaveBeenCalledTimes(1);
+		expect(recorder.createExport.mock.calls[0][0]).toMatchObject({
+			sourceId: target.sourceId,
+			streamId: 'sub',
+			startMs: target.startMs,
+			endMs: target.endMs,
+			guestRangePreparation: true
+		});
+	});
 	it('prefers an eligible substream over a newer over-budget completed main export', async () => {
 		const recorder = client();
 		recorder.listExports.mockResolvedValue([
