@@ -259,14 +259,14 @@ fn read_sample(
     Ok((query, sample.elapsed().as_secs_f64() * 1_000.0))
 }
 
-struct ProcessMeter {
+pub(super) struct ProcessMeter {
     system: sysinfo::System,
     pid: sysinfo::Pid,
-    resident: u64,
+    pub(super) resident: u64,
 }
 
 impl ProcessMeter {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             system: sysinfo::System::new()
                 .expect("process metrics must be available for qualification"),
@@ -275,7 +275,7 @@ impl ProcessMeter {
         }
     }
 
-    fn sample(&mut self) -> u64 {
+    pub(super) fn sample(&mut self) -> u64 {
         self.system
             .refresh_processes(sysinfo::ProcessesToUpdate::Some(&[self.pid]), true);
         let process = self
