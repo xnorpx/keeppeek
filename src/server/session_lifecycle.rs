@@ -2,9 +2,10 @@
 
 use super::*;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(super) struct Lifecycle {
     pub(super) closed: AtomicBool,
+    pub(super) profile_watch_revision: AtomicU64,
     admission: Mutex<()>,
 }
 

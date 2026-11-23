@@ -163,15 +163,67 @@ impl PrivacyRegistry {
             .insert(alias, camera_id);
     }
 
-    /// Returns the effective active state and transition epoch for a camera.
-    pub fn decision(&self, camera_id: &str, instant: DateTime<Utc>) -> anyhow::Result<(bool, u64)> {
-        let configured_id = self
-            .aliases
+    fn configured_id(&self, camera_id: &str) -> String {
+        self.aliases
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(camera_id)
             .cloned()
-            .unwrap_or_else(|| camera_id.to_owned());
+            .unwrap_or_else(|| camera_id.to_owned())
+    }
+
+    pub(crate) fn schedule_active(
+        &self,
+        camera_id: &str,
+        instant: DateTime<Utc>,
+    ) -> anyhow::Result<bool> {
+        let configured_id = self.configured_id(camera_id);
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .schedules
+            .get(&configured_id)
+            .map_or(Ok(false), |schedule| schedule.is_active_unchecked(instant))
+    }
+
+    pub(crate) fn observed_profile_policy(
+        &self,
+        source: &str,
+        instant: DateTime<Utc>,
+        recording_mode: crate::cameras::CameraRecordingMode,
+        selected: Option<&crate::profiles::CameraProfileOverride>,
+    ) -> anyhow::Result<crate::profiles::EffectiveCameraPolicy> {
+        let id = self.configured_id(source);
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let scheduled = state
+            .schedules
+            .get(&id)
+            .map_or(Ok(false), |schedule| schedule.is_active_unchecked(instant))?;
+        let held = state.profile_overrides.get(&id).copied().unwrap_or(false);
+        let mut observed = selected.cloned().unwrap_or_default();
+        // A failed transition can retain the previous profile restriction. The schedule still has precedence.
+        observed.privacy_enforced = if held {
+            Some(true)
+        } else {
+            observed.privacy_enforced.filter(|active| !active)
+        };
+        Ok(crate::profiles::resolve_camera_policy(
+            &crate::profiles::BaseCameraPolicy {
+                available: true,
+                recording_mode,
+                privacy_enforced: scheduled,
+                notifications_enabled: true,
+            },
+            Some(&observed),
+        ))
+    }
+
+    /// Returns the effective active state and transition epoch for a camera.
+    pub fn decision(&self, camera_id: &str, instant: DateTime<Utc>) -> anyhow::Result<(bool, u64)> {
+        let configured_id = self.configured_id(camera_id);
         let state = self
             .state
             .read()
@@ -203,13 +255,7 @@ impl PrivacyRegistry {
 
     /// Returns the gate for a configured camera.
     pub fn gate(&self, camera_id: &str) -> Option<std::sync::Arc<PrivacyGate>> {
-        let configured_id = self
-            .aliases
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(camera_id)
-            .cloned()
-            .unwrap_or_else(|| camera_id.to_owned());
+        let configured_id = self.configured_id(camera_id);
         self.state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -220,13 +266,7 @@ impl PrivacyRegistry {
 
     /// Returns the configured schedule resolved through transport aliases.
     pub fn schedule(&self, camera_id: &str) -> Option<PrivacySchedule> {
-        let configured_id = self
-            .aliases
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(camera_id)
-            .cloned()
-            .unwrap_or_else(|| camera_id.to_owned());
+        let configured_id = self.configured_id(camera_id);
         self.state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

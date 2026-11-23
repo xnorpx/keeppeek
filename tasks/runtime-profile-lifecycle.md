@@ -105,9 +105,19 @@ The 127-source identity index has a 48-byte header and 18,796 bytes of owned str
 the IPv6 fixture; BTree node allocations are excluded. The loop header is 1,088 bytes. This is
 not a complete retained-memory measurement.
 
-The actual 127-target UUID Degraded fixture encodes a 60,410-byte value, 60,533-byte Get,
-60,582-byte snapshot and 60,609-byte watch; watch admission succeeds. This exceeds the original
-16 KiB document/48 KiB snapshot budgets, so the multipart acceptance work remains open.
+At the original lifecycle revision, the 127-camera Degraded status occupied 60,410 bytes
+before framing. The recorder now serves eight exact keys, `observed/0` through `observed/7`,
+with up to 16 sorted camera UUIDs apiece. The same 127-camera fixture measures a maximum
+of 7,971 bytes per document and 8,134 bytes per watch snapshot. The test exercises both
+Get and Watch, bounds the encoded control envelope, and checks that all 127 cameras appear
+exactly once. An oversized legacy `status` request returns `VALUE_TOO_LARGE`.
+
+The shell shares one active-header watch with Settings. The header reports the number of
+degraded cameras visible to the session. The Administrator's Settings view also watches
+the registry and eight observation parts. Browser tests exercise a changing generation,
+a competing watch exhausting the connection budget, and release of all fleet watches
+when Settings closes. Combined recorder storage quotas, retained-memory measurements,
+media convergence and the release-build latency qualification remain open in #202.
 
 Reproduce the committed fixtures with:
 
@@ -116,5 +126,5 @@ cargo test --lib secret_backed_camera_ip_uses_one_identity_and_camera_snapshot -
 cargo test --lib notification_profile_suppression_latency -- --ignored --nocapture
 cargo test --lib runtime_profile_recording_health_poll_scale -- --nocapture
 cargo test --lib profile_identity_index_records_owned_string_capacity_for_127_sources -- --nocapture
-cargo test --lib runtime_profile_full_degraded_status_fits_get_and_watch_transport -- --nocapture
+cargo test --lib observed_parts_cover_all_degraded -- --nocapture
 ```
