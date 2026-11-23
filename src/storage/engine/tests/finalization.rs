@@ -203,6 +203,90 @@ fn finalized_with_offline_destination(
 }
 
 #[test]
+fn reader_acquired_during_staging_defers_catalog_handoff_and_can_open_the_source() {
+    let mut config = storage_config(&format!("stage-lease-{}", uuid::Uuid::new_v4()));
+    let root = config.long_term_path.clone();
+    config.medium_term_path = root.join("source");
+    config.long_term_path = root.join("offline");
+    std::fs::create_dir_all(&config.medium_term_path).unwrap();
+    std::fs::write(&config.long_term_path, b"offline").unwrap();
+    let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+    let source = finalized_with_offline_destination(&config, &catalog);
+    let handle = catalog.handle();
+    let destination = config
+        .long_term_path
+        .join(source.strip_prefix(&config.medium_term_path).unwrap());
+    let (id, stream) = handle
+        .finalized_relocation(&source, &destination)
+        .unwrap()
+        .unwrap();
+    assert!(
+        !handle
+            .reader_leases()
+            .conflicts(&id, &source.to_string_lossy())
+            .unwrap()
+    );
+    let mut worker = WriterWorker::new(
+        config.clone(),
+        RecordingDemand::new(Duration::ZERO),
+        Some(handle.clone()),
+    );
+
+    // Stop immediately after the worker stages and verifies the replacement.
+    // A reader can still resolve the source before publication is retried.
+    std::fs::remove_file(&config.long_term_path).unwrap();
+    block_test_path_update(&config, true);
+    assert!(worker.move_to_long_term(&stream, &source, &id).is_err());
+    block_test_path_update(&config, false);
+    let job = handle.next_relocation("").unwrap().unwrap();
+    assert_eq!(job.source, source);
+    let identity = crate::storage::catalog::recording_file_identity(
+        &job.destination,
+        &std::fs::metadata(&job.destination).unwrap(),
+    )
+    .unwrap();
+    let (fragments, source_lease) = handle
+        .leased_media_fragments_in_range(&job.stream, i64::MIN, i64::MAX)
+        .unwrap();
+    assert!(!fragments.is_empty());
+    assert!(fragments.iter().all(|f| f.path == source.to_string_lossy()));
+    let error = handle
+        .publish_relocation(&job, identity.clone())
+        .unwrap_err();
+    assert!(error.to_string().contains("active readers"), "{error:#}");
+    assert!(
+        !handle
+            .next_relocation("")
+            .unwrap()
+            .unwrap()
+            .destination_published
+    );
+    let bytes = std::fs::read(&fragments[0].path).unwrap();
+    assert_eq!(bytes, std::fs::read(&job.destination).unwrap());
+    drop(source_lease);
+
+    handle.publish_relocation(&job, identity).unwrap();
+    let (published, destination_lease) = handle
+        .leased_media_fragments_in_range(&job.stream, i64::MIN, i64::MAX)
+        .unwrap();
+    assert!(!published.is_empty());
+    assert!(
+        published
+            .iter()
+            .all(|f| f.path == job.destination.to_string_lossy())
+    );
+    worker.retry_relocations(Instant::now());
+    assert!(!source.exists());
+    assert!(handle.next_relocation("").unwrap().is_none());
+    assert_eq!(std::fs::read(&published[0].path).unwrap(), bytes);
+    drop(destination_lease);
+    drop(worker);
+    drop(handle);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn restart_keeps_complete_relocation_stage_when_a_finalized_endpoint_is_damaged() {
     for published in [false, true] {
         let mut config = storage_config(&format!("damaged-recording-{}", uuid::Uuid::new_v4()));
