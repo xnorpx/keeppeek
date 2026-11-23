@@ -41,7 +41,7 @@ struct Encoder<'a> {
     identifiers: StoredMediaIdentifiers,
     period: Option<StoredMediaPeriodKey>,
     archive_source: Option<ArchiveSource<'a>>,
-    archive_deadline: Instant,
+    archive_deadline: Option<Instant>,
     content_type: Option<String>,
     messages: Vec<OutboundDataMessage>,
 }
@@ -69,7 +69,7 @@ pub(super) fn encode(
         identifiers,
         period: None,
         archive_source: None,
-        archive_deadline: Instant::now() + Duration::from_secs(30),
+        archive_deadline: None,
         content_type: None,
         messages: Vec::new(),
     };
@@ -145,7 +145,9 @@ impl Encoder<'_> {
             Some(source) => source,
             None => {
                 let work = Work {
-                    deadline: self.archive_deadline,
+                    deadline: *self
+                        .archive_deadline
+                        .get_or_insert_with(|| Instant::now() + Duration::from_secs(30)),
                     cancelled: &|| false,
                 };
                 self.archive_source.insert(
