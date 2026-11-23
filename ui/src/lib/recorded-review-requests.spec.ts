@@ -23,4 +23,28 @@ describe('comparison recorder admission', () => {
 		await final;
 		expect(order).toEqual([1, 3]);
 	});
+	it('releases a stalled pre-dispatch operation and prevents a late network send', async () => {
+		const lane = new RecordedReviewRequests(),
+			signal = new AbortController().signal;
+		const connection = Promise.withResolvers<void>();
+		const completed = Promise.withResolvers<boolean>();
+		const pending = lane.run(async (beforeSend) => {
+			await connection.promise;
+			try {
+				beforeSend();
+				completed.resolve(true);
+			} catch {
+				completed.resolve(false);
+			}
+		}, signal);
+		await expect(pending).rejects.toThrow('timed out');
+		await expect(
+			lane.run(async (beforeSend) => {
+				beforeSend();
+				return 'healthy';
+			}, signal)
+		).resolves.toBe('healthy');
+		connection.resolve();
+		await expect(completed.promise).resolves.toBe(false);
+	}, 10_000);
 });
