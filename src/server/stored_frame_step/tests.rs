@@ -1,3 +1,5 @@
+pub(super) mod scale;
+
 use super::*;
 use crate::storage::archive::target::Work;
 

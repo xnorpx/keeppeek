@@ -144,6 +144,8 @@ fn read_range(
     length: u64,
     work: &crate::storage::archive::target::Work<'_>,
 ) -> Result<Vec<u8>, Unavailable> {
+    #[cfg(test)]
+    tests::scale::observe_range(length);
     read_stored_range_with_work(
         StoredReadRange {
             path: Path::new(&source.path),
