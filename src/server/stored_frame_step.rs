@@ -356,6 +356,11 @@ fn target_window<'a>(
     let new = adjacent.pictures[target]
         .source
         .ok_or(Unavailable::Timing)?;
+    // A new MP4 starts a fresh per-file calibration even when the camera clock continues.
+    // Only its first physical media fragment can carry that marker across a file boundary.
+    let first_of_new_file = left.recording_id != right.recording_id
+        && left.path != right.path
+        && right.init_offset.checked_add(right.init_len) == Some(right.byte_offset);
     if old.session_id != new.session_id
         || old.epoch_id != new.epoch_id
         || old.clock_rate != new.clock_rate
@@ -365,7 +370,7 @@ fn target_window<'a>(
         } else {
             current.pictures[0].source
         })
-        .is_some_and(|p| p.discontinuity)
+        .is_some_and(|p| p.discontinuity && !first_of_new_file)
     {
         return Err(Unavailable::Discontinuity);
     }
