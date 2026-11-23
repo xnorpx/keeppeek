@@ -150,10 +150,12 @@ fn restore(
         "primary eviction must complete before restore"
     );
     let root = source_root(job)?;
-    let capacity = root.capacity(catalog.volume_ledger_revision()?)?;
-    let Reply::Job(Some(intent)) = catalog.archive(Request::BeginRestore {
-        id: job.id.clone(),
-        capacity,
+    let Reply::Job(Some(intent)) = catalog.with_fresh_capacity(&root, |capacity| {
+        work.check()?;
+        catalog.archive(Request::BeginRestore {
+            id: job.id.clone(),
+            capacity,
+        })
     })?
     else {
         anyhow::bail!("invalid archive restore reply");

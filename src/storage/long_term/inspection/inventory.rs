@@ -27,7 +27,10 @@ impl Archive {
                     complete = false;
                     continue;
                 }
-                if name == ".exports" || name == ".maintenance" {
+                if name == ".exports"
+                    || name == ".maintenance"
+                    || name == crate::storage::layout::HEADER_RECOVERY_DIRECTORY
+                {
                     continue;
                 }
                 let metadata = directory.symlink_metadata(&name)?;
