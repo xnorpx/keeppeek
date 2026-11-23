@@ -44,10 +44,14 @@ describe('RecordedPlaybackControls', () => {
 			.element(announced)
 			.toHaveTextContent('Recorded frame 1970-01-01T00:00:01.125000000Z');
 		await view.rerender({ frameTimeNs: 1_250_000_000n, frameLoading: true });
-		await expect.element(announced).toHaveTextContent('01.125000000Z');
+		await expect
+			.element(announced)
+			.toHaveTextContent('Recorded frame 1970-01-01T00:00:01.125000000Z');
 		await expect.element(page.getByText('Loading recorded picture…')).toBeVisible();
 		await userEvent.click(page.getByRole('button', { name: 'Read selected frame time' }));
-		await expect.element(announced).toHaveTextContent('01.250000000Z');
+		await expect
+			.element(announced)
+			.toHaveTextContent('Recorded frame 1970-01-01T00:00:01.250000000Z');
 	});
 
 	it('exposes independent, named transport commands and current playback time', async () => {

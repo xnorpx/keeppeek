@@ -30,6 +30,12 @@ be verified. A gap, a changed recording, or unavailable source timing can preven
 player shows the reason and keeps the last displayed picture. Arrow keys pan while the zoomed
 image has focus.
 
+**Recorded frame** gives the selected picture's UTC position in the recording. The timeline and
+export handles follow that position. A separate **Source presentation** time appears when the
+camera's original timing differs. Press **[** to set the export start or **]** to set the end.
+Select **Read selected frame time** for a screen-reader announcement. **Play recording** resumes
+from the selected recorded position at the current playback speed.
+
 With an older recorder or a browser without exact frame decoding, the focused player's arrows
 pause and seek by an estimated interval when camera health supplies a positive frame rate.
 Variable-rate recording can repeat or skip pictures during approximate seeking. Space toggles playback. J, K and L control shuttle

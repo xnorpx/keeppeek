@@ -39,6 +39,32 @@ function observePicture(element: Element, expected: number | null) {
 	});
 }
 
+function observePlaybackPresentation() {
+	document.addEventListener(
+		'loadedmetadata',
+		(event) => {
+			const element = event.target;
+			if (!(element instanceof HTMLVideoElement)) return;
+			const trace: string[] = [];
+			const record = (label: string) => {
+				trace.push(label);
+				if (trace.length > 16) trace.shift();
+				element.dataset.presentationHistory = JSON.stringify(trace);
+			};
+			for (const type of ['seeking', 'seeked', 'pause', 'play']) {
+				element.addEventListener(type, () => record(type + ' ' + element.currentTime.toFixed(6)));
+			}
+			const frame: VideoFrameRequestCallback = (_time, metadata) => {
+				element.dataset.presentedPictures = String(metadata.presentedFrames);
+				record('frame ' + metadata.mediaTime.toFixed(6) + ' seeking=' + element.seeking);
+				element.requestVideoFrameCallback(frame);
+			};
+			element.requestVideoFrameCallback(frame);
+		},
+		true
+	);
+}
+
 const schedules = {
 	cfr: [0, 40, 80, 120, 160, 200, 240, 280, 320, 360, 400, 440],
 	vfr: [0, 40, 80, 200, 240, 280, 400, 440, 480, 600, 640, 680],
@@ -91,20 +117,46 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 					{ timeout: 60_000, intervals: [500, 1_000] }
 				)
 				.toBe(true);
+			await page.addInitScript(observePlaybackPresentation);
 			await page.goto(
 				`/keep?camera=${encodeURIComponent(source)}&stream=sub&at=${start}&date=${new Date(start).toISOString().slice(0, 10)}`
 			);
 			const region = page.getByRole('region', { name: 'Recorded video player' });
 			const video = region.locator('video');
 			await expect
-				.poll(() => video.evaluate((v) => (v instanceof HTMLVideoElement ? v.videoWidth : 0)))
+				.poll(() => video.evaluate((v) => (v instanceof HTMLVideoElement ? v.videoWidth : 0)), {
+					timeout: 45_000
+				})
 				.toBe(64);
+			await expect
+				.poll(async () => Number(await video.getAttribute('data-presented-pictures')), {
+					timeout: 15_000
+				})
+				.toBeGreaterThan(0);
 			const pause = page.getByRole('button', { name: 'Pause recording', exact: true });
-			if (await pause.isVisible()) await pause.click();
+			if (!(await video.evaluate((v) => (v as HTMLVideoElement).paused))) await pause.click();
 			const next = page.getByRole('button', { name: 'Next recorded frame', exact: true });
 			const previous = page.getByRole('button', { name: 'Previous recorded frame', exact: true });
 			const selected = region.locator('canvas[aria-label="Selected recorded picture"]');
-			await expect(next).toBeEnabled();
+			try {
+				await expect(next).toBeEnabled();
+			} catch (cause) {
+				throw new Error(
+					'Paused anchor: ' +
+						JSON.stringify(
+							await video.evaluate((v) => {
+								const element = v as HTMLVideoElement;
+								return {
+									paused: element.paused,
+									seeking: element.seeking,
+									currentTime: element.currentTime,
+									trace: element.dataset.presentationHistory
+								};
+							})
+						),
+					{ cause }
+				);
+			}
 			const measurements = [];
 			const bounds = { start: 0, end: 0 };
 			let lastTime: number | undefined;

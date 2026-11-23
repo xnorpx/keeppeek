@@ -68,3 +68,16 @@ Fragment timing and byte offsets use an index every 64 explicit entries. A rando
 at most 63 preceding entries. The reader obtains a fragment or track default by multiplication.
 The browser permits one active request and 32 queued button or keyboard repeats. The initial
 response budget is two seconds and the decode budget is five seconds.
+
+The client acknowledges presentation by using the sample token on its next request. A failed
+decode can retry from the last displayed token. Each requested GOP carries its own decoder
+configuration. Adjacent configurations can cross when the original clock establishes their order
+and the new decode window starts at random access. A source-clock reset or an unresolvable tie
+leaves the paused picture in place.
+
+Run the explicit catalog workload with
+`cargo test --locked -p keeppeek --lib frame_window_scale_one_and_127_sources -- --ignored --nocapture --test-threads=1`.
+It measures forward and reverse selection over 30 trials per direction with one and 127 recorded
+sources, and reports catalog time, payload reads, encoded bytes, and GOP samples. The focused
+`full_4k_avc_and_hevc_gops_fit_the_source_selection_and_payload_limits` test exercises both
+directions with the repository's 3840×2160 AVC and HEVC fixtures.

@@ -218,6 +218,7 @@ fn full_4k_avc_and_hevc_gops_fit_the_source_selection_and_payload_limits() {
         }
         let fragment = writer.flush_fragment().unwrap().unwrap();
         writer.write_end().unwrap();
+        let original_digest = Sha256::digest(std::fs::read(&path).unwrap());
         let entries = [CatalogMediaFragment {
             recording_id: codec.into(),
             recording_started_at_ms: 10_000,
@@ -261,5 +262,9 @@ fn full_4k_avc_and_hevc_gops_fit_the_source_selection_and_payload_limits() {
             );
             selected = Some(output.selected);
         }
+        assert_eq!(
+            Sha256::digest(std::fs::read(&path).unwrap()),
+            original_digest
+        );
     }
 }

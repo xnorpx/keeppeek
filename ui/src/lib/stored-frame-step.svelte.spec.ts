@@ -1,5 +1,5 @@
 import { create } from '@bufbuild/protobuf';
-import { expect, test } from 'vitest';
+import { expect, onTestFinished, test, vi } from 'vitest';
 import fixtureUrl from '../../../tests/fixtures/exact_frame_step/vfr.mp4?inline';
 import { StoredFrameWindow } from './stored-frame-step';
 import {
@@ -19,6 +19,48 @@ const packets = [
 ];
 
 test('Chromium displays the numbered B pictures selected from the recorded decode window', async () => {
+	const frames = new Map<VideoFrame, number>();
+	let peakFrames = 0;
+	let peakOutputBytes = 0;
+	let activeDecoders = 0;
+	let peakDecoders = 0;
+	const closeFrame = VideoFrame.prototype.close;
+	const frameClose = vi.spyOn(VideoFrame.prototype, 'close').mockImplementation(function (
+		this: VideoFrame
+	) {
+		frames.delete(this);
+		closeFrame.call(this);
+	});
+	const NativeVideoDecoder = VideoDecoder;
+	class ObservedDecoder extends NativeVideoDecoder {
+		constructor(init: VideoDecoderInit) {
+			super({
+				error: init.error,
+				output(frame) {
+					frames.set(frame, frame.allocationSize());
+					peakFrames = Math.max(peakFrames, frames.size);
+					peakOutputBytes = Math.max(
+						peakOutputBytes,
+						[...frames.values()].reduce((total, bytes) => total + bytes, 0)
+					);
+					init.output(frame);
+				}
+			});
+			peakDecoders = Math.max(peakDecoders, ++activeDecoders);
+		}
+
+		override close() {
+			super.close();
+			activeDecoders--;
+		}
+	}
+
+	vi.stubGlobal('VideoDecoder', ObservedDecoder);
+	onTestFinished(() => {
+		frameClose.mockRestore();
+		vi.unstubAllGlobals();
+	});
+
 	const file = new Uint8Array(await (await fetch(fixtureUrl)).arrayBuffer());
 	const type = new TextDecoder('latin1').decode(file).indexOf('avcC');
 	expect(type).toBeGreaterThan(3);
@@ -79,4 +121,11 @@ test('Chromium displays the numbered B pictures selected from the recorded decod
 			sample.frame.close();
 		}
 	}
+	expect(peakDecoders).toBe(1);
+	expect(peakFrames).toBe(2);
+	expect(frames.size).toBe(0);
+	expect(activeDecoders).toBe(0);
+	expect(peakOutputBytes).toBeGreaterThan(0);
+	expect(peakOutputBytes).toBeLessThanOrEqual(2 * canvas.width * canvas.height * 4);
+	console.info('Recorded step decoder resources', { peakDecoders, peakFrames, peakOutputBytes });
 });
