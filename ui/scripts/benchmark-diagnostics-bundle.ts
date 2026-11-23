@@ -5,6 +5,7 @@ import {
 	type DiagnosticsBundleInput
 } from '../src/lib/diagnostics-bundle';
 import type { BrowserLogEntry, CameraListItem, ServerLogEntry } from '../src/lib/types';
+import { reportLogWindow } from '../src/lib/report-log-window';
 
 type Sample = {
 	assemblyMs: number;
@@ -161,9 +162,28 @@ function percentile(values: number[], quantile: number): number {
 	return ordered[Math.max(0, Math.ceil(ordered.length * quantile) - 1)]!;
 }
 
-async function sample(input: DiagnosticsBundleInput): Promise<Sample> {
+function selectReportLogs(input: DiagnosticsBundleInput) {
+	const stop = input.generatedAt!.getTime();
+	const generation = 'synthetic-recorder-process';
+	const filter = input.logging?.active_filter;
+	return reportLogWindow(
+		{ utcMs: stop - 300_000, browserSequence: 0, server: { sequence: 0, generation, filter } },
+		{
+			utcMs: stop,
+			browserSequence: input.browser.at(-1)?.sequence ?? 0,
+			server: { sequence: input.server.newest_sequence ?? 0, generation, filter }
+		},
+		input.browser,
+		input.server,
+		false
+	);
+}
+
+async function sample(input: DiagnosticsBundleInput, reportWindow: boolean): Promise<Sample> {
 	const startedAt = performance.now();
-	const document = buildDiagnosticsBundle(input);
+	const document = buildDiagnosticsBundle(
+		reportWindow ? { ...input, report: selectReportLogs(input) } : input
+	);
 	const assembledAt = performance.now();
 	const compressed = await compressDiagnosticsDocument(document);
 	const completedAt = performance.now();
@@ -183,10 +203,11 @@ const warmups = positiveInteger('warmups', 3);
 const runs = positiveInteger('runs', 15);
 const p95BudgetMs = positiveInteger('p95-budget-ms', 1_500);
 const input = fixture(serverEntries, browserEntries, messageBytes);
+const reportWindow = process.argv.includes('--report-window');
 
-for (let index = 0; index < warmups; index += 1) await sample(input);
+for (let index = 0; index < warmups; index += 1) await sample(input, reportWindow);
 const samples: Sample[] = [];
-for (let index = 0; index < runs; index += 1) samples.push(await sample(input));
+for (let index = 0; index < runs; index += 1) samples.push(await sample(input, reportWindow));
 
 const last = samples.at(-1)!;
 const result = {
@@ -195,7 +216,17 @@ const result = {
 		architecture: process.arch,
 		bun: Bun.version
 	},
-	workload: { serverEntries, browserEntries, messageBytes, warmups, runs },
+	workload: {
+		serverEntries,
+		browserEntries,
+		messageBytes,
+		warmups,
+		runs,
+		reportWindow,
+		retainedServerJsonBytes: new TextEncoder().encode(JSON.stringify(input.server.entries))
+			.byteLength,
+		retainedBrowserJsonBytes: new TextEncoder().encode(JSON.stringify(input.browser)).byteLength
+	},
 	assembly_ms: {
 		p50: Number(
 			percentile(
