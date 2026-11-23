@@ -133,7 +133,7 @@ fn queued_archive_deletion_keeps_its_bound_target_until_withdrawn() -> anyhow::R
     assert_eq!(confirm(&fixture, &next, "admin")?.items[0].state, "queued");
     assert!(fence(None).is_err());
     ctx.catalog
-        .archive(Request::Deletion(Deletion::WithdrawQueued(job.id.clone())))?;
+        .archive(Request::Deletion(Deletion::WithdrawQueued(job.id)))?;
     fence(None)?;
     assert_eq!(std::fs::read(primary)?, bytes);
     assert_eq!(std::fs::read(target)?, bytes);
