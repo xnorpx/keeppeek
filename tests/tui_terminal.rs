@@ -19,7 +19,7 @@ struct Recorder {
 
 impl Drop for Recorder {
     fn drop(&mut self) {
-        if let Ok(None) = self.child.try_wait() {
+        if matches!(self.child.try_wait(), Ok(None)) {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
