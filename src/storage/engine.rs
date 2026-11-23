@@ -1574,9 +1574,7 @@ fn finalize_pipeline_recording(
     stream: &str,
 ) -> std::io::Result<Option<PathBuf>> {
     Ok(writer.finalize_with_progress()?.map(|(path, duration)| {
-        if !duration.is_zero() {
-            health.note_progress(stream, duration);
-        }
+        health.credit_finalized_progress(stream, duration);
         path
     }))
 }
