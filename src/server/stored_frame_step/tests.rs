@@ -128,6 +128,13 @@ fn returns_the_source_adjacent_sample_and_reverses_across_a_fragment() {
     assert_eq!(decoded.result.source_ticks, 40);
     assert_eq!(decoded.result.target_presentation_rank, 1);
     assert_eq!(decoded.result.sample_count, 3);
+    assert!(
+        decoded
+            .messages(&work())
+            .unwrap()
+            .iter()
+            .all(|chunk| chunk.group == crate::webrtc::frame_step_group(&request.stored_media_id))
+    );
     let reverse = target_window(
         &fragments,
         decoded.selected.stored_ns,

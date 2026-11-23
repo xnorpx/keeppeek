@@ -576,7 +576,7 @@ impl Plan {
                 };
                 messages.push(OutboundDataMessage {
                     target: DataChannelTarget::Reliable,
-                    group: format!("stored:{}", self.result.stored_media_id),
+                    group: crate::webrtc::frame_step_group(&self.result.stored_media_id),
                     message: proto::Message {
                         message: Some(proto::message::Message::StoredMedia(
                             proto::StoredMediaMessage {
