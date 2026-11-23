@@ -33,8 +33,11 @@ Arrow keys pan a focused digitally zoomed image.
 ### Compare recordings from two cameras
 
 Open a recording in **Keep**. Under **Compare with**, select a second camera.
-**Play**, **Pause**, **Speed** and the five-second seek buttons act on one UTC
-playhead. Each camera shows the time of its most recently presented video frame.
+Use **Add camera** to compare up to four selected cameras. **Remove** drops a
+camera from the comparison. Removing one of the last two opens the remaining
+camera at the shared time. **Play**, **Pause**, **Speed** and the five-second seek
+buttons act on one UTC playhead. Enter a date and time under **Seek to UTC** and
+choose **Go to time** to move directly to that instant. Each camera shows the time of its most recently presented video frame.
 A camera with a gap shows its own status and rejoins when the playhead reaches
 playable footage again. **Single camera** opens the focused camera at that moment.
 

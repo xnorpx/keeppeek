@@ -6,6 +6,7 @@
 	import { needsGridDriftCorrection } from '$lib/grid-playback-session';
 
 	let {
+		onremove,
 		onvisibility,
 		requests,
 		cameraId,
@@ -19,6 +20,7 @@
 		muted,
 		status
 	}: {
+		onremove: () => void;
 		onvisibility: (fraction: number) => void;
 		requests: RecordedReviewRequests;
 		cameraId: string;
@@ -169,6 +171,9 @@
 				{new Date(presented).toISOString().slice(11, 23)} UTC
 			</time>
 		{/if}
+		<button class="min-h-11 px-2 text-sm underline" aria-label={'Remove ' + name} onclick={onremove}
+			>Remove</button
+		>
 	</header>
 	{#if source && !issue}
 		<!-- svelte-ignore a11y_media_has_caption -- Recorded camera footage has no authored captions. -->

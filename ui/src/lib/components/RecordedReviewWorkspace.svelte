@@ -8,7 +8,7 @@
 		selectRecordedStream
 	} from '$lib/recorded-playback-policy';
 	import { recordedPreference, type PlaybackPreferenceDocument } from '$lib/playback-preferences';
-	import type { KeepReviewSelection } from '$lib/keep-link';
+	import { parseMomentTimestamp, type KeepReviewSelection } from '$lib/keep-link';
 	import type { CameraListItem, RecordingSegment, RecordingsResponse } from '$lib/types';
 	import RecordedReviewTile from './RecordedReviewTile.svelte';
 
@@ -46,7 +46,8 @@
 	let loadedWindow = $state<number | null>(null);
 	let unavailable = $state(false);
 	let retry = $state(0);
-	const ids = $derived(selection.cameraIds);
+	let ids = $state(untrack(() => [...selection.cameraIds]));
+	let seekInput = $state(untrack(() => new Date(startMs).toISOString().slice(0, 23)));
 	const authorized = $derived(cameras.filter((c) => ids.includes(c.id)));
 	const bucket = $derived(Math.floor(epoch / 60_000) * 60_000);
 	const moment = () => Math.floor(clock.positionAt(performance.now()));
@@ -141,10 +142,39 @@
 	function persist() {
 		updateLink(moment(), focus, { cameraIds: ids, audioCameraId: audio });
 	}
-	function seek(by: number) {
-		clock.seek(Math.max(0, moment() + by), performance.now());
+	function seekTo(at: number) {
+		const valid = parseMomentTimestamp(String(Math.floor(at)));
+		if (valid === null) return;
+		clock.seek(valid, performance.now());
 		epoch = moment();
+		seekInput = new Date(valid).toISOString().slice(0, 23);
 		revision++;
+		persist();
+	}
+	function addCamera(id: string) {
+		if (
+			ids.length >= maximumReviewCameras ||
+			ids.includes(id) ||
+			!cameras.some((camera) => camera.id === id)
+		)
+			return;
+		ids = [...ids, id];
+		persist();
+	}
+	function removeCamera(id: string) {
+		const remaining = ids.filter((camera) => camera !== id);
+		if (!remaining.length || remaining.length === ids.length) return;
+		const nextFocus = remaining.includes(focus)
+			? focus
+			: remaining.find((candidate) => cameras.some((camera) => camera.id === candidate));
+		if (!nextFocus) return;
+		if (remaining.length === 1) {
+			single(moment(), nextFocus);
+			return;
+		}
+		focus = nextFocus;
+		if (!remaining.includes(audio)) audio = nextFocus;
+		ids = remaining;
 		persist();
 	}
 	function togglePlaying() {
@@ -176,18 +206,59 @@
 	<div
 		class="flex flex-wrap items-center gap-3 rounded-sm border border-hairline bg-raised px-3 py-2"
 	>
-		<button class="h-11 px-2" onclick={() => seek(-5000)} aria-label="Back five seconds"
-			>−5 s</button
+		<button
+			class="h-11 px-2"
+			onclick={() => seekTo(Math.max(0, moment() - 5000))}
+			aria-label="Back five seconds">−5 s</button
 		>
 		<button class="h-11 min-w-16 rounded-sm bg-primary px-3 text-on-primary" onclick={togglePlaying}
 			>{playing ? 'Pause' : 'Play'}</button
 		>
-		<button class="h-11 px-2" onclick={() => seek(5000)} aria-label="Forward five seconds"
-			>+5 s</button
+		<button
+			class="h-11 px-2"
+			onclick={() => seekTo(moment() + 5000)}
+			aria-label="Forward five seconds">+5 s</button
 		>
 		<time class="font-mono text-sm" datetime={new Date(epoch).toISOString()}
 			>{new Date(epoch).toISOString().replace('T', ' ').replace('Z', ' UTC')}</time
 		>
+		<form
+			class="flex flex-wrap items-center gap-2"
+			onsubmit={(event) => {
+				event.preventDefault();
+				seekTo(Date.parse(seekInput + 'Z'));
+			}}
+		>
+			<label
+				>Seek to UTC <input
+					aria-label="Seek to UTC"
+					type="datetime-local"
+					step="0.001"
+					min="1970-01-01T00:00:00"
+					max="9999-12-31T23:59:59.999"
+					required
+					bind:value={seekInput}
+				/></label
+			>
+			<button class="min-h-11 px-2" type="submit">Go to time</button>
+		</form>
+		{#if ids.length < maximumReviewCameras && cameras.some((camera) => !ids.includes(camera.id))}
+			<label
+				>Add camera <select
+					aria-label="Add camera"
+					value=""
+					onchange={(event) => {
+						addCamera(event.currentTarget.value);
+						event.currentTarget.value = '';
+					}}
+				>
+					<option value="">Select camera</option>
+					{#each cameras.filter((camera) => !ids.includes(camera.id)) as camera (camera.id)}
+						<option value={camera.id}>{label(camera.id)}</option>
+					{/each}
+				</select></label
+			>
+		{/if}
 		<label
 			>Focus <select
 				aria-label="Focused camera"
@@ -233,6 +304,7 @@
 		{#each ids as cameraId (cameraId)}
 			{@const segment = chosen.get(cameraId)}
 			<RecordedReviewTile
+				onremove={() => removeCamera(cameraId)}
 				onvisibility={(fraction) => {
 					visible[cameraId] = fraction;
 				}}

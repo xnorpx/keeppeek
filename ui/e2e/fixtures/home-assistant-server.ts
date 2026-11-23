@@ -16,11 +16,12 @@ export const cardTestKeys = [
 ] as const;
 export const cardAdminKey = '550e8400-e29b-41d4-a716-446655440004';
 export const cardSourceIds = ['192.0.2.101', '192.0.2.102'] as const;
+export const reviewSourceIds = [...cardSourceIds, '192.0.2.103', '192.0.2.104'] as const;
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
 type FixtureOptions = {
 	trustedLocal?: boolean;
 	archiveFixture?: boolean;
-	reviewFixture?: boolean;
+	reviewFixture?: boolean | 'four';
 	calibrationFixture?: { mediaPath: string; bothCameras?: boolean };
 };
 
@@ -104,7 +105,7 @@ async function writeFixtureConfiguration(options: {
 	configurations: string[];
 	trustedLocal?: boolean;
 	archiveFixture?: boolean;
-	reviewFixture?: boolean;
+	reviewFixture?: boolean | 'four';
 	calibrationFixture?: { mediaPath: string; bothCameras?: boolean };
 }): Promise<string> {
 	const { directory, origin, port, configurations, trustedLocal = false } = options;
@@ -183,11 +184,12 @@ async function startFixtureRecorder(options: {
 async function fixtureCameras(
 	binary: string,
 	children: ChildProcess[],
-	archiveFixture: boolean
+	archiveFixture: boolean,
+	sourceIds: readonly string[]
 ): Promise<string[]> {
 	const configurations: string[] = [];
 	const media = resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4');
-	for (const [index, sourceId] of cardSourceIds.entries()) {
+	for (const [index, sourceId] of sourceIds.entries()) {
 		const child = spawn(
 			binary,
 			[
@@ -385,9 +387,10 @@ async function seedComparisonStreams(
 	binary: string,
 	directory: string,
 	configPath: string,
-	children: ChildProcess[]
+	children: ChildProcess[],
+	sourceIds: readonly string[]
 ) {
-	for (const [index, id] of cardSourceIds.entries()) {
+	for (const [index, id] of sourceIds.entries()) {
 		const child = spawn(
 			binary,
 			[
@@ -401,7 +404,7 @@ async function seedComparisonStreams(
 				'--duration-seconds',
 				'40',
 				'--age-seconds',
-				String(120 - index * 10)
+				String(index === 1 ? 110 : 120)
 			],
 			{
 				cwd: directory,
@@ -431,10 +434,12 @@ async function prepareFixture(
 	) {
 		throw new Error('Recording seed modes must use separate fixtures.');
 	}
+	const sourceIds = options.reviewFixture === 'four' ? reviewSourceIds : cardSourceIds;
 	const configurations = await fixtureCameras(
 		binary,
 		children,
-		Boolean(options.archiveFixture || options.calibrationFixture || options.reviewFixture)
+		Boolean(options.archiveFixture || options.calibrationFixture || options.reviewFixture),
+		sourceIds
 	);
 	const configPath = await writeFixtureConfiguration({
 		directory,
@@ -443,7 +448,8 @@ async function prepareFixture(
 		configurations,
 		...options
 	});
-	if (options.reviewFixture) await seedComparisonStreams(binary, directory, configPath, children);
+	if (options.reviewFixture)
+		await seedComparisonStreams(binary, directory, configPath, children, sourceIds);
 	const archive = await prepareArchiveFixture(
 		binary,
 		directory,

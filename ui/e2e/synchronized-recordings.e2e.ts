@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import {
 	cardAdminKey,
 	cardSourceIds,
+	reviewSourceIds,
 	startHomeAssistantServer
 } from './fixtures/home-assistant-server';
 import { recordedAudioBackendRoute } from './fixtures/recorded-audio-playback';
@@ -18,22 +19,22 @@ async function displayed(video: Locator) {
 	}));
 }
 
-async function presentedDrift(page: Page) {
-	return page.locator('article time').evaluateAll((times) => {
-		if (times.length !== 2) return null;
+async function presentedDrift(page: Page, count = 2) {
+	return page.locator('article time').evaluateAll((times, expected) => {
+		if (times.length !== expected) return null;
 		const UTC = times.map((t) => Date.parse(t.getAttribute('datetime') ?? ''));
-		return UTC.every(Number.isFinite) ? Math.abs(UTC[0]! - UTC[1]!) : null;
-	});
+		return UTC.every(Number.isFinite) ? Math.max(...UTC) - Math.min(...UTC) : null;
+	}, count);
 }
 
-async function measurePresentedDrift(page: Page) {
+async function measurePresentedDrift(page: Page, count = 2) {
 	const drift: number[] = [];
 	const until = performance.now() + 1500;
 	while (performance.now() < until) {
 		await page.evaluate(
 			() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
 		);
-		const sample = await presentedDrift(page);
+		const sample = await presentedDrift(page, count);
 		if (sample !== null) drift.push(sample);
 	}
 	expect(drift.length).toBeGreaterThan(4);
@@ -102,6 +103,7 @@ test('two recorded cameras follow one clock, seek through coverage gaps and swit
 		await context.route('**/*', redirect);
 		const at = await overlappingMoment(page, server.url);
 		await page.goto('/keep?camera=' + cardSourceIds[0] + '&stream=sub&at=' + at);
+		await expect(page.getByLabel('Compare with')).toBeVisible({ timeout: 30_000 });
 		await page.getByLabel('Compare with').selectOption(cardSourceIds[1]);
 		await expect(page.getByRole('heading', { name: 'Compare recordings' })).toBeVisible();
 		const tiles = page.locator('article video');
@@ -210,6 +212,83 @@ test('only the chosen calibrated AAC camera is unmuted on reload and after an au
 			{ muted: false, decoded: true },
 			{ muted: true, decoded: true }
 		]);
+	} finally {
+		try {
+			await context.unroute('**/*', redirect);
+		} finally {
+			await fixture.close();
+		}
+	}
+});
+
+test('add and remove four authorized sources and seek their common UTC without transient links', async ({
+	page,
+	context,
+	baseURL
+}) => {
+	test.setTimeout(90_000);
+	page.setDefaultTimeout(8_000);
+	if (!baseURL) throw new Error('The comparison fixture requires a UI origin.');
+	await page.setViewportSize({ width: 1440, height: 1100 });
+	await page.addInitScript(() =>
+		Object.defineProperty(navigator, 'hardwareConcurrency', { configurable: true, value: 8 })
+	);
+	const origin = new URL(baseURL).origin;
+	const fixture = await startHomeAssistantServer(origin, {
+		trustedLocal: true,
+		reviewFixture: 'four'
+	});
+	const redirect = recordedAudioBackendRoute(origin, fixture.url);
+	try {
+		await context.route('**/*', redirect);
+		const at = await overlappingMoment(page, fixture.url);
+		await page.goto('/keep?camera=' + cardSourceIds[0] + '&stream=sub&at=' + at);
+		await expect(page.getByLabel('Compare with')).toBeVisible({ timeout: 30_000 });
+		await page.getByLabel('Compare with').selectOption(cardSourceIds[1]);
+		const add = page.getByRole('combobox', { name: 'Add camera' });
+		for (const id of reviewSourceIds.slice(2)) await add.selectOption(id);
+		await expect(add).toHaveCount(0);
+		await expect(page.locator('article')).toHaveCount(4);
+		await expect(page.locator('article video')).toHaveCount(4);
+		await page.getByRole('button', { name: 'Play', exact: true }).click();
+		await expect
+			.poll(() =>
+				page.locator('article video').evaluateAll(
+					(elements) =>
+						elements.filter((el) => {
+							const video = el as HTMLVideoElement;
+							return !video.paused && video.getVideoPlaybackQuality().totalVideoFrames > 2;
+						}).length
+				)
+			)
+			.toBe(4);
+		await measurePresentedDrift(page, 4);
+		await page.getByRole('button', { name: 'Pause', exact: true }).click();
+		const seek = at + 5000;
+		await page.getByLabel('Seek to UTC').fill(new Date(seek).toISOString().slice(0, 23));
+		await page.getByRole('button', { name: 'Go to time' }).click();
+		await expect.poll(() => new URL(page.url()).searchParams.get('at')).toBe(String(seek));
+		await page.getByRole('combobox', { name: 'Focused camera' }).selectOption(reviewSourceIds[3]);
+		await page.getByRole('combobox', { name: 'Audio source' }).selectOption(reviewSourceIds[2]);
+		await page.reload();
+		await expect(page.getByRole('combobox', { name: 'Focused camera' })).toHaveValue(
+			reviewSourceIds[3]
+		);
+		await expect(page.getByRole('combobox', { name: 'Audio source' })).toHaveValue(
+			reviewSourceIds[2]
+		);
+		expect(new URL(page.url()).searchParams.getAll('compare')).toEqual([...reviewSourceIds]);
+		await page.getByRole('button', { name: 'Remove card-camera-3' }).click();
+		await expect(page.getByRole('combobox', { name: 'Focused camera' })).toHaveValue(
+			cardSourceIds[0]
+		);
+		await page.getByRole('button', { name: 'Remove card-camera-2' }).click();
+		await expect(page.getByRole('combobox', { name: 'Audio source' })).toHaveValue(
+			cardSourceIds[0]
+		);
+		await page.getByRole('button', { name: 'Remove card-camera-1' }).click();
+		await expect(page.getByRole('heading', { name: 'Keep', exact: true })).toBeVisible();
+		expect(new URL(page.url()).searchParams.has('compare')).toBe(false);
 	} finally {
 		try {
 			await context.unroute('**/*', redirect);
