@@ -175,7 +175,17 @@ pub(super) async fn dispatch(
         } => execution::claim(connection, readers, &job, &operation, &policy).await,
         Request::Retired(id) => execution::retired(connection, &id).await,
         Request::Acknowledged(id) => execution::acknowledged(connection, &id).await,
-        Request::WithdrawQueued(id) => withdraw_queued(connection, &id).await,
+        Request::WithdrawQueued(id) => {
+            if load(connection, &id)
+                .await?
+                .is_some_and(|job| job.pending_deletion().is_some())
+            {
+                withdraw_queued(connection, &id).await
+            } else {
+                // An ordinary transfer still requires its worker to cancel in-flight writes.
+                Ok(Reply::Done)
+            }
+        }
         Request::RecordFailure {
             job,
             operation,

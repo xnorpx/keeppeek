@@ -472,7 +472,11 @@ fn apply_configuration_plan_as(
     let after = config::validated_configuration_table(&config_path, &stored.candidate).map_err(
         |error| configuration_internal_error("revalidate configuration plan before commit", error),
     )?;
-    super::storage_archive::validate_claim_recovery(state, after.storage.archive.as_ref())?;
+    super::storage_archive::validate_saved_binding_change(
+        state,
+        before.storage.archive.as_ref(),
+        after.storage.archive.as_ref(),
+    )?;
     let candidate = authentication::verification::Candidate {
         plan_id: stored.plan.plan_id.clone(),
         revision: current_revision,

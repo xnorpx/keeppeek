@@ -89,6 +89,22 @@ pub(super) fn sanitized(config: &Config) -> Option<Settings> {
     )
 }
 
+pub(super) fn validate_saved_binding_change(
+    state: &ServerState,
+    previous: Option<&Settings>,
+    next: Option<&Settings>,
+) -> Result<()> {
+    fn active_binding(settings: Option<&Settings>) -> Option<(&str, &Path)> {
+        settings
+            .filter(|s| s.enabled)
+            .map(|s| (s.target_id.as_str(), s.root.as_path()))
+    }
+    if active_binding(previous) == active_binding(next) {
+        return Ok(());
+    }
+    validate_claim_recovery(state, next)
+}
+
 pub(super) fn validate_claim_recovery(state: &ServerState, next: Option<&Settings>) -> Result<()> {
     let result = if let Some(handle) = &state.storage_config.archive_runtime {
         handle.ensure_recovery_binding(next)

@@ -1226,6 +1226,17 @@ fn administrator_can_withdraw_an_offline_queued_archive_deletion_before_changing
     .unwrap();
     state.storage_config.archive_runtime = None;
     worker.shutdown().unwrap();
+    let ordinary_cancel = proto::ArchiveCommand {
+        action: Some(Action::Cancel(proto::CancelArchiveJob {
+            job_id: job.clone(),
+        })),
+    };
+    assert_eq!(
+        super::storage_archive::dispatch(&state, &administrator, ordinary_cancel)
+            .unwrap_err()
+            ._http_status,
+        503
+    );
     // Persist the confirmation without waking a worker, as at a restart before its first claim.
     catalog
         .handle()
@@ -1245,6 +1256,8 @@ fn administrator_can_withdraw_an_offline_queued_archive_deletion_before_changing
             ._http_status,
         409
     );
+    // An unrelated configuration update leaves the already-saved binding untouched.
+    super::storage_archive::validate_saved_binding_change(&state, None, None).unwrap();
     let command = proto::ArchiveCommand {
         action: Some(Action::Cancel(proto::CancelArchiveJob {
             job_id: job.clone(),
