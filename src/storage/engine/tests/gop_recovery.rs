@@ -207,7 +207,9 @@ fn malformed_keyframe_keeps_the_committed_gop_health_credit() {
         video.codec = VideoCodec::H265;
         video.data = Bytes::from_static(&[0, 0, 0, 2, 0x26, 1]);
         worker.ingest(source.clone(), broken);
-        assert!(worker.health.snapshot().streams[0].last_error.is_some());
+        let failed = worker.health.snapshot().streams.remove(0);
+        assert!(failed.last_error.is_some());
+        assert!(failed.last_failure_at_ms.is_some());
         if resume {
             worker.ingest(source.clone(), frame(start, 300, true, false));
             worker.ingest(source.clone(), frame(start, 400, false, false));
@@ -228,10 +230,18 @@ fn malformed_keyframe_keeps_the_committed_gop_health_credit() {
             .sum::<u64>();
         let actual = ticks * 1000 / u64::from(timescale);
         assert_eq!(actual, if resume { 400 } else { 200 });
-        assert_eq!(
-            worker.health.snapshot().streams[0].recorded_duration_ms,
-            actual
-        );
+        let finalized = worker.health.snapshot().streams.remove(0);
+        assert_eq!(finalized.recorded_duration_ms, actual);
+        if resume {
+            assert!(finalized.last_error.is_none());
+            assert!(finalized.last_failure_at_ms.is_none());
+            assert!(finalized.attempt_age_ms.is_none());
+        } else {
+            assert_eq!(finalized.last_error, failed.last_error);
+            assert_eq!(finalized.last_failure_at_ms, failed.last_failure_at_ms);
+            assert_eq!(finalized.last_progress_at_ms, failed.last_progress_at_ms);
+            assert!(finalized.attempt_age_ms.is_some());
+        }
         drop(mp4);
         drop(worker);
         std::fs::remove_dir_all(&root).unwrap();
