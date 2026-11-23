@@ -230,14 +230,23 @@ fn render_until_closed(
                 area = actual;
             }
             let age = data
+                .snapshot
                 .as_ref()
                 .map_or(Duration::ZERO, |snap| snap.collected.elapsed());
-            terminal.draw(|frame| render::draw(frame, data.as_deref(), &mut nav, age))?;
+            terminal.draw(|frame| {
+                render::draw(
+                    frame,
+                    data.snapshot.as_deref(),
+                    &mut nav,
+                    age,
+                    data.failed_at.map(|when| when.elapsed()),
+                )
+            })?;
             last = Instant::now();
             redraw = false;
         }
         if let Ok(first) = receiver.recv_timeout(Duration::from_millis(100)) {
-            let rows = data.as_ref().map_or(0, |snap| snap.rows.len());
+            let rows = data.snapshot.as_ref().map_or(0, |snap| snap.rows.len());
             for command in std::iter::once(first).chain(receiver.try_iter().take(31)) {
                 match command {
                     Input::Rows(n) => nav.step(n, rows),

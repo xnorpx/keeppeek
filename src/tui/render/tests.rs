@@ -41,7 +41,7 @@ fn fixture(count: usize) -> Snapshot {
 fn screen(width: u16, height: u16, snapshot: &Snapshot, nav: &mut Navigation) -> Vec<String> {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal
-        .draw(|frame| draw(frame, Some(snapshot), nav, Duration::from_secs(6)))
+        .draw(|frame| draw(frame, Some(snapshot), nav, Duration::from_secs(6), None))
         .unwrap();
     let buffer = terminal.backend().buffer();
     (0..height)
@@ -134,4 +134,45 @@ fn small_and_empty_terminals_keep_exit_controls_visible() {
             .any(|line| line.contains("No configured or observed streams"))
     );
     assert!(normal[23].contains("0–0 of 0"));
+}
+
+#[test]
+fn failed_collection_keeps_last_sample_and_reports_its_own_age() {
+    use crate::tui::Observation;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let initial = Arc::new(fixture(1));
+    let now = Instant::now();
+    let mut observation = Observation::default();
+    observation.update(Some(initial.clone()), now);
+    observation.update(None, now + Duration::from_secs(4));
+    assert!(Arc::ptr_eq(
+        observation.snapshot.as_ref().unwrap(),
+        &initial
+    ));
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| {
+            draw(
+                frame,
+                observation.snapshot.as_deref(),
+                &mut Navigation::default(),
+                Duration::from_secs(6),
+                Some(Duration::from_secs(2)),
+            )
+        })
+        .unwrap();
+    let row = |y| {
+        (0..80)
+            .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+            .collect::<String>()
+    };
+    assert!(row(0).contains("Health check failed 2s ago   Last sample 6s ago"));
+    assert!((1..24).any(|y| row(y).contains("Camera 0")));
+
+    observation.update(Some(Arc::new(fixture(2))), now + Duration::from_secs(8));
+    assert_eq!(observation.snapshot.unwrap().rows.len(), 2);
+    assert!(observation.failed_at.is_none());
 }

@@ -13,10 +13,27 @@ use snapshot::Snapshot;
 use std::{
     sync::{Arc, Mutex, mpsc},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-type Latest = Arc<Mutex<Option<Arc<Snapshot>>>>;
+type Latest = Arc<Mutex<Observation>>;
+
+#[derive(Clone, Default)]
+struct Observation {
+    snapshot: Option<Arc<Snapshot>>,
+    failed_at: Option<Instant>,
+}
+
+impl Observation {
+    fn update(&mut self, snapshot: Option<Arc<Snapshot>>, now: Instant) {
+        if let Some(snapshot) = snapshot {
+            self.snapshot = Some(snapshot);
+            self.failed_at = None;
+        } else {
+            self.failed_at = Some(now);
+        }
+    }
+}
 
 struct CancelOnDrop(Shutdown);
 
@@ -35,7 +52,7 @@ impl Dashboard {
     pub(crate) fn start(
         mode: DashboardMode,
         shutdown: Shutdown,
-        collect: impl Fn() -> ServerHealthResponse + Send + 'static,
+        collect: impl Fn() -> Option<ServerHealthResponse> + Send + 'static,
         redactor: LogHub,
     ) -> Option<Self> {
         match mode.presentation() {
@@ -65,12 +82,13 @@ impl Dashboard {
                         .spawn(move || {
                             let _screen_lifetime = CancelOnDrop(collector_stop.clone());
                             while !collector_stop.is_cancelled() && !server_stop.is_cancelled() {
-                                let snapshot =
-                                    Arc::new(Snapshot::from_health(collect(), &redactor));
-                                *writer
+                                let snapshot = collect().map(|health| {
+                                    Arc::new(Snapshot::from_health(health, &redactor))
+                                });
+                                writer
                                     .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                                    Some(snapshot);
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .update(snapshot, Instant::now());
                                 if collector_stop.wait_timeout(Duration::from_secs(2)) {
                                     break;
                                 }

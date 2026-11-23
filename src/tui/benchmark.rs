@@ -163,7 +163,7 @@ fn collect_samples(
     for second in (0..TOTAL_SECONDS).step_by(2) {
         wait_until(start, second);
         let collect = Instant::now();
-        let health = dashboard_health(sender, state);
+        let health = dashboard_health(sender, state).expect("fixture health");
         let collector_us = micros(collect);
         let projection = Instant::now();
         let next = Arc::new(Snapshot::from_health(health, &redactor));
@@ -171,8 +171,10 @@ fn collect_samples(
         assert_eq!(next.rows.len(), usize::from(CAMERAS) * 4);
         metrics.snapshot_rows = metrics.snapshot_rows.max(next.rows.len());
         let mut slot = latest.lock().unwrap();
-        *slot = Some(next);
-        metrics.pending_snapshots = metrics.pending_snapshots.max(slot.iter().count());
+        slot.update(Some(next), Instant::now());
+        metrics.pending_snapshots = metrics
+            .pending_snapshots
+            .max(usize::from(slot.snapshot.is_some()));
         if second >= WARMUP_SECONDS {
             metrics.collector_us.push(collector_us);
             metrics.projection_us.push(projection_us);
@@ -187,13 +189,13 @@ fn render_samples(start: Instant, latest: Latest) -> Vec<u64> {
     let mut durations = Vec::new();
     for second in 0..TOTAL_SECONDS {
         wait_until(start, second);
-        let current = latest.lock().unwrap().clone();
+        let current = latest.lock().unwrap().snapshot.clone();
         let elapsed = current
             .as_ref()
             .map_or(Duration::ZERO, |s| s.collected.elapsed());
         let draw = Instant::now();
         terminal
-            .draw(|frame| render::draw(frame, current.as_deref(), &mut nav, elapsed))
+            .draw(|frame| render::draw(frame, current.as_deref(), &mut nav, elapsed, None))
             .unwrap();
         if second >= WARMUP_SECONDS {
             assert!(
@@ -298,7 +300,10 @@ fn audio_rows_leave_container_recording_evidence_with_video() {
             router.wait_and_drain(None).unwrap();
         }
     });
-    let snapshot = Snapshot::from_health(dashboard_health(&sender, &state), &LogHub::default());
+    let snapshot = Snapshot::from_health(
+        dashboard_health(&sender, &state).unwrap(),
+        &LogHub::default(),
+    );
     sender.send(RouterMessage::Shutdown).unwrap();
     worker.join().unwrap();
     assert_eq!(snapshot.rows.len(), 4);

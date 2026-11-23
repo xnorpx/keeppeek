@@ -11539,18 +11539,20 @@ fn server_health(
         HealthRegistry::snapshot,
         state.catalog.as_ref(),
     )
+    .0
 }
 
 pub(crate) fn dashboard_health(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
-) -> ServerHealthResponse {
-    collect_server_health(
+) -> Option<ServerHealthResponse> {
+    let (health, complete) = collect_server_health(
         router_tx,
         state,
         HealthRegistry::local_stream_snapshot,
         None,
-    )
+    );
+    complete.then_some(health)
 }
 
 fn collect_server_health(
@@ -11558,7 +11560,7 @@ fn collect_server_health(
     state: &ServerState,
     ingress_snapshot: impl FnOnce(&HealthRegistry) -> Vec<crate::stats::CameraHealthReport>,
     history_catalog: Option<&RecordingCatalogHandle>,
-) -> ServerHealthResponse {
+) -> (ServerHealthResponse, bool) {
     let uptime_seconds = state.started_at.elapsed().as_secs();
     let system = state
         .system
@@ -11566,10 +11568,12 @@ fn collect_server_health(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .snapshot(&state.storage_config.long_term_path);
     let mut issues = Vec::new();
+    let mut complete = true;
     let operational_events = state.events.as_ref().map_or_else(Vec::new, |events| {
         match events.open_operational_events() {
             Ok(events) => events,
             Err(error) => {
+                complete = false;
                 issues.push(HealthIssue {
                     severity: "warning".to_owned(),
                     scope: "storage".to_owned(),
@@ -11588,6 +11592,7 @@ fn collect_server_health(
             .map(|status| (status.id.to_string(), status))
             .collect::<HashMap<_, _>>(),
         Ok(RouterResponse::Camera(_)) => {
+            complete = false;
             issues.push(HealthIssue {
                 severity: "warning".to_owned(),
                 scope: "runtime".to_owned(),
@@ -11599,6 +11604,7 @@ fn collect_server_health(
             HashMap::new()
         }
         Err(_) => {
+            complete = false;
             issues.push(HealthIssue {
                 severity: "warning".to_owned(),
                 scope: "runtime".to_owned(),
@@ -11784,20 +11790,23 @@ fn collect_server_health(
     }
     let status = server_health_status(&issues);
 
-    ServerHealthResponse {
-        status: status.to_owned(),
-        health_contract_version: CAMERA_HEALTH_CONTRACT_VERSION,
-        generated_at_ms: unix_time_ms(),
-        uptime_seconds,
-        version: env!("CARGO_PKG_VERSION"),
-        totals,
-        system,
-        storage,
-        webrtc,
-        cameras,
-        issues,
-        operational_events,
-    }
+    (
+        ServerHealthResponse {
+            status: status.to_owned(),
+            health_contract_version: CAMERA_HEALTH_CONTRACT_VERSION,
+            generated_at_ms: unix_time_ms(),
+            uptime_seconds,
+            version: env!("CARGO_PKG_VERSION"),
+            totals,
+            system,
+            storage,
+            webrtc,
+            cameras,
+            issues,
+            operational_events,
+        },
+        complete,
+    )
 }
 
 fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerState) -> Response {
@@ -14324,7 +14333,7 @@ mod tests {
         state.catalog = Some(catalog.handle());
         let (router, tx) = crate::runtime::Router::new().unwrap();
         let worker = spawn_router_query_worker(router);
-        let dashboard = dashboard_health(&tx, &state);
+        let dashboard = dashboard_health(&tx, &state).unwrap();
         assert_eq!(worker.join().unwrap(), 1);
         assert!(dashboard.storage.catalog.is_none());
         let (router, tx) = crate::runtime::Router::new().unwrap();
@@ -14334,6 +14343,20 @@ mod tests {
         drop(state);
         catalog.shutdown();
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn dashboard_health_rejects_a_collection_without_its_router() {
+        let state = media_test_state();
+        let (router, tx) = crate::runtime::Router::new().unwrap();
+        drop(router);
+        assert!(dashboard_health(&tx, &state).is_none());
+        assert!(
+            server_health(&tx, &state)
+                .issues
+                .iter()
+                .any(|issue| issue.scope == "runtime")
+        );
     }
 
     #[test]

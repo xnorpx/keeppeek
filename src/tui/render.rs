@@ -104,13 +104,22 @@ pub(super) fn draw(
     snapshot: Option<&Snapshot>,
     nav: &mut Navigation,
     elapsed: Duration,
+    failure_age: Option<Duration>,
 ) {
     let plain = Style::new();
     let strong = plain.add_modifier(Modifier::BOLD);
     let height = frame.area().height;
     let width = frame.area().width;
+    let failure = failure_age.map(|age| format!("Health check failed {}s ago", age.as_secs()));
     let Some(s) = snapshot else {
-        line(frame, 0, "KeepPeek   Waiting for server health", strong);
+        line(
+            frame,
+            0,
+            failure
+                .as_deref()
+                .unwrap_or("KeepPeek   Waiting for server health"),
+            strong,
+        );
         line(
             frame,
             height.saturating_sub(1),
@@ -127,12 +136,23 @@ pub(super) fn draw(
     line(
         frame,
         0,
-        &format!(
-            "KeepPeek {}   {}   Uptime {}s   Sample {}s ago{stale}",
-            s.version,
-            s.health,
-            s.uptime_s,
-            elapsed.as_secs()
+        &failure.map_or_else(
+            || {
+                format!(
+                    "KeepPeek {}   {}   Uptime {}s   Sample {}s ago{stale}",
+                    s.version,
+                    s.health,
+                    s.uptime_s,
+                    elapsed.as_secs()
+                )
+            },
+            |failure| {
+                format!(
+                    "{failure}   Last sample {}s ago{stale}   KeepPeek {}",
+                    elapsed.as_secs(),
+                    s.version
+                )
+            },
         ),
         strong,
     );
