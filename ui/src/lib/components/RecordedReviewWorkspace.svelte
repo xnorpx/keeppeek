@@ -184,7 +184,8 @@
 	onDestroy(() => exportCheck?.abort());
 	$effect(() => {
 		void focus;
-		void range;
+		void rangeStart;
+		void rangeEnd;
 		exportProblem = '';
 		return () => exportCheck?.abort();
 	});
@@ -199,7 +200,13 @@
 		exportProblem = '';
 		try {
 			const rows = await reviewExportRecordings(client, camera.id, marked, controller.signal);
-			if (controller.signal.aborted || camera.id !== focus || range !== marked) return;
+			if (
+				controller.signal.aborted ||
+				camera.id !== focus ||
+				rangeStart !== marked.startMs ||
+				rangeEnd !== marked.endMs
+			)
+				return;
 			const streams = (['main', 'sub'] as const).filter((stream) =>
 				segmentForExportRange(rows, stream, marked.startMs, marked.endMs)
 			);

@@ -81,11 +81,13 @@ export function segmentForExportRange(
 			(row) => row.stream === stream && row.end_time_ms > startMs && row.start_time_ms < endMs
 		)
 		.toSorted((a, b) => a.start_time_ms - b.start_time_ms);
+	const anchor = candidates[0];
+	if (!anchor) return null;
 	let covered = startMs;
 	for (const row of candidates) {
 		if (row.start_time_ms > covered) return null;
 		covered = Math.max(covered, row.end_time_ms);
-		if (covered >= endMs) return candidates[0] ?? null;
+		if (covered >= endMs) return anchor;
 	}
 	return null;
 }
