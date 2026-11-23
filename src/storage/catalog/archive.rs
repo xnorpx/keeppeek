@@ -663,11 +663,7 @@ async fn reserve_transfer(
         job.state == "copying" && !job.cancelled,
         "archive transfer is no longer pending"
     );
-    anyhow::ensure!(
-        capacity.ledger_revision == super::locations::revision(connection).await?
-            && capacity.observed_at.elapsed() <= std::time::Duration::from_secs(5),
-        "archive capacity observation expired"
-    );
+    super::locations::ensure_fresh_observation(connection, capacity, "archive transfer").await?;
     anyhow::ensure!(
         capacity.filesystem == job.binding.identity.filesystem
             && capacity.root_identity == job.binding.identity.directory,
