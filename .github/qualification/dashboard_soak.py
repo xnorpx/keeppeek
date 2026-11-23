@@ -101,6 +101,19 @@ def rss(pid):
             return int(line.split()[1])*1024
     raise RuntimeError(f'missing process RSS for {pid}')
 
+def memory_breakdown(pid):
+    # PSS and private/anonymous breakdown help distinguish process allocations
+    # from ordinary sharing and resident file mappings.
+    source = Path(f'/proc/{pid}/smaps_rollup').read_text()
+    fields = {}
+    for line in source.splitlines():
+        field, _, value = line.partition(':')
+        if field in ('Rss', 'Pss', 'Anonymous', 'Private_Clean', 'Private_Dirty'):
+            fields[field] = int(value.split()[0]) * 1024
+    assert len(fields) == 5, fields.keys()
+    return fields
+
+
 def window(fd, cols, rows):
     fcntl.ioctl(fd,termios.TIOCSWINSZ,struct.pack('HHHH',rows,cols,0,0))
 
@@ -148,6 +161,7 @@ async def main(work):
     relays={}
     recorders={}
     samples=[]
+    memory=[]
     forced=[]
     master=slave=None
     markers=set()
@@ -222,6 +236,11 @@ async def main(work):
             assert all(p.returncode is None for p in procs), 'fixture stopped during soak'
             iteration=len(samples)
             samples.append([round(elapsed,3),rss(recorders['off'].pid),rss(recorders['on'].pid)])
+            if iteration % max(1, 60 // INTERVAL) == 0:
+                memory.append({
+                    'elapsed': round(elapsed, 3),
+                    'recorders': {mode: memory_breakdown(proc.pid) for mode, proc in recorders.items()},
+                })
             window(master,34 if iteration%3==0 else 120,7 if iteration%3==0 else 40)
             os.write(master,[b'\x1b[B',b'\x1b[6~',b'\x1b[5~'][iteration%3])
             if iteration in (DURATION // INTERVAL * 4 // 15, DURATION // INTERVAL * 3 // 5):
@@ -243,12 +262,29 @@ async def main(work):
             if b'\x1b[?1049l' in markers:break
             await asyncio.sleep(.1)
         assert b'\x1b[?1049l' in markers and recorders['on'].returncode is None
+        def incoming_camera_bytes(relay):
+            return sum(attempt['camera_bytes_after_play'] for attempt in relay.attempts)
+
+        before_detach_cooldown = {key: incoming_camera_bytes(relay) for key, relay in relays.items()}
+        after_detach = []
+        cooldown = min(90, DURATION // 4)
+        detach_time = time.monotonic()
+        for second in range(0, cooldown + 1, 5):
+            await asyncio.sleep(max(0, detach_time + second - time.monotonic()))
+            assert all(proc.returncode is None for proc in recorders.values())
+            after_detach.append({
+                'seconds_after_detach': round(time.monotonic() - detach_time, 3),
+                'recorders': {mode: memory_breakdown(proc.pid) for mode, proc in recorders.items()},
+            })
+        assert all(incoming_camera_bytes(relay) > before_detach_cooldown[key]
+                   for key, relay in relays.items()), 'camera input stopped after dashboard detach'
         for proc in recorders.values():proc.send_signal(signal.SIGINT)
         for proc in recorders.values(): assert await asyncio.wait_for(proc.wait(),30)==0
         first=[on-off for t,off,on in samples if DURATION/15<=t<DURATION*7/30]
         last=[on-off for t,off,on in samples if t>=DURATION*5/6]
-        report={'seconds':time.monotonic()-start,'samples':samples,'forced_disconnects':forced,
-            'early_median_rss_delta':statistics.median(first),'late_median_rss_delta':statistics.median(last),'streams':{}}
+        report={'seconds':detach_time-start,'samples':samples,'forced_disconnects':forced,
+            'early_median_rss_delta':statistics.median(first),'late_median_rss_delta':statistics.median(last),
+            'memory_breakdown':memory,'after_detach':after_detach,'streams':{}}
         for mode in recorders:
             streams=continuity(work/mode)
             assert len(streams)==2,(mode,list(streams))
