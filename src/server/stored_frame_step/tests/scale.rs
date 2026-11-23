@@ -1,6 +1,6 @@
 //! Cold catalog setup is outside the timed, repeated local disk queries.
 use super::*;
-use crate::storage::{CatalogFragment, CatalogRecording, RecordingCatalogHandle};
+use crate::storage::{CatalogFragment, CatalogRecording};
 use std::cell::Cell;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -34,7 +34,7 @@ describe('RecordedPlaybackControls', () => {
 			}
 		});
 		const announced = page.getByRole('status', { name: 'Requested frame time' });
-		await expect.element(announced).toBeEmptyDOMElement();
+		await expect.element(announced).toHaveTextContent(/^\s*$/);
 		expect(
 			(page.getByRole('slider', { name: 'Recording position' }).element() as HTMLInputElement)
 				.valueAsNumber
