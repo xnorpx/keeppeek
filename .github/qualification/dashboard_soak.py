@@ -82,8 +82,9 @@ def window(fd, cols, rows):
 
 def continuity(directory):
     streams = defaultdict(list)
-    catalog = directory / 'recordings.db'
-    assert catalog.is_file(), f'missing fixture recording catalog {catalog}'
+    catalogs = list((directory / 'storage' / 'metadata').glob('catalog-*.db'))
+    assert len(catalogs) == 1, f'expected one managed catalog, found {catalogs}'
+    catalog, = catalogs
     with sqlite3.connect(catalog.as_uri() + '?mode=ro', uri=True) as db:
         recordings = db.execute(
             'SELECT logical_stream_id, started_at_ms, path FROM recording_files ORDER BY started_at_ms, id'
@@ -143,7 +144,6 @@ async def main(work):
             cfg=(f'host = "127.0.0.1"\nport = {port()}\n[storage]\nshort_term_secs = 5\n'
                  f'medium_term_secs = 20\nflush_interval_secs = 2\nlong_term_max_gb = 0\n'
                  'minimum_free_gb = 1\ncritical_free_gb = 0\n'
-                 f'recording_catalog_path = "{folder / "recordings.db"}"\n'
                  f'long_term_path = "{rec}"\nmedium_term_path = "{tmp}"\n'
                  +settings+'\nrecording_mode = "both"\n')
             (folder/'config.toml').write_text(cfg)
