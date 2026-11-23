@@ -332,6 +332,7 @@ impl RecordingCatalogHandle {
                     if error.is::<StaleCapacity>() && retries > 0 && Instant::now() < deadline =>
                 {
                     retries -= 1;
+                    std::thread::yield_now();
                 }
                 result => return result,
             }

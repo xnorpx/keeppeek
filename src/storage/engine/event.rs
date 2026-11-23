@@ -834,7 +834,7 @@ impl WriterWorker {
     }
 
     fn publish_event_recording(
-        &mut self,
+        &self,
         stream: &str,
         recording_id: &str,
         output: Option<(PathBuf, Duration)>,
