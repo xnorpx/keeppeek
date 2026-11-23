@@ -96,9 +96,30 @@ it('discards cancelled output even when finalization has begun', async () => {
 	const capture = await startReportCapture({ signal: controller.signal });
 	Recorder.latest.chunk(new Blob(['private frame']));
 	void capture.stop();
+	expect(display.readyState).toBe('live');
 	controller.abort();
+	expect(display.readyState).toBe('ended');
 	expect(await capture.result).toEqual({ reason: 'cancelled', recording: null });
 	expect(Recorder.latest.stopped).toBe(1);
+	expect(display.stopped).toBe(1);
+});
+
+it('releases the display immediately on owner abort even if the stop event is deferred', async () => {
+	const { display } = installCapture();
+	const controller = new AbortController();
+	const sizes: number[] = [];
+	const capture = await startReportCapture({
+		signal: controller.signal,
+		onSize: (bytes) => sizes.push(bytes)
+	});
+	Recorder.latest.chunk(new Blob(['head']));
+	controller.abort();
+	expect(display.readyState).toBe('ended');
+	expect(display.stopped).toBe(1);
+	// Browser page suspension can delay the encoder's final chunk and stop event.
+	Recorder.latest.chunk(new Blob(['late']));
+	expect(await capture.result).toEqual({ reason: 'cancelled', recording: null });
+	expect(sizes).toEqual([4]);
 	expect(display.stopped).toBe(1);
 });
 

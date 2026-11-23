@@ -83,6 +83,8 @@ export async function startReportCapture({ signal, onSize }: CaptureOptions) {
 	};
 	const onAbort = () => {
 		void stop('cancelled');
+		// Cancellation discards the tail, so page suspension must not delay releasing the display.
+		finalize();
 	};
 	const onError = () => {
 		void stop('error');

@@ -6,6 +6,7 @@ import type { ReportTransport } from './report-submission';
 import { createDiagnosticRedactor } from './diagnostic-redaction';
 import { BrowserLogStore } from './browser-logs';
 import { ReportSession } from './report-session.svelte';
+import { startReportCapture } from './report-capture';
 
 type ReportDependencies = ConstructorParameters<typeof ReportSession>[0];
 
@@ -57,6 +58,24 @@ function setup() {
 }
 
 afterEach(() => vi.useRealTimers());
+
+it('releases a real browser video track before the cancel or pagehide handler returns', async () => {
+	const canvas = document.createElement('canvas');
+	const stream = canvas.captureStream();
+	const track = stream.getVideoTracks()[0];
+	const selection = vi.spyOn(navigator.mediaDevices, 'getDisplayMedia').mockResolvedValue(stream);
+	try {
+		const owner = new AbortController();
+		const capture = await startReportCapture({ signal: owner.signal });
+		expect(track.readyState).toBe('live');
+		owner.abort();
+		expect(track.readyState).toBe('ended');
+		expect(await capture.result).toEqual({ reason: 'cancelled', recording: null });
+	} finally {
+		track.stop();
+		selection.mockRestore();
+	}
+});
 
 it('keeps one logs-only session and packages only recorded cursor ranges', async () => {
 	const { session, time, browser, capture, createPackage } = setup();
