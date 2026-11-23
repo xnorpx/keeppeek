@@ -3960,7 +3960,7 @@ fn next_video_frame(
             received: frame.received_at,
             timestamp: frame.timestamp,
             bytes: frame.data.avcc.len(),
-            payload_address: frame.data.avcc.as_ptr() as usize,
+            payload_address: Arc::as_ptr(&frame.data) as usize,
         };
         if let Some(ready) = timing.admit(item, packet, now) {
             break ready;
@@ -8516,6 +8516,61 @@ mod tests {
             Bytes::from_static(&[1, 2, 3])
         );
         publisher.disarm_talkback(session_id);
+    }
+
+    #[test]
+    fn live_audio_mixed_listeners_reserve_the_shared_annex_b_cache_before_it_is_populated() {
+        let camera = Arc::new(live_timing::CameraTiming::default());
+        let mut delayed = live_timing::Queue::new(camera.clone());
+        let mut immediate = live_timing::Queue::new(camera);
+        delayed.set_preview(Some(-100));
+        let received = Instant::now();
+        let source = test_source();
+        let (tx, rx) = bounded(1);
+        let mut avcc = vec![0x65; 640 * 1024];
+        let nal_size = u32::try_from(avcc.len() - 4).unwrap();
+        avcc[..4].copy_from_slice(&nal_size.to_be_bytes());
+        let mut frame = live_frame(true);
+        frame.received_at = received;
+        frame.data = Arc::new(MediaFrameData::new(avcc.clone().into()));
+        let send = |frame| {
+            tx.send(SessionCommand::Frame {
+                sequence: 1,
+                source,
+                frame,
+            })
+            .unwrap()
+        };
+        send(frame.clone());
+        assert!(matches!(
+            next_video_frame(&rx, &mut delayed, received),
+            Err(TryRecvError::Empty)
+        ));
+        assert!(frame.data.annexb.get().is_none());
+        send(frame.clone());
+        let (SessionCommand::Frame { frame: ready, .. }, _) =
+            next_video_frame(&rx, &mut immediate, received).unwrap();
+        assert_eq!(ready.data.annexb().len(), avcc.len());
+        assert!(frame.data.annexb.get().is_some());
+        // A distinct frame with equal timing and bytes requires its own conversion cache.
+        frame.data = Arc::new(MediaFrameData::new(avcc.into()));
+        send(frame);
+        assert!(matches!(
+            next_video_frame(&rx, &mut delayed, received),
+            Err(TryRecvError::Empty)
+        ));
+        let stats = delayed.report(source.stream);
+        assert_eq!(stats.held_video_frames, 1);
+        assert_eq!(stats.capacity_drops, 1);
+        let due = received + Duration::from_millis(100);
+        let (
+            SessionCommand::Frame {
+                frame: retained, ..
+            },
+            _,
+        ) = next_video_frame(&rx, &mut delayed, due).unwrap();
+        assert!(Arc::ptr_eq(&retained.data, &ready.data));
+        assert_eq!(delayed.report(source.stream).held_video_bytes, 0);
     }
 
     #[test]

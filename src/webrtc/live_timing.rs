@@ -153,6 +153,18 @@ struct PayloadKey {
     received: Instant,
 }
 
+impl PayloadKey {
+    const fn retained_bytes(self, audio: bool) -> usize {
+        if audio {
+            self.bytes
+        } else {
+            // Any listener can populate the shared Annex B cache after admission.
+            // Its four-byte start codes replace the four-byte AVCC lengths.
+            self.bytes.saturating_mul(2)
+        }
+    }
+}
+
 struct Reservation {
     camera: Arc<CameraTiming>,
     stream: StreamKind,
@@ -178,7 +190,7 @@ impl Reservation {
             MAX_VIDEO_BYTES
         };
         let first = !usage.payloads.contains_key(&key);
-        let payload_charge = if first { key.bytes } else { 0 };
+        let payload_charge = if first { key.retained_bytes(audio) } else { 0 };
         let available = limit - usage.reserved_bytes;
         let slots = if key.bytes == 0 || (!audio && first && usage.stats.frames == MAX_FRAMES) {
             None
@@ -231,7 +243,7 @@ impl Drop for Reservation {
             usage.payloads.remove(&self.key);
             usage.stats.frames -= 1;
             usage.stats.bytes -= self.key.bytes;
-            usage.reserved_bytes -= self.key.bytes;
+            usage.reserved_bytes -= self.key.retained_bytes(self.audio);
         }
     }
 }
@@ -709,7 +721,7 @@ mod tests {
             (
                 VIDEO,
                 -200,
-                MAX_VIDEO_BYTES - std::mem::size_of::<Held<i32>>(),
+                (MAX_VIDEO_BYTES - std::mem::size_of::<Held<i32>>()) / 2,
             ),
         ] {
             let t = Instant::now();
@@ -756,7 +768,7 @@ mod tests {
         second.set_preview(Some(-120));
         let poll = Instant::now();
         let arrival = poll + Duration::from_millis(1);
-        let bytes = MAX_VIDEO_BYTES * 3 / 4;
+        let bytes = MAX_VIDEO_BYTES * 3 / 8;
         first.admit(1, packet(StreamKind::Main, VIDEO, arrival, bytes), poll);
         second.admit(2, packet(StreamKind::Main, VIDEO, arrival, bytes), poll);
         let stats = first.report(StreamKind::Main);
