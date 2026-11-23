@@ -43,6 +43,12 @@ async function checkResponsivePreview(page: Page, dialog: Locator, testInfo: Tes
 	}
 }
 
+function fixtureEventDate(recordingStartMs: number) {
+	// authentication_browser_fixture.rs indexes guest-range-event 500 ms before the recording.
+	// The event and the recording can belong to different UTC dates.
+	return new Date(recordingStartMs - 500).toISOString().slice(0, 10);
+}
+
 async function openEventAndBookmark(
 	page: Page,
 	origin: string,
@@ -50,7 +56,7 @@ async function openEventAndBookmark(
 	dialog: Locator,
 	selected: Locator
 ) {
-	const date = new Date(start - 500).toISOString().slice(0, 10);
+	const date = fixtureEventDate(start);
 	await page.goto(`${origin}/events?date=${date}`);
 	const event = page.locator('[data-event-card="127.0.0.1:guest-range-event"]');
 	await page
@@ -189,14 +195,16 @@ async function openCreatorRange(
 			throw new Error('Keep export bounds are invalid.');
 		return { start: from, end: to };
 	}
-	const date = new Date(start - 500).toISOString().slice(0, 10);
+	const date = fixtureEventDate(start);
 	await page.goto(`${origin}/events?date=${date}`);
 	await page.locator('[data-event-card="127.0.0.1:guest-range-event"]').click();
 	await page
 		.getByRole('complementary', { name: 'Event detail' })
 		.getByRole('button', { name: 'Share recording range' })
 		.click();
-	const selected = page.getByRole('dialog').getByText(/Selected interval/);
+	const selected = page
+		.getByRole('dialog', { name: 'Create guest link', exact: true })
+		.getByText(/Selected interval/);
 	await expect(selected).toBeVisible();
 	const dates = (await selected.innerText()).match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g);
 	if (dates?.length !== 2) throw new Error('The event preview must show both interval edges.');
@@ -235,6 +243,7 @@ async function openRecipient(page: Page, url: string) {
 }
 
 async function verifyGuestExpiresDuringPlayback(viewer: Page, url: string, expiry: number) {
+	const timeout = 50_000;
 	const player = await viewer
 		.locator('video')
 		.evaluateHandle((element) => element as HTMLVideoElement);
@@ -245,18 +254,19 @@ async function verifyGuestExpiresDuringPlayback(viewer: Page, url: string, expir
 		return video.currentTime;
 	});
 	await expect
-		.poll(() =>
-			player.evaluate(
-				(video, initial) =>
-					video.videoWidth > 0 &&
-					video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
-					!video.paused &&
-					video.currentTime > initial + 0.05,
-				initialTime
-			)
+		.poll(
+			() =>
+				player.evaluate(
+					(video, initial) =>
+						video.videoWidth > 0 &&
+						video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+						!video.paused &&
+						video.currentTime > initial + 0.05,
+					initialTime
+				),
+			{ timeout }
 		)
 		.toBe(true);
-	const timeout = 50_000;
 	const expired = await viewer.waitForResponse(
 		async (response) => {
 			if (
