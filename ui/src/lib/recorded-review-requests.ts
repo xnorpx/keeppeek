@@ -1,3 +1,6 @@
+import type { ControlClient } from './control-client';
+import type { KeepReviewRange } from './keep-link';
+import type { RecordingSegment } from './types';
 import { maximumReviewCameras } from './grid-playback-session';
 
 // A control session accepts one background recording operation at a time.
@@ -25,4 +28,23 @@ export class RecordedReviewRequests {
 			.finally(() => this.#pending--);
 		return result;
 	}
+}
+
+export async function reviewExportRecordings(
+	client: Pick<ControlClient, 'getRecordingsInRange'>,
+	source: string,
+	range: KeepReviewRange,
+	signal: AbortSignal
+): Promise<RecordingSegment[]> {
+	const { startMs, endMs } = range;
+	const days = new Set([startMs, endMs - 1].map((ms) => new Date(ms).toISOString().slice(0, 10)));
+	const rows: RecordingSegment[] = [];
+	for (const day of days) {
+		signal.throwIfAborted();
+		const result = await client.getRecordingsInRange([source], day, startMs, endMs, signal);
+		signal.throwIfAborted();
+		const recording = result.find((row) => row.camera_id === source);
+		if (recording) rows.push(...recording.segments);
+	}
+	return rows;
 }

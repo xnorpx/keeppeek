@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { useControlClient } from '$lib/control-context';
+	import { reviewExportRecordings } from '$lib/recorded-review-requests';
 	import { segmentForExportRange } from '$lib/keep-modes';
 	import type { KeepReviewRange } from '$lib/keep-link';
 	import type { CameraListItem, RecordingSegment } from '$lib/types';
@@ -26,24 +27,18 @@
 			selectedStream = stream,
 			{ startMs, endMs } = range;
 		const controller = new AbortController();
-		const days = new Set([startMs, endMs - 1].map((ms) => new Date(ms).toISOString().slice(0, 10)));
+
 		void retry;
 		segment = null;
 		problem = null;
 		async function load() {
-			const rows: RecordingSegment[] = [];
-			for (const day of days) {
-				const result = await client.getRecordingsInRange(
-					[source],
-					day,
-					startMs,
-					endMs,
-					controller.signal
-				);
-				if (controller.signal.aborted) return;
-				const recording = result.find((row) => row.camera_id === source);
-				if (recording) rows.push(...recording.segments);
-			}
+			const rows = await reviewExportRecordings(
+				client,
+				source,
+				{ startMs, endMs },
+				controller.signal
+			);
+			if (controller.signal.aborted) return;
 			segment = segmentForExportRange(rows, selectedStream, startMs, endMs);
 			if (!segment)
 				problem =

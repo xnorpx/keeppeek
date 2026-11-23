@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { onMount, untrack } from 'svelte';
+	import { onDestroy, onMount, untrack } from 'svelte';
 	import { resolve } from '$app/paths';
 	import CopyMomentLink from './CopyMomentLink.svelte';
-	import { MAX_EXPORT_DURATION_MS } from '$lib/keep-modes';
+	import { MAX_EXPORT_DURATION_MS, segmentForExportRange } from '$lib/keep-modes';
 	import { recordedPlaybackRates } from './RecordedPlaybackControls.svelte';
 	import { GridPlaybackSession, maximumReviewCameras } from '$lib/grid-playback-session';
-	import { RecordedReviewRequests } from '$lib/recorded-review-requests';
+	import { RecordedReviewRequests, reviewExportRecordings } from '$lib/recorded-review-requests';
 	import { useControlClient } from '$lib/control-context';
 	import {
 		browserSupportsRecordedEncoding,
@@ -179,6 +179,44 @@
 		return () => controller.abort();
 	});
 
+	let exportCheck = $state.raw<AbortController | null>(null);
+	let exportProblem = $state('');
+	onDestroy(() => exportCheck?.abort());
+	$effect(() => {
+		void focus;
+		void range;
+		exportProblem = '';
+		return () => exportCheck?.abort();
+	});
+
+	async function exportMarked() {
+		const camera = authorized.find((camera) => camera.id === focus),
+			marked = range;
+		if (!camera || !marked || exportCheck) return;
+		const at = moment(),
+			controller = new AbortController();
+		exportCheck = controller;
+		exportProblem = '';
+		try {
+			const rows = await reviewExportRecordings(client, camera.id, marked, controller.signal);
+			if (controller.signal.aborted || camera.id !== focus || range !== marked) return;
+			const streams = (['main', 'sub'] as const).filter((stream) =>
+				segmentForExportRange(rows, stream, marked.startMs, marked.endMs)
+			);
+			const { selectedStream } = selectRecordedStream(camera, {
+				preference: recordedPreference(preferences, camera.id),
+				availableStreams: streams,
+				isEncodingSupported: browserSupportsRecordedEncoding
+			});
+			if (selectedStream) openExport(at, camera.id, selectedStream, reviewSelection);
+			else exportProblem = 'No playable stream from this camera covers the entire selected range.';
+		} catch {
+			if (!controller.signal.aborted)
+				exportProblem = 'Recording coverage could not be loaded. Try exporting again.';
+		} finally {
+			if (exportCheck === controller) exportCheck = null;
+		}
+	}
 	function markRange(edge: 'start' | 'end') {
 		if (edge === 'start') rangeStart = moment();
 		else rangeEnd = moment();
@@ -397,12 +435,10 @@
 		<button
 			type="button"
 			class="min-h-11 rounded-sm border border-hairline px-3 disabled:opacity-45"
-			disabled={!range || !chosen.has(focus)}
-			onclick={() => {
-				const segment = chosen.get(focus);
-				if (range && segment) openExport(moment(), focus, segment.stream, reviewSelection);
-			}}>Export focused camera</button
+			disabled={!range || !authorized.some((camera) => camera.id === focus) || !!exportCheck}
+			onclick={exportMarked}>Export focused camera</button
 		>
+		{#if exportProblem}<p role="alert">{exportProblem}</p>{/if}
 		{#if rangeStart !== null && rangeEnd !== null && !range}<p role="status"
 				>Choose an end after the start, within two minutes.</p
 			>{/if}

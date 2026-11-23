@@ -341,17 +341,36 @@ test('exports one focused source and retains the shared cameras, playhead and au
 	const redirect = recordedAudioBackendRoute(origin, server.url);
 	try {
 		await context.route('**/*', redirect);
-		const at = await overlappingMoment(page, server.url);
+		const response = await page.request.get(server.url + '/recording-coverage?stream=sub', {
+			headers: { Authorization: 'Bearer ' + cardAdminKey }
+		});
+		expect(response.ok()).toBeTruthy();
+		const coverage: RecordingCoverageResponse = await response.json();
+		const end = coverage.cameras
+			.find((row) => row.camera_id === cardSourceIds[1])
+			?.streams.find((stream) => stream.stream_id === 'sub')
+			?.ranges.at(-1)?.end_ms;
+		if (end === undefined)
+			throw new Error('The fixture must index the focused recording boundary.');
+		const at = end - 5000;
 		const [first, second] = cardSourceIds;
 		const initial = new URLSearchParams({ camera: first, stream: 'sub', at: String(at) });
 		initial.append('compare', first);
 		initial.append('compare', second);
 		await page.goto('/keep?' + initial);
 		await page.getByRole('combobox', { name: 'Focused camera' }).selectOption(second);
-		await expect(page.locator('article video')).toHaveCount(2);
+		await expect(page.getByRole('article', { name: 'card-camera-1' }).locator('video')).toHaveCount(
+			1
+		);
 		await page.getByRole('button', { name: 'Set range start' }).click();
 		await page.getByRole('button', { name: 'Forward five seconds' }).click();
 		await page.getByRole('button', { name: 'Set range end' }).click();
+		await expect(
+			page
+				.getByRole('article', { name: 'card-camera-1' })
+				.getByText('No playable footage at this time')
+		).toBeVisible();
+		await page.getByRole('button', { name: 'Forward five seconds' }).click();
 		await page.getByRole('button', { name: 'Export focused camera' }).click();
 		const panel = page.locator('[data-keep-export]');
 		await expect(panel).toHaveAttribute('data-export-start-ms', String(at));
@@ -377,7 +396,7 @@ test('exports one focused source and retains the shared cameras, playhead and au
 		const returned = new URL(page.url()).searchParams;
 		expect(returned.getAll('compare')).toEqual([...cardSourceIds]);
 		expect([returned.get('at'), returned.get('rangeStart'), returned.get('rangeEnd')]).toEqual([
-			String(at + 5000),
+			String(at + 10000),
 			String(at),
 			String(at + 5000)
 		]);
