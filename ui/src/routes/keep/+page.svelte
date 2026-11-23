@@ -133,13 +133,6 @@
 	let playbackUrl: string | null = $state(null);
 	const frames = new RecordedFramePlayer();
 	let frameCanvas = $state<HTMLCanvasElement | null>(null);
-	$effect.pre(() => {
-		const element = video;
-		const cursor = storedPlayback;
-		const url = playbackUrl;
-		if (mode !== 'timeline' || scrubbing || !element || !cursor || !url) return;
-		return untrack(() => frames.follow(element, cursor));
-	});
 	let playbackAnchorMs = 0;
 	let playbackVersion = 0;
 	let playbackSourceCommitVersion: number | null = null;
@@ -202,6 +195,13 @@
 	const keyframePreviewCache = new Map<string, string>();
 	let keyFrameUnsubscribe: (() => void) | null = null;
 	let scrubbing = $state(false);
+	$effect.pre(() => {
+		const element = video;
+		const cursor = storedPlayback;
+		const url = playbackUrl;
+		if (mode !== 'timeline' || scrubbing || !element || !cursor || !url) return;
+		return untrack(() => frames.follow(element, cursor));
+	});
 	let scrubTargetMs: number | null = null;
 	let scrubPump: Promise<void> | null = null;
 	let scrubVersion = 0;
