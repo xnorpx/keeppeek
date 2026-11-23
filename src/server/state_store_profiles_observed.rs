@@ -35,6 +35,29 @@ pub(in crate::server) fn generation(status: &RuntimeProfileStatus) -> Result<Str
     hex_digest(digest)
 }
 
+#[derive(Default)]
+pub(in crate::server) struct GenerationCache(
+    std::sync::Mutex<Option<(RuntimeProfileStatus, std::sync::Arc<str>)>>,
+);
+
+impl GenerationCache {
+    fn for_status(&self, status: &RuntimeProfileStatus) -> Result<std::sync::Arc<str>, Error> {
+        let mut cached = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((previous, generation)) = cached.as_ref()
+            && previous == status
+        {
+            return Ok(generation.clone());
+        }
+        // One snapshot covers a multipart read without retaining a row set for every viewer.
+        let generation: std::sync::Arc<str> = generation(status)?.into();
+        *cached = Some((status.clone(), generation.clone()));
+        Ok(generation)
+    }
+}
+
 pub(in crate::server) fn part_entry(
     status: &RuntimeProfileStatus,
     index: usize,
@@ -173,7 +196,12 @@ pub(super) fn snapshot_entry(
         visible = scoped_status(status, &ids);
         &visible
     };
-    entry_for_key(projected, key)
+    if let Some(index) = part_index(key) {
+        let generation = state.profile_generation_cache.for_status(projected)?;
+        part_entry(projected, index, &generation)
+    } else {
+        entry_for_key(projected, key)
+    }
 }
 
 pub(in crate::server) fn scoped_status(
@@ -338,4 +366,21 @@ mod key_tests {
             assert_eq!(part_index(key), None, "{key}");
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn generation_cache_reuses_only_the_same_observed_status() {
+    let cache = GenerationCache::default();
+    let mut status = RuntimeProfileStatus::default();
+    let first = cache.for_status(&status).unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        &first,
+        &cache.for_status(&status).unwrap()
+    ));
+    status.definition_revision = Some(2);
+    let edited = cache.for_status(&status).unwrap();
+    assert_ne!(first, edited);
+    status.definition_revision = None;
+    assert_eq!(first, cache.for_status(&status).unwrap());
 }
