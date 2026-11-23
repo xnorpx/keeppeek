@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-009751a7.js";
+            window.path_to_searchindex_js = "searchindex-787b9a58.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -1490,10 +1490,12 @@ the policy and save the desired settings successfully. Camera settings reload do
 that suspension. Restart ends sessions and transfers while preserving grants, revocations and
 committed counts. Starting again requires the original valid link and remaining usage allowance.</p>
 <p>Limits are 256 active grants, 32 per creator, eight media sessions globally and two per grant.
-Retained history is capped at 4096 records; creation is rejected when full. Expired/revoked metadata
-leaves lists after 30 days, with bounded physical cleanup. Exact-range derivatives, all four
-creator entry points, measured revoke latency and full HTTPS/performance qualification remain
-tracked implementation work.</p>
+KeepPeek retains at most 4,096 grant records and rejects creation when the history is full.
+Expired or revoked grants disappear from lists 30 days after the earlier of expiry and revocation.
+The running server deletes overdue records in batches of 256. When the server restarts after
+downtime, it removes every overdue record before opening the guest store for access.</p>
+<p>Exact-range creation, the remaining creator entry points and full transport qualification are
+tracked in <a href="https://github.com/xnorpx/keeppeek/issues/132">issue #132</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="digital-zoom-and-pan"><a class="header" href="#digital-zoom-and-pan">Digital zoom and pan</a></h1>
 <p>Digital zoom enlarges the media already decoded by your browser. It is available in the focused
@@ -2174,8 +2176,10 @@ than the immutable export’s expiry. Evidence is limited to two minutes and 512
 names are limited to 128 UTF-8 bytes and notes to 512. There are at most eight media sessions
 globally and two per grant. Retention may remove evidence before a grant expires; sharing
 creates no evidence hold. Expired or revoked metadata disappears from management lists after
-30 days, with bounded physical cleanup scheduled at most once per minute. New grants are
-rejected when the retained audit store reaches its fixed capacity.</p>
+30 days. On startup the recorder removes all overdue rows before serving grants, bounded by
+the 4,096-record history capacity. During normal operation a cleanup transaction removes at
+most 256 rows. A full batch schedules another pass, otherwise maintenance waits one minute.
+The recorder rejects new grants when its retained audit store reaches capacity.</p>
 <h2 id="external-authentication-configuration"><a class="header" href="#external-authentication-configuration">External authentication configuration</a></h2>
 <p>Type: <code>access::external::Config</code>, optional section <code>[external_auth]</code>. Configured
 OIDC providers use browser authorization-code login with PKCE. Configured identity
