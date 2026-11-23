@@ -1,5 +1,5 @@
 const maxRecordingBytes = 100 * 1024 * 1024;
-const maxRecordingDurationMs = 5 * 60_000;
+export const reportLimitMs = 5 * 60_000;
 const recordingTypes = ['video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
 
 type EndReason =
@@ -42,7 +42,10 @@ export async function startReportCapture({ signal, onSize }: CaptureOptions) {
 
 	const display = stream.getVideoTracks()[0];
 	const chunks: Blob[] = [];
-	const completion = Promise.withResolvers<CaptureResult>();
+	let complete!: (value: CaptureResult) => void;
+	const result = new Promise<CaptureResult>((resolve) => {
+		complete = resolve;
+	});
 	let bytes = 0;
 	let reason: EndReason | null = null;
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -64,7 +67,7 @@ export async function startReportCapture({ signal, onSize }: CaptureOptions) {
 				? new Blob(chunks, { type: (mimeType ?? '').split(';')[0] })
 				: null;
 		chunks.length = 0;
-		completion.resolve({ reason: outcome, recording });
+		complete({ reason: outcome, recording });
 	}
 
 	function stop(next: EndReason): Promise<CaptureResult> {
@@ -72,7 +75,7 @@ export async function startReportCapture({ signal, onSize }: CaptureOptions) {
 			reason = next;
 			if (recorder.state !== 'inactive') recorder.stop();
 		}
-		return completion.promise;
+		return result;
 	}
 
 	const onDisplayEnded = () => {
@@ -114,12 +117,12 @@ export async function startReportCapture({ signal, onSize }: CaptureOptions) {
 		recorder.start(1_000);
 		timer = setTimeout(() => {
 			void stop('duration-limit');
-		}, maxRecordingDurationMs);
+		}, reportLimitMs);
 		if (display.readyState === 'ended') onDisplayEnded();
 	} catch (error) {
 		reason = 'error';
 		finalize();
 		throw error;
 	}
-	return { result: completion.promise, stop: () => stop('stopped') };
+	return { result, stop: () => stop('stopped') };
 }

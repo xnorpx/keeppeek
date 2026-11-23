@@ -40,12 +40,15 @@
 	let hasDraft = $derived(reportTextFields.some(({ key }) => draft[key].trim()));
 
 	let submission: ReportSubmission | null = $state.raw(null);
-	let submissionState = $state<'review' | 'confirm' | 'sending' | 'retry' | 'complete'>('review');
+	let submissionState = $state<
+		'review' | 'confirm' | 'sending' | 'cancelling' | 'retry' | 'complete'
+	>('review');
+	let checkOnly = $state(false);
 	let submissionError: string | null = $state(null);
 	let issueUrl: string | null = $state(null);
 	let progress: ReportProgress = $state({ uploaded: 0, total: 0 });
 
-	const labels = {
+	const labels: Record<string, string> = {
 		'browser-log-window-incomplete': 'Some browser log entries are missing.',
 		'server-log-window-incomplete': 'Some server log entries are missing.',
 		'server-log-filter-active': 'The active server log filter may have excluded entries.',
@@ -139,12 +142,23 @@
 		submissionState = 'sending';
 		submissionError = null;
 		try {
-			const result = await attempt.submit((next) => {
-				progress = next;
-			});
-			if (submission !== attempt) return;
+			const result = await (checkOnly
+				? attempt.check()
+				: attempt.submit((next) => {
+						progress = next;
+					}));
+			if (submission !== attempt || submissionState !== 'sending') return;
+			if (checkOnly && result.state === 'cancelled') {
+				resetSubmission();
+				return;
+			}
 			if (result.state === 'complete') {
-				const url = URL.parse(result.issueUrl);
+				let url: URL | undefined;
+				try {
+					url = new URL(result.issueUrl);
+				} catch {
+					// The completed submission remains valid even if its link is unusable.
+				}
 				if (
 					!url ||
 					url.origin !== 'https://github.com' ||
@@ -165,11 +179,27 @@
 			submissionError =
 				'The service has not returned an issue. You can check again or download the report.';
 		} catch {
-			if (submission !== attempt) return;
+			if (submission !== attempt || submissionState !== 'sending') return;
 			submissionError =
 				'The service could not confirm submission. You can retry or download the report.';
 		}
 		submissionState = 'retry';
+	}
+
+	async function cancelUpload(): Promise<void> {
+		const attempt = submission;
+		if (!attempt || submissionState !== 'sending') return;
+		submissionState = 'cancelling';
+		const confirmed = await attempt.cancel();
+		if (submission !== attempt) return;
+		if (confirmed) {
+			resetSubmission();
+			return;
+		}
+		checkOnly = true;
+		submissionState = 'retry';
+		submissionError =
+			'The service could not confirm cancellation. Check the existing submission before trying again.';
 	}
 
 	function resetSubmission(): void {
@@ -178,6 +208,7 @@
 		submissionState = 'review';
 		submissionError = null;
 		issueUrl = null;
+		checkOnly = false;
 		progress = { uploaded: 0, total: 0 };
 	}
 
@@ -230,7 +261,7 @@
 	class="m-auto max-h-[85dvh] w-[calc(100%-2rem)] max-w-xl overflow-auto rounded-md border border-hairline bg-surface p-0 text-foreground shadow-xl backdrop:bg-black/55"
 	oncancel={(event) => {
 		event.preventDefault();
-		open = false;
+		if (!review) open = false;
 	}}
 >
 	<div class="space-y-4 p-4 sm:p-6">
@@ -344,9 +375,13 @@
 						class="w-full"
 					></progress>
 				{/if}
-				<Button variant="outline" onclick={resetSubmission}>Cancel upload</Button>
+				<Button variant="outline" onclick={() => void cancelUpload()}>Cancel upload</Button>
+			{:else if submissionState === 'cancelling'}
+				<p role="status" class="text-sm">Checking cancellation</p>
 			{:else if submissionState === 'retry'}
-				<Button onclick={() => void submitConfirmed()}>Retry submission</Button>
+				<Button onclick={() => void submitConfirmed()}
+					>{checkOnly ? 'Check submission' : 'Retry submission'}</Button
+				>
 			{:else if submissionState === 'complete'}
 				{#if issueUrl}<a href={issueUrl} class="text-sm font-medium underline"
 						>Open the created GitHub issue</a
@@ -392,7 +427,13 @@
 						disabled={submissionState !== 'review'}>Discard screen recording</Button
 					>
 				{/if}
-				<Button onclick={discard} disabled={submissionState === 'sending'}>Done</Button>
+				{#if submissionState === 'retry'}
+					<Button variant="outline" onclick={() => (open = false)}>Keep report</Button>
+				{:else}
+					<Button onclick={discard} disabled={['sending', 'cancelling'].includes(submissionState)}
+						>Done</Button
+					>
+				{/if}
 			</div>
 		{:else if session.phase === 'idle'}
 			<p class="text-sm"

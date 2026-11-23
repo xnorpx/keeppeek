@@ -93,3 +93,47 @@ it('refuses an invalid package before the service is called', () => {
 	).toThrow('unsupported or oversized artifact');
 	expect(keys).toHaveLength(0);
 });
+
+it('checks the original submission without uploading again when cancellation races finalization', async () => {
+	const { service, transport, text, diagnostics, keys } = setup();
+	const finalize = transport.finalize;
+	let notifyCreated!: () => void;
+	const created = new Promise<void>((resolve) => (notifyCreated = resolve));
+	transport.finalize = async (grant, signal) => {
+		await finalize(grant, signal);
+		notifyCreated();
+		return new Promise((_resolve, reject) => {
+			signal.addEventListener('abort', () => reject(new Error('Request cancelled')), {
+				once: true
+			});
+		});
+	};
+	const submission = new ReportSubmission(transport, { text, diagnostics, evidenceWarnings: [] });
+	const sent = submission.submit(() => {});
+	const settled = expect(sent).rejects.toThrow('Request cancelled');
+	await created;
+	expect(await submission.cancel()).toBe(false);
+	await settled;
+	transport.upload = async () => {
+		throw new Error('Status reconciliation must not upload');
+	};
+	expect(await submission.check()).toMatchObject({ state: 'complete' });
+	expect(keys).toHaveLength(1);
+	expect(service.createdIssues()).toHaveLength(1);
+});
+
+it('preserves the original grant if the service cannot confirm cancellation', async () => {
+	const { service, transport, text, diagnostics, keys } = setup();
+	transport.upload = async () => {
+		throw new Error('Upload failed');
+	};
+	transport.cancel = async () => {
+		throw new Error('Cancellation unconfirmed');
+	};
+	const submission = new ReportSubmission(transport, { text, diagnostics, evidenceWarnings: [] });
+	await expect(submission.submit(() => {})).rejects.toThrow('Upload failed');
+	expect(await submission.cancel()).toBe(false);
+	expect(await submission.check()).toEqual({ state: 'pending' });
+	expect(keys).toHaveLength(1);
+	expect(service.createdIssues()).toHaveLength(0);
+});

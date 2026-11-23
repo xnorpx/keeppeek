@@ -1,5 +1,4 @@
 import schema from '../../../schemas/reporting/report-v1.schema.json';
-import type { ReportLogWindow } from './report-log-window';
 
 export type ReportText = {
 	title: string;
@@ -78,7 +77,7 @@ type ReviewInput = {
 	text: ReportText;
 	diagnostics: Blob;
 	screen?: Blob;
-	evidenceWarnings: ReportLogWindow['manifest']['warnings'];
+	evidenceWarnings: readonly string[];
 };
 
 export class ReportSubmission {
@@ -88,6 +87,7 @@ export class ReportSubmission {
 	readonly #key: string;
 	#active: { controller: AbortController; result: Promise<ReportState> } | null = null;
 	#cancelled = false;
+	#finalizationStarted = false;
 	#grant: ReportGrant | undefined;
 	#completed: Extract<ReportState, { state: 'complete' }> | undefined;
 
@@ -112,11 +112,25 @@ export class ReportSubmission {
 	}
 
 	submit(onProgress: (progress: ReportProgress) => void): Promise<ReportState> {
+		return this.startAttempt((signal) => this.run(signal, onProgress));
+	}
+
+	check(): Promise<ReportState> {
+		return this.startAttempt(async (signal) => {
+			const grant = this.#grant;
+			if (!grant) return { state: 'cancelled' };
+			const status = await this.transport.status(grant, signal);
+			signal.throwIfAborted();
+			return this.finish(status);
+		});
+	}
+
+	private startAttempt(run: (signal: AbortSignal) => Promise<ReportState>): Promise<ReportState> {
 		if (this.#completed) return Promise.resolve(this.#completed);
 		if (this.#cancelled) return Promise.resolve({ state: 'cancelled' });
 		if (this.#active) return this.#active.result;
 		const controller = new AbortController();
-		const result = this.run(controller.signal, onProgress);
+		const result = run(controller.signal);
 		this.#active = { controller, result };
 		void result.then(
 			() => this.clear(controller),
@@ -158,6 +172,7 @@ export class ReportSubmission {
 			committed += artifact.size;
 			onProgress({ uploaded: committed, total: this.#total });
 		}
+		this.#finalizationStarted = true;
 		const finalized = await this.transport.finalize(grant, signal);
 		signal.throwIfAborted();
 		return this.finish(finalized);
@@ -171,16 +186,32 @@ export class ReportSubmission {
 		return state;
 	}
 
-	async cancel(): Promise<void> {
+	async cancel(): Promise<boolean> {
+		const active = this.#active;
+		this.#active = null;
+		active?.controller.abort();
+		if (this.#finalizationStarted || this.#completed) return false;
+
 		this.#cancelled = true;
-		this.#active?.controller.abort();
 		const grant = this.#grant;
-		this.#grant = undefined;
-		if (grant) await this.cancelStaged(grant);
+		if (!grant) return true;
+
+		const confirmed = await this.cancelStaged(grant);
+		if (confirmed) this.#grant = undefined;
+		else this.#cancelled = false;
+		return confirmed;
 	}
 
-	private async cancelStaged(grant: ReportGrant): Promise<void> {
-		// Upload cancellation is immediate. A bounded second request removes accepted chunks.
-		await this.transport.cancel(grant, AbortSignal.timeout(5_000)).catch(() => undefined);
+	private async cancelStaged(grant: ReportGrant): Promise<boolean> {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), 5_000);
+		try {
+			await this.transport.cancel(grant, controller.signal);
+			return !controller.signal.aborted;
+		} catch {
+			return false;
+		} finally {
+			clearTimeout(timer);
+		}
 	}
 }

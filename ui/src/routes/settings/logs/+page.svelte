@@ -76,20 +76,19 @@
 		}
 	}
 
+	function recordGap(count: number): void {
+		skippedEntries += count;
+		report?.session.recordServerLogGap();
+	}
+
 	function startStream(after?: number, tail = 200): void {
 		stream?.close(false);
 		stream = new ServerLogStream(
 			{
 				onentry: appendServerEntry,
 				onstate: (state) => (streamState = state),
-				ongap: (dropped) => {
-					skippedEntries += dropped;
-					report?.session.recordServerLogGap();
-				},
-				onreplaytruncated: () => {
-					skippedEntries += 1;
-					report?.session.recordServerLogGap();
-				}
+				ongap: recordGap,
+				onreplaytruncated: () => recordGap(1)
 			},
 			(url, signal) => controlClient.openLogStream(url, signal)
 		);
