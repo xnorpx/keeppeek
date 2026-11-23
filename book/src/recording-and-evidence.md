@@ -54,8 +54,10 @@ when decoder capacity is limited. Pausing, seeking or changing the focused or
 audio camera updates the link so it can reopen the comparison at that moment.
 **Copy link to this moment** captures the current playhead while recordings are
 playing. The browser remembers the playback speed and mute preference.
-On a compact screen, up to two recordings can decode. A hidden browser tab
-releases the comparison players and reopens visible footage on return.
+On a compact screen, up to two recordings can decode. On phones, **Comparison
+options** opens the camera, audio, speed and UTC seek controls.
+A hidden browser tab releases the comparison players and reopens visible footage
+on return.
 If the connection drops during playback, the sign-in screen clears the camera
 views. After reconnecting, the comparison opens paused at the last shared UTC
 time. A comparison link still opens its authorized cameras when a selected camera

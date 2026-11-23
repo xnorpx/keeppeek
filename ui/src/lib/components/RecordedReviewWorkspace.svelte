@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, untrack } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { resolve } from '$app/paths';
 	import CopyMomentLink from './CopyMomentLink.svelte';
 	import { recordedPlaybackRates } from './RecordedPlaybackControls.svelte';
@@ -44,6 +44,10 @@
 		updateLink: (at: number, focus: string, selection: KeepReviewSelection) => void;
 		single: (at: number, focus: string) => void;
 	} = $props();
+	const workspaceId = $props.id();
+	let optionsOpen = $state(false);
+	let optionsButton = $state<HTMLButtonElement>();
+	let focusControl = $state<HTMLSelectElement>();
 	const client = useControlClient();
 	const requests = new RecordedReviewRequests();
 	const clock = new GridPlaybackSession();
@@ -211,6 +215,15 @@
 		revision++;
 		persist();
 	}
+	function persistCameraSelection() {
+		const previous = document.activeElement;
+		persist();
+		void tick().then(() => {
+			if (!previous || previous.isConnected || document.activeElement !== document.body) return;
+			const target = focusControl?.getClientRects().length ? focusControl : optionsButton;
+			target?.focus();
+		});
+	}
 	function addCamera(id: string) {
 		if (
 			ids.length >= maximumReviewCameras ||
@@ -219,7 +232,7 @@
 		)
 			return;
 		ids = [...ids, id];
-		persist();
+		persistCameraSelection();
 	}
 	function removeCamera(id: string) {
 		const remaining = ids.filter((camera) => camera !== id);
@@ -235,7 +248,7 @@
 		focus = nextFocus;
 		if (!remaining.includes(audio)) audio = nextFocus;
 		ids = remaining;
-		persist();
+		persistCameraSelection();
 	}
 	function togglePlaying() {
 		playing = !playing;
@@ -289,94 +302,114 @@
 		<time class="font-mono text-sm" datetime={new Date(epoch).toISOString()}
 			>{new Date(epoch).toISOString().replace('T', ' ').replace('Z', ' UTC')}</time
 		>
-		<form
-			class="flex flex-wrap items-center gap-2"
-			onsubmit={(event) => {
-				event.preventDefault();
-				seekTo(Date.parse(seekInput + 'Z'));
-			}}
-		>
-			<label
-				>Seek to UTC <input
-					aria-label="Seek to UTC"
-					type="datetime-local"
-					step="0.001"
-					min="1970-01-01T00:00:00"
-					max="9999-12-31T23:59:59.999"
-					required
-					bind:value={seekInput}
-				/></label
-			>
-			<button class="min-h-11 px-2" type="submit">Go to time</button>
-		</form>
-		{#if ids.length < maximumReviewCameras && cameras.some((camera) => !ids.includes(camera.id))}
-			<label
-				>Add camera <select
-					aria-label="Add camera"
-					value=""
-					onchange={(event) => {
-						addCamera(event.currentTarget.value);
-						event.currentTarget.value = '';
-					}}
-				>
-					<option value="">Select camera</option>
-					{#each cameras.filter((camera) => !ids.includes(camera.id)) as camera (camera.id)}
-						<option value={camera.id}>{label(camera.id)}</option>
-					{/each}
-				</select></label
-			>
-		{/if}
-		<label
-			>Focus <select
-				aria-label="Focused camera"
-				value={focus}
-				onchange={(event) => {
-					focus = event.currentTarget.value;
-					persist();
-				}}
-				>{#each authorized as camera (camera.id)}<option value={camera.id}
-						>{label(camera.id)}</option
-					>{/each}</select
-			></label
-		>
-		<label
-			>Audio <select
-				aria-label="Audio source"
-				value={audio}
-				onchange={(event) => {
-					audio = event.currentTarget.value;
-					persist();
-				}}
-				>{#each authorized as camera (camera.id)}<option value={camera.id}
-						>{label(camera.id)}</option
-					>{/each}</select
-			></label
-		>
 		<button
 			type="button"
-			aria-label="Mute audio"
-			aria-pressed={muted}
-			class="h-11 px-2"
-			onclick={() => {
-				muted = !muted;
-				rememberMedia();
-			}}>{muted ? 'Unmute' : 'Mute'}</button
+			class="min-h-11 rounded-sm border border-hairline-strong px-3 md:hidden"
+			bind:this={optionsButton}
+			aria-expanded={optionsOpen}
+			aria-controls={workspaceId + '-settings'}
+			onclick={() => (optionsOpen = !optionsOpen)}
 		>
-		<label
-			>Speed <select
-				aria-label="Playback speed"
-				value={rate}
-				onchange={(event) => {
-					rate = Number(event.currentTarget.value);
-					clock.setRate(rate, performance.now());
-					rememberMedia();
+			Comparison options
+		</button>
+		<div id={workspaceId + '-settings'} class={optionsOpen ? 'contents' : 'hidden md:contents'}>
+			<form
+				class="flex flex-wrap items-center gap-2"
+				onsubmit={(event) => {
+					event.preventDefault();
+					seekTo(Date.parse(seekInput + 'Z'));
 				}}
-				>{#each recordedPlaybackRates as speed (speed)}<option value={speed}>{speed}×</option
-					>{/each}</select
-			></label
-		>
+			>
+				<label
+					>Seek to UTC <input
+						class="min-h-11 max-w-full"
+						aria-label="Seek to UTC"
+						type="datetime-local"
+						step="0.001"
+						min="1970-01-01T00:00:00"
+						max="9999-12-31T23:59:59.999"
+						required
+						bind:value={seekInput}
+					/></label
+				>
+				<button class="min-h-11 px-2" type="submit">Go to time</button>
+			</form>
+			{#if ids.length < maximumReviewCameras && cameras.some((camera) => !ids.includes(camera.id))}
+				<label
+					>Add camera <select
+						class="min-h-11 max-w-full min-w-11"
+						aria-label="Add camera"
+						value=""
+						onchange={(event) => {
+							addCamera(event.currentTarget.value);
+							event.currentTarget.value = '';
+						}}
+					>
+						<option value="">Select camera</option>
+						{#each cameras.filter((camera) => !ids.includes(camera.id)) as camera (camera.id)}
+							<option value={camera.id}>{label(camera.id)}</option>
+						{/each}
+					</select></label
+				>
+			{/if}
+			<label
+				>Focus <select
+					class="min-h-11 max-w-full min-w-11"
+					aria-label="Focused camera"
+					bind:this={focusControl}
+					value={focus}
+					onchange={(event) => {
+						focus = event.currentTarget.value;
+						persist();
+					}}
+					>{#each authorized as camera (camera.id)}<option value={camera.id}
+							>{label(camera.id)}</option
+						>{/each}</select
+				></label
+			>
+			<label
+				>Audio <select
+					class="min-h-11 max-w-full min-w-11"
+					aria-label="Audio source"
+					value={audio}
+					onchange={(event) => {
+						audio = event.currentTarget.value;
+						persist();
+					}}
+					>{#each authorized as camera (camera.id)}<option value={camera.id}
+							>{label(camera.id)}</option
+						>{/each}</select
+				></label
+			>
+			<button
+				type="button"
+				aria-label="Mute audio"
+				aria-pressed={muted}
+				class="h-11 px-2"
+				onclick={() => {
+					muted = !muted;
+					rememberMedia();
+				}}>{muted ? 'Unmute' : 'Mute'}</button
+			>
+			<label
+				>Speed <select
+					class="min-h-11 max-w-full min-w-11"
+					aria-label="Playback speed"
+					value={rate}
+					onchange={(event) => {
+						rate = Number(event.currentTarget.value);
+						clock.setRate(rate, performance.now());
+						rememberMedia();
+					}}
+					>{#each recordedPlaybackRates as speed (speed)}<option value={speed}>{speed}×</option
+						>{/each}</select
+				></label
+			>
+		</div>
 	</div>
-	{#if unavailable}<button type="button" onclick={() => retry++}>Retry coverage</button>{/if}
+	{#if unavailable}<button class="min-h-11 px-2" type="button" onclick={() => retry++}
+			>Retry coverage</button
+		>{/if}
 	<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
 		{#each ids as cameraId (cameraId)}
 			{@const segment = chosen.get(cameraId)}

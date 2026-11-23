@@ -91,6 +91,7 @@ async function checkLimitedDecoder(page: Page) {
 	await page.setViewportSize({ width: 390, height: 844 });
 	await expect(page.locator('article video')).toHaveCount(1);
 	await expect(page.getByText('Waiting for a decoder')).toBeVisible();
+	await page.getByRole('button', { name: 'Comparison options' }).click();
 	await page.getByRole('combobox', { name: 'Focused camera' }).selectOption(cardSourceIds[1]);
 	await expect(page.getByRole('article', { name: 'card-camera-1' }).locator('video')).toHaveCount(
 		1
