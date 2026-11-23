@@ -312,9 +312,9 @@ fn archive_export_owner_index_filters_before_limiting() -> anyhow::Result<()> {
             .await?;
         let insert = "INSERT INTO archive_replicas(job_id,recording_id,kind,target_id,object_id,
             source_path,source_identity,bytes,digest,source_root,source_filesystem,source_root_identity,
-            source_relative_key,source_operation,state,export_job_id,export_metadata)
+            source_relative_key,source_operation,state,version,export_job_id,export_metadata)
             VALUES('archive-'||?1,'artifact-'||?1,'export','cold','object-'||?1,'source','inode',1,
-            zeroblob(32),'/hot','fs','root','key','operation',?2,?1,?3)";
+            zeroblob(32),'/hot','fs','root','key','operation',?2,'version',?1,?3)";
         for i in 0..72 {
             let id = format!("job-{i:03}");
             let owner = if i == 71 { "other" } else { "owner" };

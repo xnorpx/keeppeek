@@ -75,7 +75,7 @@ pub(in crate::server) fn snapshot(
     else {
         return Ok(None);
     };
-    if archive.state != "ready" {
+    if archive.state != "ready" || archive.version.is_none() {
         return Ok(None);
     }
     if archive.kind != "export" || archive.export_job_id.as_deref() != Some(job_id) {

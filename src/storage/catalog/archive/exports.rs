@@ -21,7 +21,7 @@ pub(super) async fn list(
             "SELECT export_job_id,recording_id,digest,export_metadata
              FROM archive_replicas INDEXED BY archive_ready_export_owner
              WHERE kind='export' AND state='ready' AND json_valid(export_metadata)
-               AND json_extract(export_metadata,'$.requester_id')=?1
+               AND version IS NOT NULL AND json_extract(export_metadata,'$.requester_id')=?1
                AND length(CAST(export_metadata AS BLOB)) BETWEEN 1 AND 65536
                AND export_job_id NOT IN (SELECT value FROM json_each(?2))
              ORDER BY json_extract(export_metadata,'$.created_at_ms') DESC,export_job_id
