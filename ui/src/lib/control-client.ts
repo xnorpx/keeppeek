@@ -525,7 +525,7 @@ export class ControlClient {
 					'Restore verification requires the same live remote Administrator session.'
 				);
 		};
-		return this.request(command, controlTimeoutMs, undefined, admit);
+		return this.request(command, controlTimeoutMs, { admit });
 	}
 
 	beginConfigurationRestoreVerification(archiveBytes: bigint, archiveSha256: string) {
@@ -988,11 +988,15 @@ export class ControlClient {
 		);
 	}
 
-	private async admitEventSearch(command: Request['command'], signal?: AbortSignal) {
+	private async admitEventSearch(
+		command: Request['command'],
+		signal: AbortSignal,
+		onSent: () => void
+	) {
 		const delays = [60, 120, 240, 480, 960];
 		for (let attempt = 0; ; attempt++) {
 			try {
-				return await this.request(command, controlTimeoutMs, signal);
+				return await this.request(command, controlTimeoutMs, { signal, onSent });
 			} catch (cause) {
 				const delay = delays[attempt];
 				if (!(cause instanceof EventSearchCapacityError) || delay === undefined) throw cause;
@@ -1008,13 +1012,14 @@ export class ControlClient {
 		if (signal?.aborted) throw timelineAbortError();
 		const queryId = `event-search-${this.#nextStoredId++}`;
 		const admission = new AbortController();
+		let sent = false;
 		const completed = new Promise<EventPreviewPage>((resolve, reject) => {
 			this.#eventSearchPending.set(queryId, { hits: [], sequences: new Set(), resolve, reject });
 		});
 		const cancel = (reason: Error) => {
 			admission.abort(reason);
 			this.#eventSearchPending.get(queryId)?.reject(reason);
-			void this.cancelEventSearchQuery(queryId).catch(() => undefined);
+			if (sent) void this.cancelEventSearchQuery(queryId).catch(() => undefined);
 		};
 		const abort = () => cancel(timelineAbortError());
 		const deadline = setTimeout(
@@ -1028,7 +1033,10 @@ export class ControlClient {
 			});
 			const admitted = this.admitEventSearch(
 				{ case: 'eventSearchCommand', value: command },
-				admission.signal
+				admission.signal,
+				() => {
+					sent = true;
+				}
 			).then((result) => {
 				if (
 					result.case !== 'eventSearchDelivery' ||
@@ -1225,7 +1233,7 @@ export class ControlClient {
 			const result = await this.request(
 				{ case: 'storedMediaCommand', value: command },
 				options.openTimeoutMs ?? 4_000,
-				options.signal
+				{ signal: options.signal }
 			);
 			if (result.case !== 'storedMediaState') {
 				throw new Error('Server returned an unexpected stored media response.');
@@ -2287,17 +2295,20 @@ export class ControlClient {
 		admit?.();
 		signal?.throwIfAborted();
 		await this.connect();
-		admit?.();
-		signal?.throwIfAborted();
 	}
 
 	private async request(
 		command: Request['command'],
 		timeoutMs = controlTimeoutMs,
-		signal?: AbortSignal,
-		admit?: () => void
+		{
+			signal,
+			admit,
+			onSent
+		}: { signal?: AbortSignal; admit?: () => void; onSent?: () => void } = {}
 	) {
 		await this.connectForRequest(signal, admit);
+		admit?.();
+		signal?.throwIfAborted();
 		const channel = this.#controlChannel;
 		if (!channel || channel.readyState !== 'open') {
 			throw new Error('WebRTC control channel is unavailable.');
@@ -2327,6 +2338,7 @@ export class ControlClient {
 		});
 		try {
 			channel.send(toBinary(ControlEnvelopeSchema, envelope));
+			onSent?.();
 			const reply = await response;
 			if (reply.result.case === 'error') {
 				// The existing recorder uses REJECTED for both an occupied search slot and a duplicate ID.
@@ -2372,6 +2384,11 @@ export class ControlClient {
 			return reply.result.value.result;
 		} finally {
 			signal?.removeEventListener('abort', abort);
+			const pending = this.#pending.get(requestId);
+			if (pending) {
+				clearTimeout(pending.timeout);
+				this.#pending.delete(requestId);
+			}
 		}
 	}
 

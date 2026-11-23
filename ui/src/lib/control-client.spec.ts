@@ -2708,11 +2708,16 @@ describe('ControlClient', () => {
 			answer: { type: 'answer', sdp: 'v=0' }
 		});
 		const client = new ControlClient();
-		await client.connect();
+		await client.getServerCapabilities();
 		const channel = FakePeerConnection.latest!.channels.find(
 			(item) => item.label === 'control-channel'
 		)!;
-		const options = { sourceIds: ['front-door'], streamId: 'main', startMs: 1, endMs: 5000 };
+		const options = {
+			sourceIds: ['front-door'],
+			streamId: 'main' as const,
+			startMs: 1,
+			endMs: 5000
+		};
 		const capacity = 'event search task limit is reached';
 		channel.eventSearchRefusals.push(capacity, capacity);
 		const page = await client.searchEventMetadata(options);
@@ -2736,6 +2741,71 @@ describe('ControlClient', () => {
 		await client.close();
 	});
 
+	it('cancels a search between connection readiness and control send without allocating a response', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'search-cancel-before-send',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+		await client.getServerCapabilities();
+		const channel = FakePeerConnection.latest!.channels.find(
+			(item) => item.label === 'control-channel'
+		)!;
+		vi.useFakeTimers();
+		try {
+			const timers = vi.getTimerCount();
+			const controller = new AbortController();
+			const query = client.searchEventMetadata({
+				sourceIds: ['front-door'],
+				streamId: 'main',
+				startMs: 1,
+				endMs: 5000,
+				signal: controller.signal
+			});
+			queueMicrotask(() => controller.abort());
+			await expect(query).rejects.toMatchObject({ name: 'AbortError' });
+			expect(channel.eventSearchQueries).toHaveLength(0);
+			expect(channel.eventSearchCancelled).toHaveLength(0);
+			expect(vi.getTimerCount()).toBe(timers);
+		} finally {
+			await client.close();
+			vi.useRealTimers();
+		}
+	});
+
+	it('releases the control response timer when sending a search fails', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'search-send-failure',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+		await client.getServerCapabilities();
+		const channel = FakePeerConnection.latest!.channels.find(
+			(item) => item.label === 'control-channel'
+		)!;
+		vi.spyOn(channel, 'send').mockImplementationOnce(() => {
+			throw new Error('Transport closed during send');
+		});
+		vi.useFakeTimers();
+		try {
+			const timers = vi.getTimerCount();
+			await expect(
+				client.searchEventMetadata({
+					sourceIds: ['front-door'],
+					streamId: 'main',
+					startMs: 1,
+					endMs: 5000
+				})
+			).rejects.toThrow('Transport closed during send');
+			expect(vi.getTimerCount()).toBe(timers);
+		} finally {
+			await client.close();
+			vi.useRealTimers();
+		}
+	});
+
 	it('stops retrying a slow event query at its delivery deadline', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({
@@ -2743,7 +2813,7 @@ describe('ControlClient', () => {
 			answer: { type: 'answer', sdp: 'v=0' }
 		});
 		const client = new ControlClient();
-		await client.connect();
+		await client.getServerCapabilities();
 		const channel = FakePeerConnection.latest!.channels.find(
 			(item) => item.label === 'control-channel'
 		)!;
