@@ -10,6 +10,8 @@ import {
 import { recordedAudioBackendRoute } from './fixtures/recorded-audio-playback';
 import type { RecordingCoverageResponse } from '../src/lib/types';
 
+test.use({ timezoneId: 'America/New_York' });
+
 async function displayed(video: Locator) {
 	return video.evaluate((element: HTMLVideoElement) => ({
 		seconds: element.currentTime,

@@ -2518,7 +2518,14 @@
 			{#if cameras.length > 1 && cameraId && playheadMs !== null}
 				<label class="inline-flex min-h-11 items-center gap-2 text-sm"
 					>Compare with
-					<select value="" onchange={(event) => compareWith(event.currentTarget.value)}>
+					<select
+						value=""
+						onchange={(event) => {
+							const id = event.currentTarget.value;
+							event.currentTarget.value = '';
+							compareWith(id);
+						}}
+					>
 						<option value="">Select camera</option>
 						{#each cameras.filter((camera) => camera.id !== cameraId) as camera (camera.id)}
 							<option value={camera.id}>{camera.name || camera.id}</option>
