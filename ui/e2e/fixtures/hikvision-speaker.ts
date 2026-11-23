@@ -6,6 +6,7 @@ export type SpeakerObservation = {
 	bytes: number;
 	audible: number;
 	crossings: number;
+	peerClosedUploads: number;
 };
 
 export function observeSpeaker(
@@ -26,13 +27,14 @@ export function observeSpeaker(
 			output += chunk.toString();
 			if (output.length > 160) return finish(new Error('Oversized speaker observation'));
 			if (!output.endsWith('\n')) return;
-			const match = /^speaker (true|false) (\d+) (\d+) (\d+)$/.exec(output.trim());
+			const match = /^speaker (true|false) (\d+) (\d+) (\d+) (\d+)$/.exec(output.trim());
 			if (!match) return finish(new Error('Malformed speaker observation'));
 			finish(undefined, {
 				active: match[1] === 'true',
 				bytes: Number(match[2]),
 				audible: Number(match[3]),
-				crossings: Number(match[4])
+				crossings: Number(match[4]),
+				peerClosedUploads: Number(match[5])
 			});
 		};
 		const timer = setTimeout(

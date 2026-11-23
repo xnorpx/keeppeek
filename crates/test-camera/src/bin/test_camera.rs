@@ -168,7 +168,9 @@ fn serve_hikvision(
     media: Option<&std::path::Path>,
     speaker_observations: bool,
 ) -> anyhow::Result<()> {
-    let camera = test_camera::hikvision::FakeHikvision::builder().start()?;
+    let camera = test_camera::hikvision::FakeHikvision::builder()
+        .observe_upload_closure(speaker_observations)
+        .start()?;
     let streams = media
         .map(|path| {
             TestCameraBuilder::rtsp(path, path)
@@ -237,9 +239,10 @@ fn observe_hikvision_speaker(camera: &test_camera::hikvision::FakeHikvision) -> 
                     audible += 1;
                 }
                 println!(
-                    "speaker {} {} {audible} {crossings}",
+                    "speaker {} {} {audible} {crossings} {}",
                     camera.audio_active(),
-                    samples.len()
+                    samples.len(),
+                    camera.audio_uploads_closed_by_peer()
                 );
                 std::io::stdout().flush()?;
             }

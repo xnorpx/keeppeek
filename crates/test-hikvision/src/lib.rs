@@ -141,6 +141,7 @@ impl EventPart {
 
 /// Builds a stateful fake device or a scripted protocol-fault scenario.
 pub struct Builder {
+    observe_upload_closure: bool,
     username: String,
     password: String,
     digest: bool,
@@ -158,6 +159,11 @@ impl Builder {
     /// Enables or disables authentication for tests that target unrelated transport failures.
     pub const fn digest(mut self, enabled: bool) -> Self {
         self.digest = enabled;
+        self
+    }
+    /// Keeps upload sockets open until the peer closes even after a channel is released.
+    pub const fn observe_upload_closure(mut self, enabled: bool) -> Self {
+        self.observe_upload_closure = enabled;
         self
     }
     /// Queues a wire reply for the next request, before normal device routing or authentication.
@@ -205,12 +211,14 @@ impl Builder {
                 audio_session: None,
                 next_audio_session: 1,
                 audio_output: Vec::new(),
+                audio_uploads_closed_by_peer: 0,
                 audio_input: vec![0xff; 160],
                 audio_input_after_output: 0,
             }),
             username: self.username,
             password: self.password,
             digest: self.digest,
+            observe_upload_closure: self.observe_upload_closure,
         });
         let worker = Arc::clone(&shared);
         let handle = std::thread::Builder::new()
@@ -244,6 +252,7 @@ impl FakeHikvision {
     /// Uses Digest authentication and the fixture credentials `test` / `test` by default.
     pub fn builder() -> Builder {
         Builder {
+            observe_upload_closure: false,
             username: "test".to_owned(),
             password: "test".to_owned(),
             digest: true,
@@ -329,6 +338,15 @@ impl FakeHikvision {
     /// Reports whether the synthetic audio channel currently has a session owner.
     pub fn audio_active(&self) -> bool {
         self.shared.state.lock().unwrap().audio_session.is_some()
+    }
+
+    /// Counts upload EOF or reset from the peer while closure observation is enabled.
+    pub fn audio_uploads_closed_by_peer(&self) -> u64 {
+        self.shared
+            .state
+            .lock()
+            .unwrap()
+            .audio_uploads_closed_by_peer
     }
 
     /// Returns the original speaker bytes received after the latest audio handshake.
@@ -430,6 +448,7 @@ impl Drop for FakeHikvision {
 }
 
 struct Shared {
+    observe_upload_closure: bool,
     state: Mutex<State>,
     changed: Condvar,
     stopped: AtomicBool,
@@ -448,6 +467,7 @@ struct State {
     audio_session: Option<u64>,
     next_audio_session: u64,
     audio_output: Vec<u8>,
+    audio_uploads_closed_by_peer: u64,
     audio_input: Vec<u8>,
     audio_input_after_output: usize,
 }

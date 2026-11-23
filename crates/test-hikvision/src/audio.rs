@@ -114,14 +114,20 @@ fn send(
     let deadline = Instant::now() + Duration::from_secs(300);
     let mut buffer = [0; 1600];
     while Instant::now() < deadline && !shared.stopped.load(Ordering::Acquire) {
-        if shared.state.lock().unwrap().audio_session != session {
+        if !shared.observe_upload_closure && shared.state.lock().unwrap().audio_session != session {
             break;
         }
         match socket.read(&mut buffer) {
-            Ok(0) => break,
+            Ok(0) => {
+                note_peer_closure(shared);
+                break;
+            }
             Ok(count) => {
                 let mut state = shared.state.lock().unwrap();
                 if state.audio_session != session {
+                    if shared.observe_upload_closure {
+                        continue;
+                    }
                     break;
                 }
                 anyhow::ensure!(
@@ -136,8 +142,22 @@ fn send(
                     error.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) => {}
+            Err(error)
+                if shared.observe_upload_closure
+                    && error.kind() == std::io::ErrorKind::ConnectionReset =>
+            {
+                note_peer_closure(shared);
+                break;
+            }
             Err(error) => return Err(error.into()),
         }
     }
     Ok(())
+}
+
+fn note_peer_closure(shared: &Shared) {
+    if shared.observe_upload_closure && !shared.stopped.load(Ordering::Acquire) {
+        let mut state = shared.state.lock().unwrap();
+        state.audio_uploads_closed_by_peer = state.audio_uploads_closed_by_peer.saturating_add(1);
+    }
 }

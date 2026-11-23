@@ -53,7 +53,9 @@ test('the Talk control sends the browser microphone tone to the Hikvision speake
 			await context.route('**/*', recordedAudioBackendRoute(new URL(baseURL).origin, fixture.url));
 			const page = await context.newPage();
 			await page.goto('/');
-			await expect.poll(observe).toEqual({ active: false, bytes: 0, audible: 0, crossings: 0 });
+			await expect
+				.poll(observe)
+				.toEqual({ active: false, bytes: 0, audible: 0, crossings: 0, peerClosedUploads: 0 });
 			const tile = page.locator('[data-peek-camera="127.0.0.1"]');
 			await tile.getByRole('button', { name: /^Focus .* live view$/ }).click();
 			const focus = page.getByRole('region', { name: /focus$/ });
@@ -77,11 +79,17 @@ test('the Talk control sends the browser microphone tone to the Hikvision speake
 			});
 			await focus.getByRole('button', { name: 'Stop talkback to 127.0.0.1', exact: true }).click();
 			await expect.poll(async () => (await observe()).active).toBe(false);
+			await expect.poll(async () => (await observe()).peerClosedUploads).toBe(1);
 			await expect(talk).toBeVisible();
 			await talk.click();
-			await expect.poll(async () => (await observe()).active).toBe(true);
+			await expect.poll(async () => (await observe()).audible).toBeGreaterThan(0);
 			await page.close();
 			await expect.poll(async () => (await observe()).active).toBe(false);
+			await expect.poll(async () => (await observe()).peerClosedUploads).toBe(2);
+			await info.attach('speaker-closure', {
+				contentType: 'application/json',
+				body: JSON.stringify(await observe())
+			});
 		} finally {
 			try {
 				await info.attach('recorder-log', {
