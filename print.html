@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-787b9a58.js";
+            window.path_to_searchindex_js = "searchindex-1b0c7731.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -1270,6 +1270,22 @@ and an explicit unknown state. Gap actions open nearby footage, camera health, o
 <p>Long histories remain bounded: fleet pages contain 25 cameras by default, recent exact detail keeps
 at most 256 ranges per stream, and longer periods use deterministic time buckets while retaining
 exact totals.</p>
+<h2 id="interrupted-legacy-recording-initialization"><a class="header" href="#interrupted-legacy-recording-initialization">Interrupted legacy recording initialization</a></h2>
+<p>On Unix, KeepPeek can encounter two different files at the same active recording name
+while recovering a failed header write. The current occupant stays in place. The displaced
+entry retains its original filename under <code>.keeppeek-header-recovery-v1/</code> in the same
+recording hour. Its private <code>&lt;active name&gt;.pins-v2/</code> directory holds a hard link whose
+name records the device and inode from the writer’s open file handle. This single link
+both holds the inode across a restart and identifies it before the move into recovery.
+Recording listings, integrity scans, and date or capacity pruning skip the recovery directory.
+When the active name is next requested, KeepPeek verifies the pin before reclaiming a partial
+file belonging to the failed write or restores a displaced entry to its vacant original name.
+For an older recording, stop writers for that directory and preserve the saved entry under a vacant
+recovery name. Inspect both files before changing either. A staged entry without a valid
+recovery record is left in place. An inaccessible directory or one with untrusted ownership
+or permissions is skipped. New recordings still require a vacant active filename.
+Named storage volumes use their allocation ledger for
+recovery.</p>
 <h2 id="review-events-consistently"><a class="header" href="#review-events-consistently">Review events consistently</a></h2>
 <p>Open <strong>Events</strong> to search across authorized cameras. Choose the UTC date and optional start/end
 times, then narrow by camera, event kind, origin, zone, confidence, image availability or text.
@@ -2459,7 +2475,7 @@ to <code>.event-thumbnails</code> under that same directory. See
 <tr><td><code>event_thumbnail_path</code></td><td>Optional <code>String</code></td><td>Runtime-selected</td><td>Event-thumbnail directory.</td></tr>
 <tr><td><code>event_thumbnail_max_mb</code></td><td><code>u64</code></td><td><code>1024</code></td><td>Thumbnail storage budget, in MiB.</td></tr>
 <tr><td><code>short_term_secs</code></td><td><code>u64</code></td><td><code>120</code></td><td>Short-term retention, in seconds.</td></tr>
-<tr><td><code>medium_term_secs</code></td><td><code>u64</code></td><td><code>1800</code></td><td>Medium-term retention, in seconds.</td></tr>
+<tr><td><code>medium_term_secs</code></td><td><code>u64</code></td><td><code>1800</code></td><td>Target recording segment duration in seconds. Rotation waits for a video keyframe and keeps intervening frames in the current segment.</td></tr>
 <tr><td><code>flush_interval_secs</code></td><td><code>u64</code></td><td><code>60</code></td><td>Recording flush interval, in seconds.</td></tr>
 <tr><td><code>write_buffer_bytes</code></td><td><code>usize</code></td><td><code>8192</code></td><td>Recording write-buffer size, in bytes.</td></tr>
 <tr><td><code>long_term_max_gb</code></td><td><code>u64</code></td><td><code>1024</code></td><td>Long-term storage budget, in GiB.</td></tr>
@@ -2479,6 +2495,9 @@ threshold is derived as critical plus hysteresis. Otherwise, warning must be at 
 Effective media paths come from named owners, and catalog paths come from the metadata binding.
 Use named-volume move controls for stored objects and the confirmed metadata restart workflow
 for the catalog. The general storage editor displays these paths read-only.</p>
+<p>Each recording writer can hold up to 16 MiB of encoded media and frame metadata between video
+keyframes. If a camera exceeds this limit, KeepPeek commits the decodable prefix, reports the
+gap in recording health and resumes at the next usable video keyframe.</p>
 <p>These values are policy defaults, not a capacity guarantee. Storage budgets and free-space thresholds
 must suit the actual disks and camera bitrates. A configuration ZIP preserves the target’s existing
 storage paths on apply; it does not move a recording archive. See
