@@ -47,7 +47,7 @@
 		openExport: (
 			at: number,
 			focus: string,
-			stream: RecordingSegment['stream'],
+			stream: RecordedStreamId,
 			selection: KeepReviewSelection
 		) => void;
 		single: (at: number, focus: string) => void;
