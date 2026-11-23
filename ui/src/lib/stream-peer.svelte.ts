@@ -79,6 +79,7 @@ export type LivePeerTrack = {
 export type TalkbackTargetSelection = { sourceId: string } | { groupId: string } | { all: true };
 
 export type CameraAudioAssets = {
+	twoWayAudio: boolean;
 	quickReplies: ReadonlyArray<{ id: string; label: string }>;
 	chimes: ReadonlyArray<{ id: string; label: string }>;
 };
@@ -806,10 +807,17 @@ export class LivePeer {
 		this.#capabilities = capabilities;
 		this.cameraAudioAssets = Object.fromEntries(
 			capabilities.cameras
-				.filter((camera) => camera.deviceCapabilities?.twoWayAudio === true)
+				.filter(
+					({ deviceCapabilities: capability }) =>
+						capability &&
+						(capability.twoWayAudio ||
+							capability.quickReplies.length > 0 ||
+							capability.chimes.length > 0)
+				)
 				.map((camera) => [
 					camera.sourceId,
 					{
+						twoWayAudio: camera.deviceCapabilities?.twoWayAudio === true,
 						quickReplies: (camera.deviceCapabilities?.quickReplies ?? []).map((asset) => ({
 							id: asset.assetId,
 							label: asset.displayName

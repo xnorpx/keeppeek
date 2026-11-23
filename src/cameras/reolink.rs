@@ -6,7 +6,7 @@ use super::{
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     sync::atomic::{AtomicBool, Ordering},
     thread,
@@ -16,6 +16,8 @@ use ureq::Agent;
 use url::Url;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(2);
+const DOORBELL_ASSET_COUNT_MAX: usize = 128;
+const DOORBELL_ASSET_TEXT_BYTES_MAX: usize = 256;
 const MAX_CONCURRENT_PROBES: usize = 200;
 const BAICHUAN_LISTEN_TIMEOUT: Duration = Duration::from_secs(5);
 const GET_ENC_ATTEMPTS: usize = 3;
@@ -46,6 +48,17 @@ pub(crate) struct ReolinkDoorbellCapabilities {
     pub visitor_loudspeaker: Option<bool>,
     pub quick_reply_assets: Vec<(String, String)>,
     pub chime_assets: Vec<(String, String)>,
+}
+
+impl ReolinkDoorbellCapabilities {
+    pub(crate) fn apply_audio_assets(self, capabilities: &mut CameraCapabilities) {
+        let asset = |(asset_id, display_name)| super::CameraAudioAsset {
+            asset_id,
+            display_name,
+        };
+        capabilities.quick_replies = self.quick_reply_assets.into_iter().map(asset).collect();
+        capabilities.chimes = self.chime_assets.into_iter().map(asset).collect();
+    }
 }
 
 impl CameraBrand for Reolink {
@@ -869,81 +882,115 @@ impl ReolinkClient {
         channel: u32,
         username: &str,
     ) -> anyhow::Result<ReolinkDoorbellCapabilities> {
-        let events = self.api_call("GetEvents", Some(serde_json::json!({ "channel": channel })))?;
-        let visitor_events = events
-            .get("Events")
-            .and_then(|value| value.get("visitor"))
-            .and_then(|value| value.get("support"))
-            .and_then(Value::as_u64)
-            .is_some_and(|value| value != 0);
-        let audio = self.api_call(
-            "GetAudioCfg",
-            Some(serde_json::json!({ "channel": channel })),
-        )?;
-        let audio = audio.get("AudioCfg").cloned().unwrap_or_default();
+        let events = self
+            .api_call("GetEvents", Some(serde_json::json!({ "channel": channel })))
+            .ok();
+        let visitor_events = events.as_ref().is_some_and(|events| {
+            let data = events.get("Events").unwrap_or(events);
+            reply_channel_matches(events, channel)
+                && reply_channel_matches(data, channel)
+                && data
+                    .get("visitor")
+                    .filter(|visitor| reply_channel_matches(visitor, channel))
+                    .and_then(|value| value.get("support"))
+                    .and_then(Value::as_u64)
+                    .is_some_and(|permit| permit != 0)
+        });
+        let audio_reply = self
+            .api_call(
+                "GetAudioCfg",
+                Some(serde_json::json!({ "channel": channel })),
+            )
+            .ok();
+        let audio_config = audio_reply.as_ref().and_then(|reply| {
+            reply.get("AudioCfg").filter(|cfg| {
+                reply_channel_matches(reply, channel) && reply_channel_matches(cfg, channel)
+            })
+        });
         let volume = |name: &str| {
-            audio
-                .get(name)
+            audio_config
+                .and_then(|cfg| cfg.get(name))
                 .and_then(Value::as_u64)
                 .and_then(|value| u8::try_from(value).ok())
         };
-        let files = self.api_call("GetAudioFileList", Some(serde_json::json!({})))?;
-        let quick_reply_assets = files
-            .get("AudioFileList")
-            .and_then(|value| value.get("audioFile"))
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| {
-                        Some((
-                            item.get("id")?.to_string().trim_matches('"').to_owned(),
-                            item.get("name")?.as_str()?.to_owned(),
-                        ))
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let quick_replies = files
-            .get("AudioFileList")
-            .and_then(|value| value.get("supportAudioPlay"))
-            .and_then(Value::as_u64)
-            .is_some_and(|value| value != 0);
         let auto_reply = self
             .api_call("GetAutoReply", Some(serde_json::json!({})))
-            .is_ok();
-        let chime_assets = self
-            .api_call("GetDingDongList", Some(serde_json::json!({})))
             .ok()
-            .and_then(|value| value.get("DingDongList").cloned())
-            .and_then(|value| value.get("dingDong").and_then(Value::as_array).cloned())
-            .unwrap_or_default();
-        let chime_assets = chime_assets
-            .iter()
-            .filter_map(|item| {
-                Some((
-                    item.get("id")?.as_str()?.to_owned(),
-                    item.get("name")?.as_str()?.to_owned(),
-                ))
-            })
-            .collect::<Vec<_>>();
-        let chime = !chime_assets.is_empty();
-
+            .is_some_and(|reply| {
+                reply_channel_matches(&reply, channel)
+                    && reply.get("AutoReply").is_some_and(|config| {
+                        config.is_object() && reply_channel_matches(config, channel)
+                    })
+            });
         Ok(ReolinkDoorbellCapabilities {
             visitor_events,
-            talkback: self.get_ability(username)?.two_way_audio,
-            quick_replies,
             auto_reply,
-            chime,
             visitor_volume: volume("visitorVolume"),
             talk_and_reply_volume: volume("talkAndReplyVolume"),
-            visitor_loudspeaker: audio
-                .get("visitorLoudspeaker")
+            visitor_loudspeaker: audio_config
+                .and_then(|cfg| cfg.get("visitorLoudspeaker"))
                 .and_then(Value::as_u64)
                 .map(|value| value != 0),
-            quick_reply_assets,
-            chime_assets,
+            talkback: self
+                .get_ability_for_channel(username, channel)?
+                .two_way_audio,
+            ..self.get_audio_assets(channel)
         })
+    }
+
+    pub(crate) fn get_audio_output_capabilities(
+        &self,
+        channel: u32,
+        username: &str,
+    ) -> ReolinkDoorbellCapabilities {
+        ReolinkDoorbellCapabilities {
+            talkback: self
+                .get_ability_for_channel(username, channel)
+                .is_ok_and(|ability| ability.two_way_audio),
+            ..self.get_audio_assets(channel)
+        }
+    }
+
+    fn get_audio_assets(&self, channel: u32) -> ReolinkDoorbellCapabilities {
+        let files = self
+            .api_call("GetAudioFileList", Some(serde_json::json!({})))
+            .ok();
+        let files = files
+            .as_ref()
+            .and_then(|value| channel_inventory(value, "AudioFileList", channel));
+        let quick_replies = files
+            .and_then(|value| value.get("supportAudioPlay"))
+            .and_then(Value::as_u64)
+            .is_some_and(|permit| permit != 0);
+        let quick_reply_assets = if quick_replies {
+            doorbell_assets(
+                files.and_then(|value| value.get("audioFile")),
+                true,
+                channel,
+            )
+        } else {
+            Vec::new()
+        };
+        let chimes = self
+            .api_call("GetDingDongList", Some(serde_json::json!({})))
+            .ok();
+        let chime_assets = doorbell_assets(
+            chimes
+                .as_ref()
+                .and_then(|value| channel_inventory(value, "DingDongList", channel))
+                .and_then(|list| list.get("dingDong")),
+            false,
+            channel,
+        );
+        let chime = !chime_assets.is_empty();
+
+        ReolinkDoorbellCapabilities {
+            quick_replies,
+            quick_reply_assets,
+            chime,
+            chime_assets,
+            ..ReolinkDoorbellCapabilities::default()
+        }
     }
 
     pub fn get_image(&self, channel: u32) -> anyhow::Result<ImagingSettings> {
@@ -1000,6 +1047,14 @@ impl ReolinkClient {
     }
 
     pub fn get_ability(&self, username: &str) -> anyhow::Result<CameraCapabilities> {
+        self.get_ability_for_channel(username, 0)
+    }
+
+    fn get_ability_for_channel(
+        &self,
+        username: &str,
+        channel: u32,
+    ) -> anyhow::Result<CameraCapabilities> {
         let param = serde_json::json!({
             "User": { "userName": username }
         });
@@ -1015,11 +1070,26 @@ impl ReolinkClient {
                 > 0
         };
 
+        let channel_ability = ability
+            .get("abilityChn")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                let channel_is_labeled = |entry: &Value| {
+                    entry.get("channel").is_some() || entry.get("channelId").is_some()
+                };
+                entries
+                    .iter()
+                    .find(|entry| {
+                        channel_is_labeled(entry) && reply_channel_matches(entry, channel)
+                    })
+                    .or_else(|| {
+                        entries
+                            .get(channel as usize)
+                            .filter(|entry| !channel_is_labeled(entry))
+                    })
+            });
         let chn_has = |key: &str| -> bool {
-            ability
-                .get("abilityChn")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
+            channel_ability
                 .and_then(|ch| ch.get(key))
                 .and_then(|v| v.get("permit"))
                 .and_then(|v| v.as_u64())
@@ -1637,26 +1707,7 @@ impl ReolinkClient {
                 chime = doorbell.chime,
                 "Reolink doorbell capabilities"
             );
-            capabilities.quick_replies = doorbell
-                .quick_reply_assets
-                .iter()
-                .map(
-                    |(asset_id, display_name)| crate::cameras::CameraAudioAsset {
-                        asset_id: asset_id.clone(),
-                        display_name: display_name.clone(),
-                    },
-                )
-                .collect();
-            capabilities.chimes = doorbell
-                .chime_assets
-                .iter()
-                .map(
-                    |(asset_id, display_name)| crate::cameras::CameraAudioAsset {
-                        asset_id: asset_id.clone(),
-                        display_name: display_name.clone(),
-                    },
-                )
-                .collect();
+            doorbell.apply_audio_assets(&mut capabilities);
         }
 
         if profiles
@@ -1800,9 +1851,107 @@ fn parse_video_encoding(codec: Option<&str>) -> VideoEncoding {
     }
 }
 
+fn channel_inventory<'a>(value: &'a Value, key: &str, channel: u32) -> Option<&'a Value> {
+    value.get(key).filter(|list| {
+        reply_channel_matches(value, channel) && reply_channel_matches(list, channel)
+    })
+}
+
+fn doorbell_assets(
+    list: Option<&Value>,
+    allow_numeric_ids: bool,
+    channel: u32,
+) -> Vec<(String, String)> {
+    let Some(items) = list.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    if items.len() > DOORBELL_ASSET_COUNT_MAX {
+        return Vec::new();
+    }
+    let mut by_id = BTreeMap::new();
+    for item in items {
+        if !reply_channel_matches(item, channel) {
+            continue;
+        }
+        let Some(raw_id) = item.get("id") else {
+            continue;
+        };
+        let id = raw_id.as_str().map(str::to_owned).or_else(|| {
+            allow_numeric_ids
+                .then_some(raw_id)
+                .and_then(Value::as_u64)
+                .map(|number| number.to_string())
+        });
+        let Some(id) =
+            id.filter(|id| !id.trim().is_empty() && id.len() <= DOORBELL_ASSET_TEXT_BYTES_MAX)
+        else {
+            continue;
+        };
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty() && name.len() <= DOORBELL_ASSET_TEXT_BYTES_MAX);
+        // A repeated ID cannot safely identify an individual device or reply.
+        by_id
+            .entry(id)
+            .and_modify(|entry| *entry = None)
+            .or_insert(name);
+    }
+    by_id
+        .into_iter()
+        .filter_map(|(id, name)| Some((id, name?.to_owned())))
+        .collect()
+}
+
+fn reply_channel_matches(value: &Value, channel: u32) -> bool {
+    ["channel", "channelId"].into_iter().all(|name| {
+        value
+            .get(name)
+            .is_none_or(|label| label.as_u64() == Some(u64::from(channel)))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_audio_outputs_are_independent_of_selected_channel_talk_permission() {
+        let server = rouille::Server::new("127.0.0.1:0", |request| {
+            let command = request.get_param("cmd").unwrap();
+            let value = match command.as_str() {
+                "GetAbility" => serde_json::json!({"Ability": {"abilityChn": [
+                    {"channel": 1, "talkCfg": {"permit": 1}},
+                    {"channel": 0, "talkCfg": {"permit": 0}}
+                ]}}),
+                "GetAudioFileList" => serde_json::json!({"channel": 0, "AudioFileList": {
+                    "supportAudioPlay": 1, "audioFile": [{"id": 2, "name": "Delivery"}]
+                }}),
+                "GetDingDongList" => serde_json::json!({"DingDongList": {"dingDong": [
+                    {"id": "hall", "name": "Hallway", "channelId": 0},
+                    {"id": "side", "name": "Side", "channelId": 1}
+                ]}}),
+                _ => return rouille::Response::empty_404(),
+            };
+            rouille::Response::json(
+                &serde_json::json!([{"cmd": command, "code": 0, "value": value}]),
+            )
+        })
+        .unwrap();
+        let port = server.server_addr().port();
+        let (worker, stop) = server.stoppable();
+        let client = ReolinkClient::new_with_http_port(Ipv4Addr::LOCALHOST.into(), Some(port));
+        let [first, second] =
+            [0, 1].map(|channel| client.get_audio_output_capabilities(channel, "operator"));
+        stop.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(!first.talkback);
+        assert_eq!(first.quick_reply_assets, [("2".into(), "Delivery".into())]);
+        assert_eq!(first.chime_assets, [("hall".into(), "Hallway".into())]);
+        assert!(second.talkback);
+        assert!(second.quick_reply_assets.is_empty());
+        assert_eq!(second.chime_assets, [("side".into(), "Side".into())]);
+    }
 
     #[test]
     fn motion_enablement_is_not_live_motion_and_toggle_preserves_alarm_fields() {

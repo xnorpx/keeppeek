@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 mod speaker;
 
+use crate::cameras::reolink::ReolinkDoorbellCapabilities;
+
 use super::{
     CameraConfig, CameraEntry, MAX_CAMERA_METADATA_WORKERS, ServerState, probe_onvif_camera,
 };
@@ -90,9 +92,36 @@ fn run(state: &ServerState) {
                 tracing::debug!(ip = %entry.configuration.ip, "configured camera did not provide ONVIF metadata");
             }
         }
+        if let Some(control) = entry.control.as_ref()
+            && entry.battery_uid.is_none()
+            && current(state, &entry)
+        {
+            let capabilities = super::logged_in_reolink(control)
+                .map(|client| client.get_audio_output_capabilities(0, &control.username))
+                .unwrap_or_default();
+            apply_audio_capabilities(state, &entry, capabilities);
+        }
         if current(state, &entry) {
             state.probe_hikvision_capabilities(entry.configuration.ip);
         }
+    }
+}
+
+fn apply_audio_capabilities(
+    state: &ServerState,
+    previous: &CameraEntry,
+    capabilities: ReolinkDoorbellCapabilities,
+) {
+    let mut cameras = state
+        .cameras
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(camera) = cameras.iter_mut().find(|camera| {
+        camera.info.id == previous.info.id
+            && std::sync::Arc::ptr_eq(&camera.control_revision, &previous.control_revision)
+    }) {
+        camera.reolink_talk_permitted = capabilities.talkback;
+        capabilities.apply_audio_assets(&mut camera.info.capabilities);
     }
 }
 
@@ -116,5 +145,46 @@ impl Queue {
             )
             .expect("camera metadata queue is not poisoned");
         pending.workers == 0 && pending.entries.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cameras::CameraBackend;
+
+    #[test]
+    fn audio_inventory_and_talk_permission_follow_the_configured_camera_revision() {
+        let state = super::super::tests::media_test_state();
+        let mut config = state.camera("127.0.0.1").unwrap().configuration;
+        config.backend = CameraBackend::ReoProto;
+        state.upsert_camera(super::super::camera_entry(&config, None));
+        let current = state.camera("127.0.0.1").unwrap();
+        let inventory = || ReolinkDoorbellCapabilities {
+            talkback: true,
+            quick_reply_assets: vec![("2".into(), "Delivery".into())],
+            chime_assets: vec![("hall".into(), "Hallway".into())],
+            ..Default::default()
+        };
+
+        apply_audio_capabilities(&state, &current, inventory());
+        let updated = state.camera("127.0.0.1").unwrap();
+        assert!(updated.reolink_talk_permitted);
+        assert!(!updated.info.capabilities.two_way_audio);
+        assert_eq!(updated.info.capabilities.quick_replies[0].asset_id, "2");
+        assert_eq!(updated.info.capabilities.chimes[0].display_name, "Hallway");
+
+        apply_audio_capabilities(&state, &current, Default::default());
+        let cleared = state.camera("127.0.0.1").unwrap();
+        assert!(!cleared.reolink_talk_permitted);
+        assert!(cleared.info.capabilities.quick_replies.is_empty());
+        assert!(cleared.info.capabilities.chimes.is_empty());
+
+        state.upsert_camera(super::super::camera_entry(&config, None));
+        apply_audio_capabilities(&state, &current, inventory());
+        let replacement = state.camera("127.0.0.1").unwrap();
+        assert!(!replacement.reolink_talk_permitted);
+        assert!(replacement.info.capabilities.quick_replies.is_empty());
+        assert!(replacement.info.capabilities.chimes.is_empty());
     }
 }

@@ -365,6 +365,7 @@ struct CameraEntry {
     control: Option<CameraControl>,
     control_revision: Arc<()>,
     reolink_profile_verified: bool,
+    reolink_talk_permitted: bool,
     hikvision: Option<camera_control::Report>,
     runtime_camera: Option<crate::cameras::Camera>,
 }
@@ -7864,6 +7865,7 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
         control,
         control_revision: Arc::new(()),
         reolink_profile_verified: false,
+        reolink_talk_permitted: false,
         hikvision: None,
         runtime_camera: camera.cloned(),
     }
@@ -23651,6 +23653,7 @@ mod tests {
             control: None,
             control_revision: Arc::new(()),
             reolink_profile_verified: false,
+            reolink_talk_permitted: false,
             hikvision: None,
             runtime_camera: None,
         }]));
