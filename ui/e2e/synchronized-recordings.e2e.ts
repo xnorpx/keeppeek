@@ -60,7 +60,7 @@ async function measurePresentedDrift(page: Page, count = 2) {
 	expect(drift[Math.floor(drift.length * 0.95)]).toBeLessThanOrEqual(250);
 }
 
-async function overlappingMoment(page: Page, backend: string) {
+async function overlappingMoment(page: Page, backend: string, crossMinute = false) {
 	const response = await page.request.get(backend + '/recording-coverage?stream=sub', {
 		headers: { Authorization: 'Bearer ' + cardAdminKey }
 	});
@@ -73,7 +73,9 @@ async function overlappingMoment(page: Page, backend: string) {
 				?.streams.find((stream) => stream.stream_id === 'sub')?.ranges[0]
 	);
 	if (!ranges[0] || !ranges[1]) throw new Error('The recorder must index both seeded streams.');
-	const at = Math.max(ranges[0].start_ms, ranges[1].start_ms) + 600;
+	const start = Math.max(ranges[0].start_ms, ranges[1].start_ms);
+	const at = crossMinute ? Math.ceil(start / 60_000) * 60_000 - 900 : start + 600;
+	expect(at).toBeGreaterThan(start);
 	expect(at + 6000).toBeLessThan(Math.min(ranges[0].end_ms, ranges[1].end_ms));
 	return at;
 }
@@ -287,6 +289,63 @@ async function verifyComparisonReload(page: Page, origin: string, seek: number) 
 	expect(new URL(page.url()).searchParams.getAll('compare')).toEqual([...reviewSourceIds]);
 }
 
+async function verifyContinuousMinute(page: Page, at: number) {
+	await page.getByLabel('Seek to UTC').fill(new Date(at).toISOString().slice(0, 23));
+	await page.getByRole('button', { name: 'Go to time' }).click();
+	const videos = page.locator('article video');
+	const times = () =>
+		page
+			.locator('article time')
+			.evaluateAll((elements) =>
+				elements.map((element) => Date.parse(element.getAttribute('datetime') ?? ''))
+			);
+	const sources = () =>
+		videos.evaluateAll((elements) =>
+			elements.map((element) => (element as HTMLVideoElement).currentSrc)
+		);
+	await expect
+		.poll(async () => (await times()).filter((time) => Math.abs(time - at) <= 150).length)
+		.toBe(4);
+	const beforeBoundary = await sources();
+	await page.getByRole('button', { name: 'Play recordings', pressed: false }).click();
+	await expect
+		.poll(() =>
+			videos.evaluateAll(
+				(elements) =>
+					elements.filter((element) => {
+						const video = element as HTMLVideoElement;
+						return !video.paused && video.getVideoPlaybackQuality().totalVideoFrames > 2;
+					}).length
+			)
+		)
+		.toBe(4);
+	await measurePresentedDrift(page, 4);
+	const boundary = Math.ceil(at / 60_000) * 60_000;
+	await expect.poll(async () => (await times()).filter((time) => time >= boundary).length).toBe(4);
+	expect(await sources()).toEqual(beforeBoundary);
+}
+
+async function verifyContinuingRecording(page: Page, boundary: number) {
+	// Three recordings end near +25 s. Camera 1 extends past the first cursor's finite +30 s bound.
+	await page.getByRole('combobox', { name: 'Playback speed' }).selectOption('4');
+	const continuing = page.getByRole('article', { name: 'card-camera-1' });
+	await expect
+		.poll(
+			() =>
+				continuing
+					.locator('time')
+					.evaluateAll((times) => Date.parse(times[0]?.getAttribute('datetime') ?? '')),
+			{ timeout: 15_000, intervals: [100] }
+		)
+		.toBeGreaterThan(boundary + 30_250);
+	await page.getByRole('button', { name: 'Play recordings', pressed: true }).click();
+	await expect(page.getByText('No playable footage at this time')).toHaveCount(3);
+	await expect(page.locator('article video')).toHaveCount(1);
+	await expect
+		.poll(async () => (await readRecordedCursorBudget(page)).active)
+		.toEqual([cardSourceIds[1]]);
+}
+
 test('add and remove four authorized sources and seek their common UTC without transient links', async ({
 	page,
 	context,
@@ -311,7 +370,7 @@ test('add and remove four authorized sources and seek their common UTC without t
 	const redirect = recordedAudioBackendRoute(origin, fixture.url);
 	try {
 		await context.route('**/*', redirect);
-		const at = await overlappingMoment(page, fixture.url);
+		const at = await overlappingMoment(page, fixture.url, true);
 		await page.goto('/keep?camera=' + cardSourceIds[0] + '&stream=sub&at=' + at);
 		await expect(page.getByLabel('Compare with')).toBeVisible({ timeout: 30_000 });
 		await page.getByLabel('Compare with').selectOption(cardSourceIds[1]);
@@ -331,20 +390,8 @@ test('add and remove four authorized sources and seek their common UTC without t
 			body: JSON.stringify(resources),
 			contentType: 'application/json'
 		});
-		await page.getByRole('button', { name: 'Play recordings', pressed: false }).click();
-		await expect
-			.poll(() =>
-				page.locator('article video').evaluateAll(
-					(elements) =>
-						elements.filter((el) => {
-							const video = el as HTMLVideoElement;
-							return !video.paused && video.getVideoPlaybackQuality().totalVideoFrames > 2;
-						}).length
-				)
-			)
-			.toBe(4);
-		await measurePresentedDrift(page, 4);
-		await page.getByRole('button', { name: 'Play recordings', pressed: true }).click();
+		await verifyContinuousMinute(page, at);
+		await verifyContinuingRecording(page, Math.ceil(at / 60_000) * 60_000);
 		const seek = at + 5000;
 		await page.getByLabel('Seek to UTC').fill(new Date(seek).toISOString().slice(0, 23));
 		await page.getByRole('button', { name: 'Go to time' }).click();

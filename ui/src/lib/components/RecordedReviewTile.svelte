@@ -13,6 +13,7 @@
 		name,
 		stream,
 		endMs,
+		epoch,
 		revision,
 		position,
 		playing,
@@ -27,6 +28,7 @@
 		name: string;
 		stream: 'main' | 'sub' | null;
 		endMs: number;
+		epoch: number;
 		revision: number;
 		position: () => number;
 		playing: boolean;
@@ -44,6 +46,16 @@
 	let lastCorrection = 0;
 	let tile = $state<HTMLElement>();
 	let attempt = $state(0);
+	let admittedEnd = $state<number | null>(null);
+	$effect(() => {
+		// A later catalog page can extend the same recording while this finite cursor is healthy.
+		// Renew only at its actual limit, or immediately if refreshed coverage becomes shorter.
+		if (admittedEnd === null || !stream || endMs === admittedEnd) return;
+		if (endMs < admittedEnd || epoch >= admittedEnd) {
+			admittedEnd = null;
+			attempt++;
+		}
+	});
 	$effect(() => {
 		if (!tile) return;
 		const observer = new IntersectionObserver(
@@ -80,7 +92,7 @@
 	$effect(() => {
 		const id = cameraId,
 			selected = stream,
-			end = endMs;
+			end = untrack(() => endMs);
 		void revision;
 		void attempt;
 		const abort = new AbortController();
@@ -91,6 +103,7 @@
 		playback = null;
 		issue = '';
 		ready = false;
+		admittedEnd = selected ? end : null;
 		if (!selected) return;
 		tail = tail.then(async () => {
 			if (abort.signal.aborted) return;

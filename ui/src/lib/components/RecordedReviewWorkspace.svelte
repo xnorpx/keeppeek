@@ -23,7 +23,9 @@
 		recordingMomentUrl,
 		type KeepReviewSelection
 	} from '$lib/keep-link';
-	import type { CameraListItem, RecordingSegment, RecordingsResponse } from '$lib/types';
+	import type { CameraListItem } from '$lib/types';
+	import type { StoredTimelineRange } from '$lib/control-client';
+	import type { RecordedStreamId } from '$lib/recorded-playback-policy';
 	import RecordedReviewTile from './RecordedReviewTile.svelte';
 
 	let {
@@ -79,30 +81,33 @@
 	let visible = $state<Record<string, number>>({});
 	let foreground = $state(false);
 	let rate = $state(untrack(() => preferences.media.playbackRate));
-	let rows = $state.raw<RecordingsResponse[]>([]);
+	let ranges = $state.raw<StoredTimelineRange[]>([]);
 	let loadedWindow = $state<number | null>(null);
 	let unavailable = $state(false);
 	let retry = $state(0);
 	let seekInput = $state(untrack(() => new Date(startMs).toISOString().slice(0, 23)));
 	const authorized = $derived(cameras.filter((c) => ids.includes(c.id)));
-	const bucket = $derived(Math.floor(epoch / 60_000) * 60_000);
+	// Refresh halfway through each minute of coverage so a continuing camera stays admitted.
+	const refreshMs = 30_000;
+	const bucket = $derived(Math.floor(epoch / refreshMs) * refreshMs);
 	const moment = () => Math.floor(clock.positionAt(performance.now()));
 	const chosen = $derived.by(() => {
-		const result = new Map<string, RecordingSegment>();
+		const result = new Map<string, { stream: RecordedStreamId; endMs: number }>();
 		for (const camera of authorized) {
-			const segments =
-				rows
-					.find((row) => row.camera_id === camera.id)
-					?.segments.filter(
-						(segment) => segment.start_time_ms <= epoch && epoch < segment.end_time_ms
-					) ?? [];
+			const covering = ranges.filter(
+				(range) => range.sourceId === camera.id && range.startMs <= epoch && epoch < range.endMs
+			);
+			const availableStreams = covering
+				.map((range) => range.streamId)
+				.filter((stream) => stream === 'main' || stream === 'sub');
 			const { selectedStream } = selectRecordedStream(camera, {
 				preference: recordedPreference(preferences, camera.id),
-				availableStreams: segments.map((row) => row.stream),
+				availableStreams,
 				isEncodingSupported: browserSupportsRecordedEncoding
 			});
-			const segment = segments.find((row) => row.stream === selectedStream);
-			if (segment) result.set(camera.id, segment);
+			const range = covering.find((entry) => entry.streamId === selectedStream);
+			if (range && selectedStream)
+				result.set(camera.id, { stream: selectedStream, endMs: range.endMs });
 		}
 		return result;
 	});
@@ -170,22 +175,28 @@
 		const controller = new AbortController();
 		loadedWindow = null;
 		unavailable = false;
+		if (!sources.length) {
+			ranges = [];
+			loadedWindow = from;
+			return;
+		}
 		client
-			.getRecordingsInRange(
-				sources,
-				new Date(from).toISOString().slice(0, 10),
-				from,
-				from + 60_000,
-				controller.signal
-			)
+			.queryStoredTimeline({
+				sourceIds: sources,
+				startMs: from,
+				endMs: from + 2 * refreshMs,
+				includeEvents: false,
+				includeAttachments: false,
+				signal: controller.signal
+			})
 			.then((result) => {
 				if (controller.signal.aborted) return;
-				rows = result;
+				ranges = result.ranges;
 				loadedWindow = from;
 			})
 			.catch(() => {
 				if (controller.signal.aborted) return;
-				rows = [];
+				ranges = [];
 				unavailable = true;
 			});
 		return () => controller.abort();
@@ -475,7 +486,8 @@
 				{cameraId}
 				name={label(cameraId)}
 				stream={active.includes(cameraId) ? (segment?.stream ?? null) : null}
-				endMs={segment?.end_time_ms ?? 0}
+				endMs={segment?.endMs ?? 0}
+				{epoch}
 				{revision}
 				position={moment}
 				{playing}
