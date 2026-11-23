@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use super::{CapturedRequest, Shared};
 
+const PEER_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub fn handle(
     socket: &mut TcpStream,
     request: &CapturedRequest,
@@ -111,11 +113,14 @@ fn send(
     }
     socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")?;
     socket.set_read_timeout(Some(Duration::from_millis(100)))?;
-    let deadline = Instant::now() + Duration::from_secs(300);
+    let mut deadline = Instant::now() + Duration::from_secs(300);
     let mut buffer = [0; 1600];
     while Instant::now() < deadline && !shared.stopped.load(Ordering::Acquire) {
-        if !shared.observe_upload_closure && shared.state.lock().unwrap().audio_session != session {
-            break;
+        if shared.state.lock().unwrap().audio_session != session {
+            if !shared.observe_upload_closure {
+                break;
+            }
+            deadline = deadline.min(Instant::now() + PEER_CLOSE_TIMEOUT);
         }
         match socket.read(&mut buffer) {
             Ok(0) => {

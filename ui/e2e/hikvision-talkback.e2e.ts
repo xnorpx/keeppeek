@@ -70,6 +70,7 @@ test('the Talk control sends the browser microphone tone to the Hikvision speake
 			await expect.poll(async () => (await observe()).audible).toBeGreaterThan(1_600);
 			const speaker = await observe();
 			expect(speaker.active).toBe(true);
+			expect(speaker.bytes).toBeGreaterThan(0);
 			const hz = (speaker.crossings * 8_000) / (2 * speaker.bytes);
 			expect(hz).toBeGreaterThan(350);
 			expect(hz).toBeLessThan(520);

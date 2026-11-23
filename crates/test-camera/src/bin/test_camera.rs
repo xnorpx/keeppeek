@@ -180,9 +180,9 @@ fn serve_hikvision(
         .transpose()?;
     if let Some(streams) = &streams {
         let config = streams.connection().toml_entry("hikvision");
-        let (table, settings) = config
-            .split_once('\n')
-            .expect("generated config contains a table");
+        let (table, settings) = config.split_once('\n').ok_or_else(|| {
+            anyhow::anyhow!("generated camera configuration is missing its table")
+        })?;
         let settings = settings
             .lines()
             .filter(|line| !line.starts_with("http_port = "))
@@ -224,19 +224,19 @@ fn observe_hikvision_speaker(camera: &test_camera::hikvision::FakeHikvision) -> 
             b'q' => break,
             b's' => {
                 let samples = camera.audio_output();
-                // The fixture negotiates G.711 mu-law. Discard quiet codes and count signal polarity changes.
+                // The fixture negotiates G.711 mu-law. Count quiet codes separately from signal polarity changes.
                 let mut previous = None;
                 let mut audible = 0;
                 let mut crossings = 0;
-                for sample in samples
-                    .iter()
-                    .copied()
-                    .filter(|sample| sample & 0x7f < 0x60)
-                {
-                    let positive = sample & 0x80 != 0;
-                    crossings += usize::from(previous.is_some_and(|last| last != positive));
-                    previous = Some(positive);
-                    audible += 1;
+                for sample in samples.iter().copied() {
+                    let magnitude = sample & 0x7f;
+                    audible += usize::from(magnitude < 0x60);
+                    // Exact zero has two encodings. Skip its sign while retaining its time.
+                    if magnitude != 0x7f {
+                        let positive = sample & 0x80 != 0;
+                        crossings += usize::from(previous.is_some_and(|last| last != positive));
+                        previous = Some(positive);
+                    }
                 }
                 println!(
                     "speaker {} {} {audible} {crossings} {}",

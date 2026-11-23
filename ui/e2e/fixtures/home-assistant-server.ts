@@ -333,8 +333,14 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 		await rm(directory, { recursive: true, force: true });
 	};
 	let log = '';
+	const captureLog = (chunk: Buffer) => {
+		log = (log + chunk.toString()).slice(-16_384);
+	};
 	const sanitizedLog = () =>
-		[...cardTestKeys, cardAdminKey].reduce((text, key) => text.replaceAll(key, '[redacted]'), log);
+		[...cardTestKeys, cardAdminKey].reduce(
+			(text, key) => text.replaceAll(key, '[redacted]'),
+			log.replaceAll('test:test@', '[redacted]@')
+		);
 
 	try {
 		const port = await availablePort();
@@ -344,7 +350,8 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 			origin,
 			port,
 			children,
-			options
+			options,
+			captureLog
 		);
 		const url = `http://127.0.0.1:${port}`;
 		const launch = () =>
@@ -354,9 +361,7 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 				directory,
 				url,
 				children,
-				onLog: (chunk) => {
-					log = (log + chunk.toString()).slice(-16_384);
-				}
+				onLog: captureLog
 			});
 		let server = await launch();
 		return {
@@ -392,7 +397,8 @@ async function prepareFixture(
 	origin: string,
 	port: number,
 	children: ChildProcess[],
-	options: FixtureOptions
+	options: FixtureOptions,
+	onLog: (chunk: Buffer) => void
 ) {
 	if (options.archiveFixture && options.calibrationFixture) {
 		throw new Error('Archive and calibration recording seeds must use separate fixtures.');
@@ -402,9 +408,10 @@ async function prepareFixture(
 	if (options.hikvisionSpeaker) {
 		const media = resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4');
 		const camera = spawn(binary, ['hikvision', '--media', media, '--speaker-observations'], {
-			stdio: ['pipe', 'pipe', 'ignore'],
+			stdio: ['pipe', 'pipe', 'pipe'],
 			windowsHide: true
 		});
+		camera.stderr.on('data', onLog);
 		children.push(camera);
 		await once(camera, 'spawn');
 		configurations = [await cameraConfig(camera)];

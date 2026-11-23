@@ -10,7 +10,7 @@ export type SpeakerObservation = {
 };
 
 export function observeSpeaker(
-	child: ChildProcessByStdio<Writable, Readable, null>
+	child: ChildProcessByStdio<Writable, Readable, Readable>
 ): Promise<SpeakerObservation> {
 	return new Promise((resolve, reject) => {
 		let output = '';
@@ -25,10 +25,23 @@ export function observeSpeaker(
 			finish(new Error('Hikvision fixture exited before its speaker observation'));
 		const onData = (chunk: Buffer) => {
 			output += chunk.toString();
-			if (output.length > 160) return finish(new Error('Oversized speaker observation'));
+			if (Buffer.byteLength(output) > 160)
+				return finish(new Error('Oversized speaker observation'));
 			if (!output.endsWith('\n')) return;
 			const match = /^speaker (true|false) (\d+) (\d+) (\d+) (\d+)$/.exec(output.trim());
-			if (!match) return finish(new Error('Malformed speaker observation'));
+			if (!match) {
+				const shape = output
+					.trim()
+					.split(/\s+/, 8)
+					.map((field) =>
+						/^\d+$/.test(field) ? `${field.length} digits` : `${field.length} chars`
+					);
+				return finish(
+					new Error(
+						`Malformed speaker observation (${Buffer.byteLength(output)} bytes, fields ${shape.join(', ')})`
+					)
+				);
+			}
 			finish(undefined, {
 				active: match[1] === 'true',
 				bytes: Number(match[2]),
