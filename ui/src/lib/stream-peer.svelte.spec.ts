@@ -750,6 +750,56 @@ describe('LivePeer', () => {
 		await peer.close();
 	});
 
+	it.each(['deactivate', 'close', 'switch camera'] as const)(
+		'releases an unconfirmed keyframe preview immediately on %s',
+		async (action) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			api.createSession.mockResolvedValue({
+				session_id: 'timing',
+				answer: { type: 'answer', sdp: 'v=0' }
+			});
+			api.deleteSession.mockResolvedValue(undefined);
+			FakeDataChannel.audioVariants = ['main', 'sub'];
+			const peer = new LivePeer();
+			const front = { cameraId: 'front-door', quality: 'auto' } as const;
+			const garage = { cameraId: 'garage', quality: 'auto' } as const;
+			await peer.configure([front, garage]);
+			const channel = FakePeerConnection.latest!.channels[0];
+			FakeDataChannel.subscriptionQuality = create(LiveQualityDiagnosticsSchema, {
+				activeVariantId: 'sub',
+				pendingVariantId: 'main',
+				selectionReason: LiveQualitySelectionReason.WAITING_KEYFRAME
+			});
+			const preview = { ...front, variantId: 'main', liveAudioPreviewOffsetMs: 45 } as const;
+			const first = peer.configure([preview, garage]).catch((error: Error) => error.message);
+			await vi.waitFor(() => expect(peer.track(front.cameraId)?.pendingStream).toBe('main'));
+			const same = peer.configure([preview, garage], 'reconcile');
+			await Promise.resolve();
+			expect(
+				channel.subscriptions.filter((item) => item.liveAudioPreviewOffsetMs === 45)
+			).toHaveLength(1);
+			const next =
+				action === 'close'
+					? peer.close()
+					: peer.configure(
+							action === 'deactivate' ? [{ ...front, active: false }, garage] : [garage]
+						);
+			const result = await first;
+			expect(result).toMatch(/superseded/i);
+			await Promise.all([same, next]);
+			expect(peer.track(front.cameraId)?.subscribed ?? false).toBe(false);
+			if (action !== 'close') expect(peer.track(garage.cameraId)?.subscribed).toBe(true);
+			if (action === 'deactivate') expect(api.createSession).toHaveBeenCalledOnce();
+			expect(
+				channel.subscriptions.some(
+					(item) => item.kind === MediaKind.AUDIO && item.liveAudioPreviewOffsetMs === 45
+				)
+			).toBe(false);
+			await peer.close();
+		},
+		2500
+	);
+
 	it('keeps the admitted video and restores the saved plan after an unavailable preview', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({

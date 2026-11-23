@@ -62,6 +62,12 @@ type PendingRequest = {
 	timeout: ReturnType<typeof setTimeout>;
 };
 
+class SupersededPreview extends Error {
+	constructor() {
+		super('The live timing preview was superseded.');
+	}
+}
+
 export type LivePeerPlan = {
 	cameraId: string;
 	quality: LiveQuality;
@@ -199,7 +205,7 @@ export class LivePeer {
 			cameraIds[plan.cameraId] = true;
 		}
 		const wasActive = this.#desiredPlans.some((plan) => plan.active);
-		this.#desiredPlans = nextPlans;
+		this.setDesiredPlans(nextPlans);
 		return this.enqueue(async () => {
 			if (this.#desiredPlans !== nextPlans) return;
 			const recovering = this.#recoveryAttempts > 0 || this.#recoveryStopped;
@@ -222,9 +228,14 @@ export class LivePeer {
 		});
 	}
 
+	private setDesiredPlans(plans: LivePeerPlan[]): void {
+		this.#desiredPlans = plans;
+		for (const observe of this.#previewWaiters.values()) observe();
+	}
+
 	close(): Promise<void> {
 		this.talkbackError = null;
-		this.#desiredPlans = [];
+		this.setDesiredPlans([]);
 		this.cancelRecovery();
 		return this.enqueue(async () => this.closeNow());
 	}
@@ -321,7 +332,7 @@ export class LivePeer {
 
 	closeOnPageHide(): void {
 		this.talkbackError = null;
-		this.#desiredPlans = [];
+		this.setDesiredPlans([]);
 		this.cancelRecovery();
 		const sessionToken = this.releaseLocalResources();
 		if (sessionToken === null) return;
@@ -478,7 +489,7 @@ export class LivePeer {
 				}
 				try {
 					await this.subscribeTrack(
-						plan.cameraId,
+						plan,
 						track.trackId,
 						plan.quality,
 						variant,
@@ -487,7 +498,9 @@ export class LivePeer {
 						timingChanged
 					);
 				} catch (error) {
-					if (track.subscribed && timingChanged) {
+					if (error instanceof SupersededPreview) {
+						this.replaceTrack(plan.cameraId, { timingReconciliationNeeded: true });
+					} else if (track.subscribed && timingChanged) {
 						await this.restoreTimingPair(plan, track);
 					} else if (timingChanged && this.#peer) {
 						await this.unsubscribeTrack(plan.cameraId, track.trackId).catch((cleanupError) =>
@@ -502,7 +515,7 @@ export class LivePeer {
 
 	private async restoreTimingPair(plan: LivePeerPlan, track: LivePeerTrack) {
 		await this.subscribeTrack(
-			plan.cameraId,
+			plan,
 			track.trackId,
 			track.requestedQuality,
 			track.requestedVariantId,
@@ -753,7 +766,7 @@ export class LivePeer {
 		const owner = this.#peer;
 		try {
 			await this.subscribeTrack(
-				plan.cameraId,
+				plan,
 				id,
 				plan.quality,
 				plan.variantId ?? null,
@@ -761,6 +774,10 @@ export class LivePeer {
 				plan.liveAudioPreviewOffsetMs
 			);
 		} catch (error) {
+			if (error instanceof SupersededPreview) {
+				this.replaceTrack(plan.cameraId, { timingReconciliationNeeded: true });
+				return;
+			}
 			if (
 				!recovering ||
 				plan.liveAudioPreviewOffsetMs === undefined ||
@@ -771,7 +788,7 @@ export class LivePeer {
 			const saved = { ...plan, variantId: undefined, liveAudioPreviewOffsetMs: undefined };
 			// The preview may have admitted video before audio failed. Replace the same
 			// subscription in place so its MID retains the existing sender clock.
-			await this.subscribeTrack(plan.cameraId, id, saved.quality, null, true, undefined, true);
+			await this.subscribeTrack(plan, id, saved.quality, null, true, undefined, true);
 			if (owner === this.#peer && this.#desiredPlans.includes(plan)) {
 				this.#desiredPlans = this.#desiredPlans.map((item) => (item === plan ? saved : item));
 				this.replaceTrack(plan.cameraId, { restoredSavedTiming: true });
@@ -781,10 +798,12 @@ export class LivePeer {
 	}
 
 	cancelDisconnectedPreview(cameraId: string): void {
-		this.#desiredPlans = this.#desiredPlans.map((plan) =>
-			plan.cameraId === cameraId
-				? { ...plan, variantId: undefined, liveAudioPreviewOffsetMs: undefined }
-				: plan
+		this.setDesiredPlans(
+			this.#desiredPlans.map((plan) =>
+				plan.cameraId === cameraId
+					? { ...plan, variantId: undefined, liveAudioPreviewOffsetMs: undefined }
+					: plan
+			)
 		);
 		if (this.#peer) {
 			void this.enqueue(() => this.configureNow(this.#desiredPlans, true)).catch(() =>
@@ -796,7 +815,7 @@ export class LivePeer {
 	}
 
 	private async subscribeTrack(
-		cameraId: string,
+		plan: LivePeerPlan,
 		subscriptionId: string,
 		quality: LiveQuality,
 		variantId: 'main' | 'sub' | null = null,
@@ -804,6 +823,7 @@ export class LivePeer {
 		liveAudioPreviewOffsetMs?: number,
 		confirmTiming = liveAudioPreviewOffsetMs !== undefined
 	): Promise<void> {
+		const { cameraId } = plan;
 		const owner = this.#peer;
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
 		if (!sourceSessionId) {
@@ -853,23 +873,19 @@ export class LivePeer {
 			result.value.delivery.value.mid,
 			result.value
 		);
-		await this.completeTimingAdmission(
-			cameraId,
-			variantId,
-			liveAudioPreviewOffsetMs,
-			confirmTiming
-		);
+		await this.completeTimingAdmission(plan, variantId, liveAudioPreviewOffsetMs, confirmTiming);
 	}
 
 	private async completeTimingAdmission(
-		cameraId: string,
+		plan: LivePeerPlan,
 		variantId: 'main' | 'sub' | null,
 		liveAudioPreviewOffsetMs: number | undefined,
 		confirmTiming: boolean
 	) {
+		const { cameraId } = plan;
 		if (liveAudioPreviewOffsetMs !== undefined) {
 			if (variantId === null) throw new Error('Choose a video profile for timing preview.');
-			await this.waitForPreviewProfile(cameraId, variantId);
+			await this.waitForPreviewProfile(plan, variantId);
 		}
 		await this.subscribeAudio(
 			cameraId,
@@ -918,13 +934,22 @@ export class LivePeer {
 		if (event) this.attachTrackEvent(cameraId, event);
 	}
 
-	private waitForPreviewProfile(cameraId: string, desired: 'main' | 'sub'): Promise<void> {
+	private waitForPreviewProfile(plan: LivePeerPlan, desired: 'main' | 'sub'): Promise<void> {
+		const { cameraId } = plan;
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(
 				() => observe(new Error('The selected video profile did not become active in time.')),
 				controlTimeoutMs
 			);
 			const observe = (failure?: Error) => {
+				const requested = this.#desiredPlans.find((item) => item.cameraId === cameraId);
+				if (
+					!failure &&
+					(!requested?.active ||
+						requested.variantId !== plan.variantId ||
+						requested.liveAudioPreviewOffsetMs !== plan.liveAudioPreviewOffsetMs)
+				)
+					failure = new SupersededPreview();
 				const track = this.track(cameraId);
 				if (
 					!failure &&

@@ -1,7 +1,39 @@
 use super::*;
 use crate::api::proto::{
-    LiveQualityDiagnostics, LiveQualitySelectionReason as Reason, Notification,
+    DeliveryTransport, LiveQualityDiagnostics, LiveQualitySelectionReason as Reason, Notification,
 };
+
+#[test]
+fn replacing_audio_timing_discards_only_its_unflushed_telemetry() {
+    let mut fixture = SharedFixture::new(&[StreamQuality::Auto]);
+    fixture.prime();
+    fixture.take_stream_states();
+    let transport = DeliveryTransport::ReliableData;
+    let initial = fixture.subscribe_audio_with_preview(transport, Some(-80));
+    // Simulate a backed-up control channel with both the old audio report and a
+    // genuine video report waiting. Admission responses are flushed first.
+    fixture.media.audio_tracks[0].reported_timing = None;
+    fixture.media.tracks[0].runtime.reported_quality = None;
+    fixture
+        .media
+        .report_live_quality(fixture.start + Duration::from_secs(2));
+    assert_eq!(fixture.media.control_notifications.len(), 2);
+    let ack = fixture.subscribe_audio_with_preview(transport, Some(80));
+    assert_eq!(ack.subscription_id, initial.subscription_id);
+    assert_eq!(ack.live_audio.unwrap().applied_offset_ms, 80);
+    let states = fixture.take_stream_states();
+    assert_eq!(states.len(), 1);
+    assert_ne!(states[0].subscription_id, ack.subscription_id);
+    assert_eq!(fixture.media.control_notification_bytes, 0);
+    assert_eq!(
+        fixture.media.audio_tracks[0].reported_timing,
+        ack.live_audio
+    );
+    fixture
+        .media
+        .report_live_quality(fixture.start + Duration::from_secs(4));
+    assert!(fixture.take_stream_states().is_empty());
+}
 
 #[test]
 fn live_preview_changes_emit_timing_even_when_network_quality_is_stable() {

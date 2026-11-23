@@ -385,6 +385,15 @@ impl SharedFixture {
     }
 
     pub(super) fn subscribe_audio(&mut self, transport: api::DeliveryTransport) -> String {
+        self.subscribe_audio_with_preview(transport, None)
+            .subscription_id
+    }
+
+    pub(super) fn subscribe_audio_with_preview(
+        &mut self,
+        transport: api::DeliveryTransport,
+        preview: Option<i32>,
+    ) -> api::SubscriptionResult {
         assert!(matches!(
             transport,
             api::DeliveryTransport::Rtp | api::DeliveryTransport::ReliableData
@@ -395,7 +404,7 @@ impl SharedFixture {
             "audio-reliable"
         };
         let request = api::SubscribeMedia {
-            live_audio_preview_offset_ms: None,
+            live_audio_preview_offset_ms: preview,
             subscription_id: id.to_owned(),
             source_session_id: "camera:camera-0".to_owned(),
             kind: api::MediaKind::Audio as i32,
@@ -437,8 +446,7 @@ impl SharedFixture {
                     selected_variant_id: "main".to_owned(),
                 },
             )
-            .unwrap();
-        request.subscription_id
+            .unwrap()
     }
 
     pub(super) fn subscribe_fixed_data(

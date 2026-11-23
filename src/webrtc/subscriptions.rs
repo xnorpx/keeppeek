@@ -244,6 +244,11 @@ impl ApiMediaRuntime {
             plan.selected_variant_id,
         );
         result.live_audio = Some(runtime.timing.report(selected_stream));
+        // Control replies take priority over queued telemetry. An older report
+        // must never follow this acknowledgment on the ordered channel.
+        track.reported_timing = result.live_audio;
+        let track_id = runtime.track_id.clone();
+        self.discard_queued_stream_states(&track_id);
         if let Some(retired) = retired {
             self.cancel_group(&retired);
         }
