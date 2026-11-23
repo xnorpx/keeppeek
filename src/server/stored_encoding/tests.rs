@@ -54,7 +54,7 @@ fn encode_test_batch(
     )
 }
 
-fn compare_verified_ranges(count: u32, start: usize) -> anyhow::Result<()> {
+fn compare_verified_ranges(count: u32, start: usize, expected_chunks: usize) -> anyhow::Result<()> {
     let directory = std::env::temp_dir().join(format!(
         "keeppeek-verified-playback-{}",
         uuid::Uuid::new_v4()
@@ -77,6 +77,7 @@ fn compare_verified_ranges(count: u32, start: usize) -> anyhow::Result<()> {
             touched.extend(offset / CHUNK_BYTES..(offset + length).div_ceil(CHUNK_BYTES));
         }
     }
+    assert_eq!(touched.len(), expected_chunks);
     let expected = touched
         .iter()
         .map(|index| (descriptor.bytes - index * CHUNK_BYTES).min(CHUNK_BYTES))
@@ -111,11 +112,47 @@ fn compare_verified_ranges(count: u32, start: usize) -> anyhow::Result<()> {
 
 #[test]
 fn archive_playback_verifies_one_chunk_once_for_ten_real_fragments() -> anyhow::Result<()> {
-    compare_verified_ranges(40, 5)
+    compare_verified_ranges(40, 5, 1)
 }
 
 #[test]
 fn archive_playback_reuses_initialization_when_ten_real_fragments_cross_chunks()
 -> anyhow::Result<()> {
-    compare_verified_ranges(135, 112)
+    compare_verified_ranges(135, 112, 2)
+}
+
+#[test]
+fn archive_batch_fences_changed_verification_evidence_and_fresh_requests() -> anyhow::Result<()> {
+    let directory =
+        std::env::temp_dir().join(format!("keeppeek-archive-fence-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory)?;
+    let mut fragments = recorded_fragments(&directory, 2)?;
+    let bytes = std::fs::read(&fragments[0].path)?;
+    let (root, target, descriptor) = publish_fixture(&bytes)?;
+    for fragment in &mut fragments {
+        fragment.archive = Some(descriptor.clone());
+    }
+    assert!(encode_test_batch(fragments.clone()).is_ok());
+    let mut changed = fragments.clone();
+    changed[1].archive.as_mut().unwrap().chunk_hashes = vec![0; 32].into();
+    let unavailable = |batch: Result<StoredMediaBatch, ControlCommandError>| {
+        let error = batch.err().expect("no partial batch may be returned");
+        assert_eq!(error._http_status, 503);
+        assert_eq!(
+            error.message,
+            "Archive media is unavailable or failed integrity verification. Check the archive target and retry."
+        );
+    };
+    unavailable(encode_test_batch(changed));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(descriptor.path())?;
+    std::io::Write::write_all(&mut file, &[bytes[0] ^ 1])?;
+    file.sync_all()?;
+    drop(file);
+    unavailable(encode_test_batch(fragments));
+    drop(target);
+    std::fs::remove_dir_all(root)?;
+    std::fs::remove_dir_all(directory)?;
+    Ok(())
 }

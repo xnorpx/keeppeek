@@ -1,6 +1,38 @@
 //! Encodes stored fragments while retaining identifiers across cursor refills.
 
 use super::*;
+use crate::storage::{
+    archive::{VerifiedReader, target::Work},
+    catalog::archive_playback::ArchiveRead,
+};
+
+struct ArchiveSource<'a> {
+    reader: VerifiedReader<'a>,
+    init_offset: u64,
+    initialization: Vec<u8>,
+}
+
+impl<'a> ArchiveSource<'a> {
+    fn open(
+        fragment: &CatalogMediaFragment,
+        descriptor: &ArchiveRead,
+        work: Work<'a>,
+    ) -> anyhow::Result<Self> {
+        let mut reader = VerifiedReader::new(descriptor.clone(), work)?;
+        let initialization = reader.read_range(fragment.init_offset, fragment.init_len)?;
+        Ok(Self {
+            reader,
+            init_offset: fragment.init_offset,
+            initialization,
+        })
+    }
+
+    fn matches(&self, fragment: &CatalogMediaFragment, descriptor: &ArchiveRead) -> bool {
+        self.reader.descriptor() == descriptor
+            && self.init_offset == fragment.init_offset
+            && self.initialization.len() as u64 == fragment.init_len
+    }
+}
 
 struct Encoder<'a> {
     id: &'a str,
@@ -8,6 +40,8 @@ struct Encoder<'a> {
     target: DataChannelTarget,
     identifiers: StoredMediaIdentifiers,
     period: Option<StoredMediaPeriodKey>,
+    archive_source: Option<ArchiveSource<'a>>,
+    archive_deadline: Instant,
     content_type: Option<String>,
     messages: Vec<OutboundDataMessage>,
 }
@@ -34,6 +68,8 @@ pub(super) fn encode(
         target,
         identifiers,
         period: None,
+        archive_source: None,
+        archive_deadline: Instant::now() + Duration::from_secs(30),
         content_type: None,
         messages: Vec::new(),
     };
@@ -55,19 +91,7 @@ pub(super) fn encode(
 
 impl Encoder<'_> {
     fn push(&mut self, fragment: CatalogMediaFragment) -> Result<(), ControlCommandError> {
-        let initialization = read_stored_range(
-            Path::new(&fragment.path),
-            fragment.archive.as_ref(),
-            fragment.init_offset,
-            fragment.init_len,
-        )?;
-        let payload = read_stored_range(
-            Path::new(&fragment.path),
-            fragment.archive.as_ref(),
-            fragment.byte_offset,
-            fragment.byte_len,
-        )?;
-        let period = stored_media_period(&initialization, &payload)?;
+        let period = self.read_period(&fragment)?;
         let key = StoredMediaPeriodKey {
             recording_id: fragment.recording_id,
             sample_descriptions: period.sample_descriptions,
@@ -98,6 +122,43 @@ impl Encoder<'_> {
             self.target,
             &period.fragment,
         )
+    }
+
+    fn read_period(
+        &mut self,
+        fragment: &CatalogMediaFragment,
+    ) -> Result<StoredMediaPeriod, ControlCommandError> {
+        let Some(archive) = &fragment.archive else {
+            self.archive_source = None;
+            let path = Path::new(&fragment.path);
+            let initialization =
+                read_stored_range(path, None, fragment.init_offset, fragment.init_len)?;
+            let payload = read_stored_range(path, None, fragment.byte_offset, fragment.byte_len)?;
+            return stored_media_period(&initialization, &payload);
+        };
+        stored_read::validate_length(fragment.init_len)?;
+        stored_read::validate_length(fragment.byte_len)?;
+        // Discard the previous initialization and chunk before opening another object.
+        self.archive_source
+            .take_if(|source| !source.matches(fragment, archive));
+        let source = match &mut self.archive_source {
+            Some(source) => source,
+            None => {
+                let work = Work {
+                    deadline: self.archive_deadline,
+                    cancelled: &|| false,
+                };
+                self.archive_source.insert(
+                    ArchiveSource::open(fragment, archive, work)
+                        .map_err(stored_read::archive_error)?,
+                )
+            }
+        };
+        let payload = source
+            .reader
+            .read_range(fragment.byte_offset, fragment.byte_len)
+            .map_err(stored_read::archive_error)?;
+        stored_media_period(&source.initialization, &payload)
     }
 }
 
