@@ -392,6 +392,46 @@ describe('ControlClientStateStore', () => {
 		]);
 	});
 
+	it.each(['gap', 'closed'])(
+		'hands an interrupted %s snapshot to its group for recovery',
+		async (reason) => {
+			const transport = new FakeTransport((action) =>
+				action.case === 'watch'
+					? snapshotResult(action.value.watchId, [testEntry('a', 1n)])
+					: unwatchResult('unused')
+			);
+			const client = new ControlClientStateStore((command) => transport.send(command), {
+				maxWatches: 1
+			});
+			let interrupted = 0;
+			const watch = await client.watch(namespace, {
+				onInterrupted: () => {
+					interrupted++;
+				}
+			});
+			if (reason === 'gap')
+				await client.handleWatchUpdate(
+					testUpdate(watch.watchId, 'a', StateStoreUpdateKind.DELETE, 3n)
+				);
+			else await client.handleWatchClosed(testClosed(watch.watchId));
+			expect(interrupted).toBe(1);
+			client.handleConnectionClosed();
+			await client.handleConnectionOpened();
+			expect(watch.status).toBe('closed');
+			expect(transport.sent.map((command) => storeAction(command).case)).toEqual([
+				'watch',
+				'unwatch'
+			]);
+			const replacement = await client.watch(namespace);
+			await client.handleWatchClosed(testClosed(watch.watchId));
+			await watch.close();
+			expect(interrupted).toBe(1);
+			expect(replacement.status).toBe('active');
+			expect(transport.sent).toHaveLength(3);
+			await replacement.close();
+		}
+	);
+
 	it('reconnects watches with fresh snapshots after a connection drop', async () => {
 		let calls = 0;
 		const transport = new FakeTransport((action) => {
@@ -503,6 +543,20 @@ describe('ControlClientStateStore', () => {
 		expect(transport.sent).toHaveLength(1);
 		expect(draft.expectedRevision).toBe(draftRevision);
 		expect(draft.value).toEqual({ desired: true, key: 'intent/a' });
+	});
+
+	it('admits sixteen shared connection watches and reuses a released slot', async () => {
+		const transport = new FakeTransport((action) => {
+			if (action.case === 'watch') return snapshotResult(action.value.watchId, []);
+			if (action.case === 'unwatch') return unwatchResult(action.value.watchId);
+			throw new Error('Unexpected operation');
+		});
+		const client = new ControlClientStateStore((command) => transport.send(command));
+		const admitted = await Promise.all(Array.from({ length: 16 }, () => client.watch(namespace)));
+		await expect(client.watch(namespace)).rejects.toThrow('watch limit');
+		await admitted.pop()!.close();
+		admitted.push(await client.watch(namespace));
+		await Promise.all(admitted.map((handle) => handle.close()));
 	});
 
 	it('rejects a second concurrent watch while the first snapshot is pending', async () => {

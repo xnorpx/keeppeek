@@ -18,6 +18,10 @@ export const capabilityActions = {
 		action: 'Create guest link',
 		capability: 'keeppeek.guest-review.v1'
 	},
+	shareRecordingRange: {
+		action: 'Share recording range',
+		capability: 'keeppeek.guest-range.v1'
+	},
 	manageGuestLinks: {
 		action: 'Manage guest links',
 		capability: 'keeppeek.guest-review.v1'

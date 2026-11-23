@@ -610,7 +610,7 @@ export class ControlClient {
 	};
 	#accessStateListeners = new Set<AccessStateListener>();
 	#notifications = new NotificationControlClient((command) => this.request(command));
-	readonly sharing = new SharingControlClient((command) => this.request(command));
+	readonly sharing = new SharingControlClient((command, timeout) => this.request(command, timeout));
 	readonly recordingMaintenance = new RecordingMaintenanceClient((command) =>
 		this.request(command)
 	);
@@ -1385,6 +1385,7 @@ export class ControlClient {
 		endMs: number;
 		allowPartial?: boolean;
 		burnInTimestamp?: boolean;
+		guestRangePreparation?: boolean;
 		event?: Pick<
 			RecordingEvent,
 			| 'id'
@@ -1407,6 +1408,7 @@ export class ControlClient {
 					endTime: timestampFromDate(new Date(options.endMs)),
 					allowPartial: options.allowPartial ?? false,
 					burnInTimestamp: options.burnInTimestamp ?? false,
+					guestRangePreparation: options.guestRangePreparation,
 					eventSeed: options.event ? protoExportEventSeed(options.event) : undefined
 				})
 			}
@@ -2554,6 +2556,7 @@ export class ControlClient {
 				const capabilities = envelope.message.value.event.value;
 				this.#serverCapabilities = capabilities;
 				void this.#stateStore.handleConnectionOpened();
+				void this.#runtimeProfiles.handleConnectionOpened();
 				for (const waiter of this.#capabilityWaiters) {
 					clearTimeout(waiter.timeout);
 					waiter.resolve(capabilities);
@@ -3098,6 +3101,7 @@ export class ControlClient {
 			this.#objectUrls.clear();
 		}
 		this.publishCapabilities([]);
+		this.#runtimeProfiles.handleConnectionClosed();
 		this.#stateStore.handleConnectionClosed();
 		this.failPending('WebRTC control connection closed.');
 		return sessionId;
