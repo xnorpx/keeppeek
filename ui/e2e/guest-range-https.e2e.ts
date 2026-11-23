@@ -16,6 +16,47 @@ test.use({
 	video: 'off'
 });
 
+async function checkRecordedExportMarks(page: Page, origin: string, start: number) {
+	await page.goto(`${origin}/keep?camera=127.0.0.1&stream=sub&at=${start}`);
+	const player = page.locator('[data-keep-player]');
+	const video = player.locator('video');
+	await expect
+		.poll(() =>
+			video.evaluate(
+				(element: HTMLVideoElement) =>
+					element.videoWidth > 0 &&
+					element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+					element.buffered.length > 0 &&
+					element.buffered.start(0) <= 0.2505 &&
+					element.buffered.end(0) > 0.7505
+			)
+		)
+		.toBe(true);
+	await video.focus();
+	await page.keyboard.press('k');
+	for (const [seconds, key] of [
+		[0.2505, '['],
+		[0.7505, ']']
+	] as const) {
+		await video.evaluate(async (element: HTMLVideoElement, target) => {
+			const seeked = new Promise<void>((resolve) =>
+				element.addEventListener('seeked', () => resolve(), { once: true })
+			);
+			element.currentTime = target;
+			await seeked;
+		}, seconds);
+		await expect(player).toHaveAttribute(
+			'data-recording-playhead-ms',
+			String(start + seconds * 1000)
+		);
+		await page.keyboard.press(key);
+	}
+	await page.getByRole('button', { name: 'Export', exact: true }).click();
+	const panel = page.locator('[data-keep-export]');
+	await expect(panel).toHaveAttribute('data-export-start-ms', String(start + 250));
+	await expect(panel).toHaveAttribute('data-export-end-ms', String(start + 750));
+}
+
 async function checkResponsivePreview(page: Page, dialog: Locator, testInfo: TestInfo) {
 	for (const width of testInfo.repeatEachIndex === 0 ? [1440, 390, 320] : []) {
 		await page.setViewportSize({ width, height: width === 1440 ? 900 : 844 });
@@ -121,6 +162,7 @@ test('the selected Keep, event and bookmark intervals reach the same guarded HTT
 		const start = fixture.guestRecordingStartMs;
 		if (start === null || !Number.isSafeInteger(start))
 			throw new Error('The fixture requires retained video.');
+		await checkRecordedExportMarks(page, fixture.origin, start);
 		await page.goto(`${fixture.origin}/keep?camera=127.0.0.1&stream=sub&at=${start}&mode=export`);
 		const panel = page.locator('[data-keep-export]');
 		const dialog = page.getByRole('dialog', { name: 'Create guest link', exact: true });
