@@ -629,7 +629,7 @@ export class ControlClient {
 		typeof this.#accessKey === 'string' ? this.#accessKey : null
 	);
 	#system = new SystemControlClient(
-		(command) => this.request(command),
+		(command, signal) => this.request(command, controlTimeoutMs, signal),
 		(event) => recordingEvent(event, new Map<string, ChunkAccumulator>(), () => {})
 	);
 	#stateStore = new ControlClientStateStore((command) => this.request(command));
@@ -770,12 +770,34 @@ export class ControlClient {
 		return deleteSession(sessionId, this.#accessKey, options);
 	}
 
-	async getLogSnapshot() {
-		return this.authenticatedHttp(() => fetchAuthenticatedLogSnapshot(this.#accessKey));
+	async getLogSnapshot(signal?: AbortSignal) {
+		return this.diagnosticsSnapshot(fetchAuthenticatedLogSnapshot, signal);
 	}
 
-	async getMetricsSnapshot(): Promise<string> {
-		return this.authenticatedHttp(() => fetchAuthenticatedMetricsSnapshot(this.#accessKey));
+	async getMetricsSnapshot(signal?: AbortSignal): Promise<string> {
+		return this.diagnosticsSnapshot(fetchAuthenticatedMetricsSnapshot, signal);
+	}
+
+	private async diagnosticsSnapshot<T>(
+		read: (credential: HttpCredential, signal?: AbortSignal) => Promise<T>,
+		signal?: AbortSignal
+	): Promise<T> {
+		const generation = this.#accessState.generation;
+		const credential = this.#accessKey;
+		try {
+			return await read(credential, signal);
+		} catch (error) {
+			if (
+				!signal?.aborted &&
+				generation === this.#accessState.generation &&
+				credential === this.#accessKey &&
+				error instanceof ApiRequestError &&
+				(error.status === 401 || error.status === 403)
+			) {
+				this.publishConnectionError(error);
+			}
+			throw error;
+		}
 	}
 
 	async getMqttIntegration() {
@@ -1246,25 +1268,43 @@ export class ControlClient {
 		}
 	}
 
-	async getServerCapabilities(): Promise<ServerCapabilities> {
+	async getServerCapabilities(signal?: AbortSignal): Promise<ServerCapabilities> {
+		signal?.throwIfAborted();
 		const generation = this.#transportGeneration;
 		await this.connect();
 		if (generation !== this.#transportGeneration)
 			throw new Error('WebRTC control connection changed.');
+		signal?.throwIfAborted();
 		if (this.#serverCapabilities) return this.#serverCapabilities;
 		return new Promise((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				this.#capabilityWaiters = this.#capabilityWaiters.filter(
-					(waiter) => waiter.resolve !== resolve
-				);
-				reject(new Error('WebRTC server capabilities did not arrive.'));
-			}, controlTimeoutMs);
-			this.#capabilityWaiters.push({ resolve, reject, timeout });
+			const fail = (error: Error) => {
+				this.#capabilityWaiters = this.#capabilityWaiters.filter((item) => item !== waiter);
+				clearTimeout(waiter.timeout);
+				waiter.reject(error);
+			};
+			const abort = () => fail(timelineAbortError());
+			const waiter: CapabilityWaiter = {
+				resolve: (capabilities) => {
+					signal?.removeEventListener('abort', abort);
+					resolve(capabilities);
+				},
+				reject: (error) => {
+					signal?.removeEventListener('abort', abort);
+					reject(error);
+				},
+				timeout: setTimeout(
+					() => fail(new Error('WebRTC server capabilities did not arrive.')),
+					controlTimeoutMs
+				)
+			};
+			this.#capabilityWaiters.push(waiter);
+			signal?.addEventListener('abort', abort, { once: true });
+			if (signal?.aborted) abort();
 		});
 	}
 
-	async getCameras(): Promise<CameraListItem[]> {
-		return camerasFromCapabilities(await this.getServerCapabilities());
+	async getCameras(signal?: AbortSignal): Promise<CameraListItem[]> {
+		return camerasFromCapabilities(await this.getServerCapabilities(signal));
 	}
 
 	async getHealth(signal?: AbortSignal): Promise<ServerHealthResponse> {
@@ -1592,8 +1632,8 @@ export class ControlClient {
 		return result.value.manufacturer ?? null;
 	}
 
-	async getLoggingSettings(): Promise<LoggingSettings> {
-		return this.#system.getLoggingSettings();
+	async getLoggingSettings(signal?: AbortSignal): Promise<LoggingSettings> {
+		return this.#system.getLoggingSettings(signal);
 	}
 
 	async setLoggingFilter(filter: string): Promise<LoggingSettings> {
@@ -2073,8 +2113,8 @@ export class ControlClient {
 		return this.#system.updateRuntimeConfiguration(update);
 	}
 
-	async getRuntimeConfiguration(): Promise<SanitizedConfig> {
-		return this.#system.getRuntimeConfiguration();
+	async getRuntimeConfiguration(signal?: AbortSignal): Promise<SanitizedConfig> {
+		return this.#system.getRuntimeConfiguration(signal);
 	}
 
 	async storageVolumes(command: import('./proto/webrtc_pb').StorageVolumeCommand) {
