@@ -752,7 +752,7 @@ fn archived_export_owner_download_decodes_on_a_clean_destination_volume() -> any
     drop(file);
 
     let recovered = std::fs::read(&path)?;
-    let sha256 = format!("{:x}", Sha256::digest(&recovered));
+    let sha256 = encode_lower_hex(Sha256::digest(&recovered));
     ensure!(
         sha256 == expected_sha256 && recovered == bytes,
         "restored export bytes changed"
