@@ -3,6 +3,8 @@ use crate::{profiles::RuntimeApplicationState, storage::RecordingConfiguration};
 use std::time::Instant;
 
 const RECORDING_ACK_TIMEOUT: Duration = Duration::from_millis(200);
+pub(super) const ACTIVE_RECORDING_WRITE_FAILURE: &str =
+    "recording writer reported an active write failure";
 
 pub(super) type RecordingRequest = Result<Option<RecordingConfiguration>, String>;
 
@@ -87,15 +89,8 @@ impl KeepPeekLoop {
         else {
             return false;
         };
-        let camera = source_id
-            .parse::<IpAddr>()
-            .ok()
-            .and_then(|ip| self.camera_definitions.get(&ip));
-        let writer_failed = application.state == RuntimeApplicationState::Applied
-            && self
-                .storage
-                .as_ref()
-                .is_some_and(|storage| storage.recording_configuration_failed(source_id));
+        let ip = source_id.parse::<IpAddr>().ok();
+        let camera = ip.and_then(|ip| self.camera_definitions.get(&ip));
         if let (Some(privacy), Some(camera)) = (&self.privacy, camera) {
             changed |= application.observe_policy(
                 privacy.observed_profile_policy(
@@ -107,17 +102,31 @@ impl KeepPeekLoop {
                 ),
             );
         }
-        if writer_failed
-            && camera.map_or(application.policy.recording_mode, |camera| {
-                self.effective_recording_mode(&camera.config)
-            }) != crate::cameras::CameraRecordingMode::Off
+        if application.state != RuntimeApplicationState::Applied
+            || !self.recording_writer_failed(source_id)
         {
-            application.state = RuntimeApplicationState::Degraded;
-            application.reason =
-                Some("recording writer reported an active write failure".to_owned());
-            changed = true;
+            return changed;
         }
-        changed
+        let configured_mode = camera.map_or_else(
+            || {
+                ip.and_then(|ip| self.inactive_configurations.get(&ip))
+                    .and_then(InactiveCamera::acknowledged_recording_mode)
+                    .unwrap_or(application.policy.recording_mode)
+            },
+            |camera| self.effective_recording_mode(&camera.config),
+        );
+        if configured_mode == crate::cameras::CameraRecordingMode::Off {
+            return changed;
+        }
+        application.state = RuntimeApplicationState::Degraded;
+        application.reason = Some(ACTIVE_RECORDING_WRITE_FAILURE.to_owned());
+        true
+    }
+
+    pub(super) fn recording_writer_failed(&self, source_id: &str) -> bool {
+        self.storage
+            .as_ref()
+            .is_some_and(|storage| storage.recording_configuration_failed(source_id))
     }
 
     pub(super) fn configure_profile_recording(

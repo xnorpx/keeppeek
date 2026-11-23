@@ -489,3 +489,58 @@ fn connected_camera_republishes_the_schedule_and_reports_its_recording_failure()
     assert_eq!(publications.load(std::sync::atomic::Ordering::Relaxed), 3);
     storage.shutdown();
 }
+
+#[test]
+fn privacy_pause_does_not_discard_a_recording_writer_failure() {
+    use crate::profiles::RuntimeApplicationState::{Applied, Degraded};
+
+    for failure_before_pause in [true, false] {
+        let (mut recorder, storage, _, camera) = recording_health_fixture();
+        let ip = camera.config.ip;
+        let id = ip.to_string();
+        apply_recording_health_revision(&mut recorder, 1);
+        let status = recorder.control().runtime_profile_status_handle();
+        assert_eq!(status.read().unwrap().cameras[&id].state, Applied);
+        if failure_before_pause {
+            storage.handle().note_test_writer_failure(&id);
+        }
+
+        recorder.set_privacy_registry(active_privacy_schedule(&id));
+        let (reply, paused) = mpsc::sync_channel(1);
+        recorder
+            .command_tx
+            .send(KeepPeekCommand::Stop {
+                ip,
+                reason: CameraStopReason::Privacy,
+                reply,
+            })
+            .unwrap();
+        recorder.handle_commands();
+        paused.try_recv().unwrap().unwrap();
+        assert!(!recorder.camera_workers.contains_key(&ip));
+        if !failure_before_pause {
+            assert_eq!(status.read().unwrap().cameras[&id].state, Applied);
+            storage.handle().note_test_writer_failure(&id);
+            poll_recording_health(&mut recorder);
+        }
+
+        let assert_failed = || {
+            let status = status.read().unwrap();
+            let application = &status.cameras[&id];
+            assert!(application.policy.privacy_enforced);
+            assert_eq!(
+                application.policy.recording_mode,
+                crate::cameras::CameraRecordingMode::Off
+            );
+            assert_eq!(application.state, Degraded);
+            assert_eq!(
+                application.reason.as_deref(),
+                Some(recording::ACTIVE_RECORDING_WRITE_FAILURE)
+            );
+        };
+        assert_failed();
+        apply_recording_health_revision(&mut recorder, 2);
+        assert_failed();
+        storage.shutdown();
+    }
+}
