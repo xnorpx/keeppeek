@@ -1,8 +1,9 @@
 use super::super::export_provenance_tests::{configured_source, current_record};
-use super::super::export_storage_tests::setup;
+use super::super::export_storage_tests::setup_for_codec;
 use super::*;
 use crate::shares::{CreateGrant, IssuerBinding, Mode};
-use crate::storage::RecordingCatalog;
+use crate::storage::{RecordingCatalog, VideoCodec};
+use crate::test_support::guest_range_recovery_messages;
 use proto::{share_command::Action, share_result::Result as Value};
 
 struct Fixture {
@@ -14,7 +15,13 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let (root, catalog, manager, mut state, request) = setup(16 * 1024 * 1024);
+        Self::with_export(VideoCodec::H264, |_| {})
+    }
+
+    fn with_export(codec: VideoCodec, select: impl FnOnce(&mut proto::CreateExportJob)) -> Self {
+        let (root, catalog, manager, mut state, mut request) =
+            setup_for_codec(16 * 1024 * 1024, codec);
+        select(&mut request);
         state.export_history_path = Some(Arc::new(root.join("history.json")));
         let identity = Uuid::parse_str("b70a223d-3e4f-42e6-b950-c7a4e9429c77").unwrap();
         let path = configured_source(&mut state, &root, identity);
@@ -65,6 +72,7 @@ impl Fixture {
         let Value::Evidence(evidence) =
             self.action(Action::PreviewExport(proto::PreviewShareExport {
                 export_job_id: "named-export".into(),
+                recording_range: None,
             }))
         else {
             panic!("export preview must return evidence");
@@ -73,8 +81,15 @@ impl Fixture {
     }
 
     fn issue(&self) -> proto::IssuedShareGrant {
+        let Value::Created(issued) = self.action(Action::Create(self.intent())) else {
+            panic!("grant creation must return one issued link");
+        };
+        issued
+    }
+
+    fn intent(&self) -> proto::CreateShareGrant {
         let evidence = self.preview();
-        let Value::Created(issued) = self.action(Action::Create(proto::CreateShareGrant {
+        proto::CreateShareGrant {
             request_id: Uuid::new_v4().to_string(),
             export_job_id: evidence.export_job_id,
             artifact_id: evidence.artifact_id,
@@ -86,10 +101,8 @@ impl Fixture {
             allow_download: true,
             max_views: Some(2),
             max_downloads: Some(2),
-        })) else {
-            panic!("grant creation must return one issued link");
-        };
-        issued
+            recording_range: None,
+        }
     }
 
     fn list(&self, page_size: u32) -> proto::ShareGrantList {
@@ -146,6 +159,412 @@ fn wait_for_export(state: &ServerState, principal: &ApiPrincipal) {
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("fixture export did not finish within ten seconds");
+}
+
+fn selected_export(codec: VideoCodec) -> (Fixture, ExportJobRecord, proto::ShareRecordingRange) {
+    let fixture = Fixture::with_export(codec, |request| {
+        let start = required_timestamp_ms(request.start_time.as_ref(), "start").unwrap();
+        let end = required_timestamp_ms(request.end_time.as_ref(), "end").unwrap();
+        request.start_time = Some(millis_timestamp(start - 500));
+        request.end_time = Some(millis_timestamp(end + 500));
+        request.allow_partial = true;
+    });
+    let record = current_record(&fixture.state);
+    let selection = proto::ShareRecordingRange {
+        source_id: record.job.source_id.clone(),
+        start_ms: required_timestamp_ms(record.request.start_time.as_ref(), "start").unwrap(),
+        end_ms: required_timestamp_ms(record.request.end_time.as_ref(), "end").unwrap(),
+    };
+    (fixture, record, selection)
+}
+
+#[test]
+fn a_ready_range_requires_an_intact_source_digest_before_preview_and_creation() {
+    use std::io::{Seek, SeekFrom, Write};
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let intent = proto::CreateShareGrant {
+        recording_range: Some(range.clone()),
+        ..fixture.intent()
+    };
+    let path = record.path.as_ref().unwrap();
+    let expected = std::fs::read(path).unwrap();
+    let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.seek(SeekFrom::End(-1)).unwrap();
+    file.write_all(&[expected.last().unwrap() ^ 1]).unwrap();
+    drop(file);
+    for action in [
+        Action::PreviewExport(proto::PreviewShareExport {
+            export_job_id: record.job.job_id,
+            recording_range: Some(range),
+        }),
+        Action::Create(intent),
+    ] {
+        let result = dispatch(
+            &fixture.state,
+            &fixture.principal,
+            proto::ShareCommand {
+                action: Some(action),
+            },
+        );
+        assert_eq!(result.unwrap_err().code, proto::ErrorCode::Unavailable);
+    }
+    assert!(fixture.list(1).grants.is_empty());
+}
+
+#[test]
+fn unsupported_range_codec_is_declined_before_disclosure() {
+    let (fixture, record, range) = selected_export(VideoCodec::H265);
+    let intent = fixture.intent();
+    for action in [
+        Action::PreviewExport(proto::PreviewShareExport {
+            export_job_id: record.job.job_id,
+            recording_range: Some(range.clone()),
+        }),
+        Action::Create(proto::CreateShareGrant {
+            recording_range: Some(range),
+            ..intent
+        }),
+    ] {
+        let error = dispatch(
+            &fixture.state,
+            &fixture.principal,
+            proto::ShareCommand {
+                action: Some(action),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+        assert_eq!(
+            error.message,
+            guest_range_recovery_messages()["incompatibleCodec"]
+        );
+    }
+    assert!(fixture.list(1).grants.is_empty());
+}
+
+#[test]
+fn range_preview_and_creation_require_uncorrected_audio_and_an_existing_media_proof() {
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let intent = fixture.intent();
+    let messages = guest_range_recovery_messages();
+    for (offset, missing_proof, reason) in [
+        (200, false, messages["correctedAudio"]),
+        (-200, false, messages["correctedAudio"]),
+        (0, true, messages["missingProof"]),
+    ] {
+        {
+            let mut records = fixture.state.export_jobs.lock().unwrap();
+            let job = records.get_mut(&record.job.job_id).unwrap();
+            let timing = job.job.recorded_audio.as_mut().unwrap();
+            timing.applied_offset_ms = offset;
+            timing.configured_offset_ms = offset;
+            if missing_proof {
+                job.media_proof = None;
+            }
+        }
+        for action in [
+            Action::PreviewExport(proto::PreviewShareExport {
+                export_job_id: record.job.job_id.clone(),
+                recording_range: Some(range.clone()),
+            }),
+            Action::Create(proto::CreateShareGrant {
+                recording_range: Some(range.clone()),
+                ..intent.clone()
+            }),
+        ] {
+            let err = dispatch(
+                &fixture.state,
+                &fixture.principal,
+                proto::ShareCommand {
+                    action: Some(action),
+                },
+            )
+            .unwrap_err();
+            assert_eq!(err.message, reason);
+        }
+    }
+    assert!(fixture.list(100).grants.is_empty());
+}
+
+#[test]
+fn creation_rechecks_current_policy_after_inspecting_and_leasing_the_file() {
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let request = proto::CreateShareGrant {
+        recording_range: Some(range.clone()),
+        ..fixture.intent()
+    };
+    let (inspected, _lease) = evidence::inspect(
+        &fixture.state,
+        &fixture.principal,
+        &record.job.job_id,
+        Some(&range),
+    )
+    .unwrap();
+    let mut settings = fixture.policy_change("https://recorder.example");
+    settings.settings.as_mut().unwrap().enabled = false;
+    fixture.action(Action::ConfigurePolicy(settings));
+    assert!(
+        management::create_inspected(
+            &fixture.state,
+            SessionId::from_u64(0),
+            &fixture.principal,
+            request,
+            inspected
+        )
+        .is_err()
+    );
+    assert!(fixture.list(100).grants.is_empty());
+}
+
+#[test]
+fn range_preview_uses_the_recorders_shared_inspection_capacity() {
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let inspect = || {
+        evidence::preview(
+            &fixture.state,
+            &fixture.principal,
+            &record.job.job_id,
+            Some(&range),
+        )
+    };
+    let _first = fixture.state.guest_review.reserve_hash().unwrap();
+    let second = fixture.state.guest_review.reserve_hash().unwrap();
+    let error = inspect().err().unwrap();
+    assert_eq!(error.code, proto::ErrorCode::Unavailable);
+    assert!(error.message.contains("inspection is busy"));
+    assert!(
+        evidence::preview(&fixture.state, &fixture.principal, &record.job.job_id, None).is_ok()
+    );
+    drop(second);
+    assert!(inspect().is_ok());
+}
+
+#[test]
+fn closing_the_initiating_session_cancels_pending_grant_creation() {
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let id = SessionId::from_u64(751);
+    fixture
+        .state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .insert(id, super::super::tests::local_test_session());
+    let (inspected, _lease) = evidence::inspect(
+        &fixture.state,
+        &fixture.principal,
+        &record.job.job_id,
+        Some(&range),
+    )
+    .unwrap();
+    let request = proto::CreateShareGrant {
+        recording_range: Some(range),
+        ..fixture.intent()
+    };
+    session_lifecycle::admit(&fixture.state, id, || Ok(())).unwrap();
+    assert!(session_lifecycle::close(&fixture.state, id).is_some());
+    let error =
+        management::create_inspected(&fixture.state, id, &fixture.principal, request, inspected)
+            .unwrap_err();
+    assert!(error.message.contains("API session is unavailable"));
+    assert!(fixture.list(1).grants.is_empty());
+}
+
+#[test]
+fn maximum_completed_export_remains_shareable_when_source_audio_crosses_a_guarded_edge() {
+    let (fixture, mut record, mut range) = selected_export(VideoCodec::H264);
+    range.end_ms = range.start_ms + crate::shares::MAX_MEDIA_DURATION_MS;
+    record.request.end_time = Some(millis_timestamp(range.end_ms));
+    let proof = record.media_proof.as_mut().unwrap();
+    proof.bounds.start_ms = range.start_ms;
+    proof.bounds.end_ms = range.end_ms;
+    proof.source_bounds = Some(crate::storage::playback::ExportMediaBounds {
+        start_ms: range.start_ms - 1,
+        end_ms: range.end_ms,
+    });
+    fixture
+        .state
+        .export_jobs
+        .lock()
+        .unwrap()
+        .insert(record.job.job_id.clone(), record.clone());
+    let preview = |selected| {
+        evidence::preview_binding(
+            &fixture.state,
+            &fixture.principal,
+            &record.job.job_id,
+            selected,
+        )
+    };
+    assert_eq!(
+        preview(Some(&range)).err().unwrap().message,
+        guest_range_recovery_messages()["crossedRange"]
+    );
+    let completed = preview(None).unwrap();
+    assert_eq!(completed.binding.start_ms, range.start_ms);
+    assert_eq!(completed.binding.end_ms, range.end_ms);
+}
+
+#[test]
+fn older_output_only_proofs_still_serve_completed_exports_and_require_fresh_ranges() {
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let mut records = fixture.state.export_jobs.lock().unwrap();
+    records
+        .get_mut(&record.job.job_id)
+        .unwrap()
+        .media_proof
+        .as_mut()
+        .unwrap()
+        .version = 1;
+    drop(records);
+    let intent = fixture.intent();
+    let error = dispatch(
+        &fixture.state,
+        &fixture.principal,
+        proto::ShareCommand {
+            action: Some(Action::Create(proto::CreateShareGrant {
+                recording_range: Some(range),
+                ..intent
+            })),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.message,
+        guest_range_recovery_messages()["missingProof"]
+    );
+    assert!(fixture.list(100).grants.is_empty());
+    assert!(!fixture.issue().url.is_empty());
+}
+
+#[test]
+fn a_creator_can_identify_legacy_range_artifacts_that_need_replacement() {
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
+    let preview = || {
+        evidence::preview(
+            &fixture.state,
+            &fixture.principal,
+            &record.job.job_id,
+            Some(&range),
+        )
+        .err()
+        .expect("legacy evidence must be rejected")
+    };
+    for (owner, source) in [
+        (None, record.source_identity),
+        (record.owner_key.clone(), None),
+    ] {
+        {
+            let mut records = fixture.state.export_jobs.lock().unwrap();
+            let stored = records.get_mut(&record.job.job_id).unwrap();
+            stored.owner_key = owner;
+            stored.source_identity = source;
+        }
+        assert_eq!(
+            preview().message,
+            guest_range_recovery_messages()["missingProof"]
+        );
+    }
+    fixture
+        .state
+        .export_jobs
+        .lock()
+        .unwrap()
+        .get_mut(&record.job.job_id)
+        .unwrap()
+        .requester_id = "another-creator".to_owned();
+    assert_eq!(preview().message, "guest evidence is unavailable");
+}
+
+fn assert_range_actions_rejected(fixture: &Fixture, actions: [Action; 2]) {
+    for action in actions {
+        assert!(
+            dispatch(
+                &fixture.state,
+                &fixture.principal,
+                proto::ShareCommand {
+                    action: Some(action)
+                }
+            )
+            .is_err()
+        );
+    }
+}
+
+fn assert_mismatched_range_requests(
+    fixture: &Fixture,
+    selected: &proto::ShareRecordingRange,
+    preview: &impl Fn(&proto::ShareRecordingRange) -> Action,
+    create: &impl Fn(&proto::ShareRecordingRange) -> Action,
+) {
+    for changed in [
+        proto::ShareRecordingRange {
+            source_id: "different-camera".into(),
+            ..selected.clone()
+        },
+        proto::ShareRecordingRange {
+            start_ms: selected.start_ms - 1,
+            ..selected.clone()
+        },
+        proto::ShareRecordingRange {
+            end_ms: selected.end_ms - 1,
+            ..selected.clone()
+        },
+        proto::ShareRecordingRange {
+            end_ms: selected.start_ms,
+            ..selected.clone()
+        },
+    ] {
+        assert_range_actions_rejected(fixture, [preview(&changed), create(&changed)]);
+    }
+}
+
+#[test]
+fn selected_interval_guards_preview_and_grant_creation() {
+    let (fixture, record, selected) = selected_export(VideoCodec::H264);
+    let guarded_preview = |selected: &proto::ShareRecordingRange| {
+        Action::PreviewExport(proto::PreviewShareExport {
+            export_job_id: record.job.job_id.clone(),
+            recording_range: Some(selected.clone()),
+        })
+    };
+    let guarded_create = |selected: &proto::ShareRecordingRange| {
+        Action::Create(proto::CreateShareGrant {
+            recording_range: Some(selected.clone()),
+            ..fixture.intent()
+        })
+    };
+    let Value::Evidence(preview) = fixture.action(guarded_preview(&selected)) else {
+        panic!("expected range preview")
+    };
+    assert!(preview.start_ms >= selected.start_ms && preview.end_ms <= selected.end_ms);
+    assert!(matches!(
+        fixture.action(guarded_create(&selected)),
+        Value::Created(_)
+    ));
+    assert_mismatched_range_requests(&fixture, &selected, &guarded_preview, &guarded_create);
+    // Keep the immutable bytes and their measured bounds. Exercise a preceding keyframe
+    // and a trailing sample independently using corresponding requested intervals.
+    for (start, end) in [
+        (preview.start_ms + 1, selected.end_ms),
+        (selected.start_ms, preview.end_ms - 1),
+    ] {
+        {
+            let mut jobs = fixture.state.export_jobs.lock().unwrap();
+            let request = &mut jobs.get_mut(&record.job.job_id).unwrap().request;
+            request.start_time = Some(millis_timestamp(start));
+            request.end_time = Some(millis_timestamp(end));
+        }
+        let narrower = proto::ShareRecordingRange {
+            start_ms: start,
+            end_ms: end,
+            ..selected.clone()
+        };
+        assert_range_actions_rejected(
+            &fixture,
+            [guarded_preview(&narrower), guarded_create(&narrower)],
+        );
+    }
+    assert_eq!(fixture.list(100).grants.len(), 1);
 }
 
 #[test]
@@ -316,14 +735,35 @@ fn equivalent_source_uuid_spellings_revoke_the_selected_live_grant() {
 
 #[test]
 fn a_missing_owned_artifact_is_unavailable_even_while_its_history_remains_ready() {
-    let fixture = Fixture::new();
+    let (fixture, record, range) = selected_export(VideoCodec::H264);
     let issued = fixture.issue();
     assert_eq!(
         fixture.list(50).grants[0].status,
         proto::ShareGrantStatus::Active as i32
     );
-    let record = current_record(&fixture.state);
+    let preview = || {
+        evidence::preview(
+            &fixture.state,
+            &fixture.principal,
+            "named-export",
+            Some(&range),
+        )
+    };
+    assert!(preview().is_ok());
+    fixture
+        .state
+        .maintenance_active
+        .store(true, Ordering::Release);
+    assert_eq!(preview().err().unwrap().code, proto::ErrorCode::Unavailable);
+    fixture
+        .state
+        .maintenance_active
+        .store(false, Ordering::Release);
     std::fs::remove_file(record.path.unwrap()).unwrap();
+    assert_eq!(
+        preview().err().unwrap().message,
+        guest_range_recovery_messages()["missingArtifact"]
+    );
     assert_eq!(
         current_record(&fixture.state).job.status,
         proto::ExportJobStatus::Ready as i32
@@ -335,7 +775,7 @@ fn a_missing_owned_artifact_is_unavailable_even_while_its_history_remains_ready(
         page.grants[0].status,
         proto::ShareGrantStatus::Unavailable as i32
     );
-    assert!(evidence::preview(&fixture.state, &fixture.principal, "named-export").is_err());
+    assert!(evidence::preview(&fixture.state, &fixture.principal, "named-export", None).is_err());
 }
 
 #[test]
@@ -385,7 +825,7 @@ fn activating_policy_reclaims_sessions_and_reservations_without_refunding_delive
 #[test]
 fn overdue_audit_records_are_hidden_before_bounded_maintenance_purges_them() {
     let fixture = Fixture::new();
-    let binding = evidence::preview(&fixture.state, &fixture.principal, "named-export")
+    let binding = evidence::preview(&fixture.state, &fixture.principal, "named-export", None)
         .unwrap()
         .binding;
     let sampled = raw_clock().unwrap();

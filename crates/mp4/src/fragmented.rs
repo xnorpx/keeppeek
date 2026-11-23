@@ -6,6 +6,8 @@
 //! boundaries. Each returned range has been flushed to the underlying writer and can be indexed
 //! or served independently alongside the initialization range.
 
+mod budget;
+
 use crate::{
     mp4box::{
         mfhd::MfhdBox, mvex::MvexBox, tfdt::TfdtBox, tfhd::TfhdBox, traf::TrafBox, trex::TrexBox,
@@ -58,6 +60,8 @@ struct FragmentTrack {
     sample_description_count: u32,
     pending_sample_description_index: Option<u32>,
     composition_range: CompositionRange,
+    pending_payload: u64,
+    has_composition_offsets: bool,
     samples: Vec<Mp4Sample>,
     source_timing: source_rtp::SourceTiming,
     committed_epoch: Option<SourceRtpTime>,
@@ -166,6 +170,8 @@ impl<W> FragmentedMp4Writer<W> {
         for track in &mut self.tracks {
             track.pending_epoch = track.committed_epoch;
             track.composition_range = CompositionRange::default();
+            track.pending_payload = 0;
+            track.has_composition_offsets = false;
             track.samples.clear();
             track.source_timing = source_rtp::SourceTiming::default();
             track.pending_sample_description_index = None;
@@ -241,6 +247,8 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
                 sample_description_count,
                 pending_sample_description_index: None,
                 composition_range: CompositionRange::default(),
+                pending_payload: 0,
+                has_composition_offsets: false,
                 samples: Vec::new(),
                 committed_epoch: None,
                 pending_epoch: None,
@@ -397,6 +405,10 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
             ));
         }
         let composition_range = track.composition_range.including(sample.rendering_offset)?;
+        let pending_payload = track
+            .pending_payload
+            .checked_add(sample.bytes.len() as u64)
+            .ok_or(Error::InvalidData("fragmented MP4 payload size overflow"))?;
         if let Some(previous) = track.samples.last_mut() {
             let delta = sample
                 .start_time
@@ -414,6 +426,8 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
         if let Some(value) = measured {
             track.source_timing.add(track.samples.len() as u32, value);
         }
+        track.pending_payload = pending_payload;
+        track.has_composition_offsets |= sample.rendering_offset != 0;
         track.samples.push(sample);
         Ok(())
     }
@@ -442,27 +456,16 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
             let sample_count = u32::try_from(track.samples.len())
                 .map_err(|_| Error::InvalidData("fragmented MP4 fragment has too many samples"))?;
             let first_sample = &track.samples[0];
-            let has_composition_offsets = track
-                .samples
-                .iter()
-                .any(|sample| sample.rendering_offset != 0);
-            let mut flags = TrunBox::FLAG_DATA_OFFSET
-                | TrunBox::FLAG_SAMPLE_DURATION
-                | TrunBox::FLAG_SAMPLE_SIZE
-                | TrunBox::FLAG_SAMPLE_FLAGS;
-            if has_composition_offsets {
-                flags |= TrunBox::FLAG_SAMPLE_CTS;
-            }
+            let has_composition_offsets = track.has_composition_offsets;
+            let flags = budget::trun_flags(has_composition_offsets);
             let sample_sizes = track
                 .samples
                 .iter()
                 .map(|sample| u32::try_from(sample.bytes.len()).unwrap())
                 .collect::<Vec<_>>();
-            payload_len = sample_sizes.iter().try_fold(payload_len, |total, size| {
-                total
-                    .checked_add(u64::from(*size))
-                    .ok_or(Error::InvalidData("fragmented MP4 payload size overflow"))
-            })?;
+            payload_len = payload_len
+                .checked_add(track.pending_payload)
+                .ok_or(Error::InvalidData("fragmented MP4 payload size overflow"))?;
 
             let has_multiple_descriptions = track.sample_description_count > 1;
             source_events.extend(track.source_timing.events(
@@ -474,15 +477,7 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
             moof.trafs.push(TrafBox {
                 source_timing: Default::default(),
                 tfhd: TfhdBox {
-                    flags: TfhdBox::FLAG_DEFAULT_BASE_IS_MOOF
-                        | TfhdBox::FLAG_DEFAULT_SAMPLE_DURATION
-                        | TfhdBox::FLAG_DEFAULT_SAMPLE_SIZE
-                        | TfhdBox::FLAG_DEFAULT_SAMPLE_FLAGS
-                        | if has_multiple_descriptions {
-                            TfhdBox::FLAG_SAMPLE_DESCRIPTION_INDEX
-                        } else {
-                            0
-                        },
+                    flags: budget::tfhd_flags(has_multiple_descriptions),
                     track_id: track.track_id,
                     base_data_offset: None,
                     sample_description_index: has_multiple_descriptions
@@ -583,6 +578,8 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
         for track in &mut self.tracks {
             track.committed_epoch = track.pending_epoch;
             track.composition_range = CompositionRange::default();
+            track.pending_payload = 0;
+            track.has_composition_offsets = false;
             track.samples.clear();
             track.source_timing = source_rtp::SourceTiming::default();
             track.pending_sample_description_index = None;
@@ -1457,8 +1454,17 @@ mod tests {
                         .unwrap();
                 }
             }
+            let projected = writer.projected_end_before_payload(2, 0).unwrap();
+            let last_payload = b"unmeasured";
+            writer
+                .write_sample(2, sample(513_000, false, last_payload))
+                .unwrap();
             let estimate = writer.metadata_usage();
             let fragment = writer.flush_fragment().unwrap().unwrap();
+            assert_eq!(
+                fragment.range.offset + fragment.range.size,
+                projected + last_payload.len() as u64
+            );
             let start = fragment.range.offset as usize;
             let end = start + fragment.range.size as usize;
             let bytes = &writer.writer.get_ref()[start..end];
@@ -1490,7 +1496,7 @@ mod tests {
                     metadata += size as u64;
                 }
                 b"mdat" => {
-                    let sample_payload = 2 * 513 * 4;
+                    let sample_payload = 2 * 513 * 4 + b"unmeasured".len();
                     assert_eq!(size, HEADER_SIZE as usize + sample_payload);
                     metadata += (size - sample_payload) as u64;
                 }

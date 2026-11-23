@@ -17,9 +17,10 @@ use crate::storage::{
 mod audio_decode_tests;
 mod audio_timing;
 mod envelope;
+pub(crate) mod limited_export;
 pub(crate) mod recorded;
-use envelope::ExportEnvelope;
 pub use envelope::ExportMediaBounds;
+use envelope::{ExportEnvelope, ObservedBounds};
 
 #[derive(Clone)]
 struct PlaybackTrack {
@@ -34,6 +35,7 @@ pub struct ExportArtifact {
     pub delivered_end_ms: i64,
     pub bytes: u64,
     pub media_bounds: Option<ExportMediaBounds>,
+    pub source_bounds: Option<ExportMediaBounds>,
     pub audio_timing: AudioTimingEvidence,
 }
 
@@ -125,6 +127,7 @@ fn read_export_mp4<'a>(
 
 struct ExportSample {
     absolute_ms: i64,
+    source_bounds: Option<ExportMediaBounds>,
     track_id: u32,
     track_type: mp4::TrackType,
     timescale: u32,
@@ -139,10 +142,26 @@ struct ExportProgress {
     audio_timing: AudioTimingEvidence,
     pending_audio_end: HashMap<u32, u64>,
     envelope: ExportEnvelope,
+    source_bounds: ObservedBounds,
+}
+
+impl ExportProgress {
+    fn new(aligned_start_ms: i64) -> Self {
+        Self {
+            pending_video: false,
+            last_sample_start: HashMap::new(),
+            bytes_written: 0,
+            audio_timing: AudioTimingEvidence::default(),
+            pending_audio_end: HashMap::new(),
+            envelope: ExportEnvelope::new(aligned_start_ms),
+            source_bounds: ObservedBounds::default(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 struct ExportSelection<'a> {
+    maximum_bytes: Option<u64>,
     audio_offset_ms: i32,
     aligned_start_ms: i64,
     windows: &'a [(i64, i64)],
@@ -214,6 +233,24 @@ pub(crate) fn export_sources_to_file(
     cancelled: impl Fn() -> bool,
     progress: impl Fn(u64),
 ) -> anyhow::Result<ExportArtifact> {
+    export_sources_to_file_with_limit(
+        sources,
+        destination,
+        audio_offset_ms,
+        None,
+        cancelled,
+        progress,
+    )
+}
+
+pub(crate) fn export_sources_to_file_with_limit(
+    sources: ExportSources<'_>,
+    destination: &Path,
+    audio_offset_ms: i32,
+    maximum: Option<u64>,
+    cancelled: impl Fn() -> bool,
+    progress: impl Fn(u64),
+) -> anyhow::Result<ExportArtifact> {
     sources
         .video_fragments
         .first()
@@ -225,18 +262,14 @@ pub(crate) fn export_sources_to_file(
     }
     let result = (|| {
         let mut output = BufWriter::new(File::create(&temporary)?);
-        let result = if sources.audio_context.is_empty() {
-            export_fragment_ranges_to_writer_with_audio_offset(
-                sources.video_fragments,
-                sources.requested_end_ms,
-                &mut output,
-                audio_offset_ms,
-                &cancelled,
-                progress,
-            )
-        } else {
-            export_sources_to_writer(sources, &mut output, audio_offset_ms, &cancelled, progress)
-        };
+        let result = limited_export::write(
+            sources,
+            &mut output,
+            audio_offset_ms,
+            maximum,
+            &cancelled,
+            progress,
+        );
         // Discard pending buffered bytes on failure instead of retrying writes during drop.
         let (file, _) = output.into_parts();
         drop(file);
@@ -257,6 +290,7 @@ pub(crate) fn export_sources_to_writer<W: Write + Seek>(
     sources: ExportSources<'_>,
     output: &mut W,
     audio_offset_ms: i32,
+    maximum_bytes: Option<u64>,
     cancelled: impl Fn() -> bool,
     progress: impl Fn(u64),
 ) -> anyhow::Result<ExportArtifact> {
@@ -273,26 +307,21 @@ pub(crate) fn export_sources_to_writer<W: Write + Seek>(
     }
     let plan = export_recordings(sources, audio_offset_ms)?;
     let selection = ExportSelection {
+        maximum_bytes,
         aligned_start_ms: plan.aligned_start_ms,
         audio_offset_ms,
         windows: &plan.windows,
     };
-    let (bytes, audio_timing, media_bounds) =
-        write_export_recordings(&plan.recordings, selection, output, &cancelled, &progress)?;
+    let artifact = write_export_recordings(&plan, selection, output, &cancelled, &progress)?;
     if cancelled() {
         bail!("export was cancelled");
     }
-    Ok(ExportArtifact {
-        aligned_start_ms: plan.aligned_start_ms,
-        delivered_end_ms: plan.delivered_end_ms,
-        bytes,
-        audio_timing,
-        media_bounds,
-    })
+    Ok(artifact)
 }
 
 /// Writes to a new empty sink; its owner handles durability, publication, and failed-file cleanup.
-pub(crate) fn export_fragment_ranges_to_writer_with_audio_offset<W: Write + Seek>(
+#[cfg(test)]
+fn export_fragment_ranges_to_writer_with_audio_offset<W: Write + Seek>(
     fragments: &[CatalogMediaFragment],
     requested_end_ms: i64,
     output: &mut W,
@@ -308,6 +337,7 @@ pub(crate) fn export_fragment_ranges_to_writer_with_audio_offset<W: Write + Seek
         },
         output,
         audio_offset_ms,
+        None,
         cancelled,
         progress,
     )
@@ -469,12 +499,13 @@ fn sort_export_recordings(recordings: &mut [ExportRecording], contextual: bool) 
 }
 
 fn write_export_recordings<W: Write + Seek>(
-    recordings: &[ExportRecording],
+    plan: &ExportPlan,
     selection: ExportSelection<'_>,
     output: &mut W,
     cancelled: &impl Fn() -> bool,
     report_progress: &impl Fn(u64),
-) -> anyhow::Result<(u64, AudioTimingEvidence, Option<ExportMediaBounds>)> {
+) -> anyhow::Result<ExportArtifact> {
+    let recordings = &plan.recordings;
     let first = recordings
         .iter()
         .find(|recording| !recording.intervals.is_empty())
@@ -490,14 +521,7 @@ fn write_export_recordings<W: Write + Seek>(
     let (config, configs) = export_mp4_configuration(&tracks, selection.audio_offset_ms)?;
     let mut writer =
         mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(output, &config, &configs)?;
-    let mut progress = ExportProgress {
-        pending_video: false,
-        last_sample_start: HashMap::new(),
-        bytes_written: 0,
-        audio_timing: AudioTimingEvidence::default(),
-        pending_audio_end: HashMap::new(),
-        envelope: ExportEnvelope::new(selection.aligned_start_ms),
-    };
+    let mut progress = ExportProgress::new(selection.aligned_start_ms);
     let callbacks = ExportContext {
         cancelled,
         report_progress,
@@ -532,11 +556,14 @@ fn write_export_recordings<W: Write + Seek>(
     progress.envelope.flush();
     let output = writer.into_writer();
     output.flush()?;
-    Ok((
-        output.seek(std::io::SeekFrom::End(0))?,
-        progress.audio_timing,
-        progress.envelope.bounds(),
-    ))
+    Ok(ExportArtifact {
+        aligned_start_ms: plan.aligned_start_ms,
+        delivered_end_ms: plan.delivered_end_ms,
+        bytes: output.seek(std::io::SeekFrom::End(0))?,
+        audio_timing: progress.audio_timing,
+        media_bounds: progress.envelope.bounds(),
+        source_bounds: progress.source_bounds.bounds(),
+    })
 }
 
 fn export_mp4_configuration(
@@ -586,12 +613,12 @@ fn selected_export_track_indexes(
 ) -> anyhow::Result<Vec<usize>> {
     let mut selected = vec![false; reference_tracks.len()];
     for recording in recordings {
-        let mut reader = read_export_mp4(recording, cancelled)?;
+        let reader = read_export_mp4(recording, cancelled)?;
         let tracks = export_tracks(&reader)?;
         validate_track_layout(reference_tracks, &tracks)?;
         for (index, track) in tracks.iter().enumerate() {
             if !selected[index]
-                && track_has_selected_sample(&mut reader, recording, track, selection, cancelled)?
+                && track_has_selected_sample(&reader, recording, track, selection, cancelled)?
             {
                 selected[index] = true;
             }
@@ -624,7 +651,7 @@ fn validate_track_layout(
 }
 
 fn track_has_selected_sample<R: Read + Seek>(
-    reader: &mut mp4::Mp4Reader<R>,
+    reader: &mp4::Mp4Reader<R>,
     recording: &ExportRecording,
     track: &PlaybackTrack,
     selection: ExportSelection<'_>,
@@ -638,7 +665,7 @@ fn track_has_selected_sample<R: Read + Seek>(
         if cancelled() {
             bail!("export was cancelled");
         }
-        let Some(sample) = read_export_source_sample(reader, recording, track, sample_id)? else {
+        let Some(sample) = export_source_header(reader, recording, track, sample_id)? else {
             continue;
         };
         if selected_sample_time(&sample, recording, track)?.is_none() {
@@ -700,25 +727,37 @@ fn write_export_recording<R: Read + Seek, W: Write + Seek>(
             if let Some(sample) = read_export_sample(
                 reader, recording, track, sample_id, track_id, progress, callbacks,
             )? {
-                samples.push(sample);
+                samples.push((track.source_id, sample_id, sample));
             }
         }
     }
-    samples.sort_unstable_by(|left, right| {
+    samples.sort_unstable_by(|(_, _, left), (_, _, right)| {
         left.absolute_ms.cmp(&right.absolute_ms).then_with(|| {
             let left_rank = u8::from(left.track_type != mp4::TrackType::Video);
             let right_rank = u8::from(right.track_type != mp4::TrackType::Video);
             left_rank.cmp(&right_rank)
         })
     });
-    for sample in samples {
-        append_export_sample(writer, sample, progress, callbacks)?;
+    for (track_id, sample_id, sample) in samples {
+        if (callbacks.cancelled)() {
+            bail!("export was cancelled");
+        }
+        if progress
+            .last_sample_start
+            .get(&sample.track_id)
+            .is_some_and(|previous| sample.sample.start_time <= *previous)
+        {
+            continue;
+        }
+        append_export_sample(writer, sample, progress, callbacks, |remaining| {
+            limited_export::read_payload(reader, track_id, sample_id, remaining)
+        })?;
     }
     Ok(())
 }
 
 fn read_export_sample<R: Read + Seek>(
-    reader: &mut mp4::Mp4Reader<R>,
+    reader: &mp4::Mp4Reader<R>,
     recording: &ExportRecording,
     track: &PlaybackTrack,
     sample_id: u32,
@@ -726,7 +765,7 @@ fn read_export_sample<R: Read + Seek>(
     progress: &mut ExportProgress,
     context: &ExportContext<'_>,
 ) -> anyhow::Result<Option<ExportSample>> {
-    let Some(mut sample) = read_export_source_sample(reader, recording, track, sample_id)? else {
+    let Some(mut sample) = export_source_header(reader, recording, track, sample_id)? else {
         return Ok(None);
     };
     let Some(absolute_ms) = selected_sample_time(&sample, recording, track)? else {
@@ -759,9 +798,15 @@ fn read_export_sample<R: Read + Seek>(
         .context("export source track disappeared")?;
     let description = source_track.sample_description_index(sample_id)?;
     let sample_description = source_track.media_config_for_description(description)?;
+    let source_bounds = ExportMediaBounds::source_sample(
+        recording.recording_started_at_ms,
+        source_track.timescale(),
+        &sample,
+    );
     sample.start_time = start;
     Ok(Some(ExportSample {
         absolute_ms,
+        source_bounds,
         track_id,
         track_type: track.config.track_type,
         timescale: track.config.timescale,
@@ -797,8 +842,8 @@ fn export_intervals<'a>(recording: &'a ExportRecording, track: &PlaybackTrack) -
     }
 }
 
-fn read_export_source_sample<R: Read + Seek>(
-    reader: &mut mp4::Mp4Reader<R>,
+fn export_source_header<R: Read + Seek>(
+    reader: &mp4::Mp4Reader<R>,
     recording: &ExportRecording,
     track: &PlaybackTrack,
     sample_id: u32,
@@ -827,7 +872,10 @@ fn read_export_source_sample<R: Read + Seek>(
         }
     }
     let sample = reader
-        .read_sample(track.source_id, sample_id)?
+        .tracks()
+        .get(&track.source_id)
+        .context("export source track disappeared")?
+        .sample_header(sample_id)?
         .with_context(|| format!("track {} sample {sample_id} is missing", track.source_id))?;
     anyhow::ensure!(
         !recording.contextual
@@ -930,19 +978,13 @@ fn normalized_sample_start(
 
 fn append_export_sample<W: Write + Seek>(
     writer: &mut mp4::FragmentedMp4Writer<W>,
-    sample: ExportSample,
+    mut sample: ExportSample,
     progress: &mut ExportProgress,
     callbacks: &ExportContext<'_>,
+    read_payload: impl FnOnce(Option<u64>) -> anyhow::Result<bytes::Bytes>,
 ) -> anyhow::Result<()> {
     if (callbacks.cancelled)() {
         bail!("export was cancelled");
-    }
-    if progress
-        .last_sample_start
-        .get(&sample.track_id)
-        .is_some_and(|previous| sample.sample.start_time <= *previous)
-    {
-        return Ok(());
     }
     if sample.track_type == mp4::TrackType::Video && sample.sample.is_sync {
         if progress.pending_video {
@@ -954,8 +996,23 @@ fn append_export_sample<W: Write + Seek>(
     }
     let audio_end =
         corrected_export_audio_end(&sample, progress, callbacks.selection.audio_offset_ms)?;
+    if callbacks.selection.audio_offset_ms == 0 {
+        progress.source_bounds.include(sample.source_bounds);
+    }
     let description_index =
         writer.add_sample_description(sample.track_id, sample.sample_description)?;
+    let remaining = if let Some(maximum) = callbacks.selection.maximum_bytes {
+        let committed =
+            writer.projected_end_before_payload(sample.track_id, sample.sample.rendering_offset)?;
+        Some(
+            maximum
+                .checked_sub(committed)
+                .context("export exceeds the guest preparation byte limit")?,
+        )
+    } else {
+        None
+    };
+    sample.sample.bytes = read_payload(remaining)?;
     progress
         .last_sample_start
         .insert(sample.track_id, sample.sample.start_time);
@@ -1105,6 +1162,7 @@ fn collect_compatibility_samples<R: Read + Seek>(
             let sample_description = reader.tracks()[&track.source_id]
                 .media_config_for_description(description_index)?;
             samples.push(ExportSample {
+                source_bounds: None,
                 absolute_ms: i64::try_from(
                     sample.start_time.saturating_mul(1_000) / u64::from(track.config.timescale),
                 )

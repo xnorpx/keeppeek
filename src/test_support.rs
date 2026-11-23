@@ -2,6 +2,12 @@
 
 use crate::camera_database::CameraDatabase;
 
+#[cfg(test)]
+pub(crate) fn guest_range_recovery_messages()
+-> std::collections::BTreeMap<&'static str, &'static str> {
+    serde_json::from_str(include_str!("../tests/fixtures/guest-range-recovery.json")).unwrap()
+}
+
 /// One fictional camera entry for an in-memory test catalog.
 #[derive(Debug, Clone)]
 pub struct TestCatalogCamera {
