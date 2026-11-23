@@ -196,7 +196,20 @@ async function openCreatorRange(
 		.getByRole('complementary', { name: 'Event detail' })
 		.getByRole('button', { name: 'Share recording range' })
 		.click();
-	return { start: start - 500, end: start + 2_500 };
+	const selected = page.getByRole('dialog').getByText(/Selected interval/);
+	await expect(selected).toBeVisible();
+	const dates = (await selected.innerText()).match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g);
+	if (dates?.length !== 2) throw new Error('The event preview must show both interval edges.');
+	const [from, to] = dates.map(Date.parse);
+	if (
+		from === undefined ||
+		to === undefined ||
+		!Number.isSafeInteger(from) ||
+		!Number.isSafeInteger(to) ||
+		from >= to
+	)
+		throw new Error('The event preview must show an ordered UTC interval.');
+	return { start: from, end: to };
 }
 
 async function openRecipient(page: Page, url: string) {
@@ -252,13 +265,19 @@ async function verifyGuestExpiresDuringPlayback(viewer: Page, url: string, expir
 				!response.ok()
 			)
 				return false;
-			return (await response.json()).status === 'expired';
+			const body: unknown = await response.json().catch(() => null);
+			return (
+				typeof body === 'object' && body !== null && 'status' in body && body.status === 'expired'
+			);
 		},
 		{ timeout }
 	);
 	// The grant is aligned to a whole UTC second, the precision of the recorder's HTTP Date.
 	const recorderDate = await expired.headerValue('date');
-	expect(Date.parse(recorderDate ?? '')).toBeGreaterThanOrEqual(expiry);
+	expect(recorderDate, 'recorder supplied an HTTP Date').toBeTruthy();
+	const recorderTime = Date.parse(recorderDate ?? '');
+	expect(Number.isFinite(recorderTime), 'recorder HTTP Date is a valid timestamp').toBe(true);
+	expect(recorderTime).toBeGreaterThanOrEqual(expiry);
 	await expect(viewer.getByText('The link expired. Playback has stopped.')).toBeVisible({
 		timeout
 	});
