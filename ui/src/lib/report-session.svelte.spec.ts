@@ -6,6 +6,8 @@ import type { ReportTransport } from './report-submission';
 import { BrowserLogStore } from './browser-logs';
 import { ReportSession } from './report-session.svelte';
 
+type ReportDependencies = ConstructorParameters<typeof ReportSession>[0];
+
 function setup() {
 	let time = 100;
 	const browser = new BrowserLogStore({ storage: null });
@@ -18,11 +20,16 @@ function setup() {
 		result: result.promise,
 		stop: () => result.promise
 	}));
-	const checkpoint = vi.fn(async (position: { utcMs: number; browserSequence: number }) => ({
-		cursor: { ...position, server: null },
-		server: null
+	const checkpoint = vi.fn<ReportDependencies['snapshot']>(
+		async (position: { utcMs: number; browserSequence: number }) => ({
+			cursor: { ...position, server: null },
+			server: null
+		})
+	);
+	const createPackage = vi.fn<ReportDependencies['package']>(async () => ({
+		diagnostics,
+		warnings: []
 	}));
-	const createPackage = vi.fn(async () => diagnostics);
 	const session = new ReportSession({
 		now: () => time,
 		latestBrowserSequence: () => browser.latestSequence,
@@ -61,7 +68,8 @@ it('keeps one logs-only session and packages only recorded cursor ranges', async
 		null,
 		expect.objectContaining({
 			browserEntries: [expect.objectContaining({ message: 'inside' })]
-		})
+		}),
+		expect.any(AbortSignal)
 	);
 	expect(session.review?.window.browserCursors).toEqual({ start: 1, stop: 2 });
 	expect(session.review?.window.warnings).toContain('server-logs-unavailable');
@@ -147,4 +155,47 @@ it('shows the reviewed artifacts and retention before contacting the service', a
 		.element(page.getByRole('link', { name: 'Open the created GitHub issue' }))
 		.toHaveAttribute('href', 'https://github.com/xnorpx/keeppeek/issues/999');
 	expect(transport.create).toHaveBeenCalledTimes(1);
+});
+
+it('bounds stalled checkpoints and packaging while retaining finalized media', async () => {
+	vi.useFakeTimers();
+	const { session, result, checkpoint, createPackage } = setup();
+	const stalledCheckpoint = Promise.withResolvers<Awaited<ReturnType<typeof checkpoint>>>();
+	checkpoint.mockReturnValue(stalledCheckpoint.promise);
+	const stalledPackage = Promise.withResolvers<Awaited<ReturnType<typeof createPackage>>>();
+	createPackage.mockReturnValue(stalledPackage.promise);
+	session.start(true);
+	await Promise.resolve();
+	const finalizing = session.stop();
+	const recording = new Blob(['recording'], { type: 'video/webm' });
+	result.resolve({ reason: 'stopped', recording });
+	await vi.advanceTimersByTimeAsync(5_000);
+	expect(createPackage).toHaveBeenCalledTimes(1);
+	expect(checkpoint.mock.calls.map(([, signal]) => signal.aborted)).toEqual([true, true]);
+	await vi.advanceTimersByTimeAsync(8_000);
+	await finalizing;
+	expect(createPackage.mock.calls[0]?.[2].aborted).toBe(true);
+	expect(session.phase).toBe('review');
+	expect(session.review?.recording).toBe(recording);
+	expect(session.review?.diagnostics).toBeNull();
+	expect(session.review?.evidenceWarnings).toEqual([
+		'server-logs-unavailable',
+		'diagnostics-package-unavailable'
+	]);
+	stalledPackage.resolve({ diagnostics: new Blob(['late']), warnings: [] });
+	await Promise.resolve();
+	expect(session.review?.diagnostics).toBeNull();
+});
+
+it('includes missing package sections in the review warnings when a scrubbed package is available', async () => {
+	const { session, createPackage } = setup();
+	const diagnostics = new Blob(['package']);
+	createPackage.mockResolvedValue({ diagnostics, warnings: ['diagnostics-metrics-unavailable'] });
+	session.start(false);
+	await session.stop();
+	expect(session.review?.evidenceWarnings).toEqual([
+		'server-logs-unavailable',
+		'diagnostics-metrics-unavailable'
+	]);
+	expect(session.review?.diagnostics).toBe(diagnostics);
 });

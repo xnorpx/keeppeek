@@ -1,7 +1,8 @@
-import { collectReportDiagnosticsBundle } from './diagnostics-bundle';
+import { boundedReportEvidence } from './report-evidence';
+import { collectReportDiagnosticsBundle, type ReportDiagnostics } from './diagnostics-bundle';
 import type { BrowserLogStore } from './browser-logs';
 import type { ControlClient } from './control-client';
-import { startReportCapture } from './report-capture';
+import { reportLimitMs, startReportCapture } from './report-capture';
 import {
 	reportLogWindow,
 	type ReportLogCheckpoint,
@@ -9,11 +10,11 @@ import {
 } from './report-log-window';
 import type { BrowserLogEntry, LogSnapshot } from './types';
 
-const reportLimitMs = 5 * 60_000;
 type Capture = Awaited<ReturnType<typeof startReportCapture>>;
-type Position = { cursor: ReportLogCheckpoint; server: LogSnapshot | null };
+type Position = { cursor: ReportLogCheckpoint; server: LogSnapshot | null; warnings?: string[] };
 type Session = {
 	media: AbortController;
+	evidence: AbortController;
 	start: Promise<Position>;
 	timer: ReturnType<typeof setTimeout>;
 	capture?: Capture;
@@ -21,10 +22,17 @@ type Session = {
 };
 
 type Dependencies = {
-	snapshot(cursor: Pick<ReportLogCheckpoint, 'utcMs' | 'browserSequence'>): Promise<Position>;
+	snapshot(
+		cursor: Pick<ReportLogCheckpoint, 'utcMs' | 'browserSequence'>,
+		signal: AbortSignal
+	): Promise<Position>;
 	latestBrowserSequence(): number;
 	browserEntries(): BrowserLogEntry[];
-	package(server: LogSnapshot | null, report: ReportLogWindow): Promise<Blob>;
+	package(
+		server: LogSnapshot | null,
+		report: ReportLogWindow,
+		signal: AbortSignal
+	): Promise<ReportDiagnostics>;
 	capture: typeof startReportCapture;
 	now(): number;
 };
@@ -38,15 +46,18 @@ export function createReportSession(
 		capture: startReportCapture,
 		browserEntries: () => browser.snapshot(),
 		latestBrowserSequence: () => browser.latestSequence,
-		package: (snapshot, window) => collectReportDiagnosticsBundle(control, snapshot, window),
-		async snapshot(position) {
+		package: (snapshot, window, signal) =>
+			collectReportDiagnosticsBundle(control, snapshot, window, signal),
+		async snapshot(position, signal) {
 			const [logs, settings] = await Promise.allSettled([
-				control.getLogSnapshot(),
-				control.getLoggingSettings()
+				boundedReportEvidence(signal, (active) => control.getLogSnapshot(active)),
+				boundedReportEvidence(signal, (active) => control.getLoggingSettings(active))
 			]);
 			const server = logs.status === 'fulfilled' ? logs.value : null;
 			return {
 				server,
+				warnings:
+					settings.status === 'rejected' ? ['diagnostics-logging-settings-unavailable'] : [],
 				cursor: {
 					...position,
 					server: server
@@ -65,6 +76,7 @@ type Phase = 'idle' | 'recording' | 'finishing' | 'review';
 type CaptureState = 'logs-only' | 'requesting' | 'capturing' | 'unavailable';
 type Review = {
 	window: ReportLogWindow['manifest'];
+	evidenceWarnings: string[];
 	diagnostics: Blob | null;
 	recording: Blob | null;
 	stopReason: string;
@@ -87,9 +99,11 @@ export class ReportSession {
 		this.phase = 'recording';
 		this.mediaState = withDisplay ? 'requesting' : 'logs-only';
 		const media = new AbortController();
+		const evidence = new AbortController();
 		const session: Session = {
 			media,
-			start: this.snapshot(this.startedAt),
+			evidence,
+			start: this.snapshot(this.startedAt, evidence.signal),
 			timer: setTimeout(() => {
 				void this.stop('duration-limit');
 			}, reportLimitMs),
@@ -123,9 +137,13 @@ export class ReportSession {
 			);
 	}
 
-	private snapshot(utcMs: number): Promise<Position> {
+	private snapshot(utcMs: number, signal: AbortSignal): Promise<Position> {
 		const position = { utcMs, browserSequence: this.deps.latestBrowserSequence() };
-		return this.deps.snapshot(position).catch(() => ({
+		return boundedReportEvidence(
+			signal,
+			(active) => this.deps.snapshot(position, active),
+			5_000
+		).catch(() => ({
 			cursor: { ...position, server: null },
 			server: null
 		}));
@@ -146,7 +164,7 @@ export class ReportSession {
 		const browserEntries = this.deps.browserEntries();
 		const [start, stop, captured] = await Promise.all([
 			session.start,
-			this.snapshot(stoppedAt),
+			this.snapshot(stoppedAt, session.evidence.signal),
 			media
 		]);
 		if (this.#session !== session) return;
@@ -157,10 +175,22 @@ export class ReportSession {
 			stop.server,
 			session.gap
 		);
-		const diagnostics = await this.deps.package(stop.server, window).catch(() => null);
+		const { diagnostics, warnings } = await boundedReportEvidence(
+			session.evidence.signal,
+			(signal) => this.deps.package(stop.server, window, signal),
+			8_000
+		).catch(() => ({ diagnostics: null, warnings: ['diagnostics-package-unavailable'] }));
 		if (this.#session !== session) return;
 		this.review = {
 			window: window.manifest,
+			evidenceWarnings: [
+				...new Set([
+					...window.manifest.warnings,
+					...(start.warnings ?? []),
+					...(stop.warnings ?? []),
+					...warnings
+				])
+			],
 			diagnostics,
 			recording: captured?.recording ?? null,
 			stopReason: captured && captured.reason !== 'stopped' ? captured.reason : reason,
@@ -178,6 +208,7 @@ export class ReportSession {
 		if (this.#session) {
 			clearTimeout(this.#session.timer);
 			this.#session.media.abort();
+			this.#session.evidence.abort();
 		}
 		this.#session = null;
 		this.review = null;

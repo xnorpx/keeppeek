@@ -1,3 +1,4 @@
+import { boundedReportEvidence } from './report-evidence';
 import { createDiagnosticRedactor, type DiagnosticPrivateValue } from './diagnostic-redaction';
 import type { ControlClient } from './control-client';
 import type { ReportLogWindow } from './report-log-window';
@@ -42,11 +43,14 @@ export async function collectDiagnosticsBundle(
 	return collectEvidence(controlClient, await controlClient.getLogSnapshot(), browser, generatedAt);
 }
 
+export type ReportDiagnostics = { diagnostics: Blob | null; warnings: string[] };
+
 export async function collectReportDiagnosticsBundle(
 	controlClient: DiagnosticsControlClient,
 	server: LogSnapshot | null,
-	report: ReportLogWindow
-): Promise<Blob> {
+	report: ReportLogWindow,
+	signal: AbortSignal
+): Promise<ReportDiagnostics> {
 	// The report manifest accounts for missing server logs. The existing health,
 	// configuration, and inventory checks still apply to every downloadable package.
 	const buffer = server ?? {
@@ -64,14 +68,28 @@ export async function collectReportDiagnosticsBundle(
 			max_streams: 0
 		}
 	};
-	const document = await collectEvidence(
-		controlClient,
-		buffer,
-		report.browserEntries,
-		new Date(report.manifest.stopUtc),
-		report
+	const collectionErrors: Record<string, string> = {};
+	let diagnostics: Blob | null = null;
+	try {
+		const document = await collectEvidence(
+			controlClient,
+			buffer,
+			report.browserEntries,
+			new Date(report.manifest.stopUtc),
+			report,
+			signal,
+			collectionErrors
+		);
+		signal.throwIfAborted();
+		diagnostics = await compressDiagnosticsDocument(document, signal);
+	} catch {
+		signal.throwIfAborted();
+	}
+	const warnings = Object.keys(collectionErrors).map(
+		(source) => `diagnostics-${source}-unavailable`
 	);
-	return compressDiagnosticsDocument(document);
+	if (!diagnostics) warnings.push('diagnostics-package-unavailable');
+	return { diagnostics, warnings };
 }
 
 async function collectEvidence(
@@ -79,17 +97,20 @@ async function collectEvidence(
 	server: LogSnapshot,
 	browser: BrowserLogEntry[],
 	generatedAt: Date,
-	report?: ReportLogWindow
+	report?: ReportLogWindow,
+	signal?: AbortSignal,
+	collectionErrors: Record<string, string> = {}
 ): Promise<string> {
+	const collect = <T>(operation: (signal?: AbortSignal) => Promise<T>) =>
+		signal ? boundedReportEvidence(signal, operation) : operation();
 	const [loggingResult, healthResult, configResult, camerasResult, metricsResult] =
 		await Promise.allSettled([
-			controlClient.getLoggingSettings(),
-			controlClient.getHealth(),
-			controlClient.getRuntimeConfiguration(),
-			controlClient.getCameras(),
-			controlClient.getMetricsSnapshot()
+			collect((active) => controlClient.getLoggingSettings(active)),
+			collect((active) => controlClient.getHealth(active)),
+			collect((active) => controlClient.getRuntimeConfiguration(active)),
+			collect((active) => controlClient.getCameras(active)),
+			collect((active) => controlClient.getMetricsSnapshot(active))
 		]);
-	const collectionErrors: Record<string, string> = {};
 	const logging = settledValue(loggingResult, 'logging-settings', collectionErrors);
 	const health = settledValue(healthResult, 'health', collectionErrors);
 	const config = settledValue(configResult, 'runtime-config', collectionErrors);
@@ -206,11 +227,16 @@ export function downloadDiagnosticsArtifact(blob: Blob, filename: string): void 
 	}
 }
 
-export async function compressDiagnosticsDocument(document: string): Promise<Blob> {
+export async function compressDiagnosticsDocument(
+	document: string,
+	signal?: AbortSignal
+): Promise<Blob> {
 	if (typeof CompressionStream === 'undefined') {
 		throw new Error('This browser cannot create a compressed diagnostics package.');
 	}
-	const stream = new Blob([document]).stream().pipeThrough(new CompressionStream('gzip'));
+	const stream = new Blob([document])
+		.stream()
+		.pipeThrough(new CompressionStream('gzip'), { signal });
 	return new Blob([await new Response(stream).arrayBuffer()], { type: 'application/gzip' });
 }
 
