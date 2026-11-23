@@ -150,7 +150,7 @@ mod tests {
             match boundary {
                 "absolute" => candidate.created_at_ms = previous.absolute_expires_at_ms,
                 "idle" => {
-                    candidate.last_activity = previous.last_activity + Duration::from_secs(30)
+                    candidate.last_activity = previous.last_activity + Duration::from_secs(30);
                 }
                 "retention" => directory.prune(Instant::now() + LIFETIME),
                 "cancelled" => directory.cancel(id, None),

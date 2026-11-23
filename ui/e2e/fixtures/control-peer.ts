@@ -1194,7 +1194,7 @@ export async function mockControlPeer(
 			const subscription = request.command.value;
 			const result = fixtureSubscriptionResult(
 				subscription,
-				options.cameras ?? [],
+				currentCameras,
 				requests.mediaSubscriptions
 			);
 			const error = options.mediaAdmissionError?.(subscription);
