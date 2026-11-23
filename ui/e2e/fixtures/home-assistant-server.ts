@@ -332,6 +332,10 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 		await Promise.all(children.map(stop));
 		await rm(directory, { recursive: true, force: true });
 	};
+	let log = '';
+	const sanitizedLog = () =>
+		[...cardTestKeys, cardAdminKey].reduce((text, key) => text.replaceAll(key, '[redacted]'), log);
+
 	try {
 		const port = await availablePort();
 		const { configPath, archive, calibration, speakerObservation } = await prepareFixture(
@@ -342,7 +346,6 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 			children,
 			options
 		);
-		let log = '';
 		const url = `http://127.0.0.1:${port}`;
 		const launch = () =>
 			startFixtureRecorder({
@@ -369,14 +372,16 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 				await stop(server);
 				server = await launch();
 			},
-			logs: () =>
-				[...cardTestKeys, cardAdminKey].reduce(
-					(text, key) => text.replaceAll(key, '[redacted]'),
-					log
-				)
+			logs: sanitizedLog
 		};
 	} catch (error) {
 		await close();
+		const evidence = sanitizedLog();
+		if (options.hikvisionSpeaker && evidence) {
+			throw new Error(`The Hikvision recorder fixture could not start.\n${evidence}`, {
+				cause: error
+			});
+		}
 		throw error;
 	}
 }

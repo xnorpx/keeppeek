@@ -181,6 +181,11 @@ fn serve_hikvision(
         let (table, settings) = config
             .split_once('\n')
             .expect("generated config contains a table");
+        let settings = settings
+            .lines()
+            .filter(|line| !line.starts_with("http_port = "))
+            .collect::<Vec<_>>()
+            .join("\n");
         println!(
             "{table}\nmanufacturer = \"Hikvision\"\nhttp_port = {}\n{settings}",
             camera.address().port()
