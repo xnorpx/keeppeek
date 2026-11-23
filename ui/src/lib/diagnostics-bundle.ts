@@ -39,7 +39,48 @@ export async function collectDiagnosticsBundle(
 	browser: BrowserLogEntry[],
 	generatedAt = new Date()
 ): Promise<string> {
-	const server = await controlClient.getLogSnapshot();
+	return collectEvidence(controlClient, await controlClient.getLogSnapshot(), browser, generatedAt);
+}
+
+export async function collectReportDiagnosticsBundle(
+	controlClient: DiagnosticsControlClient,
+	server: LogSnapshot | null,
+	report: ReportLogWindow
+): Promise<Blob> {
+	// The report manifest accounts for missing server logs. The existing health,
+	// configuration, and inventory checks still apply to every downloadable package.
+	const buffer = server ?? {
+		entries: [],
+		oldest_sequence: null,
+		newest_sequence: null,
+		truncated: true,
+		stats: {
+			entry_count: 0,
+			byte_count: 0,
+			evicted_entries: 0,
+			max_entries: 0,
+			max_bytes: 0,
+			active_streams: 0,
+			max_streams: 0
+		}
+	};
+	const document = await collectEvidence(
+		controlClient,
+		buffer,
+		report.browserEntries,
+		new Date(report.manifest.stopUtc),
+		report
+	);
+	return compressDiagnosticsDocument(document);
+}
+
+async function collectEvidence(
+	controlClient: DiagnosticsControlClient,
+	server: LogSnapshot,
+	browser: BrowserLogEntry[],
+	generatedAt: Date,
+	report?: ReportLogWindow
+): Promise<string> {
 	const [loggingResult, healthResult, configResult, camerasResult, metricsResult] =
 		await Promise.allSettled([
 			controlClient.getLoggingSettings(),
@@ -61,6 +102,7 @@ export async function collectDiagnosticsBundle(
 	if (!cameras) throw new Error('Camera inventory is required to scrub the diagnostics package.');
 
 	return buildDiagnosticsBundle({
+		report,
 		server,
 		browser,
 		logging,
