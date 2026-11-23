@@ -89,11 +89,7 @@ fn admission(
     let guard = guard.bind(&bound, context).map_err(io_failure)?;
     let permit = checked.permit;
     permit
-        .protect_response(
-            request
-                .response_abort_handle()
-                .ok_or_else(|| failure(503))?,
-        )
+        .protect_response(guard.response_abort_handle())
         .map_err(io_failure)?;
     let ticket = sharing::with_guest_store(state, context, |store, clock| {
         store.begin_delivery(handle, context, &checked.binding, mode, clock)
