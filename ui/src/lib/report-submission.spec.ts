@@ -1,3 +1,4 @@
+import { createDiagnosticRedactor } from './diagnostic-redaction';
 import { expect, it } from 'vitest';
 import { reportingService } from '../../e2e/reporting-service';
 import { ReportSubmission, type ReportTransport, type ReportGrant } from './report-submission';
@@ -44,6 +45,7 @@ it('waits for confirmation and reuses the key after an ambiguous finalization', 
 		throw new Error('Response lost');
 	};
 	const submission = new ReportSubmission(transport, {
+		redactText: createDiagnosticRedactor([]).text,
 		text,
 		diagnostics,
 		screen,
@@ -72,7 +74,12 @@ it('cancels accepted staging after an upload fails and leaves the caller with it
 		await upload(...args);
 		throw new Error('Connection lost during upload');
 	};
-	const submission = new ReportSubmission(transport, { text, diagnostics, evidenceWarnings: [] });
+	const submission = new ReportSubmission(transport, {
+		redactText: createDiagnosticRedactor([]).text,
+		text,
+		diagnostics,
+		evidenceWarnings: []
+	});
 	await expect(submission.submit(() => {})).rejects.toThrow('Connection lost during upload');
 	await submission.cancel();
 	const [{ id, token }] = grants;
@@ -86,6 +93,7 @@ it('refuses an invalid package before the service is called', () => {
 	expect(
 		() =>
 			new ReportSubmission(transport, {
+				redactText: createDiagnosticRedactor([]).text,
 				text,
 				diagnostics: new Blob(['bad'], { type: 'text/plain' }),
 				evidenceWarnings: []
@@ -108,7 +116,12 @@ it('checks the original submission without uploading again when cancellation rac
 			});
 		});
 	};
-	const submission = new ReportSubmission(transport, { text, diagnostics, evidenceWarnings: [] });
+	const submission = new ReportSubmission(transport, {
+		redactText: createDiagnosticRedactor([]).text,
+		text,
+		diagnostics,
+		evidenceWarnings: []
+	});
 	const sent = submission.submit(() => {});
 	const settled = sent.then(
 		() => null,
@@ -133,7 +146,12 @@ it('preserves the original grant if the service cannot confirm cancellation', as
 	transport.cancel = async () => {
 		throw new Error('Cancellation unconfirmed');
 	};
-	const submission = new ReportSubmission(transport, { text, diagnostics, evidenceWarnings: [] });
+	const submission = new ReportSubmission(transport, {
+		redactText: createDiagnosticRedactor([]).text,
+		text,
+		diagnostics,
+		evidenceWarnings: []
+	});
 	await expect(submission.submit(() => {})).rejects.toThrow('Upload failed');
 	expect(await submission.cancel()).toBe(false);
 	expect(await submission.check()).toEqual({ state: 'pending' });
@@ -144,6 +162,7 @@ it('preserves the original grant if the service cannot confirm cancellation', as
 it('carries safe diagnostics warnings into the submitted issue manifest', async () => {
 	const { service, transport, text, diagnostics } = setup();
 	const submission = new ReportSubmission(transport, {
+		redactText: createDiagnosticRedactor([]).text,
 		text,
 		diagnostics,
 		evidenceWarnings: ['diagnostics-logging-settings-unavailable']
@@ -157,6 +176,7 @@ it('rejects a private or unknown evidence warning before contacting the service'
 	expect(
 		() =>
 			new ReportSubmission(transport, {
+				redactText: createDiagnosticRedactor([]).text,
 				text,
 				diagnostics,
 				evidenceWarnings: ['unrecognized-private-canary']

@@ -40,10 +40,16 @@ export async function collectDiagnosticsBundle(
 	browser: BrowserLogEntry[],
 	generatedAt = new Date()
 ): Promise<string> {
-	return collectEvidence(controlClient, await controlClient.getLogSnapshot(), browser, generatedAt);
+	return (
+		await collectEvidence(controlClient, await controlClient.getLogSnapshot(), browser, generatedAt)
+	).document;
 }
 
-export type ReportDiagnostics = { diagnostics: Blob | null; warnings: string[] };
+export type ReportDiagnostics = {
+	diagnostics: Blob | null;
+	redactText: ((value: string) => string) | null;
+	warnings: string[];
+};
 
 export async function collectReportDiagnosticsBundle(
 	controlClient: DiagnosticsControlClient,
@@ -70,8 +76,9 @@ export async function collectReportDiagnosticsBundle(
 	};
 	const collectionErrors: Record<string, string> = {};
 	let diagnostics: Blob | null = null;
+	let redactText: ReportDiagnostics['redactText'] = null;
 	try {
-		const document = await collectEvidence(
+		const evidence = await collectEvidence(
 			controlClient,
 			buffer,
 			report.browserEntries,
@@ -81,7 +88,8 @@ export async function collectReportDiagnosticsBundle(
 			collectionErrors
 		);
 		signal.throwIfAborted();
-		diagnostics = await compressDiagnosticsDocument(document, signal);
+		diagnostics = await compressDiagnosticsDocument(evidence.document, signal);
+		redactText = evidence.redactText;
 	} catch {
 		signal.throwIfAborted();
 	}
@@ -89,7 +97,7 @@ export async function collectReportDiagnosticsBundle(
 		(source) => `diagnostics-${source}-unavailable`
 	);
 	if (!diagnostics) warnings.push('diagnostics-package-unavailable');
-	return { diagnostics, warnings };
+	return { diagnostics, redactText, warnings };
 }
 
 async function collectEvidence(
@@ -100,7 +108,7 @@ async function collectEvidence(
 	report?: ReportLogWindow,
 	signal?: AbortSignal,
 	collectionErrors: Record<string, string> = {}
-): Promise<string> {
+) {
 	const collect = <T>(operation: (signal?: AbortSignal) => Promise<T>) =>
 		signal ? boundedReportEvidence(signal, operation) : operation();
 	const [loggingResult, healthResult, configResult, camerasResult, metricsResult] =
@@ -122,7 +130,7 @@ async function collectEvidence(
 	}
 	if (!cameras) throw new Error('Camera inventory is required to scrub the diagnostics package.');
 
-	return buildDiagnosticsBundle({
+	return buildEvidence({
 		report,
 		server,
 		browser,
@@ -138,6 +146,10 @@ async function collectEvidence(
 }
 
 export function buildDiagnosticsBundle(input: DiagnosticsBundleInput): string {
+	return buildEvidence(input).document;
+}
+
+function buildEvidence(input: DiagnosticsBundleInput) {
 	if (!input.health) {
 		throw new Error('Health evidence is required to scrub the diagnostics package.');
 	}
@@ -198,7 +210,10 @@ export function buildDiagnosticsBundle(input: DiagnosticsBundleInput): string {
 		collection_errors: input.collectionErrors
 	};
 
-	return `${JSON.stringify(redactor.value(document), null, 2)}\n`;
+	return {
+		document: `${JSON.stringify(redactor.value(document), null, 2)}\n`,
+		redactText: redactor.text
+	};
 }
 
 export function diagnosticsBundleFilename(generatedAt = new Date()): string {

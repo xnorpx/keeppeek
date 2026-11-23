@@ -225,6 +225,9 @@ it('identifies each unavailable report section without exposing transport errors
 	const signal = new AbortController().signal;
 	const partial = await collectReportDiagnosticsBundle(control, data.server, report, signal);
 	expect(partial.diagnostics).toBeInstanceOf(Blob);
+	expect(
+		partial.redactText?.('Replay front-door-private while saving to /Users/marcus/private')
+	).toBe('Replay camera-001 while saving to [REDACTED_PATH]');
 	expect(partial.warnings).toEqual([
 		'diagnostics-logging-settings-unavailable',
 		'diagnostics-metrics-unavailable'
@@ -236,6 +239,7 @@ it('identifies each unavailable report section without exposing transport errors
 		signal
 	);
 	expect(blocked.diagnostics).toBeNull();
+	expect(blocked.redactText).toBeNull();
 	expect(blocked.warnings).toEqual([
 		'diagnostics-logging-settings-unavailable',
 		'diagnostics-cameras-unavailable',

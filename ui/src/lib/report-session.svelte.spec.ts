@@ -3,6 +3,7 @@ import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import ReportBugWorkflow from './components/ReportBugWorkflow.svelte';
 import type { ReportTransport } from './report-submission';
+import { createDiagnosticRedactor } from './diagnostic-redaction';
 import { BrowserLogStore } from './browser-logs';
 import { ReportSession } from './report-session.svelte';
 
@@ -15,6 +16,9 @@ function setup() {
 		reason: 'stopped' | 'display-ended';
 		recording: Blob | null;
 	}>();
+	const redactText = createDiagnosticRedactor([
+		{ value: 'fixture-private-name', replacement: 'camera-001' }
+	]).text;
 	const diagnostics = new Blob(['diagnostics'], { type: 'application/gzip' });
 	const capture = vi.fn(async () => ({
 		result: result.promise,
@@ -28,6 +32,7 @@ function setup() {
 	);
 	const createPackage = vi.fn<ReportDependencies['package']>(async () => ({
 		diagnostics,
+		redactText,
 		warnings: []
 	}));
 	const session = new ReportSession({
@@ -119,9 +124,11 @@ it('cancels asynchronous finalization and clears the report after the hard time 
 	expect(createPackage).not.toHaveBeenCalled();
 });
 
-it('shows the reviewed artifacts and retention before contacting the service', async () => {
-	const { session } = setup();
+it('shows the exact scrubbed issue text, included log counts and retention before contacting the service', async () => {
+	const { session, browser } = setup();
+	browser.append('info', 'test', ['outside']);
 	session.start(false);
+	browser.append('info', 'test', ['inside']);
 	await session.stop();
 	const grant = { id: 'one', token: 'private-test-grant' };
 	const transport: ReportTransport = {
@@ -138,14 +145,24 @@ it('shows the reviewed artifacts and retention before contacting the service', a
 		session,
 		reporting: { transport, retentionDays: 30 }
 	});
-	await page.getByLabelText('Issue title').fill('Test report');
-	await page.getByLabelText('Problem description').fill('Playback stopped.');
+	await page.getByLabelText('Issue title').fill('Test fixture-private-name');
+	await page.getByLabelText('Problem description').fill('Playback stopped at 192.0.2.5.');
 	await page.getByLabelText('Steps to reproduce').fill('Open a recording.');
 	await page.getByLabelText('Expected behavior').fill('The clip plays.');
 	await page.getByLabelText('Actual behavior').fill('The clip remains paused.');
 	await page.getByRole('button', { name: 'Review submission' }).click();
 	const confirm = page.getByRole('button', { name: 'Confirm and submit' });
 	await expect.element(confirm).toBeVisible();
+	await expect.element(page.getByText('1 browser and 0 server log entries')).toBeVisible();
+	await expect.element(page.getByText('Test camera-001', { exact: true })).toBeVisible();
+	await expect
+		.element(page.getByText('Playback stopped at [REDACTED_IP].', { exact: true }))
+		.toBeVisible();
+	expect(page.getByRole('dialog').element().textContent).not.toContain('fixture-private-name');
+	expect(transport.create).not.toHaveBeenCalled();
+	await page.getByRole('button', { name: 'Back to review' }).click();
+	await expect.element(page.getByLabelText('Issue title')).toHaveValue('Test fixture-private-name');
+	await page.getByRole('button', { name: 'Review submission' }).click();
 	expect(page.getByRole('dialog').element().textContent?.replace(/\s+/g, ' ')).toContain(
 		'for up to 30 days'
 	);
@@ -154,7 +171,17 @@ it('shows the reviewed artifacts and retention before contacting the service', a
 	await expect
 		.element(page.getByRole('link', { name: 'Open the created GitHub issue' }))
 		.toHaveAttribute('href', 'https://github.com/xnorpx/keeppeek/issues/999');
-	expect(transport.create).toHaveBeenCalledTimes(1);
+	expect(transport.create).toHaveBeenCalledExactlyOnceWith(
+		expect.objectContaining({
+			title: 'Test camera-001',
+			description: 'Playback stopped at [REDACTED_IP].',
+			reproduction: 'Open a recording.',
+			expected: 'The clip plays.',
+			actual: 'The clip remains paused.'
+		}),
+		expect.any(String),
+		expect.any(AbortSignal)
+	);
 });
 
 it('bounds stalled checkpoints and packaging while retaining finalized media', async () => {
@@ -182,7 +209,7 @@ it('bounds stalled checkpoints and packaging while retaining finalized media', a
 		'server-logs-unavailable',
 		'diagnostics-package-unavailable'
 	]);
-	stalledPackage.resolve({ diagnostics: new Blob(['late']), warnings: [] });
+	stalledPackage.resolve({ diagnostics: new Blob(['late']), redactText: String, warnings: [] });
 	await Promise.resolve();
 	expect(session.review?.diagnostics).toBeNull();
 });
@@ -190,7 +217,11 @@ it('bounds stalled checkpoints and packaging while retaining finalized media', a
 it('includes missing package sections in the review warnings when a scrubbed package is available', async () => {
 	const { session, createPackage } = setup();
 	const diagnostics = new Blob(['package']);
-	createPackage.mockResolvedValue({ diagnostics, warnings: ['diagnostics-metrics-unavailable'] });
+	createPackage.mockResolvedValue({
+		diagnostics,
+		redactText: String,
+		warnings: ['diagnostics-metrics-unavailable']
+	});
 	session.start(false);
 	await session.stop();
 	expect(session.review?.evidenceWarnings).toEqual([

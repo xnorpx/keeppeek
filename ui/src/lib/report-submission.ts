@@ -49,10 +49,10 @@ export interface ReportTransport {
 	cancel(grant: ReportGrant, signal: AbortSignal): Promise<void>;
 }
 
-function textDescription(input: ReportText): ReportText {
+function textDescription(input: ReportText, redactText: (value: string) => string): ReportText {
 	const trimmed = { ...input };
 	for (const { key, limit } of reportTextFields) {
-		const value = input[key].trim();
+		const value = redactText(input[key].trim());
 		if (!value || [...value].length > limit) {
 			throw new Error('Review every report field and its length before submitting.');
 		}
@@ -75,12 +75,14 @@ function artifactDescription(kind: ArtifactKind, artifact: Blob): ArtifactDescri
 
 type ReviewInput = {
 	text: ReportText;
+	redactText: (value: string) => string;
 	diagnostics: Blob;
 	screen?: Blob;
 	evidenceWarnings: readonly string[];
 };
 
 export class ReportSubmission {
+	readonly reviewedText: Readonly<ReportText>;
 	readonly #manifest: Manifest;
 	readonly #artifacts: ReadonlyArray<readonly [ArtifactKind, Blob]>;
 	readonly #total: number;
@@ -110,9 +112,10 @@ export class ReportSubmission {
 		) {
 			throw new Error('The report contains an unrecognized evidence warning.');
 		}
+		this.reviewedText = Object.freeze(textDescription(review.text, review.redactText));
 		this.#manifest = {
 			version: 1,
-			...textDescription(review.text),
+			...this.reviewedText,
 			evidenceWarnings: warnings,
 			artifacts: { diagnostics, ...(screen ? { screen } : {}) }
 		};

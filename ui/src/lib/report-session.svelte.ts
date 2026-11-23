@@ -78,6 +78,9 @@ type Review = {
 	window: ReportLogWindow['manifest'];
 	evidenceWarnings: string[];
 	diagnostics: Blob | null;
+	redactText: ReportDiagnostics['redactText'];
+	browserLogCount: number;
+	serverLogCount: number;
 	recording: Blob | null;
 	stopReason: string;
 	diagnosticsUnavailable: boolean;
@@ -175,14 +178,21 @@ export class ReportSession {
 			stop.server,
 			session.gap
 		);
-		const { diagnostics, warnings } = await boundedReportEvidence(
+		const { diagnostics, redactText, warnings } = await boundedReportEvidence(
 			session.evidence.signal,
 			(signal) => this.deps.package(stop.server, window, signal),
 			8_000
-		).catch(() => ({ diagnostics: null, warnings: ['diagnostics-package-unavailable'] }));
+		).catch(() => ({
+			diagnostics: null,
+			redactText: null,
+			warnings: ['diagnostics-package-unavailable']
+		}));
 		if (this.#session !== session) return;
 		this.review = {
 			window: window.manifest,
+			browserLogCount: window.browserEntries.length,
+			serverLogCount: window.serverEntries.length,
+			redactText,
 			evidenceWarnings: [
 				...new Set([
 					...window.manifest.warnings,

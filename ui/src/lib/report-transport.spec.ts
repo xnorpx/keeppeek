@@ -1,3 +1,4 @@
+import { createDiagnosticRedactor } from './diagnostic-redaction';
 import { expect, it } from 'vitest';
 import { reportingService } from '../../e2e/reporting-service';
 import { ReportSubmission } from './report-submission';
@@ -35,6 +36,7 @@ it('uploads only selected artifacts to the configured origin with a scoped grant
 		request
 	);
 	const submission = new ReportSubmission(transport, {
+		redactText: createDiagnosticRedactor([]).text,
 		text: {
 			title: 'Test',
 			description: 'Bug',

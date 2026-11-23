@@ -127,10 +127,11 @@
 	});
 
 	function prepareSubmission(): void {
-		if (!reporting || !review?.diagnostics || submission) return;
+		if (!reporting || !review?.diagnostics || !review.redactText || submission) return;
 		try {
 			submission = new ReportSubmission(reporting.transport, {
 				text: draft,
+				redactText: review.redactText,
 				diagnostics: review.diagnostics,
 				screen: includeRecording ? (review.recording ?? undefined) : undefined,
 				evidenceWarnings: review.evidenceWarnings
@@ -299,30 +300,51 @@
 					{/each}
 				</ul>
 			{/if}
-			<fieldset disabled={submissionState !== 'review'} class="space-y-3">
-				<legend class="mb-2 text-sm font-semibold">Issue details</legend>
-				<p class="text-sm text-muted-foreground"
-					>Remove private details from the issue text before sharing.</p
-				>
-				{#each reportTextFields as field (field.key)}
-					<label class="block space-y-1 text-sm">
-						<span>{field.label}</span>
-						{#if field.key === 'title'}
-							<Input bind:value={draft.title} maxlength={field.limit} />
-						{:else}
-							<textarea
-								bind:value={draft[field.key]}
-								maxlength={field.limit}
-								rows={2}
-								class="block min-h-16 w-full resize-y rounded-md border border-input bg-background px-3 py-2"
-							></textarea>
-						{/if}
-					</label>
-				{/each}
-			</fieldset>
+			{#if submission}
+				<section aria-label="Reviewed issue text" class="space-y-2">
+					<h3 class="text-sm font-semibold">Issue text to be shared</h3>
+					<dl class="space-y-2 text-sm">
+						{#each reportTextFields as field (field.key)}
+							<div>
+								<dt class="font-medium">{field.label}</dt>
+								<dd class="wrap-anywhere whitespace-pre-wrap"
+									>{submission.reviewedText[field.key]}</dd
+								>
+							</div>
+						{/each}
+					</dl>
+				</section>
+			{:else}
+				<fieldset class="space-y-3">
+					<legend class="mb-2 text-sm font-semibold">Issue details</legend>
+					<p class="text-sm text-muted-foreground"
+						>Remove private details from the issue text before sharing.</p
+					>
+					{#each reportTextFields as field (field.key)}
+						<label class="block space-y-1 text-sm">
+							<span>{field.label}</span>
+							{#if field.key === 'title'}
+								<Input bind:value={draft.title} maxlength={field.limit} />
+							{:else}
+								<textarea
+									bind:value={draft[field.key]}
+									maxlength={field.limit}
+									rows={2}
+									class="block min-h-16 w-full resize-y rounded-md border border-input bg-background px-3 py-2"
+								></textarea>
+							{/if}
+						</label>
+					{/each}
+				</fieldset>
+			{/if}
 			<ul aria-label="Report artifacts" class="space-y-1 text-sm">
 				{#if review.diagnostics}
-					<li>Diagnostics · {(review.diagnostics.size / 1024).toFixed(1)} KiB</li>
+					<li>
+						Diagnostics · {(review.diagnostics.size / 1024).toFixed(1)} KiB
+						<span class="block text-muted-foreground"
+							>{review.browserLogCount} browser and {review.serverLogCount} server log entries</span
+						>
+					</li>
 				{/if}
 				{#if review.recording && includeRecording}
 					<li>Private screen recording · {(review.recording.size / 1_048_576).toFixed(1)} MiB</li>
