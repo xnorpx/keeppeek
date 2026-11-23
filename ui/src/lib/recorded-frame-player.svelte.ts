@@ -232,6 +232,52 @@ export class RecordedFramePlayer {
 		};
 	}
 
+	private async findPausedPicture(
+		video: HTMLVideoElement,
+		cursor: Cursor,
+		coordinates: readonly bigint[],
+		targetUs: number,
+		signal: AbortSignal,
+		current: () => boolean
+	): Promise<boolean> {
+		const deadline = performance.now() + 5_000;
+		const url = cursor.url;
+		const positions = coordinates
+			.map((coordinate) => cursor.mediaUsForStoredNs(coordinate))
+			.filter(
+				(us): us is number =>
+					us !== undefined &&
+					us >= 0 &&
+					(!Number.isFinite(video.duration) || us <= video.duration * 1_000_000)
+			);
+		const seekDeadline = positions.length > 1 ? deadline - 2_500 : deadline;
+		for (const position of positions) {
+			const remaining = seekDeadline - performance.now();
+			if (remaining <= 0 || !current() || !video.paused) break;
+			if (
+				await probePausedPicture(
+					video,
+					url,
+					position,
+					targetUs,
+					signal,
+					Math.min(remaining, positions.length === 1 ? 5_000 : 350)
+				)
+			)
+				return true;
+		}
+		if (positions.length < 2 || !current() || !video.paused) return false;
+		const startUs = Math.max(Math.min(...positions), targetUs - 1_000_000);
+		const remaining = deadline - performance.now();
+		if (startUs >= targetUs || remaining <= 0) return false;
+		this.preroll = true;
+		try {
+			return await presentWhileDecoding(video, url, startUs, targetUs, signal, remaining);
+		} finally {
+			this.preroll = false;
+		}
+	}
+
 	async alignForPlay(
 		video: HTMLVideoElement,
 		cursor: Cursor,
@@ -260,55 +306,17 @@ export class RecordedFramePlayer {
 		this.active?.abort();
 		this.pendingSteps = 0;
 		this.notice = '';
-		const deadline = performance.now() + 5_000;
+		const current = () =>
+			!controller.signal.aborted && ownsPicture() && cursor.url === url && video.currentSrc === url;
 		try {
-			const positions = coordinates
-				.map((coordinate) => cursor.mediaUsForStoredNs(coordinate))
-				.filter(
-					(us): us is number =>
-						us !== undefined &&
-						us >= 0 &&
-						(!Number.isFinite(video.duration) || us <= video.duration * 1_000_000)
-				);
-			const current = () =>
-				!controller.signal.aborted &&
-				ownsPicture() &&
-				cursor.url === url &&
-				video.currentSrc === url;
-			let displayed = false;
-			const seekDeadline = positions.length > 1 ? deadline - 2_500 : deadline;
-			for (const position of positions) {
-				const remaining = seekDeadline - performance.now();
-				if (remaining <= 0 || !current() || !video.paused) break;
-				displayed = await probePausedPicture(
-					video,
-					url,
-					position,
-					targetUs,
-					controller.signal,
-					Math.min(remaining, positions.length === 1 ? 5_000 : 350)
-				);
-				if (displayed) break;
-			}
-			if (!displayed && positions.length > 1 && current() && video.paused) {
-				const startUs = Math.max(Math.min(...positions), targetUs - 1_000_000);
-				const remaining = deadline - performance.now();
-				if (startUs < targetUs && remaining > 0) {
-					this.preroll = true;
-					try {
-						displayed = await presentWhileDecoding(
-							video,
-							url,
-							startUs,
-							targetUs,
-							controller.signal,
-							remaining
-						);
-					} finally {
-						this.preroll = false;
-					}
-				}
-			}
+			const displayed = await this.findPausedPicture(
+				video,
+				cursor,
+				coordinates,
+				targetUs,
+				controller.signal,
+				current
+			);
 			if (displayed && current() && video.paused) {
 				this.displayedNs = sample.storedTimeNs;
 				if (retained && !retained.verified()) return false;
