@@ -483,7 +483,7 @@ impl InactiveCamera {
             InactiveCameraReason::MissingCredentials => {
                 Err("camera credentials are not configured".into())
             }
-            InactiveCameraReason::PrivacyFailed(reason) => Err(reason.clone()),
+            InactiveCameraReason::PrivacyFailed(ref reason) => Err(reason.clone()),
             InactiveCameraReason::PrivacyPaused(acknowledged_mode)
                 if acknowledged_mode == configured_mode
                     && (policy.privacy_enforced || !policy.available) =>

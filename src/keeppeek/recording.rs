@@ -91,6 +91,8 @@ impl KeepPeekLoop {
         };
         let ip = source_id.parse::<IpAddr>().ok();
         let camera = ip.and_then(|ip| self.camera_definitions.get(&ip));
+        let writer_failed = application.state == RuntimeApplicationState::Applied
+            && self.recording_writer_failed(source_id);
         if let (Some(privacy), Some(camera)) = (&self.privacy, camera) {
             changed |= application.observe_policy(
                 privacy.observed_profile_policy(
@@ -102,9 +104,7 @@ impl KeepPeekLoop {
                 ),
             );
         }
-        if application.state != RuntimeApplicationState::Applied
-            || !self.recording_writer_failed(source_id)
-        {
+        if application.state != RuntimeApplicationState::Applied || !writer_failed {
             return changed;
         }
         let configured_mode = camera.map_or_else(
