@@ -1926,6 +1926,30 @@ describe('ControlClient', () => {
 		expect(states).toEqual(['checking']);
 	});
 
+	it('preserves verified access on snapshot collection failures and clears it on actual authorization loss', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'diagnostic-session',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+		const states: string[] = [];
+		client.onAccessState((state) => states.push(state.status));
+		await client.signIn('550e8400-e29b-41d4-a716-446655440000');
+		const authenticatedChanges = states.length;
+		api.fetchLogSnapshot.mockRejectedValueOnce(new api.ApiRequestError(500, 'Unavailable'));
+		api.fetchMetricsSnapshot.mockRejectedValueOnce(new TypeError('Network unavailable'));
+		await expect(client.getLogSnapshot()).rejects.toMatchObject({ status: 500 });
+		await expect(client.getMetricsSnapshot()).rejects.toThrow('Network unavailable');
+		expect(states).toHaveLength(authenticatedChanges);
+		expect(states.at(-1)).toBe('authenticated');
+		api.fetchLogSnapshot.mockRejectedValueOnce(new api.ApiRequestError(401, 'Unauthorized'));
+		await expect(client.getLogSnapshot()).rejects.toMatchObject({ status: 401 });
+		expect(states.at(-1)).toBe('sign-in-required');
+		await client.close();
+	});
+
 	it('keeps the remote bearer private while publishing resolved session metadata', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({
