@@ -86,7 +86,7 @@ async function refreshUntil(archive: Locator, job: Locator, text: string) {
 	await expect(async () => {
 		await archive.getByRole('button', { name: 'Refresh archive jobs' }).click();
 		latest = await job.innerText();
-		expect(latest.includes(text) || latest.includes('Ã‚Â· failed')).toBe(true);
+		expect(latest.includes(text) || latest.includes('· failed')).toBe(true);
 	}).toPass({ timeout: 30_000, intervals: [250, 500, 1000] });
 	expect(latest).toContain(text);
 }
@@ -276,7 +276,7 @@ async function copyAndEvict(
 	const startedAt = performance.now();
 	await archive.getByRole('button', { name: 'Queue archive copy' }).click();
 	const job = archive.getByRole('article').first();
-	await refreshUntil(archive, job, 'Ã‚Â· ready');
+	await refreshUntil(archive, job, '· ready');
 	evidence.transfers.push({
 		operation: 'copy',
 		elapsed_ms: performance.now() - startedAt,
