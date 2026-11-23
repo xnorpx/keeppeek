@@ -125,12 +125,25 @@ def continuity(directory):
         streams[stream].extend(start_ms / 1000 + t - pts[0] for t in pts)
     return {stream:sorted(times) for stream,times in streams.items()}
 
+async def camera_configuration(folder, processes, handles):
+    camera_log = (folder / "camera.log").open("wb")
+    handles.append(camera_log)
+    camera = await asyncio.create_subprocess_exec(
+        CAM, "rtsp", "--main", MEDIA, "--sub", MEDIA, "--name", "soak",
+        "--start-at-seconds", "0", stdout=asyncio.subprocess.PIPE, stderr=camera_log,
+    )
+    processes.append(camera)
+    raw = b""
+    while b"transport = " not in raw:
+        line = await asyncio.wait_for(camera.stdout.readline(), 20)
+        assert line, "camera exited before configuration"
+        raw += line
+    return raw.decode()
+
+
 async def main(work):
-    camera_log = (work/'camera.log').open('wb')
-    camera = await asyncio.create_subprocess_exec(CAM,'rtsp','--main',MEDIA,'--sub',MEDIA,'--name','soak','--start-at-seconds','0',
-        stdout=asyncio.subprocess.PIPE,stderr=camera_log)
-    procs=[camera]
-    handles=[camera_log]
+    procs=[]
+    handles=[]
     servers=[]
     relays={}
     recorders={}
@@ -140,18 +153,13 @@ async def main(work):
     markers=set()
     carry=b''
     try:
-        raw=b''
-        while b'transport = ' not in raw:
-            line=await asyncio.wait_for(camera.stdout.readline(),20)
-            assert line,'camera exited before configuration'
-            raw+=line
-        camera_text=raw.decode()
-        conf=tomllib.loads(camera_text)['test-camera']['soak']
         loop=asyncio.get_running_loop()
         for mode in ['off','on']:
             folder=work/mode
             folder.mkdir()
-            settings=camera_text
+            # The fixture's metadata relay owns one RTSP connection per profile.
+            settings=await camera_configuration(folder, procs, handles)
+            conf=tomllib.loads(settings)['test-camera']['soak']
             for source in ['main','sub']:
                 url=conf[source+'_rtsp_url']
                 endpoint=urlsplit(url)
@@ -203,7 +211,7 @@ async def main(work):
             if b'Uptime' in markers and all(r.media_epoch == 0 for r in relays.values()):break
             assert all(p.returncode is None for p in procs), (
                 'fixture stopped during startup', [p.returncode for p in procs],
-                (work/'camera.log').read_text(errors='replace')[-4000:],
+                [(work/mode/'camera.log').read_text(errors='replace')[-2000:] for mode in recorders],
                 (work/'off'/'server.log').read_text(errors='replace')[-4000:],
                 carry.decode(errors='backslashreplace'),
             )
@@ -260,12 +268,12 @@ async def main(work):
         evidence = {f"{mode}/{source}": relay.attempts for (mode, source), relay in relays.items()}
         for key, attempts in evidence.items():
             print("RTSP relay", key, json.dumps(attempts[-12:]), flush=True)
-        for log in (work / "camera.log", work / "off" / "server.log"):
+        for log in (work / "off" / "camera.log", work / "on" / "camera.log", work / "off" / "server.log"):
             if log.is_file():
                 with log.open("rb") as handle:
                     handle.seek(max(0, log.stat().st_size - 6000))
                     text = handle.read().decode(errors="replace")
-                print(log.name, text.replace("test:test@", "[redacted]@"), flush=True)
+                print(log.relative_to(work), text.replace("test:test@", "[redacted]@"), flush=True)
         print("foreground terminal tail", carry.decode(errors="backslashreplace")[-1800:], flush=True)
         (Path(os.environ["RUNNER_TEMP"]) / "dashboard-soak.json").write_text(
             json.dumps({"complete": False, "forced_disconnects": forced, "relays": evidence}, indent=2)
