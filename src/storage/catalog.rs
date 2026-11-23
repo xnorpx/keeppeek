@@ -2937,13 +2937,7 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
                  PRIMARY KEY(event_id, model_id)
              );
              CREATE INDEX IF NOT EXISTS recording_event_embeddings_model
-                 ON recording_event_embeddings(model_id, dimensions, event_id);
-             CREATE TRIGGER IF NOT EXISTS recording_event_embeddings_invalidate_revision
-             AFTER UPDATE OF revision ON recording_events
-             WHEN NEW.revision <> OLD.revision
-             BEGIN
-                 DELETE FROM recording_event_embeddings WHERE event_id = OLD.id;
-             END;",
+                 ON recording_event_embeddings(model_id, dimensions, event_id);",
         )
         .await?;
     ensure_column(connection, "recording_files", "source_id", "TEXT").await?;
@@ -2993,6 +2987,16 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
         "INTEGER",
     )
     .await?;
+    connection
+        .execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS recording_event_embeddings_invalidate_revision
+             AFTER UPDATE OF revision ON recording_events
+             WHEN NEW.revision <> OLD.revision
+             BEGIN
+                 DELETE FROM recording_event_embeddings WHERE event_id = OLD.id;
+             END;",
+        )
+        .await?;
     ensure_column(
         connection,
         "recording_events",
@@ -7463,6 +7467,69 @@ pub(crate) mod tests {
         });
         assert_eq!(marker_count, 0);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_embeddings_only_rank_with_unmodified_event_revisions() -> anyhow::Result<()> {
+        let root = test_dir("turso-embedding-revision-migration");
+        pollster::block_on(async {
+            let path = root.join("recordings.db");
+            let database = turso::Builder::new_local(path.to_str().unwrap())
+                .build()
+                .await?;
+            let connection = database.connect()?;
+            connection.execute_batch(
+                "CREATE TABLE recording_events (
+                      id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
+                      camera_id TEXT NOT NULL, stream TEXT, source TEXT NOT NULL, kind TEXT NOT NULL,
+                      start_time_ms INTEGER NOT NULL, end_time_ms INTEGER, confidence REAL,
+                      bbox_json TEXT, zone TEXT, thumbnail_filename TEXT
+                 );
+                 CREATE TABLE recording_event_embeddings (
+                      event_id TEXT NOT NULL REFERENCES recording_events(id) ON DELETE CASCADE,
+                      model_id TEXT NOT NULL, dimensions INTEGER NOT NULL, embedding BLOB NOT NULL,
+                      PRIMARY KEY(event_id, model_id)
+                 );
+                 INSERT INTO recording_events (id, revision, camera_id, stream, source, kind, start_time_ms)
+                 VALUES ('unchanged',1,'front','main','camera','motion',100),
+                        ('revised',2,'front','main','camera','motion',200);
+                 INSERT INTO recording_event_embeddings (event_id, model_id, dimensions, embedding)
+                 SELECT id, 'model-v1', 2, vector32('[1,0]') FROM recording_events;"
+            ).await?;
+            initialize_schema(&connection).await?;
+            initialize_schema(&connection).await?;
+            let query = EventSemanticSearchQuery::new(
+                EventEmbedding {
+                    model_id: "model-v1".to_owned(),
+                    values: vec![1.0, 0.0],
+                },
+                "main",
+                0,
+                1_000,
+            );
+            let initial = search_event_semantic(&connection, query.clone()).await?;
+            assert_eq!(initial.hits.len(), 1);
+            assert_eq!(initial.hits[0].event_id, "unchanged");
+
+            set_event_embedding(&connection, "revised", query.embedding.clone()).await?;
+            let refreshed = search_event_semantic(&connection, query.clone()).await?;
+            assert_eq!(refreshed.hits.len(), 2);
+            close_event(&connection, "unchanged", 300).await?;
+            let after_close = search_event_semantic(&connection, query).await?;
+            assert_eq!(after_close.hits.len(), 1);
+            assert_eq!(after_close.hits[0].event_id, "revised");
+            assert_eq!(
+                query_count(
+                    &connection,
+                    "SELECT COUNT(*) FROM recording_event_embeddings WHERE event_id = 'unchanged'"
+                )
+                .await,
+                0,
+            );
+            Ok::<(), anyhow::Error>(())
+        })?;
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     pub fn test_event(id: &str, start_time_ms: i64) -> TimelineEvent {
