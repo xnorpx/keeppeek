@@ -1235,6 +1235,9 @@ fn nil_source_and_invalid_issuer_generations_never_create_authority() {
     assert!(f.store.list(&f.intent.issuer, f.now).unwrap().is_empty());
 }
 
+#[path = "tests/retention.rs"]
+mod retention;
+
 #[path = "tests/status.rs"]
 mod status;
 
