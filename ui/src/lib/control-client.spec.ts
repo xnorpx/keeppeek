@@ -1997,6 +1997,61 @@ describe('ControlClient', () => {
 		}
 	);
 
+	it.each(['active', 'revoked', 'rotated'])(
+		'checks cookie authority before attempting privacy recovery (%s)',
+		async (authority) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			const active = authority === 'active';
+			const identity = { id: 'viewer', display_name: 'Remote viewer', role: 'user' };
+			const browserSession = {
+				local: false,
+				bearer_enabled: false,
+				methods: [],
+				identity,
+				csrf_token: 'cookie-session'
+			};
+			const discovered = {
+				...browserSession,
+				identity: authority === 'revoked' ? null : identity,
+				csrf_token: authority === 'rotated' ? 'replacement-cookie' : browserSession.csrf_token
+			};
+			const discover = vi
+				.fn()
+				.mockResolvedValueOnce(Response.json(browserSession))
+				.mockResolvedValueOnce(Response.json(discovered));
+			vi.stubGlobal('fetch', discover);
+			const answer = { type: 'answer', sdp: 'v=0' };
+			api.createSession.mockResolvedValueOnce({ session_id: 'original', answer });
+			if (active) api.createSession.mockResolvedValueOnce({ session_id: 'restored', answer });
+			api.deleteSession.mockResolvedValue(undefined);
+			const client = new ControlClient();
+			const states: string[] = [];
+			client.onAccessState(({ status }) => states.push(status));
+			await client.checkAccess();
+			FakePeerConnection.latest!.channels[0].close();
+			await vi.waitFor(() =>
+				expect(states.slice(-2)).toEqual([
+					'checking',
+					active ? 'authenticated' : 'sign-in-required'
+				])
+			);
+			expect(discover).toHaveBeenCalledTimes(2);
+			expect(api.createSession).toHaveBeenCalledTimes(active ? 2 : 1);
+			if (active) {
+				expect(api.createSession).toHaveBeenLastCalledWith(
+					expect.objectContaining({ type: 'offer' }),
+					{ csrfToken: 'cookie-session' },
+					'original'
+				);
+			} else {
+				expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith('original', {
+					csrfToken: 'cookie-session'
+				});
+			}
+			await client.close();
+		}
+	);
+
 	it('deletes an unconfirmed replacement using the original bearer before requiring sign-in', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		const response = { session_id: 'old', answer: { type: 'answer', sdp: 'v=0' } };
@@ -2080,7 +2135,7 @@ describe('ControlClient', () => {
 					status: local ? 'error' : 'sign-in-required',
 					message: local
 						? 'The recorder connection was interrupted. Retry to reconnect.'
-						: 'The recorder connection was interrupted. Sign in again to reconnect.'
+						: 'The remote session expired, was revoked, or disconnected.'
 				})
 			);
 			expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith(

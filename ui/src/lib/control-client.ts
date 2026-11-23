@@ -2426,15 +2426,21 @@ export class ControlClient {
 	private async connectNow(): Promise<void> {
 		const generation = this.#transportGeneration;
 		const credential = this.#accessKey;
+		const previous = this.#previousSession;
 		const peer = new RTCPeerConnection();
 		this.#peer = peer;
 		const control = this.openControlChannels(peer);
 		const opening = watchControlOpening(control, () => this.controlTransportLost(peer));
 		try {
+			if (previous && credential && typeof credential !== 'string') {
+				await this.externalAuthentication.discover();
+				if (this.externalAuthentication.credential?.csrfToken !== credential.csrfToken)
+					throw new ApiRequestError(401, 'The browser session is no longer active.');
+			}
 			const offer = await peer.createOffer();
 			await peer.setLocalDescription(offer);
+			if (peer !== this.#peer) throw new Error('The control connection changed during setup.');
 			if (!peer.localDescription) throw new Error('WebRTC offer is unavailable.');
-			const previous = this.#previousSession;
 			const session = previous
 				? await createSession(peer.localDescription, credential, previous)
 				: await createSession(peer.localDescription, credential);
@@ -3049,7 +3055,7 @@ export class ControlClient {
 				session: null,
 				message: access.session.local
 					? 'The recorder connection was interrupted. Retry to reconnect.'
-					: 'The recorder connection was interrupted. Sign in again to reconnect.'
+					: 'The remote session expired, was revoked, or disconnected.'
 			});
 			return;
 		}
