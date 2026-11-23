@@ -13,13 +13,26 @@ pub struct Move {
     pub destination: PathBuf,
     pub staged: uuid::Uuid,
     pub source_identity: String,
+    pub source_bytes: u64,
     pub destination_published: bool,
 }
 
 pub(super) enum Request {
     Reserve(Move),
     Next(String),
-    Retire(String, uuid::Uuid),
+    Publish {
+        id: String,
+        stage: uuid::Uuid,
+        destination_identity: String,
+        bytes: i64,
+    },
+    Published {
+        id: String,
+        stage: uuid::Uuid,
+        file_identity: String,
+        bytes: i64,
+        retire: bool,
+    },
 }
 
 pub(super) async fn initialize(db: &turso::Connection) -> Result<()> {
@@ -76,11 +89,13 @@ fn read(row: &turso::Row) -> Result<Move> {
         staged: row.get::<String>(4)?.parse()?,
         source_identity: row.get(5)?,
         destination_published: row.get::<i64>(6)? != 0,
+        source_bytes: u64::try_from(row.get::<i64>(7)?)?,
     })
 }
 
 const COLUMNS: &str = "id,stream,source,destination,stage,source_identity,
-    EXISTS(SELECT 1 FROM recording_files f WHERE f.id=legacy_recording_relocations.id AND f.path=legacy_recording_relocations.destination)";
+    EXISTS(SELECT 1 FROM recording_files f WHERE f.id=legacy_recording_relocations.id AND f.path=legacy_recording_relocations.destination),
+    (SELECT file_bytes FROM recording_files f WHERE f.id=legacy_recording_relocations.id)";
 
 pub(super) async fn dispatch(db: &turso::Connection, request: Request) -> Result<Option<Move>> {
     match request {
@@ -100,9 +115,12 @@ pub(super) async fn dispatch(db: &turso::Connection, request: Request) -> Result
                   SELECT id,stream_id,?2,?3,?4,?5 FROM recording_files
                   WHERE id=?1 AND path IN (?2,?3) AND stream_id=?6 AND finalized=1 AND cleanup_pending=0
                   AND (path=?3 OR file_identity IS NULL OR file_identity=?5)
+                  AND file_bytes=?7 AND file_bytes>0 AND init_offset>=0 AND init_len>=0 AND init_len<=file_bytes-init_offset
+                  AND NOT EXISTS(SELECT 1 FROM recording_fragments g WHERE g.recording_id=recording_files.id AND
+                    (g.byte_offset<0 OR g.byte_len<0 OR g.byte_len>recording_files.file_bytes-g.byte_offset))
                   AND NOT EXISTS(SELECT 1 FROM recording_files WHERE id!=?1 AND path IN (?2,?3))
                   AND NOT EXISTS(SELECT 1 FROM recording_maintenance_claims WHERE active=1 AND (recording_id=?1 OR path IN (?2,?3)))
-                  ON CONFLICT(id) DO NOTHING",turso::params![job.id.as_str(),source,destination,job.staged.to_string(),job.source_identity.as_str(),job.stream.as_str()]).await?;
+                  ON CONFLICT(id) DO NOTHING",turso::params![job.id.as_str(),source,destination,job.staged.to_string(),job.source_identity.as_str(),job.stream.as_str(),i64::try_from(job.source_bytes)?]).await?;
             let mut rows = db
                 .query(
                     format!("SELECT {COLUMNS} FROM legacy_recording_relocations WHERE id=?1"),
@@ -122,15 +140,49 @@ pub(super) async fn dispatch(db: &turso::Connection, request: Request) -> Result
             );
             Ok(Some(existing))
         }
-        Request::Retire(id, stage) => {
+        Request::Publish {
+            id,
+            stage,
+            destination_identity,
+            bytes,
+        } => {
+            // Only the path and filesystem identity change. The finalized size and media index
+            // were established before relocation and remain the authority after a restart.
+            let changed = db.execute(
+                "UPDATE recording_files SET path=(SELECT destination FROM legacy_recording_relocations WHERE id=?1), file_identity=?3
+                 WHERE id=?1 AND finalized=1 AND cleanup_pending=0 AND file_bytes=?4
+                 AND EXISTS(SELECT 1 FROM legacy_recording_relocations m WHERE m.id=?1 AND m.stage=?2 AND recording_files.path IN (m.source,m.destination))",
+                turso::params![id,stage.to_string(),destination_identity,bytes],
+            ).await?;
             ensure!(
-                db.execute(
-                    "DELETE FROM legacy_recording_relocations WHERE id=?1 AND stage=?2",
-                    (id, stage.to_string())
-                )
-                .await?
-                    == 1,
-                "recording relocation ownership changed"
+                changed == 1,
+                "recording changed before relocation publication"
+            );
+            Ok(None)
+        }
+        Request::Published {
+            id,
+            stage,
+            file_identity,
+            bytes,
+            retire,
+        } => {
+            let filter = "FROM legacy_recording_relocations WHERE id=?1 AND stage=?2
+                     AND EXISTS(SELECT 1 FROM recording_files f WHERE f.id=legacy_recording_relocations.id
+                         AND f.path=legacy_recording_relocations.destination AND f.file_identity=?3 AND f.file_bytes=?4)";
+            let parameters = turso::params![id, stage.to_string(), file_identity, bytes];
+            let matched = if retire {
+                db.execute(format!("DELETE {filter}"), parameters).await? == 1
+            } else {
+                db.query(format!("SELECT 1 {filter}"), parameters)
+                    .await?
+                    .next()
+                    .await?
+                    .is_some()
+            };
+            ensure!(
+                matched,
+                "published recording no longer matches the durable catalog"
             );
             Ok(None)
         }
@@ -155,8 +207,43 @@ impl RecordingCatalogHandle {
     pub(crate) fn next_relocation(&self, after: &str) -> Result<Option<Move>> {
         self.relocation(Request::Next(after.to_owned()))
     }
+    pub(crate) fn publish_relocation(
+        &self,
+        job: &Move,
+        destination_identity: String,
+    ) -> Result<()> {
+        self.relocation(Request::Publish {
+            id: job.id.clone(),
+            stage: job.staged,
+            destination_identity,
+            bytes: i64::try_from(job.source_bytes)?,
+        })?;
+        Ok(())
+    }
+
     pub(crate) fn retire_relocation(&self, job: &Move) -> Result<()> {
-        self.relocation(Request::Retire(job.id.clone(), job.staged))?;
+        self.match_published_relocation(job, true)
+    }
+
+    pub(crate) fn verify_published_relocation(&self, job: &Move) -> Result<()> {
+        self.match_published_relocation(job, false)
+    }
+
+    fn match_published_relocation(&self, job: &Move, retire: bool) -> Result<()> {
+        let metadata = std::fs::symlink_metadata(&job.destination)?;
+        ensure!(
+            metadata.is_file(),
+            "published recording is not a regular file"
+        );
+        let file_identity = super::recording_file_identity(&job.destination, &metadata)
+            .ok_or_else(|| anyhow::anyhow!("published recording identity unavailable"))?;
+        self.relocation(Request::Published {
+            retire,
+            id: job.id.clone(),
+            stage: job.staged,
+            file_identity,
+            bytes: i64::try_from(metadata.len())?,
+        })?;
         Ok(())
     }
 }

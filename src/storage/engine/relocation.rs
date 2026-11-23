@@ -43,7 +43,7 @@ impl Scan {
         }
     }
 
-    pub(super) fn enabled(&self) -> bool {
+    pub(super) const fn enabled(&self) -> bool {
         self.due.is_some()
     }
 

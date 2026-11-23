@@ -203,6 +203,95 @@ fn finalized_with_offline_destination(
 }
 
 #[test]
+fn restart_keeps_complete_relocation_stage_when_a_finalized_endpoint_is_damaged() {
+    for published in [false, true] {
+        let mut config = storage_config(&format!("damaged-recording-{}", uuid::Uuid::new_v4()));
+        let root = config.long_term_path.clone();
+        config.medium_term_path = root.join("medium");
+        config.long_term_path = root.join("archive");
+        std::fs::create_dir_all(&config.medium_term_path).unwrap();
+        std::fs::write(&config.long_term_path, b"offline").unwrap();
+        let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+        let source = finalized_with_offline_destination(&config, &catalog);
+        let original = std::fs::read(&source).unwrap();
+        let destination = config
+            .long_term_path
+            .join(source.strip_prefix(&config.medium_term_path).unwrap());
+        std::fs::remove_file(&config.long_term_path).unwrap();
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        let handle = catalog.handle();
+        let (id, stream) = handle
+            .finalized_relocation(&source, &destination)
+            .unwrap()
+            .unwrap();
+        let metadata = std::fs::metadata(&source).unwrap();
+        let job = handle
+            .reserve_relocation(crate::storage::catalog::relocation::Move {
+                id,
+                stream,
+                source: source.clone(),
+                destination: destination.clone(),
+                staged: uuid::Uuid::new_v4(),
+                source_identity: crate::storage::catalog::recording_file_identity(
+                    &source, &metadata,
+                )
+                .unwrap(),
+                source_bytes: metadata.len(),
+                destination_published: false,
+            })
+            .unwrap();
+        let staged = destination.with_file_name(format!(".keeppeek-{}.partial", job.staged));
+        std::fs::copy(&source, &staged).unwrap();
+        let endpoint = if published {
+            std::fs::copy(&source, &destination).unwrap();
+            handle
+                .update_recording_path(&job.id, &destination, true)
+                .unwrap();
+            std::fs::rename(&source, root.join("detached-capture")).unwrap();
+            &destination
+        } else {
+            &source
+        };
+        drop(handle);
+        catalog.shutdown();
+        // The filesystem object retains its original identity across both writes.
+        std::fs::write(endpoint, &original[..original.len() / 2]).unwrap();
+        let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+        let handle = catalog.handle();
+        let retry = || {
+            let mut worker = WriterWorker::new(
+                config.clone(),
+                RecordingDemand::new(Duration::ZERO),
+                Some(handle.clone()),
+            );
+            worker.retry_relocations(Instant::now());
+        };
+        for damaged in [
+            original[..original.len() / 2].to_vec(),
+            vec![0x55; original.len()],
+        ] {
+            std::fs::write(endpoint, &damaged).unwrap();
+            retry();
+            assert_eq!(std::fs::read(endpoint).unwrap(), damaged);
+            assert_eq!(std::fs::read(&staged).unwrap(), original);
+            let pending = handle.next_relocation("").unwrap().unwrap();
+            assert_eq!(pending.source_bytes, original.len() as u64);
+            assert_eq!(pending.destination_published, published);
+            assert!(handle.claim_cleanup_candidate().unwrap().is_none());
+        }
+        std::fs::write(endpoint, &original).unwrap();
+        retry();
+        assert!(handle.next_relocation("").unwrap().is_none());
+        assert!(!staged.exists());
+        assert_eq!(std::fs::read(&destination).unwrap(), original);
+        assert_finalized_metadata(&config);
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn relocation_journal_fences_retention_and_recovers_owned_stages_after_restart() {
     for published in [false, true] {
         let mut config = storage_config(&format!("journal-restart-{}", uuid::Uuid::new_v4()));
@@ -236,6 +325,7 @@ fn relocation_journal_fences_retention_and_recovers_owned_stages_after_restart()
                 destination: destination.clone(),
                 staged: uuid::Uuid::new_v4(),
                 source_identity: identity,
+                source_bytes: std::fs::metadata(&source).unwrap().len(),
                 destination_published: false,
             })
             .unwrap();
@@ -244,14 +334,15 @@ fn relocation_journal_fences_retention_and_recovers_owned_stages_after_restart()
             destination.with_file_name(format!(".keeppeek-{}.partial", uuid::Uuid::new_v4()));
         std::fs::write(&partial, b"interrupted copy").unwrap();
         std::fs::write(&other, b"separately owned").unwrap();
+        let original_bytes = std::fs::read(&source).unwrap();
         if published {
             std::fs::copy(&source, &destination).unwrap();
             handle
                 .update_recording_path(&id, &destination, true)
                 .unwrap();
-        } else {
-            std::fs::remove_file(&source).unwrap();
         }
+        let unavailable = root.join("detached-capture");
+        std::fs::rename(&source, &unavailable).unwrap();
         drop(handle);
         catalog.shutdown();
         let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
@@ -277,6 +368,42 @@ fn relocation_journal_fences_retention_and_recovers_owned_stages_after_restart()
                 "retention was able to select a partially relocated object"
             );
         });
+        // Missing mounts and a same-length foreign destination must retain the durable
+        // reservation and remaining staging bytes until the original inode is available.
+        let displaced = root.join("detached-archive");
+        if published {
+            std::fs::rename(&destination, &displaced).unwrap();
+        }
+        let assert_deferred = || {
+            let mut recovering = WriterWorker::new(
+                config.clone(),
+                RecordingDemand::new(Duration::ZERO),
+                Some(handle.clone()),
+            );
+            recovering.retry_relocations(Instant::now());
+            assert!(
+                recovering
+                    .health
+                    .snapshot()
+                    .streams
+                    .iter()
+                    .any(|entry| entry.last_error.is_some())
+            );
+            assert!(handle.next_relocation("").unwrap().is_some());
+            assert_eq!(std::fs::read(&partial).unwrap(), b"interrupted copy");
+        };
+        assert_deferred();
+        if published {
+            std::fs::write(&destination, vec![0x55; original_bytes.len()]).unwrap();
+            assert_deferred();
+            assert_eq!(
+                std::fs::read(&destination).unwrap(),
+                vec![0x55; original_bytes.len()]
+            );
+            std::fs::remove_file(&destination).unwrap();
+            std::fs::rename(&displaced, &destination).unwrap();
+        }
+        std::fs::rename(&unavailable, &source).unwrap();
         let playback = published.then(|| {
             handle
                 .leased_media_fragments_in_range("front/main", i64::MIN, i64::MAX)
@@ -332,7 +459,7 @@ fn relocation_journal_fences_retention_and_recovers_owned_stages_after_restart()
         assert!(!partial.exists());
         assert_eq!(std::fs::read(&other).unwrap(), b"separately owned");
         assert!(!source.exists());
-        assert_eq!(destination.exists(), published);
+        assert_eq!(std::fs::read(&destination).unwrap(), original_bytes);
         drop(playback);
         drop(worker);
         drop(handle);

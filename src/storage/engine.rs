@@ -1805,11 +1805,10 @@ mod tests {
             let fixture =
                 std::env::temp_dir().join(format!("cleanup-unrelocated-{}", uuid::Uuid::new_v4()));
             let archive = fixture.join("archive");
-            let medium = if let Some(directory) = nested {
-                archive.join(directory)
-            } else {
-                fixture.join("archive-capture")
-            };
+            let medium = nested.map_or_else(
+                || fixture.join("archive-capture"),
+                |directory| archive.join(directory),
+            );
             config.long_term_path.clone_from(&archive);
             config.medium_term_path.clone_from(&medium);
             config.recording_catalog_path = fixture.join("catalog.db");

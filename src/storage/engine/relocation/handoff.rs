@@ -59,6 +59,7 @@ pub(in crate::storage::engine) fn move_recording(
                 destination: destination.clone(),
                 staged: uuid::Uuid::new_v4(),
                 destination_published: false,
+                source_bytes: metadata.len(),
                 source_identity: identity
                     .ok_or_else(|| io::Error::other("recording identity unavailable"))?,
             })
@@ -124,28 +125,38 @@ pub(super) fn recover_job(
     validate_reserved_paths(job)?;
     let staged = job.destination.with_file_name(staged_name(job.staged));
     // The UUID was reserved by the catalog before even one media byte could be written.
-    remove_stage(&staged)?;
     if !job.source.try_exists()? {
-        if !job.destination_published && job.destination.try_exists()? {
+        if !job.destination_published || !job.destination.try_exists()? {
             return Err(io::Error::other(
                 "source disappeared before recording handoff",
             ));
         }
+        // Keep the only remaining staging bytes through source/target outages or replacement.
+        catalog
+            .verify_published_relocation(job)
+            .map_err(io::Error::other)?;
+        protect_complete_stage(&job.destination, &staged, job.source_bytes, stop)?;
+        remove_stage(&staged)?;
         sync_parent(&job.source)?;
         return catalog.retire_relocation(job).map_err(io::Error::other);
     }
     verify_source(job)?;
+    protect_complete_stage(&job.source, &staged, job.source_bytes, stop)?;
+    if job.destination_published && job.destination.try_exists()? {
+        catalog
+            .verify_published_relocation(job)
+            .map_err(io::Error::other)?;
+    }
     if same_entry(&job.source, &job.destination)? {
         if !job.destination_published {
             catalog
-                .update_recording_path(&job.id, &job.destination, true)
+                .publish_relocation(job, job.source_identity.clone())
                 .map_err(io::Error::other)?;
         }
+        remove_stage(&staged)?;
         return catalog.retire_relocation(job).map_err(io::Error::other);
     }
     if job.destination_published && job.destination.try_exists()? {
-        // All source readers left before the catalog switch. New readers own the
-        // destination and can continue through removal of the old directory entry.
         verify_existing(&job.source, &job.destination, stop)?;
     } else {
         if catalog
@@ -160,10 +171,19 @@ pub(super) fn recover_job(
         stage_source(&job.source, &job.destination, job.staged, stop)?;
         sync_parent(&job.destination)?;
         check_running(stop)?;
+        let identity = qualified_identity(&job.destination, job.source_bytes)?;
+        if identity != job.source_identity {
+            verify_existing(&job.source, &job.destination, stop)?;
+        }
+        verify_source(job)?;
         catalog
-            .update_recording_path(&job.id, &job.destination, true)
+            .publish_relocation(job, identity)
             .map_err(io::Error::other)?;
     }
+    catalog
+        .verify_published_relocation(job)
+        .map_err(io::Error::other)?;
+    remove_stage(&staged)?;
     if same_entry(&job.source, &job.destination)? {
         return catalog.retire_relocation(job).map_err(io::Error::other);
     }
@@ -196,17 +216,41 @@ fn validate_reserved_paths(job: &Move) -> io::Result<()> {
     Ok(())
 }
 
+fn qualified_identity(path: &Path, bytes: u64) -> io::Result<String> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.is_file() || meta.len() != bytes {
+        return Err(io::Error::other(
+            "recording length changed during relocation",
+        ));
+    }
+    crate::storage::catalog::recording_file_identity(path, &meta)
+        .ok_or_else(|| io::Error::other("recording identity unavailable"))
+}
+
 fn verify_source(job: &Move) -> io::Result<()> {
-    let meta = fs::symlink_metadata(&job.source)?;
-    if !meta.is_file()
-        || crate::storage::catalog::recording_file_identity(&job.source, &meta).as_deref()
-            != Some(&job.source_identity)
-    {
+    if qualified_identity(&job.source, job.source_bytes)? != job.source_identity {
         return Err(io::Error::other(
             "recording source changed during relocation",
         ));
     }
     Ok(())
+}
+
+fn protect_complete_stage(
+    reference: &Path,
+    staged: &Path,
+    expected: u64,
+    stop: &AtomicBool,
+) -> io::Result<()> {
+    match fs::symlink_metadata(staged) {
+        Ok(metadata) if metadata.is_file() && metadata.len() >= expected => {
+            verify_existing(reference, staged, stop)
+        }
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(io::Error::other("recording stage is not a regular file")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn sync_parent(path: &Path) -> io::Result<()> {
