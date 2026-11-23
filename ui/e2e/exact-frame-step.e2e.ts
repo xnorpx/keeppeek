@@ -56,6 +56,7 @@ function observePlaybackPresentation() {
 			}
 			const frame: VideoFrameRequestCallback = (_time, metadata) => {
 				element.dataset.presentedPictures = String(metadata.presentedFrames);
+				element.dataset.lastMediaTime = String(metadata.mediaTime);
 				record('frame ' + metadata.mediaTime.toFixed(6) + ' seeking=' + element.seeking);
 				element.requestVideoFrameCallback(frame);
 			};
@@ -63,6 +64,46 @@ function observePlaybackPresentation() {
 		},
 		true
 	);
+}
+
+function witnessHandoff(surface: Element) {
+	const video = surface.parentElement?.querySelector('video');
+	if (!(surface instanceof HTMLCanvasElement) || !video || surface.hidden)
+		throw new Error('The exact picture and underlying paused video must both be present.');
+	return new Promise<{
+		picture: number;
+		mediaTime: number;
+		requestedTime: number;
+		presentedFrames: number;
+		paused: boolean;
+	}>((resolve, reject) => {
+		const observer = new MutationObserver(() => {
+			if (!surface.hidden) return;
+			observer.disconnect();
+			clearTimeout(timer);
+			const canvas = document.createElement('canvas');
+			canvas.width = 64;
+			canvas.height = 32;
+			const ctx = canvas.getContext('2d')!;
+			ctx.drawImage(video, 0, 0, 64, 32);
+			let picture = 0;
+			for (let bit = 0; bit < 4; bit++) {
+				if (ctx.getImageData(8 + 16 * bit, 16, 1, 1).data[0] > 128) picture |= 1 << bit;
+			}
+			resolve({
+				picture,
+				mediaTime: Number(video.dataset.lastMediaTime),
+				requestedTime: video.currentTime,
+				presentedFrames: Number(video.dataset.presentedPictures),
+				paused: video.paused
+			});
+		});
+		const timer = setTimeout(() => {
+			observer.disconnect();
+			reject(new Error('No verified resume picture: ' + video.dataset.presentationHistory));
+		}, 8_000);
+		observer.observe(surface, { attributes: true, attributeFilter: ['hidden'] });
+	});
 }
 
 const schedules = {
@@ -228,49 +269,35 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 			await Promise.all([selected.evaluate(observePicture, extra), next.press('ArrowRight')]);
 			await expect(next).toBeFocused();
 
-			const handoff = video.evaluate((element) => {
-				if (!(element instanceof HTMLVideoElement)) throw new Error('Missing resumed video');
-				return new Promise<{
-					picture: number;
-					mediaTime: number;
-					requestedTime: number;
-					presentedFrames: number;
-					paused: boolean;
-				}>((resolve, reject) => {
-					const timer = setTimeout(() => reject(new Error('No decoded resume picture')), 5000);
-					element.addEventListener(
-						'seeking',
-						() => {
-							const requestedTime = element.currentTime;
-							element.requestVideoFrameCallback((_now, metadata) => {
-								const canvas = document.createElement('canvas');
-								canvas.width = 64;
-								canvas.height = 32;
-								const ctx = canvas.getContext('2d')!;
-								ctx.drawImage(element, 0, 0, 64, 32);
-								let picture = 0;
-								for (let bit = 0; bit < 4; bit++) {
-									if (ctx.getImageData(8 + 16 * bit, 16, 1, 1).data[0] > 128) picture |= 1 << bit;
-								}
-								clearTimeout(timer);
-								resolve({
-									picture,
-									mediaTime: metadata.mediaTime,
-									requestedTime,
-									presentedFrames: metadata.presentedFrames,
-									paused: element.paused
-								});
-							});
-						},
-						{ once: true }
-					);
-				});
-			});
+			// Observe the visible canvas-to-video transition, while normal playback is still paused.
+			const handoff = selected.evaluate(witnessHandoff);
 			await region.getByRole('button', { name: 'Play recording', exact: true }).click();
 			const resumed = await handoff;
 			expect(resumed.picture, JSON.stringify(resumed)).toBe(extra);
+			expect(resumed.paused).toBe(true);
 			await expect(selected).toBeHidden();
 			await expect(video).toHaveJSProperty('paused', false);
+			const reorderedHandoffs = [];
+			if (fixture === 'duplicate-pts') {
+				for (const target of [3, 5, 6, 9, 11, 0]) {
+					await pause.click();
+					await expect(video).toHaveJSProperty('paused', true);
+					let current = (await video.evaluate(observePicture, null)).id;
+					// Every handoff starts with a real selected canvas, even when Pause landed on the target.
+					const count = (target - current + 12) % 12 || 12;
+					for (let step = 0; step < count; step++) {
+						current = (current + 1) % 12;
+						await Promise.all([selected.evaluate(observePicture, current), next.click()]);
+					}
+					const verified = selected.evaluate(witnessHandoff);
+					await region.getByRole('button', { name: 'Play recording', exact: true }).click();
+					const observed = await verified;
+					expect(observed.picture, JSON.stringify(observed)).toBe(target);
+					expect(observed.paused).toBe(true);
+					await expect(video).toHaveJSProperty('paused', false);
+					reorderedHandoffs.push(observed);
+				}
+			}
 			await page.getByRole('button', { name: 'Export', exact: true }).click();
 			const panel = page.locator('[data-keep-export]');
 			await expect(panel).toHaveAttribute('data-export-start-ms', String(bounds.start));
@@ -283,7 +310,7 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 				expect(Date.parse('1970-01-01T' + actual + 'Z')).toBe(Math.floor(value) % 86_400_000);
 			}
 			await testInfo.attach('input-to-recorded-picture', {
-				body: JSON.stringify({ fixture, measurements, bounds, resumed }),
+				body: JSON.stringify({ fixture, measurements, bounds, resumed, reorderedHandoffs }),
 				contentType: 'application/json'
 			});
 		} finally {

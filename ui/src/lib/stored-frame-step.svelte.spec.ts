@@ -83,7 +83,7 @@ test('Chromium displays the numbered B pictures selected from the recorded decod
 			status: StoredFrameStepStatus.READY,
 			sampleToken: new Uint8Array([target]),
 			presentationTime: { nanos: times[target] * 1e6 },
-			storedTime: { seconds: 2n, nanos: target * 40_000_000 },
+			storedTime: { seconds: 2n, nanos: packets.findIndex((p) => p.rank === target) * 40_000_000 },
 			sourceTicks: BigInt(times[target]),
 			sourceTimescale: 1_000,
 			targetPresentationRank: target,
@@ -101,6 +101,12 @@ test('Chromium displays the numbered B pictures selected from the recorded decod
 					...identity,
 					decodeIndex,
 					presentationRank: packet.rank,
+					...(target === 0
+						? {}
+						: {
+								storedTime: { seconds: 2n, nanos: decodeIndex * 40_000_000 },
+								storedEndTime: { seconds: 2n, nanos: (decodeIndex + 1) * 40_000_000 }
+							}),
 					randomAccess: decodeIndex === 0,
 					chunkCount: 1,
 					payload: file.slice(packet.start, packet.start + packet.size),
@@ -116,6 +122,12 @@ test('Chromium displays the numbered B pictures selected from the recorded decod
 				if (context.getImageData(8 + 16 * bit, 16, 1, 1).data[0] > 128) picture |= 1 << bit;
 			}
 			expect(picture).toBe(target);
+			expect(sample.resumeTimesNs?.[0]).toBe(sample.storedTimeNs + 1_000n);
+			if (target === 0) expect(sample.resumeTimesNs).toHaveLength(1);
+			else
+				expect(sample.resumeTimesNs).toContain(
+					2_000_000_000n + BigInt(target + 1) * 40_000_000n - 100_000n
+				);
 			expect(sample.presentationTimeNs).toBe(BigInt(times[target]) * 1_000_000n);
 		} finally {
 			sample.frame.close();

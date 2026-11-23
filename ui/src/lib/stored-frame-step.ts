@@ -8,7 +8,13 @@ const maxSamples = 4_096;
 const maxBytes = 32 * 1_024 * 1_024;
 const chunkBytes = 32 * 1_024;
 
-type Sample = { rank: number; randomAccess: boolean; bytes: Uint8Array<ArrayBuffer> };
+type Sample = {
+	rank: number;
+	randomAccess: boolean;
+	bytes: Uint8Array<ArrayBuffer>;
+	storedStart?: bigint;
+	storedEnd?: bigint;
+};
 
 export class UnsupportedRecordedFrame extends Error {}
 
@@ -17,6 +23,8 @@ export type PresentedStoredFrame = {
 	sampleToken: Uint8Array;
 	presentationTimeNs: bigint;
 	storedTimeNs: bigint;
+	/** Paused seek coordinates from the recorded GOP. An empty list means the timestamp is ambiguous. */
+	resumeTimesNs?: readonly bigint[];
 	sourceTicks: bigint;
 	sourceTimescale: number;
 };
@@ -26,6 +34,36 @@ function nanoseconds(value: { seconds: bigint; nanos: number } | undefined): big
 		throw new Error('The recorder returned an invalid picture timestamp.');
 	}
 	return value.seconds * 1_000_000_000n + BigInt(value.nanos);
+}
+
+// Browser seek positions and presented packet times can differ when the encoded pictures reorder.
+function resumeCoordinates(samples: Sample[], rank: number, target: bigint): bigint[] {
+	const direct = target + 1_000n;
+	const selected = samples.find((sample) => sample.rank === rank)!;
+	if (selected.storedStart !== undefined && selected.storedStart !== target)
+		throw new Error('The recording timestamps disagree about the selected picture.');
+	if (samples.some((sample) => sample.rank !== rank && sample.storedStart === target)) return [];
+	const coordinates = new Set([direct]);
+	const spans = samples.flatMap(({ storedStart: start, storedEnd: end }) =>
+		start !== undefined && end !== undefined ? [{ start, end }] : []
+	);
+	if (spans.length !== samples.length) return [...coordinates];
+	spans.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+	const visit = (i: number) => {
+		const span = spans[i];
+		if (!span) return;
+		const width = span.end - span.start;
+		const middle = span.start + width / 2n;
+		coordinates.add(span.start + (width > 2_000n ? 1_000n : width / 2n));
+		coordinates.add(span.end - (width > 200_000n ? 100_000n : (width + 1n) / 2n));
+		coordinates.add(middle);
+	};
+	visit(rank);
+	for (let distance = 1; distance < spans.length && coordinates.size < 32; distance++) {
+		visit(rank + distance);
+		visit(rank - distance);
+	}
+	return [...coordinates].slice(0, 32);
 }
 
 // A transfer belongs to one cursor generation and is replaced on seek, close or timeout.
@@ -75,7 +113,13 @@ export class StoredFrameWindow {
 			chunk.chunkIndex !== (this.#partial?.next ?? 0)
 		)
 			throw new Error('The recorded frame chunks are inconsistent.');
+		if (chunk.chunkIndex !== 0 && (chunk.storedTime || chunk.storedEndTime))
+			throw new Error('Recording timestamps may appear only on the first chunk.');
 		if (!this.#partial) {
+			const storedStart = chunk.storedTime ? nanoseconds(chunk.storedTime) : undefined;
+			const storedEnd = chunk.storedEndTime ? nanoseconds(chunk.storedEndTime) : undefined;
+			if (storedEnd !== undefined && (storedStart === undefined || storedEnd <= storedStart))
+				throw new Error('The recorder returned an invalid picture interval.');
 			if (
 				this.#ranks.has(chunk.presentationRank) ||
 				(chunk.decodeIndex === 0 && !chunk.randomAccess) ||
@@ -89,6 +133,8 @@ export class StoredFrameWindow {
 				sample: {
 					bytes: new Uint8Array(chunk.sampleBytes),
 					rank: chunk.presentationRank,
+					storedStart,
+					storedEnd,
 					randomAccess: chunk.randomAccess
 				},
 				next: 0
@@ -170,6 +216,11 @@ export class StoredFrameWindow {
 			this.checkComplete();
 			await this.#ready.promise;
 			if (this.#error) throw this.#error;
+			const resumeTimesNs = resumeCoordinates(
+				this.samples,
+				result.targetPresentationRank,
+				storedTimeNs
+			);
 			const frame = await decodePicture(
 				{
 					codec,
@@ -186,6 +237,7 @@ export class StoredFrameWindow {
 				sampleToken: result.sampleToken,
 				presentationTimeNs,
 				storedTimeNs,
+				resumeTimesNs,
 				sourceTicks: result.sourceTicks,
 				sourceTimescale: result.sourceTimescale
 			};

@@ -8,6 +8,58 @@ type Cursor = Pick<
 	'anchorTimeMs' | 'url' | 'canStepExactly' | 'stepRecordedFrame'
 >;
 
+// Reading currentTime only identifies the requested seek position. The compositor identifies
+// the stored picture actually drawn, which can differ from that position for B pictures.
+function probePausedPicture(
+	video: HTMLVideoElement,
+	url: string,
+	coordinateUs: number,
+	targetUs: number,
+	signal: AbortSignal,
+	budgetMs: number
+): Promise<boolean> {
+	return new Promise((resolve) => {
+		let live = true;
+		let callback = 0;
+		let presented: number | undefined;
+		const current = () =>
+			!signal.aborted &&
+			video.paused &&
+			video.currentSrc === url &&
+			Math.abs(video.currentTime * 1_000_000 - coordinateUs) <= 3;
+		const finish = (success: boolean) => {
+			if (!live) return;
+			live = false;
+			clearTimeout(timer);
+			video.cancelVideoFrameCallback(callback);
+			video.removeEventListener('seeked', settled);
+			signal.removeEventListener('abort', cancelled);
+			resolve(success);
+		};
+		const settled = () => {
+			if (presented !== undefined && !video.seeking)
+				finish(current() && Math.abs(presented - targetUs) <= 1);
+		};
+		const cancelled = () => finish(false);
+		const inspect: VideoFrameRequestCallback = (_now, { mediaTime }) => {
+			if (!live) return;
+			if (!current()) return finish(false);
+			presented = Math.round(mediaTime * 1_000_000);
+			settled();
+			if (live) callback = video.requestVideoFrameCallback(inspect);
+		};
+		const timer = setTimeout(cancelled, budgetMs);
+		signal.addEventListener('abort', cancelled, { once: true });
+		video.addEventListener('seeked', settled);
+		callback = video.requestVideoFrameCallback(inspect);
+		try {
+			video.currentTime = coordinateUs / 1_000_000;
+		} catch {
+			finish(false);
+		}
+	});
+}
+
 export class RecordedFramePlayer {
 	selection = $state.raw<Selection>();
 	busy = $state(false);
@@ -83,50 +135,63 @@ export class RecordedFramePlayer {
 	async alignForPlay(video: HTMLVideoElement, cursor: Cursor): Promise<boolean> {
 		const sample = this.selection;
 		if (!sample || this.handoff || !video.paused || video.currentSrc !== cursor.url) return false;
-		const relativeNs = sample.storedTimeNs - BigInt(cursor.anchorTimeMs) * 1_000_000n;
-		const targetUs = Math.round(Number(relativeNs) / 1_000);
+		const url = cursor.url;
+		const origin = BigInt(cursor.anchorTimeMs) * 1_000_000n;
+		const relativeUs = (ns: bigint) => Math.round(Number(ns - origin) / 1_000);
+		const targetUs = relativeUs(sample.storedTimeNs);
+		const coordinates = sample.resumeTimesNs ?? [sample.storedTimeNs + 1_000n];
 		const controller = new AbortController();
 		this.handoff = controller;
 		this.active?.abort();
 		this.pendingSteps = 0;
 		this.notice = '';
+		const deadline = performance.now() + 5_000;
 		try {
-			const displayed = await new Promise<boolean>((resolve) => {
-				const signal = controller.signal;
-				let callback: number;
-				let presented = false;
-				const done = (success: boolean) => {
-					clearTimeout(timer);
-					video.cancelVideoFrameCallback(callback);
-					video.removeEventListener('seeked', settled);
-					signal.removeEventListener('abort', cancelled);
-					resolve(success);
-				};
-				const settled = () => {
-					if (presented && !video.seeking) done(true);
-				};
-				const cancelled = () => done(false);
-				const inspect: VideoFrameRequestCallback = (_now, { mediaTime }) => {
-					if (video.currentSrc !== cursor.url || !video.paused) return done(false);
-					presented = Math.abs(Math.round(mediaTime * 1_000_000) - targetUs) <= 1;
-					if (presented && !video.seeking) done(true);
-					else callback = video.requestVideoFrameCallback(inspect);
-				};
-				const timer = setTimeout(() => done(false), 5_000);
-				video.addEventListener('seeked', settled);
-				signal.addEventListener('abort', cancelled, { once: true });
-				callback = video.requestVideoFrameCallback(inspect);
-				// Enter the target sample after the browser's microsecond time conversion.
-				video.currentTime = (targetUs + 1) / 1_000_000;
-			});
-			if (controller.signal.aborted || this.selection !== sample) return false;
-			if (!displayed) {
+			for (const coordinate of coordinates) {
+				const remaining = deadline - performance.now();
+				if (
+					remaining <= 0 ||
+					controller.signal.aborted ||
+					this.selection !== sample ||
+					video.currentSrc !== url ||
+					cursor.url !== url ||
+					!video.paused
+				)
+					break;
+				const coordinateUs = relativeUs(coordinate);
+				if (coordinateUs < 0 || coordinateUs / 1_000_000 > video.duration) continue;
+				const displayed = await probePausedPicture(
+					video,
+					url,
+					coordinateUs,
+					targetUs,
+					controller.signal,
+					Math.min(remaining, coordinates.length === 1 ? 5_000 : 350)
+				);
+				if (
+					displayed &&
+					!controller.signal.aborted &&
+					this.selection === sample &&
+					cursor.url === url
+				) {
+					this.displayedNs = sample.storedTimeNs;
+					this.selection = undefined;
+					// Let the verified paused video replace the canvas before Play can advance it.
+					await new Promise<void>((resolve) =>
+						requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+					);
+					return (
+						!controller.signal.aborted &&
+						cursor.url === url &&
+						video.currentSrc === url &&
+						video.paused
+					);
+				}
+			}
+			if (!controller.signal.aborted && this.selection === sample)
 				this.notice =
 					'Playback could not resume on this recorded picture. Select another playback position.';
-				return false;
-			}
-			this.selection = undefined;
-			return true;
+			return false;
 		} finally {
 			if (this.handoff === controller) this.handoff = undefined;
 		}

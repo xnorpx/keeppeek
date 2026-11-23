@@ -234,3 +234,38 @@ test('resuming waits for the selected compositor picture and a settled seek, and
 	player.clear();
 	expect(await cancelled).toBe(false);
 });
+
+test('probes recorded GOP intervals and exposes only the matching paused picture', async () => {
+	const fixture = observedVideo();
+	const player = new RecordedFramePlayer();
+	const sample = picture(1);
+	sample.frame.close();
+	sample.resumeTimesNs = [41_001_000n, 80_001_000n, 119_900_000n];
+	player.selection = sample;
+	const url = fixture.video.currentSrc;
+	const cursor = {
+		url,
+		anchorTimeMs: 0,
+		canStepExactly: true,
+		stepRecordedFrame: () => Promise.resolve(sample)
+	};
+	const aligning = player.alignForPlay(fixture.video, cursor);
+	const stale = fixture.callback();
+	stale(0.02);
+	await Promise.resolve();
+	expect(fixture.video.currentTime).toBeCloseTo(0.080001, 6);
+	stale(0.041);
+	expect(player.selection).toBeDefined();
+	fixture.callback()(0.08);
+	await Promise.resolve();
+	expect(fixture.video.currentTime).toBeCloseTo(0.1199, 6);
+	fixture.callback()(0.041);
+	expect(await aligning).toBe(true);
+	expect(player.selection).toBeUndefined();
+
+	sample.resumeTimesNs = [];
+	player.selection = sample;
+	expect(await player.alignForPlay(fixture.video, cursor)).toBe(false);
+	expect(player.selection).toBeDefined();
+	expect(player.notice).toContain('could not resume');
+});
