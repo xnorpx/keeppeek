@@ -215,6 +215,15 @@ test('captures a scoped bug report across Settings and Logs navigation', async (
 	await page.evaluate(() => console.info('report-window-inside-marker'));
 	await indicator.getByRole('button', { name: 'Stop', exact: true }).click();
 	await expect(dialog).toHaveAccessibleName('Review bug report');
+	await dialog.getByLabel('Issue title').fill('Sample playback error');
+	await dialog.getByLabel('Steps to reproduce').fill('Open a sample recording.');
+	const notes = page.waitForEvent('download');
+	await dialog.getByRole('button', { name: 'Download report notes' }).click();
+	const notesPath = await (await notes).path();
+	if (!notesPath) throw new Error('Expected downloaded report notes');
+	const notesText = await readFile(notesPath, 'utf8');
+	expect(notesText).toContain('Issue title\nSample playback error');
+	expect(notesText).toContain('Steps to reproduce\nOpen a sample recording.');
 
 	await info.attach('desktop-report-review', {
 		body: await dialog.screenshot(),

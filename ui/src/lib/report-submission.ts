@@ -8,6 +8,22 @@ export type ReportText = {
 	expected: string;
 	actual: string;
 };
+export const reportTextFields = [
+	{ key: 'title', label: 'Issue title', limit: schema.properties.title.maxLength },
+	{
+		key: 'description',
+		label: 'Problem description',
+		limit: schema.properties.description.maxLength
+	},
+	{
+		key: 'reproduction',
+		label: 'Steps to reproduce',
+		limit: schema.properties.reproduction.maxLength
+	},
+	{ key: 'expected', label: 'Expected behavior', limit: schema.properties.expected.maxLength },
+	{ key: 'actual', label: 'Actual behavior', limit: schema.properties.actual.maxLength }
+] as const;
+
 type ArtifactKind = 'diagnostics' | 'screen';
 type ArtifactDescription = { type: string; bytes: number };
 type Manifest = ReportText & {
@@ -36,9 +52,9 @@ export interface ReportTransport {
 
 function textDescription(input: ReportText): ReportText {
 	const trimmed = { ...input };
-	for (const key of ['title', 'description', 'reproduction', 'expected', 'actual'] as const) {
+	for (const { key, limit } of reportTextFields) {
 		const value = input[key].trim();
-		if (!value || [...value].length > schema.properties[key].maxLength) {
+		if (!value || [...value].length > limit) {
 			throw new Error('Review every report field and its length before submitting.');
 		}
 		trimmed[key] = value;

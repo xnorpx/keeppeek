@@ -1,4 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { render } from 'vitest-browser-svelte';
+import { page } from 'vitest/browser';
+import ReportBugWorkflow from './components/ReportBugWorkflow.svelte';
+import type { ReportTransport } from './report-submission';
 import { BrowserLogStore } from './browser-logs';
 import { ReportSession } from './report-session.svelte';
 
@@ -105,4 +109,42 @@ it('cancels asynchronous finalization and clears the report after the hard time 
 	expect(session.phase).toBe('idle');
 	expect(session.review).toBeNull();
 	expect(createPackage).not.toHaveBeenCalled();
+});
+
+it('shows the reviewed artifacts and retention before contacting the service', async () => {
+	const { session } = setup();
+	session.start(false);
+	await session.stop();
+	const grant = { id: 'one', token: 'private-test-grant' };
+	const transport: ReportTransport = {
+		create: vi.fn(async () => grant),
+		status: vi.fn(async () => ({ state: 'pending' as const })),
+		upload: vi.fn(async (_grant, _kind, artifact, _signal, onBytes) => onBytes(artifact.size)),
+		finalize: vi.fn(async () => ({
+			state: 'complete' as const,
+			issueUrl: 'https://github.com/xnorpx/keeppeek/issues/999'
+		})),
+		cancel: vi.fn(async () => {})
+	};
+	render(ReportBugWorkflow, {
+		session,
+		reporting: { transport, retentionDays: 30 }
+	});
+	await page.getByLabelText('Issue title').fill('Test report');
+	await page.getByLabelText('Problem description').fill('Playback stopped.');
+	await page.getByLabelText('Steps to reproduce').fill('Open a recording.');
+	await page.getByLabelText('Expected behavior').fill('The clip plays.');
+	await page.getByLabelText('Actual behavior').fill('The clip remains paused.');
+	await page.getByRole('button', { name: 'Review submission' }).click();
+	const confirm = page.getByRole('button', { name: 'Confirm and submit' });
+	await expect.element(confirm).toBeVisible();
+	expect(page.getByRole('dialog').element().textContent?.replace(/\s+/g, ' ')).toContain(
+		'for up to 30 days'
+	);
+	expect(transport.create).not.toHaveBeenCalled();
+	await confirm.click();
+	await expect
+		.element(page.getByRole('link', { name: 'Open the created GitHub issue' }))
+		.toHaveAttribute('href', 'https://github.com/xnorpx/keeppeek/issues/999');
+	expect(transport.create).toHaveBeenCalledTimes(1);
 });

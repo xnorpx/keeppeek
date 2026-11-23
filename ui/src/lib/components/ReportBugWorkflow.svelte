@@ -1,14 +1,49 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import { Input } from '$lib/components/ui/input/index.js';
+	import {
+		ReportSubmission,
+		reportTextFields,
+		type ReportText,
+		type ReportTransport,
+		type ReportProgress
+	} from '$lib/report-submission';
 	import { diagnosticsBundleFilename, downloadDiagnosticsArtifact } from '$lib/diagnostics-bundle';
 	import { reportCaptureSupported } from '$lib/report-capture';
 	import type { ReportSession } from '$lib/report-session.svelte';
 
-	let { session, open = $bindable(false) }: { session: ReportSession; open?: boolean } = $props();
+	let {
+		session,
+		open = $bindable(false),
+		reporting
+	}: {
+		session: ReportSession;
+		open?: boolean;
+		reporting?: { transport: ReportTransport; retentionDays: number };
+	} = $props();
+
 	let dialog: HTMLDialogElement | undefined = $state();
 	let preview: string | null = $state(null);
 	let elapsed = $state(0);
 	let review = $derived(session.review);
+
+	const blankDraft = (): ReportText => ({
+		title: '',
+		description: '',
+		reproduction: '',
+		expected: '',
+		actual: ''
+	});
+	let draft: ReportText = $state(blankDraft());
+	let includeRecording = $state(true);
+	let hasDraft = $derived(reportTextFields.some(({ key }) => draft[key].trim()));
+
+	let submission: ReportSubmission | null = $state.raw(null);
+	let submissionState = $state<'review' | 'confirm' | 'sending' | 'retry' | 'complete'>('review');
+	let submissionError: string | null = $state(null);
+	let issueUrl: string | null = $state(null);
+	let progress: ReportProgress = $state({ uploaded: 0, total: 0 });
 
 	const labels = {
 		'browser-log-window-incomplete': 'Some browser log entries are missing.',
@@ -20,6 +55,27 @@
 			'The recorder history could not be verified. Server logs were excluded.',
 		'server-logs-unavailable': 'Server logs could not be collected.'
 	};
+
+	$effect(() => {
+		if (submissionState === 'confirm')
+			dialog?.querySelector<HTMLButtonElement>('[data-confirm-report]')?.focus();
+	});
+
+	$effect(() => {
+		if (!review) resetSubmission();
+	});
+	onDestroy(resetSubmission);
+
+	function downloadDraft(stopUtc: string): void {
+		const lines = reportTextFields
+			.filter(({ key }) => draft[key].trim())
+			.map(({ key, label }) => `${label}\n${draft[key].trim()}`);
+		const name = new Date(stopUtc).toISOString().replace(/[:.]/g, '-');
+		downloadDiagnosticsArtifact(
+			new Blob([lines.join('\n\n')], { type: 'text/plain;charset=utf-8' }),
+			`keeppeek-report-notes-${name}.txt`
+		);
+	}
 
 	function downloadRecord(blob: Blob, stopUtc: string): void {
 		const extension = blob.type === 'video/mp4' ? 'mp4' : 'webm';
@@ -60,12 +116,82 @@
 		return () => URL.revokeObjectURL(url);
 	});
 
+	function prepareSubmission(): void {
+		if (!reporting || !review?.diagnostics || submission) return;
+		try {
+			submission = new ReportSubmission(reporting.transport, {
+				text: draft,
+				diagnostics: review.diagnostics,
+				screen: includeRecording ? (review.recording ?? undefined) : undefined,
+				evidenceWarnings: review.window.warnings
+			});
+			submissionError = null;
+			submissionState = 'confirm';
+		} catch (error) {
+			submissionError =
+				error instanceof Error ? error.message : 'Review the report before submitting.';
+		}
+	}
+
+	async function submitConfirmed(): Promise<void> {
+		const attempt = submission;
+		if (!attempt || !['confirm', 'retry'].includes(submissionState)) return;
+		submissionState = 'sending';
+		submissionError = null;
+		try {
+			const result = await attempt.submit((next) => {
+				progress = next;
+			});
+			if (submission !== attempt) return;
+			if (result.state === 'complete') {
+				const url = URL.parse(result.issueUrl);
+				if (
+					!url ||
+					url.origin !== 'https://github.com' ||
+					url.username ||
+					url.password ||
+					url.search ||
+					url.hash ||
+					!/^\/[^/]+\/[^/]+\/issues\/[1-9][0-9]*$/.test(url.pathname)
+				) {
+					submissionState = 'complete';
+					submissionError = 'The service created the issue but returned an invalid issue link.';
+					return;
+				}
+				issueUrl = url.href;
+				submissionState = 'complete';
+				return;
+			}
+			submissionError =
+				'The service has not returned an issue. You can check again or download the report.';
+		} catch {
+			if (submission !== attempt) return;
+			submissionError =
+				'The service could not confirm submission. You can retry or download the report.';
+		}
+		submissionState = 'retry';
+	}
+
+	function resetSubmission(): void {
+		void submission?.cancel();
+		submission = null;
+		submissionState = 'review';
+		submissionError = null;
+		issueUrl = null;
+		progress = { uploaded: 0, total: 0 };
+	}
+
 	function start(display: boolean) {
+		draft = blankDraft();
+		includeRecording = true;
 		open = false;
 		session.start(display);
 	}
 
 	function discard() {
+		resetSubmission();
+		draft = blankDraft();
+		includeRecording = true;
 		open = false;
 		session.cancel();
 	}
@@ -135,14 +261,45 @@
 					{/each}
 				</ul>
 			{/if}
+			<fieldset disabled={submissionState !== 'review'} class="space-y-3">
+				<legend class="mb-2 text-sm font-semibold">Issue details</legend>
+				<p class="text-sm text-muted-foreground"
+					>Remove private details from the issue text before sharing.</p
+				>
+				{#each reportTextFields as field (field.key)}
+					<label class="block space-y-1 text-sm">
+						<span>{field.label}</span>
+						{#if field.key === 'title'}
+							<Input bind:value={draft.title} maxlength={field.limit} />
+						{:else}
+							<textarea
+								bind:value={draft[field.key]}
+								maxlength={field.limit}
+								rows={2}
+								class="block min-h-16 w-full resize-y rounded-md border border-input bg-background px-3 py-2"
+							></textarea>
+						{/if}
+					</label>
+				{/each}
+			</fieldset>
 			<ul aria-label="Report artifacts" class="space-y-1 text-sm">
 				{#if review.diagnostics}
 					<li>Diagnostics · {(review.diagnostics.size / 1024).toFixed(1)} KiB</li>
 				{/if}
-				{#if review.recording}
+				{#if review.recording && includeRecording}
 					<li>Private screen recording · {(review.recording.size / 1_048_576).toFixed(1)} MiB</li>
 				{/if}
 			</ul>
+			{#if review.recording}
+				<label class="flex items-center gap-2 text-sm">
+					<input
+						type="checkbox"
+						bind:checked={includeRecording}
+						disabled={submissionState !== 'review'}
+					/>
+					Include the screen recording
+				</label>
+			{/if}
 			{#if preview}
 				<!-- svelte-ignore a11y_media_has_caption (the capture includes no audio tracks) -->
 				<video
@@ -158,10 +315,56 @@
 					is unavailable.</p
 				>
 			{/if}
-			<p class="text-sm text-muted-foreground"
-				>Remote submission is unavailable. Download the artifacts you want to share.</p
-			>
+			{#if !reporting}
+				<p class="text-sm text-muted-foreground"
+					>Remote submission is unavailable. Download the artifacts you want to share.</p
+				>
+			{:else if submissionState === 'confirm'}
+				<p class="text-sm"
+					>Submit the issue text and listed artifacts. The service keeps private artifacts for up to {reporting.retentionDays}
+					days.</p
+				>
+				<div class="flex flex-wrap gap-2">
+					<Button data-confirm-report onclick={() => void submitConfirmed()}
+						>Confirm and submit</Button
+					>
+					<Button variant="outline" onclick={resetSubmission}>Back to review</Button>
+				</div>
+			{:else if submissionState === 'sending'}
+				<p class="text-sm" role="status"
+					>{progress.uploaded === progress.total && progress.total > 0
+						? 'Waiting for issue creation'
+						: 'Uploading reviewed artifacts'}</p
+				>
+				{#if progress.total > 0}
+					<progress
+						aria-label="Report upload progress"
+						value={progress.uploaded}
+						max={progress.total}
+						class="w-full"
+					></progress>
+				{/if}
+				<Button variant="outline" onclick={resetSubmission}>Cancel upload</Button>
+			{:else if submissionState === 'retry'}
+				<Button onclick={() => void submitConfirmed()}>Retry submission</Button>
+			{:else if submissionState === 'complete'}
+				{#if issueUrl}<a href={issueUrl} class="text-sm font-medium underline"
+						>Open the created GitHub issue</a
+					>{/if}
+			{:else if review.diagnostics}
+				<Button onclick={prepareSubmission}>Review submission</Button>
+			{/if}
+			{#if submissionError}<p role="alert" class="text-sm">{submissionError}</p>{/if}
+
 			<div class="flex flex-wrap gap-2">
+				{#if hasDraft}
+					<Button
+						variant="outline"
+						onclick={() => {
+							if (review) downloadDraft(review.window.stopUtc);
+						}}>Download report notes</Button
+					>
+				{/if}
 				{#if review.diagnostics}
 					<Button
 						variant="outline"
@@ -174,18 +377,22 @@
 						}}>Download report diagnostics</Button
 					>
 				{/if}
-				{#if review.recording}
+				{#if review.recording && includeRecording}
 					<Button
 						variant="outline"
 						onclick={() => {
 							if (review?.recording) downloadRecord(review.recording, review.window.stopUtc);
 						}}>Download screen recording</Button
 					>
-					<Button variant="ghost" onclick={() => session.discardRecording()}
-						>Discard screen recording</Button
+				{/if}
+				{#if review.recording}
+					<Button
+						variant="ghost"
+						onclick={() => session.discardRecording()}
+						disabled={submissionState !== 'review'}>Discard screen recording</Button
 					>
 				{/if}
-				<Button onclick={discard}>Done</Button>
+				<Button onclick={discard} disabled={submissionState === 'sending'}>Done</Button>
 			</div>
 		{:else if session.phase === 'idle'}
 			<p class="text-sm"
