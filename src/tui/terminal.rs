@@ -247,7 +247,7 @@ fn render_until_closed(
                     &mut nav,
                     age,
                     data.failed_at.map(|when| when.elapsed()),
-                )
+                );
             })?;
             last = Instant::now();
             redraw = false;

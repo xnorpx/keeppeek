@@ -163,7 +163,7 @@ fn failed_collection_keeps_last_sample_and_reports_its_own_age() {
                 &mut Navigation::default(),
                 Duration::from_secs(6),
                 Some(Duration::from_secs(2)),
-            )
+            );
         })
         .unwrap();
     let row = |y| {
