@@ -11548,13 +11548,13 @@ pub(crate) fn dashboard_health(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
 ) -> Option<ServerHealthResponse> {
-    let (health, complete) = collect_server_health(
+    let (health, lifecycle_available) = collect_server_health(
         router_tx,
         state,
         HealthRegistry::local_stream_snapshot,
         None,
     );
-    complete.then_some(health)
+    lifecycle_available.then_some(health)
 }
 
 fn collect_server_health(
@@ -11573,7 +11573,7 @@ fn collect_server_health(
         lifecycle,
         operational_events,
         mut issues,
-        complete,
+        lifecycle_available,
     } = acquire_health_sources(router_tx, state);
     let ingress = ingress_snapshot(&state.health);
     let recording = state.recording_health.snapshot();
@@ -11606,7 +11606,7 @@ fn collect_server_health(
             issues,
             operational_events,
         },
-        complete,
+        lifecycle_available,
     )
 }
 
@@ -11614,7 +11614,7 @@ struct HealthAcquisition {
     lifecycle: HashMap<String, CameraStatus>,
     operational_events: Vec<crate::operational_events::OperationalEvent>,
     issues: Vec<HealthIssue>,
-    complete: bool,
+    lifecycle_available: bool,
 }
 
 fn acquire_health_sources(
@@ -11622,12 +11622,11 @@ fn acquire_health_sources(
     state: &ServerState,
 ) -> HealthAcquisition {
     let mut issues = Vec::new();
-    let mut complete = true;
+    let mut lifecycle_available = true;
     let operational_events = state.events.as_ref().map_or_else(Vec::new, |events| {
         match events.open_operational_events() {
             Ok(events) => events,
             Err(error) => {
-                complete = false;
                 issues.push(HealthIssue {
                     severity: "warning".to_owned(),
                     scope: "storage".to_owned(),
@@ -11646,7 +11645,7 @@ fn acquire_health_sources(
             .map(|status| (status.id.to_string(), status))
             .collect::<HashMap<_, _>>(),
         Ok(RouterResponse::Camera(_)) => {
-            complete = false;
+            lifecycle_available = false;
             issues.push(HealthIssue {
                 severity: "warning".to_owned(),
                 scope: "runtime".to_owned(),
@@ -11658,7 +11657,7 @@ fn acquire_health_sources(
             HashMap::new()
         }
         Err(_) => {
-            complete = false;
+            lifecycle_available = false;
             issues.push(HealthIssue {
                 severity: "warning".to_owned(),
                 scope: "runtime".to_owned(),
@@ -11674,7 +11673,7 @@ fn acquire_health_sources(
         lifecycle,
         operational_events,
         issues,
-        complete,
+        lifecycle_available,
     }
 }
 
@@ -14408,6 +14407,32 @@ mod tests {
         drop(state);
         catalog.shutdown();
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn dashboard_health_keeps_live_data_when_event_history_is_unavailable() {
+        let folder = std::env::temp_dir().join(format!("keeppeek-tui-events-{}", Uuid::new_v4()));
+        std::fs::create_dir(&folder).unwrap();
+        let catalog =
+            crate::storage::RecordingCatalog::open(&folder.join("recordings.db")).unwrap();
+        let mut state = media_test_state();
+        state.events =
+            Some(EventStore::new(catalog.handle(), &folder.join("thumbnails"), 1024).unwrap());
+        catalog.shutdown();
+
+        let (router, tx) = crate::runtime::Router::new().unwrap();
+        let worker = spawn_router_query_worker(router);
+        let dashboard = dashboard_health(&tx, &state).unwrap();
+        assert_eq!(worker.join().unwrap(), 1);
+        assert!(dashboard.operational_events.is_empty());
+        assert!(dashboard.issues.iter().any(|issue| {
+            issue.scope == "storage"
+                && issue
+                    .message
+                    .starts_with("Operational event history is unavailable")
+        }));
+        drop(state);
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]

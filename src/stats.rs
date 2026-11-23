@@ -639,12 +639,12 @@ pub(crate) fn video_report(
         jitter_samples: snap.jitter_samples,
         jitter_p50_ms: round1(snap.jitter_p50_ms),
         jitter_p99_ms: round1(snap.jitter_p99_ms),
-        frames: nonzero_u64(snap.video_frames),
-        bytes: nonzero_u64(snap.video_bytes),
+        frames: Some(snap.video_frames),
+        bytes: Some(snap.video_bytes),
         keyframes: nonzero_u64(snap.video_keyframes),
-        reconnects: nonzero_u64(snap.reconnects),
-        drops: nonzero_u64(snap.dropped_frames),
-        errors: nonzero_u64(snap.error_count),
+        reconnects: Some(snap.reconnects),
+        drops: Some(snap.dropped_frames),
+        errors: Some(snap.error_count),
     }
 }
 
@@ -675,8 +675,8 @@ pub(crate) fn audio_report(
         jitter_samples: 0,
         jitter_p50_ms: 0.0,
         jitter_p99_ms: 0.0,
-        frames: nonzero_u64(snap.audio_frames),
-        bytes: nonzero_u64(snap.audio_bytes),
+        frames: Some(snap.audio_frames),
+        bytes: Some(snap.audio_bytes),
         keyframes: None,
         reconnects: None,
         drops: None,
@@ -800,6 +800,23 @@ mod tests {
         assert_eq!(report.reconnects, Some(5));
         assert_eq!(report.drops, Some(3));
         assert_eq!(report.errors, Some(4));
+
+        let mut counters = snapshot;
+        counters.video_frames = 0;
+        counters.video_bytes = 0;
+        counters.reconnects = 0;
+        counters.dropped_frames = 0;
+        counters.error_count = 0;
+        let measured_zero = video_report(StreamKind::Main, &counters, &rates, None, 0, 0, 0.0);
+        assert_eq!(measured_zero.frames, Some(0));
+        assert_eq!(measured_zero.bytes, Some(0));
+        assert_eq!(measured_zero.reconnects, Some(0));
+        assert_eq!(measured_zero.drops, Some(0));
+        assert_eq!(measured_zero.errors, Some(0));
+        let json = serde_json::to_value(&measured_zero).unwrap();
+        for field in ["frames", "bytes", "reconnects", "drops", "errors"] {
+            assert!(json.get(field).is_none());
+        }
     }
 
     fn stream(kind: &str, fps: f64) -> StreamReport {
