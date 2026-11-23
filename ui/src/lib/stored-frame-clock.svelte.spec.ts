@@ -103,6 +103,15 @@ async function qualifyFractionalPicture(
 		// AAC starts at tick 78,720/48,000; Chromium sets the sequence origin from it.
 		expect(Math.abs(us - 26_666)).toBeLessThanOrEqual(1);
 		const stored = BigInt(now) * 1_000_000n + 1_666_666_666n;
+		const frame = new VideoFrame(video);
+		try {
+			expect(Math.abs(frame.timestamp - us)).toBeLessThanOrEqual(1);
+			expect(Math.abs(Number(cursor.storedNsForMediaUs(frame.timestamp)! - stored))).toBeLessThan(
+				1_000
+			);
+		} finally {
+			frame.close();
+		}
 		const actual = cursor.storedNsForMediaUs(us);
 		expect(actual).toBeDefined();
 		expect(Math.abs(Number(actual! - stored))).toBeLessThan(1_000);
