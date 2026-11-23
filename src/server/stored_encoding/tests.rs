@@ -112,13 +112,13 @@ fn compare_verified_ranges(count: u32, start: usize, expected_chunks: usize) -> 
 
 #[test]
 fn archive_playback_verifies_one_chunk_once_for_ten_real_fragments() -> anyhow::Result<()> {
-    compare_verified_ranges(40, 5, 1)
+    compare_verified_ranges(122, 5, 1)
 }
 
 #[test]
 fn archive_playback_reuses_initialization_when_ten_real_fragments_cross_chunks()
 -> anyhow::Result<()> {
-    compare_verified_ranges(135, 112, 2)
+    compare_verified_ranges(400, 350, 2)
 }
 
 #[test]
