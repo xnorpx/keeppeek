@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KeepPeek report submission v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "title",
+    "description",
+    "reproduction",
+    "expected",
+    "actual",
+    "evidenceWarnings",
+    "artifacts"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "pattern": "\\S"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "pattern": "\\S"
+    },
+    "reproduction": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "pattern": "\\S"
+    },
+    "expected": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
+    },
+    "actual": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
+    },
+    "evidenceWarnings": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "browser-log-window-incomplete",
+          "server-log-window-incomplete",
+          "server-log-filter-active",
+          "server-log-stream-gap",
+          "server-log-generation-changed",
+          "server-logs-unavailable"
+        ]
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["diagnostics"],
+      "properties": {
+        "diagnostics": {
+          "$ref": "#/$defs/diagnostics"
+        },
+        "screen": {
+          "$ref": "#/$defs/screen"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "bytes"],
+      "properties": {
+        "type": {
+          "enum": ["application/gzip"]
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 29360128
+        }
+      }
+    },
+    "screen": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "bytes"],
+      "properties": {
+        "type": {
+          "enum": ["video/webm", "video/mp4"]
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 104857600
+        }
+      }
+    }
+  }
+}
