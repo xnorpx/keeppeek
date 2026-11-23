@@ -10,6 +10,8 @@ import {
 	runtimeProfilesStatusKey,
 	runtimeProfilesStatusSchema,
 	runtimeProfileFromEntry,
+	assembleObservedParts,
+	observedPartFromEntry,
 	runtimeProfileManifestFromEntry,
 	runtimeProfilePartFromEntry,
 	runtimeProfileStatusFromEntry,
@@ -122,6 +124,47 @@ describe('runtime profile state', () => {
 		} as unknown as StateEntry);
 
 		expect(active).toEqual({ profileId: null, revision: '4' });
+	});
+
+	it('preserves the definition revision in active selection and complete multipart status', () => {
+		const active = {
+			...registryEntry({ profile_id: 'away', definition_revision: '2' }, 3n),
+			key: runtimeProfilesActiveKey,
+			schema: runtimeProfilesActiveSchema
+		};
+		expect(runtimeProfileFromEntry(active)).toEqual({
+			profileId: 'away',
+			revision: '3',
+			definitionRevision: '2'
+		});
+		const parts = new Map(
+			Array.from({ length: 8 }, (_, index) => {
+				const part = registryEntry(
+					{
+						revision: '3',
+						active_profile_id: 'away',
+						definition_revision: '2',
+						part_index: index,
+						part_count: 8,
+						generation: 'a'.repeat(64),
+						cameras: {}
+					},
+					3n
+				);
+				return [
+					index,
+					observedPartFromEntry(
+						{ ...part, key: `observed/${index}`, schema: 'keeppeek.runtime-profiles.observed.v1' },
+						index
+					)
+				] as const;
+			})
+		);
+		expect(assembleObservedParts(parts)).toMatchObject({
+			active_profile_id: 'away',
+			revision: '3',
+			definitionRevision: '2'
+		});
 	});
 
 	it('identifies when an override should inherit Base', () => {

@@ -8510,6 +8510,7 @@ pub struct ServerState {
     runtime_profiles: Arc<RwLock<crate::profiles::ProfileRegistry>>,
     runtime_profile_status: Arc<RwLock<crate::profiles::RuntimeProfileStatus>>,
     runtime_profile_drafts: Arc<Mutex<state_store::profiles::RuntimeProfileDrafts>>,
+    profile_generation_cache: Arc<state_store::profiles::observed::GenerationCache>,
     privacy_sources: Arc<RwLock<BTreeMap<String, PrivacySource>>>,
     privacy_epochs: Arc<Mutex<HashMap<IpAddr, u64>>>,
     privacy_override_states: Arc<Mutex<HashMap<IpAddr, bool>>>,
@@ -8689,8 +8690,10 @@ impl ServerState {
             runtime_profile_status: Arc::new(RwLock::new(crate::profiles::RuntimeProfileStatus {
                 revision: config.runtime_profiles.revision,
                 active_profile_id: config.runtime_profiles.active_profile_id.clone(),
+                definition_revision: config.runtime_profiles.active_definition_revision(),
                 cameras: BTreeMap::new(),
             })),
+            profile_generation_cache: Arc::default(),
             runtime_profile_drafts: Arc::new(Mutex::new(
                 state_store::profiles::RuntimeProfileDrafts::default(),
             )),
@@ -8920,7 +8923,7 @@ impl ServerState {
                         .as_ref()
                         .is_some_and(|schedule| !schedule.keep_camera_connected)
                     && let Some(runtime) = &self.camera_runtime
-                    && let Err(error) = runtime.stop_camera(camera_ip)
+                    && let Err(error) = runtime.pause_camera_for_privacy(camera_ip)
                 {
                     tracing::warn!(%camera_ip, %error, "privacy could not stop camera ingress");
                     record_access_audit(
@@ -8980,6 +8983,7 @@ impl ServerState {
     }
 
     fn upsert_camera(&self, mut entry: CameraEntry) {
+        let inventory = self.state_store_watches.lock_profile_views();
         let source_ip = entry.configuration.ip;
         let mut cameras = self
             .cameras
@@ -9016,6 +9020,7 @@ impl ServerState {
         }
         cameras.sort_unstable_by(|left, right| left.info.id.cmp(&right.info.id));
         drop(cameras);
+        drop(inventory);
         if !changed_groups.is_empty() {
             camera_access::invalidate_group_sessions(self, &changed_groups);
         }
@@ -9072,6 +9077,7 @@ impl ServerState {
     fn activate_camera_entry(&self, entry: CameraEntry) {
         let config = entry.configuration.clone();
         self.upsert_camera(entry);
+        self.publish_runtime_profile_status();
         self.enrich_camera_metadata_in_background(vec![config]);
     }
 
