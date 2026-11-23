@@ -1477,7 +1477,7 @@ pub(in crate::server) fn publish_status_event(state: &ServerState, updated_ms: u
                 };
             }
             let entry = observed::part_index(&key).map_or_else(
-                || status_entry(status.clone()).map_err(|error| Error::Storage(error.to_string())),
+                || status_entry(&status).map_err(|error| Error::Storage(error.to_string())),
                 |index| {
                     let generation = generation
                         .get_or_init(|| observed::generation(&status))
@@ -1509,7 +1509,7 @@ pub(in crate::server) fn publish_status_event(state: &ServerState, updated_ms: u
     drop(status);
 }
 
-fn status_entry(status: crate::profiles::RuntimeProfileStatus) -> anyhow::Result<StoredEntry> {
+fn status_entry(status: &crate::profiles::RuntimeProfileStatus) -> anyhow::Result<StoredEntry> {
     let revision = status.revision;
     let mut value = serde_json::to_value(status)?;
     normalize_revision_fields(&mut value, true)?;

@@ -77,13 +77,13 @@ pub(in crate::server) fn part_entry(
             (id.clone(), application)
         })
         .collect();
-    let mut entry = status_entry(RuntimeProfileStatus {
+    let part = RuntimeProfileStatus {
         revision: status.revision,
         active_profile_id: status.active_profile_id.clone(),
         definition_revision: status.definition_revision,
-        cameras: cameras.clone(),
-    })
-    .map_err(|error| Error::Storage(error.to_string()))?;
+        cameras,
+    };
+    let mut entry = status_entry(&part).map_err(|error| Error::Storage(error.to_string()))?;
     entry.key = format!("observed/{index}");
     entry.schema = PART_SCHEMA.to_owned();
     entry.value.fields.insert(
@@ -125,7 +125,7 @@ pub(in crate::server) fn part_entry(
         },
     );
     if entry.value.encoded_len() > PROFILE_DOCUMENT_BYTES_MAX {
-        let compact = compact_rows(cameras)?;
+        let compact = compact_rows(part.cameras)?;
         entry.value.fields.insert(
             "cameras".to_owned(),
             Value {
@@ -229,7 +229,7 @@ pub(in crate::server) fn entry_for_key(
     if let Some(index) = part_index(key) {
         part_entry(status, index, &generation(status)?)
     } else {
-        bounded(status_entry(status.clone()).map_err(|error| Error::Storage(error.to_string()))?)
+        bounded(status_entry(status).map_err(|error| Error::Storage(error.to_string()))?)
     }
 }
 
