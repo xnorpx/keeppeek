@@ -45,7 +45,7 @@ import type {
 } from './types';
 import type { StorageWriteProbe } from './first-run';
 
-type SendRequest = (command: Request['command']) => Promise<Ok['result']>;
+type SendRequest = (command: Request['command'], signal?: AbortSignal) => Promise<Ok['result']>;
 type MapRecordingEvent = (event: ProtoEvent) => RecordingEvent;
 
 export class SystemControlClient {
@@ -73,7 +73,7 @@ export class SystemControlClient {
 		const command = create(HealthCommandSchema, {
 			action: { case: 'get', value: create(GetHealthSchema) }
 		});
-		const result = await this.sendRequest({ case: 'healthCommand', value: command });
+		const result = await this.sendRequest({ case: 'healthCommand', value: command }, signal);
 		signal?.throwIfAborted();
 		if (result.case !== 'healthResult') {
 			throw new Error('Server returned an unexpected health response.');
@@ -81,11 +81,11 @@ export class SystemControlClient {
 		return serverHealth(result.value, this.mapRecordingEvent);
 	}
 
-	async getLoggingSettings(): Promise<LoggingSettings> {
+	async getLoggingSettings(signal?: AbortSignal): Promise<LoggingSettings> {
 		const command = create(LoggingCommandSchema, {
 			action: { case: 'getSettings', value: create(GetLoggingSettingsSchema) }
 		});
-		return this.loggingRequest(command);
+		return this.loggingRequest(command, signal);
 	}
 
 	async setLoggingFilter(filter: string): Promise<LoggingSettings> {
@@ -182,11 +182,14 @@ export class SystemControlClient {
 		};
 	}
 
-	async getRuntimeConfiguration(): Promise<SanitizedConfig> {
+	async getRuntimeConfiguration(signal?: AbortSignal): Promise<SanitizedConfig> {
 		const command = create(RuntimeConfigurationCommandSchema, {
 			action: { case: 'get', value: create(GetRuntimeConfigurationSchema) }
 		});
-		const result = await this.sendRequest({ case: 'runtimeConfigurationCommand', value: command });
+		const result = await this.sendRequest(
+			{ case: 'runtimeConfigurationCommand', value: command },
+			signal
+		);
 		if (result.case !== 'runtimeConfigurationResult' || !result.value.config) {
 			throw new Error('Server returned an unexpected runtime configuration response.');
 		}
@@ -205,9 +208,10 @@ export class SystemControlClient {
 	}
 
 	private async loggingRequest(
-		command: ReturnType<typeof create<typeof LoggingCommandSchema>>
+		command: ReturnType<typeof create<typeof LoggingCommandSchema>>,
+		signal?: AbortSignal
 	): Promise<LoggingSettings> {
-		const result = await this.sendRequest({ case: 'loggingCommand', value: command });
+		const result = await this.sendRequest({ case: 'loggingCommand', value: command }, signal);
 		if (result.case !== 'loggingSettingsResult') {
 			throw new Error('Server returned an unexpected logging response.');
 		}
