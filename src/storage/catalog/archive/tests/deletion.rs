@@ -144,6 +144,53 @@ fn confirmed_replay_checks_the_receipt_and_never_admits_a_new_batch() -> anyhow:
 }
 
 #[test]
+fn durable_reverification_preserves_same_version_age_and_starts_a_new_version_clock()
+-> anyhow::Result<()> {
+    pollster::block_on(async {
+        for old_version in ["archive-version", "retired-version"] {
+            let connection = fixture().await?;
+            let id = admission().job_id;
+            bind(&connection, &binding()).await?;
+            enqueue(&connection, &admission()).await?;
+            start(&connection, &id, 2).await?;
+            let version = Version::new(
+                crate::storage::archive::target::ObjectId::parse(&id)?,
+                "archive-version".into(),
+                4,
+            )?;
+            stage(&connection, &id, &version).await?;
+            connection
+                .execute(
+                    "INSERT INTO archive_verified_at(job_id,version,verified_ms) VALUES(?1,?2,1)",
+                    (id.as_str(), old_version),
+                )
+                .await?;
+            let before = current_unix_time_ms();
+            ready(&connection, &id, &version, [0; 32], &[0; 32]).await?;
+            let timestamp = required(&connection, &id).await?.verified_ms.unwrap();
+            if old_version == version.token {
+                assert_eq!(timestamp, 1);
+            } else {
+                assert!((before..=current_unix_time_ms()).contains(&timestamp));
+            }
+            run(
+                &connection,
+                Deletion::Reverified {
+                    job: id.clone(),
+                    version: version.token.clone(),
+                },
+            )
+            .await?;
+            assert_eq!(
+                required(&connection, &id).await?.verified_ms,
+                Some(timestamp)
+            );
+        }
+        Ok(())
+    })
+}
+
+#[test]
 fn archive_retention_age_starts_at_durable_verification_and_each_batch_requires_confirmation()
 -> anyhow::Result<()> {
     pollster::block_on(async {

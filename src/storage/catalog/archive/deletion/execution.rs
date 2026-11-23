@@ -143,8 +143,7 @@ pub(super) async fn reverified(
         job.state == "ready" && job.version.as_deref() == Some(version) && job.kind != "probe",
         "archive version changed before reverification"
     );
-    connection.execute("INSERT INTO archive_verified_at(job_id,version,verified_ms) VALUES(?1,?2,?3) ON CONFLICT(job_id) DO NOTHING",
-        turso::params![id,version,current_unix_time_ms()]).await?;
+    record_verification(connection, id, version).await?;
     connection
         .execute(
             "DELETE FROM archive_reverification_retries WHERE job_id=?1",

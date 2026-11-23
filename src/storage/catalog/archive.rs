@@ -552,15 +552,26 @@ async fn ready(
     }
     connection.execute("UPDATE archive_replicas SET state='ready',version=?2,chunk_hashes=?3,error=NULL,target_reserved_bytes=0,target_materialized_bytes=0 WHERE job_id=?1",turso::params![id,version.token.clone(),chunk_hashes.to_vec()]).await?;
     if job.kind != "probe" {
-        connection
-            .execute(
-                "INSERT INTO archive_verified_at(job_id,version,verified_ms) VALUES(?1,?2,?3)",
-                turso::params![id, version.token.as_str(), super::current_unix_time_ms()],
-            )
-            .await?;
+        record_verification(connection, id, &version.token).await?;
     }
     super::locations::bump_revision(connection).await?;
     Ok(Reply::Job(load(connection, id).await?.map(Box::new)))
+}
+
+async fn record_verification(
+    connection: &turso::Connection,
+    id: &str,
+    version: &str,
+) -> anyhow::Result<()> {
+    connection
+        .execute(
+            "INSERT INTO archive_verified_at(job_id,version,verified_ms) VALUES(?1,?2,?3)
+        ON CONFLICT(job_id) DO UPDATE SET version=excluded.version,verified_ms=excluded.verified_ms
+        WHERE archive_verified_at.version<>excluded.version",
+            turso::params![id, version, super::current_unix_time_ms()],
+        )
+        .await?;
+    Ok(())
 }
 
 async fn update_state(
