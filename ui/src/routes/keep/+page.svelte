@@ -2159,8 +2159,7 @@
 		context.drawImage(sample.frame, 0, 0);
 		clearStillPreview();
 		playheadMs =
-			Number(sample.presentationTimeNs / 1_000_000n) +
-			Number(sample.presentationTimeNs % 1_000_000n) / 1e6;
+			Number(sample.storedTimeNs / 1_000_000n) + Number(sample.storedTimeNs % 1_000_000n) / 1e6;
 	}
 
 	function stepRecordedPicture(direction: -1 | 1): void {
@@ -2189,7 +2188,14 @@
 		}
 		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest('[role="dialog"], dialog')) return;
-		if (target?.closest('[data-recorded-playback-controls]')) return;
+		if (
+			target?.closest('[data-recorded-playback-controls]') &&
+			!(
+				target.closest('[aria-keyshortcuts="ArrowLeft"], [aria-keyshortcuts="ArrowRight"]') &&
+				['ArrowLeft', 'ArrowRight', '[', ']'].includes(event.key)
+			)
+		)
+			return;
 		if (event.key.startsWith('Arrow') && target?.closest('[data-digital-pan-active]')) return;
 		const playerFocused = Boolean(target?.closest('[data-keep-player]'));
 		const key = event.key.toLowerCase();
@@ -2803,11 +2809,14 @@
 						onframe={storedPlayback?.canStepExactly && mode === 'timeline'
 							? stepRecordedPicture
 							: undefined}
-						frameDisabled={playing ||
+						frameDisabled={frames.unsupported ||
+							playing ||
 							scrubbing ||
 							(frames.displayedNs === undefined && !frames.selection)}
-						frameTimeNs={frames.selection?.presentationTimeNs}
-						frameNotice={frames.notice || (frames.busy ? 'Loading recorded picture…' : '')}
+						frameTimeNs={frames.selection?.storedTimeNs}
+						frameSourceTimeNs={frames.selection?.presentationTimeNs}
+						frameNotice={frames.notice}
+						frameLoading={frames.busy}
 						onoptions={mobilePortrait ? () => openMobilePanel('playback') : undefined}
 						{playing}
 						muted={playbackMuted}

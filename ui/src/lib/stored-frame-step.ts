@@ -10,6 +10,8 @@ const chunkBytes = 32 * 1_024;
 
 type Sample = { rank: number; randomAccess: boolean; bytes: Uint8Array<ArrayBuffer> };
 
+export class UnsupportedRecordedFrame extends Error {}
+
 export type PresentedStoredFrame = {
 	frame: VideoFrame;
 	sampleToken: Uint8Array;
@@ -137,6 +139,9 @@ export class StoredFrameWindow {
 		) {
 			throw new Error('The recorded picture belongs to another cursor.');
 		}
+		if (result.status === StoredFrameStepStatus.TIMING_UNAVAILABLE) {
+			throw new UnsupportedRecordedFrame(stepUnavailable(result.status));
+		}
 		if (result.status !== StoredFrameStepStatus.READY)
 			throw new Error(stepUnavailable(result.status));
 		const format = result.configuration?.format?.format;
@@ -239,7 +244,9 @@ async function decodePicture(
 		typeof VideoDecoder === 'undefined' ||
 		!(await awaitFrameOperation(VideoDecoder.isConfigSupported(config), signal)).supported
 	) {
-		throw new Error('This browser cannot decode exact pictures for this stream.');
+		throw new UnsupportedRecordedFrame(
+			'This browser cannot decode exact pictures for this stream.'
+		);
 	}
 	signal.throwIfAborted();
 	let selected: VideoFrame | undefined;

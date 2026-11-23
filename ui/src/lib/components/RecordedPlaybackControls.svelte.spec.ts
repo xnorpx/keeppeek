@@ -24,6 +24,32 @@ function props() {
 }
 
 describe('RecordedPlaybackControls', () => {
+	it('reads the selected timestamp only on request and preserves subsecond positioning', async () => {
+		const view = await render(RecordedPlaybackControls, {
+			props: {
+				...props(),
+				positionSeconds: 1.125,
+				frameTimeNs: 1_125_000_000n,
+				frameSourceTimeNs: 1_100_000_000n
+			}
+		});
+		const announced = page.getByRole('status', { name: 'Requested frame time' });
+		await expect.element(announced).toBeEmptyDOMElement();
+		expect(
+			(page.getByRole('slider', { name: 'Recording position' }).element() as HTMLInputElement)
+				.valueAsNumber
+		).toBe(1.125);
+		await userEvent.click(page.getByRole('button', { name: 'Read selected frame time' }));
+		await expect
+			.element(announced)
+			.toHaveTextContent('Recorded frame 1970-01-01T00:00:01.125000000Z');
+		await view.rerender({ frameTimeNs: 1_250_000_000n, frameLoading: true });
+		await expect.element(announced).toHaveTextContent('01.125000000Z');
+		await expect.element(page.getByText('Loading recorded picture…')).toBeVisible();
+		await userEvent.click(page.getByRole('button', { name: 'Read selected frame time' }));
+		await expect.element(announced).toHaveTextContent('01.250000000Z');
+	});
+
 	it('exposes independent, named transport commands and current playback time', async () => {
 		const actions = props();
 		const view = await render(RecordedPlaybackControls, { props: actions });

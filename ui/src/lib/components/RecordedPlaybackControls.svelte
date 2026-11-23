@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { Button } from './ui/button/index.js';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import StepBackIcon from '@lucide/svelte/icons/step-back';
@@ -34,7 +34,9 @@
 		onframe?: (direction: -1 | 1) => void;
 		frameDisabled?: boolean;
 		frameNotice?: string;
+		frameLoading?: boolean;
 		frameTimeNs?: bigint;
+		frameSourceTimeNs?: bigint;
 		onoptions?: () => void;
 	};
 
@@ -56,7 +58,9 @@
 		onframe,
 		frameDisabled = false,
 		frameNotice = '',
+		frameLoading = false,
 		frameTimeNs,
+		frameSourceTimeNs,
 		onoptions
 	}: Props = $props();
 	let fullscreen = $state(false);
@@ -73,6 +77,16 @@
 		};
 	});
 
+	let requestedAnnouncement = $state('');
+
+	async function readFrameTime(): Promise<void> {
+		const selected = frameTimeNs;
+		if (selected === undefined) return;
+		requestedAnnouncement = '';
+		await tick();
+		requestedAnnouncement = 'Recorded frame ' + preciseFrameTime(selected);
+	}
+
 	function preciseFrameTime(ns: bigint): string {
 		const fraction = ((ns % 1_000_000_000n) + 1_000_000_000n) % 1_000_000_000n;
 		const date = new Date(Number((ns - fraction) / 1_000_000n));
@@ -87,6 +101,22 @@
 		return hours > 0
 			? `${hours}:${String(minutes).padStart(2, '0')}:${remainder}`
 			: `${minutes}:${remainder}`;
+	}
+
+	function seekPositionKey(event: KeyboardEvent & { currentTarget: HTMLInputElement }) {
+		const input = event.currentTarget;
+		const horizontal = getComputedStyle(input).direction === 'rtl' ? -1 : 1;
+		const steps: Record<string, number> = {
+			ArrowRight: horizontal,
+			ArrowLeft: -horizontal,
+			ArrowUp: 1,
+			ArrowDown: -1
+		};
+		const step = steps[event.key];
+		if (!step || event.altKey || event.ctrlKey || event.metaKey) return;
+		event.preventDefault();
+		input.valueAsNumber = Math.min(duration, Math.max(0, input.valueAsNumber + step));
+		onseek(input.valueAsNumber);
 	}
 
 	async function toggleFullscreen() {
@@ -119,7 +149,7 @@
 			class="size-11"
 			disabled={disabled || frameDisabled}
 			aria-label={label}
-			title={frameDisabled ? 'Pause on a displayed picture to step frames' : label}
+			title={frameDisabled ? frameNotice || 'Pause on a displayed picture to step frames' : label}
 			aria-keyshortcuts={previous ? 'ArrowLeft' : 'ArrowRight'}
 			onclick={() => onframe?.(previous ? -1 : 1)}
 		>
@@ -236,12 +266,13 @@
 			aria-label="Recording position"
 			min="0"
 			max={duration}
-			step="1"
+			step="any"
 			value={Number.isFinite(positionSeconds)
 				? Math.min(duration, Math.max(0, positionSeconds))
 				: 0}
 			disabled={disabled || duration <= 0}
 			class="h-11 min-w-0 flex-1 accent-primary focus-visible:outline-2 focus-visible:outline-ring"
+			onkeydown={seekPositionKey}
 			onchange={(event) => onseek(Number(event.currentTarget.value))}
 		/>
 	</div>
@@ -252,11 +283,22 @@
 	{/if}
 	{#if frameTimeNs !== undefined}
 		<p class="font-mono text-xs tabular-nums">
-			Recorded frame <time datetime={preciseFrameTime(frameTimeNs)}
+			Recorded frame <time data-frame-recording-time datetime={preciseFrameTime(frameTimeNs)}
 				>{preciseFrameTime(frameTimeNs)}</time
 			>
+			{#if frameSourceTimeNs !== undefined && frameSourceTimeNs !== frameTimeNs}
+				· Source presentation <time
+					data-frame-source-time
+					datetime={preciseFrameTime(frameSourceTimeNs)}>{preciseFrameTime(frameSourceTimeNs)}</time
+				>
+			{/if}
 		</p>
+		<Button variant="outline" class="h-11" onclick={readFrameTime}>Read selected frame time</Button>
+		<span role="status" aria-label="Requested frame time" class="sr-only"
+			>{requestedAnnouncement}</span
+		>
 	{/if}
+	{#if frameLoading}<p class="text-xs text-muted-foreground">Loading recorded picture…</p>{/if}
 	{#if frameNotice}<p role="status" class="text-xs text-muted-foreground">{frameNotice}</p>{/if}
 	{#if fullscreenError}<p role="alert" class="text-xs text-destructive">{fullscreenError}</p>{/if}
 </div>

@@ -1,5 +1,5 @@
 import type { StoredMediaPlayback } from './control-client';
-import type { PresentedStoredFrame } from './stored-frame-step';
+import { UnsupportedRecordedFrame, type PresentedStoredFrame } from './stored-frame-step';
 
 type Direction = -1 | 1;
 type Selection = Omit<PresentedStoredFrame, 'frame'>;
@@ -12,6 +12,7 @@ export class RecordedFramePlayer {
 	selection = $state.raw<Selection>();
 	busy = $state(false);
 	notice = $state('');
+	unsupported = $state(false);
 	displayedNs = $state<bigint>();
 	private active?: AbortController;
 	private pendingSteps = 0;
@@ -24,6 +25,7 @@ export class RecordedFramePlayer {
 		this.displayedNs = undefined;
 		this.busy = false;
 		this.notice = '';
+		this.unsupported = false;
 	}
 
 	follow(video: HTMLVideoElement, cursor: Cursor): () => void {
@@ -60,7 +62,12 @@ export class RecordedFramePlayer {
 		cursor: Cursor,
 		present: (sample: PresentedStoredFrame) => void
 	): Promise<void> {
-		if (!cursor.canStepExactly || (!this.selection && this.displayedNs === undefined)) return;
+		if (
+			this.unsupported ||
+			!cursor.canStepExactly ||
+			(!this.selection && this.displayedNs === undefined)
+		)
+			return;
 		this.pendingSteps = Math.max(-32, Math.min(32, this.pendingSteps + direction));
 		if (this.active) return;
 		const active = new AbortController();
@@ -84,9 +91,11 @@ export class RecordedFramePlayer {
 				}
 			}
 		} catch (cause) {
-			if (!active.signal.aborted)
+			if (!active.signal.aborted) {
+				this.unsupported = cause instanceof UnsupportedRecordedFrame;
 				this.notice =
 					cause instanceof Error ? cause.message : 'The recorder could not step this picture.';
+			}
 		} finally {
 			if (this.active === active) {
 				this.pendingSteps = 0;

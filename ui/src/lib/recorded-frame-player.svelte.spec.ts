@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import { RecordedFramePlayer } from './recorded-frame-player.svelte';
-import type { PresentedStoredFrame } from './stored-frame-step';
+import { UnsupportedRecordedFrame, type PresentedStoredFrame } from './stored-frame-step';
 
 function picture(ordinal: number): PresentedStoredFrame {
 	const canvas = document.createElement('canvas');
@@ -101,4 +101,30 @@ test('a seek drops pending keys and closes a late decoder output', async () => {
 	expect(player.selection).toBeUndefined();
 	expect(player.displayedNs).toBeUndefined();
 	expect(player.busy).toBe(false);
+});
+
+test('unavailable source timing disables further exact steps until the cursor changes', async () => {
+	const player = new RecordedFramePlayer();
+	player.displayedNs = 0n;
+	let attempts = 0;
+	const cursor = {
+		canStepExactly: true,
+		anchorTimeMs: 0,
+		url: 'legacy',
+		async stepRecordedFrame() {
+			attempts++;
+			throw new UnsupportedRecordedFrame(
+				'Original picture timing is unavailable for this recording.'
+			);
+		}
+	};
+	await player.step(1, cursor, () => {
+		throw new Error('An unavailable picture was presented');
+	});
+	expect(player.unsupported).toBe(true);
+	expect(player.notice).toContain('Original picture timing');
+	await player.step(-1, cursor, () => {});
+	expect(attempts).toBe(1);
+	player.clear();
+	expect(player.unsupported).toBe(false);
 });

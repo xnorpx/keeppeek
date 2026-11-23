@@ -39,7 +39,19 @@ function observePicture(element: Element, expected: number | null) {
 	});
 }
 
-for (const fixture of ['cfr', 'vfr', 'duplicate-pts']) {
+const schedules = {
+	cfr: [0, 40, 80, 120, 160, 200, 240, 280, 320, 360, 400, 440],
+	vfr: [0, 40, 80, 200, 240, 280, 400, 440, 480, 600, 640, 680],
+	'duplicate-pts': [0, 40, 40, 200, 240, 280, 400, 440, 480, 600, 640, 640]
+} as const;
+
+function timestampMs(time: string): number {
+	const fields = /^(.*)\.(\d{9})Z$/.exec(time);
+	if (!fields) throw new Error('The visible picture needs a nanosecond timestamp');
+	return Date.parse(fields[1] + 'Z') + Number(fields[2]) / 1e6;
+}
+
+for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 	test(`steps recorded ${fixture} RTSP pictures in display order in both directions`, async ({
 		page,
 		context,
@@ -94,6 +106,24 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts']) {
 			const selected = region.locator('canvas[aria-label="Selected recorded picture"]');
 			await expect(next).toBeEnabled();
 			const measurements = [];
+			const bounds = { start: 0, end: 0 };
+			let lastTime: number | undefined;
+			let lastId = -1;
+			const timeline = page.locator('[data-recording-timeline-playhead-ms]:visible').first();
+			const clock = region.locator('time[data-frame-recording-time]');
+			for (const [button, key] of [
+				[next, 'ArrowRight'],
+				[previous, 'ArrowLeft']
+			] as const) {
+				await expect(button).toHaveAttribute('aria-keyshortcuts', key);
+				const box = await button.boundingBox();
+				expect(box?.width).toBeGreaterThanOrEqual(44);
+				expect(box?.height).toBeGreaterThanOrEqual(44);
+			}
+			await region.getByRole('button', { name: 'Digital zoom in', exact: true }).click();
+			const zoom = region.getByRole('meter', { name: 'Digital zoom level' });
+			const level = await zoom.getAttribute('aria-valuenow');
+			expect(Number(level)).toBeGreaterThan(1);
 			let { id } = await video.evaluate(observePicture, null);
 			for (const direction of [...Array<number>(12).fill(1), ...Array<number>(12).fill(-1)]) {
 				const button = direction > 0 ? next : previous;
@@ -110,10 +140,83 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts']) {
 					button.click()
 				]);
 				expect(presented.id).toBe(id);
-				measurements.push({ direction, picture: id, elapsedMs: presented.elapsedMs });
+				const absoluteMs = timestampMs((await clock.getAttribute('datetime'))!);
+				const sourceClock = region.locator('time[data-frame-source-time]');
+				const sourceMs = (await sourceClock.count())
+					? timestampMs((await sourceClock.getAttribute('datetime'))!)
+					: absoluteMs;
+				const recorded = Number(await region.getAttribute('data-recording-playhead-ms'));
+				expect(Math.abs(recorded - absoluteMs)).toBeLessThan(0.001);
+				await expect
+					.poll(async () =>
+						Number(await timeline.getAttribute('data-recording-timeline-playhead-ms'))
+					)
+					.toBe(recorded);
+				if (lastTime !== undefined && Math.abs(lastId - id) === 1) {
+					const delta = schedules[fixture][id] - schedules[fixture][lastId];
+					expect(Math.abs(sourceMs - lastTime - delta)).toBeLessThan(0.03);
+				}
+				if (direction === 1 && measurements.length === 1) {
+					await button.press('[');
+					bounds.start = recorded;
+				}
+				if (direction === 1 && measurements.length === 10) {
+					await button.press(']');
+					bounds.end = recorded;
+				}
+				measurements.push({ direction, picture: id, elapsedMs: presented.elapsedMs, absoluteMs });
+				lastTime = sourceMs;
+				lastId = id;
+			}
+			await expect(zoom).toHaveAttribute('aria-valuenow', level!);
+			await next.focus();
+			const extra = (id + 1) % 12;
+			await Promise.all([selected.evaluate(observePicture, extra), next.press('ArrowRight')]);
+			await expect(next).toBeFocused();
+
+			const handoff = video.evaluate((element) => {
+				if (!(element instanceof HTMLVideoElement)) throw new Error('Missing resumed video');
+				return new Promise<{ picture: number; mediaTime: number }>((resolve, reject) => {
+					const timer = setTimeout(() => reject(new Error('No decoded resume picture')), 5000);
+					element.addEventListener(
+						'seeking',
+						() => {
+							element.requestVideoFrameCallback((_now, metadata) => {
+								const canvas = document.createElement('canvas');
+								canvas.width = 64;
+								canvas.height = 32;
+								const ctx = canvas.getContext('2d')!;
+								ctx.drawImage(element, 0, 0, 64, 32);
+								let picture = 0;
+								for (let bit = 0; bit < 4; bit++) {
+									if (ctx.getImageData(8 + 16 * bit, 16, 1, 1).data[0] > 128) picture |= 1 << bit;
+								}
+								clearTimeout(timer);
+								resolve({ picture, mediaTime: metadata.mediaTime });
+							});
+						},
+						{ once: true }
+					);
+				});
+			});
+			await region.getByRole('button', { name: 'Play recording', exact: true }).click();
+			const resumed = await handoff;
+			expect(resumed.picture).toBe(extra);
+			await expect(selected).toBeHidden();
+			await expect(video).toHaveJSProperty('paused', false);
+			await page.getByRole('button', { name: 'Export', exact: true }).click();
+			const panel = page.locator('[data-keep-export]');
+			await expect(panel).toHaveAttribute('data-export-start-ms', String(bounds.start));
+			await expect(panel).toHaveAttribute('data-export-end-ms', String(bounds.end));
+			for (const [label, value] of [
+				['FROM', bounds.start],
+				['TO', bounds.end]
+			] as const) {
+				const actual = await panel.getByLabel(label, { exact: true }).inputValue();
+				expect(Date.parse('1970-01-01T' + actual + 'Z')).toBe(Math.floor(value) % 86_400_000);
 			}
 			await testInfo.attach('input-to-recorded-picture', {
-				body: JSON.stringify({ fixture, measurements }),
+				body: JSON.stringify({ fixture, measurements, bounds, resumed }),
 				contentType: 'application/json'
 			});
 		} finally {

@@ -355,7 +355,8 @@
 		aria-label="Recording timeline scrubber"
 		aria-valuemin={dayStartMs}
 		aria-valuemax={timelineEndMs}
-		aria-valuenow={Math.round(markerTimestampMs)}
+		aria-valuenow={markerTimestampMs}
+		data-recording-timeline-playhead-ms={markerTimestampMs}
 		aria-valuetext={`${formatTime(markerTimestampMs)} UTC`}
 		onscroll={(event) => syncViewport(event.currentTarget)}
 		onpointerdown={beginDrag}
