@@ -30,7 +30,9 @@ use sysinfo::{ProcessesToUpdate, System};
 const CAMERAS: u8 = 127;
 const PAIRS: usize = 30;
 const TICK: Duration = Duration::from_millis(40);
-const WARMUP_SECONDS: u64 = 2;
+const REPORT_PERIOD: Duration = Duration::from_secs(10);
+// Give every staggered source a full reporting period before measuring.
+const WARMUP_SECONDS: u64 = REPORT_PERIOD.as_secs();
 const MEASURE_SECONDS_DEFAULT: u64 = 40;
 const MEASURE_SECONDS_ENV: &str = "KEEPPEEK_TUI_BENCHMARK_MEASURE_SECONDS";
 const CHILD_MODE: &str = "KEEPPEEK_TUI_BENCHMARK_CHILD";
@@ -234,6 +236,7 @@ fn ingress_samples(
     // Measure complete ten-second reporting periods to avoid favoring either condition.
     let ticks_per_second = 1_000 / TICK.as_millis();
     let warmup_ticks = usize::try_from(u128::from(WARMUP_SECONDS) * ticks_per_second).unwrap();
+    let report_ticks = usize::try_from(REPORT_PERIOD.as_millis() / TICK.as_millis()).unwrap();
     let measured_ticks = usize::try_from(u128::from(measure_seconds) * ticks_per_second).unwrap();
     let mut ingress_batch_ns = Vec::with_capacity(measured_ticks);
     let mut cpu_start = 0;
@@ -248,7 +251,7 @@ fn ingress_samples(
         let begin = Instant::now();
         for (i, source) in sources.iter_mut().enumerate() {
             source.receive(tick + 1);
-            if (tick + i).is_multiple_of(250) {
+            if (tick + i).is_multiple_of(report_ticks) {
                 source.publish(registry);
             }
         }
