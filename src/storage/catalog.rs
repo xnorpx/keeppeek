@@ -35,6 +35,7 @@ pub(crate) mod authority;
 mod event_write;
 pub mod locations;
 pub mod maintenance;
+mod native_close;
 pub(crate) mod readers;
 pub(crate) mod relocation;
 pub mod retention;
@@ -4779,10 +4780,7 @@ async fn close_native_events(
     }
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
-        let mut committed = Vec::with_capacity(endings.len());
-        for (id, end_time_ms) in endings {
-            committed.push(close_native_event(connection, id, *end_time_ms).await?);
-        }
+        let committed = native_close::apply(connection, endings).await?;
         connection.execute_batch("COMMIT").await?;
         Ok::<_, anyhow::Error>(committed)
     }
@@ -4791,26 +4789,6 @@ async fn close_native_events(
         let _ = connection.execute_batch("ROLLBACK").await;
     }
     result
-}
-
-async fn close_native_event(
-    connection: &turso::Connection,
-    id: &str,
-    end_time_ms: i64,
-) -> anyhow::Result<Option<TimelineEvent>> {
-    let Some(mut event) = event_by_id(connection, id).await? else {
-        return Ok(None);
-    };
-    if event.end_time_ms.is_some() {
-        return Ok(None);
-    }
-    event.revision = event
-        .revision
-        .checked_add(1)
-        .ok_or_else(|| anyhow::anyhow!("event revision exceeded its limit"))?;
-    close_event_in_transaction(connection, id, end_time_ms).await?;
-    event.end_time_ms = Some(end_time_ms);
-    Ok(Some(event))
 }
 
 async fn attach_event_thumbnail(
@@ -5078,19 +5056,19 @@ async fn events_in_range(
     Ok(events)
 }
 
+const EVENT_DETAIL_COLUMNS: &str = "id, camera_id, stream, source, kind, start_time_ms,
+                    end_time_ms, confidence, bbox_json, zone, thumbnail_filename,
+                    revision, bbox_attachment_id, attachments_json,
+                    canonical_attachment_id, icon_key, rejected_icon_key,
+                    text, payload_json";
+
 async fn event_by_id(
     connection: &turso::Connection,
     id: &str,
 ) -> anyhow::Result<Option<TimelineEvent>> {
     let mut rows = connection
         .query(
-            "SELECT id, camera_id, stream, source, kind, start_time_ms,
-                    end_time_ms, confidence, bbox_json, zone, thumbnail_filename,
-                    revision, bbox_attachment_id, attachments_json,
-                    canonical_attachment_id, icon_key, rejected_icon_key,
-                    text, payload_json
-             FROM recording_events
-             WHERE id = ?1",
+            format!("SELECT {EVENT_DETAIL_COLUMNS} FROM recording_events WHERE id = ?1"),
             turso::params![id],
         )
         .await?;
