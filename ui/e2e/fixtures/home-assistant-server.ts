@@ -389,7 +389,15 @@ async function seedComparisonStreams(
 	configPath: string,
 	sourceIds: readonly string[]
 ) {
+	// The four-camera case starts just before the same UTC boundary on every run.
+	const reviewBoundary = Math.floor(Date.now() / 60_000) * 60_000 - 120_000;
 	for (const [index, id] of sourceIds.entries()) {
+		const ageSeconds =
+			sourceIds.length === 4
+				? Math.round((Date.now() - reviewBoundary) / 1_000) + (index === 1 ? 5 : 15)
+				: index === 1
+					? 110
+					: 120;
 		await promisify(execFile)(
 			binary,
 			[
@@ -403,7 +411,7 @@ async function seedComparisonStreams(
 				'--duration-seconds',
 				'40',
 				'--age-seconds',
-				String(index === 1 ? 110 : 120)
+				String(ageSeconds)
 			],
 			{
 				cwd: directory,
