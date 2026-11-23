@@ -173,7 +173,7 @@ impl KeepPeekLoop {
 
     pub(super) fn drain_retired_native_events_until(
         &mut self,
-        expired: impl Fn() -> bool,
+        mut expired: impl FnMut() -> bool,
     ) -> usize {
         let mut remaining = self.native_commits.retired_count();
         let attempts_max = remaining;
@@ -183,7 +183,7 @@ impl KeepPeekLoop {
                 break;
             }
             let completed = self.close_retired_native_events_until(|| {
-                deadline_reached = expired();
+                deadline_reached = deadline_reached || expired();
                 deadline_reached
             });
             if completed == 0 {
