@@ -9,7 +9,7 @@
 	import EventDetailDrawer from '$lib/components/EventDetailDrawer.svelte';
 	import EventWorkflowNotice from '$lib/components/EventWorkflowNotice.svelte';
 	import FocusedMediaViewport from '$lib/components/FocusedMediaViewport.svelte';
-	import { RecordedFramePlayer } from '$lib/recorded-frame-player.svelte';
+	import { RecordedFramePlayer, type ResumePicture } from '$lib/recorded-frame-player.svelte';
 	import type { PresentedStoredFrame } from '$lib/stored-frame-step';
 	import RecordedPlaybackControls from '$lib/components/RecordedPlaybackControls.svelte';
 	import StoredPlaybackNotice from '$lib/components/StoredPlaybackNotice.svelte';
@@ -133,6 +133,24 @@
 	let playbackUrl: string | null = $state(null);
 	const frames = new RecordedFramePlayer();
 	let frameCanvas = $state<HTMLCanvasElement | null>(null);
+	type ColdPicture = {
+		picture: ResumePicture;
+		canvas: HTMLCanvasElement;
+		camera: string;
+		stream: string;
+	};
+	let coldPicture = $state.raw<ColdPicture>();
+	let frameResume = $state.raw<AbortController>();
+	let selectedPicture = $derived(coldPicture?.picture ?? frames.selection);
+	$effect(() => {
+		const retained = coldPicture;
+		const canvas = frameCanvas;
+		if (!retained || !canvas || canvas === retained.canvas) return;
+		canvas.width = retained.canvas.width;
+		canvas.height = retained.canvas.height;
+		canvas.getContext('2d')?.drawImage(retained.canvas, 0, 0);
+	});
+
 	let playbackAnchorMs = 0;
 	let playbackVersion = 0;
 	let playbackSourceCommitVersion: number | null = null;
@@ -495,6 +513,7 @@
 	});
 
 	async function initialize(search = window.location.search): Promise<void> {
+		cancelFrameResume();
 		selectedWorkflowEvent = null;
 		const version = ++routeVersion;
 		appliedSearch = search;
@@ -1166,6 +1185,7 @@
 	}
 
 	function beginTimelineScrub(timestampMs: number): void {
+		cancelFrameResume();
 		scrubVersion += 1;
 		scrubOpenController?.abort();
 		clearPlaybackStartupTimer();
@@ -1547,6 +1567,7 @@
 		const play = playbackIntent();
 		beginCameraSwitch(direction);
 		timelineRepository.deactivate();
+		cancelFrameResume();
 		cameraId = nextCameraId;
 		void loadRecordings(selectedDate || undefined, timestampMs, play, null, {
 			exactMoment: timestampMs !== undefined
@@ -1572,6 +1593,7 @@
 
 	function switchMode(nextMode: KeepMode): void {
 		if (nextMode === mode) return;
+		cancelFrameResume();
 		mode = nextMode;
 		updateUrl();
 	}
@@ -1677,7 +1699,13 @@
 		} else retryPlaybackTarget = null;
 	}
 
-	async function selectSegment(segment: RecordingSegment | null, offsetSeconds = 0, play = false) {
+	async function selectSegment(
+		segment: RecordingSegment | null,
+		offsetSeconds = 0,
+		play = false,
+		retainForResume = false
+	) {
+		if (!retainForResume) cancelFrameResume();
 		frames.clear();
 		rememberPlaybackTarget(segment, offsetSeconds, play);
 		if (!segment) {
@@ -1870,6 +1898,7 @@
 	}
 
 	async function closeStoredPlayback() {
+		cancelFrameResume();
 		const playback = storedPlayback;
 		playbackOpenController?.abort();
 		playbackOpenController = null;
@@ -1968,6 +1997,7 @@
 	}
 
 	function seekToTimestamp(timestampMs: number, play = true) {
+		cancelFrameResume();
 		showNearestCachedPreview(timestampMs);
 		if (recordingCoverage.some((range) => timestampInRange(timestampMs, range))) {
 			targetLoadVersion += 1;
@@ -2097,14 +2127,96 @@
 		storedPlayback?.setPlaybackRate(speed);
 	}
 
+	function cancelFrameResume(): void {
+		frameResume?.abort();
+		frameResume = undefined;
+		coldPicture = undefined;
+	}
+
+	async function resumeColdPicture(retained: ColdPicture, timestampMs: number): Promise<void> {
+		if (frameResume) return;
+		coldPicture = retained;
+		const target = exactRecordingTarget(timestampMs);
+		const controller = new AbortController();
+		const route = routeVersion;
+		const failure =
+			'Playback could not resume on this recorded picture. Select another playback position.';
+		frameResume = controller;
+		const current = () =>
+			!controller.signal.aborted &&
+			routeVersion === route &&
+			cameraId === retained.camera &&
+			mode === 'timeline' &&
+			!scrubbing;
+		try {
+			if (target && target.segment.stream === retained.stream) {
+				const opening = selectSegment(target.segment, target.offsetSeconds, false, true);
+				const version = playbackVersion;
+				await opening;
+				const cursor = storedPlayback;
+				const element = video;
+				const ownsSource = () =>
+					current() &&
+					version === playbackVersion &&
+					cursor === storedPlayback &&
+					element === video;
+				if (!ownsSource()) return;
+				if (
+					cursor &&
+					element &&
+					cursor.canStepExactly &&
+					cursor.sourceId === retained.camera &&
+					cursor.streamId === retained.stream &&
+					!playerError
+				) {
+					const aligned = await frames.alignForPlay(element, cursor, {
+						picture: retained.picture,
+						signal: controller.signal,
+						verified() {
+							if (!ownsSource()) return false;
+							coldPicture = undefined;
+							return true;
+						}
+					});
+					if (!ownsSource()) return;
+					if (aligned) {
+						frameResume = undefined;
+						setPlaying(true);
+						return;
+					}
+				}
+			}
+			if (current())
+				frames.notice =
+					'Playback could not resume on this recorded picture. Select another playback position.';
+		} catch {
+			if (current()) frames.notice = failure;
+		} finally {
+			if (frameResume === controller) frameResume = undefined;
+		}
+	}
+
 	function setPlaying(nextPlaying: boolean): void {
-		if (nextPlaying && frames.selection) {
-			const precise = frames.selection.storedTimeNs;
+		if (!nextPlaying) cancelFrameResume();
+		if (nextPlaying && frameResume) return;
+		const selection = selectedPicture;
+		if (nextPlaying && selection) {
+			const precise = selection.storedTimeNs;
 			const cursor = storedPlayback;
 			const storedMs = Number(precise / 1_000_000n) + Number(precise % 1_000_000n) / 1e6;
 			if (!cursor || !video) return;
-			if (!cursor.canSeekLocally(storedMs)) {
-				seekToTimestamp(storedMs, true);
+			if (coldPicture || !cursor.canSeekLocally(storedMs)) {
+				if (!frameCanvas) return;
+				const { storedTimeNs, presentationTimeNs, resumeTimesNs } = selection;
+				void resumeColdPicture(
+					coldPicture ?? {
+						picture: { storedTimeNs, presentationTimeNs, resumeTimesNs },
+						canvas: frameCanvas,
+						camera: cameraId,
+						stream: cursor.streamId
+					},
+					storedMs
+				);
 				return;
 			}
 			const element = video;
@@ -2168,7 +2280,16 @@
 	}
 
 	function stepRecordedPicture(direction: -1 | 1): void {
-		if (mode !== 'timeline' || playing || !video?.paused || scrubbing || !storedPlayback) return;
+		if (
+			mode !== 'timeline' ||
+			playing ||
+			!video?.paused ||
+			scrubbing ||
+			coldPicture ||
+			frameResume ||
+			!storedPlayback
+		)
+			return;
 		void frames.step(direction, storedPlayback, presentSteppedFrame);
 	}
 
@@ -2264,7 +2385,7 @@
 	}
 
 	function updatePlayhead() {
-		if (frames.selection) return;
+		if (selectedPicture) return;
 		if (!video || !selected || playbackSourceCommitVersion !== null) return;
 		playheadMs = playbackAnchorMs + video.currentTime * 1_000;
 		storedPlayback?.observe(video.currentTime);
@@ -2753,7 +2874,7 @@
 									{#if storedPlayback?.canStepExactly}
 										<canvas
 											bind:this={frameCanvas}
-											hidden={!frames.selection}
+											hidden={!selectedPicture}
 											aria-label="Selected recorded picture"
 											class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
 										></canvas>
@@ -2824,14 +2945,15 @@
 						onframe={storedPlayback?.canStepExactly && mode === 'timeline'
 							? stepRecordedPicture
 							: undefined}
-						frameDisabled={frames.unsupported ||
+						frameDisabled={Boolean(coldPicture || frameResume) ||
+							frames.unsupported ||
 							playing ||
 							scrubbing ||
 							(frames.displayedNs === undefined && !frames.selection)}
-						frameTimeNs={frames.selection?.storedTimeNs}
-						frameSourceTimeNs={frames.selection?.presentationTimeNs}
+						frameTimeNs={selectedPicture?.storedTimeNs}
+						frameSourceTimeNs={selectedPicture?.presentationTimeNs}
 						frameNotice={frames.notice}
-						frameLoading={frames.busy}
+						frameLoading={frames.busy || Boolean(frameResume)}
 						onoptions={mobilePortrait ? () => openMobilePanel('playback') : undefined}
 						{playing}
 						muted={playbackMuted}

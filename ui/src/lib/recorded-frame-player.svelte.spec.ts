@@ -269,3 +269,55 @@ test('probes recorded GOP intervals and exposes only the matching paused picture
 	expect(player.selection).toBeDefined();
 	expect(player.notice).toContain('could not resume');
 });
+
+test('a retained cold picture waits for the replacement source and verifies before the canvas is removed', async () => {
+	const fixture = observedVideo();
+	const player = new RecordedFramePlayer();
+	const cursor = {
+		url: 'blob:replacement',
+		anchorTimeMs: 0,
+		canStepExactly: true,
+		stepRecordedFrame: () => Promise.resolve(picture(1))
+	};
+	let ready = false;
+	Object.defineProperty(fixture.video, 'readyState', {
+		get: () => (ready ? HTMLMediaElement.HAVE_CURRENT_DATA : HTMLMediaElement.HAVE_NOTHING)
+	});
+	const retained = {
+		storedTimeNs: 41_000_000n,
+		presentationTimeNs: 40_000_000n,
+		resumeTimesNs: [41_001_000n]
+	};
+	let hidden = 0;
+	const controller = new AbortController();
+	const align = player.alignForPlay(fixture.video, cursor, {
+		picture: retained,
+		signal: controller.signal,
+		verified: () => {
+			hidden++;
+			return true;
+		}
+	});
+	expect(hidden).toBe(0);
+	fixture.replace();
+	ready = true;
+	fixture.video.dispatchEvent(new Event('loadeddata'));
+	await Promise.resolve();
+	fixture.callback()(0.041);
+	expect(await align).toBe(true);
+	expect(hidden).toBe(1);
+	expect(player.selection).toBeUndefined();
+	ready = false;
+	const abandoned = player.alignForPlay(fixture.video, cursor, {
+		picture: retained,
+		signal: controller.signal,
+		verified: () => {
+			hidden++;
+			return true;
+		}
+	});
+	controller.abort();
+	fixture.video.dispatchEvent(new Event('loadeddata'));
+	expect(await abandoned).toBe(false);
+	expect(hidden).toBe(1);
+});

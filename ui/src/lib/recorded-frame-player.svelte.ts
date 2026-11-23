@@ -3,6 +3,40 @@ import { UnsupportedRecordedFrame, type PresentedStoredFrame } from './stored-fr
 
 type Direction = -1 | 1;
 type Selection = Omit<PresentedStoredFrame, 'frame'>;
+export type ResumePicture = Pick<
+	Selection,
+	'storedTimeNs' | 'presentationTimeNs' | 'resumeTimesNs'
+>;
+
+type RetainedPicture = {
+	picture: ResumePicture;
+	signal: AbortSignal;
+	verified: () => boolean;
+};
+
+function pausedSourceReady(video: HTMLVideoElement, url: string, signal: AbortSignal) {
+	const ready = () =>
+		video.currentSrc === url && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+	if (signal.aborted) return Promise.resolve(false);
+	if (ready()) return Promise.resolve(true);
+	return new Promise<boolean>((resolve) => {
+		const finish = (result: boolean) => {
+			clearTimeout(timer);
+			video.removeEventListener('loadeddata', loaded);
+			video.removeEventListener('error', failed);
+			signal.removeEventListener('abort', failed);
+			resolve(result);
+		};
+		const failed = () => finish(false);
+		const loaded = () => {
+			if (ready()) finish(true);
+		};
+		const timer = setTimeout(failed, 10_000);
+		video.addEventListener('loadeddata', loaded);
+		video.addEventListener('error', failed);
+		signal.addEventListener('abort', failed, { once: true });
+	});
+}
 type Cursor = Pick<
 	StoredMediaPlayback,
 	'anchorTimeMs' | 'url' | 'canStepExactly' | 'stepRecordedFrame'
@@ -132,16 +166,32 @@ export class RecordedFramePlayer {
 		};
 	}
 
-	async alignForPlay(video: HTMLVideoElement, cursor: Cursor): Promise<boolean> {
-		const sample = this.selection;
-		if (!sample || this.handoff || !video.paused || video.currentSrc !== cursor.url) return false;
+	async alignForPlay(
+		video: HTMLVideoElement,
+		cursor: Cursor,
+		retained?: RetainedPicture
+	): Promise<boolean> {
+		const sample = retained?.picture ?? this.selection;
 		const url = cursor.url;
+		if (retained && !(await pausedSourceReady(video, url, retained.signal))) return false;
+		const ownsPicture = () => (retained ? !retained.signal.aborted : this.selection === sample);
+		if (
+			!sample ||
+			!ownsPicture() ||
+			this.handoff ||
+			!video.paused ||
+			video.currentSrc !== url ||
+			cursor.url !== url
+		)
+			return false;
 		const origin = BigInt(cursor.anchorTimeMs) * 1_000_000n;
 		const relativeUs = (ns: bigint) => Math.round(Number(ns - origin) / 1_000);
 		const targetUs = relativeUs(sample.storedTimeNs);
 		const coordinates = sample.resumeTimesNs ?? [sample.storedTimeNs + 1_000n];
 		const controller = new AbortController();
 		this.handoff = controller;
+		const cancel = () => controller.abort();
+		retained?.signal.addEventListener('abort', cancel, { once: true });
 		this.active?.abort();
 		this.pendingSteps = 0;
 		this.notice = '';
@@ -152,7 +202,7 @@ export class RecordedFramePlayer {
 				if (
 					remaining <= 0 ||
 					controller.signal.aborted ||
-					this.selection !== sample ||
+					!ownsPicture() ||
 					video.currentSrc !== url ||
 					cursor.url !== url ||
 					!video.paused
@@ -168,13 +218,9 @@ export class RecordedFramePlayer {
 					controller.signal,
 					Math.min(remaining, coordinates.length === 1 ? 5_000 : 350)
 				);
-				if (
-					displayed &&
-					!controller.signal.aborted &&
-					this.selection === sample &&
-					cursor.url === url
-				) {
+				if (displayed && !controller.signal.aborted && ownsPicture() && cursor.url === url) {
 					this.displayedNs = sample.storedTimeNs;
+					if (retained && !retained.verified()) return false;
 					this.selection = undefined;
 					// Let the verified paused video replace the canvas before Play can advance it.
 					await new Promise<void>((resolve) =>
@@ -188,11 +234,12 @@ export class RecordedFramePlayer {
 					);
 				}
 			}
-			if (!controller.signal.aborted && this.selection === sample)
+			if (!controller.signal.aborted && ownsPicture())
 				this.notice =
 					'Playback could not resume on this recorded picture. Select another playback position.';
 			return false;
 		} finally {
+			retained?.signal.removeEventListener('abort', cancel);
 			if (this.handoff === controller) this.handoff = undefined;
 		}
 	}
