@@ -1881,35 +1881,37 @@
 	): Promise<void> {
 		const playback = storedPlayback;
 		if (!playback) return;
-		const canSeekLocally = !audioPreviewBusy && playback.canSeekLocally(requestedTimestampMs);
+		const canSeekLocally =
+			!audioPreviewBusy &&
+			playbackSourceCommitVersion !== playbackVersion &&
+			playback.url === playbackUrl &&
+			playback.canSeekLocally(requestedTimestampMs);
 		const version = canSeekLocally ? playbackVersion : ++playbackVersion;
 		selected = segment;
 		pendingPlay = play;
 		playing = play;
 		playheadMs = requestedTimestampMs;
 		pendingSeekSeconds = Math.max(0, (requestedTimestampMs - playbackAnchorMs) / 1_000);
-		if (!canSeekLocally) {
-			coldSeekTimestampMs = requestedTimestampMs;
-			coldSeekElapsedMs = 0;
-			coldSeekStartedAt = performance.now();
-			try {
-				await playback.seek(requestedTimestampMs);
-			} catch (cause) {
-				if (version !== playbackVersion || playback !== storedPlayback) return;
-				clearColdSeek();
-				playerError = storedPlaybackError(cause);
-				return;
-			}
-			if (version !== playbackVersion || playback !== storedPlayback) return;
-			playbackSourceCommitVersion = version;
-			playbackUrl = playback.url;
-			playbackAnchorMs = playback.anchorTimeMs;
-			pendingSeekSeconds = playback.initialOffsetSeconds;
-		}
 		try {
+			if (!canSeekLocally) {
+				playbackSourceCommitVersion = version;
+				coldSeekTimestampMs = requestedTimestampMs;
+				coldSeekElapsedMs = 0;
+				coldSeekStartedAt = performance.now();
+				await playback.seek(requestedTimestampMs);
+				if (version !== playbackVersion || playback !== storedPlayback) return;
+				playbackUrl = playback.url;
+				playbackAnchorMs = playback.anchorTimeMs;
+				pendingSeekSeconds = playback.initialOffsetSeconds;
+			}
 			await tick();
 			if (version !== playbackVersion || playback !== storedPlayback) return;
+			playbackSourceCommitVersion = null;
 			applyPendingSeek();
+		} catch (cause) {
+			if (version !== playbackVersion || playback !== storedPlayback) return;
+			clearColdSeek();
+			playerError = storedPlaybackError(cause);
 		} finally {
 			if (playbackSourceCommitVersion === version) playbackSourceCommitVersion = null;
 		}
@@ -1958,6 +1960,7 @@
 				pendingSeekSeconds = playback.initialOffsetSeconds;
 				await tick();
 				if (version === playbackVersion && playback === storedPlayback) {
+					playbackSourceCommitVersion = null;
 					applyPendingSeek();
 					observePlaybackStartup(playback, version, segment, timestampMs);
 				}
@@ -2224,7 +2227,13 @@
 	}
 
 	function applyPendingSeek() {
-		if (!video || !selected) return;
+		if (
+			playbackSourceCommitVersion === playbackVersion ||
+			!video ||
+			!selected ||
+			video.getAttribute('src') !== playbackUrl
+		)
+			return;
 		video.playbackRate = playbackRate;
 		video.muted = scrubbing || playbackMuted;
 		const requestedTime = Math.max(
