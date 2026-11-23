@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn tfhd_flags(multiple_descriptions: bool) -> u32 {
+pub(super) const fn tfhd_flags(multiple_descriptions: bool) -> u32 {
     let flags = TfhdBox::FLAG_DEFAULT_BASE_IS_MOOF
         | TfhdBox::FLAG_DEFAULT_SAMPLE_DURATION
         | TfhdBox::FLAG_DEFAULT_SAMPLE_SIZE
@@ -14,7 +14,7 @@ pub(super) fn tfhd_flags(multiple_descriptions: bool) -> u32 {
     }
 }
 
-pub(super) fn trun_flags(has_offsets: bool) -> u32 {
+pub(super) const fn trun_flags(has_offsets: bool) -> u32 {
     let flags = TrunBox::FLAG_DATA_OFFSET
         | TrunBox::FLAG_SAMPLE_DURATION
         | TrunBox::FLAG_SAMPLE_SIZE
