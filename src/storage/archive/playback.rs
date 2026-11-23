@@ -169,7 +169,7 @@ pub fn read_range(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::storage::archive::target::ArchiveTarget;
     use std::{
@@ -186,11 +186,11 @@ pub(crate) mod tests {
         VERIFIED_READS.update(|(calls, total)| (calls + 1, total + bytes));
     }
 
-    pub(crate) fn take_verified_reads() -> (usize, usize) {
+    pub fn take_verified_reads() -> (usize, usize) {
         VERIFIED_READS.take()
     }
 
-    pub(crate) fn fixture(
+    pub fn fixture(
         bytes: &[u8],
     ) -> anyhow::Result<(std::path::PathBuf, FilesystemArchiveTarget, ArchiveRead)> {
         use crate::storage::long_term::inspection::removal::create_private_directory;
