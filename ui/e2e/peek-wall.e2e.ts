@@ -403,3 +403,19 @@ test('wake lock follows user intent, visibility, and navigation without changing
 	await page.getByRole('link', { name: 'Keep', exact: true }).click();
 	await expect.poll(counts).toEqual({ requests: 2, releases: 2 });
 });
+
+test('confirmed additional camera grants update the mounted Peek wall in place', async ({
+	page
+}) => {
+	const [first, added] = cameras;
+	const controls = await mockControlPeer(page, { cameras: [first], health: mixedHealth });
+	await page.goto('/');
+	const previous = page.locator(`[data-peek-camera="${first.id}"]`);
+	await expect(previous).toBeVisible();
+	const original = await previous.elementHandle();
+	const granted = page.locator(`[data-peek-camera="${added.id}"]`);
+	await expect(granted).toHaveCount(0);
+	await controls.publishCapabilities([], [first, added]);
+	await expect(granted).toBeVisible();
+	expect(await previous.evaluate((current, before) => current === before, original)).toBe(true);
+});

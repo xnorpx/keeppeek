@@ -184,6 +184,12 @@
 			if (!state.session || authorityChanged) {
 				if (previous.session) void livePeer.close().catch(() => undefined);
 				peekViewState.reset();
+			} else if (
+				state.status === 'authenticated' &&
+				previous.session &&
+				(state.cameraSourceIds?.length ?? 0) > (previous.cameraSourceIds?.length ?? 0)
+			) {
+				void peekViewState.refreshCameraInventory(controlClient);
 			}
 			const authenticated = state.status === 'authenticated';
 			if (

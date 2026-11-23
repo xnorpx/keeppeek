@@ -23,6 +23,7 @@ export class PeekViewState {
 	#cameraFrames = $state.raw<Record<string, string>>({});
 	#refresh: Promise<void> | null = null;
 	#generation = 0;
+	#inventoryRevision = 0;
 
 	get cameras(): CameraListItem[] {
 		return this.#cameras;
@@ -71,6 +72,24 @@ export class PeekViewState {
 		return refresh.finally(() => {
 			if (this.#refresh === refresh) this.#refresh = null;
 		});
+	}
+
+	async refreshCameraInventory(controller: ControlClient): Promise<void> {
+		const generation = this.#generation;
+		const revision = ++this.#inventoryRevision;
+		try {
+			const cameras = await controller.getCameras();
+			if (generation === this.#generation && revision === this.#inventoryRevision)
+				this.#cameras = cameras;
+		} catch (cause) {
+			if (
+				generation === this.#generation &&
+				revision === this.#inventoryRevision &&
+				!this.#loaded
+			) {
+				this.#error = cause instanceof Error ? cause.message : 'Failed to load cameras';
+			}
+		}
 	}
 
 	reset(): void {
@@ -139,6 +158,7 @@ export class PeekViewState {
 
 	async #refreshNow(controller: ControlClient, generation: number): Promise<void> {
 		const hadSnapshot = this.#loaded && this.#error === null;
+		const inventoryRevision = this.#inventoryRevision;
 		try {
 			const [camerasResult, healthResult, capabilitiesResult] = await Promise.allSettled([
 				controller.getCameras(),
@@ -146,8 +166,10 @@ export class PeekViewState {
 				controller.getServerCapabilities()
 			]);
 			if (generation !== this.#generation) return;
-			if (camerasResult.status === 'rejected') throw camerasResult.reason;
-			this.#cameras = camerasResult.value;
+			if (inventoryRevision === this.#inventoryRevision) {
+				if (camerasResult.status === 'rejected') throw camerasResult.reason;
+				this.#cameras = camerasResult.value;
+			}
 			if (healthResult.status === 'fulfilled') this.#serverHealth = healthResult.value;
 			if (capabilitiesResult.status === 'fulfilled') {
 				if (capabilitiesResult.value.capabilityIds.includes('keeppeek.peek-layouts.v1')) {
