@@ -31,10 +31,24 @@ const CAMERAS: u8 = 127;
 const PAIRS: usize = 30;
 const TICK: Duration = Duration::from_millis(40);
 const WARMUP_SECONDS: u64 = 2;
-const MEASURE_SECONDS: u64 = 20;
-const TOTAL_SECONDS: u64 = WARMUP_SECONDS + MEASURE_SECONDS;
+const MEASURE_SECONDS_DEFAULT: u64 = 40;
+const MEASURE_SECONDS_ENV: &str = "KEEPPEEK_TUI_BENCHMARK_MEASURE_SECONDS";
 const CHILD_MODE: &str = "KEEPPEEK_TUI_BENCHMARK_CHILD";
 const MARKER: &str = "KEEPPEEK_TUI_SAMPLE ";
+
+fn benchmark_measure_seconds() -> u64 {
+    let Ok(configured) = std::env::var(MEASURE_SECONDS_ENV) else {
+        return MEASURE_SECONDS_DEFAULT;
+    };
+    let value = configured
+        .parse::<u64>()
+        .expect("benchmark measurement window must be an integer");
+    assert!(
+        (20..=90).contains(&value) && value.is_multiple_of(10),
+        "benchmark measurement window must be 20 to 90 seconds in ten-second increments"
+    );
+    value
+}
 
 struct Source {
     camera: CameraConfig,
@@ -154,13 +168,14 @@ fn fleet(count: u8) -> (ServerState, HealthRegistry, Vec<Source>) {
 
 fn collect_samples(
     start: Instant,
+    measure_seconds: u64,
     latest: Latest,
     sender: &FacadeSender<RouterMessage>,
     state: &ServerState,
 ) -> Sample {
     let redactor = LogHub::default();
     let mut metrics = Sample::default();
-    for second in (0..TOTAL_SECONDS).step_by(2) {
+    for second in (0..WARMUP_SECONDS + measure_seconds).step_by(2) {
         wait_until(start, second);
         let collect = Instant::now();
         let health = dashboard_health(sender, state).expect("fixture health");
@@ -183,11 +198,11 @@ fn collect_samples(
     metrics
 }
 
-fn render_samples(start: Instant, latest: Latest) -> Vec<u64> {
+fn render_samples(start: Instant, measure_seconds: u64, latest: Latest) -> Vec<u64> {
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
     let mut nav = render::Navigation::default();
     let mut durations = Vec::new();
-    for second in 0..TOTAL_SECONDS {
+    for second in 0..WARMUP_SECONDS + measure_seconds {
         wait_until(start, second);
         let current = latest.lock().unwrap().snapshot.clone();
         let elapsed = current
@@ -210,14 +225,15 @@ fn render_samples(start: Instant, latest: Latest) -> Vec<u64> {
 
 fn ingress_samples(
     start: Instant,
+    measure_seconds: u64,
     sources: &mut [Source],
     registry: &HealthRegistry,
     system: &mut System,
 ) -> (Vec<u64>, u64, u64) {
-    // Include two complete ten-second reporting periods after warm-up in each paired sample.
+    // Measure complete ten-second reporting periods to avoid favoring either condition.
     let ticks_per_second = 1_000 / TICK.as_millis();
     let warmup_ticks = usize::try_from(u128::from(WARMUP_SECONDS) * ticks_per_second).unwrap();
-    let measured_ticks = usize::try_from(u128::from(MEASURE_SECONDS) * ticks_per_second).unwrap();
+    let measured_ticks = usize::try_from(u128::from(measure_seconds) * ticks_per_second).unwrap();
     let mut ingress_batch_ns = Vec::with_capacity(measured_ticks);
     let mut cpu_start = 0;
     let mut rss_bytes = 0;
@@ -244,7 +260,8 @@ fn ingress_samples(
         }
     }
     thread::sleep(
-        (start + Duration::from_secs(TOTAL_SECONDS)).saturating_duration_since(Instant::now()),
+        (start + Duration::from_secs(WARMUP_SECONDS + measure_seconds))
+            .saturating_duration_since(Instant::now()),
     );
     let (cpu_end, rss_end) = process_sample(system);
     let process_cpu_ms = cpu_end.saturating_sub(cpu_start);
@@ -252,7 +269,7 @@ fn ingress_samples(
     (ingress_batch_ns, process_cpu_ms, rss_bytes)
 }
 
-fn run_observation(enabled: bool) -> Sample {
+fn run_observation(enabled: bool, measure_seconds: u64) -> Sample {
     let (state, registry, mut sources) = fleet(CAMERAS);
     let (mut router, sender) = Router::new().unwrap();
     let router_thread = thread::spawn(move || {
@@ -267,11 +284,12 @@ fn run_observation(enabled: bool) -> Sample {
         let collector = enabled.then(|| {
             let slot = latest.clone();
             let (sender, state) = (&sender, &state);
-            scope.spawn(move || collect_samples(start, slot, sender, state))
+            scope.spawn(move || collect_samples(start, measure_seconds, slot, sender, state))
         });
-        let renderer = enabled.then(|| scope.spawn(move || render_samples(start, latest)));
+        let renderer =
+            enabled.then(|| scope.spawn(move || render_samples(start, measure_seconds, latest)));
         let (ingress_batch_ns, process_cpu_ms, rss_bytes) =
-            ingress_samples(start, &mut sources, &registry, &mut system);
+            ingress_samples(start, measure_seconds, &mut sources, &registry, &mut system);
         let mut sample = collector.map_or_else(Sample::default, |thread| thread.join().unwrap());
         if let Some(renderer) = renderer {
             sample.render_us = renderer.join().unwrap();
@@ -354,17 +372,18 @@ fn observation(enabled: bool) -> Sample {
 }
 
 #[test]
-#[ignore = "30 paired release samples, approximately 22 minutes"]
+#[ignore = "30 paired release samples, approximately 42 minutes at the default window"]
 fn dashboard_overhead() {
     assert!(
         !std::hint::black_box(cfg!(debug_assertions)),
         "use cargo test --release for measured results"
     );
+    let measure_seconds = benchmark_measure_seconds();
     if let Ok(mode) = std::env::var(CHILD_MODE) {
         assert!(matches!(mode.as_str(), "on" | "off"));
         println!(
             "{MARKER}{}",
-            serde_json::to_string(&run_observation(mode == "on")).unwrap()
+            serde_json::to_string(&run_observation(mode == "on", measure_seconds)).unwrap()
         );
         return;
     }
@@ -430,7 +449,8 @@ fn dashboard_overhead() {
         println!(
             "{}",
             serde_json::json!({
-                "percentile": p, "units": ["fleet_ingress_ns", "process_cpu_ms_per_20s", "process_rss_bytes"],
+                "percentile": p, "measurement_seconds": measure_seconds,
+                "units": ["fleet_ingress_ns", "process_cpu_ms", "process_rss_bytes"],
                 "off": off, "on": on, "delta": delta, "ingress_change_percent": 100.0 * delta[0] as f64 / off[0] as f64,
                 "paired_ingress_change_percent_interval": [paired_changes[9], paired_changes[20]],
             "collector_us": percentile(&collectors, p), "projection_us": percentile(&projections, p),
