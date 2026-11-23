@@ -4456,7 +4456,7 @@ const fn is_background_control_request(request: &crate::api::proto::Request) -> 
     }
 }
 
-fn background_operation_slot<'a>(
+const fn background_operation_slot<'a>(
     control: &'a ApiSessionControl,
     request: &crate::api::proto::Request,
 ) -> &'a Arc<AtomicBool> {
@@ -6905,7 +6905,7 @@ mod tests {
                     ..Default::default()
                 }),
                 Action::Create(proto::CreateShareGrant {
-                    recording_range: range.clone(),
+                    recording_range: range,
                     ..Default::default()
                 }),
             ] {

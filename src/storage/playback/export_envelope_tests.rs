@@ -313,7 +313,7 @@ fn bounded_export_removes_an_incomplete_file_and_publishes_at_the_exact_budget()
         |_| {},
     );
     assert_eq!(
-        rejected.err().expect("short budget must fail").to_string(),
+        rejected.expect_err("short budget must fail").to_string(),
         crate::test_support::guest_range_recovery_messages()["byteLimit"]
     );
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);

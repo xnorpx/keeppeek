@@ -46,6 +46,7 @@ impl Store {
         })
     }
 
+    #[cfg(test)]
     pub fn create(&mut self, intent: CreateGrant, clock: Clock) -> Result<IssuedGrant, Error> {
         self.create_with_evidence(intent, clock, false)
     }

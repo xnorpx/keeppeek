@@ -57,7 +57,7 @@ impl<W: Seek> Seek for BoundedWriter<'_, W> {
     }
 }
 
-pub(crate) fn write<W: Write + Seek>(
+pub fn write<W: Write + Seek>(
     sources: ExportSources<'_>,
     output: &mut W,
     offset_ms: i32,
