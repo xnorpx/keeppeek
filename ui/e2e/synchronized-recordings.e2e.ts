@@ -118,12 +118,10 @@ async function checkLimitedDecoder(page: Page) {
 		peakCursors: 1,
 		maximumRequestedBufferMs: 10_000
 	});
-	await test
-		.info()
-		.attach('compact-cursor-budget', {
-			body: JSON.stringify(await budget()),
-			contentType: 'application/json'
-		});
+	await test.info().attach('compact-cursor-budget', {
+		body: JSON.stringify(await budget()),
+		contentType: 'application/json'
+	});
 }
 
 async function checkSharedPlayAndPause(page: Page, tiles: Locator) {
@@ -329,12 +327,10 @@ test('add and remove four authorized sources and seek their common UTC without t
 		expect(resources.peers).toBe(1);
 		expect(resources.peakCursors).toBe(4);
 		expect(resources.maximumRequestedBufferMs).toBe(10_000);
-		await test
-			.info()
-			.attach('four-camera-cursor-budget', {
-				body: JSON.stringify(resources),
-				contentType: 'application/json'
-			});
+		await test.info().attach('four-camera-cursor-budget', {
+			body: JSON.stringify(resources),
+			contentType: 'application/json'
+		});
 		await page.getByRole('button', { name: 'Play recordings', pressed: false }).click();
 		await expect
 			.poll(() =>
@@ -577,6 +573,10 @@ test('an interrupted comparison clears old frames and returns paused at its last
 				.first()
 				.evaluate((node) => Date.parse(node.getAttribute('datetime') ?? ''));
 		await expect(videos).toHaveCount(2, { timeout: 30_000 });
+		await page.getByRole('button', { name: 'Set range start' }).click();
+		await page.getByRole('button', { name: 'Forward five seconds' }).click();
+		await page.getByRole('button', { name: 'Set range end' }).click();
+		await page.getByRole('button', { name: 'Back five seconds' }).click();
 		await play.click();
 		await expect.poll(firstTime).toBeGreaterThan(at + 1_400);
 		const seen = await firstTime();
@@ -589,6 +589,9 @@ test('an interrupted comparison clears old frames and returns paused at its last
 			cardSourceIds[1]
 		);
 		await expect.poll(firstTime).toBeGreaterThanOrEqual(seen - 250);
+		const restored = new URL(page.url()).searchParams;
+		expect(restored.get('rangeStart')).toBe(String(at));
+		expect(restored.get('rangeEnd')).toBe(String(at + 5000));
 		const peers = await readCardProbe(page);
 		expect(peers.created - peers.closed).toBe(1);
 		expect(peers.overflow).toBe(false);
@@ -639,6 +642,16 @@ test('a comparison with an unavailable focused camera keeps its authorized recor
 			cardSourceIds[1]
 		);
 		await checkSharedPlayAndPause(page, videos);
+		query.set('mode', 'export');
+		query.set('rangeStart', String(at));
+		query.set('rangeEnd', String(at + 1000));
+		await page.goto('/keep?' + query);
+		await expect(
+			page.getByText(
+				'The requested camera is unavailable or you are not authorized to view it. Select an available camera.'
+			)
+		).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Back to comparison' })).toHaveCount(0);
 		const peers = await readCardProbe(page);
 		expect(peers.created - peers.closed).toBe(1);
 	} finally {
