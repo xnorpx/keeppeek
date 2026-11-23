@@ -653,8 +653,9 @@ fn start_archive(
     archive::Worker::start(settings, catalog)
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 struct Progress {
+    elapsed_ms: u64,
     ready: usize,
     writer_ms: BTreeMap<String, u64>,
     completed_seeks: usize,
@@ -693,6 +694,7 @@ fn observe(
                         .map(|s| (s.stream_id, s.recorded_duration_ms))
                         .collect();
                     let observed = Progress {
+                        elapsed_ms: start.elapsed().as_millis().try_into()?,
                         ready: count,
                         writer_ms,
                         completed_seeks: review_us.len(),
@@ -750,14 +752,14 @@ fn check_progress(
         let last = last.context("no verified replica observed during ingest")?;
         ensure!(
             last.ready > first.ready && last.completed_seeks > first.completed_seeks,
-            "verified replicas and primary seeks must both advance during ingest"
+            "verified replicas and primary seeks must both advance during ingest: first={first:?}, last={last:?}"
         );
         for (id, before) in &first.writer_ms {
             ensure!(
                 last.writer_ms
                     .get(id)
                     .is_some_and(|after| *after >= before + 1000),
-                "no sustained writer progress on {id} between archive checkpoints"
+                "no sustained writer progress on {id} between archive checkpoints: first={first:?}, last={last:?}"
             );
         }
     }
