@@ -11,8 +11,8 @@ mod store;
 
 pub use clock::ClockAnchor;
 pub use model::{
-    AUDIT_RETENTION_MS, Access, BoundSession, Clock, CreateGrant, Error, ExportBinding,
-    GrantSummary, IssuedGrant, IssuedSession, IssuerBinding, MAX_MEDIA_BYTES,
+    AUDIT_PURGE_BATCH, AUDIT_RETENTION_MS, Access, BoundSession, Clock, CreateGrant, Error,
+    ExportBinding, GrantSummary, IssuedGrant, IssuedSession, IssuerBinding, MAX_MEDIA_BYTES,
     MAX_MEDIA_DURATION_MS, MediaDeadline, Mode, SessionContext, Ticket,
 };
 pub use secret::Secret;
