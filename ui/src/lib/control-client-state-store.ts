@@ -21,7 +21,7 @@ import {
 } from './proto/webrtc_pb';
 import { StateStoreRequestError } from './state-store-error';
 
-const maxWatchesPerClient = 8;
+const maxWatchesPerClient = 16;
 const maxRewatchAttempts = 3;
 const defaultMaxEntriesPerWatch = 1024;
 
@@ -33,6 +33,8 @@ export type StateStoreWatchOptions = {
 	keyPrefix?: string;
 	maxEntries?: number;
 	listener?: StateStoreWatchListener;
+	/** The owner reopens this watch together with its other dependent snapshots. */
+	onInterrupted?: () => void;
 };
 
 export type StateStorePutOptions = {
@@ -50,6 +52,7 @@ type WatchRecord = {
 	keyPrefix: string;
 	maxEntries: number;
 	listener: StateStoreWatchListener | undefined;
+	onInterrupted: (() => void) | undefined;
 	entries: Map<string, StateEntry>;
 	snapshotRevision: bigint;
 	appliedSequence: bigint;
@@ -217,6 +220,7 @@ export class ControlClientStateStore {
 				keyPrefix,
 				maxEntries,
 				listener: options.listener,
+				onInterrupted: options.onInterrupted,
 				entries: new Map(),
 				snapshotRevision: 0n,
 				appliedSequence: 0n,
@@ -288,7 +292,7 @@ export class ControlClientStateStore {
 		if (this.#disposed) return;
 		const records = [...this.#watches.values()]
 			.map(recordOf)
-			.filter((record) => record.status !== 'closed');
+			.filter((record) => record.status !== 'closed' && !record.onInterrupted);
 		await Promise.all(records.map((record) => this.rewatch(record, { unwatchFirst: false })));
 	}
 
@@ -364,6 +368,14 @@ export class ControlClientStateStore {
 	private async rewatch(record: WatchRecord, options: { unwatchFirst: boolean }): Promise<void> {
 		if (this.#disposed || record.status === 'closed' || record.status === 'rewatching') return;
 		const previousWatchId = record.watchId;
+		if (record.onInterrupted) {
+			// closeRecord detaches the handle synchronously. Invalidate its group while
+			// the recorder retires the previous watch, including remotely closed IDs.
+			const released = this.closeRecord(record).catch(() => {});
+			record.onInterrupted();
+			await released;
+			return;
+		}
 		record.generation += 1;
 		record.status = 'rewatching';
 		const generation = record.generation;
