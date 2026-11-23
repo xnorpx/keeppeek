@@ -81,7 +81,10 @@ that suspension. Restart ends sessions and transfers while preserving grants, re
 committed counts. Starting again requires the original valid link and remaining usage allowance.
 
 Limits are 256 active grants, 32 per creator, eight media sessions globally and two per grant.
-Retained history is capped at 4096 records; creation is rejected when full. Expired/revoked metadata
-leaves lists after 30 days, with bounded physical cleanup. Exact-range derivatives, all four
-creator entry points, measured revoke latency and full HTTPS/performance qualification remain
-tracked implementation work.
+KeepPeek retains at most 4,096 grant records and rejects creation when the history is full.
+Expired or revoked grants disappear from lists 30 days after the earlier of expiry and revocation.
+The running server deletes overdue records in batches of 256. When the server restarts after
+downtime, it removes every overdue record before opening the guest store for access.
+
+Exact-range creation, the remaining creator entry points and full transport qualification are
+tracked in [issue #132](https://github.com/xnorpx/keeppeek/issues/132).
