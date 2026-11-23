@@ -64,6 +64,7 @@ async function configure(directory: string): Promise<void> {
 			config: {},
 			onboarding: {},
 			person: {},
+			recorder: {},
 			analytics: {},
 			logger: { default: 'warning' },
 			lovelace: {
