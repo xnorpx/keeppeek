@@ -396,9 +396,20 @@ fn worker_rejects_queued_media_after_a_complete_privacy_cycle() {
 fn event_completion_credits_only_finalized_sample_time_and_preserves_writer_failure() {
     use crate::storage::{MediaFrame, VideoCodec};
 
-    for (more, malformed, expected_ms) in
-        [(false, false, 150), (true, false, 350), (true, true, 200)]
-    {
+    #[derive(Clone, Copy)]
+    enum Ending {
+        OneGop,
+        TwoGops,
+        MalformedSecondGop,
+        CancelSecondGop,
+    }
+    for (ending, expected_ms) in [
+        (Ending::OneGop, 150),
+        (Ending::TwoGops, 350),
+        (Ending::MalformedSecondGop, 200),
+        (Ending::CancelSecondGop, 200),
+    ] {
+        let malformed = matches!(ending, Ending::MalformedSecondGop);
         let (handle, rx, mut worker, root) = configured_worker("event-finalized-health");
         let source = RecordingStreamIdentity::legacy("camera/main");
         let start = Instant::now() - Duration::from_millis(400);
@@ -417,7 +428,7 @@ fn event_completion_credits_only_finalized_sample_time_and_preserves_writer_fail
             frame
         };
         worker.write_event_frame(source.clone(), interframe(100));
-        if more {
+        if !matches!(ending, Ending::OneGop) {
             let mut key = key_frame(start + Duration::from_millis(200));
             if malformed {
                 let MediaFrame::Video(video) = &mut key.frame else {
@@ -431,7 +442,16 @@ fn event_completion_credits_only_finalized_sample_time_and_preserves_writer_fail
                 worker.write_event_frame(source.clone(), interframe(300));
             }
         }
-        if !malformed {
+        if matches!(ending, Ending::CancelSecondGop) {
+            let snapshot = worker.health.snapshot();
+            let stream = snapshot
+                .streams
+                .iter()
+                .find(|s| s.stream_id == source.storage_key)
+                .unwrap();
+            assert_eq!(stream.recorded_duration_ms, 300);
+            worker.cancel_event_writer(&source.source_id);
+        } else if !malformed {
             worker
                 .finish_event_recording(source.clone(), start + Duration::from_millis(expected_ms));
         }
@@ -451,7 +471,14 @@ fn event_completion_credits_only_finalized_sample_time_and_preserves_writer_fail
         let mut media = mp4::read_mp4(std::fs::File::open(&recordings[0]).unwrap()).unwrap();
         let (&id, track) = media.tracks().iter().next().unwrap();
         let (samples, scale) = (track.sample_count(), track.timescale());
-        assert_eq!(samples, if more && !malformed { 4 } else { 2 });
+        assert_eq!(
+            samples,
+            if matches!(ending, Ending::TwoGops) {
+                4
+            } else {
+                2
+            }
+        );
         let ticks = (1..=samples)
             .map(|i| u64::from(media.read_sample(id, i).unwrap().unwrap().duration))
             .sum::<u64>();
@@ -545,7 +572,7 @@ fn privacy_discard_preserves_written_fragments_without_writing_pending_video() {
     writer
         .append_received(key_frame(start + Duration::from_millis(100)))
         .unwrap();
-    writer.discard_pending().unwrap();
+    writer.discard_pending();
     let path = writer.finalize().unwrap();
     let media = mp4::read_mp4(std::fs::File::open(path).unwrap()).unwrap();
     let track = media.tracks().values().next().unwrap();
@@ -626,7 +653,7 @@ fn privacy_discard_during_preparation_leaves_no_recording_file() {
     let start = Instant::now();
     let mut writer = MediumTermWriter::create(&root, "camera/main", start, 8192).unwrap();
     writer.append_received(key_frame(start)).unwrap();
-    writer.discard_pending().unwrap();
+    writer.discard_pending();
     let path = writer.finalize().unwrap();
     assert!(!path.exists());
     assert!(

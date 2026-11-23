@@ -263,9 +263,9 @@ impl MediumTermWriter {
             _ => 0,
         };
         let ticks = self.committed_video_ticks.saturating_add(open);
-        let unreported = ticks.saturating_sub(self.reported_video_ticks);
+        let before = ticks_to_duration(self.reported_video_ticks, VIDEO_TIMESCALE);
         self.reported_video_ticks = self.reported_video_ticks.max(ticks);
-        ticks_to_duration(unreported, VIDEO_TIMESCALE)
+        ticks_to_duration(self.reported_video_ticks, VIDEO_TIMESCALE).saturating_sub(before)
     }
 
     fn append_frame(&mut self, rf: RecordingFrame) -> std::io::Result<WriteProgress> {
@@ -788,7 +788,7 @@ impl MediumTermWriter {
         }
     }
 
-    pub(super) fn discard_pending(&mut self) -> std::io::Result<()> {
+    pub(super) fn discard_pending(&mut self) -> Duration {
         if let Some(bytes) = &mut self.pending_gop_bytes {
             *bytes = 0;
         }
@@ -801,7 +801,15 @@ impl MediumTermWriter {
             }
             _ => self.state = WriterState::WaitingForKeyframe,
         }
-        Ok(())
+        // Append-time observations include elapsed samples in the open fragment.
+        // Cancellation retains only committed fragments. Preserve any committed
+        // duration that has yet to be reported after a failed append.
+        let previous = ticks_to_duration(self.reported_video_ticks, VIDEO_TIMESCALE);
+        self.reported_video_ticks = self.reported_video_ticks.min(self.committed_video_ticks);
+        previous.saturating_sub(ticks_to_duration(
+            self.reported_video_ticks,
+            VIDEO_TIMESCALE,
+        ))
     }
 
     #[cfg(test)]

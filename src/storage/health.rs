@@ -123,6 +123,22 @@ impl RecordingHealthRegistry {
         self.note_progress_at(stream_id, recorded_duration, Instant::now(), unix_time_ms());
     }
 
+    pub(super) fn discard_provisional_progress(
+        &self,
+        stream_id: &str,
+        duration: std::time::Duration,
+    ) {
+        if !duration.is_zero()
+            && let Some(stream) = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_mut(stream_id)
+        {
+            stream.recorded_duration = stream.recorded_duration.saturating_sub(duration);
+        }
+    }
+
     /// Finalization can publish bytes from before the last rejected append.
     pub(crate) fn credit_finalized_progress(
         &self,
