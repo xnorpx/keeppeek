@@ -1,7 +1,6 @@
 """Run two loopback recorders against the same camera through identical RTSP relays."""
 import asyncio
 from collections import defaultdict
-from datetime import datetime, timezone
 import fcntl
 import json
 import os
@@ -9,6 +8,7 @@ from pathlib import Path
 import pty
 import signal
 import socket
+import sqlite3
 import statistics
 import struct
 import subprocess
@@ -82,17 +82,27 @@ def window(fd, cols, rows):
 
 def continuity(directory):
     streams = defaultdict(list)
-    for file in sorted(directory.rglob('*.mp4')):
-        stamp = datetime.strptime('/'.join(file.parts[-3:-1])+'/'+file.stem,'%Y-%m-%d/%H/%M%S%f').replace(tzinfo=timezone.utc).timestamp()
+    catalog = directory / 'recordings.db'
+    assert catalog.is_file(), f'missing fixture recording catalog {catalog}'
+    with sqlite3.connect(catalog.as_uri() + '?mode=ro', uri=True) as db:
+        recordings = db.execute(
+            'SELECT logical_stream_id, started_at_ms, path FROM recording_files ORDER BY started_at_ms, id'
+        ).fetchall()
+    assert recordings, 'no cataloged recordings'
+    for stream, start_ms, path in recordings:
+        file = Path(path)
+        if not file.is_absolute():
+            file = directory / file
+        assert file.is_file() and file.resolve().is_relative_to(directory), file
         out = subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-show_entries','frame=best_effort_timestamp_time','-of','json',file])
         pts = sorted(float(frame['best_effort_timestamp_time']) for frame in json.loads(out)['frames'] if 'best_effort_timestamp_time' in frame)
-        if pts:
-            streams[file.parts[-4]].extend(stamp+t-pts[0] for t in pts)
+        assert pts, f'no decoded video frames in {file}'
+        streams[stream].extend(start_ms / 1000 + t - pts[0] for t in pts)
     return {stream:sorted(times) for stream,times in streams.items()}
 
 async def main(work):
     camera_log = (work/'camera.log').open('wb')
-    camera = await asyncio.create_subprocess_exec(CAM,'rtsp','--main',MEDIA,'--sub',MEDIA,'--name','soak',
+    camera = await asyncio.create_subprocess_exec(CAM,'rtsp','--main',MEDIA,'--sub',MEDIA,'--name','soak','--start-at-seconds','0',
         stdout=asyncio.subprocess.PIPE,stderr=camera_log)
     procs=[camera]
     handles=[camera_log]
@@ -133,6 +143,7 @@ async def main(work):
             cfg=(f'host = "127.0.0.1"\nport = {port()}\n[storage]\nshort_term_secs = 5\n'
                  f'medium_term_secs = 20\nflush_interval_secs = 2\nlong_term_max_gb = 0\n'
                  'minimum_free_gb = 1\ncritical_free_gb = 0\n'
+                 f'recording_catalog_path = "{folder / "recordings.db"}"\n'
                  f'long_term_path = "{rec}"\nmedium_term_path = "{tmp}"\n'
                  +settings+'\nrecording_mode = "both"\n')
             (folder/'config.toml').write_text(cfg)
