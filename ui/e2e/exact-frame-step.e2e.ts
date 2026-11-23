@@ -297,10 +297,15 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 					await expect(video).toHaveJSProperty('paused', true);
 					let current = (await video.evaluate(observePicture, null)).id;
 					// Every handoff starts with a real selected canvas, even when Pause landed on the target.
-					const count = (target - current + 12) % 12 || 12;
-					for (let step = 0; step < count; step++) {
-						current = (current + 1) % 12;
-						await Promise.all([selected.evaluate(observePicture, current), next.click()]);
+					const forward = (target - current + 12) % 12;
+					const steps =
+						forward === 0
+							? [-1, 1]
+							: Array<number>(Math.min(forward, 12 - forward)).fill(forward <= 6 ? 1 : -1);
+					for (const direction of steps) {
+						current = (current + direction + 12) % 12;
+						const button = direction > 0 ? next : previous;
+						await Promise.all([selected.evaluate(observePicture, current), button.click()]);
 					}
 					const verified = selected.evaluate(witnessHandoff);
 					await region.getByRole('button', { name: 'Play recording', exact: true }).click();
