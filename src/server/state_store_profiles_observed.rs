@@ -191,8 +191,8 @@ pub(super) fn snapshot_entry(
     let projected = if principal.role == AccessRole::Administrator {
         status
     } else {
-        let ids =
-            visible_profile_camera_ids(state, principal, identities).ok_or(Error::NotAuthorized)?;
+        let ids = visible_profile_camera_ids(state, principal, identities)
+            .ok_or_else(|| Error::Storage("camera visibility is unavailable".to_owned()))?;
         visible = scoped_status(status, &ids);
         &visible
     };

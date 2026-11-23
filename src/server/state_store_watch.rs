@@ -206,8 +206,15 @@ impl WatchRegistry {
         key_prefix: String,
         watch_id: String,
     ) -> Result<(), Error> {
-        self.register_snapshot(session_id, namespace, key_prefix, watch_id, None)
-            .map(|_| ())
+        self.register_snapshot(
+            session_id,
+            namespace,
+            key_prefix,
+            watch_id,
+            None,
+            |_| Ok(()),
+        )
+        .map(|_| ())
     }
 
     pub(super) fn register_snapshot(
@@ -217,6 +224,7 @@ impl WatchRegistry {
         key_prefix: String,
         watch_id: String,
         profile: Option<(&StoredEntry, Arc<Lifecycle>)>,
+        validate_snapshot: impl FnOnce(u64) -> Result<(), Error>,
     ) -> Result<u64, Error> {
         let mut watches = self.lock();
         if !watches.contains_key(&(session_id, watch_id.clone())) {
@@ -231,9 +239,15 @@ impl WatchRegistry {
         let cursor = profile.as_ref().map_or(0, |(entry, session)| {
             session
                 .profile_watch_revision
-                .fetch_max(entry.revision, Ordering::Relaxed)
+                .load(Ordering::Relaxed)
                 .max(entry.revision)
         });
+        validate_snapshot(cursor)?;
+        if let Some((_, session)) = &profile {
+            session
+                .profile_watch_revision
+                .store(cursor, Ordering::Relaxed);
+        }
         watches.insert(
             (session_id, watch_id.clone()),
             Watch {
