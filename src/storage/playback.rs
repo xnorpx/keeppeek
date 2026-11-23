@@ -738,7 +738,7 @@ fn write_export_recording<R: Read + Seek, W: Write + Seek>(
             left_rank.cmp(&right_rank)
         })
     });
-    for (track_id, sample_id, mut sample) in samples {
+    for (track_id, sample_id, sample) in samples {
         if (callbacks.cancelled)() {
             bail!("export was cancelled");
         }
@@ -749,12 +749,9 @@ fn write_export_recording<R: Read + Seek, W: Write + Seek>(
         {
             continue;
         }
-        let remaining = callbacks
-            .selection
-            .maximum_bytes
-            .map(|maximum| maximum.saturating_sub(progress.bytes_written));
-        sample.sample.bytes = limited_export::read_payload(reader, track_id, sample_id, remaining)?;
-        append_export_sample(writer, sample, progress, callbacks)?;
+        append_export_sample(writer, sample, progress, callbacks, |remaining| {
+            limited_export::read_payload(reader, track_id, sample_id, remaining)
+        })?;
     }
     Ok(())
 }
@@ -981,9 +978,10 @@ fn normalized_sample_start(
 
 fn append_export_sample<W: Write + Seek>(
     writer: &mut mp4::FragmentedMp4Writer<W>,
-    sample: ExportSample,
+    mut sample: ExportSample,
     progress: &mut ExportProgress,
     callbacks: &ExportContext<'_>,
+    read_payload: impl FnOnce(Option<u64>) -> anyhow::Result<bytes::Bytes>,
 ) -> anyhow::Result<()> {
     if (callbacks.cancelled)() {
         bail!("export was cancelled");
@@ -1003,6 +1001,18 @@ fn append_export_sample<W: Write + Seek>(
     }
     let description_index =
         writer.add_sample_description(sample.track_id, sample.sample_description)?;
+    let remaining = if let Some(maximum) = callbacks.selection.maximum_bytes {
+        let committed =
+            writer.projected_end_before_payload(sample.track_id, sample.sample.rendering_offset)?;
+        Some(
+            maximum
+                .checked_sub(committed)
+                .context("export exceeds the guest preparation byte limit")?,
+        )
+    } else {
+        None
+    };
+    sample.sample.bytes = read_payload(remaining)?;
     progress
         .last_sample_start
         .insert(sample.track_id, sample.sample.start_time);

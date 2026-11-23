@@ -146,6 +146,114 @@ fn audio_source_bounds_use_the_media_clock_independent_of_its_codec_frequency() 
     std::fs::remove_file(input).unwrap();
 }
 
+struct MeteredSource<'a> {
+    data: Cursor<&'a [u8]>,
+    watched: mp4::Mp4SampleLocation,
+    payload_reads: &'a std::cell::Cell<usize>,
+}
+
+impl Read for MeteredSource<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let start = self.data.position();
+        let count = self.data.read(buffer)?;
+        if start < self.watched.offset + u64::from(self.watched.size)
+            && start + count as u64 > self.watched.offset
+        {
+            self.payload_reads.set(self.payload_reads.get() + 1);
+        }
+        Ok(count)
+    }
+}
+
+impl Seek for MeteredSource<'_> {
+    fn seek(&mut self, offset: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.data.seek(offset)
+    }
+}
+
+fn check_payload_reads(plan: &ExportPlan, input: &[u8], sample_id: u32, maximum: u64, fits: bool) {
+    let size = input.len() as u64;
+    let metadata = mp4::Mp4Reader::read_header(Cursor::new(input), size).unwrap();
+    let watched = metadata.sample_location(1, sample_id).unwrap().unwrap();
+    let payload_reads = std::cell::Cell::new(0);
+    let metered = MeteredSource {
+        data: Cursor::new(input),
+        watched,
+        payload_reads: &payload_reads,
+    };
+    let mut reader = mp4::Mp4Reader::read_header(metered, size).unwrap();
+    let tracks = export_tracks(&reader).unwrap();
+    let (config, descriptions) = export_mp4_configuration(&tracks, 0).unwrap();
+    let mut writer = mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(
+        Cursor::new(Vec::new()),
+        &config,
+        &descriptions,
+    )
+    .unwrap();
+    let callbacks = ExportContext {
+        cancelled: &|| false,
+        report_progress: &|_| {},
+        selection: ExportSelection {
+            maximum_bytes: Some(maximum),
+            audio_offset_ms: 0,
+            aligned_start_ms: plan.aligned_start_ms,
+            windows: &plan.windows,
+        },
+    };
+    payload_reads.set(0);
+    let result = write_export_recording(
+        &mut reader,
+        &plan.recordings[0],
+        &tracks,
+        &mut writer,
+        &mut ExportProgress::new(plan.aligned_start_ms),
+        &callbacks,
+    );
+    if fits {
+        result.unwrap();
+        writer.write_end().unwrap();
+        assert_eq!(writer.into_writer().into_inner().len() as u64, maximum);
+        assert!(payload_reads.get() > 0);
+    } else {
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            crate::test_support::guest_range_recovery_messages()["byteLimit"]
+        );
+        assert_eq!(payload_reads.get(), 0);
+    }
+}
+
+#[test]
+fn insufficient_container_budget_refuses_payload_before_reading_it() {
+    let mut next = sample(90_000, 90_000, 900);
+    next.is_sync = false;
+    for samples in [
+        vec![(1, sample(0, 90_000, 0))],
+        vec![(1, sample(0, 90_000, 0)), (1, next.clone())],
+        vec![
+            (1, sample(0, 90_000, 0)),
+            (1, next),
+            (1, sample(180_000, 90_000, 0)),
+        ],
+    ] {
+        let count = samples.len() as u32;
+        let path = source(&[video()], samples);
+        let fragments = [fragment(&path, "container-budget", 1000)];
+        let end = 1000 + i64::from(count) * 1000 + 50;
+        let (artifact, _) = export(&fragments, end);
+        let sources = ExportSources {
+            video_fragments: &fragments,
+            audio_context: &[],
+            requested_end_ms: end,
+        };
+        let plan = export_recordings(sources, 0).unwrap();
+        let data = std::fs::read(&path).unwrap();
+        check_payload_reads(&plan, &data, count, artifact.bytes - 1, false);
+        check_payload_reads(&plan, &data, count, artifact.bytes, true);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
 #[test]
 fn encoded_samples_are_read_only_within_the_remaining_preparation_budget() {
     let input = source(&[video()], vec![(1, sample(0, 90_000, 0))]);

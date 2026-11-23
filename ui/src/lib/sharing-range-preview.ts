@@ -34,7 +34,8 @@ export class RangeSharePreview {
 			return this.#selection?.fallback === 'available' ? 'alternate' : undefined;
 		if (
 			cause instanceof FailedRangeExport ||
-			(this.#selection?.job.reused && replaceableRangeArtifact(cause))
+			(this.#selection?.phase === 'ready' &&
+				replaceableRangeArtifact(cause, this.#selection.job.reused))
 		)
 			return 'replacement';
 	}

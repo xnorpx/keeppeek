@@ -60,10 +60,11 @@ export function alternateRangeStream(cause: unknown): boolean {
 		[incompatibleRangeCodec, correctedAudio, crossedRange].includes(cause.message)
 	);
 }
-export function replaceableRangeArtifact(cause: unknown): boolean {
+export function replaceableRangeArtifact(cause: unknown, reused = true): boolean {
 	return (
 		cause instanceof Error &&
-		[missingRangeProof, missingArtifact, correctedAudio].includes(cause.message)
+		(cause.message === missingArtifact ||
+			(reused && [missingRangeProof, correctedAudio].includes(cause.message)))
 	);
 }
 

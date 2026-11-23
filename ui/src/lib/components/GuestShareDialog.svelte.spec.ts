@@ -268,6 +268,13 @@ describe('creator guest share dialog', () => {
 			existing: true,
 			replacement: false
 		},
+		{
+			failure: recoveryMessages.missingArtifact,
+			existing: false,
+			replacement: true
+		},
+		{ failure: recoveryMessages.missingArtifact, existing: true, replacement: true },
+		{ failure: recoveryMessages.correctedAudio, existing: false, replacement: false },
 		{ failure: recoveryMessages.missingProof, existing: false, replacement: false },
 		{ failure: recoveryMessages.missingProof, existing: true, replacement: true },
 		{
@@ -276,7 +283,7 @@ describe('creator guest share dialog', () => {
 			replacement: true
 		}
 	])(
-		'allows explicit replacement only for a permanent failure on a reused artifact: $failure, existing=$existing',
+		'offers replacement according to the verified failure and artifact provenance: $failure, existing=$existing',
 		async ({ failure, existing, replacement }) => {
 			const evidence = shareEvidenceFixture();
 			const target = {
@@ -305,7 +312,10 @@ describe('creator guest share dialog', () => {
 				listExports: vi.fn().mockResolvedValue(existing ? [old] : []),
 				getEventWorkflow: vi.fn(),
 				getExport: vi.fn(),
-				createExport: vi.fn().mockResolvedValue({ ...old, id: 'new-artifact' })
+				createExport: vi
+					.fn()
+					.mockResolvedValueOnce({ ...old, id: 'prepared-1' })
+					.mockResolvedValueOnce({ ...old, id: 'prepared-2' })
 			};
 			const share = controller();
 			share.previewExport.mockRejectedValueOnce(new Error(failure));
@@ -324,9 +334,16 @@ describe('creator guest share dialog', () => {
 				await reload.click();
 			}
 			await expect.element(page.getByLabelText('Display name')).toBeVisible();
-			expect(rangeClient.createExport).toHaveBeenCalledTimes(!existing || replacement ? 1 : 0);
+			expect(rangeClient.createExport).toHaveBeenCalledTimes(
+				Number(!existing) + Number(replacement)
+			);
 			expect(rangeClient.listExports).toHaveBeenCalledTimes(1);
-			expect(share.previewExport).toHaveBeenCalledTimes(2);
+			const firstId = existing ? old.id : 'prepared-1';
+			const nextId = existing ? 'prepared-1' : 'prepared-2';
+			expect(share.previewExport.mock.calls.map(([id]) => id)).toEqual([
+				firstId,
+				replacement ? nextId : firstId
+			]);
 		}
 	);
 
