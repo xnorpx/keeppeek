@@ -160,7 +160,7 @@ impl KeepPeekLoop {
     }
 
     pub(super) fn close_retired_native_events(&mut self) {
-        self.close_retired_native_events_until(&|| false);
+        self.close_retired_native_events_until(|| false);
     }
 
     /// Returns the number of retired events that remain after best-effort shutdown.
@@ -168,7 +168,7 @@ impl KeepPeekLoop {
     /// The budget cannot interrupt synchronous storage operations or callbacks.
     pub(super) fn drain_retired_native_events(&mut self) -> usize {
         let deadline = Instant::now() + FINAL_DRAIN_BUDGET;
-        self.drain_retired_native_events_until(|| Instant::now() >= deadline)
+        self.drain_retired_native_events_until(move || Instant::now() >= deadline)
     }
 
     pub(super) fn drain_retired_native_events_until(
@@ -177,11 +177,16 @@ impl KeepPeekLoop {
     ) -> usize {
         let mut remaining = self.native_commits.retired_count();
         let attempts_max = remaining;
+        let mut deadline_reached = false;
         for _ in 0..attempts_max {
-            if remaining == 0 || expired() {
+            if remaining == 0 || deadline_reached {
                 break;
             }
-            if self.close_retired_native_events_until(&expired) == 0 {
+            let completed = self.close_retired_native_events_until(|| {
+                deadline_reached = expired();
+                deadline_reached
+            });
+            if completed == 0 {
                 break;
             }
             remaining = self.native_commits.retired_count();
@@ -190,14 +195,14 @@ impl KeepPeekLoop {
             tracing::warn!(
                 name: "native.shutdown.incomplete",
                 remaining,
-                deadline_reached = expired(),
+                deadline_reached,
                 "final native event closure stopped with undrained events"
             );
         }
         remaining
     }
 
-    fn close_retired_native_events_until(&mut self, expired: &impl Fn() -> bool) -> usize {
+    fn close_retired_native_events_until(&mut self, mut expired: impl FnMut() -> bool) -> usize {
         if expired() {
             return 0;
         }
