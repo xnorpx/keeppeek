@@ -2199,10 +2199,20 @@ impl KeepPeekLoop {
                                     status.cameras.get(&id),
                                     configured_mode,
                                 );
-                                stopped.application_state(
+                                let state = stopped.application_state(
                                     &self.effective_camera_policy(&camera.config),
                                     configured_mode,
-                                )
+                                );
+                                if matches!(
+                                    state,
+                                    Ok(crate::profiles::RuntimeApplicationState::Applied)
+                                ) && configured_mode != crate::cameras::CameraRecordingMode::Off
+                                    && self.recording_writer_failed(&ip.to_string())
+                                {
+                                    Err(recording::ACTIVE_RECORDING_WRITE_FAILURE.into())
+                                } else {
+                                    state
+                                }
                             });
                         self.record_camera_runtime_state(camera, state);
                     } else if outcome.is_ok() && self.reconcile_missing_profile_targets() {

@@ -509,11 +509,7 @@ fn privacy_pause_does_not_discard_a_recording_writer_failure() {
         let (reply, paused) = mpsc::sync_channel(1);
         recorder
             .command_tx
-            .send(KeepPeekCommand::Stop {
-                ip,
-                reason: CameraStopReason::Privacy,
-                reply,
-            })
+            .send(KeepPeekCommand::SuspendForPrivacy { ip, reply })
             .unwrap();
         recorder.handle_commands();
         paused.try_recv().unwrap().unwrap();
@@ -539,7 +535,7 @@ fn privacy_pause_does_not_discard_a_recording_writer_failure() {
             );
         };
         assert_failed();
-        apply_recording_health_revision(&mut recorder, 2);
+        poll_recording_health(&mut recorder);
         assert_failed();
         storage.shutdown();
     }
