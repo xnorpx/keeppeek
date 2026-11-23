@@ -110,6 +110,21 @@ export function createExportRange(
 	};
 }
 
+export function exportSelectionKey(
+	sourceId: string,
+	segment: RecordingSegment | null,
+	event: Pick<RecordingEvent, 'id' | 'revision'> | null
+): string {
+	return JSON.stringify([
+		sourceId,
+		segment?.stream,
+		segment?.start_time_ms,
+		segment?.end_time_ms,
+		event?.id,
+		event?.revision
+	]);
+}
+
 export function createEventExportRange(
 	event: Pick<RecordingEvent, 'start_time_ms' | 'end_time_ms'>,
 	bitrateKbps: number | null
