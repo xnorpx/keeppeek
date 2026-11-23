@@ -112,7 +112,11 @@ impl Database {
             return Err(Error::Storage);
         }
         validate_restored(&records, persisted)?;
-        self.observe(now_ms)
+        // Downtime can leave every retained grant due for deletion at once.
+        let maximum = i64::try_from(records.len()).map_err(|_| Error::Storage)?;
+        self.transaction(now_ms, |database| {
+            database.prune_up_to(now_ms, maximum).map(|_| ())
+        })
     }
 
     pub const fn high_water_ms(&self) -> i64 {
@@ -313,11 +317,15 @@ impl Database {
     }
 
     pub fn prune(&self, now_ms: i64) -> Result<u64, Error> {
+        self.prune_up_to(now_ms, i64::from(AUDIT_PURGE_BATCH))
+    }
+
+    fn prune_up_to(&self, now_ms: i64, maximum: i64) -> Result<u64, Error> {
         let cutoff = now_ms.saturating_sub(AUDIT_RETENTION_MS);
         pollster::block_on(self.connection.execute(
             "DELETE FROM guest_grants WHERE id IN (SELECT id FROM guest_grants
-             WHERE COALESCE(ended_ms,expires_ms)<=?1 ORDER BY COALESCE(ended_ms,expires_ms),id LIMIT 256)",
-            turso::params![cutoff])).map_err(|_| Error::Storage)
+             WHERE COALESCE(ended_ms,expires_ms)<=?1 ORDER BY COALESCE(ended_ms,expires_ms),id LIMIT ?2)",
+            turso::params![cutoff, maximum])).map_err(|_| Error::Storage)
     }
 
     fn connection_batch(&self, sql: &str) -> Result<(), Error> {
