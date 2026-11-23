@@ -6,7 +6,7 @@ use std::{
 // Only the foreground text sink shares its terminal with the dashboard.
 static PAUSED: AtomicBool = AtomicBool::new(false);
 
-pub(crate) struct ConsolePause;
+pub struct ConsolePause;
 
 impl ConsolePause {
     pub(crate) fn acquire() -> io::Result<Self> {

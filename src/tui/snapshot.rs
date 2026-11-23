@@ -108,8 +108,9 @@ impl Snapshot {
                             row.resolution = row.resolution.or_else(|| {
                                 profile.resolution.as_ref().map(|v| for_terminal(hub, v))
                             });
-                            row.expected_fps =
-                                row.expected_fps.or(profile.framerate.filter(|v| *v > 0.0));
+                            row.expected_fps = row
+                                .expected_fps
+                                .or_else(|| profile.framerate.filter(|v| *v > 0.0));
                         } else if let Some(audio) = &profile.audio {
                             row.codec = row
                                 .codec

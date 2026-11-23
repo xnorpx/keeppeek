@@ -11104,14 +11104,16 @@ fn project_stream_snapshot(
             .iter()
             .any(|expected| expected == stream_id)
     });
-    let transport_connected = match transport_stream_id {
-        Some(id) => stream_transport_connected(id, context.router_status),
-        None => Some(
-            context
-                .router_status
-                .is_some_and(|status| status.lifecycle == CameraLifecycle::Connected),
-        ),
-    };
+    let transport_connected = transport_stream_id.map_or_else(
+        || {
+            Some(
+                context
+                    .router_status
+                    .is_some_and(|status| status.lifecycle == CameraLifecycle::Connected),
+            )
+        },
+        |id| stream_transport_connected(id, context.router_status),
+    );
     let report_fresh = stream.report_age_ms <= STREAM_REPORT_FRESHNESS_THRESHOLD_MS;
     let frame_threshold_ms = frame_freshness_threshold_ms(stream.report.expected_fps);
     let frames_fresh = report_fresh

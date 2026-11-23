@@ -89,7 +89,7 @@ fn mib(bytes: Option<u64>) -> String {
     value(bytes.map(|n| n / (1024 * 1024)))
 }
 
-fn recording(m: &Measurement) -> &'static str {
+const fn recording(m: &Measurement) -> &'static str {
     match (m.recording_requested, m.recording_progress) {
         (None, _) => "n/a",
         (Some(false), _) => "off",

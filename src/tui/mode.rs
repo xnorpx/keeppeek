@@ -30,10 +30,8 @@ impl DashboardMode {
             stdin: std::io::stdin().is_terminal(),
             stdout: std::io::stdout().is_terminal(),
             stderr: std::io::stderr().is_terminal(),
-            supports_screen: match std::env::var_os("TERM") {
-                Some(term) => !term.is_empty() && term != "dumb",
-                None => cfg!(windows),
-            },
+            supports_screen: std::env::var_os("TERM")
+                .map_or(cfg!(windows), |term| !term.is_empty() && term != "dumb"),
         })
     }
 
