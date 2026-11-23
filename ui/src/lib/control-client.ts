@@ -227,7 +227,9 @@ type AccessStateListener = (state: AccessConnectionState) => void;
 
 export type PtzPreset = { id: number; name: string };
 
-class EventSearchCapacityError extends Error {}
+class EventSearchCapacityError extends Error {
+	override name = 'EventSearchCapacityError';
+}
 
 export class NotificationConflictError extends Error {
 	constructor(
@@ -419,7 +421,7 @@ type EventSearchPending = {
 	hits: ProtoEventSearchHit[];
 	sequences: Set<number>;
 	resolve: (page: EventPreviewPage) => void;
-	reject: (error: Error) => void;
+	reject: (reason: unknown) => void;
 };
 
 type EventMediaAccumulator = {
@@ -1010,19 +1012,22 @@ export class ControlClient {
 		signal: AbortSignal | undefined,
 		query: (queryId: string) => QueryEvents
 	): Promise<EventPreviewPage> {
-		if (signal?.aborted) throw timelineAbortError();
+		signal?.throwIfAborted();
 		const queryId = `event-search-${this.#nextStoredId++}`;
 		const admission = new AbortController();
 		let sent = false;
 		const completed = new Promise<EventPreviewPage>((resolve, reject) => {
 			this.#eventSearchPending.set(queryId, { hits: [], sequences: new Set(), resolve, reject });
 		});
-		const cancel = (reason: Error) => {
+		const cancel = (reason: unknown) => {
+			if (admission.signal.aborted) return;
+			const pending = this.#eventSearchPending.get(queryId);
+			this.#eventSearchPending.delete(queryId);
 			admission.abort(reason);
-			this.#eventSearchPending.get(queryId)?.reject(reason);
+			pending?.reject(reason);
 			if (sent) void this.cancelEventSearchQuery(queryId).catch(() => undefined);
 		};
-		const abort = () => cancel(timelineAbortError());
+		const abort = () => cancel(signal?.reason ?? timelineAbortError());
 		const deadline = setTimeout(
 			() => cancel(new Error('Event search timed out.')),
 			controlTimeoutMs
@@ -3988,7 +3993,7 @@ function waitForEventSearchSlot(delayMs: number, signal?: AbortSignal): Promise<
 	return new Promise((resolve, reject) => {
 		const abort = () => {
 			clearTimeout(timer);
-			reject(timelineAbortError());
+			reject(signal?.reason ?? timelineAbortError());
 		};
 		const timer = setTimeout(() => {
 			signal?.removeEventListener('abort', abort);

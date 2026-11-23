@@ -2732,11 +2732,15 @@ describe('ControlClient', () => {
 		const controller = new AbortController();
 		const pending = client.searchEventMetadata({ ...options, signal: controller.signal });
 		await vi.waitFor(() => expect(channel.eventSearchQueries).toHaveLength(5), { interval: 1 });
-		controller.abort();
-		await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+		const replaced = new Error('A newer search replaced this query');
+		controller.abort(replaced);
+		await expect(pending).rejects.toBe(replaced);
 		expect(channel.eventSearchQueries).toHaveLength(5);
 		channel.eventSearchRefusals.push(...Array<string>(6).fill(capacity));
-		await expect(client.searchEventMetadata(options)).rejects.toThrow(capacity);
+		await expect(client.searchEventMetadata(options)).rejects.toMatchObject({
+			name: 'EventSearchCapacityError',
+			message: capacity
+		});
 		expect(channel.eventSearchQueries).toHaveLength(11);
 		await client.close();
 	});

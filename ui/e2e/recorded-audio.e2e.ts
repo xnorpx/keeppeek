@@ -138,19 +138,22 @@ test('decodes recorded AAC through signed previews, reset, seek, and a second co
 	}
 });
 
-async function countFrameRegistrations(video: Locator) {
-	await video.evaluate((element) => {
+async function countInitialFrameRegistrations(video: Locator, source: string) {
+	await video.evaluate((element, target) => {
 		const video = element as HTMLVideoElement;
 		const request = video.requestVideoFrameCallback.bind(video);
 		let registered = 0;
+		video.dataset.initialRegistrations = '0';
 		video.requestVideoFrameCallback = (callback) => {
+			if ((video.currentSrc || video.src) !== target) return request(callback);
 			video.dataset.initialRegistrations = String(++registered);
 			return request((now, frame) => {
+				// A single observer re-arms after each frame. Count independent registrations before its first callback.
 				Reflect.deleteProperty(video, 'requestVideoFrameCallback');
 				callback(now, frame);
 			});
 		};
-	});
+	}, source);
 }
 
 async function checkPausedFrame(video: Locator, source: string, time: number) {
@@ -219,7 +222,6 @@ test('witnesses a paused replacement recording before later assertions attach', 
 	);
 	await page.goto(new URL('/recorded-frame-witness', baseURL).href);
 	const video = page.locator('video');
-	await countFrameRegistrations(video);
 	const sources: string[] = [];
 	try {
 		for (const time of [0, 1]) {
@@ -227,6 +229,7 @@ test('witnesses a paused replacement recording before later assertions attach', 
 				URL.createObjectURL(await (await fetch('/witness.mp4')).blob())
 			);
 			sources.push(source);
+			await countInitialFrameRegistrations(video, source);
 			await video.evaluate(
 				(element, { source, time }) => {
 					const video = element as HTMLVideoElement;
