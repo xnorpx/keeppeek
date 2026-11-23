@@ -160,24 +160,28 @@ impl KeepPeekLoop {
     }
 
     pub(super) fn close_retired_native_events(&mut self) {
-        self.close_retired_native_events_until(None);
+        self.close_retired_native_events_until(&|| false);
     }
 
     /// Returns the number of retired events that remain after best-effort shutdown.
     ///
     /// The budget cannot interrupt synchronous storage operations or callbacks.
     pub(super) fn drain_retired_native_events(&mut self) -> usize {
-        self.drain_retired_native_events_until(Instant::now() + FINAL_DRAIN_BUDGET)
+        let deadline = Instant::now() + FINAL_DRAIN_BUDGET;
+        self.drain_retired_native_events_until(|| Instant::now() >= deadline)
     }
 
-    pub(super) fn drain_retired_native_events_until(&mut self, deadline: Instant) -> usize {
+    pub(super) fn drain_retired_native_events_until(
+        &mut self,
+        expired: impl Fn() -> bool,
+    ) -> usize {
         let mut remaining = self.native_commits.retired_count();
         let attempts_max = remaining;
         for _ in 0..attempts_max {
-            if remaining == 0 || Instant::now() >= deadline {
+            if remaining == 0 || expired() {
                 break;
             }
-            if self.close_retired_native_events_until(Some(deadline)) == 0 {
+            if self.close_retired_native_events_until(&expired) == 0 {
                 break;
             }
             remaining = self.native_commits.retired_count();
@@ -186,15 +190,15 @@ impl KeepPeekLoop {
             tracing::warn!(
                 name: "native.shutdown.incomplete",
                 remaining,
-                deadline_reached = Instant::now() >= deadline,
+                deadline_reached = expired(),
                 "final native event closure stopped with undrained events"
             );
         }
         remaining
     }
 
-    fn close_retired_native_events_until(&mut self, deadline: Option<Instant>) -> usize {
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+    fn close_retired_native_events_until(&mut self, expired: &impl Fn() -> bool) -> usize {
+        if expired() {
             return 0;
         }
         if let Err(error) = self.stage_retired_native_events() {
@@ -203,7 +207,7 @@ impl KeepPeekLoop {
         }
         let mut completed = 0;
         for _ in 0..RETIRED_BATCH_MAX {
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            if expired() {
                 break;
             }
             let Some(pending) = self.native_commits.pending.front() else {
