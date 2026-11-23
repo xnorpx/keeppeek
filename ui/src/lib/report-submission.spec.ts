@@ -110,10 +110,13 @@ it('checks the original submission without uploading again when cancellation rac
 	};
 	const submission = new ReportSubmission(transport, { text, diagnostics, evidenceWarnings: [] });
 	const sent = submission.submit(() => {});
-	const settled = expect(sent).rejects.toThrow('Request cancelled');
+	const settled = sent.then(
+		() => null,
+		(error: unknown) => error
+	);
 	await created;
 	expect(await submission.cancel()).toBe(false);
-	await settled;
+	expect(await settled).toMatchObject({ message: 'Request cancelled' });
 	transport.upload = async () => {
 		throw new Error('Status reconciliation must not upload');
 	};
