@@ -15,6 +15,25 @@ const moment = {
 };
 
 describe('authenticated recording-moment routes', () => {
+	it('round trips a selected half-open range and rejects incomplete or unordered comparison bounds', () => {
+		const review = {
+			cameraIds: ['front', 'side'],
+			audioCameraId: 'side',
+			range: { startMs: 1000, endMs: 1500 }
+		};
+		const params = keepMomentSearchParams({
+			cameraId: 'front',
+			streamPreference: 'sub',
+			timestampMs: 1100,
+			mode: 'export',
+			review
+		});
+		expect(parseKeepRoute(params.toString()).review).toEqual(review);
+		params.set('rangeEnd', '1000');
+		expect(parseKeepRoute(params.toString()).invalid).toBe(true);
+		params.delete('rangeEnd');
+		expect(parseKeepRoute(params.toString()).invalid).toBe(true);
+	});
 	it('round-trips opaque source identity, exact milliseconds, and automatic preference', () => {
 		const route = parseKeepRoute(keepMomentSearchParams(moment).toString());
 		expect(route).toEqual({

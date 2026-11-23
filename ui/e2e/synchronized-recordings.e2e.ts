@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import {
 	cardAdminKey,
 	cardSourceIds,
@@ -321,6 +322,75 @@ test('add and remove four authorized sources and seek their common UTC without t
 			await context.unroute('**/*', redirect);
 		} finally {
 			await fixture.close();
+		}
+	}
+});
+
+test('exports one focused source and retains the shared cameras, playhead and audio on return', async ({
+	page,
+	context,
+	baseURL
+}) => {
+	test.setTimeout(90_000);
+	if (!baseURL) throw new Error('The export fixture requires a UI origin.');
+	const origin = new URL(baseURL).origin;
+	const server = await startHomeAssistantServer(origin, {
+		trustedLocal: true,
+		reviewFixture: true
+	});
+	const redirect = recordedAudioBackendRoute(origin, server.url);
+	try {
+		await context.route('**/*', redirect);
+		const at = await overlappingMoment(page, server.url);
+		const [first, second] = cardSourceIds;
+		const initial = new URLSearchParams({ camera: first, stream: 'sub', at: String(at) });
+		initial.append('compare', first);
+		initial.append('compare', second);
+		await page.goto('/keep?' + initial);
+		await page.getByRole('combobox', { name: 'Focused camera' }).selectOption(second);
+		await expect(page.locator('article video')).toHaveCount(2);
+		await page.getByRole('button', { name: 'Set range start' }).click();
+		await page.getByRole('button', { name: 'Forward five seconds' }).click();
+		await page.getByRole('button', { name: 'Set range end' }).click();
+		await page.getByRole('button', { name: 'Export focused camera' }).click();
+		const panel = page.locator('[data-keep-export]');
+		await expect(panel).toHaveAttribute('data-export-start-ms', String(at));
+		await expect(panel).toHaveAttribute('data-export-end-ms', String(at + 5000));
+		expect(new URL(page.url()).searchParams.get('camera')).toBe(second);
+		expect(new URL(page.url()).searchParams.get('stream')).toBe('sub');
+		const exportUrl = page.url();
+		await page.reload();
+		await expect(panel).toHaveAttribute('data-export-start-ms', String(at));
+		await panel.getByRole('button', { name: 'Create export', exact: true }).click();
+		await expect(panel).toHaveAttribute('data-export-status', 'ready', { timeout: 30_000 });
+		const downloaded = page.waitForEvent('download');
+		await panel.getByRole('button', { name: 'Download', exact: true }).click();
+		const result = await downloaded;
+		const path = await result.path();
+		if (!path) throw new Error('The verified recorder download must produce a local MP4.');
+		const bytes = await readFile(path);
+		expect(bytes.subarray(4, 8).toString('ascii')).toBe('ftyp');
+		expect(bytes.length).toBeGreaterThan(1024);
+		await page.getByRole('button', { name: 'Back to comparison' }).click();
+		await expect(page.getByRole('combobox', { name: 'Focused camera' })).toHaveValue(second);
+		await expect(page.getByRole('combobox', { name: 'Audio source' })).toHaveValue(first);
+		const returned = new URL(page.url()).searchParams;
+		expect(returned.getAll('compare')).toEqual([...cardSourceIds]);
+		expect([returned.get('at'), returned.get('rangeStart'), returned.get('rangeEnd')]).toEqual([
+			String(at + 5000),
+			String(at),
+			String(at + 5000)
+		]);
+		const stale = new URL(exportUrl);
+		stale.searchParams.set('rangeStart', String(at - 80_000));
+		await page.goto(stale.href);
+		await expect(page.getByRole('alert')).toHaveText(/no longer covers the entire selected range/);
+		await expect(panel).toHaveCount(0);
+	} finally {
+		try {
+			await context.unroute('**/*', redirect);
+		} finally {
+			await server.close();
 		}
 	}
 });

@@ -30,7 +30,7 @@ can display the same picture or skip a picture. Space toggles playback. J, K and
 and pause. `[` and `]` set export boundaries. Form fields keep their normal keyboard behavior.
 Arrow keys pan a focused digitally zoomed image.
 
-### Compare recordings from two cameras
+### Compare recordings from multiple cameras
 
 Open a recording in **Keep**. Under **Compare with**, select a second camera.
 Use **Add camera** to compare up to four selected cameras. **Remove** drops a
@@ -47,6 +47,12 @@ when decoder capacity is limited. Pausing, seeking or changing the focused or
 audio camera updates the link so it can reopen the comparison at that moment.
 **Copy link to this moment** captures the current playhead while recordings are
 playing. The browser remembers the playback speed and mute preference.
+For an export, choose a camera under **Focus**. Mark the shared UTC playhead with
+**Set range start** and **Set range end**, up to two minutes apart. **Export
+focused camera** opens the usual export workflow for that camera and stream.
+The recorder checks retained coverage. **Back to comparison** restores the
+camera selection, focus, audio, marked range and shared time.
+
 On a compact screen, up to two recordings can decode. A hidden browser tab
 releases the comparison players and reopens visible footage on return.
 

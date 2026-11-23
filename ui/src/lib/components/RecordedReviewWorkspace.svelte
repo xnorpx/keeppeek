@@ -2,6 +2,7 @@
 	import { onMount, untrack } from 'svelte';
 	import { resolve } from '$app/paths';
 	import CopyMomentLink from './CopyMomentLink.svelte';
+	import { MAX_EXPORT_DURATION_MS } from '$lib/keep-modes';
 	import { recordedPlaybackRates } from './RecordedPlaybackControls.svelte';
 	import { GridPlaybackSession, maximumReviewCameras } from '$lib/grid-playback-session';
 	import { RecordedReviewRequests } from '$lib/recorded-review-requests';
@@ -32,6 +33,7 @@
 		focusedId,
 		preferences,
 		updateLink,
+		openExport,
 		single
 	}: {
 		cameras: CameraListItem[];
@@ -40,6 +42,12 @@
 		focusedId: string;
 		preferences: PlaybackPreferenceDocument;
 		updateLink: (at: number, focus: string, selection: KeepReviewSelection) => void;
+		openExport: (
+			at: number,
+			focus: string,
+			stream: RecordingSegment['stream'],
+			selection: KeepReviewSelection
+		) => void;
 		single: (at: number, focus: string) => void;
 	} = $props();
 	const client = useControlClient();
@@ -50,6 +58,22 @@
 	let muted = $state(untrack(() => preferences.media.muted));
 	let epoch = $state(untrack(() => startMs));
 	let playing = $state(false);
+	let rangeStart = $state(untrack(() => selection.range?.startMs ?? null));
+	let rangeEnd = $state(untrack(() => selection.range?.endMs ?? null));
+	const range = $derived(
+		rangeStart !== null &&
+			rangeEnd !== null &&
+			rangeEnd > rangeStart &&
+			rangeEnd - rangeStart <= MAX_EXPORT_DURATION_MS
+			? { startMs: rangeStart, endMs: rangeEnd }
+			: undefined
+	);
+	let ids = $state(untrack(() => [...selection.cameraIds]));
+	const reviewSelection = $derived({
+		cameraIds: ids,
+		audioCameraId: audio,
+		...(range ? { range } : {})
+	});
 	let revision = $state(0);
 	let budget = $state(2);
 	let visible = $state<Record<string, number>>({});
@@ -59,7 +83,6 @@
 	let loadedWindow = $state<number | null>(null);
 	let unavailable = $state(false);
 	let retry = $state(0);
-	let ids = $state(untrack(() => [...selection.cameraIds]));
 	let seekInput = $state(untrack(() => new Date(startMs).toISOString().slice(0, 23)));
 	const authorized = $derived(cameras.filter((c) => ids.includes(c.id)));
 	const bucket = $derived(Math.floor(epoch / 60_000) * 60_000);
@@ -156,6 +179,11 @@
 		return () => controller.abort();
 	});
 
+	function markRange(edge: 'start' | 'end') {
+		if (edge === 'start') rangeStart = moment();
+		else rangeEnd = moment();
+		persist();
+	}
 	function comparisonLink() {
 		return recordingMomentUrl({
 			origin: window.location.origin,
@@ -165,7 +193,7 @@
 			timestampMs: moment(),
 			streamPreference: recordedPreference(preferences, focus),
 			mode: 'timeline',
-			review: { cameraIds: ids, audioCameraId: audio }
+			review: reviewSelection
 		});
 	}
 	function rememberMedia() {
@@ -177,7 +205,7 @@
 	}
 
 	function persist() {
-		updateLink(moment(), focus, { cameraIds: ids, audioCameraId: audio });
+		updateLink(moment(), focus, reviewSelection);
 	}
 	function seekTo(at: number) {
 		const valid = parseMomentTimestamp(String(Math.floor(at)));
@@ -352,6 +380,32 @@
 					>{/each}</select
 			></label
 		>
+	</div>
+	<div class="flex flex-wrap items-center gap-3">
+		<button type="button" class="min-h-11 px-2" onclick={() => markRange('start')}
+			>Set range start</button
+		>
+		{#if rangeStart !== null}<time datetime={new Date(rangeStart).toISOString()}
+				>{new Date(rangeStart).toISOString()}</time
+			>{/if}
+		<button type="button" class="min-h-11 px-2" onclick={() => markRange('end')}
+			>Set range end</button
+		>
+		{#if rangeEnd !== null}<time datetime={new Date(rangeEnd).toISOString()}
+				>{new Date(rangeEnd).toISOString()}</time
+			>{/if}
+		<button
+			type="button"
+			class="min-h-11 rounded-sm border border-hairline px-3 disabled:opacity-45"
+			disabled={!range || !chosen.has(focus)}
+			onclick={() => {
+				const segment = chosen.get(focus);
+				if (range && segment) openExport(moment(), focus, segment.stream, reviewSelection);
+			}}>Export focused camera</button
+		>
+		{#if rangeStart !== null && rangeEnd !== null && !range}<p role="status"
+				>Choose an end after the start, within two minutes.</p
+			>{/if}
 	</div>
 	{#if unavailable}<button type="button" onclick={() => retry++}>Retry coverage</button>{/if}
 	<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
