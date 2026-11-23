@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
+	import type { ProfileSubscription } from '$lib/runtime-profile-shared-watch';
 	import type { CameraSettings } from '$lib/types';
 	import {
 		maxRuntimeProfiles,
@@ -95,10 +96,18 @@
 		runtimeStatus = next;
 	}
 
+	async function releaseWatch(watch?: ProfileSubscription): Promise<void> {
+		try {
+			await watch?.close();
+		} catch {
+			// The handle detaches locally before the recorder acknowledges its removal.
+		}
+	}
+
 	function observeHeader(): () => void {
 		headerError = null;
 		let stopped = false;
-		let watch: { close: () => Promise<void> } | undefined;
+		let watch: ProfileSubscription | undefined;
 		const unavailable = (cause?: unknown) => {
 			if (stopped) return;
 			activeUpdates++;
@@ -122,13 +131,13 @@
 				acceptActive(next);
 			}, unavailable)
 			.then((opened) => {
-				if (stopped) void opened.close();
+				if (stopped) void releaseWatch(opened);
 				else watch = opened;
 			})
 			.catch(unavailable);
 		return () => {
 			stopped = true;
-			if (watch) void watch.close();
+			void releaseWatch(watch);
 		};
 	}
 
@@ -136,7 +145,7 @@
 		let stopped = false;
 		let received = false;
 		let refused = false;
-		let watch: { close: () => Promise<void> } | undefined;
+		let watch: ProfileSubscription | undefined;
 		runtimeStatus = null;
 		observationError = null;
 		function unavailable(cause: unknown) {
@@ -158,7 +167,7 @@
 				}
 			)
 			.then((opened) => {
-				if (stopped) void opened.close();
+				if (stopped) void releaseWatch(opened);
 				else watch = opened;
 			})
 			.catch((cause: unknown) => {
@@ -176,12 +185,12 @@
 			});
 		return () => {
 			stopped = true;
-			if (watch) void watch.close();
+			void releaseWatch(watch);
 		};
 	}
 
 	onMount(() => {
-		let registryWatch: { close: () => Promise<void> } | undefined;
+		let registryWatch: ProfileSubscription | undefined;
 		let stopHeader = observeHeader();
 		let stopObserving = observeStatus();
 		let disposed = false;
@@ -214,14 +223,14 @@
 					acceptRegistry(next);
 				}, registryFailure)
 				.then((watch) => {
-					if (disposed) void watch.close();
+					if (disposed) void releaseWatch(watch);
 					else registryWatch = watch;
 				})
 				.catch(registryFailure);
 		}
 		return () => {
 			disposed = true;
-			if (registryWatch) void registryWatch.close();
+			void releaseWatch(registryWatch);
 			stopHeader();
 			stopObserving();
 		};
