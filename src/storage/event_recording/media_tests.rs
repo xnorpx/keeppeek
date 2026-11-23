@@ -1,8 +1,9 @@
 use super::*;
 use crate::storage::{
     catalog::{RecordingCatalog, RecordingCatalogHandle},
-    frame::{AudioCodec, AudioFrame, MediaFrame, VideoCodec, VideoFrame},
+    frame::{AudioCodec, AudioFrame, MediaFrame, VideoCodec},
     medium_term::MediumTermWriter,
+    test_media::video_fixture,
 };
 use std::{
     fs::File,
@@ -12,56 +13,7 @@ use std::{
 };
 
 fn fixture(codec: VideoCodec) -> Vec<RecordingFrame> {
-    let suffix = match codec {
-        VideoCodec::H264 => "h264",
-        VideoCodec::H265 => "h265",
-    };
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "crates/test-camera/testdata/cc-4k-640x360-{suffix}.mp4"
-    ));
-    let mut reader = mp4::read_mp4(File::open(path).unwrap()).unwrap();
-    let (&id, track) = reader
-        .tracks()
-        .iter()
-        .find(|(_, track)| track.track_type().ok() == Some(mp4::TrackType::Video))
-        .unwrap();
-    let decoder = track.video_decoder_config().unwrap().unwrap();
-    let config = track.media_config_for_description(1).unwrap();
-    let parameters: Vec<Vec<u8>> = match config {
-        mp4::MediaConfig::AvcConfig(config) => vec![config.seq_param_set, config.pic_param_set],
-        mp4::MediaConfig::HevcConfig(config) => vec![config.vps, config.sps, config.pps],
-        _ => panic!("fixture must use H.264 or H.265"),
-    };
-    let timescale = track.timescale();
-    let count = track.sample_count();
-    let start = Instant::now() - Duration::from_secs(60);
-    (0..count * 6)
-        .map(|index| {
-            let sample = reader.read_sample(id, index % count + 1).unwrap().unwrap();
-            let mut bytes = Vec::new();
-            if sample.is_sync {
-                for parameter in &parameters {
-                    bytes.extend_from_slice(&u32::try_from(parameter.len()).unwrap().to_be_bytes());
-                    bytes.extend_from_slice(parameter);
-                }
-            }
-            bytes.extend_from_slice(&sample.bytes);
-            RecordingFrame {
-                source_rtp: None,
-                received_at: start
-                    + Duration::from_secs(u64::from(index / count))
-                    + Duration::from_secs_f64(sample.start_time as f64 / f64::from(timescale)),
-                timestamp: None,
-                frame: MediaFrame::Video(VideoFrame {
-                    codec,
-                    is_keyframe: sample.is_sync,
-                    width: u32::from(decoder.width),
-                    height: u32::from(decoder.height),
-                    data: bytes.into(),
-                }),
-            }
-        })
-        .collect()
+    video_fixture(codec, "640x360")
 }
 
 fn audio_fixture(start: Instant) -> Vec<RecordingFrame> {
@@ -169,7 +121,12 @@ fn drain(
             }
             EventOutput::Finish { end, .. } => {
                 if let Some(writer) = writer.take() {
-                    paths.push(writer.finalize_before(end).unwrap());
+                    paths.push(
+                        writer
+                            .finalize_before(end)
+                            .expect("finalize the fixture event recording")
+                            .expect("the emitted GOP must publish a segment before event finish"),
+                    );
                 }
             }
         }
@@ -310,9 +267,10 @@ fn verify_audio_coverage(path: &Path) -> f64 {
 }
 
 fn verify_catalog_seek(handle: &RecordingCatalogHandle, stream: &str, path: &Path) {
-    let now = time::OffsetDateTime::now_utc().unix_timestamp() * 1000;
+    // This private catalog contains one fixture recording. Decoding it can take longer than
+    // its synthetic age, so seek the indexed time instead of a window relative to wall time.
     let fragments = handle
-        .media_fragments_in_range(stream, now - 120_000, now)
+        .media_fragments_in_range(stream, 0, i64::MAX)
         .unwrap();
     assert!(
         fragments.len() >= 2,
@@ -323,6 +281,13 @@ fn verify_catalog_seek(handle: &RecordingCatalogHandle, stream: &str, path: &Pat
         fragments
             .iter()
             .all(|fragment| fragment.recording_id == first.recording_id)
+    );
+    let at_first = handle
+        .media_fragments_in_range(stream, first.start_ms, first.start_ms + 1)
+        .unwrap();
+    assert!(
+        at_first.contains(first),
+        "the indexed start must resolve this fragment"
     );
     let mut source = File::open(&first.path).unwrap();
     let mut clip = Vec::new();

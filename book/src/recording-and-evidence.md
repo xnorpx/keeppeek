@@ -211,6 +211,24 @@ Long histories remain bounded: fleet pages contain 25 cameras by default, recent
 at most 256 ranges per stream, and longer periods use deterministic time buckets while retaining
 exact totals.
 
+## Interrupted legacy recording initialization
+
+On Unix, KeepPeek can encounter two different files at the same active recording name
+while recovering a failed header write. The current occupant stays in place. The displaced
+entry retains its original filename under `.keeppeek-header-recovery-v1/` in the same
+recording hour. Its private `<active name>.pins-v2/` directory holds a hard link whose
+name records the device and inode from the writer's open file handle. This single link
+both holds the inode across a restart and identifies it before the move into recovery.
+Recording listings, integrity scans, and date or capacity pruning skip the recovery directory.
+When the active name is next requested, KeepPeek verifies the pin before reclaiming a partial
+file belonging to the failed write or restores a displaced entry to its vacant original name.
+For an older recording, stop writers for that directory and preserve the saved entry under a vacant
+recovery name. Inspect both files before changing either. A staged entry without a valid
+recovery record is left in place. An inaccessible directory or one with untrusted ownership
+or permissions is skipped. New recordings still require a vacant active filename.
+Named storage volumes use their allocation ledger for
+recovery.
+
 ## Review events consistently
 
 Open **Events** to search across authorized cameras. Choose the UTC date and optional start/end

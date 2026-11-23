@@ -83,10 +83,12 @@ fn publish_verify(
         root.identity() == &job.binding.identity,
         "archive transfer root changed"
     );
-    let capacity = root.capacity(catalog.volume_ledger_revision()?)?;
-    catalog.archive(Request::ReserveTransfer {
-        id: job.id.clone(),
-        capacity,
+    catalog.with_fresh_capacity(&root, |capacity| {
+        work.check()?;
+        catalog.archive(Request::ReserveTransfer {
+            id: job.id.clone(),
+            capacity,
+        })
     })?;
     let mut source = DigestReader {
         source,
