@@ -173,11 +173,16 @@ async def main(work):
             raw=carry+data
             for label in (b'Uptime',b'Enlarge',b'\x1b[?1049l'):
                 if label in raw:markers.add(label)
-            carry=raw[-200:]
+            carry=raw[-4000:]
         loop.add_reader(master,drain)
         for _ in range(90):
             if b'Uptime' in markers and all(r.accepted>0 for r in relays.values()):break
-            assert all(p.returncode is None for p in procs), 'fixture stopped during startup'
+            assert all(p.returncode is None for p in procs), (
+                'fixture stopped during startup', [p.returncode for p in procs],
+                (work/'camera.log').read_text(errors='replace')[-4000:],
+                (work/'off'/'server.log').read_text(errors='replace')[-4000:],
+                carry.decode(errors='backslashreplace'),
+            )
             await asyncio.sleep(1)
         assert b'Uptime' in markers and all(r.accepted>0 for r in relays.values()), (markers,{str(k):r.accepted for k,r in relays.items()})
         start=time.monotonic()
