@@ -1,5 +1,8 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
+	import { resolve } from '$app/paths';
+	import CopyMomentLink from './CopyMomentLink.svelte';
+	import { recordedPlaybackRates } from './RecordedPlaybackControls.svelte';
 	import { GridPlaybackSession, maximumReviewCameras } from '$lib/grid-playback-session';
 	import { RecordedReviewRequests } from '$lib/recorded-review-requests';
 	import { useControlClient } from '$lib/control-context';
@@ -7,8 +10,18 @@
 		browserSupportsRecordedEncoding,
 		selectRecordedStream
 	} from '$lib/recorded-playback-policy';
-	import { recordedPreference, type PlaybackPreferenceDocument } from '$lib/playback-preferences';
-	import { parseMomentTimestamp, type KeepReviewSelection } from '$lib/keep-link';
+	import {
+		recordedPreference,
+		loadPlaybackPreferences,
+		savePlaybackPreferences,
+		withMediaPreferences,
+		type PlaybackPreferenceDocument
+	} from '$lib/playback-preferences';
+	import {
+		parseMomentTimestamp,
+		recordingMomentUrl,
+		type KeepReviewSelection
+	} from '$lib/keep-link';
 	import type { CameraListItem, RecordingSegment, RecordingsResponse } from '$lib/types';
 	import RecordedReviewTile from './RecordedReviewTile.svelte';
 
@@ -139,6 +152,26 @@
 		return () => controller.abort();
 	});
 
+	function comparisonLink() {
+		return recordingMomentUrl({
+			origin: window.location.origin,
+			keepPath: resolve('/keep'),
+			eventsPath: resolve('/events'),
+			cameraId: focus,
+			timestampMs: moment(),
+			streamPreference: recordedPreference(preferences, focus),
+			mode: 'timeline',
+			review: { cameraIds: ids, audioCameraId: audio }
+		});
+	}
+	function rememberMedia() {
+		const latest = loadPlaybackPreferences(window.localStorage);
+		savePlaybackPreferences(
+			window.localStorage,
+			withMediaPreferences(latest, { muted, playbackRate: rate })
+		);
+	}
+
 	function persist() {
 		updateLink(moment(), focus, { cameraIds: ids, audioCameraId: audio });
 	}
@@ -199,6 +232,7 @@
 <section class="mx-auto flex h-full max-w-[120rem] flex-col gap-3 overflow-y-auto p-3 md:p-5">
 	<header class="flex flex-wrap items-center justify-between gap-3">
 		<h1 class="text-xl font-semibold">Compare recordings</h1>
+		<CopyMomentLink getLink={comparisonLink} />
 		<button class="h-11 px-3 underline" onclick={() => single(moment(), focus)}
 			>Single camera</button
 		>
@@ -285,7 +319,13 @@
 					>{/each}</select
 			></label
 		>
-		<button class="h-11 px-2" onclick={() => (muted = !muted)}>{muted ? 'Unmute' : 'Mute'}</button>
+		<button
+			class="h-11 px-2"
+			onclick={() => {
+				muted = !muted;
+				rememberMedia();
+			}}>{muted ? 'Unmute' : 'Mute'}</button
+		>
 		<label
 			>Speed <select
 				aria-label="Playback speed"
@@ -293,8 +333,9 @@
 				onchange={(event) => {
 					rate = Number(event.currentTarget.value);
 					clock.setRate(rate, performance.now());
+					rememberMedia();
 				}}
-				>{#each [0.5, 1, 1.5, 2] as speed (speed)}<option value={speed}>{speed}×</option
+				>{#each recordedPlaybackRates as speed (speed)}<option value={speed}>{speed}×</option
 					>{/each}</select
 			></label
 		>

@@ -45,6 +45,8 @@ Use **Audio** to select the one camera whose recording can be heard, and **Mute*
 or **Unmute** to control listening. **Focus** chooses which camera has priority
 when decoder capacity is limited. Pausing, seeking or changing the focused or
 audio camera updates the link so it can reopen the comparison at that moment.
+**Copy link to this moment** captures the current playhead while recordings are
+playing. The browser remembers the playback speed and mute preference.
 On a compact screen, up to two recordings can decode. A hidden browser tab
 releases the comparison players and reopens visible footage on return.
 

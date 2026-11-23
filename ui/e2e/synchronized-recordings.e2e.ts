@@ -270,7 +270,15 @@ test('add and remove four authorized sources and seek their common UTC without t
 		await expect.poll(() => new URL(page.url()).searchParams.get('at')).toBe(String(seek));
 		await page.getByRole('combobox', { name: 'Focused camera' }).selectOption(reviewSourceIds[3]);
 		await page.getByRole('combobox', { name: 'Audio source' }).selectOption(reviewSourceIds[2]);
+		await page.getByRole('combobox', { name: 'Playback speed' }).selectOption('2');
+		await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
+		await page.getByRole('button', { name: 'Copy link to this moment (sign-in required)' }).click();
+		const copied = new URL(await page.evaluate(() => navigator.clipboard.readText()));
+		expect(copied.searchParams.get('at')).toBe(String(seek));
+		expect(copied.searchParams.getAll('compare')).toEqual([...reviewSourceIds]);
+		expect(copied.searchParams.get('audio')).toBe(reviewSourceIds[2]);
 		await page.reload();
+		await expect(page.getByRole('combobox', { name: 'Playback speed' })).toHaveValue('2');
 		await expect(page.getByRole('combobox', { name: 'Focused camera' })).toHaveValue(
 			reviewSourceIds[3]
 		);
