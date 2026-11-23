@@ -60,8 +60,10 @@ focused camera** opens the usual export workflow for that camera and stream.
 The recorder checks retained coverage. **Back to comparison** restores the
 camera selection, focus, audio, marked range and shared time.
 
-On a compact screen, up to two recordings can decode. A hidden browser tab
-releases the comparison players and reopens visible footage on return.
+On a compact screen, up to two recordings can decode. On phones, **Comparison
+options** opens the camera, audio, speed, UTC seek and marked-range controls.
+A hidden browser tab releases the comparison players and reopens visible footage
+on return.
 If the connection drops during playback, the sign-in screen clears the camera
 views. After reconnecting, the comparison opens paused at the last shared UTC
 time. A comparison link still opens its authorized cameras when a selected camera
