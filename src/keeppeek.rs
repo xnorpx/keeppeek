@@ -429,7 +429,7 @@ struct InactiveCamera {
 }
 
 impl InactiveCamera {
-    fn from_config(config: &crate::cameras::CameraConfig) -> Self {
+    const fn from_config(config: &crate::cameras::CameraConfig) -> Self {
         Self {
             recording_mode: config.recording_mode,
             reason: if config.username.is_empty() {
