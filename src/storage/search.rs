@@ -1060,6 +1060,35 @@ mod tests {
         assert_eq!(bounded.hits.len(), 10);
         assert!(bounded.candidates_truncated);
 
+        let revision_query = EventSemanticSearchQuery::new(
+            EventEmbedding {
+                model_id: "vision-embedding".to_owned(),
+                values: vec![1.0, 0.0, 0.0],
+            },
+            "main",
+            0,
+            40_000,
+        );
+        let mut revised = handle.event_by_id("event-alice").unwrap().unwrap();
+        revised.revision += 1;
+        revised.kind = "reclassified".to_owned();
+        handle.insert_event(revised).unwrap();
+        let page = search.search_semantic(revision_query.clone()).unwrap();
+        assert_eq!(page.hits.len(), 1);
+        assert_eq!(page.hits[0].event_id, "event-vehicle");
+
+        search
+            .set_embedding("event-alice", revision_query.embedding.clone())
+            .unwrap();
+        let page = search.search_semantic(revision_query.clone()).unwrap();
+        assert_eq!(page.hits.len(), 2);
+        assert_eq!(page.hits[0].event_id, "event-alice");
+        handle.close_event("event-alice", 20_000).unwrap();
+        let page = search.search_semantic(revision_query).unwrap();
+        assert_eq!(page.hits.len(), 1);
+        assert_eq!(page.hits[0].event_id, "event-vehicle");
+
+
         let text_window_error = search
             .search_text(EventTextSearchQuery::new(
                 "alice",
