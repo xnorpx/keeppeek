@@ -153,6 +153,29 @@ function presentWhileDecoding(
 	});
 }
 
+function waitForPausedPaint(signal: AbortSignal, deadline: number): Promise<boolean> {
+	const remaining = deadline - performance.now();
+	if (signal.aborted || remaining <= 0) return Promise.resolve(false);
+	return new Promise<boolean>((resolve) => {
+		let settled = false;
+		let frame: number;
+		const finish = (painted: boolean) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			cancelAnimationFrame(frame);
+			signal.removeEventListener('abort', cancelled);
+			resolve(painted);
+		};
+		const cancelled = () => finish(false);
+		const timer = setTimeout(cancelled, remaining);
+		signal.addEventListener('abort', cancelled, { once: true });
+		frame = requestAnimationFrame(() => {
+			if (!settled) frame = requestAnimationFrame(() => finish(true));
+		});
+	});
+}
+
 export class RecordedFramePlayer {
 	selection = $state.raw<Selection>();
 	busy = $state(false);
@@ -160,7 +183,12 @@ export class RecordedFramePlayer {
 	unsupported = $state(false);
 	displayedNs = $state<bigint>();
 	private active?: AbortController;
-	private handoff?: AbortController;
+	private handoff = $state.raw<AbortController>();
+	revealingPicture = $state(false);
+
+	get resumingPlayback(): boolean {
+		return this.handoff !== undefined;
+	}
 	private preroll = false;
 
 	get preparingPlayback(): boolean {
@@ -175,6 +203,7 @@ export class RecordedFramePlayer {
 	clear(): void {
 		this.handoff?.abort();
 		this.handoff = undefined;
+		this.revealingPicture = false;
 		this.active?.abort();
 		this.active = undefined;
 		this.pendingSteps = 0;
@@ -238,9 +267,9 @@ export class RecordedFramePlayer {
 		coordinates: readonly bigint[],
 		targetUs: number,
 		signal: AbortSignal,
-		current: () => boolean
+		current: () => boolean,
+		deadline: number
 	): Promise<boolean> {
-		const deadline = performance.now() + 5_000;
 		const url = cursor.url;
 		const positions = coordinates
 			.map((coordinate) => cursor.mediaUsForStoredNs(coordinate))
@@ -308,6 +337,7 @@ export class RecordedFramePlayer {
 		this.notice = '';
 		const current = () =>
 			!controller.signal.aborted && ownsPicture() && cursor.url === url && video.currentSrc === url;
+		const deadline = performance.now() + 5_000;
 		try {
 			const displayed = await this.findPausedPicture(
 				video,
@@ -315,22 +345,18 @@ export class RecordedFramePlayer {
 				coordinates,
 				targetUs,
 				controller.signal,
-				current
+				current,
+				deadline
 			);
 			if (displayed && current() && video.paused) {
-				this.displayedNs = sample.storedTimeNs;
-				if (retained && !retained.verified()) return false;
-				this.selection = undefined;
-				// Paint the verified paused video before ordinary Play can advance it.
-				await new Promise<void>((resolve) =>
-					requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
-				);
-				return (
-					!controller.signal.aborted &&
-					cursor.url === url &&
-					video.currentSrc === url &&
-					video.paused
-				);
+				// Keep ownership of the canvas until the verified video has had a chance to paint.
+				this.revealingPicture = true;
+				const painted = await waitForPausedPaint(controller.signal, deadline);
+				if (painted && current() && video.paused && (!retained || retained.verified())) {
+					this.displayedNs = sample.storedTimeNs;
+					this.selection = undefined;
+					return true;
+				}
 			}
 			if (!controller.signal.aborted && ownsPicture())
 				this.notice =
@@ -338,7 +364,10 @@ export class RecordedFramePlayer {
 			return false;
 		} finally {
 			retained?.signal.removeEventListener('abort', cancel);
-			if (this.handoff === controller) this.handoff = undefined;
+			if (this.handoff === controller) {
+				this.revealingPicture = false;
+				this.handoff = undefined;
+			}
 		}
 	}
 

@@ -2128,11 +2128,11 @@
 		storedPlayback?.setPlaybackRate(speed);
 	}
 
-	function cancelFrameResume(): void {
+	function cancelFrameResume(keepPicture = false): void {
 		frames.cancelHandoff();
 		frameResume?.abort();
 		frameResume = undefined;
-		coldPicture = undefined;
+		if (!keepPicture) coldPicture = undefined;
 	}
 
 	async function resumeColdPicture(retained: ColdPicture, timestampMs: number): Promise<void> {
@@ -2199,7 +2199,7 @@
 	}
 
 	function setPlaying(nextPlaying: boolean): void {
-		if (!nextPlaying) cancelFrameResume();
+		if (!nextPlaying) cancelFrameResume(true);
 		if (nextPlaying && frameResume) return;
 		const selection = selectedPicture;
 		if (nextPlaying && selection) {
@@ -2255,7 +2255,7 @@
 	}
 
 	function toggleTransport(): void {
-		if (playing || shuttleDirection === -1) {
+		if (playing || frameResume || frames.resumingPlayback || shuttleDirection === -1) {
 			pauseTransport();
 			return;
 		}
@@ -2882,7 +2882,7 @@
 									{#if storedPlayback?.canStepExactly}
 										<canvas
 											bind:this={frameCanvas}
-											hidden={!selectedPicture}
+											hidden={!selectedPicture || frames.revealingPicture}
 											aria-label="Selected recorded picture"
 											class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
 										></canvas>
@@ -2963,7 +2963,7 @@
 						frameNotice={frames.notice}
 						frameLoading={frames.busy || Boolean(frameResume)}
 						onoptions={mobilePortrait ? () => openMobilePanel('playback') : undefined}
-						{playing}
+						playing={playing || Boolean(frameResume) || frames.resumingPlayback}
 						muted={playbackMuted}
 						volume={playbackVolume}
 						rate={playbackRate}

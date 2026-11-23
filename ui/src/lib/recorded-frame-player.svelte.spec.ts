@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { RecordedFramePlayer } from './recorded-frame-player.svelte';
 import { UnsupportedRecordedFrame, type PresentedStoredFrame } from './stored-frame-step';
 
@@ -242,6 +242,66 @@ test('resuming waits for the selected compositor picture and a settled seek, and
 	player.clear();
 	expect(await cancelled).toBe(false);
 });
+
+test.each(['pause', 'timeout'] as const)(
+	'a suspended paint releases the %s handoff without discarding the selected picture',
+	async (ending) => {
+		const fixture = observedVideo();
+		const player = new RecordedFramePlayer();
+		const sample = picture(1);
+		sample.frame.close();
+		const cursor = {
+			url: fixture.video.currentSrc,
+			...clock(0),
+			canStepExactly: true,
+			stepRecordedFrame: () => Promise.resolve(picture(1))
+		};
+		Object.defineProperty(fixture.video, 'readyState', {
+			value: HTMLMediaElement.HAVE_CURRENT_DATA
+		});
+		const retained = new AbortController();
+		const verified = vi.fn(() => true);
+		if (ending === 'pause') player.selection = sample;
+		const firstPaint = Promise.withResolvers<void>();
+		const paints: FrameRequestCallback[] = [];
+		if (ending === 'timeout') vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		const schedule = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+			paints.push(cb);
+			firstPaint.resolve();
+			return paints.length;
+		});
+		const cancelled = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+		try {
+			const result = player.alignForPlay(
+				fixture.video,
+				cursor,
+				ending === 'timeout' ? { picture: sample, signal: retained.signal, verified } : undefined
+			);
+			await Promise.resolve();
+			fixture.callback()(0.041);
+			await firstPaint.promise;
+			expect(player.revealingPicture).toBe(true);
+			expect(player.resumingPlayback).toBe(true);
+			paints[0](performance.now());
+			expect(paints).toHaveLength(2);
+			if (ending === 'pause') player.cancelHandoff();
+			else await vi.advanceTimersByTimeAsync(5_001);
+			expect(await result).toBe(false);
+			expect(cancelled).toHaveBeenCalledWith(2);
+			paints[1](performance.now());
+			expect(verified).not.toHaveBeenCalled();
+			expect(player.revealingPicture).toBe(false);
+			expect(player.resumingPlayback).toBe(false);
+			expect(fixture.video.paused).toBe(true);
+			if (ending === 'pause') expect(player.selection).toBe(sample);
+			else expect(player.notice).toContain('could not resume');
+		} finally {
+			schedule.mockRestore();
+			cancelled.mockRestore();
+			if (ending === 'timeout') vi.useRealTimers();
+		}
+	}
+);
 
 test('probes recorded GOP intervals and exposes only the matching paused picture', async () => {
 	const fixture = observedVideo();
