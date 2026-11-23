@@ -110,3 +110,6 @@ fn increment(value: u64) -> Result<u64, ControlCommandError> {
         )
     })
 }
+
+#[cfg(test)]
+mod tests;

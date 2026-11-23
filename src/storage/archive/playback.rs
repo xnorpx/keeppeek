@@ -125,6 +125,8 @@ pub fn read_range(
         let count = usize::try_from(CHUNK_BYTES.min(archive.bytes - start))?;
         file.file_mut().seek(SeekFrom::Start(start))?;
         file.read_exact(&mut buffer[..count])?;
+        #[cfg(test)]
+        tests::record_verified_read(count);
         let hash_index = usize::try_from(chunk * 32)?;
         anyhow::ensure!(
             Sha256::digest(&buffer[..count]).as_slice()
@@ -145,7 +147,7 @@ pub fn read_range(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::storage::archive::target::ArchiveTarget;
     use std::{
@@ -154,7 +156,19 @@ mod tests {
         time::Duration,
     };
 
-    fn fixture(
+    thread_local! {
+        static VERIFIED_READS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+    }
+
+    pub(super) fn record_verified_read(bytes: usize) {
+        VERIFIED_READS.update(|(calls, total)| (calls + 1, total + bytes));
+    }
+
+    pub(crate) fn take_verified_reads() -> (usize, usize) {
+        VERIFIED_READS.take()
+    }
+
+    pub(crate) fn fixture(
         bytes: &[u8],
     ) -> anyhow::Result<(std::path::PathBuf, FilesystemArchiveTarget, ArchiveRead)> {
         use crate::storage::long_term::inspection::removal::create_private_directory;
