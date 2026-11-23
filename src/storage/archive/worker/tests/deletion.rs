@@ -411,7 +411,10 @@ fn archive_deletion_blocks_the_only_copy_until_successful_restore() -> anyhow::R
             assert!(confirm(&fixture, &plan, "admin").is_err());
             let blocked = preview(&fixture, selection.clone())?;
             assert_eq!(blocked.items[0].state, "restore_required");
-            assert!(confirm(&fixture, &blocked, "admin").is_err());
+            assert!(blocked.id.is_empty());
+            assert!(blocked.revision.is_empty());
+            assert!(blocked.nonce.is_none());
+            assert_eq!(blocked.expires_ms, 0);
         }
     }
     assert_eq!(std::fs::read(&path)?, original);

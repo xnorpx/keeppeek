@@ -701,17 +701,10 @@ fn archived_export_download_survives_expiry_history_prune_and_source_retirement(
             })
             .unwrap();
         assert_eq!(preview.items[0].state, "primary_unavailable");
-        assert!(
-            handle
-                .deletion(Request::Confirm {
-                    actor: "admin".into(),
-                    policy: handle.deletion_policy().unwrap(),
-                    plan: preview.id,
-                    revision: preview.revision,
-                    nonce: preview.nonce.unwrap()
-                })
-                .is_err()
-        );
+        assert!(preview.id.is_empty());
+        assert!(preview.revision.is_empty());
+        assert!(preview.nonce.is_none());
+        assert_eq!(preview.expires_ms, 0);
     }
     let (result, messages) = download_export(&state, "owner", request.clone()).unwrap();
     assert_eq!(result.job.unwrap().job_id, "named-export");

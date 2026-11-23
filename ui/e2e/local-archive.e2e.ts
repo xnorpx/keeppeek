@@ -408,7 +408,7 @@ test('local archive survives restart and plays evicted media before restoring it
 			archive,
 			job,
 			deletionCompleted
-				? '· deleted'
+				? 'Deletion acknowledged'
 				: 'Archive retained. The primary needs filesystem-enforced write protection'
 		);
 		evidence.transfers.push({
