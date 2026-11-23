@@ -194,6 +194,31 @@ fn first_last_gap_codec_and_retired_fragment_have_explicit_outcomes() {
         target_window(&window, 10_120_000_000, None, false, &work()).err(),
         Some(Unavailable::Discontinuity)
     );
+    let next = recording_with_width(&next_path, &[Some(120), Some(160), Some(200)], 640);
+    window[1].init_len = next[0].init_len;
+    window[1].byte_offset = next[0].byte_offset;
+    window[1].byte_len = next[0].byte_len;
+    for (anchor, forward, width, ticks) in [
+        (10_080_000_000, true, 640, 120),
+        (10_120_000_000, false, 320, 80),
+    ] {
+        let target = target_window(&window, anchor, None, forward, &work()).unwrap();
+        assert_eq!(target.index.decoder.width, width);
+        let step = plan(target, &proto::StepStoredFrame::default(), &work()).unwrap();
+        assert_eq!(step.result.source_ticks, ticks);
+        assert!(step.samples[0].sync);
+        let format = step
+            .result
+            .configuration
+            .unwrap()
+            .format
+            .unwrap()
+            .format
+            .unwrap();
+        assert!(
+            matches!(format, proto::media_data_format::Format::Video(video) if video.width == u32::from(width))
+        );
+    }
     window[1].start_ms += 500;
     assert_eq!(
         target_window(&window, 10_080_000_000, None, true, &work()).err(),

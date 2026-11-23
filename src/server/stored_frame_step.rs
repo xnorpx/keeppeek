@@ -356,8 +356,7 @@ fn target_window<'a>(
     let new = adjacent.pictures[target]
         .source
         .ok_or(Unavailable::Timing)?;
-    if current.decoder != adjacent.decoder
-        || old.session_id != new.session_id
+    if old.session_id != new.session_id
         || old.epoch_id != new.epoch_id
         || old.clock_rate != new.clock_rate
         || (fragment.recording_id == neighbor.recording_id && old.anchor != new.anchor)
@@ -369,6 +368,15 @@ fn target_window<'a>(
         .is_some_and(|p| p.discontinuity)
     {
         return Err(Unavailable::Discontinuity);
+    }
+    // Across two independently indexed GOPs, source clocks must establish the order.
+    // A new codec description is safe because every transfer carries its own config
+    // and starts decoding at an independently decodable picture.
+    match old.timestamp.cmp(&new.timestamp) {
+        std::cmp::Ordering::Equal => return Err(Unavailable::Ambiguous),
+        std::cmp::Ordering::Less if !forward => return Err(Unavailable::Discontinuity),
+        std::cmp::Ordering::Greater if forward => return Err(Unavailable::Discontinuity),
+        _ => {}
     }
     Ok(Window {
         fragment: neighbor,
