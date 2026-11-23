@@ -6,7 +6,7 @@ use super::{
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     sync::atomic::{AtomicBool, Ordering},
     thread,
@@ -17,6 +17,8 @@ use url::Url;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(2);
 const CGI_RESPONSE_BYTES_MAX: u64 = 8 * 1024 * 1024;
+const DOORBELL_ASSET_COUNT_MAX: usize = 128;
+const DOORBELL_ASSET_TEXT_BYTES_MAX: usize = 256;
 const MAX_CONCURRENT_PROBES: usize = 200;
 const BAICHUAN_LISTEN_TIMEOUT: Duration = Duration::from_secs(5);
 const GET_ENC_ATTEMPTS: usize = 3;
@@ -873,22 +875,30 @@ impl ReolinkClient {
         channel: u32,
         username: &str,
     ) -> anyhow::Result<ReolinkDoorbellCapabilities> {
-        let events = self.api_call("GetEvents", Some(serde_json::json!({ "channel": channel })))?;
-        let event_data = events.get("Events").unwrap_or(&events);
-        let visitor_events = reply_channel_matches(&events, channel)
-            && reply_channel_matches(event_data, channel)
-            && event_data
-                .get("visitor")
-                .filter(|visitor| reply_channel_matches(visitor, channel))
-                .and_then(|value| value.get("support"))
-                .and_then(Value::as_u64)
-                .is_some_and(|value| value != 0);
-        let audio_reply = self.api_call(
-            "GetAudioCfg",
-            Some(serde_json::json!({ "channel": channel })),
-        )?;
-        let audio_config = audio_reply.get("AudioCfg").filter(|cfg| {
-            reply_channel_matches(&audio_reply, channel) && reply_channel_matches(cfg, channel)
+        let events = self
+            .api_call("GetEvents", Some(serde_json::json!({ "channel": channel })))
+            .ok();
+        let visitor_events = events.as_ref().is_some_and(|events| {
+            let data = events.get("Events").unwrap_or(events);
+            reply_channel_matches(events, channel)
+                && reply_channel_matches(data, channel)
+                && data
+                    .get("visitor")
+                    .filter(|visitor| reply_channel_matches(visitor, channel))
+                    .and_then(|value| value.get("support"))
+                    .and_then(Value::as_u64)
+                    .is_some_and(|permit| permit != 0)
+        });
+        let audio_reply = self
+            .api_call(
+                "GetAudioCfg",
+                Some(serde_json::json!({ "channel": channel })),
+            )
+            .ok();
+        let audio_config = audio_reply.as_ref().and_then(|reply| {
+            reply.get("AudioCfg").filter(|cfg| {
+                reply_channel_matches(reply, channel) && reply_channel_matches(cfg, channel)
+            })
         });
         let volume = |name: &str| {
             audio_config
@@ -896,46 +906,37 @@ impl ReolinkClient {
                 .and_then(Value::as_u64)
                 .and_then(|value| u8::try_from(value).ok())
         };
-        let files = self.api_call("GetAudioFileList", Some(serde_json::json!({})))?;
-        let quick_reply_assets = files
-            .get("AudioFileList")
-            .and_then(|value| value.get("audioFile"))
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| {
-                        Some((
-                            item.get("id")?.to_string().trim_matches('"').to_owned(),
-                            item.get("name")?.as_str()?.to_owned(),
-                        ))
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let files = self
+            .api_call("GetAudioFileList", Some(serde_json::json!({})))
+            .ok();
+        let files = files.as_ref().and_then(|value| value.get("AudioFileList"));
         let quick_replies = files
-            .get("AudioFileList")
             .and_then(|value| value.get("supportAudioPlay"))
             .and_then(Value::as_u64)
-            .is_some_and(|value| value != 0);
+            .is_some_and(|permit| permit != 0);
+        let quick_reply_assets = if quick_replies {
+            doorbell_assets(files.and_then(|value| value.get("audioFile")), true)
+        } else {
+            Vec::new()
+        };
         let auto_reply = self
             .api_call("GetAutoReply", Some(serde_json::json!({})))
-            .is_ok();
-        let chime_assets = self
-            .api_call("GetDingDongList", Some(serde_json::json!({})))
             .ok()
-            .and_then(|value| value.get("DingDongList").cloned())
-            .and_then(|value| value.get("dingDong").and_then(Value::as_array).cloned())
-            .unwrap_or_default();
-        let chime_assets = chime_assets
-            .iter()
-            .filter_map(|item| {
-                Some((
-                    item.get("id")?.as_str()?.to_owned(),
-                    item.get("name")?.as_str()?.to_owned(),
-                ))
-            })
-            .collect::<Vec<_>>();
+            .is_some_and(|reply| {
+                reply_channel_matches(&reply, channel)
+                    && reply.get("AutoReply").is_some_and(|config| {
+                        config.is_object() && reply_channel_matches(config, channel)
+                    })
+            });
+        let chimes = self
+            .api_call("GetDingDongList", Some(serde_json::json!({})))
+            .ok();
+        let chime_assets = doorbell_assets(
+            chimes
+                .as_ref()
+                .and_then(|value| value.pointer("/DingDongList/dingDong")),
+            false,
+        );
         let chime = !chime_assets.is_empty();
 
         Ok(ReolinkDoorbellCapabilities {
@@ -1834,6 +1835,45 @@ fn parse_video_encoding(codec: Option<&str>) -> VideoEncoding {
     }
 }
 
+fn doorbell_assets(list: Option<&Value>, allow_numeric_ids: bool) -> Vec<(String, String)> {
+    let Some(items) = list.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    if items.len() > DOORBELL_ASSET_COUNT_MAX {
+        return Vec::new();
+    }
+    let mut by_id = BTreeMap::new();
+    for item in items {
+        let Some(raw_id) = item.get("id") else {
+            continue;
+        };
+        let id = raw_id.as_str().map(str::to_owned).or_else(|| {
+            allow_numeric_ids
+                .then_some(raw_id)
+                .and_then(Value::as_u64)
+                .map(|number| number.to_string())
+        });
+        let Some(id) =
+            id.filter(|id| !id.trim().is_empty() && id.len() <= DOORBELL_ASSET_TEXT_BYTES_MAX)
+        else {
+            continue;
+        };
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty() && name.len() <= DOORBELL_ASSET_TEXT_BYTES_MAX);
+        // A repeated ID cannot safely identify an individual device or reply.
+        by_id
+            .entry(id)
+            .and_modify(|entry| *entry = None)
+            .or_insert(name);
+    }
+    by_id
+        .into_iter()
+        .filter_map(|(id, name)| Some((id, name?.to_owned())))
+        .collect()
+}
+
 fn reply_channel_matches(value: &Value, channel: u32) -> bool {
     ["channel", "channelId"].into_iter().all(|name| {
         value
@@ -1979,6 +2019,9 @@ mod tests {
             request.data().unwrap().read_to_string(&mut body).unwrap();
             let body: Value = serde_json::from_str(&body).unwrap();
             let channel = body[0]["param"]["channel"].as_u64().unwrap_or_default();
+            if command == "GetAudioFileList" || (channel == 3 && command == "GetEvents") {
+                return rouille::Response::json(&serde_json::json!([{"cmd": command, "code": 1}]));
+            }
             let value = match command.as_str() {
                 "GetEvents" if channel == 0 => serde_json::json!({
                     "Events": {"visitor": {"channel": 0, "support": 1}},
@@ -1991,6 +2034,16 @@ mod tests {
                 }),
                 "GetAudioCfg" => serde_json::json!({
                     "AudioCfg": {"channelId": 0, "visitorVolume": 83, "visitorLoudspeaker": 1},
+                }),
+                "GetDingDongList" => serde_json::json!({
+                    "DingDongList": {"dingDong": [
+                        {"id": "front", "name": "Front Chime"},
+                        {"id": "ambiguous", "name": "First Chime"},
+                        {"id": "back", "name": "Back Chime"},
+                        {"id": "ambiguous", "name": "Second Chime"},
+                        {"name": "Missing ID"},
+                        {"id": "name-missing"},
+                    ]}
                 }),
                 "GetAbility" => serde_json::json!({
                     "Ability": {"abilityChn": [
@@ -2024,6 +2077,41 @@ mod tests {
         assert!(result[2].visitor_events);
         assert!(!result[2].talkback);
         assert!(result[3].talkback);
+        assert!(!result[3].visitor_events);
+        assert!(result.iter().all(|capabilities| capabilities.chime));
+        assert!(
+            result
+                .iter()
+                .all(|capabilities| !capabilities.quick_replies)
+        );
+        assert_eq!(
+            result[1].chime_assets,
+            vec![
+                ("back".into(), "Back Chime".into()),
+                ("front".into(), "Front Chime".into()),
+            ],
+        );
+    }
+
+    #[test]
+    fn doorbell_assets_are_bounded_and_stable_when_the_camera_reorders_entries() {
+        let mut assets = serde_json::json!([
+            {"id": 2, "name": "Numeric Reply"},
+            {"id": "4", "name": "First Assignment"},
+            {"id": "1", "name": "Text Reply"},
+            {"id": 4, "name": "Same ID From Firmware"},
+            {"id": " ", "name": "Missing ID"},
+            {"id": "too-long", "name": "x".repeat(DOORBELL_ASSET_TEXT_BYTES_MAX + 1)},
+        ]);
+        let expected = vec![
+            ("1".into(), "Text Reply".into()),
+            ("2".into(), "Numeric Reply".into()),
+        ];
+        assert_eq!(doorbell_assets(Some(&assets), true), expected);
+        assets.as_array_mut().unwrap().reverse();
+        assert_eq!(doorbell_assets(Some(&assets), true), expected);
+        let oversized = Value::Array(vec![Value::Null; DOORBELL_ASSET_COUNT_MAX + 1]);
+        assert!(doorbell_assets(Some(&oversized), true).is_empty());
     }
 
     #[test]
