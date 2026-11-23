@@ -1072,7 +1072,7 @@ It reports currently held audio bytes, video bytes and encoded video frames plus
 capacity and expiry drops for that camera profile across listeners. The same source counters
 appear in `WebRtcSourceHealthSnapshot.live_audio` with the saved policy. A listener may hold
 encoded audio for up to 250 ms and the profile shares 256 KiB of audio storage across sessions.
-Identical source payloads shared by listeners count once toward the encoded bytes and frames. Each listener also consumes one queue entry per held unit under the corresponding byte limit. Reported bytes count encoded payload occupancy. Video has the same 250 ms age ceiling with at most 2 MiB and 128 encoded frames per profile.
+Identical source payloads shared by listeners count once toward the encoded bytes and frames. Each listener's allocated queue slots also count toward the byte limit, including empty slots in a partially drained queue. The listener frees the allocation when the queue empties. Reported bytes count encoded payload occupancy. Video has the same 250 ms age ceiling with at most 2 MiB and 128 encoded frames per profile.
 Capacity rejects new frames. Expiry discards late frames. A codec change, backward source time,
 reconnect, policy change or removed subscription invalidates its pending correction.
 These limits describe the server-side hold. Transport and browser playout can add latency. Reliable AAC frames carry the original

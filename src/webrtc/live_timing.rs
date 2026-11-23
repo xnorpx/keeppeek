@@ -158,7 +158,6 @@ struct Reservation {
     stream: StreamKind,
     audio: bool,
     key: PayloadKey,
-    entry_bytes: usize,
 }
 
 impl Reservation {
@@ -167,6 +166,7 @@ impl Reservation {
         stream: StreamKind,
         audio: bool,
         key: PayloadKey,
+        frames: &mut VecDeque<Held<T>>,
     ) -> Option<Self> {
         let mut usage = camera
             .budget(stream, audio)
@@ -177,33 +177,41 @@ impl Reservation {
         } else {
             MAX_VIDEO_BYTES
         };
-        let entry_bytes = std::mem::size_of::<Held<T>>();
         let first = !usage.payloads.contains_key(&key);
-        let charge = if first {
-            key.bytes.saturating_add(entry_bytes)
+        let payload_charge = if first { key.bytes } else { 0 };
+        let available = limit - usage.reserved_bytes;
+        let slots = if key.bytes == 0 || (!audio && first && usage.stats.frames == MAX_FRAMES) {
+            None
         } else {
-            entry_bytes
+            available
+                .checked_sub(payload_charge)
+                .and_then(|available| reserve_queue_slot(frames, available))
         };
-        if key.bytes == 0
-            || charge > limit - usage.reserved_bytes
-            || (!audio && first && usage.stats.frames == MAX_FRAMES)
-        {
+        let Some(added_slot_bytes) = slots else {
             usage.stats.capacity_drops = usage.stats.capacity_drops.saturating_add(1);
             return None;
-        }
+        };
         *usage.payloads.entry(key).or_insert(0) += 1;
         if first {
             usage.stats.frames += 1;
             usage.stats.bytes += key.bytes;
         }
-        usage.reserved_bytes += charge;
+        usage.reserved_bytes += payload_charge + added_slot_bytes;
         Some(Self {
             camera: camera.clone(),
             stream,
             audio,
             key,
-            entry_bytes,
         })
+    }
+
+    fn release_slots<T>(&self, count: usize) {
+        let mut usage = self
+            .camera
+            .budget(self.stream, self.audio)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        usage.reserved_bytes -= count * std::mem::size_of::<Held<T>>();
     }
 }
 
@@ -225,8 +233,30 @@ impl Drop for Reservation {
             usage.stats.bytes -= self.key.bytes;
             usage.reserved_bytes -= self.key.bytes;
         }
-        usage.reserved_bytes -= self.entry_bytes;
     }
+}
+
+/// Grow only when the profile can afford both the current and the replacement allocation.
+fn reserve_queue_slot<T>(frames: &mut VecDeque<Held<T>>, available: usize) -> Option<usize> {
+    let old = frames.capacity();
+    if frames.len() < old {
+        return Some(0);
+    }
+    let slot_bytes = std::mem::size_of::<Held<T>>();
+    let affordable = available / slot_bytes;
+    let desired = old.saturating_mul(2).max(1).min(affordable);
+    if desired <= old {
+        return None;
+    }
+    let mut replacement = VecDeque::new();
+    replacement.try_reserve_exact(desired).ok()?;
+    let actual = replacement.capacity();
+    if actual > affordable {
+        return None;
+    }
+    replacement.append(frames);
+    *frames = replacement;
+    Some((actual - old) * slot_bytes)
 }
 
 struct Held<T> {
@@ -298,9 +328,29 @@ impl<T> ProfileQueue<T> {
         if Arc::weak_count(&self.generation) > 0 {
             self.generation = Arc::new(());
         }
-        self.frames.clear();
+        self.discard_frames();
         self.state = None;
         self.last_timestamp = None;
+    }
+
+    fn pop_front(&mut self) -> Option<Held<T>> {
+        let frame = self.frames.pop_front()?;
+        if self.frames.is_empty() {
+            let slots = self.frames.capacity();
+            self.frames = VecDeque::new();
+            frame.reservation.release_slots::<T>(slots);
+        }
+        Some(frame)
+    }
+
+    fn discard_frames(&mut self) {
+        while self.pop_front().is_some() {}
+    }
+}
+
+impl<T> Drop for ProfileQueue<T> {
+    fn drop(&mut self) {
+        self.discard_frames();
     }
 }
 
@@ -389,16 +439,13 @@ impl<T> Queue<T> {
                 .is_none_or(|(_, generation)| generation != policy.generation)
                 || expired
             {
-                self.profiles[index].frames.pop_front();
+                self.profiles[index].pop_front();
                 continue;
             }
             if head.due > now {
                 break;
             }
-            let head = self.profiles[index]
-                .frames
-                .pop_front()
-                .expect("head was present");
+            let head = self.profiles[index].pop_front().expect("head was present");
             return Some((head.item, head.due));
         }
         None
@@ -460,6 +507,7 @@ impl<T> Queue<T> {
                 bytes,
                 received,
             },
+            &mut profile.frames,
         )?;
         profile.frames.push_back(Held {
             item,
@@ -593,6 +641,60 @@ mod tests {
         queue.set_preview(None);
         assert!(queue.deadline().is_none());
         assert!(!queue.report(StreamKind::Main).preview);
+    }
+
+    #[test]
+    fn successive_listeners_release_actual_queue_capacity_without_unsubscribing() {
+        let camera = Arc::new(CameraTiming::default());
+        let now = Instant::now();
+        let due = now + Duration::from_millis(120);
+        let mut listeners = (0..12)
+            .map(|_| Queue::new(camera.clone()))
+            .collect::<Vec<_>>();
+        for index in 0..listeners.len() {
+            let listener = &mut listeners[index];
+            listener.set_preview(Some(120));
+            // The last entry remains pending, so earlier pops must keep the ring charged.
+            for i in 0..96_u32 {
+                let arrival = if i == 95 {
+                    now + Duration::from_millis(1)
+                } else {
+                    now
+                };
+                listener.admit(i, packet(StreamKind::Main, AUDIO, arrival, 16), arrival);
+            }
+            assert!(listener.profiles[0].frames.capacity() >= 96);
+            while listener.pop_due(due).is_some() {}
+            assert_eq!(listener.profiles[0].frames.len(), 1);
+            let slots = listener.profiles[0].frames.capacity();
+            let usage = camera.budget(StreamKind::Main, true).lock().unwrap();
+            assert_eq!(
+                usage.reserved_bytes,
+                16 + slots * std::mem::size_of::<Held<u32>>()
+            );
+            drop(usage);
+            if index % 2 == 0 {
+                assert_eq!(
+                    listener.pop_due(due + Duration::from_millis(1)).unwrap().0,
+                    95
+                );
+            } else {
+                listener.clear();
+            }
+            assert!(
+                listeners
+                    .iter()
+                    .all(|l| l.profiles[0].frames.capacity() == 0)
+            );
+            assert_eq!(
+                camera
+                    .budget(StreamKind::Main, true)
+                    .lock()
+                    .unwrap()
+                    .reserved_bytes,
+                0
+            );
+        }
     }
 
     #[test]
