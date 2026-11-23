@@ -78,15 +78,8 @@ impl Talkback {
                 }
             }
             TalkEvent::Configured => self.ready = self.blocks.is_some(),
-            TalkEvent::Reset if self.stream_id.is_some() => {
-                self.ready = false;
-                self.blocks = None;
-                self.pending = None;
-                self.sequence = 0;
-                session.handle_input(Input::Command(Command::Talk(TalkCommand::QueryAbility {
-                    channel: self.channel,
-                })))?;
-            }
+            // Reset is a reply to close(), which already discarded that route's audio.
+            // A late reply can arrive after a replacement route has been configured.
             TalkEvent::Reset | TalkEvent::Ability(_) => {}
         }
         Ok(())
@@ -372,46 +365,30 @@ mod tests {
     }
 
     #[test]
-    fn speaker_reset_discards_negotiated_audio_and_requests_fresh_ability() {
+    fn delayed_reset_acknowledgement_cannot_clear_replacement_talkback() {
         use reo_proto::session::{BcSessionConfig, Output};
 
         let now = Instant::now();
         let mut session = BcSession::new(BcSessionConfig::default_client(), now);
         let mut transport_output = vec![0; reo_proto::DEFAULT_MEDIA_OUTPUT_BUFFER_SIZE];
         let mut talkback = Talkback::new(2);
-        session
-            .handle_input(Input::Command(Command::SubscribeStream(
-                StreamSubscription {
-                    channel: 2,
-                    stream_type: StreamType::Extern,
-                    expected_width: 0,
-                    expected_height: 0,
-                },
-            )))
-            .unwrap();
-        talkback.stream_id = Some(1);
-        while !matches!(
-            session.poll_output(&mut transport_output).unwrap(),
-            Output::Timeout(_)
-        ) {}
-
+        talkback.stream_id = Some(2);
         talkback.blocks = Some(speaker(8_000, 320));
         talkback.pending = Some(packet(&[1, 2], now));
         talkback.sequence = 9;
         talkback.ready = true;
+
         talkback.observe(TalkEvent::Reset, &mut session).unwrap();
 
-        assert!(!talkback.ready);
-        assert!(talkback.blocks.is_none());
-        assert!(talkback.pending.is_none());
-        assert_eq!(talkback.sequence, 0);
-        let Output::TcpSend { data } = session.poll_output(&mut transport_output).unwrap() else {
-            panic!("expected fresh capabilities request");
-        };
-        assert_eq!(
-            PacketHeader::parse(data).unwrap().0.msg_id,
-            reo_proto::COMMAND_TALK_CAPABILITIES
-        );
+        assert!(talkback.ready);
+        assert_eq!(talkback.stream_id, Some(2));
+        assert!(talkback.blocks.is_some());
+        assert!(talkback.pending.is_some());
+        assert_eq!(talkback.sequence, 9);
+        assert!(matches!(
+            session.poll_output(&mut transport_output).unwrap(),
+            Output::Timeout(_)
+        ));
     }
 
     #[test]
