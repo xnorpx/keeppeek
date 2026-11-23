@@ -2,6 +2,7 @@ use super::*;
 use crate::storage::catalog::locations::recording_recovery::{Action, Mode, Pending, Plan};
 use crate::storage::volumes::runtime::{Reservation, ReservedFile};
 use crate::storage::{CatalogMediaFragment, CatalogRecording};
+use anyhow::Context;
 
 struct Initialized {
     object: Object,
@@ -279,8 +280,9 @@ fn protected_alias_metadata_prevents_initialization_abandonment() -> anyhow::Res
 
 #[test]
 fn committed_abandonment_rejects_new_alias_rows_and_alias_path_updates() -> anyhow::Result<()> {
-    let (root, catalog, manager) = tests::fixture(2 * 1_048_576)?;
-    let initialized = initialized(&manager, &catalog)?;
+    let (root, catalog, manager) = tests::fixture(2 * 1_048_576).context("bind the test volume")?;
+    let initialized =
+        initialized(&manager, &catalog).context("reserve and initialize the recording")?;
     drop(initialized.writer);
     let other = root.join("other.mp4");
     fs::write(&other, b"other recording")?;
@@ -288,21 +290,38 @@ fn committed_abandonment_rejects_new_alias_rows_and_alias_path_updates() -> anyh
     let mut existing = alias_recording("existing", &other);
     handle.upsert_recording(existing.clone())?;
     let before = fs::read(&initialized.path)?;
-    let allocated_before = allocated(&catalog)?;
-    begin_abandonment(&catalog, &manager, &initialized.operation)?;
+    let allocated_before = allocated(&catalog).context("read allocation before abandonment")?;
+    begin_abandonment(&catalog, &manager, &initialized.operation)
+        .context("commit abandonment of the initialization-only recording")?;
+    let insert = handle
+        .upsert_recording(alias_recording("new-alias", &initialized.path))
+        .unwrap_err();
     assert!(
-        handle
-            .upsert_recording(alias_recording("new-alias", &initialized.path))
-            .is_err()
+        format!("{insert:#}").contains("recording recovery owns this path"),
+        "{insert:#}"
     );
     existing.path = alias_recording("unused", &initialized.path).path;
-    assert!(handle.upsert_recording(existing).is_err());
+    let update = handle.upsert_recording(existing).unwrap_err();
+    assert!(
+        format!("{update:#}").contains("recording recovery owns this path"),
+        "{update:#}"
+    );
     assert_eq!(handle.stats()?.recording_files, 2);
     assert_eq!(fs::read(&initialized.path)?, before);
-    assert_eq!(allocated(&catalog)?, allocated_before);
-    assert!(manager.recover_pending_recording(&initialized.operation)?);
+    assert_eq!(
+        allocated(&catalog).context("read allocation after refused aliases")?,
+        allocated_before
+    );
+    assert!(
+        manager
+            .recover_pending_recording(&initialized.operation)
+            .context("finish the original abandonment operation")?
+    );
     assert!(!initialized.path.exists());
-    assert_eq!(allocated(&catalog)?, 0);
+    assert_eq!(
+        allocated(&catalog).context("read allocation after recovery")?,
+        0
+    );
     assert_eq!(handle.stats()?.recording_files, 1);
     assert_eq!(fs::read(&other)?, b"other recording");
     drop(handle);
