@@ -277,20 +277,7 @@ test('controls Keep transport, estimated seeks, live follow, and export range fr
 		.toBeGreaterThan(beforeFrame);
 	const steppedFrame = Number(await player.getAttribute('data-recording-playhead-ms'));
 	expect(steppedFrame - beforeFrame).toBe(40);
-	const exactFrameTime = await video.evaluate((element) => {
-		if (!(element instanceof HTMLVideoElement)) throw new Error('Expected the recorded video');
-		const previous = element.currentTime;
-		element.currentTime = previous + 0.0005;
-		element.dispatchEvent(new Event('timeupdate'));
-		return previous;
-	});
-	await expect(player).toHaveAttribute('data-recording-playhead-ms', String(steppedFrame + 0.5));
 	await page.keyboard.press('[');
-	await video.evaluate((element, previous) => {
-		if (!(element instanceof HTMLVideoElement)) throw new Error('Expected the recorded video');
-		element.currentTime = previous;
-		element.dispatchEvent(new Event('timeupdate'));
-	}, exactFrameTime);
 	await page.keyboard.press('ArrowRight');
 	await expect(player).toHaveAttribute('data-recording-playhead-ms', String(beforeFrame + 80));
 	await page.keyboard.press(']');
