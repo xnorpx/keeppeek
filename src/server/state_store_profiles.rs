@@ -1274,7 +1274,7 @@ fn update_runtime_status(
     if status.revision == profiles.revision
         && status.active_profile_id == profiles.active_profile_id
     {
-        preserve_runtime_failures(&status.cameras, &mut cameras);
+        preserve_runtime_failures(&status.cameras, &mut cameras, profiles, configs.as_ref());
     }
     project_runtime_privacy(
         state,
@@ -1295,18 +1295,59 @@ fn update_runtime_status(
 fn preserve_runtime_failures(
     observed: &BTreeMap<String, crate::profiles::CameraRuntimeApplication>,
     returned: &mut BTreeMap<String, crate::profiles::CameraRuntimeApplication>,
+    profiles: &crate::profiles::ProfileRegistry,
+    configs: Option<&BTreeMap<String, crate::cameras::CameraConfig>>,
 ) {
     for application in returned.values_mut() {
         if application.state == crate::profiles::RuntimeApplicationState::Applied
             && let Some(current) = observed.get(&application.camera_id)
             && current.state == crate::profiles::RuntimeApplicationState::Degraded
-            && current.policy == application.policy
+            && (current.policy == application.policy
+                || configs
+                    .and_then(|configs| configs.get(&application.camera_id))
+                    .is_some_and(|config| {
+                        same_policy_across_privacy(
+                            current.policy,
+                            application.policy,
+                            config.recording_mode,
+                            profiles.active_camera_override(&application.camera_id),
+                        )
+                    }))
         {
             // The loop can observe a failure after sending the activation reply.
             application.state = current.state.clone();
             application.reason = current.reason.clone();
         }
     }
+}
+
+fn same_policy_across_privacy(
+    current: crate::profiles::EffectiveCameraPolicy,
+    returned: crate::profiles::EffectiveCameraPolicy,
+    base_mode: crate::cameras::CameraRecordingMode,
+    selected: Option<&crate::profiles::CameraProfileOverride>,
+) -> bool {
+    use crate::{cameras::CameraRecordingMode::Off, profiles::FieldSource};
+
+    if !(current.privacy_enforced || returned.privacy_enforced)
+        || current.available != returned.available
+        || current.available_source != returned.available_source
+        || current.notifications_enabled != returned.notifications_enabled
+        || current.notifications_source != returned.notifications_source
+    {
+        return false;
+    }
+    // A schedule boundary masks recording without changing the recorder's requested mode.
+    let valid_recording_policy = |policy: crate::profiles::EffectiveCameraPolicy| {
+        let expected = match (base_mode, policy.privacy_enforced, policy.available) {
+            (Off, _, _) => (Off, FieldSource::Base),
+            (_, true, _) => (Off, policy.privacy_source),
+            (_, _, false) => (Off, policy.available_source),
+            _ => crate::profiles::configured_recording_mode(base_mode, selected),
+        };
+        (policy.recording_mode, policy.recording_mode_source) == expected
+    };
+    valid_recording_policy(current) && valid_recording_policy(returned)
 }
 
 fn runtime_profile_camera_configs(
@@ -2391,8 +2432,10 @@ mod tests {
         crate::profiles::CameraRuntimeApplication,
     ) {
         let fixture = Fixture::new();
-        let camera: crate::cameras::CameraConfig =
-            toml::from_str("ip='192.0.2.1'\nusername='fixture'\npassword='fixture'").unwrap();
+        let camera: crate::cameras::CameraConfig = toml::from_str(
+            "ip='192.0.2.1'\nusername='fixture'\npassword='fixture'\nrecording_mode='sub'",
+        )
+        .unwrap();
         config::upsert_camera(&fixture.config_path(), &camera).unwrap();
         let identity = config::load_camera_profile_identities(&fixture.config_path()).unwrap()
             [&camera.ip]
@@ -2453,6 +2496,36 @@ mod tests {
             !application.policy.privacy_enforced,
             "preserved live failure must still receive current privacy projection"
         );
+    }
+
+    #[test]
+    fn delayed_profile_completion_cannot_erase_a_failure_across_a_schedule_boundary() {
+        use crate::profiles::RuntimeApplicationState::Degraded;
+        let (fixture, profiles, private) = delayed_runtime_completion_fixture();
+        let original = fixture.state.runtime_profile_status.read().unwrap().clone();
+        let id = &private.camera_id;
+        let mut open = private.clone();
+        open.policy.privacy_enforced = false;
+        open.policy.recording_mode = crate::cameras::CameraRecordingMode::Sub;
+
+        for (observed, returned) in [(&private, &open), (&open, &private)] {
+            {
+                let mut status = fixture.state.runtime_profile_status.write().unwrap();
+                *status = original.clone();
+                status.cameras.get_mut(id).unwrap().policy = observed.policy;
+            }
+            update_runtime_status(
+                &fixture.state,
+                &profiles,
+                Some(vec![returned.clone()]),
+                None,
+                false,
+            );
+            let status = fixture.state.runtime_profile_status.read().unwrap();
+            assert_eq!(status.cameras[id].state, Degraded);
+            assert_eq!(status.cameras[id].reason, original.cameras[id].reason);
+            assert!(!status.cameras[id].policy.privacy_enforced);
+        }
     }
 
     #[test]
