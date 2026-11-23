@@ -641,13 +641,8 @@ impl BaichuanCamera {
                 Some(0),
             ),
             COMMAND_STREAM if header.is_modern() && self.authenticated => self.start_stream(header),
-            COMMAND_PREVIEW_STOP if header.is_modern() => {
-                self.main = None;
-                self.sub = None;
-                if self.talk_channel == Some(channel_id(header)) {
-                    self.talk_channel = None;
-                }
-                Ok(())
+            COMMAND_PREVIEW_STOP if header.is_modern() && self.authenticated => {
+                self.stop_stream(body)
             }
             COMMAND_TALK_CAPABILITIES if header.is_modern() => {
                 self.require_talk_channel(header)?;
@@ -742,6 +737,26 @@ impl BaichuanCamera {
         )
     }
 
+    fn stop_stream(&mut self, body: &[u8]) -> anyhow::Result<()> {
+        let channel = xml_u64(body, "channelId")
+            .and_then(|value| u8::try_from(value).ok())
+            .ok_or_else(|| anyhow!("stream stop is missing a valid channel"))?;
+        let handle = xml_u64(body, "handle")
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| anyhow!("stream stop is missing a valid handle"))?;
+        if handle == EXTERNAL_STREAM_HANDLE && self.talk_channel == Some(channel) {
+            self.talk_channel = None;
+        }
+        for slot in [&mut self.main, &mut self.sub] {
+            if slot.as_ref().is_some_and(|stream| {
+                stream.handle == handle && stream.header_offset as u8 == channel
+            }) {
+                *slot = None;
+            }
+        }
+        Ok(())
+    }
+
     fn start_stream(&mut self, header: PacketHeader) -> anyhow::Result<()> {
         let channel = channel_id(header);
         let stream_type = StreamType::from_wire_id(((header.encryption_offset >> 8) & 0xFF) as u8)
@@ -759,7 +774,7 @@ impl BaichuanCamera {
                 }
                 self.talk_channel = Some(channel);
                 let body = format!(
-                    "<body><Preview version=\"1.1\"><channelId>{channel}</channelId><handle>512</handle><streamType>externStream</streamType></Preview></body>"
+                    "<body><Preview version=\"1.1\"><channelId>{channel}</channelId><handle>{EXTERNAL_STREAM_HANDLE}</handle><streamType>externStream</streamType></Preview></body>"
                 );
                 self.queue_packet(
                     COMMAND_STREAM,
@@ -892,6 +907,8 @@ impl BaichuanCamera {
     }
 }
 
+const EXTERNAL_STREAM_HANDLE: u32 = 512;
+
 const fn channel_id(header: PacketHeader) -> u8 {
     (header.encryption_offset & 0xff) as u8
 }
@@ -1008,6 +1025,37 @@ mod tests {
             status_class: make_status(BC_CLASS_MODERN_EXT, 0),
             extension: Some(0),
         }
+    }
+
+    #[test]
+    fn closing_one_preview_keeps_other_streams_and_channels_live() {
+        use reo_proto::stream::{StreamStop, build_stream_stop, stream_stop_header};
+        let mut camera = camera();
+        camera.authenticated = true;
+        let channel = 3;
+        for stream in [0, 1, 2] {
+            camera
+                .handle_message(header(COMMAND_STREAM, channel, stream), &[])
+                .unwrap();
+        }
+        let stop = |camera: &mut BaichuanCamera, channel, handle| {
+            let mut xml = [0; 512];
+            let len = build_stream_stop(&StreamStop { channel, handle }, &mut xml).unwrap();
+            camera
+                .handle_message(stream_stop_header(len), &xml[..len])
+                .unwrap();
+        };
+        stop(&mut camera, channel + 1, EXTERNAL_STREAM_HANDLE);
+        assert_eq!(camera.talk_channel, Some(channel));
+        stop(&mut camera, channel, EXTERNAL_STREAM_HANDLE);
+        assert_eq!(camera.talk_channel, None);
+        assert!(camera.main.is_some() && camera.sub.is_some());
+        stop(&mut camera, channel + 1, 0);
+        assert!(camera.main.is_some());
+        stop(&mut camera, channel, 0);
+        assert!(camera.main.is_none() && camera.sub.is_some());
+        stop(&mut camera, channel, 256);
+        assert!(camera.sub.is_none());
     }
 
     #[test]
