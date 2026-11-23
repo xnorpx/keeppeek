@@ -59,7 +59,13 @@
           "server-log-stream-gap",
           "server-log-generation-changed",
           "server-log-generation-unverified",
-          "server-logs-unavailable"
+          "server-logs-unavailable",
+          "diagnostics-logging-settings-unavailable",
+          "diagnostics-health-unavailable",
+          "diagnostics-runtime-config-unavailable",
+          "diagnostics-cameras-unavailable",
+          "diagnostics-metrics-unavailable",
+          "diagnostics-package-unavailable"
         ]
       }
     },

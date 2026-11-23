@@ -56,7 +56,14 @@
 		'server-log-generation-changed': 'The recorder restarted during the report.',
 		'server-log-generation-unverified':
 			'The recorder history could not be verified. Server logs were excluded.',
-		'server-logs-unavailable': 'Server logs could not be collected.'
+		'server-logs-unavailable': 'Server logs could not be collected.',
+		'diagnostics-logging-settings-unavailable': 'Recorder logging settings could not be collected.',
+		'diagnostics-health-unavailable': 'Recorder health could not be collected.',
+		'diagnostics-runtime-config-unavailable':
+			'Recorder runtime configuration could not be collected.',
+		'diagnostics-cameras-unavailable': 'Camera inventory could not be collected.',
+		'diagnostics-metrics-unavailable': 'Recorder metrics could not be collected.',
+		'diagnostics-package-unavailable': 'The diagnostics package could not be prepared.'
 	};
 
 	$effect(() => {

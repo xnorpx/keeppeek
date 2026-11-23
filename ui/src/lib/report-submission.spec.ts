@@ -137,3 +137,14 @@ it('preserves the original grant if the service cannot confirm cancellation', as
 	expect(keys).toHaveLength(1);
 	expect(service.createdIssues()).toHaveLength(0);
 });
+
+it('carries safe diagnostics warnings into the submitted issue manifest', async () => {
+	const { service, transport, text, diagnostics } = setup();
+	const submission = new ReportSubmission(transport, {
+		text,
+		diagnostics,
+		evidenceWarnings: ['diagnostics-logging-settings-unavailable']
+	});
+	await expect(submission.submit(() => {})).resolves.toMatchObject({ state: 'complete' });
+	expect(service.createdIssues()[0]).toContain('diagnostics-logging-settings-unavailable');
+});
