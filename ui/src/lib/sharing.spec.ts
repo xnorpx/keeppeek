@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { shareExpiry, shareQuota, shareTime } from './sharing';
+import { shareBytes, shareExpiry, shareQuota, shareTime } from './sharing';
 import { sharingFixtureNow } from './sharing.fixture';
 
 describe('sharing form bounds', () => {
+	it('shows sub-second media bounds and the sizes of short evidence clips', () => {
+		expect(shareTime(BigInt(sharingFixtureNow) + 1n)).toMatch(
+			/^18 Oct 2026(?:,| at) 06:00:00\.001 UTC$/
+		);
+		expect(shareBytes(512n)).toBe('512 B');
+		expect(shareBytes(31_910n)).toBe('31.9 kB');
+		expect(shareBytes(24_600_000n)).toBe('24.6 MB');
+	});
 	it('caps expiry at both 24 hours and the immutable artifact horizon', () => {
 		const horizon = BigInt(sharingFixtureNow + 7_200_000);
 		expect(shareExpiry('2026-10-18T07:00', horizon, sharingFixtureNow)).toBe(

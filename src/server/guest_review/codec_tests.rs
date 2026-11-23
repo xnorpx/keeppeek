@@ -1,3 +1,4 @@
+use super::super::verified::unavailable;
 use super::*;
 use mp4::WriteBox;
 
@@ -62,6 +63,39 @@ fn validate(bytes: Vec<u8>) -> io::Result<()> {
 }
 
 #[test]
+fn codec_rejection_is_distinct_from_a_verified_reader_failure() {
+    struct Unavailable(Cursor<Vec<u8>>);
+    impl Read for Unavailable {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(unavailable())
+        }
+    }
+    impl Seek for Unavailable {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.0.seek(position)
+        }
+    }
+    let avc = artifact(vec![track(b"vide", vec![video_entry()], Vec::new())]);
+    let bytes = avc.len() as u64;
+    assert!(compatible(&mut Cursor::new(&avc), bytes, || Ok(())).unwrap());
+    let error = compatible(&mut Unavailable(Cursor::new(avc)), bytes, || Ok(())).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    let unsupported_media = artifact(vec![track(
+        b"vide",
+        vec![boxed(b"hvc1", vec![0; 78])],
+        Vec::new(),
+    )]);
+    assert!(
+        !compatible(
+            &mut Cursor::new(&unsupported_media),
+            unsupported_media.len() as u64,
+            || Ok(())
+        )
+        .unwrap()
+    );
+}
+
+#[test]
 fn actual_h264_and_optional_aac_lc_descriptions_define_admission() {
     let video = track(b"vide", vec![video_entry()], Vec::new());
     assert!(validate(artifact(vec![video.clone()])).is_ok());
@@ -77,6 +111,54 @@ fn actual_h264_and_optional_aac_lc_descriptions_define_admission() {
         Vec::new(),
     );
     assert!(validate(artifact(vec![video, unsupported])).is_err());
+}
+
+#[test]
+fn top_level_box_budget_counts_media_and_initialization_boxes() {
+    let bytes = artifact(vec![track(b"vide", vec![video_entry()], Vec::new())]);
+    let len = bytes.len() as u64;
+    assert!(initialization(&mut Cursor::new(&bytes), len, 3, &mut || Ok(())).is_ok());
+    assert!(initialization(&mut Cursor::new(&bytes), len, 2, &mut || Ok(())).is_err());
+}
+
+#[test]
+fn a_two_minute_export_with_a_fragment_for_each_keyframe_is_supported() {
+    let config = mp4::Mp4Config {
+        major_brand: "iso6".parse().unwrap(),
+        minor_version: 1,
+        compatible_brands: vec!["iso6".parse().unwrap()],
+        timescale: 90_000,
+    };
+    let track = mp4::TrackConfig {
+        track_type: mp4::TrackType::Video,
+        timescale: 90_000,
+        language: "und".into(),
+        media_conf: mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
+            width: 640,
+            height: 360,
+            seq_param_set: vec![0x67, 0x42, 0, 0x1f],
+            pic_param_set: vec![0x68, 0xce, 0x3c, 0x80],
+        }),
+    };
+    let mut writer =
+        mp4::FragmentedMp4Writer::write_start(Cursor::new(Vec::new()), &config, &[track]).unwrap();
+    for frame in 0..(120 * 60) {
+        writer
+            .write_sample(
+                1,
+                mp4::Mp4Sample {
+                    start_time: frame * 1_500,
+                    duration: 1_500,
+                    rendering_offset: 0,
+                    is_sync: true,
+                    bytes: bytes::Bytes::from_static(&[0, 0, 0, 1, 0x65]),
+                },
+            )
+            .unwrap();
+        writer.flush_fragment().unwrap();
+    }
+    writer.write_end().unwrap();
+    assert!(validate(writer.into_writer().into_inner()).is_ok());
 }
 
 #[test]
