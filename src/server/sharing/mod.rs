@@ -294,7 +294,7 @@ pub(super) fn maintain(state: &ServerState) {
         return;
     }
     match with_store(state, |store, clock| store.purge(clock)) {
-        Ok(256) => *next = now,
+        Ok(count) if count == u64::from(crate::shares::AUDIT_PURGE_BATCH) => *next = now,
         Ok(_) => {}
         Err(_) => tracing::warn!("guest audit cleanup is unavailable"),
     }

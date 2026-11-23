@@ -145,7 +145,8 @@ fn malformed_export_history_is_preserved_and_disables_creation() {
 }
 
 fn write_source(root: &Path, catalog: RecordingCatalogHandle) -> (i64, i64) {
-    let started = Instant::now();
+    // Both one-second samples must be retained before the browser selects this segment.
+    let started = Instant::now() - Duration::from_secs(2);
     let mut writer = crate::storage::medium_term::MediumTermWriter::create_with_catalog(
         root,
         "front-door/sub",
