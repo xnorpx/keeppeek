@@ -1094,6 +1094,7 @@ const fn sample_freq_index(rate: u32) -> mp4::SampleFreqIndex {
         12000 => mp4::SampleFreqIndex::Freq12000,
         11025 => mp4::SampleFreqIndex::Freq11025,
         8000 => mp4::SampleFreqIndex::Freq8000,
+        7350 => mp4::SampleFreqIndex::Freq7350,
         _ => mp4::SampleFreqIndex::Freq48000,
     }
 }
@@ -1117,6 +1118,10 @@ mod tests {
 
     #[test]
     fn raw_rtsp_aac_preserves_the_negotiated_stereo_layout_and_clock() {
+        assert_eq!(
+            super::sample_freq_index(7_350),
+            mp4::SampleFreqIndex::Freq7350
+        );
         let frame = RecordingFrame {
             received_at: Instant::now(),
             timestamp: Some(Duration::ZERO),
