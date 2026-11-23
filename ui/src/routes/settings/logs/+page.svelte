@@ -2,6 +2,8 @@
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import { browserLogStore } from '$lib/browser-logs';
+	import ReportBugButton from '$lib/components/ReportBugButton.svelte';
+	import { useReportContext } from '$lib/report-context';
 	import LogViewer from '$lib/components/logging/LogViewer.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -32,6 +34,7 @@
 	let skippedEntries = $state(0);
 	let stream: ServerLogStream | null = null;
 	const controlClient = useControlClient();
+	const report = useReportContext();
 
 	onMount(() => {
 		let active = true;
@@ -79,8 +82,14 @@
 			{
 				onentry: appendServerEntry,
 				onstate: (state) => (streamState = state),
-				ongap: (dropped) => (skippedEntries += dropped),
-				onreplaytruncated: () => (skippedEntries += 1)
+				ongap: (dropped) => {
+					skippedEntries += dropped;
+					report?.session.recordServerLogGap();
+				},
+				onreplaytruncated: () => {
+					skippedEntries += 1;
+					report?.session.recordServerLogGap();
+				}
 			},
 			(url, signal) => controlClient.openLogStream(url, signal)
 		);
@@ -179,7 +188,7 @@
 				<p class="mt-1 text-sm text-muted-foreground">Live server and browser diagnostics</p>
 			</div>
 		</div>
-		<div class="flex items-center gap-3">
+		<div class="flex flex-wrap items-center justify-end gap-2">
 			{#if settings}
 				<div class="text-right text-xs text-muted-foreground">
 					<p>KeepPeek {settings.version}</p>
@@ -194,6 +203,7 @@
 				<DownloadIcon class={downloadingDiagnostics ? 'animate-pulse' : undefined} />
 				{downloadingDiagnostics ? 'Building package' : 'Download diagnostics'}
 			</Button>
+			<ReportBugButton />
 		</div>
 	</header>
 

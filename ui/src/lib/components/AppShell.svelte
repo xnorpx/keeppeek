@@ -19,7 +19,10 @@
 	import { setControlClient } from '$lib/control-context';
 	import { setAppearanceState } from '$lib/appearance-context';
 	import { setPeekViewState } from '$lib/peek-view-context.svelte';
-	import { initializeBrowserLogging } from '$lib/browser-logs';
+	import { browserLogStore, initializeBrowserLogging } from '$lib/browser-logs';
+	import { createReportSession } from '$lib/report-session.svelte';
+	import { provideReportContext } from '$lib/report-context';
+	import ReportBugWorkflow from '$lib/components/ReportBugWorkflow.svelte';
 	import KeyboardOverlay from '$lib/components/KeyboardOverlay.svelte';
 	import ExternalSignIn from '$lib/components/ExternalSignIn.svelte';
 	import AdministratorVerificationWindow from '$lib/components/AdministratorVerificationWindow.svelte';
@@ -60,6 +63,17 @@
 		message: null,
 		generation: 0
 	});
+	const reportSession = createReportSession(controlClient, browserLogStore);
+	let reportOpen = $state(false);
+	provideReportContext({
+		session: reportSession,
+		show: () => {
+			reportOpen = true;
+		},
+		authorized: () =>
+			accessState.status === 'authenticated' && accessState.session?.role === 'administrator'
+	});
+
 	let keyboardOverlay = $state<KeyboardOverlayMode>(null);
 	let keyboardReady = $state(false);
 	let navigationChordPending = $state(false);
@@ -172,10 +186,20 @@
 			if (state.status !== 'authenticated' || state.session?.principalId !== previousPrincipalId) {
 				peekViewState.reset();
 			}
+			if (
+				state.status !== 'authenticated' ||
+				state.session?.principalId !== previousPrincipalId ||
+				state.session?.role !== 'administrator'
+			) {
+				reportSession.cancel();
+				reportOpen = false;
+			}
 			void connectRuntimeProfileStatus(state.status === 'authenticated');
 		});
 		void controlClient.checkAccess().catch(() => undefined);
 		const close = () => {
+			reportSession.cancel();
+			reportOpen = false;
 			livePeer.closeOnPageHide();
 			controlClient.closeOnPageHide();
 		};
@@ -460,6 +484,9 @@
 		>
 			{controlClient.externalAuthentication.error}
 		</p>
+	{/if}
+	{#if administrator}
+		<ReportBugWorkflow session={reportSession} bind:open={reportOpen} />
 	{/if}
 	<Tooltip.Provider delayDuration={0}>
 		<div

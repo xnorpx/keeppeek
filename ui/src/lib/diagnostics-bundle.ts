@@ -191,12 +191,19 @@ export async function downloadDiagnosticsBundle(
 	const generatedAt = new Date();
 	const diagnosticsDocument = await collectDiagnosticsBundle(controlClient, browser, generatedAt);
 	const blob = await compressDiagnosticsDocument(diagnosticsDocument);
+	downloadDiagnosticsArtifact(blob, diagnosticsBundleFilename(generatedAt));
+}
+
+export function downloadDiagnosticsArtifact(blob: Blob, filename: string): void {
 	const url = URL.createObjectURL(blob);
 	const anchor = document.createElement('a');
 	anchor.href = url;
-	anchor.download = diagnosticsBundleFilename(generatedAt);
-	anchor.click();
-	URL.revokeObjectURL(url);
+	anchor.download = filename;
+	try {
+		anchor.click();
+	} finally {
+		URL.revokeObjectURL(url);
+	}
 }
 
 export async function compressDiagnosticsDocument(document: string): Promise<Blob> {
