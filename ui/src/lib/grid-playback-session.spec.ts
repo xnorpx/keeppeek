@@ -40,6 +40,43 @@ describe('GridPlaybackSession', () => {
 		).toEqual({ activeCameraIds: ['yard'], queuedCameraIds: ['front'] });
 	});
 
+	it('preserves a shared absolute playhead across pause, resume, seek, and rate changes', () => {
+		const session = new GridPlaybackSession();
+		session.update({
+			mode: 'playback',
+			selectedEpochMs: 100_000,
+			playbackRate: 1,
+			monotonicMs: 500
+		});
+		expect(session.positionAt(1_000)).toBe(100_500);
+		session.setRate(2, 1_000);
+		expect(session.positionAt(1_250)).toBe(101_000);
+		session.setPlaying(false, 1_250);
+		expect(session.positionAt(20_000)).toBe(101_000);
+		session.seek(42_000, 20_000);
+		session.setPlaying(true, 20_100);
+		expect(session.positionAt(20_200)).toBe(42_200);
+		expect(() => session.setRate(Infinity, 20_200)).toThrow(RangeError);
+		expect(() => session.seek(-1, 20_200)).toThrow(RangeError);
+		expect(session.positionAt(20_200)).toBe(42_200);
+	});
+
+	it('limits replay to four distinct cameras and rejects a non-finite decoder budget', () => {
+		const session = new GridPlaybackSession();
+		const demands = ['a', 'b', 'b', 'c', 'd', 'e', 'f'].map((cameraId) => ({
+			cameraId,
+			visibleFraction: 1,
+			focused: cameraId === 'f',
+			hasRecording: true
+		}));
+		session.update({ mode: 'playback', selectedEpochMs: 10_000, playbackRate: 1 });
+		expect(session.reconcile(demands, 127)).toEqual({
+			activeCameraIds: ['f', 'a', 'b', 'c'],
+			queuedCameraIds: ['d', 'e']
+		});
+		expect(session.reconcile(demands, Infinity).activeCameraIds).toEqual([]);
+	});
+
 	it('uses a monotonic shared epoch and corrects only material drift', () => {
 		expect(expectedGridEpochMs(10_000, 1_000, 1_500, 2)).toBe(11_000);
 		expect(needsGridDriftCorrection(100)).toBe(false);

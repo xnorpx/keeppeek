@@ -59,6 +59,44 @@ describe('authenticated recording-moment routes', () => {
 		}
 	);
 
+	it('round-trips the review grid order, focused camera, exact time and one audio source', () => {
+		const review = {
+			cameraIds: ['garage', moment.cameraId, 'porch#rear'],
+			audioCameraId: 'garage'
+		};
+		const params = keepMomentSearchParams({ ...moment, review });
+		expect(params.get('camera')).toBe(moment.cameraId);
+		expect(params.getAll('compare')).toEqual(review.cameraIds);
+		expect(parseKeepRoute(params.toString())).toMatchObject({ ...moment, review, invalid: false });
+		params.delete('audio');
+		expect(parseKeepRoute(params.toString()).review?.audioCameraId).toBe(moment.cameraId);
+	});
+
+	it.each([
+		'camera=a&compare=a&compare=b',
+		'camera=a&at=1&compare=a',
+		'camera=a&at=1&compare=a&compare=a',
+		'camera=a&at=1&compare=a&compare=b&compare=c&compare=d&compare=e',
+		'camera=a&at=1&compare=b&compare=c',
+		'camera=a&at=1&compare=a&compare=b&audio=c',
+		'camera=a&at=1&compare=a&compare=b&audio=a&audio=b',
+		'camera=a&at=1&audio=a'
+	])('rejects invalid or unbounded review selections: %s', (search) => {
+		expect(parseKeepRoute(search)).toMatchObject({ invalid: true });
+		expect(parseKeepRoute(search).review).toBeUndefined();
+	});
+
+	it('refuses to generate a review link beyond the encoded route budget', () => {
+		const cameraIds = ['a', 'b', 'c', 'd'].map((letter) => letter + '漢'.repeat(255));
+		expect(() =>
+			keepMomentSearchParams({
+				...moment,
+				cameraId: cameraIds[0],
+				review: { cameraIds, audioCameraId: cameraIds[2] }
+			})
+		).toThrow('too long');
+	});
+
 	it('rejects duplicate and oversized identity parameters', () => {
 		expect(parseKeepRoute('camera=front&camera=back&at=1').invalid).toBe(true);
 		expect(parseKeepRoute(`camera=${'x'.repeat(257)}&at=1`).invalid).toBe(true);
