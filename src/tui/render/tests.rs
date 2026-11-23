@@ -147,6 +147,8 @@ fn failed_collection_keeps_last_sample_and_reports_its_own_age() {
     let mut observation = Observation::default();
     observation.update(Some(initial.clone()), now);
     observation.update(None, now + Duration::from_secs(4));
+    observation.update(None, now + Duration::from_secs(5));
+    assert_eq!(observation.failed_at, Some(now + Duration::from_secs(4)));
     assert!(Arc::ptr_eq(
         observation.snapshot.as_ref().unwrap(),
         &initial
@@ -175,4 +177,21 @@ fn failed_collection_keeps_last_sample_and_reports_its_own_age() {
     observation.update(Some(Arc::new(fixture(2))), now + Duration::from_secs(8));
     assert_eq!(observation.snapshot.unwrap().rows.len(), 2);
     assert!(observation.failed_at.is_none());
+}
+
+#[test]
+fn renderer_consumes_one_snapshot_and_a_new_publish_replaces_an_unread_one() {
+    use crate::tui::Observation;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let now = Instant::now();
+    let mut slot = Observation::default();
+    assert!(!slot.update(Some(Arc::new(fixture(1))), now));
+    assert!(slot.unread_snapshot);
+    assert!(slot.update(Some(Arc::new(fixture(2))), now));
+    assert_eq!(slot.read_for_render().snapshot.unwrap().rows.len(), 2);
+    assert!(!slot.unread_snapshot);
+    assert!(!slot.update(Some(Arc::new(fixture(3))), now));
+    assert!(slot.unread_snapshot);
 }

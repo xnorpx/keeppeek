@@ -117,6 +117,7 @@ struct Sample {
     rss_bytes: u64,
     snapshot_rows: usize,
     pending_snapshots: usize,
+    superseded_snapshots: usize,
 }
 
 fn micros(since: Instant) -> u64 {
@@ -186,10 +187,10 @@ fn collect_samples(
         assert_eq!(next.rows.len(), usize::from(CAMERAS) * 4);
         metrics.snapshot_rows = metrics.snapshot_rows.max(next.rows.len());
         let mut slot = latest.lock().unwrap();
-        slot.update(Some(next), Instant::now());
+        metrics.superseded_snapshots += usize::from(slot.update(Some(next), Instant::now()));
         metrics.pending_snapshots = metrics
             .pending_snapshots
-            .max(usize::from(slot.snapshot.is_some()));
+            .max(usize::from(slot.unread_snapshot));
         if second >= WARMUP_SECONDS {
             metrics.collector_us.push(collector_us);
             metrics.projection_us.push(projection_us);
@@ -204,7 +205,7 @@ fn render_samples(start: Instant, measure_seconds: u64, latest: Latest) -> Vec<u
     let mut durations = Vec::new();
     for second in 0..WARMUP_SECONDS + measure_seconds {
         wait_until(start, second);
-        let current = latest.lock().unwrap().snapshot.clone();
+        let current = latest.lock().unwrap().read_for_render().snapshot;
         let elapsed = current
             .as_ref()
             .map_or(Duration::ZERO, |s| s.collected.elapsed());
@@ -457,6 +458,7 @@ fn dashboard_overhead() {
                 "render_us": percentile(&renders, p),
                 "snapshot_rows_high_water": on_samples.iter().map(|s| s.snapshot_rows).max(),
                 "pending_snapshots_high_water": on_samples.iter().map(|s| s.pending_snapshots).max(),
+            "superseded_snapshots_high_water": on_samples.iter().map(|s| s.superseded_snapshots).max(),
                 "recording_gaps": "requires separate recorded-media qualification",
             })
         );

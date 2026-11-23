@@ -22,16 +22,26 @@ type Latest = Arc<Mutex<Observation>>;
 struct Observation {
     snapshot: Option<Arc<Snapshot>>,
     failed_at: Option<Instant>,
+    unread_snapshot: bool,
 }
 
 impl Observation {
-    fn update(&mut self, snapshot: Option<Arc<Snapshot>>, now: Instant) {
+    fn update(&mut self, snapshot: Option<Arc<Snapshot>>, now: Instant) -> bool {
         if let Some(snapshot) = snapshot {
+            let replaced_unread = self.unread_snapshot;
             self.snapshot = Some(snapshot);
+            self.unread_snapshot = true;
             self.failed_at = None;
+            replaced_unread
         } else {
-            self.failed_at = Some(now);
+            self.failed_at.get_or_insert(now);
+            false
         }
+    }
+
+    fn read_for_render(&mut self) -> Self {
+        self.unread_snapshot = false;
+        self.clone()
     }
 }
 

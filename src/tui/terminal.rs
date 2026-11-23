@@ -218,11 +218,18 @@ fn render_until_closed(
     let mut redraw = true;
     let mut last = Instant::now();
     while !stop.is_cancelled() && !server.is_cancelled() {
-        let data = latest
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if redraw || last.elapsed() >= Duration::from_secs(1) {
+        let will_draw = redraw || last.elapsed() >= Duration::from_secs(1);
+        let data = {
+            let mut observation = latest
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if will_draw {
+                observation.read_for_render()
+            } else {
+                observation.clone()
+            }
+        };
+        if will_draw {
             let (w, h) = terminal::size()?;
             let actual = viewport(w, h);
             if area != actual {

@@ -227,8 +227,12 @@ impl StreamRow {
                 report_age_ms: s.ingress.report_age_ms,
                 frame_age_ms: s.ingress.frame_age_ms,
                 recording_requested: video.then_some(s.dimensions.recording_requested),
-                recording_progress: s.dimensions.recording_progressing,
-                recording_age_ms: s.dimensions.recording_progress_age_ms,
+                recording_progress: video
+                    .then_some(s.dimensions.recording_progressing)
+                    .flatten(),
+                recording_age_ms: video
+                    .then_some(s.dimensions.recording_progress_age_ms)
+                    .flatten(),
             }
         });
         Self {
