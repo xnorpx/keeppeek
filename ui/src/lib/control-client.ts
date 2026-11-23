@@ -631,7 +631,7 @@ export class ControlClient {
 		typeof this.#accessKey === 'string' ? this.#accessKey : null
 	);
 	#system = new SystemControlClient(
-		(command, signal) => this.request(command, controlTimeoutMs, signal),
+		(command, signal) => this.request(command, controlTimeoutMs, { signal }),
 		(event) => recordingEvent(event, new Map<string, ChunkAccumulator>(), () => {})
 	);
 	#stateStore = new ControlClientStateStore((command) => this.request(command));
