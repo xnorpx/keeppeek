@@ -113,7 +113,19 @@
 			focusedSourceId: focus,
 			monotonicMs: performance.now()
 		});
+		let authenticated = false;
+		const unsubscribeAccess = client.onAccessState((state) => {
+			const lostSession = authenticated && !state.session;
+			authenticated = state.status === 'authenticated';
+			if (!lostSession || !playing) return;
+			// The sign-in gate unmounts Keep. Preserve this moment and require an explicit resume.
+			clock.setPlaying(false, performance.now());
+			playing = false;
+			epoch = moment();
+			persist();
+		});
 		return () => {
+			unsubscribeAccess();
 			compact.removeEventListener('change', capacity);
 			document.removeEventListener('visibilitychange', capacity);
 		};
