@@ -30,6 +30,7 @@ vi.mock('$lib/control-context', () => ({
 		checkAccess: async () => {},
 		closeOnPageHide: () => {},
 		getHealth: async () => null,
+		getCameras: async () => [],
 		runtimeProfiles: { watchShellProfile: async () => ({ close: async () => {} }) },
 		externalAuthentication: { error: null }
 	}),

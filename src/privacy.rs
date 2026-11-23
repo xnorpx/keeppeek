@@ -510,6 +510,41 @@ impl PrivacyRegistry {
             .is_some_and(|schedule| schedule.active(instant))
     }
 
+    pub(crate) fn observed_profile_policy(
+        &self,
+        source: &str,
+        instant: DateTime<Utc>,
+        recording_mode: crate::cameras::CameraRecordingMode,
+        selected: Option<&crate::profiles::CameraProfileOverride>,
+    ) -> anyhow::Result<crate::profiles::EffectiveCameraPolicy> {
+        let id = self.configured_id(source);
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let scheduled = state
+            .schedules
+            .get(&id)
+            .map_or(Ok(false), |schedule| schedule.is_active_unchecked(instant))?;
+        let held = state.profile_overrides.get(&id).copied().unwrap_or(false);
+        let mut observed = selected.cloned().unwrap_or_default();
+        // A failed transition can retain the previous profile restriction. The schedule still has precedence.
+        observed.privacy_enforced = if held {
+            Some(true)
+        } else {
+            observed.privacy_enforced.filter(|active| !active)
+        };
+        Ok(crate::profiles::resolve_camera_policy(
+            &crate::profiles::BaseCameraPolicy {
+                available: true,
+                recording_mode,
+                privacy_enforced: scheduled,
+                notifications_enabled: true,
+            },
+            Some(&observed),
+        ))
+    }
+
     /// Returns the effective active state and transition epoch for a camera.
     pub fn decision(&self, camera_id: &str, instant: DateTime<Utc>) -> anyhow::Result<(bool, u64)> {
         let configured_id = self.configured_id(camera_id);

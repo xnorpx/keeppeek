@@ -393,7 +393,10 @@ export type ControlRequests = {
 	}>;
 	configurationActions: string[];
 	configurationPlans: Array<{ target: string; change: string }>;
-	publishCapabilities(capabilityIds: readonly string[]): Promise<void>;
+	publishCapabilities(
+		capabilityIds: readonly string[],
+		cameras?: readonly CameraListItem[]
+	): Promise<void>;
 };
 
 export type MockControlPeerOptions = {
@@ -924,6 +927,7 @@ export async function mockControlPeer(
 	let metadataPending = options.metadataPendingVolumeId;
 	let metadataRevision = 1;
 	const reportedManufacturer = options.reportedManufacturer ?? 'ONVIF';
+	let currentCameras = options.cameras ?? [];
 	const requests: ControlRequests = {
 		motion: [],
 		ptz: [],
@@ -968,9 +972,10 @@ export async function mockControlPeer(
 		runtimeProfileWrites: [],
 		configurationActions: [],
 		configurationPlans: [],
-		publishCapabilities: async (capabilityIds) => {
+		publishCapabilities: async (capabilityIds, cameras = currentCameras) => {
+			currentCameras = cameras;
 			const payload = encodedCapabilities(
-				options.cameras ?? [],
+				cameras,
 				options.storedRanges ?? [],
 				capabilityIds,
 				accessRole,
@@ -1105,7 +1110,7 @@ export async function mockControlPeer(
 	await page.exposeFunction('takeKeepPeekData', () => pendingDataMessages.splice(0));
 	await page.exposeFunction('getKeepPeekCapabilities', () =>
 		encodedCapabilities(
-			options.cameras ?? [],
+			currentCameras,
 			options.storedRanges ?? [],
 			options.capabilityIds ?? [],
 			accessRole,
@@ -2855,6 +2860,7 @@ export async function mockControlPeer(
 			pushKeepPeekCapabilities(payload: number[]): void;
 		};
 		let activeControlChannel: MockDataChannel | null = null;
+		const openControlChannels = new Set<MockDataChannel>();
 
 		class MockDataChannel {
 			readyState: RTCDataChannelState = 'connecting';
@@ -2900,6 +2906,7 @@ export async function mockControlPeer(
 				this.readyState = 'open';
 				this.onopen?.call(this as unknown as RTCDataChannel, new Event('open'));
 				if (this.label === 'control-channel') {
+					openControlChannels.add(this);
 					void (window as unknown as ControlWindow).getKeepPeekCapabilities().then((message) => {
 						this.receive(Uint8Array.from(message).buffer);
 					});
@@ -2907,11 +2914,12 @@ export async function mockControlPeer(
 			}
 
 			close(): void {
+				openControlChannels.delete(this);
 				this.readyState = 'closed';
 			}
 
 			remoteClose(): void {
-				this.readyState = 'closed';
+				this.close();
 				this.onclose?.call(this as unknown as RTCDataChannel, new Event('close'));
 			}
 		}
@@ -2974,7 +2982,7 @@ export async function mockControlPeer(
 		});
 		Object.defineProperty(window, 'pushKeepPeekCapabilities', {
 			value: (payload: number[]) => {
-				activeControlChannel?.receive(Uint8Array.from(payload).buffer);
+				for (const channel of openControlChannels) channel.receive(Uint8Array.from(payload).buffer);
 			}
 		});
 		class MockVideoFrame {
