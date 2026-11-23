@@ -8058,7 +8058,13 @@ mod tests {
             };
             for value in [-201, 201] {
                 request.live_audio_preview_offset_ms = Some(value);
-                assert!(media.subscribe(&session, &request, plan.clone()).is_err());
+                let error = media
+                    .subscribe(&session, &request, plan.clone())
+                    .unwrap_err();
+                assert_eq!(
+                    error.message,
+                    "live audio offset must be between -200 and +200 milliseconds"
+                );
             }
             request.live_audio_preview_offset_ms = Some(-200);
             let first = media.subscribe(&session, &request, plan.clone()).unwrap();
