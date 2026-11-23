@@ -779,7 +779,7 @@ jobs:
         with:
           python-version-file: examples/object_detection_service/.python-version
           cache: pip
-          cache-dependency-path: examples/object_detection_service/requirements.txt
+          cache-dependency-path: examples/object_detection_service/requirements-conformance.txt
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
@@ -802,9 +802,9 @@ jobs:
             sudo apt-get install --yes ffmpeg
           fi
           ffmpeg -version
-      - name: Install latest Python dependencies
+      - name: Install conformance dependencies
         working-directory: examples/object_detection_service
-        run: python -m pip install --upgrade -r requirements.txt
+        run: python -m pip install --upgrade -r requirements-conformance.txt
       - name: Generate MIT protobuf bindings
         working-directory: examples/object_detection_service
         run: python generate_protos.py
