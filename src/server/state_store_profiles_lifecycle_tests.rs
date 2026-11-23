@@ -208,8 +208,9 @@ impl Lifecycle {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let status = self.state.runtime_profile_status.read().unwrap();
-            if status.revision == revision
-                && status
+            let observed = super::application::observed_status(&self.state, &status);
+            if observed.revision == revision
+                && observed
                     .cameras
                     .get(&self.identity)
                     .is_some_and(|camera| camera.state == RuntimeApplicationState::Applied)
@@ -223,7 +224,8 @@ impl Lifecycle {
             drop(status);
             std::thread::sleep(Duration::from_millis(5));
         }
-        let status = self.state.runtime_profile_status.read().unwrap();
+        let actual = self.state.runtime_profile_status.read().unwrap();
+        let status = super::application::observed_status(&self.state, &actual);
         assert_eq!(status.revision, revision);
         assert_eq!(status.active_profile_id.as_deref(), profile);
         assert_eq!(
