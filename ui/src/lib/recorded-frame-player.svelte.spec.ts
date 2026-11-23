@@ -128,3 +128,78 @@ test('unavailable source timing disables further exact steps until the cursor ch
 	player.clear();
 	expect(player.unsupported).toBe(false);
 });
+
+function observedVideo() {
+	const video = document.createElement('video');
+	let next = 0;
+	const pending = new Map<number, VideoFrameRequestCallback>();
+	let seeking = false;
+	let position = 0;
+	let url = 'blob:recording';
+	Object.defineProperties(video, {
+		currentSrc: { get: () => url },
+		currentTime: { get: () => position },
+		seeking: { get: () => seeking },
+		requestVideoFrameCallback: {
+			value: (cb: VideoFrameRequestCallback) => {
+				pending.set(++next, cb);
+				return next;
+			}
+		},
+		cancelVideoFrameCallback: { value: (id: number) => pending.delete(id) }
+	});
+	return {
+		video,
+		callback() {
+			const entry = [...pending.entries()][0];
+			expect(entry).toBeDefined();
+			pending.delete(entry[0]);
+			return (mediaTime: number) => entry[1](0, { mediaTime } as VideoFrameCallbackMetadata);
+		},
+		seek(time: number) {
+			seeking = true;
+			position = time;
+			video.dispatchEvent(new Event('seeking'));
+		},
+		settle() {
+			seeking = false;
+			video.dispatchEvent(new Event('seeked'));
+		},
+		replace() {
+			url = 'blob:replacement';
+		}
+	};
+}
+
+test('uses a witnessed paused frame when the compositor callback precedes seeked', () => {
+	const fixture = observedVideo();
+	const player = new RecordedFramePlayer();
+	const cleanup = player.follow(fixture.video, {
+		url: fixture.video.currentSrc,
+		anchorTimeMs: 1000,
+		canStepExactly: true,
+		stepRecordedFrame: () => Promise.resolve(picture(1))
+	});
+	fixture.callback()(0);
+	expect(player.displayedNs).toBe(1_000_000_000n);
+	const old = fixture.callback();
+	fixture.seek(0.16);
+	old(0.16);
+	fixture.settle();
+	expect(player.displayedNs).toBeUndefined();
+	fixture.seek(0.16);
+	fixture.callback()(0.16);
+	expect(player.displayedNs).toBeUndefined();
+	fixture.settle();
+	expect(player.displayedNs).toBe(1_160_000_000n);
+	fixture.seek(0.24);
+	fixture.callback()(0.16);
+	fixture.settle();
+	expect(player.displayedNs).toBeUndefined();
+	fixture.seek(0.32);
+	fixture.callback()(0.32);
+	fixture.replace();
+	fixture.settle();
+	expect(player.displayedNs).toBeUndefined();
+	cleanup();
+});

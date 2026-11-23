@@ -133,7 +133,7 @@
 	let playbackUrl: string | null = $state(null);
 	const frames = new RecordedFramePlayer();
 	let frameCanvas = $state<HTMLCanvasElement | null>(null);
-	$effect(() => {
+	$effect.pre(() => {
 		const element = video;
 		const cursor = storedPlayback;
 		const url = playbackUrl;
@@ -174,7 +174,7 @@
 	let cameraProfilesPromise: Promise<CameraListItem[]> | null = null;
 	let playing = $state(false);
 	let playbackRate = $state(1);
-	let pendingSeekSeconds = 0;
+	let pendingSeekSeconds: number | null = null;
 	let pendingPlay = false;
 	let loadVersion = 0;
 	let shuttleDirection = $state<-1 | 0 | 1>(0);
@@ -1880,6 +1880,7 @@
 		keyFrameUnsubscribe?.();
 		keyFrameUnsubscribe = null;
 		storedPlayback = null;
+		pendingSeekSeconds = null;
 		recordedAudio = undefined;
 		audioPreviewOpen = false;
 		scrubUsesFragmentFallback = false;
@@ -2217,18 +2218,28 @@
 	}
 
 	function applyPendingSeek() {
-		if (!video || !selected) return;
+		if (
+			!video ||
+			!selected ||
+			video.readyState < HTMLMediaElement.HAVE_METADATA ||
+			video.currentSrc !== video.src ||
+			video.getAttribute('src') !== playbackUrl
+		)
+			return;
 		video.playbackRate = playbackRate;
 		video.muted = scrubbing || playbackMuted;
-		const requestedTime = Math.max(
-			0,
-			Math.min(pendingSeekSeconds, video.duration || pendingSeekSeconds)
-		);
-		video.currentTime = requestedTime;
-		if (Math.abs(video.currentTime - requestedTime) < 0.001) {
-			playheadMs = playbackAnchorMs + video.currentTime * 1_000;
+		if (pendingSeekSeconds !== null) {
+			const requestedTime = Math.max(
+				0,
+				Math.min(pendingSeekSeconds, video.duration || pendingSeekSeconds)
+			);
+			if (video.currentTime !== requestedTime) video.currentTime = requestedTime;
+			if (Math.abs(video.currentTime - requestedTime) < 0.001) {
+				playheadMs = playbackAnchorMs + video.currentTime * 1_000;
+				if (requestedTime >= pendingSeekSeconds) pendingSeekSeconds = null;
+			}
+			storedPlayback?.observe(video.currentTime);
 		}
-		storedPlayback?.observe(video.currentTime);
 		if (pendingPlay) void startReplay();
 		pendingPlay = false;
 	}

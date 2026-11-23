@@ -32,27 +32,47 @@ export class RecordedFramePlayer {
 		this.clear();
 		if (typeof video.requestVideoFrameCallback !== 'function' || !cursor.canStepExactly)
 			return () => this.clear();
-		let closed = false;
-		const presented: VideoFrameRequestCallback = (_now, metadata) => {
-			if (closed) return;
-			if (
-				!video.seeking &&
-				video.currentSrc === cursor.url &&
-				Number.isFinite(metadata.mediaTime)
-			) {
-				this.displayedNs =
-					BigInt(cursor.anchorTimeMs) * 1_000_000n +
-					BigInt(Math.round(metadata.mediaTime * 1_000_000)) * 1_000n;
-			}
+		const url = cursor.url;
+		const current = () => video.currentSrc === url && cursor.url === url;
+		const timestamp = (microseconds: number) =>
+			BigInt(cursor.anchorTimeMs) * 1_000_000n + BigInt(microseconds) * 1_000n;
+		let generation = 0;
+		let handle: number | undefined;
+		let stagedUs: number | undefined;
+		const observe = () => {
+			const expected = ++generation;
+			stagedUs = undefined;
+			if (handle !== undefined) video.cancelVideoFrameCallback(handle);
+			const presented: VideoFrameRequestCallback = (_now, { mediaTime }) => {
+				if (expected !== generation) return;
+				if (current() && Number.isFinite(mediaTime)) {
+					const us = Math.round(mediaTime * 1_000_000);
+					if (video.seeking) stagedUs = us;
+					else this.displayedNs = timestamp(us);
+				}
+				handle = video.requestVideoFrameCallback(presented);
+			};
 			handle = video.requestVideoFrameCallback(presented);
 		};
-		let handle = video.requestVideoFrameCallback(presented);
-		const expire = () => this.clear();
-		video.addEventListener('seeking', expire);
+		const seeking = () => {
+			this.clear();
+			observe();
+		};
+		const seeked = () => {
+			// A paused video may present the target before seeked and never submit another frame.
+			if (current() && !video.seeking && stagedUs === Math.round(video.currentTime * 1_000_000)) {
+				this.displayedNs = timestamp(stagedUs);
+			}
+			stagedUs = undefined;
+		};
+		video.addEventListener('seeking', seeking);
+		video.addEventListener('seeked', seeked);
+		observe();
 		return () => {
-			closed = true;
-			video.cancelVideoFrameCallback(handle);
-			video.removeEventListener('seeking', expire);
+			generation++;
+			if (handle !== undefined) video.cancelVideoFrameCallback(handle);
+			video.removeEventListener('seeking', seeking);
+			video.removeEventListener('seeked', seeked);
 			this.clear();
 		};
 	}
