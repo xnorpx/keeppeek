@@ -18,6 +18,19 @@ The reporting service is a separate HTTPS application. Every operation is scoped
 
 Service errors identify invalid manifests, missing authorization, expired grants, type mismatch, size mismatch, idempotency conflict, incomplete uploads, or an unavailable issue provider. Error responses avoid reproducing submitted fields, auth headers, artifact paths, and service internals.
 
+## Browser requests
+
+The recorder supplies the configured HTTPS origin and an opaque grant for one report after confirmation. The browser uses a bearer authorization header and sends no cookies. It refuses redirects and sends no referrer.
+
+| Request                                 | Body and response                                                                                                                |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/reports/{id}`                  | Returns JSON with `state`. The complete state includes a GitHub `issueUrl`.                                                      |
+| `PUT /v1/reports/{id}/artifacts/{kind}` | Accepts one binary body and the declared Content-Type. The kind is `diagnostics` or `screen`. Success returns an empty response. |
+| `POST /v1/reports/{id}/finalize`        | Returns the same status representation as GET.                                                                                   |
+| `DELETE /v1/reports/{id}`               | Cancels a pending report. Success returns an empty response.                                                                     |
+
+The service permits these methods and authorization headers only for configured recorder origins. The browser bounds the response used as status to 8 KiB. Credentials for creating grants are held by the recorder and are separate from this HTTP surface.
+
 ## Issue output and retention
 
 The issue contains the reviewed fields, evidence warnings, a scrubbed diagnostic summary, and the opaque report ID. The service checks the public text and summary again for private values and fails closed when the recorder could not gather the scrub context. Diagnostics and screen media stay private. Maintainer authentication is required to view artifacts. Operators see the retention before submitting. Expiry removes artifacts within at most 30 days. Issue text, screen media, bearer links, and service credentials stay out of request and audit logs.
