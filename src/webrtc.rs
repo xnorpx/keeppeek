@@ -8063,7 +8063,7 @@ mod tests {
                     .unwrap_err();
                 assert_eq!(
                     error.message,
-                    "live audio offset must be between -200 and +200 milliseconds"
+                    "live audio preview offset must be between -200 and +200 milliseconds"
                 );
             }
             request.live_audio_preview_offset_ms = Some(-200);

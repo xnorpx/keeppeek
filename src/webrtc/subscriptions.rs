@@ -15,7 +15,7 @@ impl ApiMediaRuntime {
             return Err(ControlHandlerError::new(
                 ErrorCode::InvalidRequest,
                 format!(
-                    "live audio offset must be between -{MAX_LIVE_AUDIO_OFFSET_MS} and +{MAX_LIVE_AUDIO_OFFSET_MS} milliseconds"
+                    "live audio preview offset must be between -{MAX_LIVE_AUDIO_OFFSET_MS} and +{MAX_LIVE_AUDIO_OFFSET_MS} milliseconds"
                 ),
             ));
         }
