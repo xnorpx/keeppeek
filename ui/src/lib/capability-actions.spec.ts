@@ -19,6 +19,7 @@ describe('capability action ownership', () => {
 			action: 'Create guest link',
 			capability: 'keeppeek.guest-review.v1'
 		});
+		expect(capabilityActions.shareRecordingRange.capability).toBe('keeppeek.guest-range.v1');
 		expect(capabilityActions.manageGuestLinks).toEqual({
 			action: 'Manage guest links',
 			capability: 'keeppeek.guest-review.v1'

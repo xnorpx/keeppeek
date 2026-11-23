@@ -5,6 +5,16 @@ pub(in crate::server) fn create_for_principal(
     principal: &ApiPrincipal,
     request: proto::CreateExportJob,
 ) -> Result<proto::ExportJob, ControlCommandError> {
+    if request.guest_range_preparation == Some(true) {
+        if principal.role != AccessRole::Administrator {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                403,
+                "guest preparation requires an administrator",
+            ));
+        }
+        sharing::context(state)?;
+    }
     super::creation::create_with_owner(
         state,
         &principal.id(),
