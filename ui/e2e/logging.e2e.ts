@@ -215,6 +215,8 @@ test('captures a scoped bug report across Settings and Logs navigation', async (
 	await page.evaluate(() => console.info('report-window-inside-marker'));
 	await indicator.getByRole('button', { name: 'Stop', exact: true }).click();
 	await expect(dialog).toHaveAccessibleName('Review bug report');
+	await page.keyboard.press('Escape');
+	await expect(dialog).toBeVisible();
 	await dialog.getByLabel('Issue title').fill('Sample playback error');
 	await dialog.getByLabel('Steps to reproduce').fill('Open a sample recording.');
 	const notes = page.waitForEvent('download');
