@@ -417,5 +417,6 @@ test('confirmed additional camera grants update the mounted Peek wall in place',
 	await expect(granted).toHaveCount(0);
 	await controls.publishCapabilities([], [first, added]);
 	await expect(granted).toBeVisible();
+	await expect(granted.locator('[data-camera-id]')).toHaveAttribute('data-stream', 'sub');
 	expect(await previous.evaluate((current, before) => current === before, original)).toBe(true);
 });

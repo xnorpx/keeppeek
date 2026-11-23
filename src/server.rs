@@ -8554,6 +8554,7 @@ pub struct ServerState {
     runtime_profile_status: Arc<RwLock<crate::profiles::RuntimeProfileStatus>>,
     profile_application: Arc<Mutex<state_store::profiles::ProfileApplicationQueue>>,
     runtime_profile_drafts: Arc<Mutex<state_store::profiles::RuntimeProfileDrafts>>,
+    profile_generation_cache: Arc<state_store::profiles::observed::GenerationCache>,
     privacy_sources: Arc<RwLock<BTreeMap<String, PrivacySource>>>,
     privacy_epochs: Arc<Mutex<HashMap<IpAddr, u64>>>,
     privacy_override_states: Arc<Mutex<HashMap<IpAddr, bool>>>,
@@ -8737,6 +8738,7 @@ impl ServerState {
                 definition_revision: config.runtime_profiles.active_definition_revision(),
                 cameras: BTreeMap::new(),
             })),
+            profile_generation_cache: Arc::default(),
             runtime_profile_drafts: Arc::new(Mutex::new(
                 state_store::profiles::RuntimeProfileDrafts::default(),
             )),

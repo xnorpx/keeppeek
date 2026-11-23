@@ -1,3 +1,4 @@
+import { observedPartCount } from '../../src/lib/runtime-profiles';
 import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 import type { BrowserSession } from '../../src/lib/external-authentication.svelte';
@@ -604,7 +605,8 @@ export function mockRuntimeProfileCameraId(source: string): string {
 }
 
 function runtimeProfileSchema(key: string): string {
-	if (/^observed\/[0-7]$/.test(key)) return 'keeppeek.runtime-profiles.observed.v1';
+	const part = /^observed\/(0|[1-9][0-9]*)$/.exec(key);
+	if (part && Number(part[1]) < observedPartCount) return 'keeppeek.runtime-profiles.observed.v1';
 	const schema = {
 		registry: 'keeppeek.runtime-profiles.registry.v2',
 		active: 'keeppeek.runtime-profiles.active.v1',
@@ -640,7 +642,7 @@ function activateMockRuntimeProfile(
 		active_profile_id: activeProfileId
 	};
 	revisions.status = revision;
-	for (let index = 0; index < 8; index++) {
+	for (let index = 0; index < observedPartCount; index++) {
 		const key = `observed/${index}`;
 		values[key] = {
 			...values[key],
@@ -882,7 +884,7 @@ function encodedData(message: ReturnType<typeof create<typeof MessageSchema>>): 
 
 function fixtureSubscriptionResult(
 	subscribe: SubscribeMedia,
-	options: MockControlPeerOptions,
+	options: Pick<MockControlPeerOptions, 'cameras' | 'capabilityIds'>,
 	subscriptions: ControlRequests['mediaSubscriptions']
 ): SubscriptionResult {
 	const profiles =
@@ -1035,7 +1037,7 @@ export async function mockControlPeer(
 			revision: '1',
 			profile_id: '',
 			definition_revision: null,
-			observed_parts: 8,
+			observed_parts: observedPartCount,
 			degraded_cameras: options.runtimeProfileDegradedCameras ?? 0
 		},
 		status: { revision: '1', active_profile_id: null, cameras: {} },
@@ -1047,14 +1049,14 @@ export async function mockControlPeer(
 		status: 1n,
 		cameras: 1n
 	};
-	for (let index = 0; index < 8; index++) {
+	for (let index = 0; index < observedPartCount; index++) {
 		const key = `observed/${index}`;
 		runtimeProfileValues[key] = {
 			...runtimeProfileValues.status,
 			generation: 'a'.repeat(64),
 			part_index: index,
 			definition_revision: null,
-			part_count: 8
+			part_count: observedPartCount
 		};
 		runtimeProfileRevisions[key] = 1n;
 	}
@@ -1212,7 +1214,11 @@ export async function mockControlPeer(
 		}
 		if (request.command.case === 'subscribeMedia') {
 			const subscription = request.command.value;
-			const result = fixtureSubscriptionResult(subscription, options, requests.mediaSubscriptions);
+			const result = fixtureSubscriptionResult(
+				subscription,
+				{ cameras: currentCameras, capabilityIds: options.capabilityIds },
+				requests.mediaSubscriptions
+			);
 			const error = await options.mediaAdmissionError?.(subscription);
 			return error
 				? encodedError(request.requestId, error)
