@@ -2501,6 +2501,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
         namespace,
         "access"
             | "sharing"
+            | "reporting"
             | "external_auth"
             | "external_identities"
             | "access_credentials"

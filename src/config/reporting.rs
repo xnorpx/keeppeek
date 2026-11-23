@@ -112,13 +112,13 @@ mod tests {
         let imported = directory.join("imported.toml");
         let source = toml::from_str(
             r#"
+            unrelated = "preserve"
+
             [reporting]
             origin = "https://reports.example:8443"
             credential = "{secret:REPORT_BEARER}"
             retention_days = 30
 
-            [unrelated]
-            preserve = true
             "#,
         )
         .unwrap();
