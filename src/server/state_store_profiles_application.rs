@@ -8,6 +8,7 @@ pub(in crate::server) struct ProfileApplicationQueue {
     recoverable: Option<ProfileRegistry>,
     running: bool,
     stalled_revision: Option<u64>,
+    in_flight_revision: Option<u64>,
 }
 
 // Called after durable persistence and pending publication, under the config update lock.
@@ -102,10 +103,12 @@ fn submit_next(state: &ServerState) -> Option<(ProfileRegistry, [u8; 32], Profil
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         queue.stalled_revision = None;
+        queue.in_flight_revision = None;
         let Some(desired) = queue.next.take() else {
             queue.running = false;
             return None;
         };
+        queue.in_flight_revision = Some(desired.revision);
         drop(queue);
         let (identities, submitted_config) = match current_submission(state, &desired) {
             Ok(Some(snapshot)) => snapshot,
@@ -182,8 +185,11 @@ fn finish_application(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .stalled_revision = None;
-    match current_submission(state, desired) {
-        Ok(Some((_, latest))) if latest != submitted_config => schedule(state, desired),
+    let publish = match current_submission(state, desired) {
+        Ok(Some((_, latest))) if latest != submitted_config => {
+            schedule(state, desired);
+            false
+        }
         Ok(Some((ids, _))) => {
             let result = result.and_then(|applications| {
                 apply_confirmed_privacy(state, desired, &ids, &applications, None)?;
@@ -192,13 +198,26 @@ fn finish_application(
             match result {
                 Ok(applications) => {
                     update_runtime_status(state, desired, Some(applications), None, false);
-                    publish_status_event(state, now_ms());
                 }
-                Err(error) => report_failure(state, desired, &error.to_string()),
+                Err(error) => {
+                    update_runtime_status(state, desired, None, Some(error.to_string()), false);
+                }
             }
+            true
         }
-        Ok(None) => {}
-        Err(error) => report_failure(state, desired, &error.to_string()),
+        Ok(None) => false,
+        Err(error) => {
+            update_runtime_status(state, desired, None, Some(error.to_string()), false);
+            true
+        }
+    };
+    state
+        .profile_application
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .in_flight_revision = None;
+    if publish {
+        publish_status_event(state, now_ms());
     }
 }
 
@@ -246,20 +265,35 @@ pub(super) fn observed_status<'a>(
     state: &ServerState,
     status: &'a crate::profiles::RuntimeProfileStatus,
 ) -> std::borrow::Cow<'a, crate::profiles::RuntimeProfileStatus> {
-    if state
+    let queue = state
         .profile_application
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .stalled_revision
-        != Some(status.revision)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (reported_state, reason) = if queue.stalled_revision == Some(status.revision) {
+        (
+            RuntimeApplicationState::Degraded,
+            "Camera runtime acknowledgment timed out",
+        )
+    } else if queue.in_flight_revision == Some(status.revision)
+        || queue
+            .next
+            .as_ref()
+            .is_some_and(|next| next.revision == status.revision)
     {
+        // An internal recorder acknowledgment can arrive before the server finalizes the privacy gate.
+        (
+            RuntimeApplicationState::Pending,
+            "Finalizing runtime profile",
+        )
+    } else {
         return std::borrow::Cow::Borrowed(status);
-    }
+    };
+    drop(queue);
     let mut observation = status.clone();
     for application in observation.cameras.values_mut() {
         if application.state != RuntimeApplicationState::Degraded {
-            application.state = RuntimeApplicationState::Degraded;
-            application.reason = Some("Camera runtime acknowledgment timed out".into());
+            application.state = reported_state.clone();
+            application.reason = Some(reason.into());
         }
     }
     std::borrow::Cow::Owned(observation)
@@ -368,6 +402,13 @@ mod tests {
             cameras: BTreeMap::from([(camera.camera_id.clone(), camera.clone())]),
             ..Default::default()
         };
+        state.profile_application.lock().unwrap().in_flight_revision = Some(4);
+        assert_eq!(
+            observed_status(&state, &actual).cameras["camera"].state,
+            RuntimeApplicationState::Pending
+        );
+        assert_eq!(actual.cameras["camera"], camera);
+        state.profile_application.lock().unwrap().in_flight_revision = None;
         state.profile_application.lock().unwrap().stalled_revision = Some(4);
         let shown = observed_status(&state, &actual);
         assert_eq!(
