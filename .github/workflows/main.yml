@@ -1,298 +1,47 @@
-name: Main
-
-on:
-  push:
-    branches: [main]
-  schedule:
-    - cron: "17 * * * *"
-  workflow_dispatch:
-
-concurrency:
-  group: main-extended-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'automatic' }}
-  cancel-in-progress: true
-
+name: Frame-step browser qualification
+run-name: Real Linux Chromium frame handoff diagnosis for PR 359
+on: workflow_dispatch
 permissions:
   contents: read
-
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  codeql-rust:
-    name: CodeQL (Rust)
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      security-events: write
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           submodules: recursive
-      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
-          languages: rust
-          build-mode: none
-      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
-          category: /language:rust
-
-  slow-rust:
-    name: Slow Rust Tests
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+          shared-key: canonical-repository-check
+          cache-on-failure: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+          node-version: "24"
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version-file: ui/.bun-version
-      - name: Install UI dependencies
-        working-directory: ui
-        run: bun install --no-save --registry=https://registry.npmjs.org/
-      - name: Run opt-in slow test-camera regressions
-        env:
-          KEEPPEEK_RUN_SLOW_TESTS: "1"
-        run: |
-          cargo test --locked -p test-camera checked_in_mp4_fixtures_stream_through_both_backends --lib
-          cargo test --locked -p test-camera rtsp_camera_streams_main_and_sub_profiles --lib
-      - name: Run opt-in storage pipeline regressions
-        env:
-          KEEPPEEK_RUN_SLOW_TESTS: "1"
-        run: cargo test --locked --test storage_pipeline
-
-  rust-coverage:
-    name: Rust Coverage
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-        with:
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version-file: ui/.bun-version
-      - name: Install UI dependencies
-        working-directory: ui
-        run: bun install --no-save --registry=https://registry.npmjs.org/
-      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
-        with:
-          tool: cargo-llvm-cov
       - uses: ./.github/actions/setup-ffmpeg
-      - name: Generate Rust coverage
-        run: |
-          mkdir -p target/main-coverage/rust
-          cargo llvm-cov --locked --workspace --lib --bins --tests --lcov --output-path target/main-coverage/rust/lcov.info
-          cargo llvm-cov report --json --output-path target/main-coverage/rust/coverage.json
-          cargo llvm-cov report --html --output-dir target/main-coverage/rust/html
-      - name: Upload Rust coverage
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: main-rust-coverage
-          path: target/main-coverage/rust
-          if-no-files-found: ignore
-          retention-days: 30
-
-  platform-rust:
-    name: Main Platform (${{ matrix.os }})
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'windows-11-arm' && 60 || 45 }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04-arm, windows-latest, windows-11-arm]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version-file: ui/.bun-version
-      - name: Install UI dependencies
+      - name: Build actual recorder and numbered RTSP source
         working-directory: ui
-        run: bun install --no-save --registry=https://registry.npmjs.org/
-      - name: Install and verify Rolldown Linux ARM64 binding
-        if: matrix.os == 'ubuntu-24.04-arm'
+        run: |
+          bun install --no-save --registry=https://registry.npmjs.org/
+          bun x playwright install --with-deps chromium
+          bun scripts/build-e2e-binaries.ts
+      - name: Witness 24 frame steps and playback handoffs for each input
         working-directory: ui
-        shell: bash
-        run: |
-          binding='@rolldown/binding-linux-arm64-gnu'
-          binding_version="$(bun -e "const packageJson = await Bun.file('node_modules/rolldown/package.json').json(); console.log(packageJson.optionalDependencies['$binding'])")"
-          if [[ -z "$binding_version" || "$binding_version" == undefined ]]; then
-            echo "Unable to determine $binding version" >&2
-            exit 1
-          fi
-          bun add --no-save --exact "$binding@$binding_version" --registry=https://registry.npmjs.org/
-          bun -e "await import('rolldown')"
-      - name: Build workspace
-        run: cargo build --locked --all
-      - name: Install NSIS
-        if: runner.os == 'Windows'
-        shell: bash
-        run: choco install nsis --no-progress --yes
-      - name: Build Windows installer
-        if: runner.os == 'Windows'
-        id: windows-installer
-        shell: pwsh
-        run: |
-          $architecture = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
-          $buildDirectory = Join-Path $env:GITHUB_WORKSPACE 'target\debug'
-          $outputDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-installer'
-          New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
-          & 'C:\Program Files (x86)\NSIS\makensis.exe' `
-            "/DARCH=$architecture" `
-            "/DBUILD_DIR=$buildDirectory" `
-            "/DOUT_DIR=$outputDirectory" `
-            '/DVERSION=0.0.0' `
-            '/DVERSION_RESOURCE=0.0.0.0' `
-            installer/keeppeek.nsi
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Unable to build the KeepPeek installer'
-          }
-
-          $installer = Join-Path $outputDirectory "keeppeek-0.0.0-windows-$architecture-installer.exe"
-          "installer=$installer" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "output_directory=$outputDirectory" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          if (-not (Test-Path $installer)) {
-            throw "Installer was not created at $installer"
-          }
-      - name: Verify Windows installer lifecycle
-        if: runner.os == 'Windows' && steps.windows-installer.outcome == 'success'
-        shell: pwsh
         env:
-          INSTALLER: ${{ steps.windows-installer.outputs.installer }}
-          OUTPUT_DIRECTORY: ${{ steps.windows-installer.outputs.output_directory }}
-        run: |
-          $installDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-install'
-          $serviceName = 'KeepPeekService'
-          $installer = $env:INSTALLER
-          try {
-            $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
-            if ($process.ExitCode -ne 0) {
-              throw 'Unable to install KeepPeek'
-            }
-
-            foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe') {
-              if (-not (Test-Path (Join-Path $installDirectory $binary))) {
-                throw "$binary was not installed"
-              }
-            }
-
-            $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
-            if ($null -eq $service -or -not $service.PathName.Contains("$installDirectory\keeppeek-service.exe")) {
-              throw "$serviceName was not installed with the expected binary path"
-            }
-
-            $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
-            if ($process.ExitCode -ne 0) {
-              throw 'Unable to reinstall KeepPeek'
-            }
-          } finally {
-            if (Test-Path (Join-Path $installDirectory 'uninstall.exe')) {
-              $process = Start-Process -FilePath (Join-Path $installDirectory 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
-              if ($process.ExitCode -ne 0) {
-                throw 'Unable to uninstall KeepPeek'
-              }
-            } else {
-              & sc.exe delete $serviceName
-            }
-            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory, $env:OUTPUT_DIRECTORY
-          }
-      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
-        if: matrix.os == 'windows-11-arm'
+          KEEPPEEK_E2E_RUN_ID: linux-frame-clock-diagnosis
+          CI: "true"
+        run: bun x playwright test exact-frame-step.e2e.ts --workers=1 --retries=0 --reporter=list
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: failure()
         with:
-          tool: nextest
-      - uses: ./.github/actions/setup-ffmpeg
-        if: matrix.os != 'windows-latest'
-      - name: Run platform Rust tests
-        if: matrix.os != 'windows-latest'
-        shell: bash
-        run: |
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            cargo nextest run --locked --workspace --lib --bins --tests --test-threads 2
-          else
-            cargo test --locked --all --lib --bins --tests
-          fi
-
-  platform-ui-e2e:
-    name: Main UI E2E (${{ matrix.os }})
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    defaults:
-      run:
-        working-directory: ui
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
-        id: python
-        with:
-          python-version-file: examples/object_detection_service/.python-version
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version-file: ui/.bun-version
-      - name: Install UI dependencies
-        run: bun install --no-save --registry=https://registry.npmjs.org/
-      - name: Install Chromium
-        run: bunx playwright install chromium
-      - name: Verify Windows storage ACL setup without module autoloading
-        if: runner.os == 'Windows'
-        run: powershell.exe -NoLogo -NoProfile -NonInteractive -File ../.github/scripts/test-protect-test-directory.ps1
-      - name: Run full platform Playwright suite
-        env:
-          KEEPPEEK_PYTHON: ${{ steps.python.outputs.python-path }}
-        run: bun run test:e2e:prepare && bun run test:e2e:run -- --workers=1
-      - name: Upload UI test reports
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: main-ui-reports-${{ matrix.os }}
-          path: |
-            ui/test-results
-            ui/playwright-report
-          if-no-files-found: ignore
-          retention-days: 14
-
-  main-gate:
-    name: Main Extended Gate
-    if: always() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
-    needs:
-      [codeql-rust, slow-rust, rust-coverage, platform-rust, platform-ui-e2e]
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - name: Require every extended main suite
-        env:
-          CODEQL_RUST_RESULT: ${{ needs.codeql-rust.result }}
-          SLOW_RUST_RESULT: ${{ needs.slow-rust.result }}
-          RUST_COVERAGE_RESULT: ${{ needs.rust-coverage.result }}
-          PLATFORM_RUST_RESULT: ${{ needs.platform-rust.result }}
-          PLATFORM_UI_RESULT: ${{ needs.platform-ui-e2e.result }}
-        run: |
-          test "$CODEQL_RUST_RESULT" = success
-          test "$SLOW_RUST_RESULT" = success
-          test "$RUST_COVERAGE_RESULT" = success
-          test "$PLATFORM_RUST_RESULT" = success
-          test "$PLATFORM_UI_RESULT" = success
+          name: linux-frame-clock-diagnosis
+          path: ui/test-results/playwright/**/error-context.md
+          retention-days: 2

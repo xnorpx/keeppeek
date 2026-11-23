@@ -250,7 +250,10 @@ export class RecordedFramePlayer {
 				if (current() && Number.isFinite(mediaTime)) {
 					const us = Math.round(mediaTime * 1_000_000);
 					if (video.seeking) stagedUs = us;
-					else this.displayedNs = cursor.storedNsForMediaUs(us);
+					else {
+					this.displayedNs = cursor.storedNsForMediaUs(us);
+					console.info('FRAME-COLD witness',us,String(this.displayedNs),video.currentTime);
+				}
 				}
 				handle = video.requestVideoFrameCallback(presented);
 			};
@@ -297,6 +300,7 @@ export class RecordedFramePlayer {
 					us >= 0 &&
 					(!Number.isFinite(video.duration) || us <= video.duration * 1_000_000)
 			);
+		console.info('FRAME-COLD probes', targetUs, JSON.stringify(positions), video.currentTime, video.duration);
 		const seekDeadline = positions.length > 1 ? deadline - 2_500 : deadline;
 		for (const position of positions) {
 			const remaining = seekDeadline - performance.now();
@@ -332,7 +336,12 @@ export class RecordedFramePlayer {
 	): Promise<boolean> {
 		const sample = retained?.picture ?? this.selection;
 		const url = cursor.url;
-		if (retained && !(await pausedSourceReady(video, cursor, retained))) return false;
+		if (retained) {
+			console.info('FRAME-COLD wait', String(retained.picture.storedTimeNs), video.currentSrc === url, video.seeking, video.readyState, String(cursor.mediaUsForStoredNs(retained.picture.storedTimeNs)));
+			const ready = await pausedSourceReady(video,cursor,retained);
+			console.info('FRAME-COLD loaded',ready,video.currentSrc===url,video.currentTime,video.seeking,video.readyState,String(cursor.mediaUsForStoredNs(retained.picture.storedTimeNs)));
+			if (!ready) return false;
+		}
 		const ownsPicture = () => (retained ? !retained.signal.aborted : this.selection === sample);
 		if (
 			!sample ||

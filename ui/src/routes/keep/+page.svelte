@@ -2204,6 +2204,7 @@
 
 	async function resumeColdPicture(retained: ColdPicture, timestampMs: number): Promise<void> {
 		if (frameResume) return;
+		console.info('FRAME-COLD begin',String(retained.picture.storedTimeNs),timestampMs,storedPlayback?.url,video?.currentTime);
 		coldPicture = retained;
 		const target = exactRecordingTarget(timestampMs);
 		const controller = new AbortController();
@@ -2229,6 +2230,7 @@
 					version === playbackVersion &&
 					cursor === storedPlayback &&
 					element === video;
+				console.info('FRAME-COLD cursor',ownsSource(),!!cursor,!!element,cursor?.canStepExactly,cursor?.sourceId,retained.camera,cursor?.streamId, retained.stream,playerError);
 				if (!ownsSource()) return;
 				if (
 					cursor &&

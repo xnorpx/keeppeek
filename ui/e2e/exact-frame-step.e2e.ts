@@ -30,7 +30,8 @@ function observePicture(element: Element, expected: number | null) {
 			if (input && id === expected && element.getClientRects().length > 0) {
 				resolve({ id, elapsedMs: now - input.startTime });
 			} else if (now >= deadline) {
-				reject(new Error(`Expected picture ${expected}, last observed ${id}`));
+				const r=element.closest('[data-keep-player]');
+				reject(new Error(JSON.stringify({expected,id,notice:r?.innerText.slice(-450),video:r?.querySelector('video')?.dataset.presentationHistory, surface:element.getClientRects().length})));
 			} else {
 				requestAnimationFrame(sample);
 			}
@@ -118,7 +119,7 @@ function witnessHandoff(surface: Element) {
 			reject(
 				new Error(
 					'No verified resume picture: ' +
-						region.querySelector('video')?.dataset.presentationHistory
+						JSON.stringify({trace:region.querySelector('video')?.dataset.presentationHistory,text:(region as HTMLElement).innerText.slice(-380),currentTime:region.querySelector('video')?.currentTime})
 				)
 			);
 		}, 8_000);
@@ -151,6 +152,7 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 		baseURL
 	}, testInfo) => {
 		test.setTimeout(120_000);
+		page.on('console', (m)=>{ if(m.text().includes('FRAME-COLD')) console.log(m.text()); });
 		if (!baseURL) throw new Error('The frame-step fixture needs the UI origin.');
 		const origin = new URL(baseURL).origin;
 		const mediaPath = resolve(
@@ -245,8 +247,10 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 				.toBeGreaterThan(1);
 			const level = await zoom.getAttribute('aria-valuenow');
 			let { id } = await video.evaluate(observePicture, null);
+			console.log('FRAME-COLD VFR initial',fixture,id,await video.evaluate(v=>({clock:v.currentTime,trace:v.dataset.presentationHistory,frame:v.dataset.lastMediaTime})));
 			for (const direction of [...Array<number>(12).fill(1), ...Array<number>(12).fill(-1)]) {
 				const button = direction > 0 ? next : previous;
+				console.log('FRAME-COLD step start',fixture,id,direction,measurements.length);
 				id = (id + direction + 12) % 12;
 				const [presented] = await Promise.all([
 					selected.evaluate(observePicture, id),
@@ -365,6 +369,7 @@ for (const fixture of ['cfr', 'vfr', 'duplicate-pts'] as const) {
 					coldTime = timestampMs((await clock.getAttribute('datetime'))!);
 				}
 				expect(coldTime).toBeLessThan(before.origin - 1);
+				console.log('FRAME-COLD selected', coldId,coldTime,JSON.stringify(before),await region.locator('time[data-frame-recording-time]').getAttribute('datetime'));
 				const decoded = selected.evaluate(witnessHandoff);
 				await region.getByRole('button', { name: 'Play recording', exact: true }).click();
 				coldResume = await decoded;
