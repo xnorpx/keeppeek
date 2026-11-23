@@ -28,7 +28,7 @@ fn recording_with_width(
     times: &[Option<i64>],
     width: u16,
 ) -> Vec<CatalogMediaFragment> {
-    write_recording(path, times, width, 6)
+    write_recording(path, times, width, 6, 3)
 }
 
 fn write_recording(
@@ -36,14 +36,6 @@ fn write_recording(
     times: &[Option<i64>],
     width: u16,
     first_sample_bytes: usize,
-) -> Vec<CatalogMediaFragment> {
-    recording_with_gop(path, times, width, 3)
-}
-
-fn recording_with_gop(
-    path: &Path,
-    times: &[Option<i64>],
-    width: u16,
     gop: usize,
 ) -> Vec<CatalogMediaFragment> {
     let config = mp4::Mp4Config {
@@ -71,7 +63,7 @@ fn recording_with_gop(
     .unwrap();
     let mut fragments = Vec::new();
     for (index, &stamp) in times.iter().enumerate() {
-        let sync = index % gop == 0;
+        let sync = index.is_multiple_of(gop);
         let size = if index == 0 { first_sample_bytes } else { 6 };
         let mut payload = vec![0; size];
         payload[..4].copy_from_slice(&u32::try_from(size - 4).unwrap().to_be_bytes());
@@ -150,6 +142,7 @@ fn first_chunk_carries_measured_stored_presentation_bounds_for_each_sample() {
         &[Some(0), Some(80), Some(40)],
         320,
         DATA_MESSAGE_CHUNK_BYTES + 1,
+        3,
     );
     let window = target_window(&fragments, 10_000_000_000, None, true, &work()).unwrap();
     let transfer = plan(window, &proto::StepStoredFrame::default(), &work()).unwrap();
@@ -246,7 +239,7 @@ fn valid_samples_over_the_remaining_budget_return_distance_limit() {
     assert!(index_fragment(&short[0], 3, &work()).is_ok());
     let count = index::MAX_SAMPLES as usize + 1;
     let times: Vec<_> = (0..count).map(|i| Some(i as i64)).collect();
-    let dense = recording_with_gop(&dir.0.join("dense.mp4"), &times, 320, count);
+    let dense = write_recording(&dir.0.join("dense.mp4"), &times, 320, 6, count);
     assert!(matches!(
         index_fragment(&dense[0], index::MAX_SAMPLES, &work()),
         Err(Unavailable::Limit)
