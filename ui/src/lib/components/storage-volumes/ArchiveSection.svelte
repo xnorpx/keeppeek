@@ -84,6 +84,7 @@
 		message = 'Archive request accepted. Refresh archive jobs for progress.';
 	}
 	function jobStatus(job: ArchiveJob): string {
+		if (job.action === 'delete' && job.state === 'ready') return 'Archive deletion queued';
 		if (job.state === 'deleted') {
 			if (job.action === 'delete') return 'Deletion acknowledgement pending';
 			if (!job.action) return 'Deletion acknowledged';
@@ -197,6 +198,7 @@
 	<div class="space-y-3" aria-label="Archive jobs">
 		{#if !jobs.length}<p class="text-sm text-text-muted">No archive jobs on this page.</p>{/if}
 		{#each jobs as job (job.jobId)}
+			{@const queuedDeletion = job.state === 'ready' && job.action === 'delete'}
 			<article
 				class="min-w-0 space-y-2 rounded-sm border border-hairline p-3 text-sm"
 				aria-label={`Archive job ${job.jobId}`}
@@ -245,14 +247,17 @@
 										: 'Archive operation failed. Refresh the job and destination status before retrying.'}
 					</p>{/if}
 				<div class="flex flex-wrap gap-2">
-					{#if (job.state === 'queued' || job.state === 'copying' || job.action) && job.action !== 'delete' && job.primaryCopy !== ArchivePrimaryCopyState.EVICTING}<Button
+					{#if queuedDeletion || ((job.state === 'queued' || job.state === 'copying' || job.action) && job.action !== 'delete' && job.primaryCopy !== ArchivePrimaryCopyState.EVICTING)}<Button
 							class="min-h-11 sm:min-h-0"
 							type="button"
 							size="sm"
 							variant="outline"
 							disabled={disabled || busy}
-							aria-label={`Cancel archive job ${job.jobId}`}
-							onclick={() => action('cancel', job)}>Cancel</Button
+							aria-label={queuedDeletion
+								? `Cancel queued archive deletion ${job.objectId}`
+								: `Cancel archive job ${job.jobId}`}
+							onclick={() => action('cancel', job)}
+							>{queuedDeletion ? 'Cancel queued archive deletion' : 'Cancel'}</Button
 						>{/if}
 					{#if job.state === 'failed' || job.state === 'cancelled' || (job.errorCode && job.action) || job.errorCode === 'archive_reverification_failed'}<Button
 							class="min-h-11 sm:min-h-0"
