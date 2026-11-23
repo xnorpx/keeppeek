@@ -6,7 +6,10 @@ import {
 	type Page,
 	type TestInfo
 } from '@playwright/test';
-import { startAuthenticationFixture } from './fixtures/external-authentication-server';
+import {
+	startAuthenticationFixture,
+	type AuthenticationFixture
+} from './fixtures/external-authentication-server';
 
 test.use({
 	actionTimeout: 15_000,
@@ -15,6 +18,17 @@ test.use({
 	screenshot: 'off',
 	video: 'off'
 });
+
+async function signInRangeOwner(page: Page, fixture: AuthenticationFixture) {
+	await fixture.command('administrator');
+	await page.goto(fixture.origin);
+	await page.getByRole('button', { name: 'Continue with Fixture sign-in' }).click();
+	await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible({ timeout: 45_000 });
+	const start = fixture.guestRecordingStartMs;
+	if (start === null || !Number.isSafeInteger(start))
+		throw new Error('The fixture requires retained video.');
+	return start;
+}
 
 async function checkResponsivePreview(page: Page, dialog: Locator, testInfo: TestInfo) {
 	for (const width of testInfo.repeatEachIndex === 0 ? [1440, 390, 320] : []) {
@@ -113,14 +127,7 @@ test('the selected Keep, event and bookmark intervals reach the same guarded HTT
 	const recipient = await browser.newContext({ ignoreHTTPSErrors: true });
 	try {
 		await page.setViewportSize({ width: 1440, height: 900 });
-		await fixture.command('administrator');
-		await page.goto(fixture.origin);
-		await page.getByRole('button', { name: 'Continue with Fixture sign-in' }).click();
-		// Cold recorder sign-in precedes the timed evidence previews.
-		await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible({ timeout: 45_000 });
-		const start = fixture.guestRecordingStartMs;
-		if (start === null || !Number.isSafeInteger(start))
-			throw new Error('The fixture requires retained video.');
+		const start = await signInRangeOwner(page, fixture);
 		await page.goto(`${fixture.origin}/keep?camera=127.0.0.1&stream=sub&at=${start}&mode=export`);
 		const panel = page.locator('[data-keep-export]');
 		const dialog = page.getByRole('dialog', { name: 'Create guest link', exact: true });
@@ -164,3 +171,104 @@ test('the selected Keep, event and bookmark intervals reach the same guarded HTT
 		await fixture.close();
 	}
 });
+
+async function openCreatorRange(
+	page: Page,
+	origin: string,
+	start: number,
+	entry: 'Keep' | 'Event'
+) {
+	if (entry === 'Keep') {
+		await page.goto(`${origin}/keep?camera=127.0.0.1&stream=sub&at=${start}&mode=export`);
+		const panel = page.locator('[data-keep-export]');
+		await panel.getByRole('button', { name: 'Share recording range' }).click();
+		return {
+			start: Number(await panel.getAttribute('data-export-start-ms')),
+			end: Number(await panel.getAttribute('data-export-end-ms'))
+		};
+	}
+	const date = new Date(start - 500).toISOString().slice(0, 10);
+	await page.goto(`${origin}/events?date=${date}`);
+	await page.locator('[data-event-card="127.0.0.1:guest-range-event"]').click();
+	await page
+		.getByRole('complementary', { name: 'Event detail' })
+		.getByRole('button', { name: 'Share recording range' })
+		.click();
+	return { start: start - 500, end: start + 2_500 };
+}
+
+async function openRecipient(page: Page, url: string) {
+	await page.goto(url).catch(() => {
+		throw new Error('The guest evidence page did not load.');
+	});
+}
+
+for (const entry of ['Keep', 'Event'] as const) {
+	test(`${entry} issues a bounded HTTPS grant with the chosen expiry and download setting`, async ({
+		page,
+		browser
+	}) => {
+		test.setTimeout(150_000);
+		const fixture = await startAuthenticationFixture(true);
+		const recipient = await browser.newContext({ ignoreHTTPSErrors: true });
+		try {
+			const start = await signInRangeOwner(page, fixture);
+			const selection = await openCreatorRange(page, fixture.origin, start, entry);
+			const dialog = page.getByRole('dialog', { name: 'Create guest link', exact: true });
+			const selected = dialog.getByText(/Selected interval/);
+			for (const boundary of [selection.start, selection.end]) {
+				await expect(selected).toContainText(new Date(boundary).toISOString());
+			}
+			const download = entry === 'Event';
+			await dialog.getByLabel('Display name').fill('Time-limited recording');
+			await dialog.getByLabel('Allow download').setChecked(download);
+			const expiry = Math.floor(Date.now() / 1000) * 1000 + (download ? 180_000 : 35_000);
+			await dialog.getByLabel('Expires (UTC)').fill(new Date(expiry).toISOString().slice(0, 19));
+			await dialog.getByRole('button', { name: 'Create guest link', exact: true }).click();
+			const url = await dialog.getByLabel('One-time guest link').inputValue();
+			const viewer = await recipient.newPage();
+			const session = viewer.waitForResponse(
+				(response) =>
+					response.ok() &&
+					response.request().method() === 'POST' &&
+					new URL(response.url()).pathname === '/guest/session'
+			);
+			await openRecipient(viewer, url);
+			await expect(viewer.getByRole('heading', { name: 'Time-limited recording' })).toBeVisible();
+			const metadata = await (await session).json();
+			expect(metadata.expires_at_ms).toBe(expiry);
+			expect(metadata.can_stream).toBe(true);
+			expect(metadata.can_download).toBe(download);
+			expect(metadata.start_ms).toBeGreaterThanOrEqual(selection.start);
+			expect(metadata.end_ms).toBeLessThanOrEqual(selection.end);
+			expect(metadata.end_ms).toBeGreaterThan(metadata.start_ms);
+			await expect(viewer.getByRole('link', { name: 'Download MP4' })).toHaveCount(
+				download ? 1 : 0
+			);
+			if (download) {
+				const ordinary = await recipient.newPage();
+				await ordinary.goto(fixture.origin);
+				await expect(
+					ordinary.getByRole('button', { name: 'Continue with Fixture sign-in' })
+				).toBeVisible();
+				await expect(ordinary.getByRole('button', { name: 'Sign out' })).toHaveCount(0);
+			} else {
+				await expect(viewer.getByText('The link expired. Playback has stopped.')).toBeVisible({
+					timeout: 50_000
+				});
+				expect(Date.now()).toBeGreaterThanOrEqual(expiry);
+				await expect(viewer.locator('video')).toHaveCount(0);
+				await recipient.clearCookies();
+				const fresh = await recipient.newPage();
+				await openRecipient(fresh, url);
+				await expect(
+					fresh.getByRole('heading', { name: 'This link is unavailable.' })
+				).toBeVisible();
+				await expect(fresh.locator('video')).toHaveCount(0);
+			}
+		} finally {
+			await recipient.close();
+			await fixture.close();
+		}
+	});
+}
