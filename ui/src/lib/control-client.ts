@@ -3273,6 +3273,7 @@ export class StoredMediaPlayback {
 	#latestKeyFrame: StoredMediaKeyFramePreview | null = null;
 	#firstFragmentGenerations = new Set<bigint>();
 
+	readonly #frameClockListeners = new Set<() => void>();
 	#frameStep?: { abort: AbortController; window: StoredFrameWindow };
 
 	constructor(
@@ -3308,6 +3309,11 @@ export class StoredMediaPlayback {
 
 	get canStepExactly(): boolean {
 		return this.requestFrameStep !== undefined && typeof VideoDecoder !== 'undefined';
+	}
+
+	onFrameClockUpdate(listener: () => void): () => void {
+		this.#frameClockListeners.add(listener);
+		return () => this.#frameClockListeners.delete(listener);
 	}
 
 	storedNsForMediaUs(us: number): bigint | undefined {
@@ -4020,6 +4026,7 @@ export class StoredMediaPlayback {
 						);
 					else this.#frameClock.reset();
 				}
+				for (const listener of this.#frameClockListeners) listener();
 				this.flushAppendQueue();
 				this.finishIfEnded();
 			});

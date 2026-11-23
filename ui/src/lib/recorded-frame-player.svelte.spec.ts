@@ -5,6 +5,7 @@ import { UnsupportedRecordedFrame, type PresentedStoredFrame } from './stored-fr
 function clock(originMs: number) {
 	const origin = BigInt(originMs) * 1_000_000n;
 	return {
+		onFrameClockUpdate: (_listener: () => void) => () => {},
 		storedNsForMediaUs: (us: number) => origin + BigInt(us) * 1_000n,
 		mediaUsForStoredNs: (ns: bigint) => Math.round(Number(ns - origin) / 1_000)
 	};
@@ -393,9 +394,18 @@ test.each([false, true])(
 test('a retained cold picture waits for the replacement source and verifies before the canvas is removed', async () => {
 	const fixture = observedVideo();
 	const player = new RecordedFramePlayer();
+	let publishClock: (() => void) | undefined;
+	let clockReady = false;
 	const cursor = {
 		url: 'blob:replacement',
 		...clock(0),
+		mediaUsForStoredNs: (ns: bigint) => (clockReady ? clock(0).mediaUsForStoredNs(ns) : undefined),
+		onFrameClockUpdate: (listener: () => void) => {
+			publishClock = listener;
+			return () => {
+				publishClock = undefined;
+			};
+		},
 		canStepExactly: true,
 		stepRecordedFrame: () => Promise.resolve(picture(1))
 	};
@@ -423,6 +433,12 @@ test('a retained cold picture waits for the replacement source and verifies befo
 	ready = true;
 	fixture.video.dispatchEvent(new Event('loadeddata'));
 	await Promise.resolve();
+	expect(hidden).toBe(0);
+	expect(publishClock).toBeDefined();
+	clockReady = true;
+	publishClock?.();
+	await Promise.resolve();
+	expect(publishClock).toBeUndefined();
 	fixture.callback()(0.041);
 	expect(await align).toBe(true);
 	expect(hidden).toBe(1);

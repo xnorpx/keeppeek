@@ -14,33 +14,51 @@ type RetainedPicture = {
 	verified: () => boolean;
 };
 
-function pausedSourceReady(video: HTMLVideoElement, url: string, signal: AbortSignal) {
+type Cursor = Pick<
+	StoredMediaPlayback,
+	| 'storedNsForMediaUs'
+	| 'mediaUsForStoredNs'
+	| 'onFrameClockUpdate'
+	| 'url'
+	| 'canStepExactly'
+	| 'stepRecordedFrame'
+>;
+
+function pausedSourceReady(video: HTMLVideoElement, cursor: Cursor, retained: RetainedPicture) {
+	const { signal, picture } = retained;
+	const url = cursor.url;
 	const ready = () =>
-		video.currentSrc === url && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+		cursor.url === url &&
+		video.currentSrc === url &&
+		video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+		!video.seeking &&
+		cursor.mediaUsForStoredNs(picture.storedTimeNs) !== undefined;
 	if (signal.aborted) return Promise.resolve(false);
 	if (ready()) return Promise.resolve(true);
 	return new Promise<boolean>((resolve) => {
 		const finish = (result: boolean) => {
 			clearTimeout(timer);
+			unsubscribe();
 			video.removeEventListener('loadeddata', loaded);
+			video.removeEventListener('seeked', loaded);
 			video.removeEventListener('error', failed);
 			signal.removeEventListener('abort', failed);
 			resolve(result);
 		};
 		const failed = () => finish(false);
 		const loaded = () => {
-			if (ready()) finish(true);
+			if (cursor.url !== url) failed();
+			else if (ready()) finish(true);
 		};
 		const timer = setTimeout(failed, 10_000);
+		// A replacement video's loadeddata can run before the appended fragment publishes its clock.
+		const unsubscribe = cursor.onFrameClockUpdate(loaded);
 		video.addEventListener('loadeddata', loaded);
+		video.addEventListener('seeked', loaded);
 		video.addEventListener('error', failed);
 		signal.addEventListener('abort', failed, { once: true });
 	});
 }
-type Cursor = Pick<
-	StoredMediaPlayback,
-	'storedNsForMediaUs' | 'mediaUsForStoredNs' | 'url' | 'canStepExactly' | 'stepRecordedFrame'
->;
 
 // Reading currentTime only identifies the requested seek position. The compositor identifies
 // the stored picture actually drawn, which can differ from that position for B pictures.
@@ -314,7 +332,7 @@ export class RecordedFramePlayer {
 	): Promise<boolean> {
 		const sample = retained?.picture ?? this.selection;
 		const url = cursor.url;
-		if (retained && !(await pausedSourceReady(video, url, retained.signal))) return false;
+		if (retained && !(await pausedSourceReady(video, cursor, retained))) return false;
 		const ownsPicture = () => (retained ? !retained.signal.aborted : this.selection === sample);
 		if (
 			!sample ||
