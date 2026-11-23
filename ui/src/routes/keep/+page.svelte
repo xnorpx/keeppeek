@@ -2413,49 +2413,48 @@
 	}
 
 	function applyPendingSeek() {
-		if (
-			!video ||
-			!selected ||
-			video.readyState < HTMLMediaElement.HAVE_METADATA ||
-			video.currentSrc !== video.src ||
-			video.getAttribute('src') !== playbackUrl
-		)
-			return;
+		if (!video || !selected || video.getAttribute('src') !== playbackUrl) return;
 		video.playbackRate = playbackRate;
 		video.muted = scrubbing || playbackMuted;
-		if (pendingSeekSeconds !== null) {
-			const requestedTime = Math.max(
-				0,
-				Math.min(pendingSeekSeconds, video.duration || pendingSeekSeconds)
-			);
+		const hasMetadata = video.readyState >= HTMLMediaElement.HAVE_METADATA;
+		if (pendingSeekSeconds !== null && (!hasMetadata || video.currentSrc === video.src)) {
+			const requestedTime = hasMetadata
+				? Math.max(0, Math.min(pendingSeekSeconds, video.duration || pendingSeekSeconds))
+				: pendingSeekSeconds;
+			// Before metadata, currentTime sets the new source's default playback start.
 			if (video.currentTime !== requestedTime) video.currentTime = requestedTime;
-			if (Math.abs(video.currentTime - requestedTime) < 0.001) {
+			if (hasMetadata && Math.abs(video.currentTime - requestedTime) < 0.001) {
 				playheadMs = playbackAnchorMs + video.currentTime * 1_000;
 				if (requestedTime >= pendingSeekSeconds) pendingSeekSeconds = null;
+				storedPlayback?.observe(video.currentTime);
 			}
-			storedPlayback?.observe(video.currentTime);
 		}
-		if (pendingPlay) void startReplay();
-		pendingPlay = false;
+		if (pendingPlay) {
+			pendingPlay = false;
+			void startReplay();
+		}
 	}
 
 	async function startReplay(): Promise<void> {
 		const player = video;
+		const version = playbackVersion;
 		if (!player) return;
 		try {
 			await player.play();
 		} catch {
-			if (video !== player) return;
+			if (video !== player || version !== playbackVersion || !playing) return;
 			player.muted = true;
 			playbackMuted = true;
 			playbackPreferences = withMediaPreferences(playbackPreferences, { muted: true });
 			savePlaybackPreferences(window.localStorage, playbackPreferences);
-			await player.play().catch(() => (playing = false));
+			await player.play().catch(() => {
+				if (video === player && version === playbackVersion) playing = false;
+			});
 		}
 	}
 
 	function updatePlayhead() {
-		if (selectedPicture) return;
+		if (selectedPicture || pendingSeekSeconds !== null) return;
 		if (!video || !selected || playbackSourceCommitVersion !== null) return;
 		playheadMs = playbackAnchorMs + video.currentTime * 1_000;
 		storedPlayback?.observe(video.currentTime);

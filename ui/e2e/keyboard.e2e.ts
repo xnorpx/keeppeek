@@ -226,6 +226,15 @@ test('keeps a paused cold seek at its exact frame after the media source changes
 		);
 		await expect(player).toHaveAttribute('data-recording-playhead-ms', String(beforeFrame + 40));
 		await expect(video).toHaveJSProperty('currentTime', 0);
+		// This cursor mock sends no media. A late clock event before metadata must
+		// not be combined with the replacement cursor's anchor.
+		await video.evaluate((element) => {
+			const player = element as HTMLVideoElement;
+			if (player.readyState !== player.HAVE_NOTHING) throw new Error('Unexpected cursor media');
+			player.currentTime = 0.75;
+			player.dispatchEvent(new Event('timeupdate'));
+		});
+		await expect(player).toHaveAttribute('data-recording-playhead-ms', String(beforeFrame + 40));
 		await expect(player).toHaveAttribute('data-keyboard-playing', 'false');
 		expect(controls.storedSeeks).toHaveLength(1);
 	} finally {
