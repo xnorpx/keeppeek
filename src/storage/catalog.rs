@@ -2184,6 +2184,7 @@ async fn legacy_recordings_without_keyframes(
                                         r.finalized_at_ms IS NULL OR r.ended_at_ms IS NULL
              FROM recording_files AS r
              WHERE NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
+               AND NOT EXISTS (SELECT 1 FROM legacy_recording_relocations m WHERE m.id=r.id)
                AND NOT EXISTS (SELECT 1 FROM archive_replicas a WHERE a.kind='recording' AND a.recording_id=r.id AND (a.state='ready' OR a.local_evicted!=0))
                AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations
                    WHERE kind = 'recording' AND object_id = r.id AND state != 'cancelled')
