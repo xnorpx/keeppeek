@@ -54,6 +54,7 @@ Root fields must appear before a table header or they belong to that table.
 | -------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------- |
 | Root fields                                        | `Config`                                            | Operator settings                                     |
 | `[sharing]`                                        | `sharing::SharingConfig`                            | Guest review deployment policy; server-owned revision |
+| `[reporting]`                                      | `reporting::Settings`                               | Optional bug reporting service settings               |
 | `[access]`                                         | `AccessConfig`                                      | Administrator security policy                         |
 | `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                        |
 | `[storage]`                                        | `StorageToml`                                       | Recording paths, retention, and safety                |
@@ -527,7 +528,7 @@ to `.event-thumbnails` under that same directory. See
 | `event_thumbnail_path`           | Optional `String` | Runtime-selected        | Event-thumbnail directory.                                                                                                                                    |
 | `event_thumbnail_max_mb`         | `u64`             | `1024`                  | Thumbnail storage budget, in MiB.                                                                                                                             |
 | `short_term_secs`                | `u64`             | `120`                   | Short-term retention, in seconds.                                                                                                                             |
-| `medium_term_secs`               | `u64`             | `1800`                  | Medium-term retention, in seconds.                                                                                                                            |
+| `medium_term_secs`               | `u64`             | `1800`                  | Target recording segment duration in seconds. Rotation waits for a video keyframe and keeps intervening frames in the current segment.                        |
 | `flush_interval_secs`            | `u64`             | `60`                    | Recording flush interval, in seconds.                                                                                                                         |
 | `write_buffer_bytes`             | `usize`           | `8192`                  | Recording write-buffer size, in bytes.                                                                                                                        |
 | `long_term_max_gb`               | `u64`             | `1024`                  | Long-term storage budget, in GiB.                                                                                                                             |
@@ -545,6 +546,10 @@ threshold is derived as critical plus hysteresis. Otherwise, warning must be at 
 Effective media paths come from named owners, and catalog paths come from the metadata binding.
 Use named-volume move controls for stored objects and the confirmed metadata restart workflow
 for the catalog. The general storage editor displays these paths read-only.
+
+Each recording writer can hold up to 16 MiB of encoded media and frame metadata between video
+keyframes. If a camera exceeds this limit, KeepPeek commits the decodable prefix, reports the
+gap in recording health and resumes at the next usable video keyframe.
 
 These values are policy defaults, not a capacity guarantee. Storage budgets and free-space thresholds
 must suit the actual disks and camera bitrates. A configuration ZIP preserves the target's existing
@@ -823,6 +828,21 @@ valid saved filter takes precedence over `RUST_LOG`; the built-in fallback is
 usable source. This diagnostic setting is outside the two-file configuration ZIP. Preserve it with
 the configuration directory if you need it during a recovery rehearsal. Source:
 [logging service](https://github.com/xnorpx/keeppeek/blob/main/src/logging.rs).
+
+## Bug reporting service
+
+The optional `[reporting]` section configures the recorder's reporting service. Omit it to keep
+bug reports local. The configuration loader validates the section. Remote submission is pending
+recorder integration.
+
+| Field            | Type            | Default  | Meaning                                                                                     |
+| ---------------- | --------------- | -------- | ------------------------------------------------------------------------------------------- |
+| `origin`         | String          | Required | Canonical HTTPS origin up to 512 bytes, with an optional port.                              |
+| `credential`     | Optional string | Absent   | A single `{secret:KEY}` reference in `secrets.toml` when the service requires a credential. |
+| `retention_days` | `u8`            | `7`      | Requested retention for the private evidence, from 1 to 30 days.                            |
+
+Keep the reusable credential in `secrets.toml`. The loader preserves the reference in
+`config.toml` and validates its syntax without resolving it at recorder startup.
 
 ## Operational events
 

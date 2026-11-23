@@ -495,38 +495,38 @@ impl Manager {
     ) -> anyhow::Result<Reservation> {
         let volume = &self.inner.configuration.volumes[index];
         let root = self.inner.root(index)?;
-        let capacity = root.capacity(self.inner.catalog.volume_ledger_revision()?)?;
         let operation = uuid::Uuid::new_v4().to_string();
         let writer_lease = matches!(object.kind, Kind::Thumbnail | Kind::Recording)
             .then(|| self.inner.catalog.claim_volume_move(&operation))
             .transpose()?;
-        let allocation = Allocation {
-            operation: operation.clone(),
-            object,
-            volume: volume.id.to_string(),
-            generation: 1,
-            relative_key: key.clone(),
-            bytes: placement.required_bytes,
-            capacity,
-        };
-        let request = if placement.role == VolumeRole::Active
-            && let Some(policy) = self.archive_policy(placement.source, groups)
-        {
-            Request::ReserveArchive(
-                allocation,
-                crate::storage::catalog::locations::archives::Intent {
+        let archive = (placement.role == VolumeRole::Active)
+            .then(|| self.archive_policy(placement.source, groups))
+            .flatten()
+            .map(
+                |policy| crate::storage::catalog::locations::archives::Intent {
                     id: uuid::Uuid::new_v4().to_string(),
                     policy,
                 },
-            )
-        } else {
-            Request::Reserve(allocation)
-        };
-        let reply = self
-            .inner
-            .catalog
-            .volume_location(request.clone())
-            .or_else(|_| self.inner.catalog.volume_location(request))?;
+            );
+        let catalog = &self.inner.catalog;
+        let reply = catalog.with_fresh_capacity(root, |capacity| {
+            let allocation = Allocation {
+                operation: operation.clone(),
+                object: object.clone(),
+                volume: volume.id.to_string(),
+                generation: 1,
+                relative_key: key.clone(),
+                bytes: placement.required_bytes,
+                capacity,
+            };
+            let request = match &archive {
+                Some(intent) => Request::ReserveArchive(allocation, intent.clone()),
+                None => Request::Reserve(allocation),
+            };
+            catalog
+                .volume_location(request.clone())
+                .or_else(|_| catalog.volume_location(request))
+        })?;
         let Reply::Reserved { bytes, .. } = reply else {
             anyhow::bail!("invalid reservation reply");
         };
@@ -820,15 +820,14 @@ impl ReservedFile {
     fn request_growth(&self, bytes: u64) -> anyhow::Result<u64> {
         let reservation = &self.reservation;
         let root = reservation.inner.root(reservation.index)?;
-        let capacity = root.capacity(reservation.inner.catalog.volume_ledger_revision()?)?;
-        let reply = reservation
-            .inner
-            .catalog
-            .volume_location(Request::Grow(Growth {
+        let catalog = &reservation.inner.catalog;
+        let reply = catalog.with_fresh_capacity(root, |capacity| {
+            catalog.volume_location(Request::Grow(Growth {
                 operation: reservation.operation.clone(),
                 bytes,
                 capacity,
-            }))?;
+            }))
+        })?;
         let Reply::Reserved { bytes, .. } = reply else {
             anyhow::bail!("invalid growth reply");
         };
