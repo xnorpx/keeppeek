@@ -151,6 +151,17 @@ pub(in crate::storage) fn inspect(
     inspect_with_sample_limit(reader, size, deadline, u64::MAX)
 }
 
+#[derive(Debug)]
+pub(in crate::storage) struct SampleLimit;
+
+impl std::fmt::Display for SampleLimit {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output.write_str("sample window limit exceeded")
+    }
+}
+
+impl std::error::Error for SampleLimit {}
+
 pub(in crate::storage) fn inspect_with_sample_limit(
     reader: &mut (impl Read + Seek),
     size: u64,
@@ -468,7 +479,7 @@ fn guard_samples(
                 );
                 *remaining_samples = remaining_samples
                     .checked_sub(u64::from(samples))
-                    .ok_or_else(|| anyhow::anyhow!("sample window limit exceeded"))?;
+                    .ok_or(SampleLimit)?;
                 anyhow::ensure!(end - payload >= 12, "missing media offset");
                 let mut offset = [0_u8; 4];
                 reader.read_exact(&mut offset)?;

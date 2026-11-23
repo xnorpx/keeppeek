@@ -144,7 +144,7 @@ impl<'a> PictureOrder<'a> {
 }
 
 // H.264 section 8.2.1.1 uses the previous reference picture, not the previous decoded B picture.
-fn extend_count(previous_reference: i64, lsb: i64, modulus: i64) -> i64 {
+const fn extend_count(previous_reference: i64, lsb: i64, modulus: i64) -> i64 {
     let previous_lsb = previous_reference.rem_euclid(modulus);
     let mut msb = previous_reference - previous_lsb;
     if previous_lsb - lsb >= modulus / 2 {

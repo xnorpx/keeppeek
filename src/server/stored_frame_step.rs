@@ -112,7 +112,7 @@ fn rejected(message: &'static str) -> ControlCommandError {
     ControlCommandError::new(proto::ErrorCode::Rejected, 409, message)
 }
 
-fn unavailable(status: Unavailable) -> proto::StoredFrameStepStatus {
+const fn unavailable(status: Unavailable) -> proto::StoredFrameStepStatus {
     use proto::StoredFrameStepStatus as S;
     match status {
         Unavailable::Timing => S::TimingUnavailable,
@@ -216,7 +216,7 @@ fn index_fragment(
                 work.deadline,
                 remaining,
             )
-            .map_err(|_| Unavailable::Timing)?;
+            .map_err(Unavailable::from)?;
             if u64::from(result.sequence) != source.sequence {
                 return Err(Unavailable::Stale);
             }
@@ -488,7 +488,7 @@ fn plan(
         .filter(|i| (first..end).contains(i))
         .enumerate()
     {
-        ranks[i - first] = rank as u32
+        ranks[i - first] = rank as u32;
     }
     let mut bytes = 0_u64;
     let mut min = i128::MAX;
@@ -774,8 +774,9 @@ fn step_until(
         let c = cursors
             .get_mut(&key)
             .ok_or_else(|| rejected("stored media cursor is unavailable"))?;
-        if c.source_id != request.source_id
-            || c.requested_stream_id != request.stream_id
+        let same_stream = c.requested_stream_id == request.stream_id;
+        if !same_stream
+            || c.source_id != request.source_id
             || c.generation != request.generation
             || c.playing
             || c.mode != proto::StoredMediaMode::Playback

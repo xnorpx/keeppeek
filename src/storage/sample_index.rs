@@ -6,14 +6,14 @@ use anyhow::{Context as _, ensure};
 use sha2::{Digest as _, Sha256};
 use std::{io::Cursor, time::Instant};
 
-pub(crate) const MAX_SAMPLES: u32 = 4_096;
-pub(crate) const MAX_ENCODED_BYTES: u64 = 32 * 1_024 * 1_024;
-pub(crate) const MAX_SPAN_MS: i64 = 10_000;
-pub(crate) const MAX_SPAN_NS: i128 = MAX_SPAN_MS as i128 * 1_000_000;
-pub(crate) const MAX_MOOF_BYTES: usize = 1_024 * 1_024;
+pub const MAX_SAMPLES: u32 = 4_096;
+pub const MAX_ENCODED_BYTES: u64 = 32 * 1_024 * 1_024;
+pub const MAX_SPAN_MS: i64 = 10_000;
+pub const MAX_SPAN_NS: i128 = MAX_SPAN_MS as i128 * 1_000_000;
+pub const MAX_MOOF_BYTES: usize = 1_024 * 1_024;
 
 #[derive(Clone, Debug)]
-pub(crate) struct Picture {
+pub struct Picture {
     pub ordinal: u32,
     pub stored_ns: i128,
     pub stored_end_ns: i128,
@@ -24,7 +24,7 @@ pub(crate) struct Picture {
     pub sync: bool,
 }
 
-pub(crate) struct Fragment {
+pub struct Fragment {
     pub pictures: Vec<Picture>,
     pub decoder: mp4::Mp4VideoDecoderConfig,
     pub fingerprint: [u8; 32],
@@ -41,7 +41,7 @@ fn ticks_to_ns(ticks: i128, rate: u32) -> anyhow::Result<i128> {
 
 /// The input stops at the start of mdat payload. The reader may seek over the logical
 /// payload but never needs to read it to validate the index or locate individual pictures.
-pub(crate) fn fragment(
+pub fn fragment(
     metadata: &[u8],
     init_len: usize,
     fragment_bytes: u64,
@@ -50,8 +50,8 @@ pub(crate) fn fragment(
     remaining_samples: u32,
 ) -> anyhow::Result<Fragment> {
     ensure!(
-        remaining_samples <= MAX_SAMPLES && remaining_samples > 0,
-        "sample window limit exceeded"
+        (1..=MAX_SAMPLES).contains(&remaining_samples),
+        container::SampleLimit
     );
     ensure!(
         init_len > 0
@@ -88,10 +88,8 @@ pub(crate) fn fragment(
     let (&track_id, track) = video.next().context("no video track")?;
     ensure!(video.next().is_none(), "multiple video tracks");
     let count = track.sample_count();
-    ensure!(
-        (1..=remaining_samples).contains(&count),
-        "video sample limit exceeded"
-    );
+    ensure!(count > 0, "video fragment has no pictures");
+    ensure!(count <= remaining_samples, container::SampleLimit);
     let description = checked.first_sample.sample_description_index;
     let decoder = track
         .video_decoder_config_for_description(description)?
@@ -158,7 +156,7 @@ pub(crate) fn fragment(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Unavailable {
+pub enum Unavailable {
     Timing,
     Ambiguous,
     Boundary,
@@ -168,8 +166,18 @@ pub(crate) enum Unavailable {
     Discontinuity,
 }
 
+impl From<anyhow::Error> for Unavailable {
+    fn from(error: anyhow::Error) -> Self {
+        if error.is::<container::SampleLimit>() {
+            Self::Limit
+        } else {
+            Self::Timing
+        }
+    }
+}
+
 impl Fragment {
-    pub(crate) fn displayed(&self, stored_ns: i128) -> Result<usize, Unavailable> {
+    pub fn displayed(&self, stored_ns: i128) -> Result<usize, Unavailable> {
         // requestVideoFrameCallback exposes seconds derived from the browser's microsecond media clock.
         let micros = |ns: i128| (ns + 500).div_euclid(1_000);
         let mut found = self
@@ -184,7 +192,7 @@ impl Fragment {
         Ok(index)
     }
 
-    pub(crate) fn presentation_order(
+    pub fn presentation_order(
         &self,
         mut payload: impl FnMut(&Picture) -> Result<Vec<u8>, Unavailable>,
     ) -> Result<Vec<usize>, Unavailable> {

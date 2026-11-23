@@ -37,6 +37,15 @@ fn write_recording(
     width: u16,
     first_sample_bytes: usize,
 ) -> Vec<CatalogMediaFragment> {
+    recording_with_gop(path, times, width, 3)
+}
+
+fn recording_with_gop(
+    path: &Path,
+    times: &[Option<i64>],
+    width: u16,
+    gop: usize,
+) -> Vec<CatalogMediaFragment> {
     let config = mp4::Mp4Config {
         major_brand: "iso6".parse().unwrap(),
         minor_version: 1,
@@ -62,7 +71,7 @@ fn write_recording(
     .unwrap();
     let mut fragments = Vec::new();
     for (index, &stamp) in times.iter().enumerate() {
-        let sync = index % 3 == 0;
+        let sync = index % gop == 0;
         let size = if index == 0 { first_sample_bytes } else { 6 };
         let mut payload = vec![0; size];
         payload[..4].copy_from_slice(&u32::try_from(size - 4).unwrap().to_be_bytes());
@@ -84,7 +93,7 @@ fn write_recording(
         writer
             .write_sample_with_source_timing(1, 1, sample, packet)
             .unwrap();
-        if index % 3 == 2 {
+        if index % gop == gop - 1 {
             fragments.push(writer.flush_fragment().unwrap().unwrap());
         }
     }
@@ -206,6 +215,24 @@ fn returns_the_source_adjacent_sample_and_reverses_across_a_fragment() {
     assert!(matches!(
         target_window(&changed, 10_040_000_000, None, true, &work()),
         Err(Unavailable::Gap)
+    ));
+}
+
+#[test]
+fn valid_samples_over_the_remaining_budget_return_distance_limit() {
+    let dir = RecordingDirectory::new();
+    let short = recording(&dir.0.join("short.mp4"), &[Some(0), Some(40), Some(80)]);
+    assert!(matches!(
+        index_fragment(&short[0], 2, &work()),
+        Err(Unavailable::Limit)
+    ));
+    assert!(index_fragment(&short[0], 3, &work()).is_ok());
+    let count = index::MAX_SAMPLES as usize + 1;
+    let times: Vec<_> = (0..count).map(|i| Some(i as i64)).collect();
+    let dense = recording_with_gop(&dir.0.join("dense.mp4"), &times, 320, count);
+    assert!(matches!(
+        index_fragment(&dense[0], index::MAX_SAMPLES, &work()),
+        Err(Unavailable::Limit)
     ));
 }
 
