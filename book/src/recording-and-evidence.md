@@ -170,6 +170,18 @@ normal Keep timeline; the player displays **ARCHIVE — Playing from archive. St
 the required archive ranges directly, without a full restore or an artificial delay. Existing
 waiting, failure, seek, and cancellation controls still apply.
 
+After an export expires and its local history is pruned, a new session under the same account
+can find its recent verified archives in **Keep → Export**. When no recording segment is
+selected, choose **Find completed exports**, identify the file by its camera, stream and UTC
+start time, then **Download**. When a segment is selected, choose the same stream, range and
+export options to use an existing matching export. A current camera privacy restriction hides
+the archived entry and blocks its download.
+
+The export list preserves local history and considers up to 64 additional verified exports, newest
+creation first, within the response size limit. Requesting an older export by its original job ID
+still works. Listing reads the local catalog. Downloading opens and verifies the target, so a
+disconnected destination can prevent retrieval.
+
 **Restore primary** queues a verified transfer back to the original primary destination.
 Cancellation stops cancellable copy or restore work and cleans up partial staging.
 **Retry / finish cleanup** retains the cancelled copy's job identity. Copying resumes only after
