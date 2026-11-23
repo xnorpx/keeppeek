@@ -82,7 +82,12 @@ test('the Talk control sends the browser microphone tone to the Hikvision speake
 			await expect.poll(async () => (await observe()).peerClosedUploads).toBe(1);
 			await expect(talk).toBeVisible();
 			await talk.click();
-			await expect.poll(async () => (await observe()).audible).toBeGreaterThan(0);
+			await expect
+				.poll(async () => {
+					const current = await observe();
+					return current.active && current.audible > 0;
+				})
+				.toBe(true);
 			await page.close();
 			await expect.poll(async () => (await observe()).active).toBe(false);
 			await expect.poll(async () => (await observe()).peerClosedUploads).toBe(2);
