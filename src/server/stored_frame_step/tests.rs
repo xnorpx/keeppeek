@@ -126,6 +126,23 @@ fn work() -> Work<'static> {
 }
 
 #[test]
+fn compositor_microseconds_identify_a_unique_fractional_recording_timestamp() {
+    let directory = RecordingDirectory::new();
+    let fragments = recording(
+        &directory.0.join("microseconds.mp4"),
+        &[Some(0), Some(40), Some(80)],
+    );
+    let mut index = index_fragment(&fragments[0], index::MAX_SAMPLES, &work()).unwrap();
+    // The first 90 kHz media timestamp at tick 150,000 is 1.666666666 s.
+    index.pictures[0].stored_ns = 1_666_666_666;
+    assert_eq!(index.displayed(1_666_666_000), Ok(0));
+    assert_eq!(index.displayed(1_666_667_000), Ok(0));
+    assert_eq!(index.displayed(1_666_665_000), Err(Unavailable::Stale));
+    index.pictures[1].stored_ns = 1_666_667_100;
+    assert_eq!(index.displayed(1_666_667_000), Err(Unavailable::Ambiguous));
+}
+
+#[test]
 fn first_chunk_carries_measured_stored_presentation_bounds_for_each_sample() {
     let directory = RecordingDirectory::new();
     let fragments = write_recording(

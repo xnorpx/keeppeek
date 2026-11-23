@@ -2,6 +2,14 @@ import { expect, test } from 'vitest';
 import { RecordedFramePlayer } from './recorded-frame-player.svelte';
 import { UnsupportedRecordedFrame, type PresentedStoredFrame } from './stored-frame-step';
 
+function clock(originMs: number) {
+	const origin = BigInt(originMs) * 1_000_000n;
+	return {
+		storedNsForMediaUs: (us: number) => origin + BigInt(us) * 1_000n,
+		mediaUsForStoredNs: (ns: bigint) => Math.round(Number(ns - origin) / 1_000)
+	};
+}
+
 function picture(ordinal: number): PresentedStoredFrame {
 	const canvas = document.createElement('canvas');
 	canvas.width = 2;
@@ -39,7 +47,7 @@ test.each([
 		let peak = 0;
 		const cursor = {
 			canStepExactly: true,
-			anchorTimeMs: 0,
+			...clock(0),
 			url: 'clip',
 			async stepRecordedFrame(
 				direction: -1 | 1,
@@ -82,7 +90,7 @@ test('a seek drops pending keys and closes a late decoder output', async () => {
 	const first = Promise.withResolvers<PresentedStoredFrame>();
 	const cursor = {
 		canStepExactly: true,
-		anchorTimeMs: 0,
+		...clock(0),
 		url: 'clip',
 		stepRecordedFrame: () => first.promise
 	};
@@ -109,7 +117,7 @@ test('unavailable source timing disables further exact steps until the cursor ch
 	let attempts = 0;
 	const cursor = {
 		canStepExactly: true,
-		anchorTimeMs: 0,
+		...clock(0),
 		url: 'legacy',
 		async stepRecordedFrame() {
 			attempts++;
@@ -181,7 +189,7 @@ test('uses a witnessed paused frame when the compositor callback precedes seeked
 	const player = new RecordedFramePlayer();
 	const cleanup = player.follow(fixture.video, {
 		url: fixture.video.currentSrc,
-		anchorTimeMs: 1000,
+		...clock(1000),
 		canStepExactly: true,
 		stepRecordedFrame: () => Promise.resolve(picture(1))
 	});
@@ -216,7 +224,7 @@ test('resuming waits for the selected compositor picture and a settled seek, and
 	sample.frame.close();
 	const cursor = {
 		url: fixture.video.currentSrc,
-		anchorTimeMs: 0,
+		...clock(0),
 		canStepExactly: true,
 		stepRecordedFrame: () => Promise.resolve(picture(1))
 	};
@@ -245,7 +253,7 @@ test('probes recorded GOP intervals and exposes only the matching paused picture
 	const url = fixture.video.currentSrc;
 	const cursor = {
 		url,
-		anchorTimeMs: 0,
+		...clock(0),
 		canStepExactly: true,
 		stepRecordedFrame: () => Promise.resolve(sample)
 	};
@@ -275,7 +283,7 @@ test('a retained cold picture waits for the replacement source and verifies befo
 	const player = new RecordedFramePlayer();
 	const cursor = {
 		url: 'blob:replacement',
-		anchorTimeMs: 0,
+		...clock(0),
 		canStepExactly: true,
 		stepRecordedFrame: () => Promise.resolve(picture(1))
 	};

@@ -39,7 +39,7 @@ function pausedSourceReady(video: HTMLVideoElement, url: string, signal: AbortSi
 }
 type Cursor = Pick<
 	StoredMediaPlayback,
-	'anchorTimeMs' | 'url' | 'canStepExactly' | 'stepRecordedFrame'
+	'storedNsForMediaUs' | 'mediaUsForStoredNs' | 'url' | 'canStepExactly' | 'stepRecordedFrame'
 >;
 
 // Reading currentTime only identifies the requested seek position. The compositor identifies
@@ -123,8 +123,6 @@ export class RecordedFramePlayer {
 			return () => this.clear();
 		const url = cursor.url;
 		const current = () => video.currentSrc === url && cursor.url === url;
-		const timestamp = (microseconds: number) =>
-			BigInt(cursor.anchorTimeMs) * 1_000_000n + BigInt(microseconds) * 1_000n;
 		let generation = 0;
 		let handle: number | undefined;
 		let stagedUs: number | undefined;
@@ -137,7 +135,7 @@ export class RecordedFramePlayer {
 				if (current() && Number.isFinite(mediaTime)) {
 					const us = Math.round(mediaTime * 1_000_000);
 					if (video.seeking) stagedUs = us;
-					else this.displayedNs = timestamp(us);
+					else this.displayedNs = cursor.storedNsForMediaUs(us);
 				}
 				handle = video.requestVideoFrameCallback(presented);
 			};
@@ -150,7 +148,7 @@ export class RecordedFramePlayer {
 		const seeked = () => {
 			// A paused video may present the target before seeked and never submit another frame.
 			if (current() && !video.seeking && stagedUs === Math.round(video.currentTime * 1_000_000)) {
-				this.displayedNs = timestamp(stagedUs);
+				this.displayedNs = cursor.storedNsForMediaUs(stagedUs);
 			}
 			stagedUs = undefined;
 		};
@@ -184,9 +182,8 @@ export class RecordedFramePlayer {
 			cursor.url !== url
 		)
 			return false;
-		const origin = BigInt(cursor.anchorTimeMs) * 1_000_000n;
-		const relativeUs = (ns: bigint) => Math.round(Number(ns - origin) / 1_000);
-		const targetUs = relativeUs(sample.storedTimeNs);
+		const targetUs = cursor.mediaUsForStoredNs(sample.storedTimeNs);
+		if (targetUs === undefined) return false;
 		const coordinates = sample.resumeTimesNs ?? [sample.storedTimeNs + 1_000n];
 		const controller = new AbortController();
 		this.handoff = controller;
@@ -208,8 +205,13 @@ export class RecordedFramePlayer {
 					!video.paused
 				)
 					break;
-				const coordinateUs = relativeUs(coordinate);
-				if (coordinateUs < 0 || coordinateUs / 1_000_000 > video.duration) continue;
+				const coordinateUs = cursor.mediaUsForStoredNs(coordinate);
+				if (
+					coordinateUs === undefined ||
+					coordinateUs < 0 ||
+					coordinateUs / 1_000_000 > video.duration
+				)
+					continue;
 				const displayed = await probePausedPicture(
 					video,
 					url,

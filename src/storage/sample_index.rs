@@ -179,12 +179,13 @@ impl From<anyhow::Error> for Unavailable {
 impl Fragment {
     pub fn displayed(&self, stored_ns: i128) -> Result<usize, Unavailable> {
         // requestVideoFrameCallback exposes seconds derived from the browser's microsecond media clock.
-        let micros = |ns: i128| (ns + 500).div_euclid(1_000);
-        let mut found = self
-            .pictures
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| micros(p.stored_ns) == micros(stored_ns));
+        // Demuxers can truncate or round a fractional tick when converting it to microseconds.
+        // Require a unique match across both quantizations, including near-coincident samples.
+        let observed_us = (stored_ns + 500).div_euclid(1_000);
+        let mut found = self.pictures.iter().enumerate().filter(|(_, p)| {
+            p.stored_ns.div_euclid(1_000) == observed_us
+                || (p.stored_ns + 500).div_euclid(1_000) == observed_us
+        });
         let (index, _) = found.next().ok_or(Unavailable::Stale)?;
         if found.next().is_some() {
             return Err(Unavailable::Ambiguous);

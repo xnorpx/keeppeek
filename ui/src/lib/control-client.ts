@@ -1,3 +1,4 @@
+import { StoredFrameClock } from './stored-frame-clock';
 import {
 	awaitFrameOperation,
 	StoredFrameWindow,
@@ -3174,14 +3175,17 @@ function accessAuditEvent(event: ProtoAccessAuditEvent): AccessAuditEvent {
 	};
 }
 
-type CompletedStoredObject = {
-	generation: bigint;
+type StoredAppend = {
+	catalogStartMs?: number;
 	payload: Uint8Array;
 	deliveredThroughMs?: number;
 	sourceBufferContentType?: string;
 };
 
+type CompletedStoredObject = StoredAppend & { generation: bigint };
+
 type StoredChunkAccumulator = ChunkAccumulator & {
+	catalogStartMs?: number;
 	generation: bigint;
 	deliveredThroughMs?: number;
 	sourceBufferContentType?: string;
@@ -3225,7 +3229,9 @@ export class StoredMediaPlayback {
 	#generation = 0n;
 	#chunks = new Map<string, StoredChunkAccumulator>();
 	#completed: CompletedStoredObject[] = [];
-	#appendQueue: Array<{ payload: Uint8Array; sourceBufferContentType?: string }> = [];
+	#appendQueue: StoredAppend[] = [];
+	#appending?: StoredAppend;
+	#frameClock = new StoredFrameClock();
 	#seek: (timestampMs: number) => Promise<StoredMediaState>;
 	#refill: (timestampMs: number) => Promise<StoredMediaState>;
 	#updatePlayback: (
@@ -3302,6 +3308,18 @@ export class StoredMediaPlayback {
 
 	get canStepExactly(): boolean {
 		return this.requestFrameStep !== undefined && typeof VideoDecoder !== 'undefined';
+	}
+
+	storedNsForMediaUs(us: number): bigint | undefined {
+		if (this.#sourceBuffer?.mode === 'segments')
+			return BigInt(this.anchorTimeMs) * 1_000_000n + BigInt(us) * 1_000n;
+		return this.#frameClock.storedNs(us);
+	}
+
+	mediaUsForStoredNs(ns: bigint): number | undefined {
+		if (this.#sourceBuffer?.mode === 'segments')
+			return Math.round(Number(ns - BigInt(this.anchorTimeMs) * 1_000_000n) / 1_000);
+		return this.#frameClock.mediaUs(ns);
 	}
 
 	receiveFrameStepChunk(chunk: StoredFrameStepChunk): void {
@@ -3416,10 +3434,7 @@ export class StoredMediaPlayback {
 			this.#latestKeyFrame = null;
 		}
 		for (const object of this.#completed) {
-			this.#appendQueue.push({
-				payload: object.payload,
-				sourceBufferContentType: object.sourceBufferContentType
-			});
+			this.#appendQueue.push(object);
 			if (object.deliveredThroughMs !== undefined) {
 				this.#deliveredThroughMs = Math.max(this.#deliveredThroughMs, object.deliveredThroughMs);
 			}
@@ -3566,7 +3581,9 @@ export class StoredMediaPlayback {
 			fragment.chunkCount,
 			this.#contentType ?? 'video/mp4',
 			fragment.payload,
-			deliveredThroughMs
+			deliveredThroughMs,
+			undefined,
+			fragment.startTime ? timestampDate(fragment.startTime).getTime() : undefined
 		);
 	}
 
@@ -3802,6 +3819,8 @@ export class StoredMediaPlayback {
 		this.#startupEvents = [];
 		this.#latestKeyFrame = null;
 		this.#firstFragmentGenerations.clear();
+		this.#appending = undefined;
+		this.#frameClock.reset();
 		this.#completed = [];
 		this.#appendQueue = [];
 		this.#refillInFlight = false;
@@ -3824,7 +3843,8 @@ export class StoredMediaPlayback {
 		contentType: string,
 		payload: Uint8Array,
 		deliveredThroughMs: number | undefined,
-		sourceBufferContentType?: string
+		sourceBufferContentType?: string,
+		catalogStartMs?: number
 	): void {
 		if (this.#closed || chunkCount === 0 || chunkIndex >= chunkCount) return;
 		const accumulator = this.#chunks.get(key) ?? {
@@ -3833,7 +3853,8 @@ export class StoredMediaPlayback {
 			chunks: Array.from<Uint8Array | undefined>({ length: chunkCount }),
 			contentType,
 			deliveredThroughMs,
-			sourceBufferContentType
+			sourceBufferContentType,
+			catalogStartMs
 		};
 		if (
 			accumulator.generation !== generation ||
@@ -3841,6 +3862,7 @@ export class StoredMediaPlayback {
 			accumulator.contentType !== contentType ||
 			accumulator.deliveredThroughMs !== deliveredThroughMs ||
 			accumulator.sourceBufferContentType !== sourceBufferContentType ||
+			accumulator.catalogStartMs !== catalogStartMs ||
 			accumulator.chunks[chunkIndex] !== undefined
 		) {
 			this.fail('Stored media chunks were inconsistent.');
@@ -3859,7 +3881,8 @@ export class StoredMediaPlayback {
 			generation,
 			payload: concatenateChunks(accumulator.chunks),
 			deliveredThroughMs: accumulator.deliveredThroughMs,
-			sourceBufferContentType: accumulator.sourceBufferContentType
+			sourceBufferContentType: accumulator.sourceBufferContentType,
+			catalogStartMs: accumulator.catalogStartMs
 		};
 		if (this.#generation === 0n) {
 			this.#completed.push(completed);
@@ -3873,10 +3896,7 @@ export class StoredMediaPlayback {
 		if (accumulator.deliveredThroughMs !== undefined) {
 			this.#deliveredThroughMs = Math.max(this.#deliveredThroughMs, accumulator.deliveredThroughMs);
 		}
-		this.#appendQueue.push({
-			payload: completed.payload,
-			sourceBufferContentType: completed.sourceBufferContentType
-		});
+		this.#appendQueue.push(completed);
 		if (
 			accumulator.deliveredThroughMs !== undefined &&
 			!this.#firstFragmentGenerations.has(generation)
@@ -3932,6 +3952,8 @@ export class StoredMediaPlayback {
 	}
 
 	private replaceMediaSource(): void {
+		this.#appending = undefined;
+		this.#frameClock.reset();
 		this.#sourceBuffer = null;
 		this.#sourceBufferContentType = null;
 		this.#appendQueue = [];
@@ -3986,11 +4008,26 @@ export class StoredMediaPlayback {
 			sourceBuffer.mode = this.recordedAudio?.appliedOffsetMs ? 'segments' : 'sequence';
 			sourceBuffer.addEventListener('updateend', () => {
 				if (this.#sourceBuffer !== sourceBuffer) return;
+				const appended = this.#appending;
+				this.#appending = undefined;
+				if (this.requestFrameStep && sourceBuffer.mode === 'sequence' && appended) {
+					if (appended.sourceBufferContentType) this.#frameClock.initialization(appended.payload);
+					else if (appended.catalogStartMs !== undefined)
+						this.#frameClock.fragment(
+							appended.payload,
+							appended.catalogStartMs,
+							sourceBuffer.timestampOffset
+						);
+					else this.#frameClock.reset();
+				}
 				this.flushAppendQueue();
 				this.finishIfEnded();
 			});
 			sourceBuffer.addEventListener('error', () => {
-				if (this.#sourceBuffer === sourceBuffer) this.fail('Browser rejected stored media bytes.');
+				if (this.#sourceBuffer !== sourceBuffer) return;
+				this.#appending = undefined;
+				this.#frameClock.reset();
+				this.fail('Browser rejected stored media bytes.');
 			});
 			this.flushAppendQueue();
 		} catch (error) {
@@ -4026,6 +4063,7 @@ export class StoredMediaPlayback {
 				sourceBuffer.changeType(next.sourceBufferContentType);
 				this.#sourceBufferContentType = next.sourceBufferContentType;
 			}
+			this.#appending = next;
 			sourceBuffer.appendBuffer(ownedArrayBuffer(next.payload));
 		} catch (error) {
 			this.fail(error instanceof Error ? error.message : 'Unable to append stored media bytes.');
