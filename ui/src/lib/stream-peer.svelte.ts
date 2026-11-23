@@ -56,6 +56,8 @@ type NegotiatedTrack = LivePeerPlan & {
 	audioTransceiver: RTCRtpTransceiver;
 };
 
+type AudioDelivery = 'rtp' | 'mediaData';
+
 type PendingRequest = {
 	resolve: (response: ControlResponse) => void;
 	reject: (error: Error) => void;
@@ -94,6 +96,7 @@ export type LivePeerTrack = {
 	liveQuality?: LiveQualityDiagnostics;
 	liveAudio?: LiveAudioTiming;
 	audioVariantId?: string;
+	audioDelivery?: SubscriptionResult['delivery']['case'];
 	audioTiming?: LiveAudioTiming;
 	timingReconciliationNeeded?: boolean;
 	restoredSavedTiming?: boolean;
@@ -160,7 +163,13 @@ export class LivePeer {
 	#previewWaiters = new Map<string, (failure?: Error) => void>();
 	#audioSync = new Map<
 		string,
-		{ variant: string; attempts: number; busy: boolean; retry?: ReturnType<typeof setTimeout> }
+		{
+			variant: string;
+			delivery: AudioDelivery;
+			attempts: number;
+			busy: boolean;
+			retry?: ReturnType<typeof setTimeout>;
+		}
 	>();
 	#sessionTransport: LiveSessionTransport;
 
@@ -997,16 +1006,17 @@ export class LivePeer {
 			}
 			return;
 		}
-		const previousVariant = this.track(cameraId)?.audioVariantId;
-		if (previousVariant && previousVariant !== variant.variantId) {
+		const current = this.track(cameraId);
+		const delivery = requestedAudioDelivery(variant);
+		if (
+			current?.audioVariantId &&
+			(current.audioVariantId !== variant.variantId || current.audioDelivery !== delivery)
+		) {
 			await this.unsubscribeAudio(cameraId, subscriptionId);
 		}
 		lifetime.throwIfAborted();
-		const requestedDeliveryTransport = variant.deliveryTransports.includes(
-			DeliveryTransport.RELIABLE_DATA
-		)
-			? DeliveryTransport.RELIABLE_DATA
-			: DeliveryTransport.RTP;
+		const requestedDeliveryTransport =
+			delivery === 'mediaData' ? DeliveryTransport.RELIABLE_DATA : DeliveryTransport.RTP;
 		const result = await this.requestMedia(
 			cameraId,
 			create(SubscribeMediaSchema, {
@@ -1027,6 +1037,7 @@ export class LivePeer {
 		this.replaceTrack(cameraId, {
 			audioAdmission: 'admitted',
 			audioVariantId: variant.variantId,
+			audioDelivery: result.value.delivery.case,
 			admissionError: null
 		});
 		if (confirmTiming && !timingConfirmed(result.value.liveAudio, previewOffset)) {
@@ -1161,6 +1172,7 @@ export class LivePeer {
 		}
 		this.replaceTrack(cameraId, {
 			audioVariantId: undefined,
+			audioDelivery: undefined,
 			audioTiming: undefined,
 			audioReceiver: null,
 			audioStream: null,
@@ -1350,15 +1362,17 @@ export class LivePeer {
 			!track?.subscribed ||
 			this.calibratingAudio(cameraId) ||
 			!variant ||
-			track.audioVariantId === variant.variantId
+			(track.audioVariantId === variant.variantId &&
+				track.audioDelivery === requestedAudioDelivery(variant))
 		) {
 			this.clearAudioSync(cameraId);
 			return;
 		}
+		const delivery = requestedAudioDelivery(variant);
 		let state = this.#audioSync.get(cameraId);
-		if (state?.variant !== variant.variantId) {
+		if (state?.variant !== variant.variantId || state.delivery !== delivery) {
 			this.clearAudioSync(cameraId);
-			state = { variant: variant.variantId, attempts: 0, busy: false };
+			state = { variant: variant.variantId, delivery, attempts: 0, busy: false };
 			this.#audioSync.set(cameraId, state);
 		}
 		if (refresh && !state.busy && !state.retry && state.attempts >= 3) state.attempts = 0;
@@ -1379,7 +1393,11 @@ export class LivePeer {
 					return;
 				}
 				pending.busy = false;
-				if (this.track(cameraId)?.audioVariantId === pending.variant) {
+				const admitted = this.track(cameraId);
+				if (
+					admitted?.audioVariantId === pending.variant &&
+					admitted.audioDelivery === pending.delivery
+				) {
 					this.clearAudioSync(cameraId);
 				} else if (pending.attempts < 3) {
 					pending.retry = setTimeout(() => {
@@ -1438,6 +1456,9 @@ export class LivePeer {
 			waiter.resolve(capabilities);
 		}
 		this.#capabilitiesWaiters = [];
+		for (const track of Object.values(this.tracks)) {
+			if (track.subscribed) this.followActiveAudio(track.cameraId);
+		}
 	}
 
 	private receiveMediaData(event: MessageEvent): void {
@@ -1579,6 +1600,10 @@ export class LivePeer {
 			if (this.#viewers.length === 0 && this.#holds === 0) void this.close();
 		});
 	}
+}
+
+function requestedAudioDelivery(variant: MediaVariantCapability): AudioDelivery {
+	return variant.deliveryTransports.includes(DeliveryTransport.RELIABLE_DATA) ? 'mediaData' : 'rtp';
 }
 
 function timingConfirmed(

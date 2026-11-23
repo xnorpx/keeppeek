@@ -8539,7 +8539,7 @@ mod tests {
                 source,
                 frame,
             })
-            .unwrap()
+            .unwrap();
         };
         send(frame.clone());
         assert!(matches!(
