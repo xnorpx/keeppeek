@@ -30,6 +30,21 @@ can display the same picture or skip a picture. Space toggles playback. J, K and
 and pause. `[` and `]` set export boundaries. Form fields keep their normal keyboard behavior.
 Arrow keys pan a focused digitally zoomed image.
 
+### Compare recordings from two cameras
+
+Open a recording in **Keep**. Under **Compare with**, select a second camera.
+**Play**, **Pause**, **Speed** and the five-second seek buttons act on one UTC
+playhead. Each camera shows the time of its most recently presented video frame.
+A camera with a gap shows its own status and rejoins when the playhead reaches
+playable footage again. **Single camera** opens the focused camera at that moment.
+
+Use **Audio** to select the one camera whose recording can be heard, and **Mute**
+or **Unmute** to control listening. **Focus** chooses which camera has priority
+when decoder capacity is limited. Pausing, seeking or changing the focused or
+audio camera updates the link so it can reopen the comparison at that moment.
+On a compact screen, up to two recordings can decode. A hidden browser tab
+releases the comparison players and reopens visible footage on return.
+
 ### Use Keep on a phone
 
 In portrait, Keep keeps a compact camera/date row, the player and a horizontal history timeline

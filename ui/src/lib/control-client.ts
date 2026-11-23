@@ -262,6 +262,7 @@ export type MediaExportJob = {
 };
 
 type StoredMediaOpenOptions = {
+	schedule?: <T>(operation: () => Promise<T>) => Promise<T>;
 	sourceId: string;
 	streamId: 'main' | 'sub';
 	timestampMs: number;
@@ -1177,19 +1178,22 @@ export class ControlClient {
 	async openStoredMedia(options: StoredMediaOpenOptions): Promise<StoredMediaPlayback> {
 		options.signal?.throwIfAborted();
 		const storedMediaId = `review-${this.#nextStoredId++}`;
+		const schedule = options.schedule ?? (<T>(operation: () => Promise<T>) => operation());
 		const playback = new StoredMediaPlayback(
 			storedMediaId,
 			options.sourceId,
 			options.streamId,
-			(timestampMs) => this.seekStoredMedia(storedMediaId, timestampMs),
-			(timestampMs) => this.refillStoredMedia(storedMediaId, timestampMs),
+			(timestampMs) => schedule(() => this.seekStoredMedia(storedMediaId, timestampMs)),
+			(timestampMs) => schedule(() => this.refillStoredMedia(storedMediaId, timestampMs)),
 			(playing, playbackRate, mode, recordedAudioPreview) =>
-				this.updateStoredMediaPlayback(
-					storedMediaId,
-					playing,
-					playbackRate,
-					mode,
-					recordedAudioPreview
+				schedule(() =>
+					this.updateStoredMediaPlayback(
+						storedMediaId,
+						playing,
+						playbackRate,
+						mode,
+						recordedAudioPreview
+					)
 				),
 			() => this.closeStoredMedia(storedMediaId)
 		);
@@ -1218,10 +1222,14 @@ export class ControlClient {
 					})
 				}
 			});
-			const result = await this.request(
-				{ case: 'storedMediaCommand', value: command },
-				options.openTimeoutMs ?? 4_000,
-				options.signal
+			const result = await schedule(() =>
+				this.request(
+					{ case: 'storedMediaCommand', value: command },
+					options.openTimeoutMs ?? 4_000,
+					// A dispatched shared request must drain the recorder's one background slot.
+					// The comparison scheduler checks cancellation before dispatch.
+					options.schedule ? undefined : options.signal
+				)
 			);
 			if (result.case !== 'storedMediaState') {
 				throw new Error('Server returned an unexpected stored media response.');

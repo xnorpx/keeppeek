@@ -1,0 +1,253 @@
+<script lang="ts">
+	import { onMount, untrack } from 'svelte';
+	import { GridPlaybackSession, maximumReviewCameras } from '$lib/grid-playback-session';
+	import { RecordedReviewRequests } from '$lib/recorded-review-requests';
+	import { useControlClient } from '$lib/control-context';
+	import {
+		browserSupportsRecordedEncoding,
+		selectRecordedStream
+	} from '$lib/recorded-playback-policy';
+	import { recordedPreference, type PlaybackPreferenceDocument } from '$lib/playback-preferences';
+	import type { KeepReviewSelection } from '$lib/keep-link';
+	import type { CameraListItem, RecordingSegment, RecordingsResponse } from '$lib/types';
+	import RecordedReviewTile from './RecordedReviewTile.svelte';
+
+	let {
+		cameras,
+		selection,
+		startMs,
+		focusedId,
+		preferences,
+		updateLink,
+		single
+	}: {
+		cameras: CameraListItem[];
+		selection: KeepReviewSelection;
+		startMs: number;
+		focusedId: string;
+		preferences: PlaybackPreferenceDocument;
+		updateLink: (at: number, focus: string, selection: KeepReviewSelection) => void;
+		single: (at: number, focus: string) => void;
+	} = $props();
+	const client = useControlClient();
+	const requests = new RecordedReviewRequests();
+	const clock = new GridPlaybackSession();
+	let focus = $state(untrack(() => focusedId));
+	let audio = $state(untrack(() => selection.audioCameraId));
+	let muted = $state(untrack(() => preferences.media.muted));
+	let epoch = $state(untrack(() => startMs));
+	let playing = $state(false);
+	let revision = $state(0);
+	let budget = $state(2);
+	let visible = $state<Record<string, number>>({});
+	let foreground = $state(false);
+	let rate = $state(untrack(() => preferences.media.playbackRate));
+	let rows = $state.raw<RecordingsResponse[]>([]);
+	let loadedWindow = $state<number | null>(null);
+	let unavailable = $state(false);
+	let retry = $state(0);
+	const ids = $derived(selection.cameraIds);
+	const authorized = $derived(cameras.filter((c) => ids.includes(c.id)));
+	const bucket = $derived(Math.floor(epoch / 60_000) * 60_000);
+	const moment = () => Math.floor(clock.positionAt(performance.now()));
+	const chosen = $derived.by(() => {
+		const result = new Map<string, RecordingSegment>();
+		for (const camera of authorized) {
+			const segments =
+				rows
+					.find((row) => row.camera_id === camera.id)
+					?.segments.filter(
+						(segment) => segment.start_time_ms <= epoch && epoch < segment.end_time_ms
+					) ?? [];
+			const { selectedStream } = selectRecordedStream(camera, {
+				preference: recordedPreference(preferences, camera.id),
+				availableStreams: segments.map((row) => row.stream),
+				isEncodingSupported: browserSupportsRecordedEncoding
+			});
+			const segment = segments.find((row) => row.stream === selectedStream);
+			if (segment) result.set(camera.id, segment);
+		}
+		return result;
+	});
+	const active = $derived(
+		clock.reconcile(
+			ids.map((cameraId) => ({
+				cameraId,
+				visibleFraction: visible[cameraId] ?? 0,
+				focused: cameraId === focus,
+				hasRecording: chosen.has(cameraId)
+			})),
+			foreground ? budget : 0
+		).activeCameraIds
+	);
+
+	onMount(() => {
+		const compact = window.matchMedia('(max-width: 767px)');
+		function capacity() {
+			const cores = Math.max(1, Math.floor((navigator.hardwareConcurrency || 4) / 2));
+			budget = Math.min(compact.matches ? 2 : maximumReviewCameras, cores);
+			foreground = document.visibilityState === 'visible';
+			if (foreground && playing) epoch = moment();
+		}
+		capacity();
+		compact.addEventListener('change', capacity);
+		document.addEventListener('visibilitychange', capacity);
+		clock.update({
+			selectedEpochMs: startMs,
+			mode: 'paused',
+			playbackRate: rate,
+			focusedSourceId: focus,
+			monotonicMs: performance.now()
+		});
+		const tick = window.setInterval(() => {
+			if (playing && foreground) epoch = moment();
+		}, 125);
+		return () => {
+			window.clearInterval(tick);
+			compact.removeEventListener('change', capacity);
+			document.removeEventListener('visibilitychange', capacity);
+		};
+	});
+
+	$effect(() => {
+		if (!foreground) return;
+		const from = bucket,
+			sources = authorized.map((camera) => camera.id);
+		void retry;
+		const controller = new AbortController();
+		loadedWindow = null;
+		unavailable = false;
+		client
+			.getRecordingsInRange(
+				sources,
+				new Date(from).toISOString().slice(0, 10),
+				from,
+				from + 60_000,
+				controller.signal
+			)
+			.then((result) => {
+				if (controller.signal.aborted) return;
+				rows = result;
+				loadedWindow = from;
+			})
+			.catch(() => {
+				if (controller.signal.aborted) return;
+				rows = [];
+				unavailable = true;
+			});
+		return () => controller.abort();
+	});
+
+	function persist() {
+		updateLink(moment(), focus, { cameraIds: ids, audioCameraId: audio });
+	}
+	function seek(by: number) {
+		clock.seek(Math.max(0, moment() + by), performance.now());
+		epoch = moment();
+		revision++;
+		persist();
+	}
+	function togglePlaying() {
+		playing = !playing;
+		clock.setPlaying(playing, performance.now());
+		epoch = moment();
+		persist();
+	}
+	function label(id: string) {
+		const camera = cameras.find((c) => c.id === id);
+		return camera?.name || camera?.id || 'Unavailable camera';
+	}
+	function status(id: string) {
+		if (!authorized.some((camera) => camera.id === id)) return 'Unavailable camera';
+		if (unavailable) return 'Coverage unavailable';
+		if (loadedWindow !== bucket) return 'Loading footage';
+		if (!chosen.has(id)) return 'No playable footage at this time';
+		return active.includes(id) ? 'Opening recording' : 'Waiting for a decoder';
+	}
+</script>
+
+<section class="mx-auto flex h-full max-w-[120rem] flex-col gap-3 overflow-y-auto p-3 md:p-5">
+	<header class="flex flex-wrap items-center justify-between gap-3">
+		<h1 class="text-xl font-semibold">Compare recordings</h1>
+		<button class="h-11 px-3 underline" onclick={() => single(moment(), focus)}
+			>Single camera</button
+		>
+	</header>
+	<div
+		class="flex flex-wrap items-center gap-3 rounded-sm border border-hairline bg-raised px-3 py-2"
+	>
+		<button class="h-11 px-2" onclick={() => seek(-5000)} aria-label="Back five seconds"
+			>−5 s</button
+		>
+		<button class="h-11 min-w-16 rounded-sm bg-primary px-3 text-on-primary" onclick={togglePlaying}
+			>{playing ? 'Pause' : 'Play'}</button
+		>
+		<button class="h-11 px-2" onclick={() => seek(5000)} aria-label="Forward five seconds"
+			>+5 s</button
+		>
+		<time class="font-mono text-sm" datetime={new Date(epoch).toISOString()}
+			>{new Date(epoch).toISOString().replace('T', ' ').replace('Z', ' UTC')}</time
+		>
+		<label
+			>Focus <select
+				aria-label="Focused camera"
+				value={focus}
+				onchange={(event) => {
+					focus = event.currentTarget.value;
+					persist();
+				}}
+				>{#each authorized as camera (camera.id)}<option value={camera.id}
+						>{label(camera.id)}</option
+					>{/each}</select
+			></label
+		>
+		<label
+			>Audio <select
+				aria-label="Audio source"
+				value={audio}
+				onchange={(event) => {
+					audio = event.currentTarget.value;
+					persist();
+				}}
+				>{#each authorized as camera (camera.id)}<option value={camera.id}
+						>{label(camera.id)}</option
+					>{/each}</select
+			></label
+		>
+		<button class="h-11 px-2" onclick={() => (muted = !muted)}>{muted ? 'Unmute' : 'Mute'}</button>
+		<label
+			>Speed <select
+				aria-label="Playback speed"
+				value={rate}
+				onchange={(event) => {
+					rate = Number(event.currentTarget.value);
+					clock.setRate(rate, performance.now());
+				}}
+				>{#each [0.5, 1, 1.5, 2] as speed (speed)}<option value={speed}>{speed}×</option
+					>{/each}</select
+			></label
+		>
+	</div>
+	{#if unavailable}<button onclick={() => retry++}>Retry coverage</button>{/if}
+	<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+		{#each ids as cameraId (cameraId)}
+			{@const segment = chosen.get(cameraId)}
+			<RecordedReviewTile
+				onvisibility={(fraction) => {
+					visible[cameraId] = fraction;
+				}}
+				{requests}
+				{cameraId}
+				name={label(cameraId)}
+				stream={active.includes(cameraId) ? (segment?.stream ?? null) : null}
+				endMs={segment?.end_time_ms ?? 0}
+				{revision}
+				position={moment}
+				{playing}
+				{rate}
+				muted={muted || cameraId !== audio}
+				status={status(cameraId)}
+			/>
+		{/each}
+	</div>
+</section>
