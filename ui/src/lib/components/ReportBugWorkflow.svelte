@@ -133,7 +133,7 @@
 				text: draft,
 				diagnostics: review.diagnostics,
 				screen: includeRecording ? (review.recording ?? undefined) : undefined,
-				evidenceWarnings: review.window.warnings
+				evidenceWarnings: review.evidenceWarnings
 			});
 			submissionError = null;
 			submissionState = 'confirm';
@@ -292,10 +292,10 @@
 						: 'The 100 MiB limit ended capture.'}</p
 				>
 			{/if}
-			{#if review.window.warnings.length}
+			{#if review.evidenceWarnings.length}
 				<ul class="list-disc space-y-1 pl-5 text-sm">
-					{#each review.window.warnings as warning (warning)}
-						<li>{labels[warning]}</li>
+					{#each review.evidenceWarnings as warning (warning)}
+						<li>{labels[warning] ?? 'Some evidence could not be collected.'}</li>
 					{/each}
 				</ul>
 			{/if}
