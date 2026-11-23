@@ -522,6 +522,7 @@ export class LivePeer {
 							}
 						: item
 				);
+				this.followActiveAudio(plan.cameraId);
 			})
 			.catch((restoreError) => {
 				this.replaceTrack(plan.cameraId, {
@@ -774,6 +775,7 @@ export class LivePeer {
 			if (owner === this.#peer && this.#desiredPlans.includes(plan)) {
 				this.#desiredPlans = this.#desiredPlans.map((item) => (item === plan ? saved : item));
 				this.replaceTrack(plan.cameraId, { restoredSavedTiming: true });
+				this.followActiveAudio(plan.cameraId);
 			}
 		}
 	}

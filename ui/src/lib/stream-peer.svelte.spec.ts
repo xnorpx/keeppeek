@@ -45,6 +45,8 @@ class FakeDataChannel {
 	static rejectUnsubscribe = false;
 	holdUnsubscribe = false;
 	releaseUnsubscribe: (() => void) | undefined;
+	static holdNextSavedAudio = false;
+	releaseSavedAudio: (() => void) | undefined;
 	holdSavedVideo = false;
 	releaseSavedVideo: (() => void) | undefined;
 	holdCameraCommand = false;
@@ -150,6 +152,14 @@ class FakeDataChannel {
 		) {
 			this.holdSavedVideo = false;
 			this.releaseSavedVideo = deliver;
+		} else if (
+			FakeDataChannel.holdNextSavedAudio &&
+			command.case === 'subscribeMedia' &&
+			command.value.kind === MediaKind.AUDIO &&
+			command.value.liveAudioPreviewOffsetMs === undefined
+		) {
+			FakeDataChannel.holdNextSavedAudio = false;
+			this.releaseSavedAudio = deliver;
 		} else {
 			deliver();
 		}
@@ -289,6 +299,7 @@ afterEach(() => {
 	FakeDataChannel.audioBindingSuffix = '';
 	FakeDataChannel.offlineCamera = null;
 	FakeDataChannel.rejectedSubscription = null;
+	FakeDataChannel.holdNextSavedAudio = false;
 	FakeDataChannel.rejectUnsubscribe = false;
 	FakeDataChannel.subscriptionQuality = undefined;
 	FakeDataChannel.selectedVariant = null;
@@ -565,6 +576,64 @@ describe('LivePeer', () => {
 		expect(peer.track('front-door')).toMatchObject({ subscribed: true, audioVariantId: 'sub' });
 		await peer.close();
 	});
+
+	it.each(['connected', 'recovered'] as const)(
+		'follows a handover received before the saved audio response on a %s peer',
+		async (mode) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			const answer = { type: 'answer', sdp: 'v=0' };
+			api.createSession
+				.mockResolvedValueOnce({ session_id: 'before', answer })
+				.mockResolvedValue({ session_id: 'after', answer });
+			api.deleteSession.mockResolvedValue(undefined);
+			FakeDataChannel.audioVariants = ['main', 'sub'];
+			FakeDataChannel.audioUsesReliable = true;
+			vi.spyOn(AacAudioPlayback.prototype, 'configure')
+				.mockResolvedValueOnce(undefined)
+				.mockRejectedValueOnce(new Error('preview decoder unavailable'))
+				.mockResolvedValue(undefined);
+			const peer = new LivePeer();
+			const saved = { cameraId: 'front-door', variantId: 'sub', quality: 'auto' } as const;
+			const preview = { ...saved, variantId: 'main', liveAudioPreviewOffsetMs: -80 } as const;
+			await peer.configure([mode === 'connected' ? saved : preview]);
+			FakeDataChannel.holdNextSavedAudio = true;
+			let rejectedPreview;
+			if (mode === 'connected') {
+				rejectedPreview = expect(peer.configure([preview])).rejects.toThrow(
+					'cannot decode the audio timing preview'
+				);
+			} else {
+				FakePeerConnection.latest!.channels[0].close();
+			}
+			await vi.waitFor(() =>
+				expect(FakePeerConnection.latest!.channels[0].releaseSavedAudio).toBeDefined()
+			);
+			const channel = FakePeerConnection.latest!.channels[0];
+			expect(peer.track(saved.cameraId)).toMatchObject({
+				activeStream: 'main',
+				pendingStream: 'sub'
+			});
+			const audio = () =>
+				channel.subscriptions.filter((request) => request.kind === MediaKind.AUDIO);
+			expect(audio().at(-1)?.variantId).toBe('main');
+			expect(audio().at(-1)?.liveAudioPreviewOffsetMs).toBeUndefined();
+			channel.onmessage?.(streamState('camera-0', 'sub'));
+			channel.releaseSavedAudio!();
+			await rejectedPreview;
+			await vi.waitFor(() =>
+				expect(peer.track(saved.cameraId)).toMatchObject({
+					activeStream: 'sub',
+					audioVariantId: 'sub',
+					liveAudioPreviewOffsetMs: undefined,
+					subscribed: true
+				})
+			);
+			expect(audio().at(-1)?.variantId).toBe('sub');
+			expect(audio().at(-1)?.liveAudioPreviewOffsetMs).toBeUndefined();
+			expect(channel.unsubscribed.flat()).not.toContain('camera-0');
+			await peer.close();
+		}
+	);
 
 	it('keeps an unlocked audio context through reliable preview and saved binding replacements', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
