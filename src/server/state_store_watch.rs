@@ -524,12 +524,24 @@ fn is_profile_status_event(event: &WatchEvent) -> bool {
 }
 
 fn profile_fingerprint(entry: &StoredEntry) -> [u8; 32] {
-    Sha256::new()
-        .chain_update(entry.schema.as_bytes())
-        .chain_update(entry.revision.to_be_bytes())
-        .chain_update(entry.value.encode_to_vec())
-        .finalize()
-        .into()
+    thread_local! {
+        static ENCODED_PROFILE: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    // Only validated profile documents reach this path. Reuse the encoding
+    // buffer across projections on this thread without taking another lock.
+    ENCODED_PROFILE.with_borrow_mut(|buffer| {
+        buffer.clear();
+        entry
+            .value
+            .encode(buffer)
+            .expect("encoding into a Vec is infallible");
+        Sha256::new()
+            .chain_update(entry.schema.as_bytes())
+            .chain_update(entry.revision.to_be_bytes())
+            .chain_update(buffer.as_slice())
+            .finalize()
+            .into()
+    })
 }
 
 fn closed_notification(watch: &Watch, reason: CloseReason) -> proto::Notification {
