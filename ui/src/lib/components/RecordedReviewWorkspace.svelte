@@ -113,14 +113,18 @@
 			focusedSourceId: focus,
 			monotonicMs: performance.now()
 		});
-		const tick = window.setInterval(() => {
-			if (playing && foreground) epoch = moment();
-		}, 125);
 		return () => {
-			window.clearInterval(tick);
 			compact.removeEventListener('change', capacity);
 			document.removeEventListener('visibilitychange', capacity);
 		};
+	});
+
+	$effect(() => {
+		if (!playing || !foreground) return;
+		const tick = window.setInterval(() => {
+			epoch = moment();
+		}, 125);
+		return () => window.clearInterval(tick);
 	});
 
 	$effect(() => {
@@ -233,7 +237,7 @@
 	<header class="flex flex-wrap items-center justify-between gap-3">
 		<h1 class="text-xl font-semibold">Compare recordings</h1>
 		<CopyMomentLink getLink={comparisonLink} />
-		<button class="h-11 px-3 underline" onclick={() => single(moment(), focus)}
+		<button type="button" class="h-11 px-3 underline" onclick={() => single(moment(), focus)}
 			>Single camera</button
 		>
 	</header>
@@ -241,14 +245,20 @@
 		class="flex flex-wrap items-center gap-3 rounded-sm border border-hairline bg-raised px-3 py-2"
 	>
 		<button
+			type="button"
 			class="h-11 px-2"
 			onclick={() => seekTo(Math.max(0, moment() - 5000))}
 			aria-label="Back five seconds">−5 s</button
 		>
-		<button class="h-11 min-w-16 rounded-sm bg-primary px-3 text-on-primary" onclick={togglePlaying}
-			>{playing ? 'Pause' : 'Play'}</button
+		<button
+			type="button"
+			class="h-11 min-w-16 rounded-sm bg-primary px-3 text-on-primary"
+			aria-label="Play recordings"
+			aria-pressed={playing}
+			onclick={togglePlaying}>{playing ? 'Pause' : 'Play'}</button
 		>
 		<button
+			type="button"
 			class="h-11 px-2"
 			onclick={() => seekTo(moment() + 5000)}
 			aria-label="Forward five seconds">+5 s</button
@@ -320,6 +330,9 @@
 			></label
 		>
 		<button
+			type="button"
+			aria-label="Mute audio"
+			aria-pressed={muted}
 			class="h-11 px-2"
 			onclick={() => {
 				muted = !muted;
@@ -340,7 +353,7 @@
 			></label
 		>
 	</div>
-	{#if unavailable}<button onclick={() => retry++}>Retry coverage</button>{/if}
+	{#if unavailable}<button type="button" onclick={() => retry++}>Retry coverage</button>{/if}
 	<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
 		{#each ids as cameraId (cameraId)}
 			{@const segment = chosen.get(cameraId)}

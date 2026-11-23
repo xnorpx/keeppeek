@@ -6,6 +6,14 @@ import {
 } from './grid-playback-session';
 
 describe('GridPlaybackSession', () => {
+	it('anchors playback to the current monotonic clock when no sampled time is supplied', () => {
+		const session = new GridPlaybackSession();
+		const before = performance.now();
+		session.update({ mode: 'playback', selectedEpochMs: 10_000, playbackRate: 2 });
+		const after = performance.now();
+		expect(session.positionAt(after)).toBeGreaterThanOrEqual(10_000);
+		expect(session.positionAt(after)).toBeLessThanOrEqual(10_000 + (after - before) * 2);
+	});
 	it('queues every replay during scrub and admits visible cameras by budget after commit', () => {
 		const session = new GridPlaybackSession();
 		const demands = [

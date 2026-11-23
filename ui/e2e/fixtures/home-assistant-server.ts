@@ -387,11 +387,10 @@ async function seedComparisonStreams(
 	binary: string,
 	directory: string,
 	configPath: string,
-	children: ChildProcess[],
 	sourceIds: readonly string[]
 ) {
 	for (const [index, id] of sourceIds.entries()) {
-		const child = spawn(
+		await promisify(execFile)(
 			binary,
 			[
 				'seed-recording',
@@ -408,15 +407,12 @@ async function seedComparisonStreams(
 			],
 			{
 				cwd: directory,
-				stdio: 'ignore',
+				maxBuffer: 64 * 1024,
 				windowsHide: true,
 				timeout: 30_000,
 				killSignal: 'SIGKILL'
 			}
 		);
-		children.push(child);
-		const [code] = await once(child, 'exit');
-		if (code !== 0) throw new Error('The comparison recording seed failed.');
 	}
 }
 
@@ -448,8 +444,7 @@ async function prepareFixture(
 		configurations,
 		...options
 	});
-	if (options.reviewFixture)
-		await seedComparisonStreams(binary, directory, configPath, children, sourceIds);
+	if (options.reviewFixture) await seedComparisonStreams(binary, directory, configPath, sourceIds);
 	const archive = await prepareArchiveFixture(
 		binary,
 		directory,

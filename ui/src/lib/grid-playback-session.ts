@@ -31,7 +31,7 @@ export class GridPlaybackSession {
 		focusedSourceId?: string | null;
 		monotonicMs?: number;
 	}): void {
-		const monotonicMs = options.monotonicMs ?? 0;
+		const monotonicMs = options.monotonicMs ?? performance.now();
 		validTime(options.selectedEpochMs);
 		validTime(monotonicMs);
 		if (!isPlaybackRate(options.playbackRate)) throw new RangeError('Invalid playback rate');

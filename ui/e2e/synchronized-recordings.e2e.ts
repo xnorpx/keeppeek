@@ -70,9 +70,13 @@ async function overlappingMoment(page: Page, backend: string) {
 }
 
 async function checkLimitedDecoder(page: Page) {
-	await page.evaluate(() =>
-		Object.defineProperty(navigator, 'hardwareConcurrency', { configurable: true, value: 2 })
+	await page.addInitScript(() =>
+		Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', {
+			configurable: true,
+			get: () => 2
+		})
 	);
+	await page.reload();
 	await page.setViewportSize({ width: 390, height: 844 });
 	await expect(page.locator('article video')).toHaveCount(1);
 	await expect(page.getByText('Waiting for a decoder')).toBeVisible();
@@ -85,6 +89,21 @@ async function checkLimitedDecoder(page: Page) {
 	).toBeVisible();
 }
 
+async function checkSharedPlayAndPause(page: Page, tiles: Locator) {
+	await page.getByRole('button', { name: 'Play recordings', pressed: false }).click();
+	await expect(page.getByRole('button', { name: 'Play recordings', pressed: true })).toBeVisible();
+	const starts = await Promise.all([displayed(tiles.nth(0)), displayed(tiles.nth(1))]);
+	for (const index of [0, 1])
+		await expect
+			.poll(async () => (await displayed(tiles.nth(index))).seconds)
+			.toBeGreaterThan(starts[index]!.seconds + 0.35);
+	await expect.poll(async () => (await presentedDrift(page)) ?? Infinity).toBeLessThanOrEqual(250);
+	await measurePresentedDrift(page);
+	await page.getByRole('button', { name: 'Play recordings', pressed: true }).click();
+	for (const index of [0, 1])
+		await expect.poll(async () => (await displayed(tiles.nth(index))).paused).toBe(true);
+}
+
 test('two recorded cameras follow one clock, seek through coverage gaps and switch audio', async ({
 	page,
 	context,
@@ -93,6 +112,11 @@ test('two recorded cameras follow one clock, seek through coverage gaps and swit
 	test.setTimeout(90_000);
 	page.setDefaultTimeout(8_000);
 	if (!baseURL) throw new Error('The two-camera fixture requires a UI origin.');
+	await page.addInitScript(() => {
+		const key = 'keeppeek-playback-preferences';
+		if (!localStorage.getItem(key))
+			localStorage.setItem(key, JSON.stringify({ version: 1, media: { playbackRate: 100 } }));
+	});
 	const origin = new URL(baseURL).origin;
 	const server = await startHomeAssistantServer(origin, {
 		trustedLocal: true,
@@ -106,25 +130,13 @@ test('two recorded cameras follow one clock, seek through coverage gaps and swit
 		await expect(page.getByLabel('Compare with')).toBeVisible({ timeout: 30_000 });
 		await page.getByLabel('Compare with').selectOption(cardSourceIds[1]);
 		await expect(page.getByRole('heading', { name: 'Compare recordings' })).toBeVisible();
+		await expect(page.getByRole('combobox', { name: 'Playback speed' })).toHaveValue('1');
 		const tiles = page.locator('article video');
 		await expect(tiles).toHaveCount(2);
 		for (const index of [0, 1])
 			await expect.poll(async () => (await displayed(tiles.nth(index))).decoded).toBeGreaterThan(0);
-		await page.getByRole('button', { name: 'Play', exact: true }).click();
-		await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeVisible();
-		const starts = await Promise.all([displayed(tiles.nth(0)), displayed(tiles.nth(1))]);
-		for (const index of [0, 1])
-			await expect
-				.poll(async () => (await displayed(tiles.nth(index))).seconds)
-				.toBeGreaterThan(starts[index]!.seconds + 0.35);
-		await expect
-			.poll(async () => (await presentedDrift(page)) ?? Infinity)
-			.toBeLessThanOrEqual(250);
-		await measurePresentedDrift(page);
-		await page.getByRole('button', { name: 'Pause', exact: true }).click();
-		for (const index of [0, 1])
-			await expect.poll(async () => (await displayed(tiles.nth(index))).paused).toBe(true);
-		const unmute = page.getByRole('button', { name: 'Unmute', exact: true });
+		await checkSharedPlayAndPause(page, tiles);
+		const unmute = page.getByRole('button', { name: 'Mute audio', pressed: true });
 		if (await unmute.isVisible()) await unmute.click();
 		await page
 			.getByRole('combobox', { name: 'Audio source', exact: true })
@@ -193,9 +205,9 @@ test('only the chosen calibrated AAC camera is unmuted on reload and after an au
 		await expect(page.getByRole('combobox', { name: 'Audio source' })).toHaveValue(
 			cardSourceIds[1]
 		);
-		const unmute = page.getByRole('button', { name: 'Unmute', exact: true });
+		const unmute = page.getByRole('button', { name: 'Mute audio', pressed: true });
 		if (await unmute.isVisible()) await unmute.click();
-		await page.getByRole('button', { name: 'Play', exact: true }).click();
+		await page.getByRole('button', { name: 'Play recordings', pressed: false }).click();
 		const witness = () =>
 			page.locator('article video').evaluateAll((elements) =>
 				elements.map((el) => {
@@ -250,7 +262,10 @@ test('add and remove four authorized sources and seek their common UTC without t
 	if (!baseURL) throw new Error('The comparison fixture requires a UI origin.');
 	await page.setViewportSize({ width: 1440, height: 1100 });
 	await page.addInitScript(() =>
-		Object.defineProperty(navigator, 'hardwareConcurrency', { configurable: true, value: 8 })
+		Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', {
+			configurable: true,
+			get: () => 8
+		})
 	);
 	const origin = new URL(baseURL).origin;
 	const fixture = await startHomeAssistantServer(origin, {
@@ -269,7 +284,7 @@ test('add and remove four authorized sources and seek their common UTC without t
 		await expect(add).toHaveCount(0);
 		await expect(page.locator('article')).toHaveCount(4);
 		await expect(page.locator('article video')).toHaveCount(4);
-		await page.getByRole('button', { name: 'Play', exact: true }).click();
+		await page.getByRole('button', { name: 'Play recordings', pressed: false }).click();
 		await expect
 			.poll(() =>
 				page.locator('article video').evaluateAll(
@@ -282,7 +297,7 @@ test('add and remove four authorized sources and seek their common UTC without t
 			)
 			.toBe(4);
 		await measurePresentedDrift(page, 4);
-		await page.getByRole('button', { name: 'Pause', exact: true }).click();
+		await page.getByRole('button', { name: 'Play recordings', pressed: true }).click();
 		const seek = at + 5000;
 		await page.getByLabel('Seek to UTC').fill(new Date(seek).toISOString().slice(0, 23));
 		await page.getByRole('button', { name: 'Go to time' }).click();
