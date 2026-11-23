@@ -11,8 +11,32 @@ pub(super) const CAPABILITY_ID: &str = "keeppeek.stored-frame-step.v1";
 #[derive(Default)]
 pub(super) struct CursorFrames {
     active: Option<Uuid>,
-    last: Option<Selected>,
+    confirmed: Option<Selected>,
+    pending: Option<Selected>,
     queued: Option<Arc<AtomicBool>>,
+}
+
+impl CursorFrames {
+    fn confirmed_anchor(
+        &mut self,
+        anchor: Option<&proto::step_stored_frame::Anchor>,
+    ) -> Option<Selected> {
+        let Some(proto::step_stored_frame::Anchor::SampleToken(bytes)) = anchor else {
+            return None;
+        };
+        // Reusing the token is the client's acknowledgement that decoding and presentation worked.
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|picture| picture.token.as_bytes() == bytes.as_slice())
+        {
+            self.confirmed = self.pending.take();
+        }
+        self.confirmed
+            .as_ref()
+            .filter(|picture| picture.token.as_bytes() == bytes.as_slice())
+            .cloned()
+    }
 }
 
 impl Drop for CursorFrames {
@@ -765,7 +789,7 @@ fn step_until(
                 queued,
             },
             c.recording_stream_id.clone(),
-            c.frames.last.clone(),
+            c.frames.confirmed_anchor(request.anchor.as_ref()),
             CursorBounds {
                 origin: c.fragment_time_ms,
                 delivered: c.delivered_through_ms,

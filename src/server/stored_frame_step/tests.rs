@@ -18,6 +18,14 @@ impl Drop for RecordingDirectory {
 }
 
 fn recording(path: &Path, times: &[Option<i64>]) -> Vec<CatalogMediaFragment> {
+    recording_with_width(path, times, 320)
+}
+
+fn recording_with_width(
+    path: &Path,
+    times: &[Option<i64>],
+    width: u16,
+) -> Vec<CatalogMediaFragment> {
     let config = mp4::Mp4Config {
         major_brand: "iso6".parse().unwrap(),
         minor_version: 1,
@@ -29,7 +37,7 @@ fn recording(path: &Path, times: &[Option<i64>]) -> Vec<CatalogMediaFragment> {
         timescale: 1_000,
         language: "und".into(),
         media_conf: mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
-            width: 320,
+            width,
             height: 240,
             seq_param_set: vec![0x67, 0x42, 0, 0x1e, 0xe9, 1, 0x40, 0x7b, 0x20],
             pic_param_set: vec![0x68, 0xce, 6, 0xe2],
@@ -147,6 +155,46 @@ fn returns_the_source_adjacent_sample_and_reverses_across_a_fragment() {
         target_window(&changed, 10_040_000_000, None, true, &work()),
         Err(Unavailable::Gap)
     ));
+}
+
+#[test]
+fn first_last_gap_codec_and_retired_fragment_have_explicit_outcomes() {
+    let dir = RecordingDirectory::new();
+    let path = dir.0.join("first.mp4");
+    let times = [Some(0), Some(40), Some(80)];
+    let first = recording(&path, &times);
+    assert_eq!(
+        target_window(&first, 10_000_000_000, None, false, &work()).err(),
+        Some(Unavailable::Boundary)
+    );
+    assert_eq!(
+        target_window(&first, 10_080_000_000, None, true, &work()).err(),
+        Some(Unavailable::Boundary)
+    );
+    let next_path = dir.0.join("next.mp4");
+    let mut next = recording_with_width(&next_path, &times, 640).remove(0);
+    next.recording_id = "next".into();
+    next.recording_started_at_ms = 10_120;
+    next.start_ms = 10_120;
+    let mut window = vec![first[0].clone(), next];
+    assert_eq!(
+        target_window(&window, 10_080_000_000, None, true, &work()).err(),
+        Some(Unavailable::Discontinuity)
+    );
+    assert_eq!(
+        target_window(&window, 10_120_000_000, None, false, &work()).err(),
+        Some(Unavailable::Discontinuity)
+    );
+    window[1].start_ms += 500;
+    assert_eq!(
+        target_window(&window, 10_080_000_000, None, true, &work()).err(),
+        Some(Unavailable::Gap)
+    );
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(
+        target_window(&first, 10_000_000_000, None, true, &work()).err(),
+        Some(Unavailable::Stale)
+    );
 }
 
 #[test]
@@ -414,20 +462,42 @@ fn paused_cursor_steps_under_historical_access_rules_and_invalidates_previous_to
     assert_eq!(second.source_ticks, 0);
     assert_eq!(second.status(), proto::StoredFrameStepStatus::Ready);
     assert_ne!(second.sample_token, first.sample_token);
+    // The browser may keep the previous picture if decoding the delivered window failed.
+    // Retry from that displayed token without a disruptive seek.
+    let mut retry = dispatch(session, Action::StepFrame(previous.clone())).unwrap();
+    retry
+        .frame_transfer
+        .take()
+        .unwrap()
+        .deliver(Instant::now() + DECODE_WINDOW, |_| Ok(()))
+        .unwrap();
+    let retried = step_result(retry);
+    assert_eq!(retried.source_ticks, second.source_ticks);
+    assert_ne!(retried.sample_token, second.sample_token);
+    let from = |token| proto::StepStoredFrame {
+        anchor: Some(proto::step_stored_frame::Anchor::SampleToken(token)),
+        direction: proto::StoredFrameStepDirection::Next as i32,
+        ..previous.clone()
+    };
+    let superseded = dispatch(session, Action::StepFrame(from(second.sample_token))).unwrap();
+    assert_eq!(
+        step_result(superseded).status(),
+        proto::StoredFrameStepStatus::Stale
+    );
+    let accepted = dispatch(
+        session,
+        Action::StepFrame(from(retried.sample_token.clone())),
+    )
+    .unwrap();
+    assert!(accepted.frame_transfer.is_some());
+    drop(accepted);
     let stale = dispatch(session, Action::StepFrame(previous.clone())).unwrap();
     assert!(stale.messages.is_empty());
     assert_eq!(
         step_result(stale).status(),
         proto::StoredFrameStepStatus::Stale
     );
-    let pending = proto::StepStoredFrame {
-        anchor: Some(proto::step_stored_frame::Anchor::SampleToken(
-            second.sample_token,
-        )),
-        direction: proto::StoredFrameStepDirection::Next as i32,
-        ..previous
-    };
-    let ready = dispatch(session, Action::StepFrame(pending)).unwrap();
+    let ready = dispatch(session, Action::StepFrame(from(retried.sample_token))).unwrap();
     let queued = ready.frame_transfer.as_ref().unwrap().op.queued.clone();
     dispatch(
         session,

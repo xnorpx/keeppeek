@@ -57,8 +57,8 @@ impl Delivery {
                 .filter(|c| self.op.current(c))
                 .ok_or_else(|| anyhow::anyhow!("frame step cursor changed"))?;
             // The last chunk permits the client to display and immediately step again.
-            // Publish its verified token first, without holding the cursor lock during I/O.
-            let previous = c.frames.last.replace(self.plan.selected.clone());
+            // Publish its verified candidate token first, without holding the cursor lock during I/O.
+            let previous = c.frames.pending.replace(self.plan.selected.clone());
             c.frames.active = None;
             drop(cursors);
             if let Err(error) = send(last) {
@@ -72,11 +72,11 @@ impl Delivery {
                     && c.incarnation == self.op.incarnation
                     && c.generation == self.op.generation
                     && c.frames
-                        .last
+                        .pending
                         .as_ref()
                         .is_some_and(|s| s.token == self.plan.selected.token)
                 {
-                    c.frames.last = previous;
+                    c.frames.pending = previous;
                 }
                 return Err(error);
             }
