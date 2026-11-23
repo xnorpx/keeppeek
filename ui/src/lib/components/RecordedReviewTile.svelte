@@ -106,11 +106,10 @@
 					signal: abort.signal
 				});
 				if (abort.signal.aborted) return;
-				off = acquired.onError((message) => {
-					issue = message || 'Recording unavailable';
-				});
-				playback = acquired;
-				source = acquired.url;
+				const opened = acquired;
+				playback = opened;
+				source = opened.url;
+				off = opened.onError((message) => failPlayback(opened, message || 'Recording unavailable'));
 			} catch (cause) {
 				if (!abort.signal.aborted)
 					issue = cause instanceof Error ? cause.message : 'Recording unavailable';
@@ -134,10 +133,19 @@
 		video.playbackRate = rate;
 		if (playing)
 			void video.play().catch(() => {
-				if (current === playback && playing) issue = 'Playback interrupted';
+				if (playing) failPlayback(current, 'Playback interrupted');
 			});
 		else video.pause();
 	});
+
+	function failPlayback(cursor: StoredMediaPlayback, message: string) {
+		if (playback !== cursor) return;
+		issue = message;
+		ready = false;
+		playback = null;
+		source = undefined;
+		tail = tail.then(() => cursor.close().catch(() => undefined));
+	}
 
 	function align(initial = false) {
 		if (!playback || !video || !video.buffered.length) return;
@@ -187,6 +195,10 @@
 			onloadeddata={() => {
 				align(true);
 				ready = true;
+			}}
+			onerror={(event) => {
+				if (event.currentTarget === video && video.currentSrc === source && playback)
+					failPlayback(playback, 'The browser could not play this recording.');
 			}}
 			ontimeupdate={() => align()}
 		></video>

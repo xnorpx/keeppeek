@@ -324,3 +324,83 @@ test('add and remove four authorized sources and seek their common UTC without t
 		}
 	}
 });
+
+async function installDecoderFailure(page: Page) {
+	await page.addInitScript(() => {
+		const native = URL.createObjectURL.bind(URL);
+		const sources = new Map<string, MediaSource>();
+		URL.createObjectURL = (object) => {
+			const url = native(object);
+			if (object instanceof MediaSource) sources.set(url, object);
+			return url;
+		};
+		Object.assign(window, {
+			failSelectedDecoder: (url: string) => {
+				const source = sources.get(url);
+				if (
+					source?.readyState !== 'open' ||
+					[...source.sourceBuffers].some((buffer) => buffer.updating)
+				)
+					return false;
+				source.endOfStream('decode');
+				return true;
+			}
+		});
+	});
+}
+
+test('a browser decoder failure releases only its tile and retry rejoins the advancing clock', async ({
+	page,
+	context,
+	baseURL
+}) => {
+	test.setTimeout(75_000);
+	page.setDefaultTimeout(8_000);
+	if (!baseURL) throw new Error('The decoder fixture requires a UI origin.');
+	await installDecoderFailure(page);
+	const origin = new URL(baseURL).origin;
+	const server = await startHomeAssistantServer(origin, {
+		trustedLocal: true,
+		reviewFixture: true
+	});
+	const redirect = recordedAudioBackendRoute(origin, server.url);
+	try {
+		await context.route('**/*', redirect);
+		const at = await overlappingMoment(page, server.url);
+		const query = new URLSearchParams({ camera: cardSourceIds[0], at: String(at), stream: 'sub' });
+		for (const id of cardSourceIds) query.append('compare', id);
+		await page.goto('/keep?' + query);
+		const healthy = page.getByRole('article', { name: 'card-camera-0' }).locator('video');
+		const affected = page.getByRole('article', { name: 'card-camera-1' });
+		const video = affected.locator('video');
+		await expect(page.getByRole('button', { name: 'Play recordings', pressed: false })).toBeVisible(
+			{ timeout: 30_000 }
+		);
+		await page.getByRole('button', { name: 'Play recordings', pressed: false }).click();
+		await expect.poll(async () => (await displayed(video)).decoded).toBeGreaterThan(3);
+		const before = (await displayed(healthy)).seconds;
+		await expect
+			.poll(() =>
+				video.evaluate((v: HTMLVideoElement) =>
+					(
+						window as Window & { failSelectedDecoder?: (url: string) => boolean }
+					).failSelectedDecoder?.(v.currentSrc)
+				)
+			)
+			.toBe(true);
+		await expect(affected.getByRole('button', { name: 'Retry recording' })).toBeVisible();
+		await expect(video).toHaveCount(0);
+		await expect.poll(async () => (await displayed(healthy)).seconds).toBeGreaterThan(before + 0.5);
+		await affected.getByRole('button', { name: 'Retry recording' }).click();
+		await expect.poll(async () => (await displayed(video)).decoded).toBeGreaterThan(1);
+		await expect
+			.poll(async () => (await presentedDrift(page)) ?? Infinity)
+			.toBeLessThanOrEqual(250);
+	} finally {
+		try {
+			await context.unroute('**/*', redirect);
+		} finally {
+			await server.close();
+		}
+	}
+});
