@@ -660,7 +660,7 @@ impl MediumTermWriter {
                 let Some(track) = active
                     .audio_track
                     .as_ref()
-                    .filter(|track| track.accepts(audio))
+                    .filter(|track| track.accepts(&audio))
                 else {
                     return Ok(());
                 };
