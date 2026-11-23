@@ -12,6 +12,15 @@ pub(super) const CAPABILITY_ID: &str = "keeppeek.stored-frame-step.v1";
 pub(super) struct CursorFrames {
     active: Option<Uuid>,
     last: Option<Selected>,
+    queued: Option<Arc<AtomicBool>>,
+}
+
+impl Drop for CursorFrames {
+    fn drop(&mut self) {
+        if let Some(queued) = self.queued.take() {
+            queued.store(true, Ordering::Release);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -32,6 +41,7 @@ struct Operation {
     generation: u64,
     incarnation: Uuid,
     active: Uuid,
+    queued: Arc<AtomicBool>,
 }
 
 impl Operation {
@@ -42,9 +52,11 @@ impl Operation {
             && cursor.frames.active == Some(self.active)
     }
     fn cancelled(&self) -> bool {
-        self.state
-            .maintenance_active
-            .load(std::sync::atomic::Ordering::Acquire)
+        self.queued.load(Ordering::Acquire)
+            || self
+                .state
+                .maintenance_active
+                .load(std::sync::atomic::Ordering::Acquire)
             || !self
                 .state
                 .stored_media_cursors
@@ -730,6 +742,10 @@ pub(super) fn step(
                 )
             })?;
         let active = Uuid::new_v4();
+        let queued = Arc::new(AtomicBool::new(false));
+        if let Some(previous) = c.frames.queued.replace(queued.clone()) {
+            previous.store(true, Ordering::Release);
+        }
         c.frames.active = Some(active);
         (
             Operation {
@@ -738,6 +754,7 @@ pub(super) fn step(
                 generation: c.generation,
                 incarnation: c.incarnation,
                 active,
+                queued,
             },
             c.recording_stream_id.clone(),
             c.frames.last.clone(),

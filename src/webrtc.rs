@@ -2597,10 +2597,10 @@ impl WebRtc {
         message: OutboundDataMessage,
         cancelled: Arc<AtomicBool>,
     ) -> anyhow::Result<()> {
-        self.enqueue_api_data_until(session_id, message, cancelled, None)
+        self.enqueue_api_data_with_deadline(session_id, message, cancelled, None)
     }
 
-    pub(crate) fn enqueue_api_data_until(
+    pub(crate) fn enqueue_api_data_with_deadline(
         &self,
         session_id: SessionId,
         message: OutboundDataMessage,

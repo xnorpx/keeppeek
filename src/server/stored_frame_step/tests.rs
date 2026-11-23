@@ -384,6 +384,20 @@ fn paused_cursor_steps_under_historical_access_rules_and_invalidates_previous_to
             .deliver(Instant::now(), |_| panic!("expired delivery sent data"))
             .is_err()
     );
+    let dropped = dispatch(session, Action::StepFrame(previous.clone())).unwrap();
+    let transfer = dropped.frame_transfer.unwrap();
+    let last = transfer.plan.result.sample_count;
+    let mut sent = 0;
+    assert!(
+        transfer
+            .deliver(Instant::now() + DECODE_WINDOW, |_| {
+                sent += 1;
+                anyhow::ensure!(sent != last, "fixture transport rejected final chunk");
+                Ok(())
+            })
+            .is_err()
+    );
+    assert_eq!(sent, last);
     let mut ready = dispatch(session, Action::StepFrame(previous.clone())).unwrap();
     ready
         .frame_transfer
@@ -409,6 +423,7 @@ fn paused_cursor_steps_under_historical_access_rules_and_invalidates_previous_to
         ..previous
     };
     let ready = dispatch(session, Action::StepFrame(pending)).unwrap();
+    let queued = ready.frame_transfer.as_ref().unwrap().op.queued.clone();
     dispatch(
         session,
         Action::Close(proto::CloseStoredMedia {
@@ -425,6 +440,7 @@ fn paused_cursor_steps_under_historical_access_rules_and_invalidates_previous_to
             ))
             .is_err()
     );
+    assert!(queued.load(Ordering::Acquire));
     assert_eq!(state.frame_step_workers.load(Ordering::Acquire), 0);
     drop(state);
     catalog.shutdown();

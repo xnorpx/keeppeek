@@ -96,10 +96,10 @@ impl Delivery {
                 .spawn(move || {
                     let transport = self.op.state.webrtc.clone();
                     let session = self.op.key.0;
-                    let cancelled = Arc::new(AtomicBool::new(false));
+                    let cancelled = self.op.queued.clone();
                     if self
                         .deliver(deadline, |message| {
-                            transport.enqueue_api_data_until(
+                            transport.enqueue_api_data_with_deadline(
                                 session,
                                 message,
                                 cancelled.clone(),
