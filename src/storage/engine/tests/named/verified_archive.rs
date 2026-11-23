@@ -674,6 +674,7 @@ fn observe(
     let mut review_us = Vec::new();
     let (mut ready, mut ready_bytes) = (0, 0);
     let (mut first, mut last) = (None, None);
+    let mut window = Duration::ZERO;
     for tick in 1..SECONDS * 4 {
         let due = start + Duration::from_millis(u64::from(tick) * 250);
         thread::sleep(due.saturating_duration_since(Instant::now()));
@@ -681,33 +682,40 @@ fn observe(
             break;
         }
         let sample = Instant::now();
-        if review_primary(catalog, expected)? {
-            review_us.push(sample.elapsed().as_secs_f64() * 1e6);
+        let read_us =
+            review_primary(catalog, expected)?.then(|| sample.elapsed().as_secs_f64() * 1e6);
+        let copies = archive.map(verified).transpose()?;
+        let streams = if copies.is_some_and(|(count, _)| count > ready) {
+            Some(engine.health().snapshot().streams)
+        } else {
+            None
+        };
+        let elapsed = start.elapsed();
+        // A slow disk poll can finish after the last frame was submitted. Commit only a
+        // complete in-ingest observation, including its byte, read and writer counters.
+        if finished() {
+            break;
         }
-        if let Some(handle) = archive {
-            let (count, bytes) = verified(handle)?;
-            if count > ready && !finished() {
-                let streams = engine.health().snapshot().streams;
-                if streams.len() == CAMERAS {
-                    let writer_ms = streams
+        window = elapsed;
+        review_us.extend(read_us);
+        if let Some((count, bytes)) = copies {
+            if let Some(streams) = streams.filter(|streams| streams.len() == CAMERAS) {
+                let observed = Progress {
+                    elapsed_ms: elapsed.as_millis().try_into()?,
+                    ready: count,
+                    writer_ms: streams
                         .into_iter()
                         .map(|s| (s.stream_id, s.recorded_duration_ms))
-                        .collect();
-                    let observed = Progress {
-                        elapsed_ms: start.elapsed().as_millis().try_into()?,
-                        ready: count,
-                        writer_ms,
-                        completed_seeks: review_us.len(),
-                    };
-                    first.get_or_insert_with(|| observed.clone());
-                    last = Some(observed);
-                }
+                        .collect(),
+                    completed_seeks: review_us.len(),
+                };
+                first.get_or_insert_with(|| observed.clone());
+                last = Some(observed);
             }
             (ready, ready_bytes) = (count, bytes);
         }
         meter.sample();
     }
-    let window = start.elapsed();
     check_progress(
         engine,
         review_us.len(),
