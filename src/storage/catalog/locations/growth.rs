@@ -1,8 +1,7 @@
 use super::{
-    Allocation, Growth, MAX_BINDINGS, OBSERVATION_LIFETIME, Object, Reply, Usage, admission,
-    bump_revision, ownership, revision, to_i64, to_u64,
+    Allocation, Growth, MAX_BINDINGS, Object, Reply, Usage, admission, bump_revision, ownership,
+    to_i64, to_u64,
 };
-use std::time::Instant;
 
 pub(super) async fn grow(connection: &turso::Connection, growth: &Growth) -> anyhow::Result<Reply> {
     super::moves::ensure_writable(connection, &growth.operation).await?;
@@ -25,15 +24,7 @@ pub(super) async fn grow(connection: &turso::Connection, growth: &Growth) -> any
         });
     }
     let capacity = &growth.capacity;
-    anyhow::ensure!(
-        capacity.observed_at <= Instant::now()
-            && capacity.observed_at.elapsed() <= OBSERVATION_LIFETIME,
-        "volume observation expired"
-    );
-    anyhow::ensure!(
-        capacity.ledger_revision == revision(connection).await?,
-        "volume observation superseded"
-    );
+    super::ensure_fresh_observation(connection, capacity, "storage allocation growth").await?;
     let allocation = Allocation {
         operation: growth.operation.clone(),
         object: Object {
