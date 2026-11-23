@@ -3493,14 +3493,12 @@ impl ServerControlHandler {
                 Ok((control_ok::Result::ExportJob(job), Vec::new()))
             }
             Some(proto::export_command::Action::List(_)) => {
-                let jobs = export_jobs(&self.state, &requester_id);
-                Ok((
-                    control_ok::Result::ExportJobs(proto::ExportJobList { jobs }),
-                    Vec::new(),
-                ))
+                let jobs = export_storage::archive::list(&self.state, &requester_id)?;
+                Ok((control_ok::Result::ExportJobs(jobs), Vec::new()))
             }
             Some(proto::export_command::Action::Get(request)) => {
-                let job = export_job(&self.state, &requester_id, &request.job_id)?;
+                let job =
+                    export_storage::archive::get(&self.state, &requester_id, &request.job_id)?;
                 Ok((control_ok::Result::ExportJob(job), Vec::new()))
             }
             Some(proto::export_command::Action::Cancel(request)) => {
