@@ -1,11 +1,22 @@
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
+mod speaker;
 
 use super::{
     CameraConfig, CameraEntry, MAX_CAMERA_METADATA_WORKERS, ServerState, probe_onvif_camera,
 };
 
 const PENDING_MAX: usize = 128;
+
+impl CameraEntry {
+    pub(super) fn speaker_available(&self) -> bool {
+        if self.info.is_reolink {
+            self.reolink_talk_permitted && self.reolink_profile_verified
+        } else {
+            self.info.capabilities.two_way_audio
+        }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct Queue {

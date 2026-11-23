@@ -364,6 +364,7 @@ struct CameraEntry {
     recording_label: String,
     control: Option<CameraControl>,
     control_revision: Arc<()>,
+    reolink_profile_verified: bool,
     hikvision: Option<camera_control::Report>,
     runtime_camera: Option<crate::cameras::Camera>,
 }
@@ -1266,10 +1267,9 @@ fn update_talkback(
     let cameras = server_state
         .camera_entries()
         .into_iter()
-        .map(|camera| talkback::CameraTarget {
-            source_id: camera.info.id,
-            groups: camera.groups,
-            enabled: camera.info.capabilities.two_way_audio,
+        .map(|camera| {
+            let enabled = camera.speaker_available();
+            talkback::CameraTarget { source_id: camera.info.id, groups: camera.groups, enabled }
         })
         .collect::<Vec<_>>();
     let state = match command.action {
@@ -7863,6 +7863,7 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
             .unwrap_or_else(|| camera_config.ip.to_string()),
         control,
         control_revision: Arc::new(()),
+        reolink_profile_verified: false,
         hikvision: None,
         runtime_camera: camera.cloned(),
     }
@@ -9042,6 +9043,7 @@ impl ServerState {
 
     fn camera_info(&self, camera: &CameraEntry) -> CameraInfo {
         let mut info = camera.info.clone();
+        info.capabilities.two_way_audio = camera.speaker_available();
         if let Ok(ip) = info.ip.parse()
             && let Some(evidence) = self.health.events.snapshot(ip)
         {
@@ -23648,6 +23650,7 @@ mod tests {
             recording_label: "back-yard".to_owned(),
             control: None,
             control_revision: Arc::new(()),
+            reolink_profile_verified: false,
             hikvision: None,
             runtime_camera: None,
         }]));

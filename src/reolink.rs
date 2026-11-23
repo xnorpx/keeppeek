@@ -1,5 +1,6 @@
 mod events;
 mod speaker;
+pub(crate) mod speaker_probe;
 
 use crate::{
     battery_wake::BatteryWakeHandle,
@@ -47,6 +48,8 @@ use std::{
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+// The current single-camera configuration opens Baichuan media on this channel.
+pub(crate) const CONFIGURED_CHANNEL: u8 = 0;
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const MEDIA_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const UDP_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);

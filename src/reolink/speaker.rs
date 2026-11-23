@@ -193,7 +193,7 @@ impl Talkback {
     }
 }
 
-fn select_profile(mut ability: TalkAbility, channel: u8) -> Result<TalkConfig, reo_proto::BcError> {
+pub(super) fn select_profile(mut ability: TalkAbility, channel: u8) -> Result<TalkConfig, reo_proto::BcError> {
     ability.audio_profiles.retain(|profile| {
         matches!(profile.sample_rate, 8_000 | 16_000)
             && profile.sample_precision == 16

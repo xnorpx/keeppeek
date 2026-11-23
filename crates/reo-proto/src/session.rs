@@ -132,6 +132,8 @@ pub enum Command {
     CloseTalkback { channel: u8 },
     /// Send a talkback protocol command over an external stream.
     Talk(crate::talk::TalkCommand),
+    /// Read the selected channel's ability without opening an external stream.
+    ReadTalkAbility { channel: u8 },
     /// Device / system query or config command.
     Device(crate::device::DeviceCommand),
     /// Video / encoding query or config command.
@@ -202,6 +204,8 @@ pub enum Event<'buf> {
     SnapshotFailed { status: u16 },
     /// Talkback protocol event.
     Talk(crate::talk::TalkEvent),
+    /// A read-only ability response matched its request number and selected channel.
+    ReadTalkAbility(Box<crate::talk::TalkAbility>),
     /// Stream started acknowledgement.
     StreamStarted,
     /// Stream was subscribed and assigned a local stream id.
@@ -403,6 +407,7 @@ enum EventKind {
     },
     /// Talkback domain response (lazy-parsed at poll_output time).
     TalkResponse(crate::talk::TalkResponseKind),
+    ReadTalkAbility,
     /// Stream started ack (response to start request).
     StreamStarted,
     /// Stream subscribed and assigned a local id.
@@ -440,6 +445,7 @@ enum EventKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingCommandKind {
     Generic,
+    ReadTalkAbility(u8),
     Ping,
     Snapshot,
 }
@@ -791,6 +797,10 @@ impl BcSession {
                     let body = &self.recv_buf[ev.body_start..ev.body_start + ev.body_len];
                     Event::Talk(crate::talk::parse_response(kind, body)?)
                 }
+                EventKind::ReadTalkAbility => {
+                    let body = &self.recv_buf[ev.body_start..ev.body_start + ev.body_len];
+                    Event::ReadTalkAbility(Box::new(crate::talk::parse_ability(body)?))
+                }
                 EventKind::StreamStarted => Event::StreamStarted,
                 EventKind::StreamSubscribed {
                     stream_id,
@@ -907,6 +917,12 @@ impl BcSession {
             Command::OpenTalkback { channel } => self.open_talkback(channel),
             Command::CloseTalkback { channel } => self.close_talkback(channel),
             Command::Talk(command) => self.send_talk_command(&command),
+            Command::ReadTalkAbility { channel } => {
+                if self.role != Role::Client || self.state != SessionState::Connected {
+                    return Err(BcError::Protocol("speaker ability requires an authenticated client"));
+                }
+                self.query_talk_ability(channel, PendingCommandKind::ReadTalkAbility(channel))
+            }
             Command::Device(dc) => self.send_device_command(&dc),
             Command::Video(vc) => self.send_video_command(&vc),
             Command::Network(nc) => self.send_network_command(&nc),
@@ -1039,6 +1055,21 @@ impl BcSession {
             self.pending_ping = None;
             self.missed_pings = 0;
             self.pending.push(PendingEvent::new(EventKind::Pong, 0, 0));
+            return Ok(());
+        }
+
+        if let Some(PendingCommandKind::ReadTalkAbility(channel)) = pending_command {
+            let extension = &self.recv_buf[body_start..payload_start];
+            if header.is_modern()
+                && header.channel_id() == channel
+                && crate::talk::matches_probe_channel(extension, channel)
+            {
+                self.pending.push(PendingEvent::new(
+                    EventKind::ReadTalkAbility,
+                    payload_start,
+                    payload_len,
+                ));
+            }
             return Ok(());
         }
 
@@ -2209,6 +2240,14 @@ impl BcSession {
         self.unsubscribe_stream(stream_id)
     }
 
+    fn query_talk_ability(&mut self, channel: u8, kind: PendingCommandKind) -> Result<(), BcError> {
+        let mut extension = [0_u8; crate::MAX_XML_BODY];
+        let len = crate::talk::build_extension(channel, false, &mut extension)?;
+        let header = crate::talk::command_header(crate::COMMAND_TALK_CAPABILITIES, channel, len, 0)?;
+        self.queue_correlated_send_parts(header, &extension[..len], &[], false, kind)
+            .map(|_| ())
+    }
+
     fn send_talk_command(&mut self, command: &crate::talk::TalkCommand) -> Result<(), BcError> {
         if self.role != Role::Client {
             return Err(BcError::WrongRole);
@@ -2224,21 +2263,7 @@ impl BcSession {
         let mut extension = [0_u8; crate::MAX_XML_BODY];
         match command {
             crate::talk::TalkCommand::QueryAbility { .. } => {
-                let extension_len = crate::talk::build_extension(channel, false, &mut extension)?;
-                let header = crate::talk::command_header(
-                    crate::COMMAND_TALK_CAPABILITIES,
-                    channel,
-                    extension_len,
-                    0,
-                )?;
-                self.queue_correlated_send_parts(
-                    header,
-                    &extension[..extension_len],
-                    &[],
-                    false,
-                    PendingCommandKind::Generic,
-                )
-                .map(|_| ())
+                self.query_talk_ability(channel, PendingCommandKind::Generic)
             }
             crate::talk::TalkCommand::Configure(config) => {
                 let extension_len = crate::talk::build_extension(channel, false, &mut extension)?;
