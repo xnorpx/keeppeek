@@ -149,6 +149,7 @@ fn malformed_export_history_is_preserved_and_disables_creation() {
 fn write_source(
     root: &Path,
     catalog: RecordingCatalogHandle,
+    codec: crate::storage::VideoCodec,
     frames: u32,
     spacing_ms: u64,
 ) -> (i64, i64) {
@@ -162,8 +163,11 @@ fn write_source(
         catalog.clone(),
     )
     .unwrap();
-    let payload =
-        super::tests::fixture_video_keyframe("cc-4k-640x360-h264.mp4", mp4::MediaType::H264);
+    let (source, variant) = match codec {
+        crate::storage::VideoCodec::H264 => ("cc-4k-640x360-h264.mp4", mp4::MediaType::H264),
+        crate::storage::VideoCodec::H265 => ("cc-4k-640x360-h265.mp4", mp4::MediaType::H265),
+    };
+    let payload = super::tests::fixture_video_keyframe(source, variant);
     for frame in 0..frames {
         let elapsed = Duration::from_millis(u64::from(frame) * spacing_ms);
         writer
@@ -171,7 +175,7 @@ fn write_source(
                 received_at: started + elapsed,
                 timestamp: Some(elapsed),
                 frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {
-                    codec: crate::storage::VideoCodec::H264,
+                    codec,
                     is_keyframe: true,
                     width: 640,
                     height: 368,
@@ -191,33 +195,37 @@ fn write_source(
     )
 }
 
-pub(super) fn setup(
-    limit: u64,
-) -> (
+pub(super) type ExportFixture = (
     PathBuf,
     RecordingCatalog,
     Manager,
     ServerState,
     proto::CreateExportJob,
-) {
-    setup_with_frames(limit, 2, 1000)
+);
+
+pub(super) fn setup(limit: u64) -> ExportFixture {
+    setup_for_codec(limit, crate::storage::VideoCodec::H264)
 }
 
-pub(super) fn setup_with_frames(
+pub(super) fn setup_for_codec(limit: u64, codec: crate::storage::VideoCodec) -> ExportFixture {
+    setup_for_source(limit, codec, 2, 1000)
+}
+
+pub(super) fn setup_with_frames(limit: u64, frames: u32, spacing_ms: u64) -> ExportFixture {
+    setup_for_source(limit, crate::storage::VideoCodec::H264, frames, spacing_ms)
+}
+
+fn setup_for_source(
     limit: u64,
+    codec: crate::storage::VideoCodec,
     frames: u32,
     spacing_ms: u64,
-) -> (
-    PathBuf,
-    RecordingCatalog,
-    Manager,
-    ServerState,
-    proto::CreateExportJob,
-) {
+) -> ExportFixture {
     let (root, catalog, manager) = fixture(limit).unwrap();
     let (start, end) = write_source(
         &root.join("recordings"),
         catalog.handle(),
+        codec,
         frames,
         spacing_ms,
     );
@@ -233,6 +241,7 @@ pub(super) fn setup_with_frames(
         end_time: Some(millis_timestamp(end)),
         allow_partial: false,
         burn_in_timestamp: false,
+        guest_range_preparation: None,
         event_seed: None,
     };
     (root, catalog, manager, state, request)
@@ -1107,9 +1116,18 @@ fn archived_export_preserves_sharing_metadata_and_fences_typed_create_and_retry(
         .unwrap();
     assert_eq!(archived.source_identity, Some(source_identity));
     assert_eq!(archived.owner_key, original.owner_key);
+    let original_proof = original.media_proof.as_ref().unwrap();
+    let archived_proof = archived.media_proof.as_ref().unwrap();
+    assert_eq!(original_proof.version, SOURCE_BOUNDS_PROOF_VERSION);
+    assert!(original_proof.source_bounds.is_some());
+    assert_eq!(archived_proof.version, 1);
+    assert!(archived_proof.source_bounds.is_none());
+    assert_eq!(archived_proof.artifact_id, original_proof.artifact_id);
+    assert_eq!(archived_proof.sha256, original_proof.sha256);
+    assert_eq!(archived_proof.bytes, original_proof.bytes);
     assert_eq!(
-        serde_json::to_value(&archived.media_proof).unwrap(),
-        serde_json::to_value(&original.media_proof).unwrap()
+        archived.verified_media_bounds(),
+        original.verified_media_bounds()
     );
     assert!(archived.job.expires_at.is_none());
     assert!(archived.path.is_none());
