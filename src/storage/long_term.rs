@@ -339,7 +339,7 @@ mod tests {
         let store = LongTermStore::new(root.clone());
         let mut finalized = store.finalized_segments("camera")?;
         finalized.sort();
-        assert_eq!(finalized, [old_file.clone(), new_file.clone()]);
+        assert_eq!(finalized, [old_file, new_file.clone()]);
         let (inventory, complete) = inspection::Archive::open(&root)?
             .inventory(Instant::now() + Duration::from_secs(10))?;
         assert!(complete);
