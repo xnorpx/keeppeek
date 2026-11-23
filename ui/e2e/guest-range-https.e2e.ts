@@ -208,14 +208,9 @@ async function openCreatorRange(
 	await expect(selected).toBeVisible();
 	const dates = (await selected.innerText()).match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g);
 	if (dates?.length !== 2) throw new Error('The event preview must show both interval edges.');
-	const [from, to] = dates.map(Date.parse);
-	if (
-		from === undefined ||
-		to === undefined ||
-		!Number.isSafeInteger(from) ||
-		!Number.isSafeInteger(to) ||
-		from >= to
-	)
+	const from = Date.parse(dates[0]!);
+	const to = Date.parse(dates[1]!);
+	if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from >= to)
 		throw new Error('The event preview must show an ordered UTC interval.');
 	return { start: from, end: to };
 }
@@ -242,8 +237,20 @@ async function openRecipient(page: Page, url: string) {
 	}
 }
 
-async function verifyGuestExpiresDuringPlayback(viewer: Page, url: string, expiry: number) {
-	const timeout = 50_000;
+function recorderUtc(header: string | null | undefined) {
+	if (!header) throw new Error('The recorder response omitted its HTTP Date.');
+	const utc = Date.parse(header);
+	if (!Number.isFinite(utc)) throw new Error('The recorder returned an invalid HTTP Date.');
+	return utc;
+}
+
+async function verifyGuestExpiresDuringPlayback(
+	viewer: Page,
+	url: string,
+	expiry: number,
+	exchangeUtc: number
+) {
+	const timeout = Math.max(1, Math.min(75_000, expiry - exchangeUtc + 15_000));
 	const player = await viewer
 		.locator('video')
 		.evaluateHandle((element) => element as HTMLVideoElement);
@@ -283,11 +290,7 @@ async function verifyGuestExpiresDuringPlayback(viewer: Page, url: string, expir
 		{ timeout }
 	);
 	// The grant is aligned to a whole UTC second, the precision of the recorder's HTTP Date.
-	const recorderDate = await expired.headerValue('date');
-	expect(recorderDate, 'recorder supplied an HTTP Date').toBeTruthy();
-	const recorderTime = Date.parse(recorderDate ?? '');
-	expect(Number.isFinite(recorderTime), 'recorder HTTP Date is a valid timestamp').toBe(true);
-	expect(recorderTime).toBeGreaterThanOrEqual(expiry);
+	expect(recorderUtc(await expired.headerValue('date'))).toBeGreaterThanOrEqual(expiry);
 	await expect(viewer.getByText('The link expired. Playback has stopped.')).toBeVisible({
 		timeout
 	});
@@ -325,7 +328,9 @@ for (const entry of ['Keep', 'Event'] as const) {
 			const download = entry === 'Event';
 			await dialog.getByLabel('Display name').fill('Time-limited recording');
 			await dialog.getByLabel('Allow download').setChecked(download);
-			const expiry = Math.floor(Date.now() / 1000) * 1000 + (download ? 180_000 : 35_000);
+			const clock = await page.request.get(fixture.origin + '/auth/session', { timeout: 10_000 });
+			expect(clock.ok()).toBe(true);
+			const expiry = recorderUtc(clock.headers().date) + (download ? 180_000 : 45_000);
 			await dialog.getByLabel('Expires (UTC)').fill(new Date(expiry).toISOString().slice(0, 19));
 			await dialog.getByRole('button', { name: 'Create guest link', exact: true }).click();
 			const url = await dialog.getByLabel('One-time guest link').inputValue();
@@ -338,7 +343,8 @@ for (const entry of ['Keep', 'Event'] as const) {
 			);
 			await openRecipient(viewer, url);
 			await expect(viewer.getByRole('heading', { name: 'Time-limited recording' })).toBeVisible();
-			const metadata = await (await session).json();
+			const exchange = await session;
+			const metadata = await exchange.json();
 			expect(metadata.expires_at_ms).toBe(expiry);
 			expect(metadata.can_stream).toBe(true);
 			expect(metadata.can_download).toBe(download);
@@ -356,7 +362,12 @@ for (const entry of ['Keep', 'Event'] as const) {
 				).toBeVisible();
 				await expect(ordinary.getByRole('button', { name: 'Sign out' })).toHaveCount(0);
 			} else {
-				await verifyGuestExpiresDuringPlayback(viewer, url, expiry);
+				await verifyGuestExpiresDuringPlayback(
+					viewer,
+					url,
+					expiry,
+					recorderUtc(await exchange.headerValue('date'))
+				);
 			}
 		} finally {
 			await recipient.close();
