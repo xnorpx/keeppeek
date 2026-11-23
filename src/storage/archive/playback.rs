@@ -31,7 +31,7 @@ impl<'a> VerifiedReader<'a> {
         })
     }
 
-    pub(crate) fn descriptor(&self) -> &ArchiveRead {
+    pub(crate) const fn descriptor(&self) -> &ArchiveRead {
         &self.archive
     }
 
