@@ -1047,7 +1047,7 @@ fn check_snapshot_bounds(
         .map_err(|error| registry_error(error, namespace, watch_id))
 }
 
-fn validate_snapshot_bounds(entry_count: usize, encoded_bytes: usize) -> Result<(), Error> {
+const fn validate_snapshot_bounds(entry_count: usize, encoded_bytes: usize) -> Result<(), Error> {
     if entry_count > MAX_WATCH_SNAPSHOT_ENTRIES || encoded_bytes > MAX_WATCH_SNAPSHOT_BYTES {
         return Err(Error::Invalid(Invalid::ValueTooLarge));
     }
