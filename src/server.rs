@@ -1282,17 +1282,13 @@ fn update_talkback(
             })?;
             server_state
                 .talkback
-                .start(session_id, target, &cameras)
+                .start(session_id, target, &cameras, &server_state.webrtc)
                 .map_err(talkback_error)?
         }
-        Some(talkback_command::Action::Stop(_)) => {
-            let state = server_state
-                .talkback
-                .stop(session_id)
-                .map_err(talkback_error)?;
-            server_state.webrtc.disarm_talkback(session_id);
-            state
-        }
+        Some(talkback_command::Action::Stop(_)) => server_state
+            .talkback
+            .stop(session_id, &server_state.webrtc)
+            .map_err(talkback_error)?,
         None => {
             return Err(ControlCommandError::new(
                 proto::ErrorCode::InvalidRequest,
@@ -1301,11 +1297,6 @@ fn update_talkback(
             ));
         }
     };
-    if !state.active_source_ids.is_empty() {
-        server_state
-            .webrtc
-            .arm_talkback(session_id, state.active_source_ids.clone());
-    }
     Ok(proto::Notification {
         event: Some(proto::notification::Event::TalkbackState(state)),
     })

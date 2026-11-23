@@ -1464,14 +1464,28 @@ impl SourceBitrate {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct TalkbackRoute(Arc<()>);
+
+impl TalkbackRoute {
+    fn matches(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+struct TalkbackSink {
+    route: TalkbackRoute,
+    owner: SessionId,
+    audio: AudioQueue,
+}
+
 #[derive(Default)]
 struct Inner {
     sources: Mutex<HashMap<Source, SourceState>>,
     audio_sources: Mutex<HashMap<Source, AudioQueue>>,
     audio_capabilities: Mutex<HashMap<Source, LiveAudioSourceCapability>>,
     audio_subscribers: Mutex<Vec<AudioSubscriber>>,
-    talkback_routes: Mutex<HashMap<SessionId, Vec<String>>>,
-    talkback_audio: Mutex<HashMap<String, AudioQueue>>,
+    talkback_sinks: Mutex<HashMap<String, TalkbackSink>>,
     camera_generations: Mutex<HashMap<IpAddr, u64>>,
     camera_preview_keyframes: Mutex<HashMap<IpAddr, CameraPreviewKeyframe>>,
     privacy: RwLock<Option<Arc<PrivacyRegistry>>>,
@@ -2251,63 +2265,89 @@ impl Publisher {
             .insert(camera_ip, camera_id);
     }
 
-    pub(crate) fn arm_talkback(&self, session_id: SessionId, source_ids: Vec<String>) {
-        self.inner
-            .talkback_routes
+    pub(crate) fn arm_talkback(&self, session_id: SessionId, source_ids: &[String]) -> bool {
+        let mut sinks = self
+            .inner
+            .talkback_sinks
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(session_id, source_ids);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if source_ids
+            .iter()
+            .any(|id| sinks.get(id).is_some_and(|sink| sink.owner != session_id))
+        {
+            return false;
+        }
+        sinks.retain(|_, sink| sink.owner != session_id);
+        for id in source_ids {
+            sinks.insert(
+                id.clone(),
+                TalkbackSink {
+                    route: TalkbackRoute(Arc::new(())),
+                    owner: session_id,
+                    audio: AudioQueue::default(),
+                },
+            );
+        }
+        true
     }
 
     pub(crate) fn disarm_talkback(&self, session_id: SessionId) {
         self.inner
-            .talkback_routes
+            .talkback_sinks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_id);
+            .retain(|_, sink| sink.owner != session_id);
     }
 
     pub(crate) fn talkback_is_armed(&self, source_id: &str) -> bool {
         self.inner
-            .talkback_routes
+            .talkback_sinks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .any(|sources| sources.iter().any(|source| source == source_id))
+            .contains_key(source_id)
     }
 
     fn route_talkback_audio(&self, session_id: SessionId, frame: WebRtcAudioFrame) {
-        let routes = self
+        let mut sinks = self
             .inner
-            .talkback_routes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&session_id)
-            .cloned()
-            .unwrap_or_default();
-        if routes.is_empty() {
-            return;
-        }
-        let mut audio = self
-            .inner
-            .talkback_audio
+            .talkback_sinks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for source_id in routes {
-            audio
-                .entry(source_id)
-                .or_default()
-                .push(frame.clone(), Instant::now());
+        let now = Instant::now();
+        for sink in sinks.values_mut().filter(|sink| sink.owner == session_id) {
+            sink.audio.push(frame.clone(), now);
         }
     }
 
-    pub(crate) fn take_talkback_audio(&self, source_id: &str) -> Option<WebRtcAudioFrame> {
+    pub(crate) fn talkback_route_is_current(&self, source_id: &str, route: &TalkbackRoute) -> bool {
         self.inner
-            .talkback_audio
+            .talkback_sinks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_mut(source_id)
-            .and_then(|queue| queue.pop(Instant::now()))
+            .get(source_id)
+            .is_some_and(|sink| sink.route.matches(route))
+    }
+
+    pub(crate) fn take_routed_talkback_audio(
+        &self,
+        source_id: &str,
+        expected: Option<&TalkbackRoute>,
+    ) -> Option<(TalkbackRoute, WebRtcAudioFrame)> {
+        let mut sinks = self
+            .inner
+            .talkback_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sink = sinks.get_mut(source_id)?;
+        if expected.is_some_and(|route| !route.matches(&sink.route)) {
+            return None;
+        }
+        Some((sink.route.clone(), sink.audio.pop(Instant::now())?))
+    }
+
+    pub(crate) fn take_talkback_audio(&self, source_id: &str) -> Option<WebRtcAudioFrame> {
+        self.take_routed_talkback_audio(source_id, None)
+            .map(|(_, frame)| frame)
     }
 
     pub(crate) fn publish_audio(&self, source: Source, frame: WebRtcAudioFrame) {
@@ -2570,8 +2610,8 @@ impl WebRtc {
         self.live.set_privacy_camera_id(camera_ip, camera_id);
     }
 
-    pub(crate) fn arm_talkback(&self, session_id: SessionId, source_ids: Vec<String>) {
-        self.live.arm_talkback(session_id, source_ids);
+    pub(crate) fn arm_talkback(&self, session_id: SessionId, source_ids: &[String]) -> bool {
+        self.live.arm_talkback(session_id, source_ids)
     }
 
     pub(crate) fn disarm_talkback(&self, session_id: SessionId) {
@@ -7711,7 +7751,7 @@ mod tests {
     fn talkback_audio_is_fanned_out_to_each_armed_source() {
         let publisher = Publisher::default();
         let session_id = SessionId::from_u64(9);
-        publisher.arm_talkback(session_id, vec!["front".to_owned(), "side".to_owned()]);
+        assert!(publisher.arm_talkback(session_id, &["front".to_owned(), "side".to_owned()]));
         publisher.route_talkback_audio(
             session_id,
             WebRtcAudioFrame {
@@ -7733,6 +7773,59 @@ mod tests {
             Bytes::from_static(&[1, 2, 3])
         );
         publisher.disarm_talkback(session_id);
+    }
+
+    #[test]
+    fn disarming_talkback_discards_microphone_audio_before_the_camera_is_rearmed() {
+        let publisher = Publisher::default();
+        let first = SessionId::from_u64(1);
+        let next = SessionId::from_u64(2);
+        let frame = WebRtcAudioFrame {
+            codec: audio::AudioCodec::PcmS16Le,
+            sample_rate_hz: 8000,
+            channel_count: 1,
+            timestamp: None,
+            received_at: Instant::now(),
+            data: Bytes::from_static(&[1, 2]),
+        };
+        assert!(publisher.arm_talkback(first, &["front".into(), "side".into()]));
+        publisher.route_talkback_audio(first, frame.clone());
+        let (old_route, _) = publisher.take_routed_talkback_audio("front", None).unwrap();
+        publisher.route_talkback_audio(first, frame.clone());
+
+        publisher.disarm_talkback(first);
+        assert!(!publisher.talkback_is_armed("side"));
+        assert!(publisher.take_talkback_audio("side").is_none());
+        assert!(publisher.arm_talkback(first, &["front".into()]));
+        assert!(!publisher.talkback_route_is_current("front", &old_route));
+        publisher.route_talkback_audio(first, frame.clone());
+        assert!(
+            publisher
+                .take_routed_talkback_audio("front", Some(&old_route))
+                .is_none()
+        );
+        let (new_route, _) = publisher.take_routed_talkback_audio("front", None).unwrap();
+        assert!(publisher.talkback_route_is_current("front", &new_route));
+
+        assert!(publisher.take_talkback_audio("front").is_none());
+        publisher.route_talkback_audio(first, frame.clone());
+        assert!(!publisher.arm_talkback(next, &["front".into(), "yard".into()]));
+        assert!(!publisher.talkback_is_armed("yard"));
+        assert!(publisher.talkback_route_is_current("front", &new_route));
+        assert_eq!(
+            publisher.take_talkback_audio("front").unwrap().data,
+            frame.data
+        );
+        publisher.disarm_talkback(first);
+        assert!(publisher.arm_talkback(next, &["front".into()]));
+        publisher.route_talkback_audio(first, frame.clone());
+        assert!(publisher.talkback_is_armed("front"));
+        assert!(publisher.take_talkback_audio("front").is_none());
+        publisher.route_talkback_audio(next, frame.clone());
+        assert_eq!(
+            publisher.take_talkback_audio("front").unwrap().data,
+            frame.data
+        );
     }
 
     #[test]
