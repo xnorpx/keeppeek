@@ -11,6 +11,7 @@ use std::{
 mod decode;
 pub mod deletion;
 mod dispatch;
+pub mod exports;
 use dispatch::dispatch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +113,14 @@ pub enum Request {
     Enqueue(Admission),
     Get(String),
     FindExport(String),
+    GetOwnerExport {
+        requester: String,
+        original_id: String,
+    },
+    ListOwnerExports {
+        requester: String,
+        retained: Vec<String>,
+    },
     List {
         after: String,
         limit: u16,
@@ -200,6 +209,7 @@ pub enum Reply {
     Deletion(Box<deletion::Plan>),
     Job(Option<Box<Job>>),
     Jobs(Vec<Job>),
+    ExportDescriptions(Vec<exports::Description>),
     Candidates(Vec<(String, Option<String>)>),
     Eviction(Box<super::archive_playback::Eviction>),
 }
@@ -265,7 +275,15 @@ pub(super) async fn execute(
         Instant::now() < deadline,
         "archive catalog deadline expired"
     );
-    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let transaction = if matches!(
+        request,
+        Request::ListOwnerExports { .. } | Request::GetOwnerExport { .. }
+    ) {
+        "BEGIN"
+    } else {
+        "BEGIN IMMEDIATE"
+    };
+    connection.execute_batch(transaction).await?;
     let result = dispatch(connection, registry, request).await;
     match result {
         Ok(reply) => {

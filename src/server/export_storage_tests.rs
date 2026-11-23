@@ -1,3 +1,5 @@
+mod archive_discovery;
+
 use super::*;
 use crate::storage::{
     RecordingCatalog,

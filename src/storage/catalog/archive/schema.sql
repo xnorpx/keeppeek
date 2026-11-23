@@ -62,6 +62,10 @@ CREATE VIEW IF NOT EXISTS archive_copy_sources AS
         AND (m.phase NOT IN('complete','cancelled') OR m.receipt_acknowledged=0))
       AND NOT EXISTS(SELECT 1 FROM archive_replicas r WHERE r.kind=a.kind AND r.recording_id=a.object_id
         AND NOT (r.state='cancelled' AND r.cleanup_acknowledged=1));
+CREATE INDEX IF NOT EXISTS archive_ready_export_owner
+    ON archive_replicas(json_extract(export_metadata,'$.requester_id'),
+        json_extract(export_metadata,'$.created_at_ms') DESC,export_job_id)
+    WHERE kind='export' AND state='ready' AND json_valid(export_metadata);
 CREATE INDEX IF NOT EXISTS archive_replicas_state ON archive_replicas(state,job_id);
 -- Earlier catalogs did not timestamp verified replicas. A missing observation has no age.
 CREATE TABLE IF NOT EXISTS archive_verified_at (
