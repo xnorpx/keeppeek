@@ -1,4 +1,5 @@
 import { expect, test, vi } from 'vitest';
+import numberedVideo from '../../../tests/fixtures/exact_frame_step/vfr.mp4?url';
 import { RecordedFramePlayer } from './recorded-frame-player.svelte';
 import { UnsupportedRecordedFrame, type PresentedStoredFrame } from './stored-frame-step';
 
@@ -24,6 +25,55 @@ function picture(ordinal: number): PresentedStoredFrame {
 		sourceTimescale: 1000
 	};
 }
+
+test('anchors the first step to the current paused picture when a compositor callback lags', async () => {
+	const player = new RecordedFramePlayer();
+	const video = document.createElement('video');
+	const url = URL.createObjectURL(await (await fetch(numberedVideo)).blob());
+	const stepRecordedFrame = vi.fn(async () => picture(1));
+	const cursor = { ...clock(1_000), url, canStepExactly: true, stepRecordedFrame };
+	let cleanup: (() => void) | undefined;
+	document.body.append(video);
+	try {
+		const loaded = new Promise<void>((resolve) =>
+			video.addEventListener('loadeddata', () => resolve(), { once: true })
+		);
+		video.src = url;
+		await loaded;
+		const settled = new Promise<void>((resolve) =>
+			video.addEventListener('seeked', () => resolve(), { once: true })
+		);
+		video.currentTime = 0.255;
+		await settled;
+		const frame = new VideoFrame(video);
+		const currentUs = frame.timestamp;
+		frame.close();
+		expect(currentUs).toBeGreaterThan(0);
+		expect(currentUs).not.toBe(Math.round(video.currentTime * 1_000_000));
+		const observe = vi.spyOn(video, 'requestVideoFrameCallback').mockReturnValue(1);
+		cleanup = player.follow(video, cursor);
+		observe.mock.calls[0][0](0, { mediaTime: 0 } as VideoFrameCallbackMetadata);
+		expect(player.displayedNs).toBe(1_000_000_000n);
+
+		await player.step(1, cursor, () => {});
+		expect(stepRecordedFrame).toHaveBeenCalledWith(
+			1,
+			{ displayedTimeNs: cursor.storedNsForMediaUs(currentUs) },
+			expect.any(AbortSignal)
+		);
+
+		player.clear();
+		observe.mock.calls[0][0](0, { mediaTime: 0 } as VideoFrameCallbackMetadata);
+		await player.step(-1, { ...cursor, url: 'replacement' }, () => {});
+		expect(stepRecordedFrame).toHaveBeenCalledTimes(1);
+		expect(player.notice).toContain('paused picture is unavailable');
+	} finally {
+		cleanup?.();
+		video.remove();
+		URL.revokeObjectURL(url);
+		vi.restoreAllMocks();
+	}
+});
 
 test.each([
 	{ label: 'forward', queued: Array<1 | -1>(40).fill(1), expected: Array<number>(32).fill(1) },

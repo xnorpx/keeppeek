@@ -203,6 +203,7 @@ export class RecordedFramePlayer {
 	unsupported = $state(false);
 	displayedNs = $state<bigint>();
 	private active?: AbortController;
+	private pausedTime?: (cursor: Cursor) => bigint | undefined;
 	private handoff = $state.raw<AbortController>();
 	revealingPicture = $state(false);
 
@@ -236,10 +237,34 @@ export class RecordedFramePlayer {
 
 	follow(video: HTMLVideoElement, cursor: Cursor): () => void {
 		this.clear();
+		this.pausedTime = undefined;
 		if (typeof video.requestVideoFrameCallback !== 'function' || !cursor.canStepExactly)
 			return () => this.clear();
 		const url = cursor.url;
 		const current = () => video.currentSrc === url && cursor.url === url;
+		const pausedTime = (target: Cursor) => {
+			if (
+				target !== cursor ||
+				!current() ||
+				!video.paused ||
+				video.seeking ||
+				video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+			)
+				return;
+			// Pause can freeze a newer picture than the last delivered compositor callback.
+			let frame: VideoFrame;
+			try {
+				frame = new VideoFrame(video);
+			} catch {
+				return;
+			}
+			try {
+				return cursor.storedNsForMediaUs(frame.timestamp);
+			} finally {
+				frame.close();
+			}
+		};
+		this.pausedTime = pausedTime;
 		let generation = 0;
 		let handle: number | undefined;
 		let stagedUs: number | undefined;
@@ -277,6 +302,7 @@ export class RecordedFramePlayer {
 			if (handle !== undefined) video.cancelVideoFrameCallback(handle);
 			video.removeEventListener('seeking', seeking);
 			video.removeEventListener('seeked', seeked);
+			if (this.pausedTime === pausedTime) this.pausedTime = undefined;
 			this.clear();
 		};
 	}
@@ -391,6 +417,14 @@ export class RecordedFramePlayer {
 		}
 	}
 
+	private anchor(cursor: Cursor): { sampleToken: Uint8Array } | { displayedTimeNs: bigint } {
+		if (this.selection) return { sampleToken: this.selection.sampleToken };
+		const displayedTimeNs = this.pausedTime ? this.pausedTime(cursor) : this.displayedNs;
+		if (displayedTimeNs === undefined)
+			throw new Error('The paused picture is unavailable. Play and pause the recording again.');
+		return { displayedTimeNs };
+	}
+
 	async step(
 		direction: Direction,
 		cursor: Cursor,
@@ -413,10 +447,11 @@ export class RecordedFramePlayer {
 			while (this.pendingSteps !== 0) {
 				const next = this.pendingSteps > 0 ? 1 : -1;
 				this.pendingSteps -= next;
-				const anchor = this.selection
-					? { sampleToken: this.selection.sampleToken }
-					: { displayedTimeNs: this.displayedNs! };
-				const { frame, ...selection } = await cursor.stepRecordedFrame(next, anchor, active.signal);
+				const { frame, ...selection } = await cursor.stepRecordedFrame(
+					next,
+					this.anchor(cursor),
+					active.signal
+				);
 				try {
 					active.signal.throwIfAborted();
 					present({ ...selection, frame });
