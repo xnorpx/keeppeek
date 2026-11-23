@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS archive_replicas (
     error TEXT CHECK(length(error)<=256),
     UNIQUE(kind,recording_id)
 );
+CREATE INDEX IF NOT EXISTS archive_ready_export_owner
+    ON archive_replicas(json_extract(export_metadata,'$.requester_id'),
+        json_extract(export_metadata,'$.created_at_ms') DESC,export_job_id)
+    WHERE kind='export' AND state='ready' AND json_valid(export_metadata);
 CREATE INDEX IF NOT EXISTS archive_replicas_state ON archive_replicas(state,job_id);
 CREATE INDEX IF NOT EXISTS archive_replicas_pending_eviction
     ON archive_replicas(recording_id) WHERE kind='recording' AND local_evicted=2;
