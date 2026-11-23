@@ -1,7 +1,13 @@
 import type { JsonObject } from '@bufbuild/protobuf';
 import type { StateEntry } from './proto/webrtc_pb';
+import { SharedProfileWatch, type ProfileSubscription } from './runtime-profile-shared-watch';
 import type { ControlClientStateStore, StateStoreWatch } from './control-client-state-store';
 import {
+	assembleObservedParts,
+	sameObservationGeneration,
+	observedPartCount,
+	observedPartFromEntry,
+	type ObservedPart,
 	runtimeProfilesActiveKey,
 	runtimeProfilesActiveSchema,
 	runtimeProfilesNamespace,
@@ -13,6 +19,8 @@ import {
 	runtimeProfilePartFromEntry,
 	runtimeProfilePartKey,
 	runtimeProfileFromEntry,
+	runtimeProfileHeaderFromEntry,
+	type ActiveRuntimeProfile,
 	maxRuntimeProfilePartCameras,
 	runtimeProfileStatusFromEntry,
 	runtimeProfileCamerasFromEntry,
@@ -25,9 +33,24 @@ import {
 
 const profilePartFetchConcurrency = 4;
 const registryReadRetries = 2;
+const observedIndices = Array.from({ length: observedPartCount }, (_, index) => index);
 
 export class RuntimeProfilesControlClient {
+	private readonly activeWatch = new SharedProfileWatch<ActiveRuntimeProfile | null>();
+	private readonly statusWatch = new SharedProfileWatch<RuntimeProfileStatus | null>();
 	constructor(private readonly stateStore: ControlClientStateStore) {}
+
+	private connectionGeneration = 0;
+
+	handleConnectionClosed(): void {
+		this.connectionGeneration++;
+		this.activeWatch.pause(null);
+		this.statusWatch.pause(null);
+	}
+
+	async handleConnectionOpened(): Promise<void> {
+		await Promise.all([this.activeWatch.resume(), this.statusWatch.resume()]);
+	}
 
 	async getCameras(): Promise<RuntimeProfileCameras> {
 		return runtimeProfileCamerasFromEntry(
@@ -35,7 +58,7 @@ export class RuntimeProfilesControlClient {
 		);
 	}
 
-	async getActive(): Promise<{ profileId: string | null; revision: string }> {
+	async getActive(): Promise<ReturnType<typeof runtimeProfileFromEntry>> {
 		return runtimeProfileFromEntry(
 			await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesActiveKey)
 		);
@@ -66,10 +89,28 @@ export class RuntimeProfilesControlClient {
 		throw new Error('Runtime profiles changed while they were being read.');
 	}
 
-	async getStatus(): Promise<RuntimeProfileStatus> {
-		return runtimeProfileStatusFromEntry(
-			await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesStatusKey)
-		);
+	private async hasObservedParts(): Promise<boolean> {
+		const entry = await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesActiveKey);
+		return runtimeProfileHeaderFromEntry(entry).degradedCameras !== undefined;
+	}
+
+	async getStatus(): Promise<RuntimeProfileStatus | null> {
+		if (!(await this.hasObservedParts())) {
+			return runtimeProfileStatusFromEntry(
+				await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesStatusKey)
+			);
+		}
+		for (let attempt = 0; attempt <= registryReadRetries; attempt++) {
+			const parts = await mapBounded(observedIndices, profilePartFetchConcurrency, async (index) =>
+				observedPartFromEntry(
+					await this.stateStore.get(runtimeProfilesNamespace, `observed/${index}`),
+					index
+				)
+			);
+			const assembled = assembleObservedParts(new Map(parts.entries()));
+			if (assembled) return assembled;
+		}
+		return null;
 	}
 
 	async saveRegistry(registry: RuntimeProfileRegistry): Promise<RuntimeProfileRegistry> {
@@ -156,20 +197,152 @@ export class RuntimeProfilesControlClient {
 	}
 
 	async activate(profileId: string | null, expectedRevision: string): Promise<string> {
+		return (await this.activateWithHeader(profileId, expectedRevision)).revision;
+	}
+
+	async activateWithHeader(
+		profileId: string | null,
+		expectedRevision: string
+	): Promise<ReturnType<typeof runtimeProfileFromEntry>> {
 		const entry = await this.stateStore.put(runtimeProfilesNamespace, runtimeProfilesActiveKey, {
 			schema: runtimeProfilesActiveSchema,
 			value: { profile_id: profileId ?? '' },
 			expectedRevision: BigInt(expectedRevision)
 		});
-		return runtimeProfileFromEntry(entry).revision;
+		return runtimeProfileFromEntry(entry);
 	}
 
 	watchActive(
-		listener: (active: ReturnType<typeof runtimeProfileFromEntry>) => void
-	): Promise<StateStoreWatch> {
-		return this.watch(runtimeProfilesActiveKey, (entry) =>
-			listener(runtimeProfileFromEntry(entry))
+		listener: (active: ActiveRuntimeProfile | null) => void,
+		onError?: (cause: unknown) => void
+	): Promise<ProfileSubscription> {
+		return this.watchHeader(listener, onError);
+	}
+
+	private watchHeader(
+		listener: (header: ActiveRuntimeProfile | null) => void,
+		onError?: (cause: unknown) => void
+	): Promise<ProfileSubscription> {
+		return this.activeWatch.subscribe(
+			listener,
+			async (emit) => {
+				let retired = false;
+				const generation = this.connectionGeneration;
+				const watch = await this.watch(
+					runtimeProfilesActiveKey,
+					(entry) => emit(runtimeProfileHeaderFromEntry(entry)),
+					() => {
+						if (retired || generation !== this.connectionGeneration) return;
+						retired = true;
+						this.activeWatch.pause(null);
+						this.statusWatch.pause(null);
+						void Promise.all([this.activeWatch.resume(), this.statusWatch.resume()]);
+					}
+				);
+				return {
+					close: async () => {
+						retired = true;
+						await watch.close();
+					}
+				};
+			},
+			onError
 		);
+	}
+
+	async watchShellProfile(
+		listener: (profileId: string | null | undefined, degraded: number | null) => void
+	): Promise<ProfileSubscription> {
+		let header: ActiveRuntimeProfile | undefined;
+		let closed = false;
+		const legacy = this.legacyShellStatus(() => {
+			if (header && !closed) notify(header);
+		});
+		const notify = (active: ActiveRuntimeProfile) => {
+			const status = legacy.value();
+			const matches =
+				status &&
+				status.revision === active.revision &&
+				status.active_profile_id === active.profileId &&
+				status.definitionRevision === active.definitionRevision;
+			const count =
+				active.degradedCameras === undefined && matches
+					? Object.values(status.cameras).filter((camera) => camera.state === 'degraded').length
+					: (active.degradedCameras ?? null);
+			listener(active.profileId, count);
+		};
+		let interrupted = false;
+		const accept = (next: ActiveRuntimeProfile | null) => {
+			if (closed) return;
+			interrupted = next === null;
+			if (!next) {
+				header = undefined;
+				listener(undefined, null);
+				void legacy.release();
+				return;
+			}
+			header = next;
+			if (next.degradedCameras === undefined) legacy.open();
+			else void legacy.release();
+			notify(next);
+		};
+		let active: ProfileSubscription | undefined;
+		const close = async () => {
+			closed = true;
+			await Promise.all([active?.close(), legacy.release()]);
+		};
+		try {
+			active = await this.watchHeader(accept);
+			if (!header && !interrupted) {
+				const generation = this.connectionGeneration;
+				const fresh = runtimeProfileHeaderFromEntry(
+					await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesActiveKey)
+				);
+				if (!header && !interrupted) {
+					if (generation !== this.connectionGeneration)
+						throw new Error('Recorder reconnected while reading the active profile.');
+					accept(fresh);
+				}
+			}
+			// Legacy camera counts are optional. The selected profile still follows the header.
+			await legacy.ready();
+			return { close };
+		} catch (cause) {
+			await close();
+			throw cause;
+		}
+	}
+
+	private legacyShellStatus(notify: () => void) {
+		let status: RuntimeProfileStatus | null = null;
+		let opening: Promise<ProfileSubscription> | undefined;
+		let epoch = 0;
+		return {
+			value: () => status,
+			ready: () => opening?.catch(() => undefined),
+			release: async () => {
+				epoch++;
+				status = null;
+				const previous = opening;
+				opening = undefined;
+				if (previous) await (await previous.catch(() => undefined))?.close();
+			},
+			open: () => {
+				if (opening) return;
+				const generation = epoch;
+				opening = this.watchStatus((value) => {
+					if (generation !== epoch) return;
+					status = value;
+					notify();
+				});
+				void opening.catch(() => {
+					if (epoch !== generation) return;
+					opening = undefined;
+					status = null;
+					notify();
+				});
+			}
+		};
 	}
 
 	async watchRegistry(
@@ -194,19 +367,91 @@ export class RuntimeProfilesControlClient {
 		});
 	}
 
-	watchStatus(listener: (status: RuntimeProfileStatus) => void): Promise<StateStoreWatch> {
-		return this.watch(runtimeProfilesStatusKey, (entry) =>
-			listener(runtimeProfileStatusFromEntry(entry))
-		);
+	watchStatus(
+		listener: (status: RuntimeProfileStatus | null) => void,
+		onError?: (cause: unknown) => void
+	): Promise<ProfileSubscription> {
+		return this.statusWatch.subscribe(listener, (emit) => this.openStatusWatch(emit), onError);
 	}
 
-	private watch(key: string, listener: (entry: StateEntry) => void): Promise<StateStoreWatch> {
+	private async openStatusWatch(
+		emit: (status: RuntimeProfileStatus | null) => void
+	): Promise<ProfileSubscription> {
+		const generation = this.connectionGeneration;
+		let retired = false;
+		const current = () => !retired && generation === this.connectionGeneration;
+		const interrupt = () => {
+			if (!current()) return;
+			retired = true;
+			this.statusWatch.pause(null);
+			void this.statusWatch.resume();
+		};
+		const multipart = await this.hasObservedParts();
+		if (generation !== this.connectionGeneration) return { close: async () => {} };
+		if (!multipart) {
+			const watch = await this.watch(
+				runtimeProfilesStatusKey,
+				(entry) => emit(runtimeProfileStatusFromEntry(entry)),
+				interrupt
+			);
+			return {
+				close: async () => {
+					retired = true;
+					await watch.close();
+				}
+			};
+		}
+
+		emit(null);
+		const delivery = observedStatusDelivery(emit, current);
+		const results = await Promise.allSettled(
+			observedIndices.map((index) =>
+				this.watch(
+					`observed/${index}`,
+					(entry) => {
+						if (!current()) return;
+						delivery.receive(index, observedPartFromEntry(entry, index));
+					},
+					interrupt
+				)
+			)
+		);
+		const close = async () => {
+			retired = true;
+			await Promise.allSettled(
+				results.flatMap((result) => (result.status === 'fulfilled' ? [result.value.close()] : []))
+			);
+		};
+		const failure = results.find((result) => result.status === 'rejected');
+		try {
+			if (failure) throw failure.reason;
+			delivery.admit();
+		} catch (cause) {
+			await close();
+			throw cause;
+		}
+		return { close };
+	}
+
+	private watch(
+		key: string,
+		listener: (entry: StateEntry) => void,
+		onInterrupted?: () => void
+	): Promise<StateStoreWatch> {
+		let installed = false;
 		return this.stateStore.watch(runtimeProfilesNamespace, {
 			keyPrefix: key,
 			maxEntries: 1,
+			onInterrupted,
 			listener: (entries) => {
 				const entry = entries.find((candidate) => candidate.key === key);
-				if (entry !== undefined) listener(entry);
+				if (entry !== undefined) {
+					listener(entry);
+					installed = true;
+				} else if (onInterrupted) {
+					if (!installed) throw new Error('Missing runtime profile watch snapshot.');
+					onInterrupted();
+				}
 			}
 		});
 	}
@@ -263,6 +508,37 @@ export class RuntimeProfilesControlClient {
 			profiles: Object.fromEntries(definitions)
 		};
 	}
+}
+
+function observedStatusDelivery(
+	emit: (status: RuntimeProfileStatus | null) => void,
+	current: () => boolean
+) {
+	const parts = new Map<number, ObservedPart>();
+	let published: ObservedPart | undefined;
+	let admitted = false;
+	function publishComplete() {
+		if (!admitted || !current()) return;
+		const status = assembleObservedParts(parts);
+		if (!status) return;
+		published = parts.get(0);
+		parts.clear();
+		emit(status);
+	}
+	return {
+		receive(index: number, part: ObservedPart) {
+			if (published && !sameObservationGeneration(published, part)) {
+				published = undefined;
+				emit(null);
+			}
+			parts.set(index, part);
+			publishComplete();
+		},
+		admit() {
+			admitted = true;
+			publishComplete();
+		}
+	};
 }
 
 function nextRevision(revision: string): string {

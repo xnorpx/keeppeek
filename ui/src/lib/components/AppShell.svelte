@@ -39,7 +39,6 @@
 	import type { AccessConnectionState } from '$lib/access';
 	import type { ServerHealthResponse } from '$lib/types';
 	import { setShellHealthPublisher } from '$lib/shell-health-context';
-	import type { RuntimeProfileStatus } from '$lib/runtime-profiles';
 
 	const verificationWindow =
 		typeof window !== 'undefined' &&
@@ -81,8 +80,11 @@
 	let railPathname = '';
 	let navigationChordTimer: ReturnType<typeof setTimeout> | null = null;
 	let shellHealth = $state.raw<ServerHealthResponse | null>(null);
-	let shellProfileId = $state<string | null>(null);
-	let shellProfileStatus = $state.raw<RuntimeProfileStatus | null>(null);
+	let shellProfileId = $state<string | null>();
+	const shellProfileLabel = $derived(
+		shellProfileId === undefined ? 'Pending' : (shellProfileId ?? 'Base')
+	);
+	let shellDegradedCameras = $state<number | null>(null);
 	let shellHealthRequestVersion = 0;
 	setShellHealthPublisher((health) => (shellHealth = health));
 	let shellStatusIndicators = $derived.by(() => {
@@ -181,6 +183,7 @@
 			capabilities.updateAdvertised(capabilityIds);
 		});
 		const closeAccessState = controlClient.onAccessState((state) => {
+			const wasAuthenticated = accessState.status === 'authenticated';
 			const previousPrincipalId = accessState.session?.principalId ?? null;
 			accessState = state;
 			if (state.status !== 'authenticated' || state.session?.principalId !== previousPrincipalId) {
@@ -194,7 +197,13 @@
 				reportSession.cancel();
 				reportOpen = false;
 			}
-			void connectRuntimeProfileStatus(state.status === 'authenticated');
+			const authenticated = state.status === 'authenticated';
+			if (
+				wasAuthenticated !== authenticated ||
+				previousPrincipalId !== (state.session?.principalId ?? null)
+			) {
+				void connectRuntimeProfileStatus(authenticated);
+			}
 		});
 		void controlClient.checkAccess().catch(() => undefined);
 		const close = () => {
@@ -211,7 +220,7 @@
 			closeAppearance();
 			closeCapabilities();
 			closeAccessState();
-			if (closeProfileStatusWatch) void closeProfileStatusWatch().catch(() => undefined);
+			profileWatchGeneration++;
 			if (closeProfileActiveWatch) void closeProfileActiveWatch().catch(() => undefined);
 			window.removeEventListener('keydown', handleGlobalKeyboard, { capture: true });
 			window.removeEventListener('pagehide', close);
@@ -219,48 +228,28 @@
 		};
 	});
 
-	let closeProfileStatusWatch: (() => Promise<void>) | undefined;
 	let closeProfileActiveWatch: (() => Promise<void>) | undefined;
 	let profileWatchGeneration = 0;
 
 	async function connectRuntimeProfileStatus(connected: boolean): Promise<void> {
 		const generation = ++profileWatchGeneration;
-		if (closeProfileStatusWatch) void closeProfileStatusWatch().catch(() => undefined);
 		if (closeProfileActiveWatch) void closeProfileActiveWatch().catch(() => undefined);
-		closeProfileStatusWatch = undefined;
 		closeProfileActiveWatch = undefined;
-		if (!connected) {
-			shellProfileId = null;
-			shellProfileStatus = null;
-			return;
-		}
+		shellProfileId = undefined;
+		shellDegradedCameras = null;
+		if (!connected) return;
 		try {
-			const [active, status] = await Promise.all([
-				controlClient.runtimeProfiles.getActive(),
-				controlClient.runtimeProfiles.getStatus()
-			]);
-			if (generation !== profileWatchGeneration) return;
-			shellProfileId = active.profileId;
-			shellProfileStatus = status;
-			const [activeWatch, statusWatch] = await Promise.all([
-				controlClient.runtimeProfiles.watchActive((next) => {
-					shellProfileId = next.profileId;
-				}),
-				controlClient.runtimeProfiles.watchStatus((next) => {
-					shellProfileStatus = next;
-				})
-			]);
-			if (generation !== profileWatchGeneration) {
-				void activeWatch.close().catch(() => undefined);
-				void statusWatch.close().catch(() => undefined);
-				return;
-			}
-			closeProfileActiveWatch = () => activeWatch.close();
-			closeProfileStatusWatch = () => statusWatch.close();
+			const watch = await controlClient.runtimeProfiles.watchShellProfile((id, degraded) => {
+				if (generation !== profileWatchGeneration) return;
+				shellProfileId = id;
+				shellDegradedCameras = degraded;
+			});
+			if (generation !== profileWatchGeneration) await watch.close();
+			else closeProfileActiveWatch = () => watch.close();
 		} catch {
 			if (generation === profileWatchGeneration) {
-				shellProfileId = null;
-				shellProfileStatus = null;
+				shellProfileId = undefined;
+				shellDegradedCameras = null;
 			}
 		}
 	}
@@ -650,12 +639,12 @@
 						<a
 							href={resolve('/settings#runtime-profiles')}
 							class="ml-auto rounded-sm border border-border px-2 py-1 text-xs focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-							aria-label="Active camera profile {shellProfileId ?? 'Base'}; {Object.values(
-								shellProfileStatus?.cameras ?? {}
-							).filter((camera) => camera.state === 'degraded').length} cameras degraded"
+							aria-label="Active camera profile {shellProfileLabel}; {shellDegradedCameras === null
+								? 'application status pending'
+								: `${shellDegradedCameras} cameras degraded`}"
 						>
-							{shellProfileId ?? 'Base'}
-							{#if Object.values(shellProfileStatus?.cameras ?? {}).some((camera) => camera.state === 'degraded')}
+							{shellProfileLabel}
+							{#if shellDegradedCameras !== null && shellDegradedCameras > 0}
 								<span class="text-destructive"> · degraded</span>
 							{/if}
 						</a>
