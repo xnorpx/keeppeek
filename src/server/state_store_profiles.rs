@@ -9,6 +9,8 @@ use std::{
 };
 #[path = "state_store_profiles_identity.rs"]
 mod identity;
+#[path = "state_store_profiles_observed.rs"]
+pub(in crate::server) mod observed;
 pub(in crate::server) use identity::camera_profile_ids;
 use identity::{camera_profile_configuration, cameras_entry, configured_profile_ids};
 
@@ -28,7 +30,7 @@ const CAMERAS_KEY: &str = "cameras";
 const CAMERAS_SCHEMA: &str = "keeppeek.runtime-profiles.cameras.v1";
 pub(in crate::server) const STATUS_KEY: &str = "status";
 const PROFILE_PART_TARGETS: usize = 16;
-const PROFILE_DOCUMENT_BYTES_MAX: usize = 16 * 1_024;
+pub(in crate::server) const PROFILE_DOCUMENT_BYTES_MAX: usize = 16 * 1_024;
 const PROFILE_DRAFT_TTL: Duration = Duration::from_secs(120);
 const PROFILE_DRAFT_COUNT_MAX: usize = 4;
 const PROFILE_DRAFT_PARTS_MAX: usize = crate::profiles::MAX_PROFILES
@@ -103,7 +105,11 @@ pub(super) fn is_adapter_namespace(namespace: &str) -> bool {
 }
 
 pub(in crate::server) fn viewer_watch_key(key: &str) -> bool {
-    matches!(key, ACTIVE_KEY | STATUS_KEY)
+    key == ACTIVE_KEY || is_status_key(key)
+}
+
+pub(in crate::server) fn is_status_key(key: &str) -> bool {
+    key == STATUS_KEY || observed::part_index(key).is_some()
 }
 
 pub(super) fn dispatch(
@@ -139,22 +145,48 @@ pub(super) fn dispatch(
                     &request.key,
                 ));
             }
+            if is_status_key(&request.key) {
+                let identities = (!admin).then(|| camera_profile_ids(state).ok()).flatten();
+                let status = state
+                    .runtime_profile_status
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let entry = observed::snapshot_entry(
+                    state,
+                    principal,
+                    identities.as_ref(),
+                    &status,
+                    &request.key,
+                )
+                .map_err(|error| registry_error(error, NAMESPACE, &request.key))?;
+                return Ok(control_ok::Result::StateStoreResult(entry_result(entry)));
+            }
             let registry = config::load_config(config_path)
                 .map_err(|error| {
                     registry_error(Error::Storage(error.to_string()), NAMESPACE, &request.key)
                 })?
                 .runtime_profiles;
             let entry = match request.key.as_str() {
-                ACTIVE_KEY => active_entry(registry),
+                ACTIVE_KEY => {
+                    let identities = (!admin).then(|| camera_profile_ids(state).ok()).flatten();
+                    let status = state
+                        .runtime_profile_status
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    observed::header_snapshot(
+                        state,
+                        principal,
+                        identities.as_ref(),
+                        &registry,
+                        &status,
+                    )
+                }
                 REGISTRY_KEY => registry_entry(registry)
                     .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?,
                 CAMERAS_KEY => cameras_entry(state)
                     .map_err(|error| registry_error(error, NAMESPACE, CAMERAS_KEY))?,
                 key if key.starts_with("profiles/") => profile_part_entry(&registry, key)
                     .map_err(|error| registry_error(error, NAMESPACE, key))?,
-                STATUS_KEY => status_entry(visible_status(state, principal)).map_err(|error| {
-                    registry_error(Error::Storage(error.to_string()), NAMESPACE, STATUS_KEY)
-                })?,
                 _ => {
                     return Err(registry_error(
                         Error::Invalid(Invalid::Key),
@@ -349,7 +381,19 @@ pub(super) fn dispatch(
                 runtime_result.is_none(),
             );
             let audit_target = current.runtime_profiles.active_profile_id.clone();
-            let entry = active_entry(current.runtime_profiles);
+            let entry = {
+                let status = state
+                    .runtime_profile_status
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                observed::header_snapshot(
+                    state,
+                    principal,
+                    None,
+                    &current.runtime_profiles,
+                    &status,
+                )
+            };
             let classification = state
                 .api_session_owners
                 .lock()
@@ -367,18 +411,6 @@ pub(super) fn dispatch(
                 Some(audit_target.as_deref().unwrap_or("base")),
                 "accepted",
                 classification,
-            );
-            publish_events(
-                state,
-                Some(WatchEvent {
-                    namespace: NAMESPACE.to_owned(),
-                    key: ACTIVE_KEY.to_owned(),
-                    revision: entry.revision,
-                    kind: WatchEventKind::Put(entry.clone()),
-                }),
-                Vec::new(),
-                false,
-                now_ms(),
             );
             publish_status_event(state, now_ms());
             entry_result(entry)
@@ -430,6 +462,23 @@ fn watch_profiles(
             key_prefix,
         ));
     }
+    if is_status_key(key_prefix) {
+        let status = state
+            .runtime_profile_status
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _inventory = state.state_store_watches.lock_profile_views();
+        let identities = (!admin).then(|| camera_profile_ids(state).ok()).flatten();
+        let entry =
+            observed::snapshot_entry(state, principal, identities.as_ref(), &status, key_prefix)
+                .map_err(|error| registry_error(error, NAMESPACE, key_prefix))?;
+        // Registration must precede any writer that could invalidate this snapshot.
+        #[cfg(test)]
+        tests::pause_status_registration(&request.watch_id);
+        let result = register_profile_watch(state, session_id, request, entry);
+        drop(status);
+        return result;
+    }
     let _config_guard = super::super::state_store_settings::lock_config(&state.config_update)
         .map_err(|error| registry_error(error, NAMESPACE, &request.watch_id))?;
     let config_path = state
@@ -439,34 +488,22 @@ fn watch_profiles(
     let registry = config::load_config(config_path)
         .map_err(|error| registry_error(Error::Storage(error.to_string()), NAMESPACE, ACTIVE_KEY))?
         .runtime_profiles;
-    if key_prefix == STATUS_KEY {
-        let identities = camera_profile_ids(state).ok();
-        let status = state
-            .runtime_profile_status
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry = status_entry(project_status(
-            state,
-            principal,
-            status.clone(),
-            identities.as_ref(),
-        ))
-        .map_err(|error| {
-            registry_error(Error::Storage(error.to_string()), NAMESPACE, STATUS_KEY)
-        })?;
-        // Registration must precede any writer that could invalidate this snapshot.
-        #[cfg(test)]
-        tests::pause_status_registration(&request.watch_id);
-        let result = register_profile_watch(state, session_id, request, entry);
-        drop(status);
-        return result;
+    if key_prefix == REGISTRY_KEY {
+        let entry = registry_entry(registry)
+            .map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?;
+        return register_profile_watch(state, session_id, request, entry);
     }
-    let entry = if key_prefix == REGISTRY_KEY {
-        registry_entry(registry).map_err(|error| registry_error(error, NAMESPACE, REGISTRY_KEY))?
-    } else {
-        active_entry(registry)
-    };
-    register_profile_watch(state, session_id, request, entry)
+    let status = state
+        .runtime_profile_status
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _inventory = state.state_store_watches.lock_profile_views();
+    let identities = (!admin).then(|| camera_profile_ids(state).ok()).flatten();
+    let entry =
+        observed::header_snapshot(state, principal, identities.as_ref(), &registry, &status);
+    let result = register_profile_watch(state, session_id, request, entry);
+    drop(status);
+    result
 }
 
 fn register_profile_watch(
@@ -475,26 +512,33 @@ fn register_profile_watch(
     request: proto::WatchState,
     entry: StoredEntry,
 ) -> Result<proto::StateStoreResult, ControlCommandError> {
-    let message = proto::StateWatchSnapshot {
+    let mut message = proto::StateWatchSnapshot {
         watch_id: request.watch_id.clone(),
         namespace: NAMESPACE.to_owned(),
         key_prefix: request.key_prefix.clone(),
         snapshot_revision: entry.revision,
         entries: vec![proto_entry(&entry)],
     };
-    check_snapshot_bounds(
-        message.entries.len(),
-        message.encoded_len(),
-        NAMESPACE,
-        &request.watch_id,
-    )?;
+    let lifecycle = state
+        .api_session_owners
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&session_id)
+        .map_or_else(std::sync::Arc::default, |session| {
+            std::sync::Arc::clone(&session.lifecycle)
+        });
     state
         .state_store_watches
-        .register(
+        .register_snapshot(
             session_id,
             NAMESPACE.to_owned(),
-            request.key_prefix,
+            entry.key.clone(),
             request.watch_id.clone(),
+            Some((&entry, lifecycle)),
+            |cursor| {
+                message.snapshot_revision = cursor;
+                super::validate_snapshot_bounds(message.entries.len(), message.encoded_len())
+            },
         )
         .map_err(|error| registry_error(error, NAMESPACE, &request.watch_id))?;
     Ok(proto::StateStoreResult {
@@ -503,7 +547,16 @@ fn register_profile_watch(
 }
 
 fn parse_active_profile_id(value: &Struct) -> Result<Option<String>, Error> {
-    if value.fields.len() != 1 {
+    if value.fields.keys().any(|field| {
+        !matches!(
+            field.as_str(),
+            "profile_id"
+                | "revision"
+                | "definition_revision"
+                | "observed_parts"
+                | "degraded_cameras"
+        )
+    }) {
         return Err(Error::Invalid(Invalid::Schema));
     }
     let profile_id = match value
@@ -1118,7 +1171,6 @@ fn put_registry(
         "accepted",
         classification,
     );
-    let active_entry = active_entry(candidate);
     publish_events(
         state,
         Some(WatchEvent {
@@ -1132,37 +1184,28 @@ fn put_registry(
         now_ms(),
     );
     publish_status_event(state, now_ms());
-    publish_events(
-        state,
-        Some(WatchEvent {
-            namespace: NAMESPACE.to_owned(),
-            key: ACTIVE_KEY.to_owned(),
-            revision: active_entry.revision,
-            kind: WatchEventKind::Put(active_entry),
-        }),
-        Vec::new(),
-        false,
-        now_ms(),
-    );
     Ok(control_ok::Result::StateStoreResult(entry_result(
         registry_entry,
     )))
 }
 
-fn active_entry(registry: crate::profiles::ProfileRegistry) -> StoredEntry {
-    let profile_id = registry.active_profile_id.unwrap_or_default();
+fn active_entry(registry: &crate::profiles::ProfileRegistry) -> StoredEntry {
+    let profile_id = registry.active_profile_id.as_deref().unwrap_or_default();
+    let definition_revision = registry
+        .active_definition_revision()
+        .map(|revision| revision.to_string());
+    let value = super::super::peek_layouts::json_to_struct(serde_json::json!({
+        "profile_id": profile_id,
+        "definition_revision": definition_revision,
+        "observed_parts": observed::PART_COUNT,
+        "revision": registry.revision.to_string(),
+    }))
+    .expect("active profile header contains only JSON scalars");
     StoredEntry {
         namespace: NAMESPACE.to_owned(),
         key: ACTIVE_KEY.to_owned(),
         schema: ACTIVE_SCHEMA.to_owned(),
-        value: Struct {
-            fields: BTreeMap::from([(
-                "profile_id".to_owned(),
-                Value {
-                    kind: Some(Kind::StringValue(profile_id)),
-                },
-            )]),
-        },
+        value,
         revision: registry.revision,
         updated_ms: 0,
         expires_ms: None,
@@ -1225,7 +1268,7 @@ fn update_runtime_status(
     if status.revision == profiles.revision
         && status.active_profile_id == profiles.active_profile_id
     {
-        preserve_runtime_failures(&status.cameras, &mut cameras);
+        preserve_runtime_failures(&status.cameras, &mut cameras, profiles, configs.as_ref());
     }
     project_runtime_privacy(
         state,
@@ -1233,10 +1276,12 @@ fn update_runtime_status(
         &configured_camera_ids,
         &mut cameras,
         identities.as_ref(),
+        configs.as_ref(),
     );
     *status = crate::profiles::RuntimeProfileStatus {
         revision: profiles.revision,
         active_profile_id: profiles.active_profile_id.clone(),
+        definition_revision: profiles.active_definition_revision(),
         cameras,
     };
 }
@@ -1244,18 +1289,59 @@ fn update_runtime_status(
 fn preserve_runtime_failures(
     observed: &BTreeMap<String, crate::profiles::CameraRuntimeApplication>,
     returned: &mut BTreeMap<String, crate::profiles::CameraRuntimeApplication>,
+    profiles: &crate::profiles::ProfileRegistry,
+    configs: Option<&BTreeMap<String, crate::cameras::CameraConfig>>,
 ) {
     for application in returned.values_mut() {
         if application.state == crate::profiles::RuntimeApplicationState::Applied
             && let Some(current) = observed.get(&application.camera_id)
             && current.state == crate::profiles::RuntimeApplicationState::Degraded
-            && current.policy == application.policy
+            && (current.policy == application.policy
+                || configs
+                    .and_then(|configs| configs.get(&application.camera_id))
+                    .is_some_and(|config| {
+                        same_policy_across_privacy(
+                            current.policy,
+                            application.policy,
+                            config.recording_mode,
+                            profiles.active_camera_override(&application.camera_id),
+                        )
+                    }))
         {
             // The loop can observe a failure after sending the activation reply.
             application.state = current.state.clone();
             application.reason = current.reason.clone();
         }
     }
+}
+
+fn same_policy_across_privacy(
+    current: crate::profiles::EffectiveCameraPolicy,
+    returned: crate::profiles::EffectiveCameraPolicy,
+    base_mode: crate::cameras::CameraRecordingMode,
+    selected: Option<&crate::profiles::CameraProfileOverride>,
+) -> bool {
+    use crate::{cameras::CameraRecordingMode::Off, profiles::FieldSource};
+
+    if !(current.privacy_enforced || returned.privacy_enforced)
+        || current.available != returned.available
+        || current.available_source != returned.available_source
+        || current.notifications_enabled != returned.notifications_enabled
+        || current.notifications_source != returned.notifications_source
+    {
+        return false;
+    }
+    // A schedule boundary masks recording without changing the recorder's requested mode.
+    let valid_recording_policy = |policy: crate::profiles::EffectiveCameraPolicy| {
+        let expected = match (base_mode, policy.privacy_enforced, policy.available) {
+            (Off, _, _) => (Off, FieldSource::Base),
+            (_, true, _) => (Off, policy.privacy_source),
+            (_, _, false) => (Off, policy.available_source),
+            _ => crate::profiles::configured_recording_mode(base_mode, selected),
+        };
+        (policy.recording_mode, policy.recording_mode_source) == expected
+    };
+    valid_recording_policy(current) && valid_recording_policy(returned)
 }
 
 fn runtime_profile_camera_configs(
@@ -1323,39 +1409,28 @@ fn project_runtime_privacy(
     configured_camera_ids: &BTreeSet<String>,
     cameras: &mut BTreeMap<String, crate::profiles::CameraRuntimeApplication>,
     identities: Option<&crate::keeppeek::CameraProfileIds>,
+    configs: Option<&BTreeMap<String, crate::cameras::CameraConfig>>,
 ) {
+    let now = chrono::Utc::now();
     for application in cameras.values_mut() {
-        if !configured_camera_ids.contains(&application.camera_id) {
+        let id = &application.camera_id;
+        if !configured_camera_ids.contains(id) {
             continue;
         }
-        let privacy_active = identities
-            .and_then(|identities| identities.source(&application.camera_id))
+        let observation = identities
+            .and_then(|ids| ids.source_id(id))
+            .zip(configs.and_then(|configs| configs.get(id)))
             .ok_or_else(|| anyhow::anyhow!("camera profile source is unavailable"))
-            .and_then(|ip| state.privacy.decision(&ip.to_string(), chrono::Utc::now()));
-        match privacy_active {
-            Ok((active, _)) => {
-                application.policy.privacy_enforced = active;
-                application.policy.privacy_source = if active
-                    && profiles
-                        .active_profile_id
-                        .as_ref()
-                        .and_then(|profile_id| profiles.profiles.get(profile_id))
-                        .and_then(|profile| profile.cameras.get(&application.camera_id))
-                        .is_some_and(|camera| camera.privacy_enforced == Some(true))
-                {
-                    crate::profiles::FieldSource::Profile
-                } else {
-                    crate::profiles::FieldSource::Base
-                };
-            }
-            Err(error) => {
-                application.policy.privacy_enforced = true;
-                if application.state != crate::profiles::RuntimeApplicationState::Degraded {
-                    application.reason = Some(error.to_string().chars().take(256).collect());
-                }
-                application.state = crate::profiles::RuntimeApplicationState::Degraded;
-            }
-        }
+            .and_then(|(source, config)| {
+                state.privacy.decision(source, now)?;
+                state.privacy.observed_profile_policy(
+                    source,
+                    now,
+                    config.recording_mode,
+                    profiles.active_camera_override(id),
+                )
+            });
+        application.observe_policy(observation);
     }
 }
 
@@ -1364,8 +1439,7 @@ fn mark_runtime_status_pending(state: &ServerState, profiles: &crate::profiles::
         .runtime_profile_status
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    status.revision = profiles.revision;
-    status.active_profile_id = profiles.active_profile_id.clone();
+    status.set_selection(profiles);
     for application in status.cameras.values_mut() {
         application.state = crate::profiles::RuntimeApplicationState::Pending;
         application.reason = None;
@@ -1377,25 +1451,65 @@ pub(in crate::server) fn publish_status_event(state: &ServerState, updated_ms: u
         .runtime_profile_status
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // Keep newer status writes behind this event's queue admission.
-    if let Ok(entry) = status_entry(status.clone()) {
-        publish_events(
-            state,
-            Some(WatchEvent {
-                namespace: NAMESPACE.to_owned(),
-                key: STATUS_KEY.to_owned(),
-                revision: entry.revision,
-                kind: WatchEventKind::Put(entry),
-            }),
-            Vec::new(),
-            false,
-            updated_ms,
-        );
+    // A new watch snapshots this state before registering. Existing watches share one generation.
+    let keys = state.state_store_watches.profile_status_keys();
+    if keys.is_empty() {
+        return;
     }
+    let shared_status = std::sync::Arc::new(status.clone());
+    let generation = std::cell::OnceCell::new();
+    let events = keys
+        .into_iter()
+        .map(|key| {
+            if key == ACTIVE_KEY {
+                let registry = state
+                    .runtime_profiles
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                return WatchEvent {
+                    namespace: NAMESPACE.to_owned(),
+                    key,
+                    revision: registry.revision,
+                    kind: WatchEventKind::ProfileHeader {
+                        entry: active_entry(&registry),
+                        observations: observed::observed_camera_states(&registry, &status),
+                    },
+                };
+            }
+            let entry = observed::part_index(&key).map_or_else(
+                || status_entry(&status).map_err(|error| Error::Storage(error.to_string())),
+                |index| {
+                    let generation = generation
+                        .get_or_init(|| observed::generation(&status))
+                        .as_ref()
+                        .map_err(Clone::clone)?;
+                    observed::part_entry(&status, index, generation)
+                },
+            );
+            WatchEvent {
+                namespace: NAMESPACE.to_owned(),
+                key,
+                revision: status.revision,
+                kind: WatchEventKind::ProfileObservation {
+                    status: std::sync::Arc::clone(&shared_status),
+                    administrator: entry.ok(),
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    state.state_store_watches.publish(
+        state,
+        &events,
+        false,
+        updated_ms,
+        |session, notification| {
+            super::super::state_store_watch::enqueue_notification(state, session, notification)
+        },
+    );
     drop(status);
 }
 
-fn status_entry(status: crate::profiles::RuntimeProfileStatus) -> anyhow::Result<StoredEntry> {
+fn status_entry(status: &crate::profiles::RuntimeProfileStatus) -> anyhow::Result<StoredEntry> {
     let revision = status.revision;
     let mut value = serde_json::to_value(status)?;
     normalize_revision_fields(&mut value, true)?;
@@ -1412,55 +1526,27 @@ fn status_entry(status: crate::profiles::RuntimeProfileStatus) -> anyhow::Result
     })
 }
 
-fn visible_status(
-    state: &ServerState,
-    principal: &ApiPrincipal,
-) -> crate::profiles::RuntimeProfileStatus {
-    let identities = camera_profile_ids(state).ok();
-    let status = state
-        .runtime_profile_status
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    project_status(state, principal, status, identities.as_ref())
-}
-
-fn project_status(
-    state: &ServerState,
-    principal: &ApiPrincipal,
-    mut status: crate::profiles::RuntimeProfileStatus,
-    identities: Option<&crate::keeppeek::CameraProfileIds>,
-) -> crate::profiles::RuntimeProfileStatus {
-    if principal.role == AccessRole::Administrator {
-        return status;
-    }
-    let visible = visible_profile_camera_ids(state, principal, identities);
-    status.cameras.retain(|id, _| visible.contains(id));
-    status
-}
-
 pub(in crate::server) fn visible_profile_camera_ids(
     state: &ServerState,
     principal: &ApiPrincipal,
     identities: Option<&crate::keeppeek::CameraProfileIds>,
-) -> BTreeSet<String> {
-    let Some(identities) = identities else {
-        return BTreeSet::new();
-    };
-    super::super::camera_access::for_principal(state, principal)
-        .ok()
-        .and_then(|policy| super::super::camera_access::query_cameras(state, &policy, &[]).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|camera| {
-            camera
-                .info
-                .ip
-                .parse()
-                .ok()
-                .map(|ip| identities.camera_id(ip))
-        })
-        .collect()
+) -> Option<BTreeSet<String>> {
+    let identities = identities?;
+    let policy = super::super::camera_access::for_principal(state, principal).ok()?;
+    Some(
+        super::super::camera_access::query_cameras(state, &policy, &[])
+            .ok()?
+            .into_iter()
+            .filter_map(|camera| {
+                camera
+                    .info
+                    .ip
+                    .parse()
+                    .ok()
+                    .map(|ip| identities.camera_id(ip))
+            })
+            .collect(),
+    )
 }
 
 fn registry_entry(registry: crate::profiles::ProfileRegistry) -> Result<StoredEntry, Error> {
@@ -1572,7 +1658,11 @@ fn profile_digest(profile: &crate::profiles::RuntimeProfile) -> Result<String, E
     normalize_revision_fields(&mut value, true)
         .map_err(|error| Error::Storage(error.to_string()))?;
     let bytes = serde_json::to_vec(&value).map_err(|error| Error::Storage(error.to_string()))?;
-    let digest = Sha256::digest(bytes);
+    hex_digest(Sha256::new().chain_update(bytes))
+}
+
+fn hex_digest(digest: Sha256) -> Result<String, Error> {
+    let digest = digest.finalize();
     let mut encoded = String::with_capacity(digest.len() * 2);
     for byte in digest {
         use std::fmt::Write as _;
@@ -1626,17 +1716,16 @@ mod tests {
         std::sync::mpsc::SyncSender<()>,
         std::sync::mpsc::Receiver<()>,
     );
-    static STATUS_WATCH_PAUSE: std::sync::Mutex<Option<StatusWatchPause>> =
-        std::sync::Mutex::new(None);
+    static STATUS_WATCH_PAUSE: std::sync::Mutex<Vec<StatusWatchPause>> =
+        std::sync::Mutex::new(Vec::new());
 
     pub(super) fn pause_status_registration(watch_id: &str) {
         let pause = {
-            let mut slot = STATUS_WATCH_PAUSE.lock().unwrap();
-            if slot.as_ref().is_some_and(|pause| pause.0 == watch_id) {
-                slot.take()
-            } else {
-                None
-            }
+            let mut entries = STATUS_WATCH_PAUSE.lock().unwrap();
+            entries
+                .iter()
+                .position(|pause| pause.0 == watch_id)
+                .map(|i| entries.swap_remove(i))
         };
         if let Some((_, ready, resume)) = pause {
             ready.send(()).unwrap();
@@ -1771,11 +1860,15 @@ mod tests {
     }
 
     fn watch_status(watch_id: &str) -> proto::StateStoreCommand {
+        watch_profile_key(watch_id, STATUS_KEY)
+    }
+
+    fn watch_profile_key(watch_id: &str, key: &str) -> proto::StateStoreCommand {
         proto::StateStoreCommand {
             action: Some(state_store_command::Action::Watch(proto::WatchState {
                 watch_id: watch_id.to_owned(),
                 namespace: NAMESPACE.to_owned(),
-                key_prefix: STATUS_KEY.to_owned(),
+                key_prefix: key.to_owned(),
             })),
         }
     }
@@ -2000,8 +2093,9 @@ mod tests {
                 panic!("completion must be a watch update");
             };
             assert_eq!(update.watch_sequence, 1);
-            assert_eq!(update.revision, 1);
+            assert!(update.revision > 0);
             let entry = update.entry.unwrap();
+            assert_eq!(entry.revision, 1);
             assert_eq!(entry.key, STATUS_KEY);
             assert_eq!(entry.schema, STATUS_SCHEMA);
         }
@@ -2044,7 +2138,10 @@ mod tests {
         let watch_id = "profile-status-snapshot-fence";
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
-        *STATUS_WATCH_PAUSE.lock().unwrap() = Some((watch_id.to_owned(), ready_tx, resume_rx));
+        STATUS_WATCH_PAUSE
+            .lock()
+            .unwrap()
+            .push((watch_id.to_owned(), ready_tx, resume_rx));
         let registration = std::thread::spawn(move || {
             super::super::dispatch(
                 &registration_state,
@@ -2329,8 +2426,10 @@ mod tests {
         crate::profiles::CameraRuntimeApplication,
     ) {
         let fixture = Fixture::new();
-        let camera: crate::cameras::CameraConfig =
-            toml::from_str("ip='192.0.2.1'\nusername='fixture'\npassword='fixture'").unwrap();
+        let camera: crate::cameras::CameraConfig = toml::from_str(
+            "ip='192.0.2.1'\nusername='fixture'\npassword='fixture'\nrecording_mode='sub'",
+        )
+        .unwrap();
         config::upsert_camera(&fixture.config_path(), &camera).unwrap();
         let identity = config::load_camera_profile_identities(&fixture.config_path()).unwrap()
             [&camera.ip]
@@ -2361,6 +2460,7 @@ mod tests {
             crate::profiles::RuntimeProfileStatus {
                 revision: profiles.revision,
                 active_profile_id: profiles.active_profile_id.clone(),
+                definition_revision: profiles.active_definition_revision(),
                 cameras: BTreeMap::from([(live.camera_id.clone(), live)]),
             };
         (fixture, profiles, returned)
@@ -2390,6 +2490,98 @@ mod tests {
             !application.policy.privacy_enforced,
             "preserved live failure must still receive current privacy projection"
         );
+    }
+
+    #[test]
+    fn delayed_profile_completion_cannot_erase_a_failure_across_a_schedule_boundary() {
+        use crate::profiles::RuntimeApplicationState::Degraded;
+        let (fixture, profiles, private) = delayed_runtime_completion_fixture();
+        let original = fixture.state.runtime_profile_status.read().unwrap().clone();
+        let id = &private.camera_id;
+        let mut open = private.clone();
+        open.policy.privacy_enforced = false;
+        open.policy.recording_mode = crate::cameras::CameraRecordingMode::Sub;
+
+        for (observed, returned) in [(&private, &open), (&open, &private)] {
+            {
+                let mut status = fixture.state.runtime_profile_status.write().unwrap();
+                *status = original.clone();
+                status.cameras.get_mut(id).unwrap().policy = observed.policy;
+            }
+            update_runtime_status(
+                &fixture.state,
+                &profiles,
+                Some(vec![returned.clone()]),
+                None,
+                false,
+            );
+            let status = fixture.state.runtime_profile_status.read().unwrap();
+            assert_eq!(status.cameras[id].state, Degraded);
+            assert_eq!(status.cameras[id].reason, original.cameras[id].reason);
+            assert!(!status.cameras[id].policy.privacy_enforced);
+        }
+    }
+
+    #[test]
+    fn privacy_postprocessing_resolves_schedule_and_held_profile_recording_provenance_together() {
+        use crate::cameras::CameraRecordingMode::{Main, Off};
+        use crate::profiles::FieldSource::{Base, Profile};
+        let (fixture, mut profiles, returned) = delayed_runtime_completion_fixture();
+        let id = returned.camera_id.clone();
+        let source = "192.0.2.1";
+        profiles.profiles.get_mut("away").unwrap().cameras.insert(
+            id.clone(),
+            crate::profiles::CameraProfileOverride {
+                recording_mode: Some(Main),
+                privacy_enforced: Some(true),
+                ..Default::default()
+            },
+        );
+        let privacy = &fixture.state.privacy;
+        privacy
+            .replace_profile_overrides([(source.to_owned(), true)].into())
+            .unwrap();
+        let schedule = crate::privacy::PrivacySchedule {
+            enabled: true,
+            timezone: "UTC".into(),
+            temporary_override: None,
+            keep_camera_connected: true,
+            windows: [("00:00", "12:00"), ("12:00", "00:00")]
+                .map(|(start, end)| crate::privacy::PrivacyWindow {
+                    weekdays: (1..=7).collect(),
+                    start: start.into(),
+                    end: end.into(),
+                })
+                .into(),
+        };
+        let evidence = |p: crate::profiles::EffectiveCameraPolicy| {
+            (p.privacy_source, p.recording_mode, p.recording_mode_source)
+        };
+        let projected = || {
+            update_runtime_status(
+                &fixture.state,
+                &profiles,
+                Some(vec![returned.clone()]),
+                None,
+                false,
+            );
+            fixture.state.runtime_profile_status.read().unwrap().cameras[&id].policy
+        };
+        privacy
+            .replace_schedules([(source.to_owned(), schedule)].into())
+            .unwrap();
+        let simultaneous = projected();
+        assert!(simultaneous.privacy_enforced);
+        assert_eq!(evidence(simultaneous), (Base, Off, Base));
+        privacy.replace_schedules(Default::default()).unwrap();
+        let held = projected();
+        assert_eq!(evidence(held), (Profile, Off, Profile));
+        privacy
+            .replace_profile_overrides(Default::default())
+            .unwrap();
+        let released = projected();
+        assert!(!released.privacy_enforced);
+        assert_eq!(evidence(released), (Base, Main, Profile));
     }
 
     #[test]
@@ -2786,6 +2978,46 @@ mod tests {
     }
 
     #[test]
+    fn active_v1_read_modify_write_ignores_server_metadata_and_honors_request_cas() {
+        let fixture = Fixture::new();
+        let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let session = SessionId::from_u64(20_291);
+        let dispatch =
+            |request| super::super::dispatch(&fixture.state, session, &principal, request);
+        let control_ok::Result::StateStoreResult(proto::StateStoreResult {
+            result: Some(state_store_result::Result::Entry(entry)),
+        }) = dispatch(get_key(ACTIVE_KEY)).unwrap()
+        else {
+            panic!("active entry expected")
+        };
+        let mut document = entry.value.unwrap();
+        document.fields.get_mut("profile_id").unwrap().kind =
+            Some(Kind::StringValue("away".into()));
+        let mut request = put_active("away", entry.revision);
+        let Some(state_store_command::Action::Put(put)) = request.action.as_mut() else {
+            unreachable!()
+        };
+        put.value = Some(document.clone());
+        dispatch(request.clone()).unwrap();
+        assert_eq!(
+            config::load_config(&fixture.config_path())
+                .unwrap()
+                .runtime_profiles
+                .active_profile_id
+                .as_deref(),
+            Some("away")
+        );
+        assert!(
+            dispatch(request).is_err(),
+            "the original CAS revision is stale"
+        );
+        document
+            .fields
+            .insert("unexpected".to_owned(), Value::default());
+        assert!(parse_active_profile_id(&document).is_err());
+    }
+
+    #[test]
     fn users_can_watch_only_the_active_profile_projection() {
         let fixture = Fixture::new();
         let mut principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
@@ -2810,6 +3042,90 @@ mod tests {
                 .state
                 .state_store_watches
                 .owns_watch(session, "active")
+        );
+    }
+
+    #[test]
+    fn administrator_empty_watch_prefix_keeps_active_profile_shorthand() {
+        let fixture = Fixture::new();
+        let session = SessionId::from_u64(20_205);
+        let mut principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+        let request = watch_profile_key("legacy", "");
+        let response =
+            super::super::dispatch(&fixture.state, session, &principal, request.clone()).unwrap();
+        let control_ok::Result::StateStoreResult(response) = response else {
+            panic!("state-store result expected");
+        };
+        let Some(state_store_result::Result::Watch(snapshot)) = response.result else {
+            panic!("snapshot expected");
+        };
+        assert!(snapshot.key_prefix.is_empty());
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(snapshot.entries[0].key, ACTIVE_KEY);
+
+        principal.role = AccessRole::User;
+        assert!(
+            super::super::dispatch(
+                &fixture.state,
+                SessionId::from_u64(20_206),
+                &principal,
+                request
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn profile_watch_rejects_a_snapshot_that_exceeds_the_limit_at_the_final_cursor() {
+        use std::sync::atomic::Ordering;
+
+        let fixture = Fixture::new();
+        let session_id = SessionId::from_u64(20_207);
+        let session = super::super::super::tests::local_test_session();
+        session
+            .lifecycle
+            .profile_watch_revision
+            .store(128, Ordering::Relaxed);
+        fixture
+            .state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(session_id, session);
+        let request = proto::WatchState {
+            watch_id: "bounded".to_owned(),
+            namespace: NAMESPACE.to_owned(),
+            key_prefix: ACTIVE_KEY.to_owned(),
+        };
+        let mut entry = StoredEntry {
+            namespace: NAMESPACE.to_owned(),
+            key: ACTIVE_KEY.to_owned(),
+            schema: ACTIVE_SCHEMA.to_owned(),
+            value: Struct::default(),
+            revision: 127,
+            updated_ms: 0,
+            expires_ms: None,
+            owner_id: "x".repeat(60_000),
+        };
+        let mut message = proto::StateWatchSnapshot {
+            watch_id: request.watch_id.clone(),
+            namespace: request.namespace.clone(),
+            key_prefix: request.key_prefix.clone(),
+            snapshot_revision: entry.revision,
+            entries: vec![proto_entry(&entry)],
+        };
+        entry
+            .owner_id
+            .push_str(&"x".repeat(MAX_WATCH_SNAPSHOT_BYTES - message.encoded_len()));
+        message.entries[0] = proto_entry(&entry);
+        assert_eq!(message.encoded_len(), MAX_WATCH_SNAPSHOT_BYTES);
+        let result = register_profile_watch(&fixture.state, session_id, request, entry);
+        assert!(result.is_err());
+        assert!(
+            !fixture
+                .state
+                .state_store_watches
+                .owns_watch(session_id, "bounded")
         );
     }
 
@@ -2873,7 +3189,84 @@ mod tests {
     }
 
     #[test]
+    fn adding_a_live_inventory_entry_refreshes_an_existing_camera_scoped_watch() {
+        let fixture = Fixture::new();
+        let state = &fixture.state;
+        let ip = "127.0.0.31";
+        let definition = camera_config(ip.parse().unwrap());
+        let id = fixture.add_camera(&definition);
+        state
+            .cameras
+            .write()
+            .unwrap()
+            .retain(|camera| camera.configuration.ip != definition.ip);
+        let registry = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        update_runtime_status(state, &registry, None, None, true);
+        let session = SessionId::from_u64(20_279);
+        let principal = bind_scoped_viewer(state, session, ip);
+        let mut pump = state.webrtc.stage_api_session_pump(session);
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+        STATUS_WATCH_PAUSE
+            .lock()
+            .unwrap()
+            .push(("inventory".to_owned(), ready_tx, resume_rx));
+        let registration_state = state.clone();
+        let registration = std::thread::spawn(move || {
+            super::super::dispatch(
+                &registration_state,
+                session,
+                &principal,
+                watch_profile_key("inventory", "observed/0"),
+            )
+        });
+        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let refresh_state = state.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        let refresh = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            refresh_state.activate_camera_entry(crate::server::camera_entry(&definition, None));
+            done_tx.send(()).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let blocked = matches!(
+            done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        resume_tx.send(()).unwrap();
+        let result = registration.join().unwrap().unwrap();
+        refresh.join().unwrap();
+        assert!(
+            blocked,
+            "inventory refresh completed before snapshot registration"
+        );
+        let control_ok::Result::StateStoreResult(proto::StateStoreResult {
+            result: Some(state_store_result::Result::Watch(snapshot)),
+            ..
+        }) = result
+        else {
+            panic!("watch snapshot");
+        };
+        assert!(status_camera_ids(&snapshot.entries[0]).is_empty());
+        let Some(proto::notification::Event::StateStoreWatchUpdate(update)) =
+            single_watch_notification(pump())
+        else {
+            panic!("inventory change must update the open watch");
+        };
+        let entry = update.entry.expect("one projected observation");
+        assert_eq!(status_camera_ids(&entry), vec![id]);
+    }
+
+    #[test]
     fn scoped_viewer_receives_the_same_profile_camera_ids_in_snapshots_and_updates() {
+        assert_scoped_status_projection(STATUS_KEY);
+        assert_scoped_status_projection("observed/0");
+    }
+
+    fn assert_scoped_status_projection(key: &str) {
         let fixture = Fixture::new();
         let state = &fixture.state;
         let visible_ip = "192.0.2.11";
@@ -2894,6 +3287,7 @@ mod tests {
 
         let session = SessionId::from_u64(20_273);
         let principal = bind_scoped_viewer(state, session, visible_ip);
+        let mut administrator = connected_profile_status_watch(state, 20_274);
         let mut pump = state.webrtc.stage_api_session_pump(session);
         let registry_watch = proto::StateStoreCommand {
             action: Some(state_store_command::Action::Watch(proto::WatchState {
@@ -2904,7 +3298,8 @@ mod tests {
         };
         assert!(super::super::dispatch(state, session, &principal, registry_watch).is_err());
         let result =
-            super::super::dispatch(state, session, &principal, watch_status("viewer")).unwrap();
+            super::super::dispatch(state, session, &principal, watch_profile_key("viewer", key))
+                .unwrap();
         let control_ok::Result::StateStoreResult(result) = result else {
             panic!("watch result expected")
         };
@@ -2915,13 +3310,71 @@ mod tests {
             status_camera_ids(&snapshot.entries[0]).as_slice(),
             std::slice::from_ref(&visible_id)
         );
+        state
+            .runtime_profile_status
+            .write()
+            .unwrap()
+            .cameras
+            .get_mut(&hidden_id)
+            .unwrap()
+            .reason = Some("hidden worker changed".into());
+        publish_status_event(state, 2);
+        assert!(matches!(
+            single_watch_notification(administrator()),
+            Some(proto::notification::Event::StateStoreWatchUpdate(_))
+        ));
+        assert!(
+            pump().is_empty(),
+            "hidden-only changes must not generate viewer traffic"
+        );
+        let control_ok::Result::StateStoreResult(unchanged) =
+            super::super::dispatch(state, session, &principal, get_key(key)).unwrap()
+        else {
+            panic!("expected scoped Get")
+        };
+        let Some(state_store_result::Result::Entry(unchanged)) = unchanged.result else {
+            panic!("expected scoped entry")
+        };
+        assert_eq!(unchanged, snapshot.entries[0]);
+        let rewatch = || {
+            let control_ok::Result::StateStoreResult(result) = super::super::dispatch(
+                state,
+                session,
+                &principal,
+                watch_profile_key("viewer", key),
+            )
+            .unwrap() else {
+                panic!("watch result expected")
+            };
+            let Some(state_store_result::Result::Watch(snapshot)) = result.result else {
+                panic!("watch snapshot expected");
+            };
+            snapshot
+        };
+        assert_eq!(
+            rewatch(),
+            snapshot,
+            "a hidden-only change cannot advance the viewer cursor"
+        );
+        state
+            .runtime_profile_status
+            .write()
+            .unwrap()
+            .cameras
+            .get_mut(&visible_id)
+            .unwrap()
+            .reason = Some("visible worker changed".into());
         publish_status_event(state, 3);
         let Some(proto::notification::Event::StateStoreWatchUpdate(update)) =
             single_watch_notification(pump())
         else {
             panic!("watch update expected")
         };
+        assert_eq!(update.revision, snapshot.snapshot_revision + 1);
+        assert_eq!(update.watch_sequence, 1);
         assert_eq!(status_camera_ids(&update.entry.unwrap()), [visible_id]);
+        assert_eq!(rewatch().snapshot_revision, update.revision);
+
         let (owner_id, _) = principal.credential_binding().unwrap();
         state.access_manager.revoke_credential(owner_id, 4).unwrap();
         publish_status_event(state, 5);
@@ -2937,11 +3390,70 @@ mod tests {
     }
 
     #[test]
+    fn shell_header_exposes_only_visible_degradation_without_fleet_watches() {
+        let fixture = Fixture::new();
+        let state = &fixture.state;
+        let ip = "192.0.2.11";
+        let visible = fixture.add_camera(&camera_config(ip.parse().unwrap()));
+        fixture.add_camera(&camera_config("192.0.2.12".parse().unwrap()));
+        let registry = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        update_runtime_status(state, &registry, None, None, true);
+        let session = SessionId::from_u64(20_275);
+        let principal = bind_scoped_viewer(state, session, ip);
+        let mut pump = state.webrtc.stage_api_session_pump(session);
+        let result =
+            super::super::dispatch(state, session, &principal, watch_active("shell")).unwrap();
+        let control_ok::Result::StateStoreResult(proto::StateStoreResult {
+            result: Some(state_store_result::Result::Watch(snapshot)),
+        }) = result
+        else {
+            panic!("header snapshot expected")
+        };
+        let header = |entry: &proto::StateEntry| {
+            super::super::super::peek_layouts::struct_to_json(entry.value.clone().unwrap())
+        };
+        let initial = header(&snapshot.entries[0]);
+        assert_eq!(initial["degraded_cameras"].as_f64(), Some(1.0));
+        assert_eq!(initial["observed_parts"].as_f64(), Some(8.0));
+        assert!(initial.get("cameras").is_none());
+        let mut unknown = active_entry(&registry);
+        observed::set_header_count(
+            state,
+            Some(&principal),
+            None,
+            Some(&observed::ObservedCameraStates::default()),
+            &mut unknown,
+        );
+        assert!(header(&proto_entry(&unknown))["degraded_cameras"].is_null());
+        state
+            .runtime_profile_status
+            .write()
+            .unwrap()
+            .cameras
+            .get_mut(&visible)
+            .unwrap()
+            .state = crate::profiles::RuntimeApplicationState::Applied;
+        publish_status_event(state, 3);
+        let Some(proto::notification::Event::StateStoreWatchUpdate(update)) =
+            single_watch_notification(pump())
+        else {
+            panic!("header update expected")
+        };
+        assert_eq!(update.key, ACTIVE_KEY);
+        assert!(update.revision > snapshot.snapshot_revision);
+        assert_eq!(
+            header(&update.entry.unwrap())["degraded_cameras"].as_f64(),
+            Some(0.0)
+        );
+    }
+
+    #[test]
     fn users_can_read_and_watch_runtime_application_status() {
         let fixture = Fixture::new();
         let session = SessionId::from_u64(20_209);
-        let mut principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
-        principal.role = AccessRole::User;
+        let principal = bind_scoped_viewer(&fixture.state, session, "192.0.2.20");
 
         let get =
             super::super::dispatch(&fixture.state, session, &principal, get_status()).unwrap();

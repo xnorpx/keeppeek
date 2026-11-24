@@ -62,6 +62,7 @@ fn interrupted(manager: &Manager, catalog: &RecordingCatalog) -> anyhow::Result<
 fn frame(start: Instant, seconds: u64) -> RecordingFrame {
     let timestamp = Duration::from_secs(seconds);
     RecordingFrame {
+        source_rtp: None,
         received_at: start + timestamp,
         timestamp: Some(timestamp),
         frame: MediaFrame::Video(VideoFrame {

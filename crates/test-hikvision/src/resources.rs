@@ -87,6 +87,7 @@ pub fn route(request: &CapturedRequest, state: &mut State) -> anyhow::Result<Rep
             state.next_audio_session += 1;
             state.audio_session = Some(session);
             state.audio_output.clear();
+            state.speaker_signal = Default::default();
             return Ok(Reply::http(
                 200,
                 "application/xml",

@@ -14,6 +14,10 @@ impl Secret {
         digest(&self.0)
     }
 
+    pub(super) fn range_hash(&self) -> [u8; 32] {
+        range_digest(&self.0)
+    }
+
     pub fn into_string(self) -> String {
         self.0
     }
@@ -27,6 +31,16 @@ impl fmt::Debug for Secret {
 
 pub(super) fn digest(value: &str) -> [u8; 32] {
     Sha256::digest(value.as_bytes()).into()
+}
+
+// A previous recorder looks up only the unqualified digest. It cannot redeem a
+// link that required the newer exact-range checks even though the URL shape is unchanged.
+pub(super) fn range_digest(value: &str) -> [u8; 32] {
+    Sha256::new()
+        .chain_update(b"keeppeek.guest.exact-range.v1\0")
+        .chain_update(value.as_bytes())
+        .finalize()
+        .into()
 }
 
 pub(super) fn valid(value: &str) -> bool {
