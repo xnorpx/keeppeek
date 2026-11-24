@@ -390,7 +390,7 @@ paths:
               description: Exposes the continuity acknowledgement for an allowed browser origin.
               schema:
                 type: string
-                const: X-KeepPeek-Previous-Session
+                example: X-KeepPeek-Previous-Session
             Content-Encoding:
               $ref: "#/components/headers/GzipContentEncoding"
           content:
@@ -430,7 +430,7 @@ paths:
               description: Request headers allowed for signaling on the configured origin.
               schema:
                 type: string
-                const: "Authorization, Content-Type, Content-Encoding, Prefer, X-KeepPeek-Previous-Session"
+                example: "Authorization, Content-Type, Content-Encoding, Prefer, X-KeepPeek-Previous-Session"
         "403":
           $ref: "#/components/responses/CorsOriginRejected"
   /delete:

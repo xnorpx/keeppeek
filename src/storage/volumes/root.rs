@@ -9,6 +9,7 @@ use std::{
 
 mod file;
 mod retirement;
+pub(crate) use file::MissingOwnedLeaf;
 pub use file::OwnedFile;
 
 /// An opened directory and the identity that a binding must retain.

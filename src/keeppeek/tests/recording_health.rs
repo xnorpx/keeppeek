@@ -36,6 +36,7 @@ fn recording_health_fixture() -> (KeepPeekLoop, StorageEngine, std::path::PathBu
 
 fn recording_health_keyframe() -> RecordingFrame {
     RecordingFrame {
+        source_rtp: None,
         received_at: Instant::now(),
         timestamp: None,
         frame: MediaFrame::Video(VideoFrame {

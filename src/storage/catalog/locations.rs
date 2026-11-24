@@ -26,6 +26,35 @@ const MAX_BINDINGS: i64 = 37;
 const MAX_PENDING_ALLOCATIONS: i64 = 4_096;
 const OBSERVATION_LIFETIME: Duration = Duration::from_secs(5);
 
+#[derive(Debug)]
+struct StaleCapacity(&'static str);
+
+impl fmt::Display for StaleCapacity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} capacity observation expired or superseded",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for StaleCapacity {}
+
+pub(super) async fn ensure_fresh_observation(
+    connection: &turso::Connection,
+    capacity: &Capacity,
+    operation: &'static str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        capacity.observed_at <= Instant::now()
+            && capacity.observed_at.elapsed() <= OBSERVATION_LIFETIME
+            && capacity.ledger_revision == revision(connection).await?,
+        StaleCapacity(operation)
+    );
+    Ok(())
+}
+
 pub(super) fn maintenance_identity(identity: &str) -> anyhow::Result<String> {
     ownership::recording_identity(identity)
 }
@@ -35,11 +64,7 @@ pub(super) async fn reserve_archive_restore(
     operation: &str,
     capacity: &Capacity,
 ) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        capacity.observed_at.elapsed() <= OBSERVATION_LIFETIME
-            && capacity.ledger_revision == revision(connection).await?,
-        "restore capacity observation expired"
-    );
+    ensure_fresh_observation(connection, capacity, "archive restore reservation").await?;
     let mut rows=connection.query("SELECT object_id,volume_id,generation,relative_key,bytes,state FROM storage_volume_allocations WHERE operation=?1 AND kind='recording'",[operation]).await?;
     let row = rows
         .next()
@@ -80,6 +105,18 @@ impl fmt::Display for FatalTransaction {
 }
 
 impl std::error::Error for FatalTransaction {}
+
+/// The caller did not receive a definitive acknowledgement of the volume operation.
+#[derive(Debug)]
+pub(crate) struct UnconfirmedOutcome;
+
+impl fmt::Display for UnconfirmedOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("volume catalog outcome unknown; retry operation")
+    }
+}
+
+impl std::error::Error for UnconfirmedOutcome {}
 
 /// A pinned root identity. Changing its spelling or identity requires a new volume ID.
 #[derive(Clone, PartialEq, Eq)]
@@ -289,7 +326,29 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("volume catalog unavailable"))?;
         response
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| anyhow::anyhow!("volume catalog outcome unknown; retry operation"))?
+            .map_err(|_| UnconfirmedOutcome)?
+    }
+
+    /// Resamples up to three times if a competing write invalidates the observation before admission.
+    pub(crate) fn with_fresh_capacity<T>(
+        &self,
+        root: &crate::storage::volumes::root::Root,
+        mut submit: impl FnMut(Capacity) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let deadline = Instant::now() + OBSERVATION_LIFETIME;
+        let mut retries = 3;
+        loop {
+            let capacity = root.capacity(self.volume_ledger_revision()?)?;
+            match submit(capacity) {
+                Err(error)
+                    if error.is::<StaleCapacity>() && retries > 0 && Instant::now() < deadline =>
+                {
+                    retries -= 1;
+                    std::thread::yield_now();
+                }
+                result => return result,
+            }
+        }
     }
 
     /// Returns the revision to fence a subsequent filesystem capacity probe.
@@ -765,15 +824,7 @@ async fn reserve(connection: &turso::Connection, allocation: &Allocation) -> any
         return Ok(reply);
     }
     let capacity = &allocation.capacity;
-    anyhow::ensure!(
-        capacity.observed_at <= Instant::now()
-            && capacity.observed_at.elapsed() <= OBSERVATION_LIFETIME,
-        "volume observation expired"
-    );
-    anyhow::ensure!(
-        capacity.ledger_revision == revision(connection).await?,
-        "volume observation superseded"
-    );
+    ensure_fresh_observation(connection, capacity, "storage allocation reservation").await?;
     let destination_path = admission(connection, allocation, true).await?;
     connection.execute("INSERT INTO storage_volume_allocations (operation, kind, object_id, volume_id, generation, relative_key, bytes, intent_bytes, state, destination_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'reserved', ?8)", turso::params![allocation.operation.clone(), allocation.object.kind.as_str(), allocation.object.id.clone(), allocation.volume.clone(), to_i64(allocation.generation, "volume generation")?, allocation.relative_key.clone(), to_i64(allocation.bytes, "allocation bytes")?, destination_path]).await?;
     bump_revision(connection).await?;

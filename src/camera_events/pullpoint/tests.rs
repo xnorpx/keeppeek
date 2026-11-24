@@ -87,6 +87,29 @@ fn subscription(fake: &FakeOnvif) -> (Client, Subscription, Instant) {
     (client, subscription, started)
 }
 
+fn assert_unsubscribed_after_first_pull(fake: &FakeOnvif) {
+    let requests = fake.requests();
+    let mut actions = requests
+        .iter()
+        .filter(|request| request.authenticated())
+        .map(|request| {
+            request
+                .header("content-type")
+                .expect("authenticated SOAP action")
+        });
+    assert!(actions.any(|action| action.contains("PullMessages")));
+    assert!(
+        actions
+            .next()
+            .is_some_and(|action| action.contains("Unsubscribe")),
+        "a backpressured or disconnected producer must unsubscribe immediately after its pull"
+    );
+    assert!(
+        actions.next().is_none(),
+        "unexpected operation after unsubscribe"
+    );
+}
+
 fn delayed_unavailable(delay: Duration) -> Reply {
     Reply::raw(Vec::new()).then(
         delay,
@@ -195,7 +218,7 @@ fn queue_pressure_unsubscribes_before_two_second_lease_expires() {
         "undelivered notifications must report a delivery timeout: {result:?}"
     );
     assert_eq!(fake.pull_count(), 1);
-    assert_eq!(fake.renew_count(), 0);
+    assert_unsubscribed_after_first_pull(&fake);
     assert_eq!(fake.unsubscribe_count(), 1);
     assert_eq!(fake.active_subscriptions(), 0);
     let evidence = slot.evidence.lock().unwrap().clone();

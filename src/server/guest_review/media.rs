@@ -89,11 +89,7 @@ fn admission(
     let guard = guard.bind(&bound, context).map_err(io_failure)?;
     let permit = checked.permit;
     permit
-        .protect_response(
-            request
-                .response_abort_handle()
-                .ok_or_else(|| failure(503))?,
-        )
+        .protect_response(guard.response_abort_handle())
         .map_err(io_failure)?;
     let ticket = sharing::with_guest_store(state, context, |store, clock| {
         store.begin_delivery(handle, context, &checked.binding, mode, clock)
@@ -120,6 +116,24 @@ fn admission(
     })
 }
 
+pub(in crate::server) fn verify_range_artifact(
+    file: OwnedFile,
+    binding: &ExportBinding,
+) -> io::Result<bool> {
+    let started = Instant::now();
+    let check = || verify_time_left(started);
+    let mut verified = Verified::new(PinnedReader(file), binding.bytes, binding.sha256, check)?;
+    codecs::compatible(&mut verified, binding.bytes, check)
+}
+
+fn verify_time_left(started: Instant) -> io::Result<()> {
+    if started.elapsed() >= VERIFY_TIMEOUT {
+        Err(io::Error::other("guest verification timed out"))
+    } else {
+        Ok(())
+    }
+}
+
 fn verified(
     state: &ServerState,
     binding: &ExportBinding,
@@ -127,15 +141,10 @@ fn verified(
 ) -> Result<(Verified<PinnedReader>, LeaseSet), Response> {
     let _permit = state.guest_review.reserve_hash().map_err(io_failure)?;
     let opened = sharing::open_guest(state, binding).map_err(control_failure)?;
-    let deadline = Instant::now()
-        .checked_add(VERIFY_TIMEOUT)
-        .ok_or_else(|| failure(503))?;
+    let started = Instant::now();
     let check = || {
         guard.check()?;
-        if Instant::now() >= deadline {
-            return Err(io::Error::other("guest verification timed out"));
-        }
-        Ok(())
+        verify_time_left(started)
     };
     let mut file = Verified::new(
         PinnedReader(opened.file),

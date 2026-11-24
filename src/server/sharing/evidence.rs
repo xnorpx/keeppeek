@@ -18,20 +18,148 @@ pub(super) fn preview(
     state: &ServerState,
     principal: &ApiPrincipal,
     id: &str,
+    range: Option<&proto::ShareRecordingRange>,
+) -> Result<ValidatedEvidence, ControlCommandError> {
+    Ok(inspect(state, principal, id, range)?.0)
+}
+
+pub(super) fn inspect(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    id: &str,
+    range: Option<&proto::ShareRecordingRange>,
+) -> Result<(ValidatedEvidence, LeaseSet), ControlCommandError> {
+    let checked = preview_binding(state, principal, id, range)?;
+    let _permit = range
+        .map(|_| state.guest_review.reserve_hash())
+        .transpose()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                ControlCommandError::new(
+                    proto::ErrorCode::Unavailable,
+                    503,
+                    "recording inspection is busy; retry the preview",
+                )
+            } else {
+                unavailable()
+            }
+        })?;
+    let opened = open_bound_artifact(
+        state,
+        &checked.binding,
+        if range.is_some() {
+            missing_range_artifact
+        } else {
+            unavailable
+        },
+    )?;
+    if range.is_some()
+        && !super::super::guest_review::verify_range_artifact(opened.file, &checked.binding)
+            .map_err(|_| unavailable())?
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "the selected recording could not be verified as browser-compatible",
+        ));
+    }
+    Ok((checked, opened.lease))
+}
+
+pub(super) fn preview_binding(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    id: &str,
+    range: Option<&proto::ShareRecordingRange>,
 ) -> Result<ValidatedEvidence, ControlCommandError> {
     if principal.role != AccessRole::Administrator {
         return Err(denied());
     }
     let record = record(state, id)?;
     let issuer = principal.sharing_issuer();
-    require_owner(&record, &issuer)?;
     let policy = camera_access::for_principal(state, principal)?;
-    let binding = binding(&record)?;
-    let current_source = source(state, binding.source_identity)?;
+    if range.is_some()
+        && record.requester_id == principal.id()
+        && record.job.status == proto::ExportJobStatus::Ready as i32
+        && (record.owner_key.is_none() || record.source_identity.is_none())
+    {
+        camera_access::require_camera(&policy, &record.job.source_id)?;
+        return Err(missing_range_proof());
+    }
+    require_owner(&record, &issuer)?;
+    let current_source = source(state, record.source_identity.ok_or_else(denied)?)?;
     camera_access::require_camera(&policy, &current_source)?;
-    let checked = live_evidence(state, &record, binding)?;
-    let _opened = open_guest(state, &checked.binding)?;
-    Ok(checked)
+    if range.is_some()
+        && record
+            .media_proof
+            .as_ref()
+            .is_none_or(|proof| proof.version != SOURCE_BOUNDS_PROOF_VERSION)
+        && record.job.status == proto::ExportJobStatus::Ready as i32
+    {
+        return Err(missing_range_proof());
+    }
+    if let Some(selected) = range {
+        check_range(&record, &current_source, selected)?;
+    }
+    let binding = binding(&record)?;
+    live_evidence(state, &record, binding)
+}
+
+fn missing_range_artifact() -> ControlCommandError {
+    ControlCommandError::new(
+        proto::ErrorCode::Rejected,
+        409,
+        "the completed export file is no longer available",
+    )
+}
+
+fn missing_range_proof() -> ControlCommandError {
+    ControlCommandError::new(
+        proto::ErrorCode::Rejected,
+        409,
+        "the completed export has no recorded media proof",
+    )
+}
+
+// The original selection and the pinned artifact must both fit the requested interval.
+fn check_range(
+    record: &ExportJobRecord,
+    current_source: &str,
+    selected: &proto::ShareRecordingRange,
+) -> Result<(), ControlCommandError> {
+    if selected.start_ms < 0
+        || selected.end_ms <= selected.start_ms
+        || selected.end_ms.saturating_sub(selected.start_ms) > crate::shares::MAX_MEDIA_DURATION_MS
+    {
+        return Err(invalid("select a recording interval of up to two minutes"));
+    }
+    recorded_audio::require_uncorrected_for_range(record.job.recorded_audio.as_ref())?;
+    let proof = record
+        .media_proof
+        .as_ref()
+        .filter(|proof| proof.matches(record))
+        .ok_or_else(denied)?;
+    let source = proof
+        .source_bounds
+        .filter(|bounds| bounds.start_ms < bounds.end_ms)
+        .ok_or_else(missing_range_proof)?;
+    if selected.source_id != current_source
+        || selected.source_id != record.job.source_id
+        || selected.start_ms
+            != required_timestamp_ms(record.request.start_time.as_ref(), "export start")?
+        || selected.end_ms != required_timestamp_ms(record.request.end_time.as_ref(), "export end")?
+        || source.start_ms < selected.start_ms
+        || source.end_ms > selected.end_ms
+        || proof.bounds.start_ms < selected.start_ms
+        || proof.bounds.end_ms > selected.end_ms
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "the recording cannot be shared within the selected range",
+        ));
+    }
+    Ok(())
 }
 
 pub(in crate::server) fn validate_guest(
@@ -82,6 +210,14 @@ pub(in crate::server) fn open_guest(
     state: &ServerState,
     expected: &ExportBinding,
 ) -> Result<OpenedEvidence, ControlCommandError> {
+    open_bound_artifact(state, expected, unavailable)
+}
+
+fn open_bound_artifact(
+    state: &ServerState,
+    expected: &ExportBinding,
+    missing: fn() -> ControlCommandError,
+) -> Result<OpenedEvidence, ControlCommandError> {
     let record = record(state, &expected.job_id)?;
     if binding(&record)? != *expected {
         return Err(denied());
@@ -90,7 +226,7 @@ pub(in crate::server) fn open_guest(
     let (location, lease) = catalog
         .leased_export(&expected.artifact_id)
         .map_err(|_| unavailable())?
-        .ok_or_else(unavailable)?;
+        .ok_or_else(missing)?;
     if location.bytes != expected.bytes {
         return Err(denied());
     }
@@ -102,7 +238,13 @@ pub(in crate::server) fn open_guest(
         .volume_runtime
         .as_ref()
         .ok_or_else(unavailable)?;
-    let file = manager.open_owned(&location).map_err(|_| unavailable())?;
+    let file = manager.open_owned(&location).map_err(|error| {
+        if error.is::<crate::storage::volumes::root::MissingOwnedLeaf>() {
+            missing()
+        } else {
+            unavailable()
+        }
+    })?;
     Ok(OpenedEvidence { file, lease })
 }
 

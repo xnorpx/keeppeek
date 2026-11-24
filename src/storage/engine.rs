@@ -3,6 +3,7 @@ use crate::privacy::PrivacyRegistry;
 #[doc(hidden)]
 pub mod admission_benchmark;
 mod event;
+mod relocation;
 mod retention;
 use super::event_recording::{EventOutput, EventRecordings, EventSettings, QueuedEventFrame};
 use crate::{
@@ -14,7 +15,7 @@ use crate::{
         health::RecordingHealthRegistry,
         identity::RecordingStreamIdentity,
         long_term::LongTermStore,
-        medium_term::MediumTermWriter,
+        medium_term::{MediumTermWriter, WriteProgress},
         recording_policy::{AdmissionDecision, CameraRecordingPolicy},
         safety::{
             FilesystemCapacity, StorageCleanupReason, StorageCleanupTrigger,
@@ -358,10 +359,17 @@ struct CameraPipeline {
     last_flush: Instant,
 }
 
-#[derive(Default)]
-struct WriteProgress {
-    wrote: bool,
-    recorded_duration: Duration,
+impl WriteProgress {
+    fn report(self, health: &RecordingHealthRegistry, stream: &str) {
+        if self.accepted || !self.recorded_duration.is_zero() {
+            health.note_progress(stream, self.recorded_duration);
+        }
+        if self.keyframe_gap {
+            let error = super::medium_term::keyframe_budget_error();
+            health.note_failure(stream, &error.to_string());
+            tracing::warn!(camera = stream, %error, "recording gap");
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -907,6 +915,8 @@ struct WriterWorker {
     catalog: Option<RecordingCatalogHandle>,
     pipelines: HashMap<String, CameraPipeline>,
     long_term: LongTermStore,
+    relocation_scan: relocation::Scan,
+    relocator: Option<relocation::Background>,
     admission: RecordingAdmission,
     event_recordings: Option<EventRecordings>,
     event_sources: HashMap<String, EventSourceState>,
@@ -932,8 +942,11 @@ impl WriterWorker {
         health: RecordingHealthRegistry,
         admission: RecordingAdmission,
     ) -> Self {
-        let long_term = LongTermStore::new(config.long_term_path.clone());
+        let long_term =
+            LongTermStore::for_recording_roots(&config.long_term_path, &config.medium_term_path);
         let safety = health.storage();
+        let relocation_scan =
+            relocation::Scan::new(relocation::can_scan(&config, catalog.is_some()));
         Self {
             config,
             demand,
@@ -942,6 +955,8 @@ impl WriterWorker {
             catalog,
             pipelines: HashMap::new(),
             long_term,
+            relocation_scan,
+            relocator: None,
             admission,
             event_recordings: None,
             event_sources: HashMap::new(),
@@ -950,6 +965,13 @@ impl WriterWorker {
     }
 
     fn run(&mut self, rx: StorageCommandReceiver) {
+        if self.relocation_scan.enabled() {
+            self.relocator = Some(relocation::Background::start(
+                self.config.clone(),
+                self.catalog.clone(),
+                self.health.clone(),
+            ));
+        }
         let reap_interval = Duration::from_secs(300);
         let mut last_reap = Instant::now();
         let safety_enabled = self.catalog.is_some() && self.config.has_safety_limits();
@@ -975,6 +997,12 @@ impl WriterWorker {
             } else {
                 None
             };
+            if let Some(worker) = &self.relocator
+                && worker.take_published()
+                && safety_enabled
+            {
+                self.enforce_storage_limit(StorageCleanupTrigger::SegmentFinalized);
+            }
             let cmd = if let Some(timeout) = timeout {
                 match rx.recv_timeout(timeout) {
                     Ok(cmd) => Some(cmd),
@@ -1024,10 +1052,10 @@ impl WriterWorker {
                     self.ingest(identity, frame);
                 }
             }
-            Command::FlushAll => self.flush_all(),
+            Command::FlushAll => self.flush_all(false),
             Command::Shutdown => {
                 self.stop_event_recordings();
-                self.shutdown_flush();
+                self.flush_all(true);
                 self.finalize_all();
                 return true;
             }
@@ -1050,10 +1078,7 @@ impl WriterWorker {
         if !self.config.is_direct_write() {
             self.health.note_attempt(storage_key);
             match self.flush_camera(storage_key, true) {
-                Ok(progress) if progress.wrote => self
-                    .health
-                    .note_progress(storage_key, progress.recorded_duration),
-                Ok(_) => {}
+                Ok(progress) => progress.report(&self.health, storage_key),
                 Err(error) => {
                     self.health.note_failure(storage_key, &error.to_string());
                     tracing::error!(camera = storage_key, %error, "unable to flush recording before queue gap");
@@ -1068,12 +1093,10 @@ impl WriterWorker {
             return;
         };
         let recording_id = writer.recording_id().to_owned();
-        match writer.finalize() {
-            Ok(path) => {
-                if let Err(error) = self.move_to_long_term(storage_key, &path, &recording_id) {
-                    self.health.note_failure(storage_key, &error.to_string());
-                    tracing::error!(camera = storage_key, %error, "unable to finalize recording before queue gap");
-                }
+        match finalize_pipeline_recording(writer, &self.health, storage_key) {
+            Ok(None) => {}
+            Ok(Some(path)) => {
+                self.finish_relocation(storage_key, &path, &recording_id);
             }
             Err(error) => {
                 self.health.note_failure(storage_key, &error.to_string());
@@ -1146,9 +1169,11 @@ impl WriterWorker {
         let mut bytes_removed = 0u64;
 
         while capacity.keeppeek_bytes > target_bytes {
-            let candidate = catalog.claim_cleanup_candidate()?.ok_or_else(|| {
-                anyhow::anyhow!("no eligible finalized recording remains to restore headroom")
-            })?;
+            let candidate = catalog
+                .claim_archive_cleanup(&self.long_term, None)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no eligible finalized recording remains to restore headroom")
+                })?;
             let removed = self.remove_cleanup_candidate(&catalog, &candidate, reason)?;
             files_removed = files_removed.saturating_add(u64::from(removed > 0));
             bytes_removed = bytes_removed.saturating_add(removed);
@@ -1202,7 +1227,13 @@ impl WriterWorker {
         capacity: &mut FilesystemCapacity,
     ) -> anyhow::Result<()> {
         if let Some(candidate) = catalog.pending_cleanup_candidate()? {
-            if !candidate.path.exists() {
+            if !self
+                .long_term
+                .contains_cleanup_path(&candidate.path, &candidate.stream_id)
+            {
+                // A previous build could claim a finalized capture before its move began.
+                catalog.cancel_cleanup(&candidate.recording_id)?;
+            } else if !candidate.path.exists() {
                 self.safety
                     .cleanup_started(StorageCleanupReason::Reconciliation);
                 catalog.complete_cleanup(
@@ -1267,10 +1298,7 @@ impl WriterWorker {
         if self.config.is_direct_write() {
             self.health.note_attempt(&storage_key);
             match self.direct_write(&storage_key, frame) {
-                Ok(progress) if progress.wrote => self
-                    .health
-                    .note_progress(&storage_key, progress.recorded_duration),
-                Ok(_) => {}
+                Ok(progress) => progress.report(&self.health, &storage_key),
                 Err(error) => {
                     self.health.note_failure(&storage_key, &error.to_string());
                     self.admission.note_writer_failure(&identity.source_id);
@@ -1282,16 +1310,15 @@ impl WriterWorker {
 
         let active = self.demand.is_active(&storage_key);
         let pipeline = self.pipelines.get_mut(&storage_key).unwrap();
-        pipeline.short_term.push(frame);
-        let needs_flush = active || pipeline.last_flush.elapsed() >= self.config.flush_interval;
+        let received_at = frame.received_at;
+        let expires = pipeline.short_term.push_for_recording(frame);
+        let needs_flush =
+            active || expires || pipeline.last_flush.elapsed() >= self.config.flush_interval;
 
         if needs_flush {
             self.health.note_attempt(&storage_key);
-            match self.flush_camera(&storage_key, active) {
-                Ok(progress) if progress.wrote => self
-                    .health
-                    .note_progress(&storage_key, progress.recorded_duration),
-                Ok(_) => {}
+            match self.flush_camera_at(&storage_key, active, Instant::now().max(received_at)) {
+                Ok(progress) => progress.report(&self.health, &storage_key),
                 Err(error) => {
                     self.health.note_failure(&storage_key, &error.to_string());
                     self.admission.note_writer_failure(&identity.source_id);
@@ -1342,20 +1369,25 @@ impl WriterWorker {
         frame: RecordingFrame,
         received_clock: bool,
     ) -> std::io::Result<WriteProgress> {
-        let pipeline = self.pipelines.get_mut(camera_id).unwrap();
-
-        let needs_rotation = pipeline
-            .medium_term
-            .as_ref()
-            .is_some_and(|w| w.elapsed() >= self.config.medium_term_duration);
-
-        let mut rotated = None;
-        if needs_rotation && frame.is_video_keyframe() {
-            let old = pipeline.medium_term.take().unwrap();
-            let recording_id = old.recording_id().to_owned();
-            rotated = Some((old.finalize()?, recording_id));
+        if frame.is_video_keyframe()
+            && let Some(pipeline) = self.pipelines.get_mut(camera_id)
+            && let Some(writer) = &mut pipeline.medium_term
+        {
+            // The initial GOP can still be buffered for audio codec discovery.
+            let activated = writer.activate_for_rotation()?;
+            if !activated.is_zero() {
+                self.health.note_progress(camera_id, activated);
+            }
+            if writer.needs_rotation(frame.received_at, self.config.medium_term_duration) {
+                let old = pipeline.medium_term.take().unwrap();
+                let recording_id = old.recording_id().to_owned();
+                if let Some(path) = finalize_pipeline_recording(old, &self.health, camera_id)? {
+                    self.finish_relocation(camera_id, &path, &recording_id);
+                }
+            }
         }
 
+        let pipeline = self.pipelines.get_mut(camera_id).unwrap();
         if pipeline.medium_term.is_none() {
             if !frame.is_video_keyframe() {
                 return Ok(WriteProgress::default());
@@ -1371,26 +1403,17 @@ impl WriterWorker {
             tracing::info!(
                 camera = camera_id,
                 path = %writer.active_path().display(),
-                "new segment started (direct-write)",
+                "new recording segment started",
             );
             pipeline.medium_term = Some(writer);
         }
 
         let writer = pipeline.medium_term.as_mut().unwrap();
-        let recorded_duration = if received_clock {
-            writer.append_received(frame)?
+        if received_clock {
+            writer.append_received_bounded(frame)
         } else {
-            writer.append_one(frame)?
-        };
-
-        if let Some((path, recording_id)) = rotated {
-            self.move_to_long_term(camera_id, &path, &recording_id)?;
+            writer.append_bounded(frame)
         }
-
-        Ok(WriteProgress {
-            wrote: true,
-            recorded_duration,
-        })
     }
 
     fn flush_camera(
@@ -1398,150 +1421,60 @@ impl WriterWorker {
         camera_id: &str,
         publish_all: bool,
     ) -> std::io::Result<WriteProgress> {
+        self.flush_camera_at(camera_id, publish_all, Instant::now())
+    }
+
+    fn flush_camera_at(
+        &mut self,
+        camera_id: &str,
+        publish_all: bool,
+        clock: Instant,
+    ) -> std::io::Result<WriteProgress> {
         let pipeline = self.pipelines.get_mut(camera_id).unwrap();
         pipeline.last_flush = Instant::now();
-        let mut progress = WriteProgress::default();
-
-        let mut frames = if publish_all {
+        let frames = if publish_all {
             pipeline.short_term.drain_all()
         } else {
-            Instant::now()
+            clock
                 .checked_sub(self.config.short_term_duration)
-                .map_or_else(Vec::new, |cutoff| {
-                    pipeline.short_term.drain_up_to_last_keyframe_before(cutoff)
-                })
+                .map_or_else(Vec::new, |cutoff| pipeline.short_term.drain_before(cutoff))
         };
-        if frames.is_empty() {
-            return Ok(progress);
-        }
-
-        let needs_rotation = pipeline
-            .medium_term
-            .as_ref()
-            .is_some_and(|w| w.elapsed() >= self.config.medium_term_duration);
-
-        let mut rotated = None;
-
-        if needs_rotation {
-            if let Some(kf_idx) = frames.iter().position(|f| f.is_video_keyframe()) {
-                if kf_idx > 0 {
-                    let remainder = frames.split_off(kf_idx);
-                    let recorded_duration = pipeline
-                        .medium_term
-                        .as_mut()
-                        .unwrap()
-                        .append_batch(frames)?;
-                    progress.wrote = true;
-                    progress.recorded_duration =
-                        progress.recorded_duration.saturating_add(recorded_duration);
-                    frames = remainder;
+        // The per-frame writer skips undecodable history until its first video keyframe
+        // and keeps all subsequent references, including across scheduled flushes.
+        let mut progress = WriteProgress::default();
+        let mut first_error = None;
+        for frame in frames {
+            let written = match self.write_frame_to_pipeline(camera_id, frame, false) {
+                Ok(written) => written,
+                Err(error) => {
+                    // These frames have already left the buffer. Later frames can still
+                    // reach an open or replacement writer after an individual write fails.
+                    first_error.get_or_insert(error);
+                    continue;
                 }
-            } else {
-                let recorded_duration = pipeline
-                    .medium_term
-                    .as_mut()
-                    .unwrap()
-                    .append_batch(frames)?;
-                progress.wrote = true;
-                progress.recorded_duration =
-                    progress.recorded_duration.saturating_add(recorded_duration);
-                frames = Vec::new();
-            }
-
-            let old = pipeline.medium_term.take().unwrap();
-            let recording_id = old.recording_id().to_owned();
-            rotated = Some((old.finalize()?, recording_id));
+            };
+            progress.accepted |= written.accepted;
+            progress.recorded_duration = progress
+                .recorded_duration
+                .saturating_add(written.recorded_duration);
+            progress.keyframe_gap |= written.keyframe_gap;
         }
-
-        if !frames.is_empty() && pipeline.medium_term.is_none() {
-            if let Some(keyframe_index) = frames.iter().position(RecordingFrame::is_video_keyframe)
-            {
-                if keyframe_index > 0 {
-                    frames = frames.split_off(keyframe_index);
-                }
-                let started_at = frames[0].received_at;
-                let writer = create_medium_term_writer(
-                    &self.config,
-                    self.catalog.as_ref(),
-                    &pipeline.identity,
-                    started_at,
-                    self.safety.recording_paused(),
-                )?;
-                tracing::info!(
-                    camera = camera_id,
-                    path = %writer.active_path().display(),
-                    "new medium-term segment started",
-                );
-                pipeline.medium_term = Some(writer);
-            } else {
-                frames.clear();
-            }
+        if let Some(error) = first_error {
+            progress.report(&self.health, camera_id);
+            return Err(error);
         }
-
-        if !frames.is_empty() {
-            let recorded_duration = pipeline
-                .medium_term
-                .as_mut()
-                .unwrap()
-                .append_batch(frames)?;
-            progress.wrote = true;
-            progress.recorded_duration =
-                progress.recorded_duration.saturating_add(recorded_duration);
-        }
-
-        if let Some((path, recording_id)) = rotated {
-            self.move_to_long_term(camera_id, &path, &recording_id)?;
-        }
-
         Ok(progress)
     }
 
-    fn flush_all(&mut self) {
+    fn flush_all(&mut self, publish_all: bool) {
         let ids: Vec<String> = self.pipelines.keys().cloned().collect();
         for id in ids {
-            if let Err(e) = self.flush_camera(&id, false) {
-                tracing::error!(camera = %id, error = %e, "flush failed");
-            }
-        }
-    }
-
-    fn shutdown_flush(&mut self) {
-        self.flush_all();
-
-        for (id, pipeline) in &mut self.pipelines {
-            let frames = pipeline.short_term.drain_all();
-            if frames.is_empty() {
-                continue;
-            }
-
-            let mut frames = frames;
-            if pipeline.medium_term.is_none() {
-                let Some(keyframe_index) =
-                    frames.iter().position(RecordingFrame::is_video_keyframe)
-                else {
-                    continue;
-                };
-                if keyframe_index > 0 {
-                    frames = frames.split_off(keyframe_index);
+            match self.flush_camera(&id, publish_all) {
+                Ok(progress) => progress.report(&self.health, &id),
+                Err(error) => {
+                    self.health.note_failure(&id, &error.to_string());
+                    tracing::error!(camera = %id, %error, "flush failed");
                 }
-                let started_at = frames[0].received_at;
-                match create_medium_term_writer(
-                    &self.config,
-                    self.catalog.as_ref(),
-                    &pipeline.identity,
-                    started_at,
-                    self.safety.recording_paused(),
-                ) {
-                    Ok(writer) => pipeline.medium_term = Some(writer),
-                    Err(e) => {
-                        tracing::error!(camera = %id, error = %e, "failed to create segment on shutdown");
-                        continue;
-                    }
-                }
-            }
-
-            if let Err(e) = pipeline.medium_term.as_mut().unwrap().append_batch(frames) {
-                tracing::error!(camera = %id, error = %e, "failed to write remaining frames on shutdown");
             }
         }
     }
@@ -1555,11 +1488,10 @@ impl WriterWorker {
                 .and_then(|p| p.medium_term.take())
             {
                 let recording_id = writer.recording_id().to_owned();
-                match writer.finalize() {
-                    Ok(path) => {
-                        if let Err(e) = self.move_to_long_term(&id, &path, &recording_id) {
-                            tracing::error!(camera = %id, error = %e, "move to long-term failed");
-                        }
+                match finalize_pipeline_recording(writer, &self.health, &id) {
+                    Ok(None) => {}
+                    Ok(Some(path)) => {
+                        self.finish_relocation(&id, &path, &recording_id);
                     }
                     Err(e) => {
                         tracing::error!(camera = %id, error = %e, "finalize failed");
@@ -1575,68 +1507,20 @@ impl WriterWorker {
         path: &Path,
         recording_id: &str,
     ) -> std::io::Result<PathBuf> {
-        if self.config.volume_runtime.is_some() {
-            use super::catalog::locations::{Kind, Object, Reply, Request};
-            if let Some(catalog) = &self.catalog
-                && matches!(
-                    catalog
-                        .volume_location(Request::Lookup(Object {
-                            kind: Kind::Recording,
-                            id: recording_id.to_owned()
-                        }))
-                        .map_err(std::io::Error::other)?,
-                    Reply::Location(Some(_))
-                )
-            {
-                if let Some(mover) = &self.config.volume_mover {
-                    mover.scan().map_err(std::io::Error::other)?;
-                }
-                if let Some(archive) = &self.config.archive_runtime
-                    && let Err(error) = archive.scan()
-                {
-                    tracing::warn!(%error,"archive wakeup deferred; finalized recording remains available locally");
-                }
-                return Ok(path.to_path_buf());
-            }
-        }
-        let destination = if self.config.medium_term_path == self.config.long_term_path {
-            tracing::info!(
-                camera = camera_id,
-                path = %path.display(),
-                "segment finalized to long-term storage",
-            );
-            path.to_path_buf()
-        } else {
-            let rel = path
-                .strip_prefix(&self.config.medium_term_path)
-                .unwrap_or(path);
-            let destination = self.config.long_term_path.join(rel);
-            if let Some(parent) = destination.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-
-            std::fs::rename(path, &destination).or_else(|_| {
-                std::fs::copy(path, &destination)?;
-                std::fs::remove_file(path)?;
-                Ok::<(), std::io::Error>(())
-            })?;
-
-            tracing::info!(
-                camera = camera_id,
-                from = %path.display(),
-                to = %destination.display(),
-                "segment moved to long-term storage",
-            );
-            destination
-        };
-        // Writer finalization already committed the catalog entry at the same root.
-        if self.config.medium_term_path != self.config.long_term_path
-            && let Some(catalog) = &self.catalog
+        if let Some(background) = &self.relocator
+            && relocation::legacy_path(&self.config, path)
         {
-            catalog
-                .update_recording_path(recording_id, &destination, true)
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            background.wake();
+            return Ok(path.to_path_buf());
         }
+        let destination = relocation::move_recording(
+            &self.config,
+            self.catalog.as_ref(),
+            camera_id,
+            path,
+            recording_id,
+            &std::sync::atomic::AtomicBool::new(false),
+        )?;
         if self.catalog.is_some() && self.config.has_safety_limits() {
             self.enforce_storage_limit(StorageCleanupTrigger::SegmentFinalized);
         }
@@ -1657,6 +1541,17 @@ impl WriterWorker {
                 last_flush: Instant::now(),
             })
     }
+}
+
+fn finalize_pipeline_recording(
+    writer: MediumTermWriter,
+    health: &RecordingHealthRegistry,
+    stream: &str,
+) -> std::io::Result<Option<PathBuf>> {
+    Ok(writer.finalize_with_progress()?.map(|(path, duration)| {
+        health.credit_finalized_progress(stream, duration);
+        path
+    }))
 }
 
 fn create_medium_term_writer(
@@ -1747,6 +1642,8 @@ pub struct ShortTermStats {
 #[cfg(test)]
 mod tests {
     mod finalization;
+    mod gop_recovery;
+    mod metadata_rotation;
     mod named;
 
     use super::*;
@@ -1877,7 +1774,7 @@ mod tests {
 
         let progress = worker.flush_camera(&identity.storage_key, false).unwrap();
 
-        assert!(!progress.wrote);
+        assert!(!progress.accepted);
     }
 
     #[test]
@@ -1928,6 +1825,109 @@ mod tests {
         drop(handle);
         catalog.shutdown();
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn capacity_cleanup_skips_unrelocated_capture_even_before_the_move_is_reserved() {
+        for nested in [None, Some("capture"), Some("front")] {
+            let mut config = storage_config("cleanup-unrelocated-capture");
+            let fixture =
+                std::env::temp_dir().join(format!("cleanup-unrelocated-{}", uuid::Uuid::new_v4()));
+            let archive = fixture.join("archive");
+            let medium = nested.map_or_else(
+                || fixture.join("archive-capture"),
+                |directory| archive.join(directory),
+            );
+            config.long_term_path.clone_from(&archive);
+            config.medium_term_path.clone_from(&medium);
+            config.recording_catalog_path = fixture.join("catalog.db");
+            let relative = Path::new("front/sub/2026-08-12/12/0000000.mp4");
+            let source = medium.join(relative);
+            let archived = archive.join("older-archived.mp4");
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(&archive).unwrap();
+            let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+            let handle = catalog.handle();
+            insert_cleanup_recording(&handle, "source", &source, 1_000, 40);
+            insert_cleanup_recording(&handle, "archived", &archived, 2_000, 40);
+            // Reproduce the orphaned claim a previous version could leave before its worker ran.
+            assert_eq!(
+                handle
+                    .claim_cleanup_candidate()
+                    .unwrap()
+                    .unwrap()
+                    .recording_id,
+                "source"
+            );
+            config.long_term_max_bytes = 50;
+            let mut worker = WriterWorker::new(
+                config,
+                RecordingDemand::new(Duration::ZERO),
+                Some(handle.clone()),
+            );
+            assert!(worker.relocator.is_none());
+            assert!(handle.next_relocation("").unwrap().is_none());
+            worker.enforce_storage_limit_with_capacity(
+                StorageCleanupTrigger::Periodic,
+                FilesystemCapacity {
+                    total_bytes: 1_000,
+                    available_bytes: 500,
+                    keeppeek_bytes: 0,
+                },
+            );
+            assert!(source.exists());
+            assert!(!archived.exists());
+            assert!(handle.pending_cleanup_candidate().unwrap().is_none());
+            assert_eq!(
+                worker.safety.snapshot().recording_state,
+                StorageRecordingState::Active
+            );
+            let relocated = relocation::move_recording(
+                &worker.config,
+                Some(&handle),
+                "front/sub",
+                &source,
+                "source",
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(relocated, archive.join(relative));
+            assert!(
+                worker
+                    .long_term
+                    .contains_cleanup_path(&relocated, "front/sub")
+            );
+            let mut now = Instant::now();
+            for _ in 0..32 {
+                let Some(delay) = worker.retry_relocations(now) else {
+                    break;
+                };
+                now += delay;
+            }
+            assert!(!worker.relocation_scan.take_published());
+            assert!(
+                worker
+                    .health
+                    .snapshot()
+                    .streams
+                    .iter()
+                    .all(|entry| entry.last_error.is_none())
+            );
+            assert_eq!(std::fs::read(relocated).unwrap().len(), 40);
+            assert!(!source.exists());
+            assert_eq!(
+                handle
+                    .claim_archive_cleanup(&worker.long_term, None)
+                    .unwrap()
+                    .unwrap()
+                    .recording_id,
+                "source"
+            );
+            drop(worker);
+            drop(handle);
+            catalog.shutdown();
+            std::fs::remove_dir_all(fixture).unwrap();
+        }
     }
 
     #[test]
@@ -2408,6 +2408,7 @@ mod tests {
 
     fn inter_frame() -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at: Instant::now(),
             timestamp: None,
             frame: MediaFrame::Video(VideoFrame {
@@ -2422,6 +2423,7 @@ mod tests {
 
     pub(super) fn key_frame(received_at: Instant) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at,
             timestamp: None,
             frame: MediaFrame::Video(VideoFrame {
@@ -2465,6 +2467,7 @@ mod tests {
         }
         data.extend_from_slice(&sample);
         RecordingFrame {
+            source_rtp: None,
             received_at,
             timestamp: None,
             frame: MediaFrame::Video(VideoFrame {
@@ -2479,6 +2482,7 @@ mod tests {
 
     fn audio_frame(received_at: Instant) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at,
             timestamp: None,
             frame: MediaFrame::Audio(AudioFrame {

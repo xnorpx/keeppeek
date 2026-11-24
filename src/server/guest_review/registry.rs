@@ -139,7 +139,7 @@ impl Registry {
             cancelled,
         })
     }
-    pub(super) fn reserve_hash(self: &Arc<Self>) -> io::Result<HashPermit> {
+    pub(in crate::server) fn reserve_hash(self: &Arc<Self>) -> io::Result<HashPermit> {
         let mut state = self.lock()?;
         if state.hash_readers >= MAX_HASH_READERS {
             return Err(io::Error::new(
@@ -325,7 +325,7 @@ impl RequestGuard {
         let deadline = bound
             .media_deadline
             .ok_or_else(|| io::Error::other("guest media expired"))?;
-        {
+        let abort = {
             let mut state = self.registry.lock()?;
             if !state.watchdog || self.cancelled.load(Ordering::Acquire) {
                 return Err(io::Error::other("guest cancellation is unavailable"));
@@ -357,12 +357,14 @@ impl RequestGuard {
                 evidence: bound.grant.intent.binding.clone(),
                 context: context.clone(),
             });
-        }
+            flow.abort.clone()
+        };
         Ok(TransferGuard {
             registry: self.registry,
             id: self.id,
             deadline,
             cancelled: self.cancelled,
+            abort,
         })
     }
 }
@@ -387,9 +389,14 @@ pub(super) struct TransferGuard {
     id: Uuid,
     deadline: MediaDeadline,
     cancelled: Arc<AtomicBool>,
+    abort: ResponseAbortHandle,
 }
 
 impl TransferGuard {
+    pub(super) fn response_abort_handle(&self) -> ResponseAbortHandle {
+        self.abort.clone()
+    }
+
     pub fn check(&self) -> io::Result<()> {
         check(self.deadline, &self.cancelled)
     }
@@ -417,7 +424,7 @@ impl TransferGuard {
     }
 }
 
-pub(super) struct HashPermit(Arc<Registry>);
+pub(in crate::server) struct HashPermit(Arc<Registry>);
 
 impl Drop for HashPermit {
     fn drop(&mut self) {

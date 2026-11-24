@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { capabilityActions } from '$lib/capability-actions';
 	import { afterNavigate, goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { navigating, page } from '$app/state';
@@ -9,6 +10,8 @@
 	import EventDetailDrawer from '$lib/components/EventDetailDrawer.svelte';
 	import EventWorkflowNotice from '$lib/components/EventWorkflowNotice.svelte';
 	import FocusedMediaViewport from '$lib/components/FocusedMediaViewport.svelte';
+	import { RecordedFramePlayer, type ResumePicture } from '$lib/recorded-frame-player.svelte';
+	import type { PresentedStoredFrame } from '$lib/stored-frame-step';
 	import RecordedPlaybackControls from '$lib/components/RecordedPlaybackControls.svelte';
 	import StoredPlaybackNotice from '$lib/components/StoredPlaybackNotice.svelte';
 	import RecordedAudioPreview from '$lib/components/RecordedAudioPreview.svelte';
@@ -27,7 +30,7 @@
 		type TimelineInterval,
 		type TimelineViewport
 	} from '$lib/timeline-repository.svelte';
-	import { createEventExportRange, type KeepMode } from '$lib/keep-modes';
+	import { createEventExportRange, exportSelectionKey, type KeepMode } from '$lib/keep-modes';
 	import {
 		keepMomentSearchParams,
 		parseKeepRoute,
@@ -129,6 +132,26 @@
 	let playbackVolume = $state(1);
 	let storedPlayback = $state.raw<StoredMediaPlayback | null>(null);
 	let playbackUrl: string | null = $state(null);
+	const frames = new RecordedFramePlayer();
+	let frameCanvas = $state<HTMLCanvasElement | null>(null);
+	type ColdPicture = {
+		picture: ResumePicture;
+		canvas: HTMLCanvasElement;
+		camera: string;
+		stream: string;
+	};
+	let coldPicture = $state.raw<ColdPicture>();
+	let frameResume = $state.raw<AbortController>();
+	let selectedPicture = $derived(coldPicture?.picture ?? frames.selection);
+	$effect(() => {
+		const retained = coldPicture;
+		const canvas = frameCanvas;
+		if (!retained || !canvas || canvas === retained.canvas) return;
+		canvas.width = retained.canvas.width;
+		canvas.height = retained.canvas.height;
+		canvas.getContext('2d')?.drawImage(retained.canvas, 0, 0);
+	});
+
 	let playbackAnchorMs = 0;
 	let playbackVersion = 0;
 	let playbackSourceCommitVersion: number | null = null;
@@ -163,7 +186,7 @@
 	let cameraProfilesPromise: Promise<CameraListItem[]> | null = null;
 	let playing = $state(false);
 	let playbackRate = $state(1);
-	let pendingSeekSeconds = 0;
+	let pendingSeekSeconds: number | null = null;
 	let pendingPlay = false;
 	let loadVersion = 0;
 	let shuttleDirection = $state<-1 | 0 | 1>(0);
@@ -172,6 +195,7 @@
 	let exportRangeStartMs: number | null = $state(null);
 	let exportRangeEndMs: number | null = $state(null);
 	let exportSeedEvent = $state.raw<RecordingEvent | null>(null);
+	const exportKey = $derived(exportSelectionKey(cameraId, selected, exportSeedEvent));
 	let exportReturnHref = $state<string | null>(null);
 	let configuredFrameRates = $state.raw<ReadonlyMap<string, number>>(new Map());
 	let coldSeekTimestampMs: number | null = $state(null);
@@ -191,8 +215,15 @@
 	const keyframePreviewCache = new Map<string, string>();
 	let keyFrameUnsubscribe: (() => void) | null = null;
 	let scrubbing = $state(false);
+	$effect.pre(() => {
+		const element = video;
+		const cursor = storedPlayback;
+		const url = playbackUrl;
+		if (mode !== 'timeline' || scrubbing || !element || !cursor || !url) return;
+		return untrack(() => frames.follow(element, cursor));
+	});
 	let scrubTargetMs: number | null = null;
-	let scrubPump: Promise<void> | null = null;
+	let scrubPump: { version: number; done: Promise<void> } | null = null;
 	let scrubVersion = 0;
 	let scrubPlayIntent = false;
 	let scrubOpenController: AbortController | null = null;
@@ -220,6 +251,7 @@
 		if (mobilePanel) history.back();
 	}
 	let capabilitiesSeen = false;
+	let guestRangeSupported = $state(false);
 	let reconnectPending = false;
 	let interruptedPlayback: {
 		camera: string;
@@ -409,13 +441,13 @@
 	});
 
 	$effect(() => {
-		if (shuttleDirection !== -1 || !selected) return;
+		if (mode === 'export' || shuttleDirection !== -1 || !selected) return;
 		const reverse = () => {
 			if (reconnectPending || interruptedPlayback || !storedPlayback) return;
 			const current = playheadMs ?? selected?.start_time_ms;
 			if (current !== undefined) seekToTimestamp(current - shuttleSpeed * 250, false);
 		};
-		reverse();
+		untrack(reverse);
 		const timer = window.setInterval(reverse, 250);
 		return () => window.clearInterval(timer);
 	});
@@ -427,6 +459,9 @@
 		updateOrientation();
 		portraitMedia.addEventListener('change', updateOrientation);
 		const unsubscribeCapabilities = controlClient.onCapabilities((capabilityIds) => {
+			guestRangeSupported = capabilityIds.includes(
+				capabilityActions.shareRecordingRange.capability
+			);
 			audioPreviewSupported = capabilityIds.includes('keeppeek.recorded-audio.v1');
 			eventSearchAvailable = capabilityIds.includes('keeppeek.event-search');
 			eventWorkflowAvailable = capabilityIds.includes(EVENT_WORKFLOW_CAPABILITY);
@@ -505,8 +540,10 @@
 	});
 
 	async function initialize(search = window.location.search): Promise<void> {
+		cancelFrameResume();
 		selectedWorkflowEvent = null;
 		const version = ++routeVersion;
+		const switchVersion = cameraSwitchVersion;
 		appliedSearch = search;
 		loadVersion += 1;
 		recordingLoadController?.abort();
@@ -555,7 +592,7 @@
 			}
 			await loadRouteRecordings(route, version);
 			if (version !== routeVersion) return;
-			await loadRouteEvent(route, version);
+			if (cameraSwitchVersion === switchVersion) await loadRouteEvent(route, version);
 			await healthPromise;
 		} catch (cause) {
 			if (version === routeVersion)
@@ -606,9 +643,18 @@
 	}
 
 	async function loadRouteEvent(route: KeepRoute, version: number): Promise<void> {
-		if (!route.eventId || route.timestampMs === null || !cameraId) return;
-		const event = await resolveExportSeedEvent(route.eventId, cameraId, route.timestampMs);
-		if (version !== routeVersion) return;
+		const sourceId = cameraId;
+		if (
+			!route.eventId ||
+			route.timestampMs === null ||
+			!sourceId ||
+			(route.cameraId && route.cameraId !== sourceId)
+		)
+			return;
+		const switchVersion = cameraSwitchVersion;
+		const event = await resolveExportSeedEvent(route.eventId, sourceId, route.timestampMs);
+		if (version !== routeVersion || sourceId !== cameraId || switchVersion !== cameraSwitchVersion)
+			return;
 		exportSeedEvent = event;
 		if (event && mode === 'export') {
 			const range = createEventExportRange(event, selectedBitrateKbps);
@@ -1066,22 +1112,26 @@
 		scrubTargetMs = timestampMs;
 		playheadMs = timestampMs;
 		showNearestCachedPreview(timestampMs);
-		if (!scrubPump) {
-			const version = scrubVersion;
-			scrubPump = drainTimelineScrub(version)
-				.catch((cause) => {
-					if (version !== scrubVersion) return;
-					clearColdSeek();
-					playerError = storedPlaybackError(cause);
-				})
-				.finally(() => {
-					scrubPump = null;
-					if (scrubTargetMs !== null && version === scrubVersion) {
-						void queueTimelineScrub(scrubTargetMs);
-					}
-				});
-		}
-		return scrubPump;
+		const version = scrubVersion;
+		if (scrubPump?.version === version) return scrubPump.done;
+		const previous = scrubPump;
+		const drain = previous
+			? previous.done.then(() => drainTimelineScrub(version))
+			: drainTimelineScrub(version);
+		const done = drain
+			.catch((cause) => {
+				if (version !== scrubVersion) return;
+				clearColdSeek();
+				playerError = storedPlaybackError(cause);
+			})
+			.finally(() => {
+				if (scrubPump?.version !== version) return;
+				scrubPump = null;
+				if (version === scrubVersion && scrubTargetMs !== null)
+					void queueTimelineScrub(scrubTargetMs);
+			});
+		scrubPump = { version, done };
+		return done;
 	}
 
 	async function drainTimelineScrub(version: number): Promise<void> {
@@ -1176,6 +1226,7 @@
 	}
 
 	function beginTimelineScrub(timestampMs: number): void {
+		cancelFrameResume();
 		scrubVersion += 1;
 		scrubOpenController?.abort();
 		clearPlaybackStartupTimer();
@@ -1193,7 +1244,7 @@
 	async function finishTimelineScrub(timestampMs: number): Promise<void> {
 		const version = scrubVersion;
 		await queueTimelineScrub(timestampMs);
-		await scrubPump;
+		await scrubPump?.done;
 		if (version !== scrubVersion) return;
 		const playback = storedPlayback;
 		if (!playback) {
@@ -1554,9 +1605,17 @@
 		timestampMs = playheadMs ?? undefined
 	): void {
 		if (nextCameraId === cameraId) return;
-		const play = playbackIntent();
-		beginCameraSwitch(direction);
+		selectedWorkflowEvent = null;
+		const play = mode === 'export' ? false : playbackIntent();
+		exportSeedEvent = null;
+		exportRangeStartMs = null;
+		exportRangeEndMs = null;
+		if (mode === 'export') {
+			cameraSwitchVersion += 1;
+			void selectSegment(null);
+		} else beginCameraSwitch(direction);
 		timelineRepository.deactivate();
+		cancelFrameResume();
 		cameraId = nextCameraId;
 		void loadRecordings(selectedDate || undefined, timestampMs, play, null, {
 			exactMoment: timestampMs !== undefined
@@ -1582,8 +1641,38 @@
 
 	function switchMode(nextMode: KeepMode): void {
 		if (nextMode === mode) return;
+		cancelFrameResume();
+		const scrubTarget =
+			nextMode === 'export' && scrubbing && playheadMs !== null
+				? recordingTarget(orderedSegments, playheadMs)
+				: null;
+		if (nextMode === 'export') {
+			shuttleDirection = 0;
+			scrubVersion += 1;
+			scrubTargetMs = null;
+			scrubbing = false;
+			scrubPlayIntent = false;
+			targetLoadVersion += 1;
+			targetLoadController?.abort();
+			clearColdSeek();
+		}
 		mode = nextMode;
-		if (mode === 'timeline') void resumeStoredPlayback();
+		const recoveringPlayback =
+			interruptedPlayback?.version === playbackVersion && interruptedPlayback.camera === cameraId;
+		if (scrubTarget) {
+			void selectSegment(scrubTarget.segment, scrubTarget.offsetSeconds);
+		} else if (recoveringPlayback) {
+			if (nextMode === 'timeline') void resumeStoredPlayback();
+		} else if (nextMode === 'export' || (nextMode === 'timeline' && selected && !storedPlayback)) {
+			const target = retryPlaybackTarget;
+			if (target?.cameraId === cameraId && target.segment.date === selectedDate) {
+				const offset =
+					selected?.url === target.segment.url && playheadMs !== null
+						? (playheadMs - target.segment.start_time_ms) / 1000
+						: target.offsetSeconds;
+				void selectSegment(target.segment, offset);
+			} else void selectSegment(null);
+		}
 		updateUrl();
 	}
 
@@ -1688,7 +1777,33 @@
 		} else retryPlaybackTarget = null;
 	}
 
-	async function selectSegment(segment: RecordingSegment | null, offsetSeconds = 0, play = false) {
+	async function selectExportSegment(
+		segment: RecordingSegment,
+		timestampMs: number
+	): Promise<void> {
+		// Keep the chosen stream and draft while Export has no mounted video.
+		cameraSwitchPending = false;
+		cameraSwitchAnimating = false;
+		clearCameraSwitchFrame();
+		playbackVersion += 1;
+		selected = segment;
+		playheadMs = timestampMs;
+		playing = false;
+		pendingPlay = false;
+		playerError = null;
+		playbackStartupPhase = 'idle';
+		releaseSecondaryLoads();
+		await closeStoredPlayback();
+	}
+
+	async function selectSegment(
+		segment: RecordingSegment | null,
+		offsetSeconds = 0,
+		play = false,
+		retainForResume = false
+	) {
+		if (!retainForResume) cancelFrameResume();
+		frames.clear();
 		rememberPlaybackTarget(segment, offsetSeconds, play);
 		if (!segment) {
 			cameraSwitchPending = false;
@@ -1700,11 +1815,12 @@
 			clearPlaybackStartupTimer();
 			detachPlaybackObservers();
 			playbackStartupPhase = 'idle';
-			await closeStoredPlayback();
 			selected = null;
 			playheadMs = null;
 			playing = false;
+			pendingPlay = false;
 			releaseSecondaryLoads();
+			await closeStoredPlayback();
 			return;
 		}
 		const requestedTimestampMs =
@@ -1721,7 +1837,10 @@
 			exportRangeStartMs = null;
 			exportRangeEndMs = null;
 		}
-		const requestedOffsetSeconds = (requestedTimestampMs - segment.start_time_ms) / 1_000;
+		if (mode === 'export') {
+			await selectExportSegment(segment, requestedTimestampMs);
+			return;
+		}
 		playerError = null;
 		if (sameSegment) {
 			await seekWithinSelectedSegment(segment, requestedTimestampMs, play);
@@ -1736,37 +1855,87 @@
 			coldSeekElapsedMs = 0;
 			coldSeekStartedAt = performance.now();
 		}
-		if (reusablePlayback && previousPlayback) {
-			await reuseStoredSegment(previousPlayback, segment, requestedTimestampMs, play, version);
-		} else await openStoredSegment(segment, requestedTimestampMs, play, version, previousPlayback);
+		playbackSourceCommitVersion = version;
+		pendingPlay = play;
+		playing = play;
+		try {
+			if (reusablePlayback && previousPlayback) {
+				await reuseStoredSegment(previousPlayback, segment, requestedTimestampMs, version);
+			} else
+				await openStoredSegment(segment, requestedTimestampMs, play, version, previousPlayback);
+		} finally {
+			if (playbackSourceCommitVersion === version) playbackSourceCommitVersion = null;
+		}
+	}
+
+	async function applyPlaybackSource(
+		playback: StoredMediaPlayback,
+		version: number
+	): Promise<void> {
+		await tick();
+		if (version !== playbackVersion || playback !== storedPlayback) return;
+		playbackSourceCommitVersion = null;
+		playback.setPlaying(playing);
+		applyPendingSeek();
+	}
+
+	function playbackOffsetAfterSeek(playback: StoredMediaPlayback, requestedMs: number): number {
+		// Cursor lookup uses milliseconds. The browser can resume at the fractional sample time.
+		const fractionMs = requestedMs - Math.trunc(requestedMs);
+		return Math.max(
+			0,
+			playback.initialOffsetSeconds +
+				(requestedMs >= playback.anchorTimeMs ? fractionMs / 1_000 : 0)
+		);
+	}
+
+	function pauseFailedPlaybackSource(): void {
+		pendingPlay = false;
+		pendingSeekSeconds = null;
+		playing = false;
+		shuttleDirection = 0;
+		storedPlayback?.setPlaying(false);
+		video?.pause();
+		if (
+			video &&
+			video.currentSrc === playbackUrl &&
+			video.readyState >= HTMLMediaElement.HAVE_METADATA
+		) {
+			playheadMs = playbackAnchorMs + video.currentTime * 1_000;
+		}
+	}
+
+	function rejectPlaybackSeek(
+		playback: StoredMediaPlayback,
+		version: number,
+		cause: unknown
+	): void {
+		if (version !== playbackVersion || playback !== storedPlayback) return;
+		pauseFailedPlaybackSource();
+		clearColdSeek();
+		playerError = storedPlaybackError(cause);
 	}
 
 	async function reuseStoredSegment(
 		playback: StoredMediaPlayback,
 		segment: RecordingSegment,
 		timestampMs: number,
-		play: boolean,
 		version: number
 	): Promise<void> {
 		try {
 			await playback.seek(timestampMs);
 		} catch (cause) {
-			clearColdSeek();
-			if (version === playbackVersion) playerError = storedPlaybackError(cause);
+			rejectPlaybackSeek(playback, version, cause);
 			return;
 		}
 		if (version !== playbackVersion) return;
 		selected = segment;
-		pendingPlay = play;
-		playing = play;
 		playheadMs = timestampMs;
 		playbackUrl = playback.url;
 		playbackAnchorMs = playback.anchorTimeMs;
-		pendingSeekSeconds = playback.initialOffsetSeconds;
+		pendingSeekSeconds = playbackOffsetAfterSeek(playback, timestampMs);
 		playback.setPlaybackRate(playbackRate);
-		playback.setPlaying(play);
-		await tick();
-		applyPendingSeek();
+		await applyPlaybackSource(playback, version);
 	}
 
 	async function openStoredSegment(
@@ -1796,14 +1965,16 @@
 				recordedAudioPreview
 			});
 		} catch (cause) {
-			clearColdSeek();
 			if (openController.signal.aborted || version !== playbackVersion) return;
+			const resume = pendingPlay;
+			pauseFailedPlaybackSource();
+			clearColdSeek();
 			await handlePlaybackFailure(
 				storedPlaybackError(cause),
 				version,
 				segment,
 				requestedTimestampMs,
-				play
+				resume
 			);
 			return;
 		} finally {
@@ -1814,17 +1985,14 @@
 			return;
 		}
 		selected = segment;
-		pendingPlay = play;
-		playing = play;
 		playheadMs = requestedTimestampMs;
 		storedPlayback = playback;
 		attachKeyFramePreview(playback);
 		observePlaybackStartup(playback, version, segment, requestedTimestampMs);
 		playbackUrl = playback.url;
 		playbackAnchorMs = playback.anchorTimeMs;
-		pendingSeekSeconds = playback.initialOffsetSeconds;
-		await tick();
-		applyPendingSeek();
+		pendingSeekSeconds = playbackOffsetAfterSeek(playback, requestedTimestampMs);
+		await applyPlaybackSource(playback, version);
 		if (previousPlayback && previousPlayback !== playback) {
 			await previousPlayback.close().catch(() => undefined);
 		}
@@ -1837,35 +2005,32 @@
 	): Promise<void> {
 		const playback = storedPlayback;
 		if (!playback) return;
-		const canSeekLocally = !audioPreviewBusy && playback.canSeekLocally(requestedTimestampMs);
+		const canSeekLocally =
+			!audioPreviewBusy &&
+			playbackSourceCommitVersion !== playbackVersion &&
+			playback.url === playbackUrl &&
+			playback.canSeekLocally(requestedTimestampMs);
 		const version = canSeekLocally ? playbackVersion : ++playbackVersion;
 		selected = segment;
 		pendingPlay = play;
 		playing = play;
 		playheadMs = requestedTimestampMs;
 		pendingSeekSeconds = Math.max(0, (requestedTimestampMs - playbackAnchorMs) / 1_000);
-		if (!canSeekLocally) {
-			coldSeekTimestampMs = requestedTimestampMs;
-			coldSeekElapsedMs = 0;
-			coldSeekStartedAt = performance.now();
-			try {
-				await playback.seek(requestedTimestampMs);
-			} catch (cause) {
-				if (version !== playbackVersion || playback !== storedPlayback) return;
-				clearColdSeek();
-				playerError = storedPlaybackError(cause);
-				return;
-			}
-			if (version !== playbackVersion || playback !== storedPlayback) return;
-			playbackSourceCommitVersion = version;
-			playbackUrl = playback.url;
-			playbackAnchorMs = playback.anchorTimeMs;
-			pendingSeekSeconds = playback.initialOffsetSeconds;
-		}
 		try {
-			await tick();
-			if (version !== playbackVersion || playback !== storedPlayback) return;
-			applyPendingSeek();
+			if (!canSeekLocally) {
+				playbackSourceCommitVersion = version;
+				coldSeekTimestampMs = requestedTimestampMs;
+				coldSeekElapsedMs = 0;
+				coldSeekStartedAt = performance.now();
+				await playback.seek(requestedTimestampMs);
+				if (version !== playbackVersion || playback !== storedPlayback) return;
+				playbackUrl = playback.url;
+				playbackAnchorMs = playback.anchorTimeMs;
+				pendingSeekSeconds = playbackOffsetAfterSeek(playback, requestedTimestampMs);
+			}
+			await applyPlaybackSource(playback, version);
+		} catch (cause) {
+			rejectPlaybackSeek(playback, version, cause);
 		} finally {
 			if (playbackSourceCommitVersion === version) playbackSourceCommitVersion = null;
 		}
@@ -1937,6 +2102,7 @@
 	}
 
 	async function closeStoredPlayback() {
+		cancelFrameResume();
 		const playback = storedPlayback;
 		playbackOpenController?.abort();
 		playbackOpenController = null;
@@ -1947,6 +2113,7 @@
 		keyFrameUnsubscribe?.();
 		keyFrameUnsubscribe = null;
 		storedPlayback = null;
+		pendingSeekSeconds = null;
 		recordedAudio = undefined;
 		audioPreviewOpen = false;
 		scrubUsesFragmentFallback = false;
@@ -1979,6 +2146,8 @@
 				pendingSeekSeconds = playback.initialOffsetSeconds;
 				await tick();
 				if (version === playbackVersion && playback === storedPlayback) {
+					playbackSourceCommitVersion = null;
+					playback.setPlaying(playing);
 					applyPendingSeek();
 					observePlaybackStartup(playback, version, segment, timestampMs);
 				}
@@ -2022,6 +2191,8 @@
 			await selectSegment(target.segment, offset, target.play);
 		else {
 			rememberPlaybackTarget(target.segment, offset, target.play);
+			pendingPlay = target.play;
+			playing = target.play;
 			await openStoredSegment(
 				target.segment,
 				target.segment.start_time_ms + offset * 1000,
@@ -2034,6 +2205,7 @@
 	}
 
 	function seekToTimestamp(timestampMs: number, play = true) {
+		cancelFrameResume();
 		showNearestCachedPreview(timestampMs);
 		if (recordingCoverage.some((range) => timestampInRange(timestampMs, range))) {
 			targetLoadVersion += 1;
@@ -2155,6 +2327,7 @@
 	}
 
 	function setPlaybackSpeed(speed: number): void {
+		frames.cancelHandoff();
 		shuttleSpeed = speed;
 		playbackRate = speed;
 		playbackPreferences = withMediaPreferences(playbackPreferences, { playbackRate: speed });
@@ -2163,9 +2336,113 @@
 		storedPlayback?.setPlaybackRate(speed);
 	}
 
+	function cancelFrameResume(keepPicture = false): void {
+		frames.cancelHandoff();
+		frameResume?.abort();
+		frameResume = undefined;
+		if (!keepPicture) coldPicture = undefined;
+	}
+
+	async function resumeColdPicture(retained: ColdPicture, timestampMs: number): Promise<void> {
+		if (frameResume) return;
+		coldPicture = retained;
+		const target = exactRecordingTarget(timestampMs);
+		const controller = new AbortController();
+		const route = routeVersion;
+		const failure =
+			'Playback could not resume on this recorded picture. Select another playback position.';
+		frameResume = controller;
+		const current = () =>
+			!controller.signal.aborted &&
+			routeVersion === route &&
+			cameraId === retained.camera &&
+			mode === 'timeline' &&
+			!scrubbing;
+		try {
+			if (target && target.segment.stream === retained.stream) {
+				const opening = selectSegment(target.segment, target.offsetSeconds, false, true);
+				const version = playbackVersion;
+				await opening;
+				const cursor = storedPlayback;
+				const element = video;
+				const ownsSource = () =>
+					current() &&
+					version === playbackVersion &&
+					cursor === storedPlayback &&
+					element === video;
+				if (!ownsSource()) return;
+				if (
+					cursor &&
+					element &&
+					cursor.canStepExactly &&
+					cursor.sourceId === retained.camera &&
+					cursor.streamId === retained.stream &&
+					!playerError
+				) {
+					const aligned = await frames.alignForPlay(element, cursor, {
+						picture: retained.picture,
+						signal: controller.signal,
+						verified() {
+							if (!ownsSource()) return false;
+							coldPicture = undefined;
+							return true;
+						}
+					});
+					if (!ownsSource()) return;
+					if (aligned) {
+						frameResume = undefined;
+						setPlaying(true);
+						return;
+					}
+				}
+			}
+			if (current())
+				frames.notice =
+					'Playback could not resume on this recorded picture. Select another playback position.';
+		} catch {
+			if (current()) frames.notice = failure;
+		} finally {
+			if (frameResume === controller) frameResume = undefined;
+		}
+	}
+
 	function setPlaying(nextPlaying: boolean): void {
+		if (!nextPlaying) cancelFrameResume(true);
+		if (nextPlaying && frameResume) return;
+		const selection = selectedPicture;
+		if (nextPlaying && selection) {
+			const precise = selection.storedTimeNs;
+			const cursor = storedPlayback;
+			const storedMs = Number(precise / 1_000_000n) + Number(precise % 1_000_000n) / 1e6;
+			if (!cursor || !video) return;
+			if (coldPicture || !cursor.canSeekLocally(storedMs)) {
+				if (!frameCanvas) return;
+				const { storedTimeNs, presentationTimeNs, resumeTimesNs } = selection;
+				void resumeColdPicture(
+					coldPicture ?? {
+						picture: { storedTimeNs, presentationTimeNs, resumeTimesNs },
+						canvas: frameCanvas,
+						camera: cameraId,
+						stream: cursor.streamId
+					},
+					storedMs
+				);
+				return;
+			}
+			const element = video;
+			void frames.alignForPlay(element, cursor).then((aligned) => {
+				if (aligned && cursor === storedPlayback && element === video) setPlaying(true);
+			});
+			return;
+		}
+		if (nextPlaying && frames.busy) frames.clear();
 		playing = nextPlaying;
 		rememberPlayIntent(nextPlaying);
+		if (playbackSourceCommitVersion === playbackVersion) {
+			pendingPlay = nextPlaying;
+			if (!nextPlaying) video?.pause();
+			return;
+		}
 		storedPlayback?.setPlaying(nextPlaying);
 		if (!video) {
 			pendingPlay = nextPlaying;
@@ -2191,7 +2468,7 @@
 	}
 
 	function toggleTransport(): void {
-		if (playing || shuttleDirection === -1) {
+		if (playing || frameResume || frames.resumingPlayback || shuttleDirection === -1) {
 			pauseTransport();
 			return;
 		}
@@ -2203,6 +2480,32 @@
 		if (!selected || estimatedFrameIntervalSeconds === null) return;
 		pauseTransport();
 		skip(direction * estimatedFrameIntervalSeconds);
+	}
+
+	function presentSteppedFrame(sample: PresentedStoredFrame): void {
+		if (!frameCanvas || !video?.paused) throw new Error('The paused player changed.');
+		const context = frameCanvas.getContext('2d');
+		if (!context) throw new Error('The browser could not display this picture.');
+		frameCanvas.width = sample.frame.displayWidth;
+		frameCanvas.height = sample.frame.displayHeight;
+		context.drawImage(sample.frame, 0, 0);
+		clearStillPreview();
+		playheadMs =
+			Number(sample.storedTimeNs / 1_000_000n) + Number(sample.storedTimeNs % 1_000_000n) / 1e6;
+	}
+
+	function stepRecordedPicture(direction: -1 | 1): void {
+		if (
+			mode !== 'timeline' ||
+			playing ||
+			!video?.paused ||
+			scrubbing ||
+			coldPicture ||
+			frameResume ||
+			!storedPlayback
+		)
+			return;
+		void frames.step(direction, storedPlayback, presentSteppedFrame);
 	}
 
 	function jumpToLive(): void {
@@ -2226,62 +2529,87 @@
 		}
 		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest('[role="dialog"], dialog')) return;
-		if (target?.closest('[data-recorded-playback-controls]')) return;
+		if (
+			target?.closest('[data-recorded-playback-controls]') &&
+			!(
+				target.closest('[aria-keyshortcuts="ArrowLeft"], [aria-keyshortcuts="ArrowRight"]') &&
+				['ArrowLeft', 'ArrowRight', '[', ']'].includes(event.key)
+			)
+		)
+			return;
 		if (event.key.startsWith('Arrow') && target?.closest('[data-digital-pan-active]')) return;
-		const playerFocused = target?.closest('[data-keep-player]') !== null;
+		const playerFocused = Boolean(target?.closest('[data-keep-player]'));
 		const key = event.key.toLowerCase();
+		if (mode === 'export' && key !== '[' && key !== ']') return;
 		if (key === 'j') shuttle(-1);
 		else if (key === 'k') pauseTransport();
 		else if (key === 'l') shuttle(1);
 		else if (event.key === ' ' && !event.repeat) toggleTransport();
 		else if (event.key === '[') setExportBoundary('start');
 		else if (event.key === ']') setExportBoundary('end');
-		else if (event.key === 'ArrowLeft' && playerFocused) seekEstimatedFrameInterval(-1);
-		else if (event.key === 'ArrowRight' && playerFocused) seekEstimatedFrameInterval(1);
-		else if (event.key === 'Home' && playerFocused) jumpToLive();
+		else if ((key === 'arrowleft' || key === 'arrowright') && playerFocused) {
+			const direction = key === 'arrowleft' ? -1 : 1;
+			if (storedPlayback?.canStepExactly) {
+				if (playing) return;
+				stepRecordedPicture(direction);
+			} else seekEstimatedFrameInterval(direction);
+		} else if (event.key === 'Home' && playerFocused) jumpToLive();
 		else return;
 		event.preventDefault();
 	}
 
 	function applyPendingSeek() {
-		if (!video || !selected) return;
+		if (playbackSourceCommitVersion === playbackVersion) return;
+		if (!video || !selected || video.getAttribute('src') !== playbackUrl) return;
+		const hasMetadata = video.readyState >= HTMLMediaElement.HAVE_METADATA;
+		if (hasMetadata && video.currentSrc !== video.src) return;
 		video.playbackRate = playbackRate;
 		video.muted = scrubbing || playbackMuted;
-		const requestedTime = Math.max(
-			0,
-			Math.min(pendingSeekSeconds, video.duration || pendingSeekSeconds)
-		);
-		video.currentTime = requestedTime;
-		if (Math.abs(video.currentTime - requestedTime) < 0.001) {
-			playheadMs = playbackAnchorMs + video.currentTime * 1_000;
+		if (pendingSeekSeconds !== null) {
+			const requestedTime = hasMetadata
+				? Math.max(0, Math.min(pendingSeekSeconds, video.duration || pendingSeekSeconds))
+				: pendingSeekSeconds;
+			// Before metadata, currentTime sets the new source's default playback start.
+			if (video.currentTime !== requestedTime) video.currentTime = requestedTime;
+			if (hasMetadata && Math.abs(video.currentTime - requestedTime) < 0.001) {
+				playheadMs = playbackAnchorMs + video.currentTime * 1_000;
+				if (requestedTime >= pendingSeekSeconds) pendingSeekSeconds = null;
+				storedPlayback?.observe(video.currentTime);
+			}
 		}
-		storedPlayback?.observe(video.currentTime);
-		if (pendingPlay) void startReplay();
-		pendingPlay = false;
+		if (pendingPlay) {
+			pendingPlay = false;
+			void startReplay();
+		}
 	}
 
 	async function startReplay(): Promise<void> {
 		const player = video;
+		const version = playbackVersion;
 		if (!player) return;
 		try {
 			await player.play();
 		} catch {
-			if (video !== player) return;
+			if (video !== player || version !== playbackVersion || !playing) return;
 			player.muted = true;
 			playbackMuted = true;
 			playbackPreferences = withMediaPreferences(playbackPreferences, { muted: true });
 			savePlaybackPreferences(window.localStorage, playbackPreferences);
-			await player.play().catch(() => (playing = false));
+			await player.play().catch(() => {
+				if (video === player && version === playbackVersion) playing = false;
+			});
 		}
 	}
 
 	function updatePlayhead() {
+		if (selectedPicture || pendingSeekSeconds !== null) return;
 		if (!video || !selected || playbackSourceCommitVersion !== null) return;
 		playheadMs = playbackAnchorMs + video.currentTime * 1_000;
 		storedPlayback?.observe(video.currentTime);
 	}
 
 	function updatePlaybackRate() {
+		if (frames.preparingPlayback) return;
 		if (!video) return;
 		playbackRate = video.playbackRate;
 		playbackPreferences = withMediaPreferences(playbackPreferences, { playbackRate });
@@ -2290,6 +2618,7 @@
 	}
 
 	function updateMutedPreference(): void {
+		if (frames.preparingPlayback) return;
 		if (!video || scrubbing || video.muted === playbackMuted) return;
 		playbackMuted = video.muted;
 		playbackPreferences = withMediaPreferences(playbackPreferences, { muted: playbackMuted });
@@ -2297,6 +2626,7 @@
 	}
 
 	function togglePlaybackMute(): void {
+		frames.cancelHandoff();
 		if (!video) return;
 		video.muted = !playbackMuted;
 		updateMutedPreference();
@@ -2308,6 +2638,12 @@
 	}
 
 	function handlePlay() {
+		if (
+			frames.preparingPlayback ||
+			video?.paused ||
+			playbackSourceCommitVersion === playbackVersion
+		)
+			return;
 		playing = true;
 		rememberPlayIntent(true);
 		shuttleDirection = 1;
@@ -2315,10 +2651,12 @@
 	}
 
 	function handlePause() {
+		if (frames.preparingPlayback || (video && !video.paused)) return;
 		if (ignoreNextPauseEvent) {
 			ignoreNextPauseEvent = false;
 			return;
 		}
+		if (playbackSourceCommitVersion === playbackVersion) return;
 		playing = false;
 		rememberPlayIntent(false);
 		if (shuttleDirection === 1) shuttleDirection = 0;
@@ -2338,6 +2676,7 @@
 	}
 
 	function handleEnded() {
+		if (frames.preparingPlayback) return;
 		playing = false;
 		playNext();
 	}
@@ -2675,7 +3014,7 @@
 			/>
 		{:else if mode === 'export'}
 			<div class="space-y-3">
-				{#key `${selected?.url ?? 'empty-export'}:${exportSeedEvent?.id ?? ''}:${exportSeedEvent?.revision ?? ''}`}
+				{#key exportKey}
 					<KeepExportPanel
 						sourceId={cameraId}
 						sourceName={selectedCamera?.name ?? cameraId}
@@ -2761,6 +3100,14 @@
 										onvolumechange={updateMutedPreference}
 										onerror={handlePlayerError}
 									></video>
+									{#if storedPlayback?.canStepExactly}
+										<canvas
+											bind:this={frameCanvas}
+											hidden={!selectedPicture || frames.revealingPicture}
+											aria-label="Selected recorded picture"
+											class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
+										></canvas>
+									{/if}
 								{/key}
 								{#if stillPreviewUrl}
 									<img
@@ -2824,8 +3171,20 @@
 					{/if}
 
 					<RecordedPlaybackControls
+						onframe={storedPlayback?.canStepExactly && mode === 'timeline'
+							? stepRecordedPicture
+							: undefined}
+						frameDisabled={Boolean(coldPicture || frameResume) ||
+							frames.unsupported ||
+							playing ||
+							scrubbing ||
+							(frames.displayedNs === undefined && !frames.selection)}
+						frameTimeNs={selectedPicture?.storedTimeNs}
+						frameSourceTimeNs={selectedPicture?.presentationTimeNs}
+						frameNotice={frames.notice}
+						frameLoading={frames.busy || Boolean(frameResume)}
 						onoptions={mobilePortrait ? () => openMobilePanel('playback') : undefined}
-						{playing}
+						playing={playing || Boolean(frameResume) || frames.resumingPlayback}
 						muted={playbackMuted}
 						volume={playbackVolume}
 						rate={playbackRate}
@@ -2865,6 +3224,7 @@
 						{events}
 						selectedUrl={selected?.url ?? null}
 						{playheadMs}
+						exactPicture={!!frames.selection}
 						{dayStartMs}
 						followRequest={timelineFollowRequest}
 						loading={timelineRepository.loading}
@@ -2907,6 +3267,7 @@
 		onclick={() => (selectedWorkflowEvent = null)}
 	></button>
 	<EventDetailDrawer
+		sharingController={guestRangeSupported ? controlClient : undefined}
 		record={{ camera: selectedCamera, event: withWorkflow(selectedWorkflowEvent) }}
 		{workflow}
 		{workflowIdentity}

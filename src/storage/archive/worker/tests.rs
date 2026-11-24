@@ -149,6 +149,7 @@ fn frame(now: Instant, milliseconds: u64) -> crate::storage::RecordingFrame {
     use crate::storage::{MediaFrame, RecordingFrame, VideoCodec, VideoFrame};
     let elapsed = Duration::from_millis(milliseconds);
     RecordingFrame {
+        source_rtp: None,
         received_at: now + elapsed,
         timestamp: Some(elapsed),
         frame: MediaFrame::Video(VideoFrame {
@@ -165,13 +166,17 @@ fn frame(now: Instant, milliseconds: u64) -> crate::storage::RecordingFrame {
 }
 
 fn wait_available(handle: &Handle) -> anyhow::Result<()> {
+    anyhow::ensure!(wait_probe(handle)?.available, "archive probe failed");
+    Ok(())
+}
+
+fn wait_probe(handle: &Handle) -> anyhow::Result<Health> {
     handle.request_probe()?;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let health = handle.health();
         if !health.probe_pending {
-            anyhow::ensure!(health.available, "archive probe failed");
-            return Ok(());
+            return Ok(health);
         }
         anyhow::ensure!(Instant::now() < deadline, "archive probe did not complete");
         thread::sleep(Duration::from_millis(10));
@@ -444,6 +449,62 @@ fn finish_scan(scan: &mut Scan, context: &Context) -> anyhow::Result<()> {
         }
     }
     anyhow::bail!("archive fixture scan did not finish its bounded pass")
+}
+
+#[test]
+fn archive_resamples_capacity_after_a_primary_write_changes_the_ledger() -> anyhow::Result<()> {
+    let fixture = Fixture::new()?;
+    use anyhow::Context as _;
+
+    let (recording, _) = fixture.recording("front")?;
+    let context = fixture.context();
+    context.bind()?;
+    let job = admit(
+        &fixture.settings,
+        &context.catalog,
+        &recording,
+        "recording",
+        &ObjectId::random().to_string(),
+    )?;
+    context.catalog.archive(Request::Start {
+        id: job.id.clone(),
+        maximum_attempts: 3,
+    })?;
+    let root = Root::open(&job.binding.root)?;
+    let mut observations = 0;
+    context.catalog.with_fresh_capacity(&root, |capacity| {
+        observations += 1;
+        if observations == 1 {
+            fixture.recording("rear")?;
+        }
+        context
+            .catalog
+            .archive(Request::ReserveTransfer {
+                id: job.id.clone(),
+                capacity,
+            })
+            .context("reserving an archive transfer at its destination")
+    })?;
+    assert_eq!(observations, 2);
+    assert_eq!(context.catalog.archive_job(&job.id)?.attempts, 1);
+    let mut calls = 0;
+    let changed_root = context.catalog.with_fresh_capacity(&root, |mut capacity| {
+        calls += 1;
+        capacity.root_identity = "different-root".into();
+        context
+            .catalog
+            .archive(Request::ReserveTransfer {
+                id: job.id.clone(),
+                capacity,
+            })
+            .context("reserving an archive transfer at its destination")
+    });
+    assert!(changed_root.is_err());
+    assert_eq!(calls, 1, "identity rejection must not be retried");
+
+    drop(root);
+    drop(context);
+    fixture.close()
 }
 
 #[test]

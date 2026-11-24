@@ -97,6 +97,47 @@ impl Fixture {
 }
 
 #[test]
+fn legacy_store_lookup_preserves_completed_links_and_cannot_redeem_range_links() {
+    let mut fixture = Fixture::new();
+    let (_, completed) = fixture.grant();
+    let mut range = fixture.intent.clone();
+    range.request_id = Uuid::new_v4();
+    let selected = fixture
+        .store
+        .create_with_evidence(range, fixture.now, true)
+        .unwrap()
+        .token
+        .into_string();
+    let path = fixture.directory.0.join("grants.db");
+    drop(fixture.store);
+    let previous = super::database::Database::open(&path, fixture.now.unix_ms).unwrap();
+    assert!(
+        previous
+            .by_hash(&super::secret::digest(&completed))
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        previous
+            .by_hash(&super::secret::digest(&selected))
+            .unwrap()
+            .is_none()
+    );
+    drop(previous);
+    let mut upgraded = Store::open(&path, fixture.now.unix_ms).unwrap();
+    assert!(
+        upgraded
+            .exchange(&completed, &fixture.context, fixture.now)
+            .is_ok()
+    );
+    assert!(
+        upgraded
+            .exchange(&selected, &fixture.context, fixture.now)
+            .is_ok()
+    );
+}
+
+#[test]
 fn issued_secrets_are_redacted_and_only_hashes_are_durable() {
     let mut f = Fixture::new();
     let issued = f.store.create(f.intent.clone(), f.now).unwrap();
@@ -481,51 +522,6 @@ fn owner_lock_rejects_aliases_and_releases_after_drop() {
     drop(store);
     let reopened = Store::open(&directory.0.join("grants.db"), now.unix_ms).unwrap();
     drop(reopened);
-}
-
-#[test]
-fn restart_preserves_consumption_and_revocation_but_invalidates_sessions() {
-    let mut f = Fixture::new();
-    let (grant, token) = f.grant();
-    let handle = f.session(&token);
-    let pending = f.begin(&handle, Mode::Stream).unwrap();
-    f.commit(&pending).unwrap();
-    let Fixture {
-        store,
-        directory,
-        now,
-        context,
-        intent,
-    } = f;
-    drop(store);
-    let mut reopened = Store::open(&directory.0.join("grants.db"), now.unix_ms).unwrap();
-    assert_eq!(
-        reopened
-            .begin_delivery(&handle, &context, &intent.binding, Mode::Stream, now)
-            .unwrap_err(),
-        Error::Denied
-    );
-    let new_handle = reopened
-        .exchange(&token, &context, now)
-        .unwrap()
-        .handle
-        .into_string();
-    assert_eq!(
-        reopened
-            .begin_delivery(&new_handle, &context, &intent.binding, Mode::Stream, now)
-            .unwrap_err(),
-        Error::Denied
-    );
-    reopened
-        .revoke(grant.id, grant.revision, "withdrawn", now)
-        .unwrap();
-    drop(reopened);
-    let mut reopened = Store::open(&directory.0.join("grants.db"), now.unix_ms).unwrap();
-    assert_eq!(
-        reopened.exchange(&token, &context, now).unwrap_err(),
-        Error::Denied
-    );
-    assert_eq!(reopened.list(&intent.issuer, now).unwrap()[0].views, 1);
 }
 
 #[test]
@@ -1280,5 +1276,62 @@ fn nil_source_and_invalid_issuer_generations_never_create_authority() {
     assert!(f.store.list(&f.intent.issuer, f.now).unwrap().is_empty());
 }
 
+#[path = "tests/retention.rs"]
+mod retention;
+
 #[path = "tests/status.rs"]
 mod status;
+
+#[path = "tests/restart_process.rs"]
+mod restart_process;
+
+fn read_child_diagnostics(mut pipe: impl std::io::Read) -> Vec<u8> {
+    use std::io::Read;
+
+    let mut prefix = Vec::new();
+    pipe.by_ref()
+        .take(32 * 1024)
+        .read_to_end(&mut prefix)
+        .unwrap();
+    std::io::copy(&mut pipe, &mut std::io::sink()).unwrap();
+    prefix
+}
+
+fn wait_for_child(mut child: std::process::Child) -> std::process::Output {
+    let stdout = child.stdout.take().expect("fixture stdout is piped");
+    let stderr = child.stderr.take().expect("fixture stderr is piped");
+    let stdout = std::thread::spawn(move || read_child_diagnostics(stdout));
+    let stderr = std::thread::spawn(move || read_child_diagnostics(stderr));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (status, timed_out) = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break (status, false);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            break (child.wait().unwrap(), true);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let output = std::process::Output {
+        status,
+        stdout: stdout.join().unwrap(),
+        stderr: stderr.join().unwrap(),
+    };
+    assert!(
+        !timed_out,
+        "guest-store subprocess exceeded 30 seconds; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+#[test]
+fn fixture_diagnostics_drain_the_entire_stream_but_retain_a_bounded_prefix() {
+    let bytes = vec![b'x'; 96 * 1024];
+    let mut reader = std::io::Cursor::new(&bytes);
+    let prefix = read_child_diagnostics(&mut reader);
+    assert_eq!(prefix, bytes[..32 * 1024]);
+    assert_eq!(reader.position(), bytes.len() as u64);
+}

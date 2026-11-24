@@ -208,9 +208,9 @@ fn publish_with_retry(
     loop {
         let result = handle.volume_location(Request::Publish(publication.clone()));
         if retries_remaining == 0
-            || !result.as_ref().is_err_and(|error| {
-                error.to_string() == "volume catalog outcome unknown; retry operation"
-            })
+            || !result
+                .as_ref()
+                .is_err_and(|error| error.is::<super::UnconfirmedOutcome>())
         {
             return result;
         }

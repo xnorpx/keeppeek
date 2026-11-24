@@ -86,6 +86,21 @@ export function createExportRange(
 	};
 }
 
+export function exportSelectionKey(
+	sourceId: string,
+	segment: RecordingSegment | null,
+	event: Pick<RecordingEvent, 'id' | 'revision'> | null
+): string {
+	return JSON.stringify([
+		sourceId,
+		segment?.stream,
+		segment?.start_time_ms,
+		segment?.end_time_ms,
+		event?.id,
+		event?.revision
+	]);
+}
+
 export function createEventExportRange(
 	event: Pick<RecordingEvent, 'start_time_ms' | 'end_time_ms'>,
 	bitrateKbps: number | null
@@ -147,10 +162,12 @@ export function classifyExportCandidates<T extends ExportCandidate>(
 
 export function updateExportRange(
 	range: ExportRange,
-	startMs: number,
-	endMs: number,
+	startTimeMs: number,
+	endTimeMs: number,
 	bitrateKbps: number | null
 ): ExportRange {
+	const startMs = Math.trunc(startTimeMs);
+	const endMs = Math.trunc(endTimeMs);
 	let orderedStartMs = Math.min(startMs, endMs);
 	let orderedEndMs = Math.max(startMs, endMs);
 	if (orderedEndMs - orderedStartMs > MAX_EXPORT_DURATION_MS) {

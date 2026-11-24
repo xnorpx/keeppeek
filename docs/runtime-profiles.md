@@ -213,9 +213,11 @@ The full view uses ten narrow watches: registry, active, and eight observed part
 shell shares one active-header watch with Settings and receives a camera-filtered degraded count. Definition reads use at most four concurrent Gets
 and two retries if generation collection races a read. A client assembles at most two
 observed generations and never presents mixed generations as applied. The keys `observed/0` through `observed/7` carry opaque generation identifiers which can
-change as workers converge at the same desired revision. An empty watch prefix returns
-`KEY_INVALID`. Existing clients can read or watch the legacy `status` projection while
-it fits 16 KiB. A larger legacy projection returns `VALUE_TOO_LARGE` on Get or initial Watch.
+change as workers converge at the same desired revision. For Administrators, an empty watch
+prefix selects only the `active` entry and is echoed as empty in the initial snapshot. Other
+viewers must use an explicit permitted key and receive `NOT_AUTHORIZED` for an empty prefix.
+Existing clients can read or watch the legacy `status` projection while it fits 16 KiB. A larger
+legacy projection returns `VALUE_TOO_LARGE` on Get or initial Watch.
 
 Up to 256 configured cameras and 127 retained missing targets use the same eight observed keys.
 The recorder filters to the viewer's permitted cameras before hashing or assigning rows to a

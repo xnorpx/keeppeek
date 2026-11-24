@@ -1,8 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import type { MockControlPeerOptions } from './fixtures/control-peer';
-import { keepModeDate, keepModeDayStartMs, mockKeepModes } from './fixtures/keep-modes';
+import { mockControlPeer, type MockControlPeerOptions } from './fixtures/control-peer';
+import {
+	keepModeCameras,
+	keepModeDate,
+	keepModeDayStartMs,
+	mockKeepModes
+} from './fixtures/keep-modes';
 
 const mediaExportCapability = 'keeppeek.media-export.v1';
 const selectedStartMs = keepModeDayStartMs + 6 * 60 * 60_000 + 20 * 60_000;
@@ -17,6 +22,14 @@ function observeNoncanonicalControlRequests(page: Page): string[] {
 		}
 	});
 	return requests;
+}
+
+function pendingOperation() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
 }
 
 async function openSupportedExport(page: Page, options: MockControlPeerOptions = {}) {
@@ -44,6 +57,186 @@ async function selectTwoMinuteRange(page: Page): Promise<void> {
 	await expect(panel).toHaveAttribute('data-export-start-ms', String(selectedStartMs));
 	await expect(panel).toHaveAttribute('data-export-end-ms', String(selectedEndMs));
 }
+
+test('Export closes Timeline playback and keeps camera navigation available', async ({ page }) => {
+	test.setTimeout(90_000);
+	const requests = await mockKeepModes(page, 2);
+	await page.goto(`/keep?camera=front-door&stream=main&at=${selectedStartMs}`);
+	await expect(page.getByRole('button', { name: 'Timeline', exact: true })).toBeVisible({
+		timeout: 45_000
+	});
+	await expect.poll(() => requests.storedOpens.length).toBe(1);
+	const initial = requests.storedOpens[0]!;
+	expect(initial.timestampMs).toBe(selectedStartMs);
+	const mode = (name: string) => page.getByRole('button', { name, exact: true });
+	await mode('Export').click();
+	await expect.poll(() => requests.storedCloses).toEqual([initial.storedMediaId]);
+	await expect(page.locator('[data-keep-export]')).toBeVisible();
+	expect(requests.storedOpens).toHaveLength(1);
+	await mode('Timeline').click();
+	await expect.poll(() => requests.storedOpens.length).toBe(2);
+	expect(requests.storedOpens[1]).toMatchObject({
+		sourceId: 'front-door',
+		streamId: 'main',
+		timestampMs: selectedStartMs
+	});
+	await expect(mode('Play recording')).toBeVisible();
+	await mode('Export').click();
+	await expect.poll(() => requests.storedCloses.length).toBe(2);
+	const next = page.getByRole('button', { name: /^Next camera,/ });
+	const previous = page.getByRole('button', { name: /^Previous camera,/ });
+	const panel = page.locator('[data-keep-export]');
+	await next.click();
+	await expect(page.locator('[data-camera-switcher]')).toHaveAttribute(
+		'data-selected-camera',
+		'camera-2'
+	);
+	await expect(panel).toHaveAttribute('data-export-start-ms', /^\d+$/);
+	await expect(next).toBeEnabled();
+	await expect(previous).toBeEnabled();
+	await previous.click();
+	await expect(page.locator('[data-camera-switcher]')).toHaveAttribute(
+		'data-selected-camera',
+		'front-door'
+	);
+	await expect(panel).toHaveAttribute('data-export-start-ms', /^\d+$/);
+	await expect(next).toBeEnabled();
+	expect(requests.storedOpens).toHaveLength(2);
+});
+
+test('Export stops reverse playback and returns to its frozen Timeline position', async ({
+	page
+}) => {
+	const requests = await mockKeepModes(page, 2);
+	await page.goto(`/keep?camera=front-door&stream=main&at=${selectedStartMs}`);
+	const player = page.locator('[data-keep-player]');
+	await expect(player).toHaveAttribute('data-recording-playhead-ms', String(selectedStartMs));
+	await page.keyboard.press('j');
+	await expect
+		.poll(async () => Number(await player.getAttribute('data-recording-playhead-ms')))
+		.toBeLessThan(selectedStartMs);
+	const frozen = await page
+		.getByRole('button', { name: 'Export', exact: true })
+		.evaluate((button) => {
+			if (!(button instanceof HTMLButtonElement)) throw new Error('Expected Export mode button');
+			const at = Number(
+				document.querySelector<HTMLElement>('[data-keep-player]')!.dataset.recordingPlayheadMs
+			);
+			button.click();
+			return at;
+		});
+	await expect.poll(() => requests.storedCloses.length).toBe(1);
+	await page.clock.install();
+	await page.keyboard.press('j');
+	await page.clock.runFor(800);
+	await page.getByRole('button', { name: 'Timeline', exact: true }).click();
+	await expect.poll(() => requests.storedOpens.length).toBe(2);
+	expect(requests.storedOpens[1]).toMatchObject({
+		sourceId: 'front-door',
+		streamId: 'main',
+		timestampMs: frozen
+	});
+	await expect(player).toHaveAttribute('data-keyboard-shuttle-direction', '0');
+	await expect(player).toHaveAttribute('data-keyboard-playing', 'false');
+});
+
+test('Export keeps the last drag position while a Timeline seek is pending', async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 840 });
+	const seek = pendingOperation();
+	const requests = await mockKeepModes(page, 2, {
+		storedOpenGates: [Promise.resolve(), seek.promise]
+	});
+	await page.goto(`/keep?camera=front-door&stream=main&at=${selectedStartMs}`);
+	const player = page.locator('[data-keep-player]');
+	await expect(player).toHaveAttribute('data-recording-playhead-ms', String(selectedStartMs));
+	const drag = page.getByRole('button', { name: /Playback position at/i });
+	await drag.hover();
+	const bounds = await drag.boundingBox();
+	if (!bounds) throw new Error('Timeline drag control has no bounds');
+	const x = bounds.x + bounds.width / 2;
+	const y = bounds.y + bounds.height / 2;
+	let frozen: number;
+	try {
+		await page.mouse.move(x, y);
+		await page.mouse.down();
+		await page.mouse.move(x, y + 4, { steps: 4 });
+		await expect(player).not.toHaveAttribute('data-recording-playhead-ms', String(selectedStartMs));
+		await page.mouse.up();
+		frozen = Math.trunc(Number(await player.getAttribute('data-recording-playhead-ms')));
+		expect(frozen).not.toBe(selectedStartMs);
+		await page.getByRole('button', { name: 'Export', exact: true }).click();
+		await expect(page.locator('[data-keep-export]')).toBeVisible();
+	} finally {
+		seek.resolve();
+	}
+	await expect.poll(() => requests.storedCloses.length).toBe(1);
+	await page.getByRole('button', { name: 'Timeline', exact: true }).click();
+	await expect.poll(() => requests.storedOpens.length).toBe(2);
+	expect(requests.storedOpens[1]).toMatchObject({
+		sourceId: 'front-door',
+		streamId: 'main',
+		timestampMs: frozen
+	});
+	await expect(player).toHaveAttribute('data-keyboard-playing', 'false');
+});
+
+test('entering Export during the first Timeline open retains its selection and retires that cursor', async ({
+	page
+}) => {
+	test.setTimeout(90_000);
+	const opened = pendingOperation();
+	const requests = await mockKeepModes(page, 2, { storedOpenGates: [opened.promise] });
+	await page.goto(`/keep?camera=front-door&stream=main&at=${selectedStartMs}`);
+	await expect.poll(() => requests.storedOpens.length, { timeout: 45_000 }).toBe(1);
+	const initial = requests.storedOpens[0]!;
+	try {
+		await page.getByRole('button', { name: 'Export', exact: true }).click();
+		await expect(page.locator('[data-keep-export]')).toHaveAttribute(
+			'data-export-start-ms',
+			/[0-9]+/
+		);
+	} finally {
+		opened.resolve();
+	}
+	await expect.poll(() => requests.storedCloses).toContain(initial.storedMediaId);
+	await page.getByRole('button', { name: 'Timeline', exact: true }).click();
+	await expect.poll(() => requests.storedOpens.length).toBe(2);
+	expect(requests.storedOpens[1]).toMatchObject({
+		sourceId: 'front-door',
+		timestampMs: selectedStartMs
+	});
+	await expect(page.getByRole('button', { name: 'Play recording', exact: true })).toBeVisible();
+});
+
+test('returning to Timeline during an Export camera change opens only the selected camera', async ({
+	page
+}) => {
+	test.setTimeout(90_000);
+	const nextCamera = pendingOperation();
+	const requests = await mockKeepModes(page, 2, {
+		beforeStoredTimelineQuery: (sourceIds) =>
+			sourceIds.includes('camera-2') ? nextCamera.promise : undefined
+	});
+	await page.goto(`/keep?camera=front-door&stream=main&at=${selectedStartMs}&mode=export`);
+	const panel = page.locator('[data-keep-export]');
+	await expect(panel).toHaveAttribute('data-export-start-ms', /[0-9]+/, { timeout: 45_000 });
+	try {
+		await page.getByRole('button', { name: /^Next camera,/ }).click();
+		await expect(page.locator('[data-camera-switcher]')).toHaveAttribute(
+			'data-selected-camera',
+			'camera-2'
+		);
+		await expect(panel).toHaveCount(0);
+		await page.getByRole('button', { name: 'Timeline', exact: true }).click();
+		expect(requests.storedOpens).toHaveLength(0);
+	} finally {
+		nextCamera.resolve();
+	}
+	await expect
+		.poll(() => requests.storedOpens.map(({ sourceId }) => sourceId))
+		.toEqual(['camera-2']);
+	await expect(page.getByRole('button', { name: 'Play recording', exact: true })).toBeVisible();
+});
 
 test('preserves an export range while job creation fails closed', async ({ page }) => {
 	await mockKeepModes(page);
@@ -336,4 +529,41 @@ test('reuses a matching ready server job without horizontal drift at the Paper m
 	expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
 	expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 	expect(noncanonicalRequests).toEqual([]);
+});
+
+test('downloads an existing completed export in a fresh session with no recording segments', async ({
+	page
+}) => {
+	const payload = Uint8Array.from([0, 0, 0, 8, 102, 116, 121, 112]);
+	const controls = await mockControlPeer(page, {
+		cameras: keepModeCameras(1),
+		storedRanges: [],
+		capabilityIds: [mediaExportCapability],
+		exportFile: payload,
+		exportJobs: [
+			{
+				jobId: 'original-export',
+				sourceId: 'front-door',
+				status: 'ready',
+				fileName: 'door-evidence.mp4',
+				bytesWritten: payload.length
+			},
+			{ jobId: 'expired-export', status: 'expired', fileName: 'expired.mp4' }
+		]
+	});
+	await page.goto(`/keep?camera=front-door&mode=export&date=${keepModeDate}`);
+	const panel = page.locator('[data-keep-export]');
+	await expect(panel.getByText('No recording segment selected.')).toBeVisible();
+	await panel.getByRole('button', { name: 'Find completed exports' }).click();
+	const list = panel.getByRole('list', { name: 'Completed exports' });
+	await expect(list.getByText('expired.mp4')).toHaveCount(0);
+	const downloadPromise = page.waitForEvent('download');
+	await list.getByRole('button', { name: 'Download door-evidence.mp4' }).click();
+	const download = await downloadPromise;
+	expect(download.suggestedFilename()).toBe('door-evidence.mp4');
+	expect(new Uint8Array(await readFile((await download.path())!))).toEqual(payload);
+	expect(controls.exportJobs).toEqual([
+		{ action: 'list' },
+		{ action: 'download', jobId: 'original-export' }
+	]);
 });

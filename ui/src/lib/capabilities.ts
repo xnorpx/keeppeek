@@ -108,6 +108,14 @@ export const serverCapabilityCatalog = {
 		failureGuarantee:
 			'Unconfirmed creation never re-discloses a secret; stale mutations require a fresh grant list'
 	},
+	'keeppeek.guest-range.v1': {
+		delivery: 'target',
+		serverOwns:
+			'Verification of the source and the media envelope against the selected recording interval',
+		unlocks: 'Guest links from selected recording ranges, events and bookmarks',
+		whenMissing: 'Range sharing is hidden',
+		failureGuarantee: 'A range with media outside its boundaries cannot issue a guest link'
+	},
 	'stored-media-keyframe-preview.v1': {
 		delivery: 'ships',
 		serverOwns:

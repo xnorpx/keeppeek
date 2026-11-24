@@ -201,6 +201,9 @@ class FakeDataChannel {
 	storedTimelineQueries: QueryStoredMediaTimeline[] = [];
 	cancelledTimelineQueryIds: string[] = [];
 	eventSearchQueries: QueryEvents[] = [];
+	eventSearchRefusals: string[] = [];
+	eventSearchRefusalDelay = 0;
+	eventSearchCancelled: string[] = [];
 	exportRecordedAudio?: import('./proto/webrtc_pb').RecordedAudioTiming;
 
 	send(data: ArrayBuffer | ArrayBufferView): void {
@@ -376,6 +379,30 @@ class FakeDataChannel {
 			const action = command.value.action;
 			if (action.case === 'query') {
 				this.eventSearchQueries.push(action.value);
+				const refusal = this.eventSearchRefusals.shift();
+				if (refusal) {
+					const reply = create(ControlEnvelopeSchema, {
+						message: {
+							case: 'response',
+							value: create(ResponseSchema, {
+								requestId: request.message.value.requestId,
+								result: {
+									case: 'error',
+									value: create(ErrorSchema, { code: ErrorCode.REJECTED, message: refusal })
+								}
+							})
+						}
+					});
+					const deliverRefusal = () =>
+						this.onmessage?.({
+							data: toBinary(ControlEnvelopeSchema, reply).buffer
+						} as MessageEvent);
+					if (this.eventSearchRefusalDelay)
+						setTimeout(deliverRefusal, this.eventSearchRefusalDelay);
+					else queueMicrotask(deliverRefusal);
+					return;
+				}
+
 				const sourceId =
 					action.value.search.case === 'metadata'
 						? (action.value.search.value.sourceIds[0] ?? 'front-door')
@@ -580,6 +607,7 @@ class FakeDataChannel {
 				);
 				return;
 			}
+			if (action.case === 'cancelQuery') this.eventSearchCancelled.push(action.value.queryId);
 			if (action.case === 'cancelQuery' || action.case === 'cancelMedia') return;
 			throw new Error('unexpected event search action');
 		}
@@ -1913,6 +1941,9 @@ describe('ControlClient', () => {
 			playback.configure(recordedTimingState(2n, anchorMs + 5_000, 250));
 			appendTimingPeriod(playback, 2n, anchorMs + 5_000, 2n);
 			expect(sources[1]!.sourceBuffer.mode).toBe('segments');
+			const stored = BigInt(playback.anchorTimeMs) * 1_000_000n + 2_123_000n;
+			expect(playback.storedNsForMediaUs(2_123)).toBe(stored);
+			expect(playback.mediaUsForStoredNs(stored)).toBe(2_123);
 			playback.configure(recordedTimingState(3n, anchorMs + 8_000, 0));
 			appendTimingPeriod(playback, 3n, anchorMs + 8_000, 3n);
 			expect(sources[2]!.sourceBuffer.mode).toBe('sequence');
@@ -1935,6 +1966,56 @@ describe('ControlClient', () => {
 		});
 
 		expect(states).toEqual(['checking']);
+	});
+
+	it('aborts a transmitted health request when report collection is cancelled', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'report-health-abort',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+		try {
+			await client.getServerCapabilities();
+			const channel = FakePeerConnection.latest!.channels.find(
+				(item) => item.label === 'control-channel'
+			)!;
+			const sent = Promise.withResolvers<void>();
+			vi.spyOn(channel, 'send').mockImplementationOnce(() => sent.resolve());
+			const controller = new AbortController();
+			const reason = new Error('Report collection was cancelled');
+			const rejected = expect(client.getHealth(controller.signal)).rejects.toBe(reason);
+			await sent.promise;
+			controller.abort(reason);
+			await rejected;
+			await expect(client.getHealth()).resolves.toMatchObject({ status: 'degraded' });
+		} finally {
+			await client.close();
+		}
+	});
+
+	it('preserves verified access on snapshot collection failures and clears it on actual authorization loss', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'diagnostic-session',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+		const states: string[] = [];
+		client.onAccessState((state) => states.push(state.status));
+		await client.signIn('550e8400-e29b-41d4-a716-446655440000');
+		const authenticatedChanges = states.length;
+		api.fetchLogSnapshot.mockRejectedValueOnce(new api.ApiRequestError(500, 'Unavailable'));
+		api.fetchMetricsSnapshot.mockRejectedValueOnce(new TypeError('Network unavailable'));
+		await expect(client.getLogSnapshot()).rejects.toMatchObject({ status: 500 });
+		await expect(client.getMetricsSnapshot()).rejects.toThrow('Network unavailable');
+		expect(states).toHaveLength(authenticatedChanges);
+		expect(states.at(-1)).toBe('authenticated');
+		api.fetchLogSnapshot.mockRejectedValueOnce(new api.ApiRequestError(401, 'Unauthorized'));
+		await expect(client.getLogSnapshot()).rejects.toMatchObject({ status: 401 });
+		expect(states.at(-1)).toBe('sign-in-required');
+		await client.close();
 	});
 
 	it('keeps the remote bearer private while publishing resolved session metadata', async () => {
@@ -1993,6 +2074,61 @@ describe('ControlClient', () => {
 			expect(api.createSession).toHaveBeenCalledTimes(2);
 			if (allowed) expect(api.deleteSession).not.toHaveBeenCalled();
 			else expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith('first', 'retained-bearer');
+			await client.close();
+		}
+	);
+
+	it.each(['active', 'revoked', 'rotated'])(
+		'checks cookie authority before attempting privacy recovery (%s)',
+		async (authority) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			const active = authority === 'active';
+			const identity = { id: 'viewer', display_name: 'Remote viewer', role: 'user' };
+			const browserSession = {
+				local: false,
+				bearer_enabled: false,
+				methods: [],
+				identity,
+				csrf_token: 'cookie-session'
+			};
+			const discovered = {
+				...browserSession,
+				identity: authority === 'revoked' ? null : identity,
+				csrf_token: authority === 'rotated' ? 'replacement-cookie' : browserSession.csrf_token
+			};
+			const discover = vi
+				.fn()
+				.mockResolvedValueOnce(Response.json(browserSession))
+				.mockResolvedValueOnce(Response.json(discovered));
+			vi.stubGlobal('fetch', discover);
+			const answer = { type: 'answer', sdp: 'v=0' };
+			api.createSession.mockResolvedValueOnce({ session_id: 'original', answer });
+			if (active) api.createSession.mockResolvedValueOnce({ session_id: 'restored', answer });
+			api.deleteSession.mockResolvedValue(undefined);
+			const client = new ControlClient();
+			const states: string[] = [];
+			client.onAccessState(({ status }) => states.push(status));
+			await client.checkAccess();
+			FakePeerConnection.latest!.channels[0].close();
+			await vi.waitFor(() =>
+				expect(states.slice(-2)).toEqual([
+					'checking',
+					active ? 'authenticated' : 'sign-in-required'
+				])
+			);
+			expect(discover).toHaveBeenCalledTimes(2);
+			expect(api.createSession).toHaveBeenCalledTimes(active ? 2 : 1);
+			if (active) {
+				expect(api.createSession).toHaveBeenLastCalledWith(
+					expect.objectContaining({ type: 'offer' }),
+					{ csrfToken: 'cookie-session' },
+					'original'
+				);
+			} else {
+				expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith('original', {
+					csrfToken: 'cookie-session'
+				});
+			}
 			await client.close();
 		}
 	);
@@ -2080,7 +2216,7 @@ describe('ControlClient', () => {
 					status: local ? 'error' : 'sign-in-required',
 					message: local
 						? 'The recorder connection was interrupted. Retry to reconnect.'
-						: 'The recorder connection was interrupted. Sign in again to reconnect.'
+						: 'The remote session expired, was revoked, or disconnected.'
 				})
 			);
 			expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith(
@@ -2971,6 +3107,186 @@ describe('ControlClient', () => {
 			nalLengthSize: 4
 		});
 		expect([...media.payload]).toEqual([1, 2, 3]);
+	});
+
+	it('allows the latest event query to recover while cancelled searches drain', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'search-capacity',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+		await client.getServerCapabilities();
+		const channel = FakePeerConnection.latest!.channels.find(
+			(item) => item.label === 'control-channel'
+		)!;
+		const options = {
+			sourceIds: ['front-door'],
+			streamId: 'main' as const,
+			startMs: 1,
+			endMs: 5000
+		};
+		const capacity = 'event search task limit is reached';
+		channel.eventSearchRefusals.push(capacity, capacity.toUpperCase() + '.');
+		const page = await client.searchEventMetadata(options);
+		expect(page.hits.map((hit) => hit.eventId)).toContain('event-42');
+		expect(channel.eventSearchQueries).toHaveLength(3);
+		expect(new Set(channel.eventSearchQueries.map((query) => query.queryId)).size).toBe(1);
+		channel.eventSearchRefusals.push('permission denied');
+		await expect(client.searchEventMetadata(options)).rejects.toThrow('permission denied');
+		expect(channel.eventSearchQueries).toHaveLength(4);
+
+		channel.eventSearchRefusals.push(capacity);
+		const controller = new AbortController();
+		const pending = client.searchEventMetadata({ ...options, signal: controller.signal });
+		await vi.waitFor(() => expect(channel.eventSearchQueries).toHaveLength(5), { interval: 1 });
+		const replaced = new Error('A newer search replaced this query');
+		controller.abort(replaced);
+		await expect(pending).rejects.toBe(replaced);
+		expect(channel.eventSearchQueries).toHaveLength(5);
+		channel.eventSearchRefusals.push(...Array<string>(6).fill(capacity));
+		await expect(client.searchEventMetadata(options)).rejects.toMatchObject({
+			name: 'EventSearchCapacityError',
+			message: capacity
+		});
+		expect(channel.eventSearchQueries).toHaveLength(11);
+		await client.close();
+	});
+
+	it('preserves the supplied abort reason for an outstanding playback control response', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		vi.stubGlobal('MediaSource', class extends EventTarget {});
+		vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:stored-abort');
+		api.createSession.mockResolvedValue({
+			session_id: 'playback-abort-reason',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+		await client.getServerCapabilities();
+		const channel = FakePeerConnection.latest!.channels.find(
+			(item) => item.label === 'control-channel'
+		)!;
+		let sent!: () => void;
+		const transmitted = new Promise<void>((resolve) => {
+			sent = resolve;
+		});
+		vi.spyOn(channel, 'send').mockImplementationOnce(() => sent());
+		const controller = new AbortController();
+		const reason = new Error('The active playback selection was replaced.');
+		try {
+			const opened = client.openStoredMedia({
+				sourceId: 'front-door',
+				streamId: 'main',
+				timestampMs: 1,
+				endTimeMs: 5000,
+				playing: false,
+				playbackRate: 1,
+				signal: controller.signal
+			});
+			const rejected = expect(opened).rejects.toBe(reason);
+			await transmitted;
+			controller.abort(reason);
+			await rejected;
+		} finally {
+			await client.close();
+		}
+	});
+
+	it('cancels a search between connection readiness and control send without allocating a response', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'search-cancel-before-send',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+		await client.getServerCapabilities();
+		const channel = FakePeerConnection.latest!.channels.find(
+			(item) => item.label === 'control-channel'
+		)!;
+		vi.useFakeTimers();
+		try {
+			const timers = vi.getTimerCount();
+			const controller = new AbortController();
+			const query = client.searchEventMetadata({
+				sourceIds: ['front-door'],
+				streamId: 'main',
+				startMs: 1,
+				endMs: 5000,
+				signal: controller.signal
+			});
+			queueMicrotask(() => controller.abort());
+			await expect(query).rejects.toMatchObject({ name: 'AbortError' });
+			expect(channel.eventSearchQueries).toHaveLength(0);
+			expect(channel.eventSearchCancelled).toHaveLength(0);
+			expect(vi.getTimerCount()).toBe(timers);
+		} finally {
+			await client.close();
+			vi.useRealTimers();
+		}
+	});
+
+	it('releases the control response timer when sending a search fails', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'search-send-failure',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+		await client.getServerCapabilities();
+		const channel = FakePeerConnection.latest!.channels.find(
+			(item) => item.label === 'control-channel'
+		)!;
+		vi.spyOn(channel, 'send').mockImplementationOnce(() => {
+			throw new Error('Transport closed during send');
+		});
+		vi.useFakeTimers();
+		try {
+			const timers = vi.getTimerCount();
+			await expect(
+				client.searchEventMetadata({
+					sourceIds: ['front-door'],
+					streamId: 'main',
+					startMs: 1,
+					endMs: 5000
+				})
+			).rejects.toThrow('Transport closed during send');
+			expect(vi.getTimerCount()).toBe(timers);
+		} finally {
+			await client.close();
+			vi.useRealTimers();
+		}
+	});
+
+	it('stops retrying a slow event query at its delivery deadline', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'search-deadline',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+		await client.getServerCapabilities();
+		const channel = FakePeerConnection.latest!.channels.find(
+			(item) => item.label === 'control-channel'
+		)!;
+		vi.useFakeTimers();
+		try {
+			channel.eventSearchRefusalDelay = 9_980;
+			channel.eventSearchRefusals.push('event search task limit is reached');
+			const query = client.searchEventMetadata({
+				sourceIds: ['front-door'],
+				streamId: 'main',
+				startMs: 1,
+				endMs: 5000
+			});
+			const failure = expect(query).rejects.toThrow('Event search timed out.');
+			await vi.advanceTimersByTimeAsync(10_100);
+			await failure;
+			expect(channel.eventSearchQueries).toHaveLength(1);
+			expect(channel.eventSearchCancelled).toEqual([channel.eventSearchQueries[0]!.queryId]);
+		} finally {
+			await client.close();
+			vi.useRealTimers();
+		}
 	});
 
 	it('encodes metadata filters and decodes a rich bounded event page', async () => {

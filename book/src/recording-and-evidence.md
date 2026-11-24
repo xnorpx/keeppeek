@@ -23,10 +23,22 @@ Changing the quality preference is separate from [digital zoom](./digital-zoom.m
 playback does not provide automatic transcoding for an unsupported codec; retain a compatible
 H.264 stream when your viewing devices need one.
 
-With a recording selected and the player focused, Left and Right pause playback and seek by one
-estimated frame interval when camera health reports a positive configured frame rate. If the rate
-is unavailable, playback and position stay as they were. On variable-rate recordings, successive seeks
-can display the same picture or skip a picture. Space toggles playback. J, K and L control shuttle
+To inspect adjacent pictures in Keep, pause a recording in **Timeline**. Select **Previous recorded
+frame** or **Next recorded frame**, or focus the player and press Left or Right. Each successful
+step displays the selected picture, including pictures that share a timestamp when their order can
+be verified. A gap, a changed recording, or unavailable source timing can prevent a step. The
+player shows the reason and keeps the last displayed picture. Arrow keys pan while the zoomed
+image has focus.
+
+**Recorded frame** gives the selected picture's UTC position in the recording. The timeline and
+export handles follow that position. A separate **Source presentation** time appears when the
+camera's original timing differs. Press **[** to set the export start or **]** to set the end.
+Select **Read selected frame time** for a screen-reader announcement. **Play recording** resumes
+from the selected recorded position at the current playback speed.
+
+With an older recorder or a browser without exact frame decoding, the focused player's arrows
+pause and seek by an estimated interval when camera health supplies a positive frame rate.
+Variable-rate recording can repeat or skip pictures during approximate seeking. Space toggles playback. J, K and L control shuttle
 and pause. `[` and `]` set export boundaries. Form fields keep their normal keyboard behavior.
 Arrow keys pan a focused digitally zoomed image.
 
@@ -170,6 +182,18 @@ normal Keep timeline; the player displays **ARCHIVE — Playing from archive. St
 the required archive ranges directly, without a full restore or an artificial delay. Existing
 waiting, failure, seek, and cancellation controls still apply.
 
+After an export expires and its local history is pruned, a new session under the same account
+can find its recent verified archives in **Keep → Export**. When no recording segment is
+selected, choose **Find completed exports**, identify the file by its camera, stream and UTC
+start time, then **Download**. When a segment is selected, choose the same stream, range and
+export options to use an existing matching export. A current camera privacy restriction hides
+the archived entry and blocks its download.
+
+The export list preserves local history and considers up to 64 additional verified exports, newest
+creation first, within the response size limit. Requesting an older export by its original job ID
+still works. Listing reads the local catalog. Downloading opens and verifies the target, so a
+disconnected destination can prevent retrieval.
+
 **Restore primary** queues a verified transfer back to the original primary destination.
 Cancellation stops cancellable copy or restore work and cleans up partial staging.
 **Retry / finish cleanup** retains the cancelled copy's job identity. Copying resumes only after
@@ -217,6 +241,24 @@ and an explicit unknown state. Gap actions open nearby footage, camera health, o
 Long histories remain bounded: fleet pages contain 25 cameras by default, recent exact detail keeps
 at most 256 ranges per stream, and longer periods use deterministic time buckets while retaining
 exact totals.
+
+## Interrupted legacy recording initialization
+
+On Unix, KeepPeek can encounter two different files at the same active recording name
+while recovering a failed header write. The current occupant stays in place. The displaced
+entry retains its original filename under `.keeppeek-header-recovery-v1/` in the same
+recording hour. Its private `<active name>.pins-v2/` directory holds a hard link whose
+name records the device and inode from the writer's open file handle. This single link
+both holds the inode across a restart and identifies it before the move into recovery.
+Recording listings, integrity scans, and date or capacity pruning skip the recovery directory.
+When the active name is next requested, KeepPeek verifies the pin before reclaiming a partial
+file belonging to the failed write or restores a displaced entry to its vacant original name.
+For an older recording, stop writers for that directory and preserve the saved entry under a vacant
+recovery name. Inspect both files before changing either. A staged entry without a valid
+recovery record is left in place. An inaccessible directory or one with untrusted ownership
+or permissions is skipped. New recordings still require a vacant active filename.
+Named storage volumes use their allocation ledger for
+recovery.
 
 ## Review events consistently
 
@@ -382,8 +424,16 @@ single configured track and the recorder has accepted at least one RTP packet. E
 The readings precede transcoding, recording timeline normalization and configured
 presentation correction. Use the recorded flash/tone preview or a known physical
 event to measure audible sync. These periodic observations live in the recorder
-log and expire with its retention policy. Existing recordings contain their
-stored media timestamps.
+log and expire with its retention policy. Newly recorded RTSP files also retain
+measured per-sample source timing for the lifetime of the recording. Older files
+provide their stored presentation timestamps only.
+
+Recordings rotate at a video keyframe as they approach their recovery limits.
+An exceptionally long interval between keyframes or repeated source clock
+discontinuities can exhaust a file’s metadata budget. The recorder logs
+`recording recovery budget exhausted`, keeps the valid prefix and starts a new
+recording at the next video keyframe. The interval between the last retained
+sample and that keyframe is a gap in coverage.
 
 For the availability and safety limits of manual deletion and catalog drift checks,
 see [Recording maintenance](./recording-maintenance.md). The Administrator workflow

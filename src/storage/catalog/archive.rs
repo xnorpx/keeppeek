@@ -10,6 +10,7 @@ use std::{
 
 mod decode;
 mod dispatch;
+pub mod exports;
 use dispatch::dispatch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +77,14 @@ pub enum Request {
     Enqueue(Admission),
     Get(String),
     FindExport(String),
+    GetOwnerExport {
+        requester: String,
+        original_id: String,
+    },
+    ListOwnerExports {
+        requester: String,
+        retained: Vec<String>,
+    },
     List {
         after: String,
         limit: u16,
@@ -163,6 +172,7 @@ pub enum Reply {
     Done,
     Job(Option<Box<Job>>),
     Jobs(Vec<Job>),
+    ExportDescriptions(Vec<exports::Description>),
     Candidates(Vec<(String, Option<String>)>),
     Eviction(Box<super::archive_playback::Eviction>),
 }
@@ -208,7 +218,15 @@ pub(super) async fn execute(
         Instant::now() < deadline,
         "archive catalog deadline expired"
     );
-    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let transaction = if matches!(
+        request,
+        Request::ListOwnerExports { .. } | Request::GetOwnerExport { .. }
+    ) {
+        "BEGIN"
+    } else {
+        "BEGIN IMMEDIATE"
+    };
+    connection.execute_batch(transaction).await?;
     let result = dispatch(connection, registry, request).await;
     match result {
         Ok(reply) => {
@@ -663,11 +681,7 @@ async fn reserve_transfer(
         job.state == "copying" && !job.cancelled,
         "archive transfer is no longer pending"
     );
-    anyhow::ensure!(
-        capacity.ledger_revision == super::locations::revision(connection).await?
-            && capacity.observed_at.elapsed() <= std::time::Duration::from_secs(5),
-        "archive capacity observation expired"
-    );
+    super::locations::ensure_fresh_observation(connection, capacity, "archive transfer").await?;
     anyhow::ensure!(
         capacity.filesystem == job.binding.identity.filesystem
             && capacity.root_identity == job.binding.identity.directory,

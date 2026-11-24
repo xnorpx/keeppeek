@@ -206,8 +206,15 @@ impl WatchRegistry {
         key_prefix: String,
         watch_id: String,
     ) -> Result<(), Error> {
-        self.register_snapshot(session_id, namespace, key_prefix, watch_id, None)
-            .map(|_| ())
+        self.register_snapshot(
+            session_id,
+            namespace,
+            key_prefix,
+            watch_id,
+            None,
+            |_| Ok(()),
+        )
+        .map(|_| ())
     }
 
     pub(super) fn register_snapshot(
@@ -217,6 +224,7 @@ impl WatchRegistry {
         key_prefix: String,
         watch_id: String,
         profile: Option<(&StoredEntry, Arc<Lifecycle>)>,
+        validate_snapshot: impl FnOnce(u64) -> Result<(), Error>,
     ) -> Result<u64, Error> {
         let mut watches = self.lock();
         if !watches.contains_key(&(session_id, watch_id.clone())) {
@@ -231,9 +239,15 @@ impl WatchRegistry {
         let cursor = profile.as_ref().map_or(0, |(entry, session)| {
             session
                 .profile_watch_revision
-                .fetch_max(entry.revision, Ordering::Relaxed)
+                .load(Ordering::Relaxed)
                 .max(entry.revision)
         });
+        validate_snapshot(cursor)?;
+        if let Some((_, session)) = &profile {
+            session
+                .profile_watch_revision
+                .store(cursor, Ordering::Relaxed);
+        }
         watches.insert(
             (session_id, watch_id.clone()),
             Watch {
@@ -510,12 +524,24 @@ fn is_profile_status_event(event: &WatchEvent) -> bool {
 }
 
 fn profile_fingerprint(entry: &StoredEntry) -> [u8; 32] {
-    Sha256::new()
-        .chain_update(entry.schema.as_bytes())
-        .chain_update(entry.revision.to_be_bytes())
-        .chain_update(entry.value.encode_to_vec())
-        .finalize()
-        .into()
+    thread_local! {
+        static ENCODED_PROFILE: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    // Only validated profile documents reach this path. Reuse the encoding
+    // buffer across projections on this thread without taking another lock.
+    ENCODED_PROFILE.with_borrow_mut(|buffer| {
+        buffer.clear();
+        entry
+            .value
+            .encode(buffer)
+            .expect("encoding into a Vec is infallible");
+        Sha256::new()
+            .chain_update(entry.schema.as_bytes())
+            .chain_update(entry.revision.to_be_bytes())
+            .chain_update(buffer.as_slice())
+            .finalize()
+            .into()
+    })
 }
 
 fn closed_notification(watch: &Watch, reason: CloseReason) -> proto::Notification {

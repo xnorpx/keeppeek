@@ -184,6 +184,7 @@ impl NegotiatedPeers {
             .push_back(QueuedApiData::Message(QueuedDataMessage {
                 group: "camera".into(),
                 target,
+                lifetime: None,
                 payload: GuardedMedia {
                     value: b"authorized fixture audio".to_vec(),
                     timing: None,
@@ -302,10 +303,12 @@ fn negotiated_camera_paths_require_their_original_epoch_at_udp_handoff() {
                 .unwrap();
             let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
             let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-            receiver.set_nonblocking(true).unwrap();
             let destination = receiver.local_addr().unwrap();
             assert_blocked_datagram(&media.permits, &sender, &receiver, &packet.contents, path);
             let mut buf = [0; 2048];
+            receiver
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             send_datagram(&other, &sender, &packet.contents, destination).unwrap();
             let length = receiver.recv(&mut buf).unwrap();
             assert_eq!(&buf[..length], &packet.contents[..]);
@@ -337,9 +340,13 @@ fn assert_blocked_datagram(
         "{path:?}"
     );
     let mut buf = [0; 2048];
-    assert_eq!(
-        receiver.recv(&mut buf).unwrap_err().kind(),
-        ErrorKind::WouldBlock
+    receiver
+        .set_read_timeout(Some(Duration::from_millis(25)))
+        .unwrap();
+    let outcome = receiver.recv(&mut buf);
+    assert!(
+        matches!(outcome, Err(ref e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)),
+        "{path:?} should leave the UDP socket quiet, received {outcome:?}"
     );
 }
 

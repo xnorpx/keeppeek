@@ -1,5 +1,7 @@
+import { boundedReportEvidence } from './report-evidence';
 import { createDiagnosticRedactor, type DiagnosticPrivateValue } from './diagnostic-redaction';
 import type { ControlClient } from './control-client';
+import type { ReportLogWindow } from './report-log-window';
 import type {
 	BrowserLogEntry,
 	CameraListItem,
@@ -10,6 +12,7 @@ import type {
 } from './types';
 
 export interface DiagnosticsBundleInput {
+	report?: ReportLogWindow;
 	server: LogSnapshot;
 	browser: BrowserLogEntry[];
 	logging?: LoggingSettings;
@@ -37,16 +40,85 @@ export async function collectDiagnosticsBundle(
 	browser: BrowserLogEntry[],
 	generatedAt = new Date()
 ): Promise<string> {
-	const server = await controlClient.getLogSnapshot();
+	return (
+		await collectEvidence(controlClient, await controlClient.getLogSnapshot(), browser, generatedAt)
+	).document;
+}
+
+export type ReportDiagnostics = {
+	diagnostics: Blob | null;
+	redactText: ((value: string) => string) | null;
+	warnings: string[];
+};
+
+export async function collectReportDiagnosticsBundle(
+	controlClient: DiagnosticsControlClient,
+	server: LogSnapshot | null,
+	report: ReportLogWindow,
+	signal: AbortSignal
+): Promise<ReportDiagnostics> {
+	// The report manifest accounts for missing server logs. The existing health,
+	// configuration, and inventory checks still apply to every downloadable package.
+	const buffer = server ?? {
+		entries: [],
+		oldest_sequence: null,
+		newest_sequence: null,
+		truncated: true,
+		stats: {
+			entry_count: 0,
+			byte_count: 0,
+			evicted_entries: 0,
+			max_entries: 0,
+			max_bytes: 0,
+			active_streams: 0,
+			max_streams: 0
+		}
+	};
+	const collectionErrors: Record<string, string> = {};
+	let diagnostics: Blob | null = null;
+	let redactText: ReportDiagnostics['redactText'] = null;
+	try {
+		const evidence = await collectEvidence(
+			controlClient,
+			buffer,
+			report.browserEntries,
+			new Date(report.manifest.stopUtc),
+			report,
+			signal,
+			collectionErrors
+		);
+		signal.throwIfAborted();
+		diagnostics = await compressDiagnosticsDocument(evidence.document, signal);
+		redactText = evidence.redactText;
+	} catch {
+		signal.throwIfAborted();
+	}
+	const warnings = Object.keys(collectionErrors).map(
+		(source) => `diagnostics-${source}-unavailable`
+	);
+	if (!diagnostics) warnings.push('diagnostics-package-unavailable');
+	return { diagnostics, redactText, warnings };
+}
+
+async function collectEvidence(
+	controlClient: DiagnosticsControlClient,
+	server: LogSnapshot,
+	browser: BrowserLogEntry[],
+	generatedAt: Date,
+	report?: ReportLogWindow,
+	signal?: AbortSignal,
+	collectionErrors: Record<string, string> = {}
+) {
+	const collect = <T>(operation: (signal?: AbortSignal) => Promise<T>) =>
+		signal ? boundedReportEvidence(signal, operation) : operation();
 	const [loggingResult, healthResult, configResult, camerasResult, metricsResult] =
 		await Promise.allSettled([
-			controlClient.getLoggingSettings(),
-			controlClient.getHealth(),
-			controlClient.getRuntimeConfiguration(),
-			controlClient.getCameras(),
-			controlClient.getMetricsSnapshot()
+			collect((active) => controlClient.getLoggingSettings(active)),
+			collect((active) => controlClient.getHealth(active)),
+			collect((active) => controlClient.getRuntimeConfiguration(active)),
+			collect((active) => controlClient.getCameras(active)),
+			collect((active) => controlClient.getMetricsSnapshot(active))
 		]);
-	const collectionErrors: Record<string, string> = {};
 	const logging = settledValue(loggingResult, 'logging-settings', collectionErrors);
 	const health = settledValue(healthResult, 'health', collectionErrors);
 	const config = settledValue(configResult, 'runtime-config', collectionErrors);
@@ -58,7 +130,8 @@ export async function collectDiagnosticsBundle(
 	}
 	if (!cameras) throw new Error('Camera inventory is required to scrub the diagnostics package.');
 
-	return buildDiagnosticsBundle({
+	return buildEvidence({
+		report,
 		server,
 		browser,
 		logging,
@@ -73,6 +146,10 @@ export async function collectDiagnosticsBundle(
 }
 
 export function buildDiagnosticsBundle(input: DiagnosticsBundleInput): string {
+	return buildEvidence(input).document;
+}
+
+function buildEvidence(input: DiagnosticsBundleInput) {
 	if (!input.health) {
 		throw new Error('Health evidence is required to scrub the diagnostics package.');
 	}
@@ -84,10 +161,13 @@ export function buildDiagnosticsBundle(input: DiagnosticsBundleInput): string {
 	}
 	const generatedAt = input.generatedAt ?? new Date();
 	const redactor = createDiagnosticRedactor(privateValues(input));
+	const serverEntries = input.report?.serverEntries ?? input.server.entries;
+	const browserEntries = input.report?.browserEntries ?? input.browser;
 	const artifacts = [
 		'server_logs',
 		'browser_logs',
 		'log_buffer',
+		...(input.report ? ['report_window'] : []),
 		...(input.logging ? ['logging_settings'] : []),
 		...(input.health ? ['health'] : []),
 		...(input.config ? ['runtime_config'] : []),
@@ -105,15 +185,16 @@ export function buildDiagnosticsBundle(input: DiagnosticsBundleInput): string {
 			generated_at: generatedAt.toISOString(),
 			privacy: 'scrubbed',
 			redaction_context: 'complete',
-			server_log_entries: input.server.entries.length,
-			browser_log_entries: input.browser.length,
+			server_log_entries: serverEntries.length,
+			browser_log_entries: browserEntries.length,
 			server_snapshot_truncated: input.server.truncated,
 			artifacts,
 			notice:
 				'Known private values and recognized sensitive patterns were scrubbed before compression. Review before sharing because no automated scrubber can guarantee removal of every free-form private value.'
 		},
-		server_logs: input.server.entries,
-		browser_logs: input.browser,
+		...(input.report ? { report_window: input.report.manifest } : {}),
+		server_logs: serverEntries,
+		browser_logs: browserEntries,
 		log_buffer: {
 			oldest_sequence: input.server.oldest_sequence,
 			newest_sequence: input.server.newest_sequence,
@@ -129,7 +210,10 @@ export function buildDiagnosticsBundle(input: DiagnosticsBundleInput): string {
 		collection_errors: input.collectionErrors
 	};
 
-	return `${JSON.stringify(redactor.value(document), null, 2)}\n`;
+	return {
+		document: `${JSON.stringify(redactor.value(document), null, 2)}\n`,
+		redactText: redactor.text
+	};
 }
 
 export function diagnosticsBundleFilename(generatedAt = new Date()): string {
@@ -143,19 +227,31 @@ export async function downloadDiagnosticsBundle(
 	const generatedAt = new Date();
 	const diagnosticsDocument = await collectDiagnosticsBundle(controlClient, browser, generatedAt);
 	const blob = await compressDiagnosticsDocument(diagnosticsDocument);
+	downloadDiagnosticsArtifact(blob, diagnosticsBundleFilename(generatedAt));
+}
+
+export function downloadDiagnosticsArtifact(blob: Blob, filename: string): void {
 	const url = URL.createObjectURL(blob);
 	const anchor = document.createElement('a');
 	anchor.href = url;
-	anchor.download = diagnosticsBundleFilename(generatedAt);
-	anchor.click();
-	URL.revokeObjectURL(url);
+	anchor.download = filename;
+	try {
+		anchor.click();
+	} finally {
+		URL.revokeObjectURL(url);
+	}
 }
 
-export async function compressDiagnosticsDocument(document: string): Promise<Blob> {
+export async function compressDiagnosticsDocument(
+	document: string,
+	signal?: AbortSignal
+): Promise<Blob> {
 	if (typeof CompressionStream === 'undefined') {
 		throw new Error('This browser cannot create a compressed diagnostics package.');
 	}
-	const stream = new Blob([document]).stream().pipeThrough(new CompressionStream('gzip'));
+	const stream = new Blob([document])
+		.stream()
+		.pipeThrough(new CompressionStream('gzip'), { signal });
 	return new Blob([await new Response(stream).arrayBuffer()], { type: 'application/gzip' });
 }
 

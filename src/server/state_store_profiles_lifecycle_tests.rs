@@ -332,6 +332,7 @@ fn keyframe(received_at: Instant, marker: &[u8]) -> RecordingFrame {
     data.push(0x65);
     data.extend_from_slice(marker);
     RecordingFrame {
+        source_rtp: None,
         received_at,
         timestamp: None,
         frame: MediaFrame::Video(VideoFrame {
@@ -722,37 +723,35 @@ fn observed_parts_cover_all_degraded_cameras_and_fit_document_and_snapshot_budge
         .unwrap()
         .insert(session, super::super::super::tests::local_test_session());
     let mut pump = lifecycle.state.webrtc.stage_api_session_pump(session);
-    for key in [ACTIVE_KEY, REGISTRY_KEY] {
+    for (watch_id, prefix, expected_key) in [
+        (ACTIVE_KEY, ACTIVE_KEY, ACTIVE_KEY),
+        (REGISTRY_KEY, REGISTRY_KEY, REGISTRY_KEY),
+        ("legacy-active", "", ACTIVE_KEY),
+    ] {
         let result = super::super::dispatch(
             &lifecycle.state,
             session,
             &admin,
             proto::StateStoreCommand {
                 action: Some(state_store_command::Action::Watch(proto::WatchState {
-                    watch_id: key.into(),
+                    watch_id: watch_id.into(),
                     namespace: NAMESPACE.into(),
-                    key_prefix: key.into(),
+                    key_prefix: prefix.into(),
                 })),
             },
         )
         .unwrap();
+        let control_ok::Result::StateStoreResult(watch) = &result else {
+            panic!("expected a runtime profile watch");
+        };
+        let Some(state_store_result::Result::Watch(snapshot)) = &watch.result else {
+            panic!("expected a runtime profile snapshot");
+        };
+        assert_eq!(snapshot.key_prefix, prefix);
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(snapshot.entries[0].key, expected_key);
         assert!(response_envelope(result).encoded_len() <= 48 * 1024);
     }
-    let broad = super::super::dispatch(
-        &lifecycle.state,
-        SessionId::from_u64(20_274),
-        &admin,
-        proto::StateStoreCommand {
-            action: Some(state_store_command::Action::Watch(proto::WatchState {
-                watch_id: "broad".into(),
-                namespace: NAMESPACE.into(),
-                key_prefix: String::new(),
-            })),
-        },
-    )
-    .expect_err("a broad profile snapshot cannot represent the fleet");
-    let detail = proto::StateStoreError::decode(broad.details[0].value.as_slice()).unwrap();
-    assert_eq!(detail.code(), proto::StateStoreErrorCode::KeyInvalid);
     let mut seen = BTreeSet::new();
     let mut generations = BTreeSet::new();
     let mut max_document = 0;

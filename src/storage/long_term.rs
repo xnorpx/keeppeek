@@ -1,15 +1,89 @@
 use crate::storage::layout;
+use cap_fs_ext::DirExt;
+use cap_std::fs::Dir;
 use std::path::{Path, PathBuf};
 
 pub mod inspection;
+mod paths;
+use paths::{contains_private_directory, recording_relative};
 
+pub(super) fn legacy_stream(root: &Path, path: &Path) -> Option<String> {
+    let relative = recording_relative(root, path)?;
+    let name = relative.file_name()?.to_str()?.strip_suffix(".mp4")?;
+    let hour = relative.parent()?;
+    let date = hour.parent()?;
+    let stream = date.parent()?;
+    let digits = |text: &str, len| text.len() == len && text.bytes().all(|b| b.is_ascii_digit());
+    let day = date.file_name()?.to_str()?;
+    if !digits(name, 7)
+        || !digits(hour.file_name()?.to_str()?, 2)
+        || day.len() != 10
+        || !day.is_ascii()
+        || !digits(&day[..4], 4)
+        || !digits(&day[5..7], 2)
+        || !digits(&day[8..], 2)
+        || &day[4..5] != "-"
+        || &day[7..8] != "-"
+        || stream.as_os_str().is_empty()
+    {
+        return None;
+    }
+    Some(
+        stream
+            .iter()
+            .map(|s| s.to_str())
+            .collect::<Option<Vec<_>>>()?
+            .join("/"),
+    )
+}
+
+#[derive(Clone)]
 pub struct LongTermStore {
     root: PathBuf,
+    pending_source: Option<PathBuf>,
 }
 
 impl LongTermStore {
     pub const fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            pending_source: None,
+        }
+    }
+
+    pub(crate) fn for_recording_roots(root: &Path, source: &Path) -> Self {
+        // A nested capture directory also lies under the archive prefix until relocation completes.
+        let pending_source = paths::relative_components(root, source)
+            .filter(|relative| !relative.as_os_str().is_empty())
+            .map(|_| source.to_owned());
+        Self {
+            root: root.to_owned(),
+            pending_source,
+        }
+    }
+
+    pub(crate) fn pending_source(&self) -> Option<&Path> {
+        self.pending_source.as_deref()
+    }
+
+    pub(crate) fn contains_cleanup_path(&self, path: &Path, catalog_stream: &str) -> bool {
+        if recording_relative(&self.root, path).is_none_or(contains_private_directory) {
+            return false;
+        }
+        if self
+            .pending_source()
+            .is_some_and(|source| paths::relative_components(source, path).is_some())
+        {
+            // A published stream can share the name of a capture directory nested in the archive.
+            return legacy_stream(&self.root, path).is_some_and(|stream| {
+                if cfg!(windows) {
+                    stream.eq_ignore_ascii_case(catalog_stream)
+                } else {
+                    stream == catalog_stream
+                }
+            });
+        }
+        true
     }
 
     pub fn finalized_segments(&self, camera_id: &str) -> std::io::Result<Vec<PathBuf>> {
@@ -45,10 +119,10 @@ impl LongTermStore {
                 continue;
             };
 
-            if date_str < cutoff_date.as_str() {
+            if is_recording_date(date_str) && date_str < cutoff_date.as_str() {
                 let path = entry.path();
-                if path.is_dir() {
-                    removed += remove_dir_count(&path)?;
+                if entry.file_type()?.is_dir() {
+                    self.prune_date(&path, &mut |_, _| removed += 1)?;
                 }
             }
         }
@@ -68,15 +142,13 @@ impl LongTermStore {
     }
 
     pub(crate) fn remove_catalog_recording(&self, path: &Path) -> std::io::Result<u64> {
-        let relative = path.strip_prefix(&self.root).map_err(|_| {
+        let relative = recording_relative(&self.root, path).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "catalog recording is outside the configured archive root",
             )
         })?;
-        if relative
-            .components()
-            .any(|component| component.as_os_str() == ".exports")
+        if contains_private_directory(relative)
             || path.extension().and_then(|extension| extension.to_str()) != Some("mp4")
         {
             return Err(std::io::Error::new(
@@ -97,7 +169,11 @@ impl LongTermStore {
         }
         let canonical_root = self.root.canonicalize()?;
         let canonical_path = path.canonicalize()?;
-        if !canonical_path.starts_with(&canonical_root) {
+        if canonical_path
+            .strip_prefix(&canonical_root)
+            .ok()
+            .is_none_or(contains_private_directory)
+        {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "catalog recording resolves outside the configured archive root",
@@ -105,8 +181,8 @@ impl LongTermStore {
         }
         let bytes = metadata.len();
         std::fs::remove_file(path)?;
-        if let Some(parent) = path.parent() {
-            let _ = remove_empty_parents(parent, &self.root);
+        if let Some(parent) = canonical_path.parent() {
+            let _ = remove_empty_parents(parent, &canonical_root);
         }
         Ok(bytes)
     }
@@ -136,22 +212,25 @@ impl LongTermStore {
 
         let mut remaining = total;
         let mut removed_files = Vec::new();
-        while remaining > max_bytes {
-            let oldest = match self.find_oldest_date_dir() {
-                Some(entry) => entry,
-                None => break,
-            };
-
-            let freed = dir_size(&oldest).unwrap_or_default();
-            let files = collect_finalized(&oldest).unwrap_or_default();
-
-            if let Err(e) = std::fs::remove_dir_all(&oldest) {
-                tracing::error!(path = %oldest.display(), error = %e, "failed to remove old date dir");
+        let mut dates = Vec::new();
+        collect_date_dirs(&self.root, &mut dates);
+        dates.sort_unstable();
+        for (_, oldest) in dates {
+            if remaining <= max_bytes {
                 break;
             }
-
+            let mut freed = 0_u64;
+            let result = self.prune_date(&oldest, &mut |path, bytes| {
+                freed = freed.saturating_add(bytes);
+                if is_finalized(path) {
+                    removed_files.push(path.to_owned());
+                }
+            });
             remaining = remaining.saturating_sub(freed);
-            removed_files.extend(files);
+            if let Err(error) = result {
+                tracing::error!(path = %oldest.display(), %error, "failed to prune old date directory");
+                break;
+            }
             tracing::info!(
                 removed = %oldest.display(),
                 freed_mb = freed / (1024 * 1024),
@@ -166,34 +245,39 @@ impl LongTermStore {
         removed_files
     }
 
-    fn find_oldest_date_dir(&self) -> Option<PathBuf> {
-        let mut oldest: Option<(String, PathBuf)> = None;
-        find_oldest_date_dir(&self.root, &mut oldest);
-
-        oldest.map(|(_, path)| path)
+    fn prune_date(&self, date: &Path, removed: &mut impl FnMut(&Path, u64)) -> std::io::Result<()> {
+        let relative = date
+            .strip_prefix(&self.root)
+            .map_err(std::io::Error::other)?;
+        let mut parent = Dir::open_ambient_dir(&self.root, cap_std::ambient_authority())?;
+        let mut components = relative.components().peekable();
+        while let Some(component) = components.next() {
+            let std::path::Component::Normal(name) = component else {
+                return Err(std::io::ErrorKind::InvalidInput.into());
+            };
+            if components.peek().is_none() {
+                return prune_directory(&parent, name, date, removed);
+            }
+            parent = parent.open_dir_nofollow(name)?;
+        }
+        Err(std::io::ErrorKind::InvalidInput.into())
     }
 }
 
-fn find_oldest_date_dir(root: &Path, oldest: &mut Option<(String, PathBuf)>) {
+fn collect_date_dirs(root: &Path, dates: &mut Vec<(String, PathBuf)>) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
     for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             continue;
         }
         let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
+        let Some(name) = name.to_str() else { continue };
         if is_recording_date(name) {
-            let key = name.to_owned();
-            if oldest.as_ref().is_none_or(|(current, _)| key < *current) {
-                *oldest = Some((key, path));
-            }
+            dates.push((name.to_owned(), entry.path()));
         } else if !name.starts_with('.') {
-            find_oldest_date_dir(&path, oldest);
+            collect_date_dirs(&entry.path(), dates);
         }
     }
 }
@@ -208,48 +292,77 @@ fn is_recording_date(value: &str) -> bool {
             .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
 }
 
+fn is_finalized(path: &Path) -> bool {
+    !path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .ends_with(".active")
+}
+
 fn collect_finalized(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut result = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        if entry.file_name() == layout::HEADER_RECOVERY_DIRECTORY {
+            continue;
+        }
         let path = entry.path();
-        if path.is_dir() {
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
             result.extend(collect_finalized(&path)?);
-        } else if path.is_file() {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !name.ends_with(".active") {
-                result.push(path);
-            }
+        } else if kind.is_file() && is_finalized(&path) {
+            result.push(path);
         }
     }
     Ok(result)
 }
 
-fn remove_dir_count(dir: &Path) -> std::io::Result<u64> {
-    let mut count = 0;
-    for entry in std::fs::read_dir(dir)? {
+/// Remove ordinary entries individually. A private recovery directory may appear
+/// after enumeration, so remove only an empty parent and preserve any newly arrived entries.
+fn prune_directory(
+    parent: &Dir,
+    name: &std::ffi::OsStr,
+    path: &Path,
+    removed: &mut impl FnMut(&Path, u64),
+) -> std::io::Result<()> {
+    let directory = parent.open_dir_nofollow(name)?;
+    for entry in directory.entries()? {
         let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            count += remove_dir_count(&path)?;
+        let leaf = entry.file_name();
+        if leaf == layout::HEADER_RECOVERY_DIRECTORY {
+            continue;
+        }
+        let kind = entry.file_type()?;
+        let child = path.join(&leaf);
+        if kind.is_dir() {
+            prune_directory(&directory, &leaf, &child, removed)?;
         } else {
-            count += 1;
+            let bytes = directory.symlink_metadata(&leaf)?.len();
+            directory.remove_file(&leaf)?;
+            removed(&child, bytes);
         }
     }
-    std::fs::remove_dir_all(dir)?;
-    Ok(count)
+    drop(directory);
+    match parent.remove_dir(name) {
+        Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
+        result => result,
+    }
 }
 
 fn dir_size(dir: &Path) -> std::io::Result<u64> {
-    let mut total = 0;
+    let mut total = 0_u64;
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            total += dir_size(&path)?;
-        } else {
-            total += entry.metadata()?.len();
+        if entry.file_name() == layout::HEADER_RECOVERY_DIRECTORY {
+            continue;
         }
+        let bytes = if entry.file_type()?.is_dir() {
+            dir_size(&entry.path())?
+        } else {
+            std::fs::symlink_metadata(entry.path())?.len()
+        };
+        total = total.saturating_add(bytes);
     }
     Ok(total)
 }
@@ -273,6 +386,52 @@ fn remove_empty_parents(dir: &Path, stop_at: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_entries_stay_private_and_survive_date_and_capacity_pruning() -> std::io::Result<()>
+    {
+        use std::time::{Duration, Instant};
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-long-term-recovery-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let old = root.join("camera/2026-08-20/00");
+        let new = root.join("camera/2026-08-21/00");
+        let recovery = old.join(layout::HEADER_RECOVERY_DIRECTORY);
+        let pins = recovery.join("0000000.mp4.active.pins-v2");
+        std::fs::create_dir_all(&pins)?;
+        std::fs::create_dir_all(&new)?;
+        let pin = pins.join("pin-0000000000000001-0000000000000002");
+        let staged = recovery.join("0000000.mp4.active");
+        std::fs::write(&pin, b"partial")?;
+        std::fs::write(&staged, b"conflict")?;
+        let old_file = old.join("0000000.mp4");
+        let new_file = new.join("0000000.mp4");
+        std::fs::write(&old_file, b"old")?;
+        std::fs::write(&new_file, b"new")?;
+
+        let store = LongTermStore::new(root.clone());
+        let mut finalized = store.finalized_segments("camera")?;
+        finalized.sort();
+        assert_eq!(finalized, [old_file, new_file.clone()]);
+        let (inventory, complete) = inspection::Archive::open(&root)?
+            .inventory(Instant::now() + Duration::from_secs(10))?;
+        assert!(complete);
+        assert_eq!(inventory.len(), 2);
+        assert!(
+            inventory
+                .iter()
+                .all(|(path, active)| !active && finalized.contains(path))
+        );
+        assert_eq!(store.total_bytes("camera")?, 6);
+        let cutoff = time::macros::datetime!(2026-08-21 00:00 UTC);
+        assert_eq!(store.purge_before("camera", cutoff)?, 1);
+        assert_eq!(store.enforce_limit_with_removed(0), [new_file]);
+        assert_eq!(std::fs::read(pin)?, b"partial");
+        assert_eq!(std::fs::read(staged)?, b"conflict");
+        assert!(store.finalized_segments("camera")?.is_empty());
+        std::fs::remove_dir_all(root)
+    }
 
     #[test]
     fn prunes_oldest_date_below_camera_and_stream_directories() {

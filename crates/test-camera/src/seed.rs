@@ -108,6 +108,7 @@ pub fn seed_recording(options: &RecordingSeedOptions) -> anyhow::Result<()> {
                 break;
             }
             writer.append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + elapsed,
                 timestamp: Some(elapsed),
                 frame: MediaFrame::Video(VideoFrame {

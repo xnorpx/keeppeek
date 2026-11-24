@@ -20,9 +20,22 @@ impl ShortTermBuffer {
     }
 
     pub fn push(&mut self, frame: RecordingFrame) {
+        if self.push_for_recording(frame) {
+            self.evict_expired();
+        }
+    }
+
+    /// Retain the entire decoding chain until the recorder can deliver the expired prefix.
+    pub(super) fn push_for_recording(&mut self, frame: RecordingFrame) -> bool {
+        let expires = self.chunks.front().is_some_and(|oldest| {
+            frame
+                .received_at
+                .saturating_duration_since(oldest.received_at)
+                > self.max_duration
+        });
         self.total_bytes += frame.byte_len();
         self.chunks.push_back(frame);
-        self.evict_expired();
+        expires
     }
 
     fn evict_expired(&mut self) {
@@ -135,6 +148,7 @@ mod tests {
 
     fn video_frame(keyframe: bool, at: Instant) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at: at,
             timestamp: None,
             frame: MediaFrame::Video(VideoFrame {

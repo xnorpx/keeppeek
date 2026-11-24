@@ -98,6 +98,7 @@ struct Attempt {
     cancel: Arc<AtomicBool>,
     file_name: String,
     audio_offset_ms: i32,
+    maximum_bytes: Option<u64>,
     recording_stream_id: Option<String>,
 }
 
@@ -137,6 +138,10 @@ pub(super) fn spawn(
         cancel,
         file_name,
         audio_offset_ms: timing.offset_ms,
+        maximum_bytes: request
+            .guest_range_preparation
+            .unwrap_or(false)
+            .then_some(crate::shares::MAX_MEDIA_BYTES),
         recording_stream_id: timing.stream_id,
     };
     let monitor = attempt.clone();
@@ -286,14 +291,16 @@ fn write(
             sources,
             reservation,
             attempt.audio_offset_ms,
+            attempt.maximum_bytes,
             cancelled,
             progress,
         )
     } else {
-        let artifact = crate::storage::playback::export_sources_to_file(
+        let artifact = crate::storage::playback::export_sources_to_file_with_limit(
             sources,
             path,
             attempt.audio_offset_ms,
+            attempt.maximum_bytes,
             cancelled,
             progress,
         )?;
@@ -308,19 +315,35 @@ fn publish_owned(
     sources: crate::storage::playback::ExportSources<'_>,
     reservation: Reservation,
     offset_ms: i32,
+    maximum: Option<u64>,
     cancelled: impl Fn() -> bool,
     progress: impl Fn(u64),
 ) -> anyhow::Result<(ExportArtifact, String)> {
     let mut file = reservation.open()?;
-    let artifact = crate::storage::playback::export_sources_to_writer(
-        sources, &mut file, offset_ms, &cancelled, progress,
+    let artifact = crate::storage::playback::limited_export::write(
+        sources, &mut file, offset_ms, maximum, &cancelled, progress,
     )?;
     let evidence = file.evidence_with_progress(|_| {
         anyhow::ensure!(!cancelled(), "export cancelled");
         Ok(())
     })?;
-    anyhow::ensure!(!cancelled(), "export cancelled");
     let checksum = encode_lower_hex(evidence.digest);
-    file.publish(evidence)?;
+    confirm_publication(|| file.publish(evidence.clone()), cancelled)?;
     Ok((artifact, checksum))
+}
+
+pub(super) fn confirm_publication(
+    mut publish: impl FnMut() -> anyhow::Result<()>,
+    cancelled: impl Fn() -> bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(!cancelled(), "export cancelled");
+    match publish() {
+        Err(error) if error.is::<crate::storage::catalog::locations::UnconfirmedOutcome>() => {
+            // The first attempt may have committed. Replaying the identical evidence is idempotent.
+            anyhow::ensure!(!cancelled(), "export cancelled");
+            tracing::warn!("retrying export publication after a missing catalog acknowledgement");
+            publish()
+        }
+        result => result,
+    }
 }

@@ -2,8 +2,12 @@ import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { gunzipSync } from 'node:zlib';
 import { mockControlPeer } from './fixtures/control-peer';
+import { mixedCameras } from './fixtures/peek';
 
-async function installLoggingMocks(page: Page): Promise<void> {
+async function installLoggingMocks(
+	page: Page,
+	accessRole: 'administrator' | 'user' = 'administrator'
+) {
 	await page.route('**/logs/snapshot', async (route) => {
 		await route.fulfill({
 			contentType: 'application/json',
@@ -68,7 +72,8 @@ async function installLoggingMocks(page: Page): Promise<void> {
 			});
 		}
 	);
-	await mockControlPeer(page, {
+	return mockControlPeer(page, {
+		accessRole,
 		runtimeConfiguration: {
 			host: '0.0.0.0',
 			port: 3000,
@@ -192,4 +197,118 @@ test('keeps the log toolbar usable on a narrow viewport', async ({ page }) => {
 	await expect(page.getByLabel('Text filter')).toBeInViewport();
 	const viewportWidth = await page.evaluate(() => document.documentElement.scrollWidth);
 	expect(viewportWidth).toBeLessThanOrEqual(390);
+});
+
+test('captures a scoped bug report across Settings and Logs navigation', async ({ page }, info) => {
+	await installLoggingMocks(page);
+	await page.goto('/settings');
+	await page.evaluate(() => console.info('report-window-before-marker'));
+	await page.getByRole('button', { name: 'Report a bug' }).click();
+	const dialog = page.getByRole('dialog');
+	await expect(dialog).toHaveAccessibleName('Report a bug');
+	await dialog.getByRole('button', { name: 'Collect logs only' }).click();
+	const indicator = page.getByRole('complementary', { name: 'Bug report in progress' });
+	await expect(indicator).toContainText('Collecting diagnostic logs');
+	await page.getByRole('link', { name: 'View logs' }).click();
+	await expect(page).toHaveURL(/\/settings\/logs$/);
+	await expect(page.getByRole('button', { name: 'Report a bug' })).toBeVisible();
+	await expect(indicator).toBeVisible();
+	await page.evaluate(() => console.info('report-window-inside-marker'));
+	await indicator.getByRole('button', { name: 'Stop', exact: true }).click();
+	await expect(dialog).toHaveAccessibleName('Review bug report');
+	await page.keyboard.press('Escape');
+	await expect(dialog).toBeVisible();
+	await dialog.getByLabel('Issue title').fill('Sample playback error');
+	await dialog.getByLabel('Steps to reproduce').fill('Open a sample recording.');
+	const notes = page.waitForEvent('download');
+	await dialog.getByRole('button', { name: 'Download report notes' }).click();
+	const notesPath = await (await notes).path();
+	if (!notesPath) throw new Error('Expected downloaded report notes');
+	const notesText = await readFile(notesPath, 'utf8');
+	expect(notesText).toContain('Issue title\nSample playback error');
+	expect(notesText).toContain('Steps to reproduce\nOpen a sample recording.');
+
+	await info.attach('desktop-report-review', {
+		body: await dialog.screenshot(),
+		contentType: 'image/png'
+	});
+	await page.setViewportSize({ width: 390, height: 844 });
+	await expect(dialog).toBeVisible();
+	const reviewBounds = await dialog.boundingBox();
+	expect(reviewBounds?.width ?? 0).toBeLessThanOrEqual(390);
+	await info.attach('mobile-report-review', {
+		body: await dialog.screenshot(),
+		contentType: 'image/png'
+	});
+	await page.evaluate(() => console.info('report-window-after-marker'));
+	const downloaded = page.waitForEvent('download');
+	await dialog.getByRole('button', { name: 'Download report diagnostics' }).click();
+	const file = await downloaded;
+	const downloadedPath = await file.path();
+	if (!downloadedPath) throw new Error('Expected a downloaded diagnostics package');
+	const report = gunzipSync(await readFile(downloadedPath)).toString('utf8');
+	expect(report).toContain('report-window-inside-marker');
+	expect(report).not.toContain('report-window-before-marker');
+	expect(report).not.toContain('report-window-after-marker');
+	expect(report).toContain('server-log-generation-unverified');
+	await dialog.getByRole('button', { name: 'Done', exact: true }).click();
+	await expect(dialog).not.toBeVisible();
+	await expect(indicator).not.toBeVisible();
+});
+
+test('cancels an active report when the same administrator loses camera access', async ({
+	page
+}) => {
+	const control = await installLoggingMocks(page);
+	await page.goto('/settings/logs');
+	const start = page.getByRole('button', { name: 'Report a bug' });
+	await expect(start).toBeVisible();
+	await control.publishCapabilities([], mixedCameras);
+	await start.click();
+	await page.getByRole('button', { name: 'Collect logs only' }).click();
+	const indicator = page.getByRole('complementary', { name: 'Bug report in progress' });
+	await expect(indicator).toBeVisible();
+	await control.publishCapabilities([], []);
+	await expect(indicator).toBeHidden();
+	await start.click();
+	await expect(page.getByRole('dialog', { name: 'Report a bug' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Collect logs only' })).toBeVisible();
+});
+
+test('ordinary viewers cannot start a bug report from administrator routes', async ({ page }) => {
+	await installLoggingMocks(page, 'user');
+	await page.goto('/settings/logs');
+	await expect(page).not.toHaveURL(/\/settings/);
+	await expect(page.getByRole('button', { name: 'Report a bug' })).toHaveCount(0);
+	await expect(page.getByRole('complementary', { name: 'Bug report in progress' })).toHaveCount(0);
+});
+
+test('keeps the report and available diagnostics when metrics collection fails', async ({
+	page
+}) => {
+	await installLoggingMocks(page);
+	await page.route('**/metrics', (route) =>
+		route.fulfill({
+			status: 503,
+			contentType: 'text/plain',
+			body: 'upstream error private-response-canary'
+		})
+	);
+	await page.goto('/settings');
+	await page.getByRole('button', { name: 'Report a bug' }).click();
+	const dialog = page.getByRole('dialog');
+	await dialog.getByRole('button', { name: 'Collect logs only' }).click();
+	const indicator = page.getByRole('complementary', { name: 'Bug report in progress' });
+	await expect(indicator).toBeVisible();
+	await page.evaluate(() => console.info('report-retained-marker'));
+	await indicator.getByRole('button', { name: 'Stop', exact: true }).click();
+	await expect(dialog).toHaveAccessibleName('Review bug report');
+	await expect(dialog.getByText('Recorder metrics could not be collected.')).toBeVisible();
+	const downloaded = page.waitForEvent('download');
+	await dialog.getByRole('button', { name: 'Download report diagnostics' }).click();
+	const path = await (await downloaded).path();
+	if (!path) throw new Error('Expected a downloadable report');
+	const evidence = gunzipSync(await readFile(path)).toString('utf8');
+	expect(evidence).toContain('report-retained-marker');
+	expect(evidence).not.toContain('private-response-canary');
 });

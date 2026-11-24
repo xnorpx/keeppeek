@@ -96,7 +96,8 @@ function cursor(id: string) {
 function controller(
 	first: ReturnType<typeof cursor>,
 	next: ReturnType<typeof cursor>,
-	audioSupported: boolean
+	audioSupported: boolean,
+	segments: (typeof recording)[]
 ) {
 	const open = vi.fn().mockResolvedValueOnce(first.playback).mockResolvedValue(next.playback);
 	type TimelineAccess = {
@@ -122,18 +123,18 @@ function controller(
 		],
 		getHealth: async () => null,
 		getRecordingDates: async () => ['2026-10-15'],
-		getRecordingsInRange: async () => [{ segments: [recording], events: [] }],
+		getRecordingsInRange: async () => [{ segments, events: [] }],
 		queryStoredTimeline: async () => ({ ranges: [], events: [] }),
 		openStoredMedia: open
 	});
 	return { open, emitAccess: (value: TimelineAccess) => acceptAccess(value) };
 }
 
-function keepFixture(audioSupported = false) {
+function keepFixture(audioSupported = false, segments = [recording]) {
 	const original = window.location.href;
 	const first = cursor('first');
 	const next = cursor('replacement');
-	const controls = controller(first, next, audioSupported);
+	const controls = controller(first, next, audioSupported, segments);
 	return {
 		first,
 		next,
@@ -176,6 +177,26 @@ it('revalidates the mounted timeline only after retained access is confirmed aga
 	}
 });
 
+function setVideoPlayhead(video: HTMLMediaElement, currentTimeSeconds: number) {
+	Object.defineProperty(video, 'readyState', {
+		configurable: true,
+		value: HTMLMediaElement.HAVE_METADATA,
+		writable: true
+	});
+	Object.defineProperty(video, 'currentSrc', {
+		configurable: true,
+		value: video.src,
+		writable: true
+	});
+	video.dispatchEvent(new Event('loadedmetadata'));
+	Object.defineProperty(video, 'currentTime', {
+		configurable: true,
+		value: currentTimeSeconds,
+		writable: true
+	});
+	video.dispatchEvent(new Event('timeupdate'));
+}
+
 it.each([true, false])(
 	'restores the cursor at its playhead with play intent %s and its audio preview',
 	async (playing) => {
@@ -189,12 +210,7 @@ it.each([true, false])(
 				create(RecordedAudioTimingSchema, { appliedOffsetMs: 137, preview: true })
 			);
 			const video = document.querySelector('video')!;
-			Object.defineProperty(video, 'currentTime', {
-				configurable: true,
-				value: 6.25,
-				writable: true
-			});
-			video.dispatchEvent(new Event('timeupdate'));
+			setVideoPlayhead(video, 6.25);
 			expect(fixture.open).toHaveBeenCalledWith(expect.objectContaining({ playing }));
 			const session = { principalId: 'viewer' };
 			fixture.emitAccess({ status: 'checking', session });
@@ -229,12 +245,7 @@ it('holds reverse shuttle seeks until privacy recovery installs the new cursor',
 			create(RecordedAudioTimingSchema, { appliedOffsetMs: 137, preview: true })
 		);
 		const video = document.querySelector('video')!;
-		Object.defineProperty(video, 'currentTime', {
-			configurable: true,
-			value: 6.25,
-			writable: true
-		});
-		video.dispatchEvent(new Event('timeupdate'));
+		setVideoPlayhead(video, 6.25);
 		video.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }));
 		await vi.waitFor(() => expect(intervals.mock.calls.some(([, ms]) => ms === 250)).toBe(true));
 		const reverse = intervals.mock.calls.find(([, ms]) => ms === 250)?.[0];
@@ -261,17 +272,16 @@ it('holds reverse shuttle seeks until privacy recovery installs the new cursor',
 	}
 });
 
-it('clears a disposed Export cursor and waits for Timeline to reopen its exact moment', async () => {
+it('retains an interrupted playhead while switching to Export during privacy recovery', async () => {
 	const fixture = keepFixture();
 	const session = { principalId: 'viewer' };
 	try {
 		await fixture.mount();
 		const video = document.querySelector('video')!;
-		Object.defineProperty(video, 'currentTime', { configurable: true, value: 4.5, writable: true });
-		video.dispatchEvent(new Event('timeupdate'));
-		await page.getByRole('button', { name: 'Export', exact: true }).click();
+		setVideoPlayhead(video, 4.5);
 		fixture.emitAccess({ status: 'checking', session });
 		await vi.waitFor(() => expect(fixture.first.playback.close).toHaveBeenCalledOnce());
+		await page.getByRole('button', { name: 'Export', exact: true }).click();
 		fixture.emitAccess({ status: 'authenticated', session });
 		await expect.element(page.getByRole('button', { name: 'Timeline', exact: true })).toBeVisible();
 		expect(fixture.open).toHaveBeenCalledTimes(1);
@@ -509,6 +519,65 @@ it('tracks the retained cursor across cold seeks and ignores a replaced cursor c
 			.element(page.getByRole('region', { name: 'Archive playback', exact: true }))
 			.not.toBeInTheDocument();
 	} finally {
+		dispose();
+	}
+});
+
+it('keeps the current seek indicator when a previous cross-clip seek fails', async () => {
+	const second = {
+		...recording,
+		url: 'stored:front:sub:second',
+		start_time_ms: recording.end_time_ms,
+		end_time_ms: recording.end_time_ms + recording.duration_ms
+	};
+	const { first, mount, dispose } = keepFixture(false, [recording, second]);
+	const stale = Promise.withResolvers<void>();
+	const current = Promise.withResolvers<void>();
+	first.playback.seek
+		.mockImplementationOnce(() => stale.promise)
+		.mockImplementationOnce(() => current.promise);
+	try {
+		await mount();
+		const slider = page.getByRole('slider', { name: 'Recording position', exact: true });
+		await expect.element(slider).toBeEnabled();
+		const player = document.querySelector('[data-keep-player] video');
+		expect(player).toBeInstanceOf(HTMLVideoElement);
+		player!.dispatchEvent(new Event('ended'));
+		await vi.waitFor(() => expect(first.playback.seek).toHaveBeenCalledTimes(1));
+		await slider.click();
+		await vi.waitFor(() => expect(first.playback.seek).toHaveBeenCalledTimes(2));
+		const indicator = page.getByText(
+			'The current frame stays until the requested recording arrives'
+		);
+		await expect.element(indicator).toBeVisible();
+		stale.reject(new Error('Previous recording request failed'));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await expect.element(indicator).toBeVisible();
+	} finally {
+		stale.resolve();
+		current.resolve();
+		dispose();
+	}
+});
+
+it('waits for a cancelled scrub before seeking and committing a new drag', async () => {
+	const { first, mount, dispose } = keepFixture();
+	const pending = Promise.withResolvers<void>();
+	first.playback.enterScrub.mockReturnValueOnce(pending.promise);
+	try {
+		await mount();
+		const cancel = beginDrag();
+		await vi.waitFor(() => expect(first.playback.enterScrub).toHaveBeenCalledOnce());
+		cancel('pointercancel');
+		const finish = beginDrag();
+		finish();
+		expect(first.playback.seek).not.toHaveBeenCalled();
+		pending.resolve();
+		await vi.waitFor(() => expect(first.playback.seek).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(first.playback.commitPlayback).toHaveBeenCalledTimes(2));
+		expect(first.playback.enterScrub).toHaveBeenCalledTimes(2);
+	} finally {
+		pending.resolve();
 		dispose();
 	}
 });
