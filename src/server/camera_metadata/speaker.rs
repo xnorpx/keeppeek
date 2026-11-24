@@ -106,7 +106,7 @@ mod tests {
                     talkback,
                     ..Default::default()
                 },
-            )
+            );
         };
         state.apply_reolink_speaker(&current, true);
         assert!(!advertised());
