@@ -27,7 +27,8 @@ pub(super) const fn trun_flags(has_offsets: bool) -> u32 {
 }
 
 impl<W: Write + Seek> FragmentedMp4Writer<W> {
-    /// File end after the pending fragment and the next sample's headers, excluding that sample's payload.
+    /// File end after the pending fragment and the next sample without new source timing,
+    /// excluding that sample's payload. Includes any timing already queued on all tracks.
     /// Call after flushing any preceding fragment and registering the next sample description.
     pub fn projected_end_before_payload(
         &mut self,
@@ -56,6 +57,7 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
                 return Ok(end);
             }
             let traf = TrafBox {
+                source_timing: Default::default(),
                 tfhd: TfhdBox {
                     flags: tfhd_flags(track.sample_description_count > 1),
                     ..TfhdBox::default()
@@ -74,6 +76,7 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
             };
             end.checked_add(track.pending_payload)
                 .and_then(|n| n.checked_add(traf.box_size()))
+                .and_then(|n| n.checked_add(track.source_timing.event_bytes(track.track_id)))
                 .ok_or(Error::InvalidData("fragmented MP4 output size overflow"))
         })
     }

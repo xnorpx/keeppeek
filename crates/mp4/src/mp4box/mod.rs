@@ -85,6 +85,7 @@ pub mod mp4a;
 pub mod mvex;
 pub mod mvhd;
 pub mod smhd;
+pub mod source_rtp;
 pub mod stbl;
 pub mod stco;
 pub mod stsc;
@@ -145,6 +146,7 @@ macro_rules! boxtype {
 boxtype! {
     FtypBox => 0x66747970,
     MvhdBox => 0x6d766864,
+    UuidBox => 0x75756964,
     MfhdBox => 0x6d666864,
     FreeBox => 0x66726565,
     MdatBox => 0x6d646174,

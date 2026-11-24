@@ -16,7 +16,7 @@ pub struct EmsgBox {
 }
 
 impl EmsgBox {
-    const fn size_without_message(version: u8, scheme_id_uri: &str, value: &str) -> u64 {
+    pub(super) const fn size_without_message(version: u8, scheme_id_uri: &str, value: &str) -> u64 {
         HEADER_SIZE + HEADER_EXT_SIZE +
             4 + // id
             Self::time_size(version) +

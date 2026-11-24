@@ -3,10 +3,11 @@ use std::{
     time::Instant,
 };
 
-const METADATA_BYTES_MAX: u64 = 8 * 1024 * 1024;
-const BOX_BYTES_MAX: u64 = 1024 * 1024;
-const BOX_COUNT_MAX: usize = 16_384;
-const FRAGMENT_COUNT_MAX: usize = 4_096;
+use crate::storage::{
+    RECORDING_BOX_BYTES_MAX as BOX_BYTES_MAX, RECORDING_BOX_COUNT_MAX as BOX_COUNT_MAX,
+    RECORDING_FRAGMENT_COUNT_MAX as FRAGMENT_COUNT_MAX,
+    RECORDING_METADATA_BYTES_MAX as METADATA_BYTES_MAX,
+};
 
 pub(in crate::storage) fn inspect_initialization(
     reader: &mut (impl Read + Seek),
@@ -258,35 +259,39 @@ fn validate_extents<Reader: Read + Seek>(
     deadline: Instant,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(moof.trafs.len() <= 2, "too many fragment tracks");
-    let mut extents = Vec::new();
+    let mut extents = Vec::with_capacity(moof.trafs.len());
     for traf in &moof.trafs {
-        let count = traf
+        let run = traf
             .trun
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("missing samples"))?
-            .sample_count;
-        anyhow::ensure!(count <= 65_536, "sample limit exceeded");
+            .ok_or_else(|| anyhow::anyhow!("missing samples"))?;
+        anyhow::ensure!(
+            (1..=65_536).contains(&run.sample_count)
+                && run.sample_sizes.len() == usize::try_from(run.sample_count)?,
+            "invalid sample extent table"
+        );
         let next = sample_ids.entry(traf.tfhd.track_id).or_insert(1);
-        for _ in 0..count {
+        let first = parsed
+            .sample_location(traf.tfhd.track_id, *next)?
+            .ok_or_else(|| anyhow::anyhow!("missing sample extent"))?;
+        // The scanner requires one moof-relative run per track, with explicit sizes.
+        // Its samples are contiguous. Recomputing each offset would rescan every prior size.
+        let mut end = first.offset;
+        for &size in &run.sample_sizes {
             super::check_deadline(deadline)?;
-            let location = parsed
-                .sample_location(traf.tfhd.track_id, *next)?
-                .ok_or_else(|| anyhow::anyhow!("missing sample extent"))?;
-            let end = location
-                .offset
-                .checked_add(u64::from(location.size))
+            anyhow::ensure!(size > 0, "empty sample extent");
+            end = end
+                .checked_add(u64::from(size))
                 .ok_or_else(|| anyhow::anyhow!("sample extent overflow"))?;
-            anyhow::ensure!(
-                location.size > 0
-                    && location.offset >= range.payload
-                    && end <= range.range.offset + range.range.size,
-                "sample outside media payload"
-            );
-            extents.push((location.offset, end));
-            *next = next
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("sample ID overflow"))?;
         }
+        anyhow::ensure!(
+            first.offset >= range.payload && end <= range.range.offset + range.range.size,
+            "sample outside media payload"
+        );
+        extents.push((first.offset, end));
+        *next = next
+            .checked_add(run.sample_count)
+            .ok_or_else(|| anyhow::anyhow!("sample ID overflow"))?;
     }
     extents.sort_unstable();
     let mut next = range.payload;
@@ -521,7 +526,7 @@ mod tests {
     use super::*;
     use std::{io::Cursor, time::Duration};
 
-    fn recording() -> Vec<u8> {
+    fn config_and_video() -> (mp4::Mp4Config, mp4::TrackConfig) {
         let config = mp4::Mp4Config {
             major_brand: "iso6".parse().unwrap(),
             minor_version: 1,
@@ -539,6 +544,11 @@ mod tests {
                 pic_param_set: vec![0x68, 0xce, 6, 0xe2],
             }),
         };
+        (config, track)
+    }
+
+    fn recording() -> Vec<u8> {
+        let (config, track) = config_and_video();
         let mut writer =
             mp4::FragmentedMp4Writer::write_start(Cursor::new(Vec::new()), &config, &[track])
                 .unwrap();
@@ -556,6 +566,70 @@ mod tests {
             .unwrap();
         writer.write_end().unwrap();
         writer.into_writer().into_inner()
+    }
+
+    #[test]
+    fn long_source_clock_recordings_rotate_inside_the_recovery_metadata_budget() {
+        let (config, video) = config_and_video();
+        let audio = mp4::TrackConfig {
+            track_type: mp4::TrackType::Audio,
+            timescale: 48_000,
+            language: "und".into(),
+            media_conf: mp4::MediaConfig::AacConfig(mp4::AacConfig {
+                bitrate: 64_000,
+                profile: mp4::AudioObjectType::AacLowComplexity,
+                freq_index: mp4::SampleFreqIndex::Freq48000,
+                chan_conf: mp4::ChannelConfig::Mono,
+            }),
+        };
+        let tracks = [video, audio];
+        let make = || {
+            mp4::FragmentedMp4Writer::write_start(Cursor::new(Vec::new()), &config, &tracks)
+                .unwrap()
+        };
+        let mut writer = make();
+        let mut files = 0;
+        let mut recovered_gops = 0;
+        for gop in 0_u64..3300 {
+            for (track, first, last, step) in [
+                (1, gop * 50, (gop + 1) * 50, 3600_u32),
+                (2, gop * 96_000 / 1024, (gop + 1) * 96_000 / 1024, 1024),
+            ] {
+                for n in first..last {
+                    let ticks = n * u64::from(step);
+                    let sample = mp4::Mp4Sample {
+                        start_time: ticks,
+                        duration: step,
+                        rendering_offset: 0,
+                        is_sync: track == 2 || n == first,
+                        bytes: bytes::Bytes::from_static(b"sample"),
+                    };
+                    let clock = mp4::SourceRtpPacket {
+                        session_id: [1; 16],
+                        epoch_id: [track as u8; 16],
+                        clock_rate: tracks[(track - 1) as usize].timescale.try_into().unwrap(),
+                        timestamp: ticks as i64 + 123,
+                    };
+                    writer
+                        .write_sample_with_source_timing(track, 1, sample, Some(clock))
+                        .unwrap();
+                }
+            }
+            writer.flush_fragment().unwrap();
+            let usage = writer.metadata_usage();
+            if crate::storage::recording_metadata_rotation_due(usage) || gop == 3299 {
+                assert!(usage.bytes < METADATA_BYTES_MAX);
+                let mut cursor = std::mem::replace(&mut writer, make()).into_writer();
+                let size = cursor.get_ref().len() as u64;
+                cursor.set_position(0);
+                let index =
+                    inspect(&mut cursor, size, Instant::now() + Duration::from_secs(60)).unwrap();
+                recovered_gops += index.fragments.len();
+                files += 1;
+            }
+        }
+        assert!(files >= 2);
+        assert_eq!(recovered_gops, 3300);
     }
 
     #[test]
