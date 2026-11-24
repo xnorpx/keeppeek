@@ -18,7 +18,7 @@ runs:
           try {
             Invoke-WebRequest -Uri $source -UserAgent 'KeepPeek CI NSIS installer' `
               -Headers @{ Accept = 'application/octet-stream' } -MaximumRedirection 5 `
-              -TimeoutSec 45 -OutFile $installer -ErrorAction Stop
+              -ConnectionTimeoutSeconds 20 -OperationTimeoutSeconds 30 -OutFile $installer -ErrorAction Stop
             break
           } catch {
             if ($attempt -eq 3) { throw }
