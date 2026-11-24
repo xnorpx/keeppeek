@@ -1,6 +1,7 @@
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+	AccessRole,
 	CameraInfoSchema,
 	CameraUpdatedSchema,
 	ConnectionUpdateSchema,
@@ -270,6 +271,27 @@ function talkbackRoute(
 	});
 }
 
+function speakerInventory(role?: AccessRole): MessageEvent {
+	return notification({
+		case: 'initialCapabilities',
+		value: create(ServerCapabilitiesSchema, {
+			accessSession: role === undefined ? undefined : { role },
+			cameras: [
+				{
+					sourceId: 'front-door',
+					groupIds: ['entrance'],
+					deviceCapabilities: {
+						twoWayAudio: true,
+						quickReplies: [{ assetId: '2', displayName: 'Delivery' }],
+						chimes: [{ assetId: 'hall', displayName: 'Hallway' }]
+					}
+				}
+			],
+			sourceSessions: [{ sourceId: 'front-door', sourceSessionId: 'camera:front-door', video: {} }]
+		})
+	});
+}
+
 async function cameraWithMicrophone(peer: LivePeer, sessionId: string) {
 	api.createSession.mockResolvedValue({
 		session_id: sessionId,
@@ -278,6 +300,7 @@ async function cameraWithMicrophone(peer: LivePeer, sessionId: string) {
 	api.deleteSession.mockResolvedValue(undefined);
 	await peer.configure([{ cameraId: 'front-door', quality: 'auto' }]);
 	const connection = FakePeerConnection.latest!;
+	connection.channels[0].onmessage?.(speakerInventory(AccessRole.ADMINISTRATOR));
 	const sender = {
 		replaceTrack: vi.fn(async (track: MediaStreamTrack | null) => {
 			if (!track) throw new Error('Sender already closed.');
@@ -341,6 +364,68 @@ describe('LivePeer', () => {
 		await peer.configure([{ cameraId, quality: 'high' }]);
 		expect(channel.mediaSubscriptionIds.filter((id) => id === 'audio-0')).toHaveLength(4);
 		await peer.close();
+	});
+
+	it.each([AccessRole.USER, AccessRole.UNSPECIFIED, undefined])(
+		'keeps permitted doorbell actions but never prompts for an unprivileged live role %s',
+		async (role) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			const peer = new LivePeer();
+			const { channel, sender } = await cameraWithMicrophone(peer, 'viewer');
+			channel.onmessage?.(speakerInventory(role));
+			const prompt = vi
+				.spyOn(navigator.mediaDevices, 'getUserMedia')
+				.mockRejectedValue(new Error('microphone requested for an unauthorized viewer'));
+			try {
+				for (const target of [
+					{ sourceId: 'front-door' },
+					{ groupId: 'entrance' },
+					{ all: true }
+				] as const)
+					await expect(peer.startTalkback(target)).rejects.toThrow(/administrator/i);
+				expect(prompt).not.toHaveBeenCalled();
+				expect(sender.replaceTrack).not.toHaveBeenCalled();
+				expect(channel.commands).not.toContain('talkbackCommand');
+				if (role === AccessRole.USER) {
+					await peer.playQuickReply('front-door', '2');
+					await peer.playChime('front-door', 'hall');
+					expect(channel.commands.slice(-2)).toEqual([
+						'cameraControlCommand',
+						'cameraControlCommand'
+					]);
+				}
+			} finally {
+				await peer.close();
+			}
+		}
+	);
+
+	it('stops a late browser microphone after the live role was withdrawn and restored', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		const peer = new LivePeer();
+		const { channel, sender } = await cameraWithMicrophone(peer, 'owner');
+		const context = new AudioContext();
+		const stream = context.createMediaStreamDestination().stream;
+		const device = Promise.withResolvers<MediaStream>();
+		const prompt = vi.spyOn(navigator.mediaDevices, 'getUserMedia').mockReturnValue(device.promise);
+		try {
+			const result = peer.startTalkback({ sourceId: 'front-door' }).then(
+				() => null,
+				(error: unknown) => error
+			);
+			await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+			channel.onmessage?.(speakerInventory(AccessRole.USER));
+			channel.onmessage?.(speakerInventory(AccessRole.ADMINISTRATOR));
+			device.resolve(stream);
+			expect(await result).toBeInstanceOf(Error);
+			expect(stream.getAudioTracks()[0].readyState).toBe('ended');
+			expect(sender.replaceTrack).not.toHaveBeenCalled();
+			expect(channel.commands).not.toContain('talkbackCommand');
+		} finally {
+			stream.getTracks().forEach((track) => track.stop());
+			await peer.close();
+			await context.close();
+		}
 	});
 
 	it.each([false, true])(

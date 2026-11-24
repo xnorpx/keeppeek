@@ -6,6 +6,7 @@ import { liveVariant, safeBitrate } from './live-quality';
 import {
 	ControlEnvelopeSchema,
 	CameraControlCommandSchema,
+	AccessRole,
 	DeliveryTransport,
 	MediaKind,
 	MessageSchema,
@@ -121,6 +122,7 @@ export class LivePeer {
 	#reliableChannel: RTCDataChannel | null = null;
 	#unreliableChannel: RTCDataChannel | null = null;
 	#talkbackTransceiver: RTCRtpTransceiver | null = null;
+	#talkbackAuthorization = $state.raw<symbol | null>(null);
 	#microphone: {
 		stream: MediaStream;
 		sender: RTCRtpSender;
@@ -190,17 +192,45 @@ export class LivePeer {
 		return this.enqueue(async () => this.closeNow());
 	}
 
+	get canUseMicrophone(): boolean {
+		return this.#talkbackAuthorization !== null;
+	}
+
+	get canBroadcastTalkback(): boolean {
+		return (
+			this.canUseMicrophone &&
+			Object.values(this.cameraAudioAssets).some((camera) => camera.twoWayAudio)
+		);
+	}
+
+	private hasTalkbackTarget(target: TalkbackTargetSelection): boolean {
+		if ('sourceId' in target) return this.cameraAudioAssets[target.sourceId]?.twoWayAudio === true;
+		if ('groupId' in target)
+			return this.talkbackGroups.some((group) => group.id === target.groupId);
+		return this.canBroadcastTalkback;
+	}
+
 	startTalkback(target: TalkbackTargetSelection): Promise<void> {
 		return this.enqueue(async () => {
 			const transceiver = this.#talkbackTransceiver;
 			if (transceiver === null) {
 				throw new Error('Talkback is unavailable until the live session is connected.');
 			}
+			const authorization = this.#talkbackAuthorization;
+			if (authorization === null)
+				throw new Error('Administrator access is required to use the microphone.');
+			if (!this.hasTalkbackTarget(target))
+				throw new Error('No available speaker matches the selected talkback target.');
 			if (this.talkbackActive) return;
 			this.talkbackError = null;
 			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 			const track = stream.getAudioTracks()[0];
-			if (!track || this.#talkbackTransceiver !== transceiver) {
+			if (
+				!track ||
+				this.#talkbackTransceiver !== transceiver ||
+				this.#talkbackAuthorization !== authorization ||
+				!this.hasTalkbackTarget(target)
+			) {
 				stream.getTracks().forEach((item) => item.stop());
 				throw new Error(
 					track
@@ -919,6 +949,12 @@ export class LivePeer {
 
 	private receiveCapabilities(capabilities: ServerCapabilities): void {
 		this.#capabilities = capabilities;
+		if (capabilities.accessSession?.role === AccessRole.ADMINISTRATOR) {
+			this.#talkbackAuthorization ??= Symbol();
+		} else {
+			this.#talkbackAuthorization = null;
+			this.releaseMicrophone();
+		}
 		this.cameraAudioAssets = Object.fromEntries(
 			capabilities.cameras.flatMap((camera) => {
 				const assets = audioAssets(camera);
@@ -1035,6 +1071,7 @@ export class LivePeer {
 		this.#sourceSessionByCamera = {};
 		this.#trackEventByMid = {};
 		this.#capabilities = null;
+		this.#talkbackAuthorization = null;
 		this.talkbackGroups = [];
 		this.cameraAudioAssets = {};
 		this.sessionId = null;

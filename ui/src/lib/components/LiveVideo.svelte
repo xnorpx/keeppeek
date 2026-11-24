@@ -233,7 +233,7 @@
 		diagnosticsLabel ? `${diagnosticsLabel} camera information` : 'WebRTC stream diagnostics'
 	);
 	let audioAssets = $derived(livePeer.cameraAudioAssets?.[cameraId]);
-	let talkbackControls = $derived(audioAssets?.twoWayAudio === true);
+	let talkbackControls = $derived(livePeer.canUseMicrophone && audioAssets?.twoWayAudio === true);
 	let talkbackActive = $derived(talkbackControls && livePeer.talkbackActive);
 
 	async function playAudioAsset(kind: 'quickReply' | 'chime', assetId: string): Promise<void> {
