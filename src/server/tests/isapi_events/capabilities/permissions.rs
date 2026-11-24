@@ -88,3 +88,43 @@ fn native_refresh_excludes_cameras_outside_the_receiving_users_access() {
     );
     assert_eq!(delivered_event(&notifications[1]).source_id, "native-front");
 }
+
+#[test]
+fn single_camera_capabilities_match_the_scoped_snapshot_without_touching_session_activity() {
+    let state = live_state();
+    let mut other = state.camera_entries().remove(0);
+    other.info.id = "private-back".to_owned();
+    other.configuration.ip = "192.0.2.2".parse().unwrap();
+    state.upsert_camera(other);
+    let session_id = SessionId::from_u64(115);
+    let _queue = restricted_queue(&state, session_id);
+    let handler = test_control_handler(state.clone());
+    let snapshot = handler.initial_capabilities(session_id).unwrap();
+    let activity = state.api_session_owners.lock().unwrap()[&session_id].last_activity;
+    assert_eq!(snapshot.cameras.len(), 1);
+    assert_eq!(
+        handler.camera_capability(session_id, "native-front"),
+        Some(snapshot.cameras[0].clone())
+    );
+    assert!(
+        handler
+            .camera_capability(session_id, "private-back")
+            .is_none()
+    );
+    assert_eq!(
+        activity,
+        state.api_session_owners.lock().unwrap()[&session_id].last_activity
+    );
+    state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .get_mut(&session_id)
+        .unwrap()
+        .absolute_expires_at_ms = 0;
+    assert!(
+        handler
+            .camera_capability(session_id, "native-front")
+            .is_none()
+    );
+}

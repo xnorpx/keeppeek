@@ -971,6 +971,23 @@ impl ControlRequestHandler for ServerControlHandler {
         close_api_session(&self.state, session_id);
     }
 
+    fn camera_capability(
+        &self,
+        session_id: SessionId,
+        source_id: &str,
+    ) -> Option<proto::CameraInfo> {
+        let policy = camera_access::for_session(&self.state, session_id).ok()?;
+        if !policy.allows(source_id) {
+            return None;
+        }
+        let entry = self.state.camera(source_id)?;
+        Some(camera_capability(
+            &self.state,
+            &entry,
+            &self.state.camera_info(&entry),
+        ))
+    }
+
     fn initial_capabilities(&self, session_id: SessionId) -> Option<proto::ServerCapabilities> {
         let camera_entries = camera_access::visible_cameras(self, session_id)?;
         Some(self.state.event_subscriptions.capabilities(session_id, || {
@@ -1311,6 +1328,32 @@ fn update_talkback(
     })
 }
 
+fn camera_capability(
+    state: &ServerState,
+    entry: &CameraEntry,
+    info: &CameraInfo,
+) -> proto::CameraInfo {
+    let mut camera = proto_camera_info(info, camera_control::ptz_capability(entry), &entry.groups);
+    let (active, epoch, error) = match state.privacy.decision(&entry.info.id, chrono::Utc::now()) {
+        Ok((active, epoch)) => (active, epoch, None),
+        Err(error) => (true, u64::MAX, Some(error.to_string())),
+    };
+    let source = state
+        .privacy_sources
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&entry.info.id)
+        .copied();
+    camera.privacy = Some(privacy_status(
+        state.privacy.schedule(&entry.info.id).as_ref(),
+        active,
+        epoch,
+        source,
+        error,
+    ));
+    camera
+}
+
 fn server_capabilities(
     state: &ServerState,
     camera_entries: &[CameraEntry],
@@ -1322,29 +1365,7 @@ fn server_capabilities(
     let cameras = camera_entries
         .iter()
         .zip(camera_info.iter())
-        .map(|(entry, info)| {
-            let mut camera =
-                proto_camera_info(info, camera_control::ptz_capability(entry), &entry.groups);
-            let (active, epoch, error) =
-                match state.privacy.decision(&entry.info.id, chrono::Utc::now()) {
-                    Ok((active, epoch)) => (active, epoch, None),
-                    Err(error) => (true, u64::MAX, Some(error.to_string())),
-                };
-            let source = state
-                .privacy_sources
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&entry.info.id)
-                .copied();
-            camera.privacy = Some(privacy_status(
-                state.privacy.schedule(&entry.info.id).as_ref(),
-                active,
-                epoch,
-                source,
-                error,
-            ));
-            camera
-        })
+        .map(|(entry, info)| camera_capability(state, entry, info))
         .collect();
     let source_sessions = camera_info
         .iter()

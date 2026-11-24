@@ -61,6 +61,59 @@ fn shared_feedback_pre_sctp_drain_preserves_updates_until_control_opens() {
     handshake.assert_control_close_is_terminal();
 }
 
+#[test]
+fn camera_capability_delta_follows_the_initial_inventory_on_the_negotiated_control_channel() {
+    let mut handshake = ApiHandshake::new();
+    handshake.observe_initial_feedback();
+    handshake.receive_initial_notifications();
+    assert!(handshake.control.camera_updates.mark("front"));
+    assert!(!handshake.control.camera_updates.mark("front"));
+    assert!(!handshake.control.camera_updates.mark("private"));
+    assert!(
+        handshake
+            .control
+            .write_camera_updates(&mut handshake.server, handshake.channels.control)
+            .unwrap()
+    );
+    for _ in 0..5_000 {
+        handshake.progress().unwrap();
+        if let Some(updated) = handshake.received.iter().find_map(|envelope| {
+            let Some(control_envelope::Message::Notification(notice)) = &envelope.message else {
+                return None;
+            };
+            let Some(api::notification::Event::CameraUpdated(updated)) = &notice.event else {
+                return None;
+            };
+            Some(updated)
+        }) {
+            assert_eq!(updated.source_id, "front");
+            let camera = updated.camera.as_ref().unwrap();
+            assert_eq!(camera.source_id, "front");
+            assert_eq!(camera.display_name, "after discovery");
+            assert!(!handshake.control.camera_updates.has_work());
+            assert_eq!(
+                handshake
+                    .received
+                    .iter()
+                    .filter(|envelope| matches!(
+                        &envelope.message,
+                        Some(control_envelope::Message::Notification(api::Notification {
+                            event: Some(api::notification::Event::InitialCapabilities(_))
+                        }))
+                    ))
+                    .count(),
+                1
+            );
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    panic!(
+        "camera delta did not reach the negotiated control channel: {}",
+        handshake.diagnostics()
+    );
+}
+
 struct InitialCapabilities;
 
 impl ControlRequestHandler for InitialCapabilities {
@@ -73,7 +126,26 @@ impl ControlRequestHandler for InitialCapabilities {
     }
 
     fn initial_capabilities(&self, _session_id: SessionId) -> Option<api::ServerCapabilities> {
-        Some(api::ServerCapabilities::default())
+        Some(api::ServerCapabilities {
+            cameras: vec![api::CameraInfo {
+                source_id: "front".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+    }
+
+    fn camera_capability(
+        &self,
+        _session_id: SessionId,
+        source_id: &str,
+    ) -> Option<api::CameraInfo> {
+        assert_eq!(source_id, "front");
+        Some(api::CameraInfo {
+            source_id: source_id.to_owned(),
+            display_name: "after discovery".into(),
+            ..Default::default()
+        })
     }
 }
 
@@ -304,6 +376,7 @@ fn session_control(handler: &Arc<dyn ControlRequestHandler>) -> ApiSessionContro
         data_tx: bounded(1).0,
         pending_event_bytes: Arc::new(AtomicUsize::new(0)),
         pending_event_count: Arc::new(AtomicUsize::new(0)),
+        camera_updates: Default::default(),
         media_camera_ips: Mutex::new(HashSet::new()),
         background_operation_in_flight: Arc::new(AtomicBool::new(false)),
         share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
