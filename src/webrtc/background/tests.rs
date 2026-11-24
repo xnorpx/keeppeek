@@ -90,6 +90,7 @@ fn check_successor(action: Action, expected_groups: &[&str]) {
     ] {
         media
             .enqueue(vec![OutboundDataMessage {
+                permit: None,
                 target: DataChannelTarget::Reliable,
                 group: group.into(),
                 message: proto::Message::default(),

@@ -595,6 +595,7 @@ impl Plan {
                     stored_end_time,
                 };
                 messages.push(OutboundDataMessage {
+                    permit: None,
                     target: DataChannelTarget::Reliable,
                     group: crate::webrtc::frame_step_group(&self.result.stored_media_id),
                     message: proto::Message {

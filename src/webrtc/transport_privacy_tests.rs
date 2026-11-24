@@ -169,6 +169,7 @@ impl NegotiatedPeers {
             .push_back(QueuedApiData::Message(QueuedDataMessage {
                 group: "camera".into(),
                 target,
+                lifetime: None,
                 payload: GuardedMedia {
                     value: b"authorized fixture audio".to_vec(),
                     permit,

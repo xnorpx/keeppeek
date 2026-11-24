@@ -1311,7 +1311,9 @@ impl ApiMediaRuntime {
                 .as_ref()
                 .is_some_and(|lifetime| !lifetime.current(now()))
             {
-                self.outbound_bytes = self.outbound_bytes.saturating_sub(message.payload.value.len());
+                self.outbound_bytes = self
+                    .outbound_bytes
+                    .saturating_sub(message.payload.value.len());
                 continue;
             }
             let wrote = message
@@ -5719,6 +5721,7 @@ mod tests {
                     groups
                         .iter()
                         .map(|group| OutboundDataMessage {
+                            permit: None,
                             target: DataChannelTarget::Reliable,
                             group: group.clone(),
                             message: test_event_data_message(),
@@ -5759,6 +5762,7 @@ mod tests {
         ] {
             tx.send(ApiSessionCommand::Data {
                 message: Box::new(OutboundDataMessage {
+                    permit: None,
                     target: DataChannelTarget::Reliable,
                     group: frame_step_group(id),
                     message: test_event_data_message(),
