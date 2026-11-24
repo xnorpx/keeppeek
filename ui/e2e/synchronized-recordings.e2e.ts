@@ -18,6 +18,18 @@ import type { RecordingCoverageResponse } from '../src/lib/types';
 
 test.use({ timezoneId: 'America/New_York' });
 
+async function setDecoderConcurrency(page: Page, decoders: number) {
+	// Set hardwareConcurrency so the workspace grants the test decoder budget on small CI VMs.
+	await page.addInitScript(
+		(cores) =>
+			Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', {
+				configurable: true,
+				get: () => cores
+			}),
+		decoders * 2
+	);
+}
+
 async function displayed(video: Locator) {
 	return video.evaluate((element: HTMLVideoElement) => ({
 		seconds: element.currentTime,
@@ -82,12 +94,7 @@ async function overlappingMoment(page: Page, backend: string, crossMinute = fals
 
 async function checkLimitedDecoder(page: Page) {
 	await installCardProbe(page);
-	await page.addInitScript(() =>
-		Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', {
-			configurable: true,
-			get: () => 2
-		})
-	);
+	await setDecoderConcurrency(page, 1);
 	await page.reload();
 	await page.setViewportSize({ width: 390, height: 844 });
 	await expect(page.locator('article video')).toHaveCount(1);
@@ -155,6 +162,7 @@ test('two recorded cameras follow one clock, seek through coverage gaps and swit
 		if (!localStorage.getItem(key))
 			localStorage.setItem(key, JSON.stringify({ version: 1, media: { playbackRate: 100 } }));
 	});
+	await setDecoderConcurrency(page, 2);
 	const origin = new URL(baseURL).origin;
 	const server = await startHomeAssistantServer(origin, {
 		trustedLocal: true,
@@ -212,6 +220,7 @@ test('only the chosen calibrated AAC camera is unmuted on reload and after an au
 	test.setTimeout(90_000);
 	page.setDefaultTimeout(8_000);
 	if (!baseURL) throw new Error('The comparison fixture requires a UI origin.');
+	await setDecoderConcurrency(page, 2);
 	const origin = new URL(baseURL).origin;
 	const fixture = await startHomeAssistantServer(origin, {
 		trustedLocal: true,
@@ -357,12 +366,7 @@ test('add and remove four authorized sources and seek their common UTC without t
 	if (!baseURL) throw new Error('The comparison fixture requires a UI origin.');
 	await installCardProbe(page);
 	await page.setViewportSize({ width: 1440, height: 1100 });
-	await page.addInitScript(() =>
-		Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', {
-			configurable: true,
-			get: () => 8
-		})
-	);
+	await setDecoderConcurrency(page, 4);
 	const origin = new URL(baseURL).origin;
 	const fixture = await startHomeAssistantServer(origin, {
 		trustedLocal: true,
@@ -540,6 +544,7 @@ test('a browser decoder failure releases only its tile and retry rejoins the adv
 	test.setTimeout(75_000);
 	page.setDefaultTimeout(8_000);
 	if (!baseURL) throw new Error('The decoder fixture requires a UI origin.');
+	await setDecoderConcurrency(page, 2);
 	await installDecoderFailure(page);
 	const origin = new URL(baseURL).origin;
 	const server = await startHomeAssistantServer(origin, {
@@ -595,6 +600,7 @@ test('an interrupted comparison clears old frames and returns paused at its last
 }) => {
 	test.setTimeout(75_000);
 	if (!baseURL) throw new Error('The interrupted comparison requires a UI origin.');
+	await setDecoderConcurrency(page, 2);
 	await installCardProbe(page);
 	const origin = new URL(baseURL).origin;
 	const server = await startHomeAssistantServer(origin, {
@@ -659,6 +665,7 @@ test('a comparison with an unavailable focused camera keeps its authorized recor
 }) => {
 	test.setTimeout(45_000);
 	if (!baseURL) throw new Error('The partial comparison requires a UI origin.');
+	await setDecoderConcurrency(page, 2);
 	await installCardProbe(page);
 	const origin = new URL(baseURL).origin;
 	const server = await startHomeAssistantServer(origin, {
