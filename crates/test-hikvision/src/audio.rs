@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use super::{CapturedRequest, Shared};
 
+const PEER_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub fn handle(
     socket: &mut TcpStream,
     request: &CapturedRequest,
@@ -111,23 +113,33 @@ fn send(
     }
     socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")?;
     socket.set_read_timeout(Some(Duration::from_millis(100)))?;
-    let deadline = Instant::now() + Duration::from_secs(300);
+    let mut deadline = Instant::now() + Duration::from_secs(300);
     let mut buffer = [0; 1600];
     while Instant::now() < deadline && !shared.stopped.load(Ordering::Acquire) {
         if shared.state.lock().unwrap().audio_session != session {
-            break;
+            if !shared.observe_upload_closure {
+                break;
+            }
+            deadline = deadline.min(Instant::now() + PEER_CLOSE_TIMEOUT);
         }
         match socket.read(&mut buffer) {
-            Ok(0) => break,
+            Ok(0) => {
+                note_peer_closure(shared);
+                break;
+            }
             Ok(count) => {
                 let mut state = shared.state.lock().unwrap();
                 if state.audio_session != session {
+                    if shared.observe_upload_closure {
+                        continue;
+                    }
                     break;
                 }
                 anyhow::ensure!(
                     state.audio_output.len() + count <= 2_400_000,
                     "fake audio capture exceeds its limit"
                 );
+                state.speaker_signal.record(&buffer[..count]);
                 state.audio_output.extend_from_slice(&buffer[..count]);
                 shared.changed.notify_all();
             }
@@ -136,8 +148,61 @@ fn send(
                     error.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) => {}
+            Err(error)
+                if shared.observe_upload_closure
+                    && error.kind() == std::io::ErrorKind::ConnectionReset =>
+            {
+                note_peer_closure(shared);
+                break;
+            }
             Err(error) => return Err(error.into()),
         }
     }
     Ok(())
+}
+
+fn note_peer_closure(shared: &Shared) {
+    if shared.observe_upload_closure && !shared.stopped.load(Ordering::Acquire) {
+        let mut state = shared.state.lock().unwrap();
+        state.audio_uploads_closed_by_peer = state.audio_uploads_closed_by_peer.saturating_add(1);
+    }
+}
+
+#[derive(Default)]
+pub struct SpeakerSignal {
+    pub(super) audible: usize,
+    pub(super) crossings: usize,
+    previous_positive: Option<bool>,
+}
+
+impl SpeakerSignal {
+    fn record(&mut self, samples: &[u8]) {
+        // The fixture negotiates mu-law. Exact zero has two sign encodings.
+        // Keep those samples in the elapsed time without counting their signs.
+        for &sample in samples {
+            let magnitude = sample & 0x7f;
+            self.audible += usize::from(magnitude < 0x60);
+            if magnitude != 0x7f {
+                let positive = sample & 0x80 != 0;
+                self.crossings +=
+                    usize::from(self.previous_positive.is_some_and(|last| last != positive));
+                self.previous_positive = Some(positive);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod speaker_tests {
+    use super::*;
+
+    #[test]
+    fn speaker_crossings_ignore_signed_zero_and_span_upload_chunks() {
+        let mut signal = SpeakerSignal::default();
+        signal.record(&[0x80, 0x7f, 0xff, 0xfe]);
+        signal.record(&[0x7e, 0xff]);
+        signal.record(&[0x00, 0x80]);
+        assert_eq!(signal.crossings, 2);
+        assert_eq!(signal.audible, 3);
+    }
 }

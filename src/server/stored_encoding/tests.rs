@@ -21,6 +21,7 @@ fn recorded_fragments(directory: &Path, count: u32) -> anyhow::Result<Vec<Catalo
     for second in 0..count {
         let elapsed = Duration::from_secs(u64::from(second));
         writer.append_one(RecordingFrame {
+            source_rtp: None,
             received_at: start + elapsed,
             timestamp: Some(elapsed),
             frame: MediaFrame::Video(VideoFrame {

@@ -1050,9 +1050,11 @@ test('creates, saves, and activates a runtime profile in settings', async ({ pag
 	await profiles.getByRole('button', { name: 'Create profile' }).click();
 	await expect(profiles.getByText('Stable profile ID: away', { exact: true })).toBeVisible();
 	await profiles.getByRole('button', { name: 'Save profile changes' }).click();
-	await expect(profiles.getByRole('status')).toContainText('Runtime profile changes saved.');
+	await expect(
+		profiles.getByRole('status').filter({ hasText: 'Runtime profile changes saved.' })
+	).toBeVisible();
 	await profiles.getByRole('button', { name: 'Activate' }).click();
-	await expect(profiles.getByRole('status')).toContainText('Activated Away.');
+	await expect(profiles.getByRole('status').filter({ hasText: 'Activated Away.' })).toBeVisible();
 });
 
 function metadataRuntimeConfiguration() {

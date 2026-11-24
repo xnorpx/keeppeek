@@ -56,6 +56,24 @@ If you use storage snapshots instead of a stopped copy, establish and test a con
 procedure for every involved volume and writer. This book does not claim that an arbitrary live
 filesystem copy is recoverable.
 
+## Recover guest links
+
+Guest link verifiers, revocations and consumed view or download limits live in the metadata
+volume’s `guest-review/grants.db` database. The configuration ZIP contains the sharing policy.
+A restart ends existing guest sessions and active transfers.
+
+Before starting a recorder from a historical volume image, set `enabled = false` in the
+restored `[sharing]` configuration and keep its public guest origin offline. An older image
+can contain grants that an Administrator has since revoked or counters that recipients have
+since consumed.
+
+Preserve the complete backup offline. In the working copy of the recovered metadata volume,
+leave the entire `guest-review` directory out of the active volume, including database
+sidecars. KeepPeek initializes a fresh guest store at startup. Once the recorder is isolated
+and its evidence has been checked, enable sharing and confirm that the Administrator's
+all-creators guest-link list is empty before restoring public access. Issue new links only
+for the recordings and completed exports that an Administrator still authorizes.
+
 ## Restore the runtime state store before accepting watches
 
 Restore the state-store database family together with its counters: namespace

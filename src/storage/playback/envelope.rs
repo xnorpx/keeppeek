@@ -18,8 +18,29 @@ struct Timing {
 pub(super) struct ExportEnvelope {
     origin_ms: i64,
     pending: [Option<Timing>; 2],
+    samples: ObservedBounds,
+}
+
+#[derive(Default)]
+pub(super) struct ObservedBounds {
     bounds: Option<ExportMediaBounds>,
     invalid: bool,
+}
+
+impl ExportMediaBounds {
+    pub(super) fn source_sample(
+        origin_ms: i64,
+        timescale: u32,
+        sample: &mp4::Mp4Sample,
+    ) -> Option<Self> {
+        Timing {
+            start: sample.start_time,
+            duration: sample.duration,
+            offset: sample.rendering_offset,
+            timescale,
+        }
+        .bounds(origin_ms)
+    }
 }
 
 impl ExportEnvelope {
@@ -27,18 +48,20 @@ impl ExportEnvelope {
         Self {
             origin_ms,
             pending: [None; 2],
-            bounds: None,
-            invalid: false,
+            samples: ObservedBounds {
+                bounds: None,
+                invalid: false,
+            },
         }
     }
 
     pub(super) fn sample(&mut self, track: u32, timescale: u32, sample: &mp4::Mp4Sample) {
         let Some(index) = track.checked_sub(1).and_then(|id| usize::try_from(id).ok()) else {
-            self.invalid = true;
+            self.samples.invalid = true;
             return;
         };
         if index >= self.pending.len() || timescale == 0 || sample.duration == 0 {
-            self.invalid = true;
+            self.samples.invalid = true;
             return;
         }
         let next = Timing {
@@ -55,7 +78,7 @@ impl ExportEnvelope {
                 .and_then(|delta| u32::try_from(delta).ok())
                 .filter(|delta| *delta > 0);
             let Some(duration) = duration.filter(|_| previous.timescale == timescale) else {
-                self.invalid = true;
+                self.samples.invalid = true;
                 return;
             };
             previous.duration = duration;
@@ -72,11 +95,21 @@ impl ExportEnvelope {
     }
 
     pub(super) const fn bounds(&self) -> Option<ExportMediaBounds> {
-        if self.invalid { None } else { self.bounds }
+        self.samples.bounds()
     }
 
     fn include(&mut self, timing: Timing) {
-        let Some(bounds) = timing.bounds(self.origin_ms) else {
+        self.samples.include(timing.bounds(self.origin_ms));
+    }
+}
+
+impl ObservedBounds {
+    pub(super) const fn bounds(&self) -> Option<ExportMediaBounds> {
+        if self.invalid { None } else { self.bounds }
+    }
+
+    pub(super) fn include(&mut self, bounds: Option<ExportMediaBounds>) {
+        let Some(bounds) = bounds else {
             self.invalid = true;
             return;
         };

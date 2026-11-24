@@ -43,6 +43,7 @@ impl<R: Read + Seek> Mp4Reader<R> {
         let mut ftyp = None;
         let mut moov = None;
         let mut moofs = Vec::new();
+        let mut have_open_fragment = false;
         let mut moof_offsets = Vec::new();
         let mut emsgs = Vec::new();
 
@@ -73,6 +74,7 @@ impl<R: Read + Seek> Mp4Reader<R> {
                     skip_box(&mut reader, s)?;
                 }
                 BoxType::MdatBox => {
+                    have_open_fragment = false;
                     skip_box(&mut reader, s)?;
                 }
                 BoxType::MoovBox => {
@@ -81,11 +83,21 @@ impl<R: Read + Seek> Mp4Reader<R> {
                 BoxType::MoofBox => {
                     let moof = MoofBox::read_box(&mut reader, s)?;
                     moofs.push(moof);
+                    have_open_fragment = true;
                     moof_offsets.push(current);
                 }
                 BoxType::EmsgBox => {
                     let emsg = EmsgBox::read_box(&mut reader, s)?;
-                    emsgs.push(emsg);
+                    if emsg.scheme_id_uri == source_rtp::SCHEME {
+                        if !have_open_fragment {
+                            return Err(Error::InvalidData(
+                                "source RTP event is outside a fragment",
+                            ));
+                        }
+                        source_rtp::SourceTiming::attach(moofs.last_mut().unwrap(), &emsg)?;
+                    } else {
+                        emsgs.push(emsg);
+                    }
                 }
                 _ => {
                     // XXX warn!()
@@ -121,7 +133,7 @@ impl<R: Read + Seek> Mp4Reader<R> {
                 for traf in moof.trafs.iter() {
                     let track_id = traf.tfhd.track_id;
                     if let Some(track) = tracks.get_mut(&track_id) {
-                        let sample_count = traf.trun.as_ref().map(|t| t.sample_count).unwrap_or(0);
+                        let sample_count = traf.trun.as_ref().map_or(0, |t| t.sample_count);
                         let previous = track.traf_sample_counts.last().copied().unwrap_or(0);
                         let cumulative = previous
                             .checked_add(sample_count)
@@ -277,6 +289,20 @@ impl<R: Read + Seek> Mp4Reader<R> {
                 .ok_or(Error::InvalidData("fragment sample ID overflow"))?;
         }
         Ok(locations)
+    }
+
+    /// Looks up measured source packet timing for a one-based sample ordinal.
+    /// Historical recordings, unsupported timing versions, and unmeasured samples return None.
+    pub fn source_rtp_time(&self, track_id: u32, sample_id: u32) -> Result<Option<SourceRtpTime>> {
+        let track = self
+            .tracks
+            .get(&track_id)
+            .ok_or(Error::TrakNotFound(track_id))?;
+        if !track.trafs.is_empty() && track.trak.mdia.minf.stbl.stsz.sample_count != 0 {
+            // This optional lookup cannot assign one global ordinal to a mixed layout.
+            return Ok(None);
+        }
+        Ok(track.source_rtp_time(sample_id))
     }
 
     pub fn read_sample(&mut self, track_id: u32, sample_id: u32) -> Result<Option<Mp4Sample>> {

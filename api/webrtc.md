@@ -1689,7 +1689,7 @@ creation retry fence. Repeating it returns a conflict and never returns the old
 secret or silently creates another link. An indeterminate result requires listing
 and revoking the grant before starting a new creation intent.
 
-The first export path grants the complete immutable MP4. Its preview reports the
+Without `recording_range`, the export path grants the complete immutable MP4. Its preview reports the
 measured media envelope, rounded outward to milliseconds across all emitted
 tracks. It can begin before the original requested start because of codec
 preroll, or end after the requested end because whole samples are retained. It must not be described as exact recording-range sharing. A
@@ -1698,6 +1698,25 @@ still match the Ready generation. Guest admission also requires a persisted
 media-envelope proof bound to that artifact, digest and byte length. Legacy
 exports without captured source/owner identity or measured bounds cannot be
 shared; ordinary authenticated download remains available.
+
+`keeppeek.guest-range.v1` advertises recording-range enforcement on `preview_export` and `create`.
+Range clients require this capability and send the same `ShareRecordingRange` with both commands.
+Fresh range jobs set `CreateExportJob.guest_range_preparation` to true only after negotiating
+this capability. The recorder checks encoded sample sizes before reading payloads and limits output writes to 512 MiB. It discards any incomplete file
+and excludes unrestricted running jobs from deduplication with bounded jobs. Omitting or
+clearing the field retains ordinary export behavior.
+The completed-export duration uses the output presentation envelope. Range proof separately
+records the outward-rounded original source extents of the emitted, unshifted samples. A completed export with an older output-only proof remains
+available to completed-export clients and requires fresh preparation for an exact range.
+The guard names the selected source and exact half-open Unix millisecond interval, up to two minutes.
+The recorder verifies that the export request named this source and interval, that the current camera
+has the captured identity, and that both the source and output extents fit wholly inside the selection.
+Range previews and grant creation also verify the retained MP4 uses the guest viewer's supported
+H.264 video and optional AAC audio. Codec preroll or a final sample extending past an edge makes
+the range unavailable. A nonzero applied recorded-audio offset also prevents guarded sharing:
+the output envelope cannot establish the original source times of corrected audio. Missing footage
+can shorten the file; the preview returns its measured bounds and reports catalog gaps. A successful
+grant binds the verified immutable file digest and these bounds for every guest access.
 
 A grant lasts at most 24 hours and never later than export expiry. Evidence remains
 subject to deletion, privacy and retention; sharing creates no retention hold.
