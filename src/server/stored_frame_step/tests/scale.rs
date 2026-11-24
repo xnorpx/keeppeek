@@ -14,11 +14,11 @@ thread_local! {
 }
 
 pub(in crate::server::stored_frame_step) fn observe_range(bytes: u64) {
-    READS.update(|counts| {
-        counts.map(|counts| Reads {
+    READS.with(|cell| {
+        cell.set(cell.get().map(|counts| Reads {
             calls: counts.calls + 1,
             bytes: counts.bytes + bytes,
-        })
+        }));
     });
 }
 

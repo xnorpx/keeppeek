@@ -244,9 +244,10 @@ test.describe('touch input', () => {
 		await sheet.getByRole('button', { name: 'Next camera, Front Door' }).tap();
 		await page.locator('[data-keep-player] video').dispatchEvent('loadeddata');
 		await sheet.getByRole('button', { name: /^Choose camera,/ }).tap();
-		const search = page.getByRole('searchbox', { name: 'Find a Keep camera' });
+		const chooser = page.getByRole('dialog', { name: 'Choose a Keep camera' });
+		const search = chooser.getByRole('searchbox', { name: 'Find a Keep camera' });
 		await search.fill('Camera 10');
-		await page.getByRole('option', { name: /Camera 10/ }).tap();
+		await chooser.getByRole('option', { name: /Camera 10/ }).tap();
 		await page.locator('[data-keep-player] video').dispatchEvent('loadeddata');
 		await sheet.getByRole('button', { name: 'Previous recorded day', exact: true }).tap();
 		await expect(sheet.getByRole('combobox', { name: 'Recorded day' })).toHaveValue(
