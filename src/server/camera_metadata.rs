@@ -133,8 +133,11 @@ fn run(state: &ServerState) {
             } else {
                 ReolinkDoorbellCapabilities::default()
             };
+            let may_query_speaker = capabilities.talkback;
             apply_audio_capabilities(state, &entry, capabilities);
-            state.probe_reolink_speaker(&entry);
+            if may_query_speaker {
+                state.probe_reolink_speaker(&entry);
+            }
         }
         if current(state, &entry) {
             state.probe_hikvision_capabilities(entry.configuration.ip);
