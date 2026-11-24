@@ -74,6 +74,7 @@ export type LivePeerTrack = {
 	estimatedBitrateBps: number | null;
 	liveQuality?: LiveQualityDiagnostics;
 	subscribed: boolean;
+	audioSourceSessionId?: string;
 	admissionError?: string | null;
 };
 
@@ -604,6 +605,8 @@ export class LivePeer {
 
 	private async subscribeAudio(cameraId: string, subscriptionId: string): Promise<void> {
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
+		if (!sourceSessionId || this.track(cameraId)?.audioSourceSessionId === sourceSessionId) return;
+		const owner = this.#peer;
 		const source = this.#capabilities?.sourceSessions.find(
 			(item) => item.sourceSessionId === sourceSessionId
 		);
@@ -627,7 +630,13 @@ export class LivePeer {
 				variantId: variant.variantId
 			})
 		);
-		if (result?.case !== 'subscriptionResult') return;
+		if (
+			owner !== this.#peer ||
+			this.#sourceSessionByCamera[cameraId] !== sourceSessionId ||
+			result?.case !== 'subscriptionResult'
+		)
+			return;
+		this.replaceTrack(cameraId, { audioSourceSessionId: sourceSessionId });
 		if (result.value.delivery.case === 'rtp') {
 			const mid = result.value.delivery.value.mid;
 			this.#audioCameraByMid[mid] = cameraId;
@@ -647,6 +656,10 @@ export class LivePeer {
 				format.value.sampleRateHz,
 				format.value.channelCount
 			);
+			if (owner !== this.#peer || this.track(cameraId)?.audioSourceSessionId !== sourceSessionId) {
+				playback.close();
+				return;
+			}
 			this.#audioPlaybackByBinding.set(result.value.delivery.value.streamBindingId, playback);
 			this.#audioBindingByCamera[cameraId] = result.value.delivery.value.streamBindingId;
 		} catch (error) {
@@ -663,6 +676,7 @@ export class LivePeer {
 			return await this.request({ case: 'subscribeMedia', value: subscribe });
 		} catch (error) {
 			if (!(error instanceof MediaAdmissionError)) throw error;
+			if (subscribe.kind === MediaKind.AUDIO) return null;
 			this.replaceTrack(cameraId, {
 				status: 'unavailable',
 				admissionError: 'Server did not admit this stream'
@@ -679,6 +693,17 @@ export class LivePeer {
 				subscriptionIds: audioTrackId ? [subscriptionId, audioTrackId] : [subscriptionId]
 			})
 		});
+		this.releaseCameraAudio(cameraId);
+		this.replaceTrack(cameraId, {
+			status: 'queued',
+			subscribed: false,
+			pendingStream: null,
+			estimatedBitrateBps: null,
+			liveQuality: undefined
+		});
+	}
+
+	private releaseCameraAudio(cameraId: string): void {
 		const binding = this.#audioBindingByCamera[cameraId];
 		if (binding) {
 			this.#audioPlaybackByBinding.get(binding)?.close();
@@ -689,13 +714,9 @@ export class LivePeer {
 			if (sourceId === cameraId) delete this.#audioCameraByMid[mid];
 		}
 		this.replaceTrack(cameraId, {
-			status: 'queued',
-			subscribed: false,
+			audioSourceSessionId: undefined,
 			audioReceiver: null,
-			audioStream: null,
-			pendingStream: null,
-			estimatedBitrateBps: null,
-			liveQuality: undefined
+			audioStream: null
 		});
 	}
 
@@ -844,6 +865,7 @@ export class LivePeer {
 		for (const [cameraId, source] of Object.entries(this.#sourceSessionByCamera)) {
 			if (source !== sourceSessionId) continue;
 			delete this.#sourceSessionByCamera[cameraId];
+			this.releaseCameraAudio(cameraId);
 			this.replaceTrack(cameraId, { liveQuality: undefined, pendingStream: null });
 		}
 	}
@@ -890,6 +912,13 @@ export class LivePeer {
 				)
 				.map((source) => [source.sourceId, source.sourceSessionId])
 		);
+		for (const track of Object.values(this.tracks)) {
+			if (
+				track.audioSourceSessionId &&
+				this.#sourceSessionByCamera[track.cameraId] !== track.audioSourceSessionId
+			)
+				this.releaseCameraAudio(track.cameraId);
+		}
 		for (const waiter of this.#capabilitiesWaiters) {
 			clearTimeout(waiter.timeout);
 			waiter.resolve(capabilities);

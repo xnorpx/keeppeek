@@ -45,6 +45,7 @@ class FakeDataChannel {
 	onerror: (() => void) | null = null;
 	onmessage: ((event: MessageEvent) => void) | null = null;
 	readonly commands: string[] = [];
+	readonly mediaSubscriptionIds: string[] = [];
 	delayTalkbackStart = false;
 	replyToTalkbackStart?: () => void;
 
@@ -64,6 +65,8 @@ class FakeDataChannel {
 		const request = envelope.message.value;
 		const command = request.command;
 		this.commands.push(command.case ?? 'unknown');
+		if (command.case === 'subscribeMedia')
+			this.mediaSubscriptionIds.push(command.value.subscriptionId);
 
 		const result =
 			command.case === 'subscribeMedia'
@@ -284,6 +287,61 @@ async function cameraWithMicrophone(peer: LivePeer, sessionId: string) {
 }
 
 describe('LivePeer', () => {
+	it('keeps the admitted camera audio when video quality changes and reacquires it after release', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'audio-owner',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		const cameraId = 'front-door';
+		await peer.configure([{ cameraId, quality: 'auto' }]);
+		const channel = FakePeerConnection.latest!.channels[0];
+		const advertise = (sourceSessionId: string) =>
+			channel.onmessage?.(
+				notification({
+					case: 'initialCapabilities',
+					value: create(ServerCapabilitiesSchema, {
+						sourceSessions: [
+							{
+								sourceSessionId,
+								sourceId: cameraId,
+								video: {},
+								audio: { variants: [{ variantId: 'main' }] }
+							}
+						]
+					})
+				})
+			);
+		advertise('camera:front-door');
+		peer.markPlaying(cameraId);
+		FakeDataChannel.rejectedSubscription = 'audio-0';
+		await peer.configure([{ cameraId, quality: 'high' }]);
+		expect(peer.track(cameraId)?.status).toBe('live');
+		FakeDataChannel.rejectedSubscription = null;
+		await peer.configure([{ cameraId, quality: 'low' }]);
+		FakeDataChannel.rejectedSubscription = 'audio-0';
+		await peer.configure([{ cameraId, quality: 'high' }]);
+		await peer.configure([{ cameraId, quality: 'low' }]);
+		expect(peer.track(cameraId)?.status).toBe('live');
+		expect(channel.mediaSubscriptionIds.filter((id) => id === 'audio-0')).toHaveLength(2);
+		await peer.configure([{ cameraId, quality: 'low', active: false }]);
+		FakeDataChannel.rejectedSubscription = null;
+		await peer.configure([{ cameraId, quality: 'low' }]);
+		expect(channel.mediaSubscriptionIds.filter((id) => id === 'audio-0')).toHaveLength(3);
+		channel.onmessage?.(
+			notification({
+				case: 'sourceSessionRemoved',
+				value: create(SourceSessionRemovedSchema, { sourceSessionId: 'camera:front-door' })
+			})
+		);
+		advertise('replacement:front-door');
+		await peer.configure([{ cameraId, quality: 'high' }]);
+		expect(channel.mediaSubscriptionIds.filter((id) => id === 'audio-0')).toHaveLength(4);
+		await peer.close();
+	});
+
 	it.each([false, true])(
 		'releases a withdrawn microphone with pending start=%s and a rejecting sender',
 		async (pendingStart) => {
