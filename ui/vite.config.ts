@@ -161,6 +161,7 @@ export default defineConfig({
 				extends: './vite.config.ts',
 				test: {
 					name: 'server-compat',
+					pool: 'threads',
 					environment: 'node',
 					include: [
 						'src/lib/api.spec.ts',
@@ -181,6 +182,7 @@ export default defineConfig({
 				extends: './vite.config.ts',
 				test: {
 					name: 'server',
+					pool: 'threads',
 					environment: 'node',
 					include: ['src/**/*.{test,spec}.{js,ts}'],
 					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']

@@ -16,6 +16,7 @@ use ureq::Agent;
 use url::Url;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(2);
+const CGI_RESPONSE_BYTES_MAX: u64 = 8 * 1024 * 1024;
 const DOORBELL_ASSET_COUNT_MAX: usize = 128;
 const DOORBELL_ASSET_TEXT_BYTES_MAX: usize = 256;
 const MAX_CONCURRENT_PROBES: usize = 200;
@@ -471,7 +472,6 @@ impl PtzOp {
 
 #[derive(Deserialize)]
 struct ApiRsp {
-    #[expect(dead_code)]
     cmd: Option<String>,
     code: Option<i32>,
     value: Option<Value>,
@@ -480,7 +480,6 @@ struct ApiRsp {
 
 #[derive(Deserialize)]
 struct RspError {
-    detail: Option<String>,
     #[serde(alias = "rspCode")]
     rsp_code: Option<i32>,
 }
@@ -622,10 +621,11 @@ impl ReolinkClient {
     }
 
     fn api_call(&self, cmd: &str, param: Option<Value>) -> anyhow::Result<Value> {
-        let mut url = format!("{}?cmd={}", self.base_url, cmd);
+        let mut url = Url::parse(&self.base_url)
+            .map_err(|_| anyhow::anyhow!("{cmd} camera address is invalid"))?;
+        url.query_pairs_mut().append_pair("cmd", cmd);
         if let Some(token) = &self.token {
-            url.push_str("&token=");
-            url.push_str(token);
+            url.query_pairs_mut().append_pair("token", token);
         }
 
         let body = serde_json::json!([{
@@ -636,36 +636,40 @@ impl ReolinkClient {
 
         let response = self
             .client
-            .post(&url)
+            .post(url.as_str())
+            .config()
+            .max_redirects(0)
+            .build()
             .header("Content-Type", "application/json")
-            .send(body.to_string())?;
-        let mut response_body = response.into_body();
-        let text = response_body.read_to_string()?;
-
-        let responses: Vec<ApiRsp> = serde_json::from_str(&text).map_err(|e| {
+            .send(body.to_string())
+            .map_err(|_| anyhow::anyhow!("{cmd} camera request failed"))?;
+        let status = response.status();
+        anyhow::ensure!(
+            status.is_success(),
+            "{cmd} camera HTTP status {}",
+            status.as_u16()
+        );
+        let bytes = response
+            .into_body()
+            .into_with_config()
+            .limit(CGI_RESPONSE_BYTES_MAX)
+            .read_to_vec()
+            .map_err(|_| anyhow::anyhow!("{cmd} camera response is unavailable or too large"))?;
+        let [rsp]: [ApiRsp; 1] = serde_json::from_slice(&bytes).map_err(|error| {
             anyhow::anyhow!(
-                "{} parse error: {} (body: {})",
-                cmd,
-                e,
-                &text[..text.len().min(200)]
+                "{cmd} camera response is invalid at line {} column {}",
+                error.line(),
+                error.column()
             )
         })?;
-
-        let rsp = responses
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("empty response for {cmd}"))?;
-
-        if let Some(err) = &rsp.error
-            && let Some(code) = err.rsp_code
+        anyhow::ensure!(
+            rsp.cmd.as_deref() == Some(cmd),
+            "{cmd} camera response does not name the requested command"
+        );
+        if let Some(code) = rsp.error.and_then(|error| error.rsp_code)
             && code != 0
         {
-            anyhow::bail!(
-                "{} error: code={}, detail={}",
-                cmd,
-                code,
-                err.detail.as_deref().unwrap_or("unknown")
-            );
+            anyhow::bail!("{cmd} camera reported error code {code}");
         }
 
         if let Some(code) = rsp.code
@@ -1997,6 +2001,188 @@ mod tests {
         assert!(!actual);
         assert_eq!(stored["sens"][0]["sensitivity"], 37);
         assert_eq!(stored["scope"]["area"], "retained");
+    }
+
+    #[test]
+    fn cgi_rejects_oversize_redirect_and_unrelated_responses_without_echoing_private_data() {
+        use std::sync::{Arc, atomic::AtomicUsize};
+
+        const CANARY: &str = "fixture-credential+cgi&marker";
+        let redirects = Arc::new(AtomicUsize::new(0));
+        let queried_redirects = Arc::clone(&redirects);
+        let server = rouille::Server::new("127.0.0.1:0", move |request| {
+            if request.url() == "/redirected" {
+                queried_redirects.fetch_add(1, Ordering::Relaxed);
+                return rouille::Response::empty_404();
+            }
+            assert_eq!(request.get_param("token").as_deref(), Some(CANARY));
+            let command = request.get_param("cmd").unwrap();
+            match command.as_str() {
+                "InvalidJson" => rouille::Response::text(format!("{CANARY}{}", "ä".repeat(130))),
+                "WrongCommand" => rouille::Response::json(&serde_json::json!([
+                    {"cmd": "OtherCommand", "code": 0, "value": {"token": CANARY}}
+                ])),
+                "MissingCommand" => rouille::Response::json(&serde_json::json!([
+                    {"code": 0, "value": {"token": CANARY}}
+                ])),
+                "NullCommand" => rouille::Response::json(&serde_json::json!([
+                    {"cmd": null, "code": 0, "value": {"token": CANARY}}
+                ])),
+                "PrivateError" => rouille::Response::json(&serde_json::json!([
+                    {"cmd": command, "code": 1, "error": {"rspCode": 3, "detail": CANARY}}
+                ])),
+                "LargeResponse" => rouille::Response::from_data(
+                    "application/json",
+                    vec![b'x'; usize::try_from(CGI_RESPONSE_BYTES_MAX + 1).unwrap()],
+                ),
+                "Unavailable" => rouille::Response::text(CANARY).with_status_code(503),
+                "Redirect" => rouille::Response::text(CANARY)
+                    .with_status_code(307)
+                    .with_unique_header("Location", "/redirected"),
+                _ => rouille::Response::json(&serde_json::json!([
+                    {"cmd": command, "code": 0, "value": {"verified": true}}
+                ])),
+            }
+        })
+        .unwrap();
+        let port = server.server_addr().port();
+        let (worker, stop) = server.stoppable();
+        let mut client =
+            ReolinkClient::new_with_http_port(IpAddr::V4(Ipv4Addr::LOCALHOST), Some(port));
+        client.token = Some(CANARY.to_owned());
+
+        let errors = [
+            "InvalidJson",
+            "WrongCommand",
+            "MissingCommand",
+            "NullCommand",
+            "PrivateError",
+            "LargeResponse",
+            "Redirect",
+            "Unavailable",
+        ]
+        .map(|command| client.api_call(command, None).unwrap_err().to_string());
+        let valid = client.api_call("ValidResponse", None).unwrap();
+        stop.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(errors[0].contains("invalid at line"));
+        assert!(
+            errors[1..4]
+                .iter()
+                .all(|error| error.contains("does not name the requested command"))
+        );
+        assert!(errors[4].contains("error code 3"));
+        assert!(errors[5].contains("unavailable or too large"));
+        assert!(errors[6].contains("status 307"));
+        assert!(errors[7].contains("HTTP status 503"));
+        assert!(errors.iter().all(|error| !error.contains(CANARY)));
+        assert_eq!(redirects.load(Ordering::Relaxed), 0);
+        assert_eq!(valid["verified"], true);
+    }
+
+    #[test]
+    fn doorbell_probe_keeps_channel_specific_abilities_and_rejects_mismatched_evidence() {
+        use std::io::Read;
+
+        let server = rouille::Server::new("127.0.0.1:0", |request| {
+            let command = request.get_param("cmd").unwrap();
+            let mut body = String::new();
+            request.data().unwrap().read_to_string(&mut body).unwrap();
+            let body: Value = serde_json::from_str(&body).unwrap();
+            let channel = body[0]["param"]["channel"].as_u64().unwrap_or_default();
+            if command == "GetAudioFileList" || (channel == 3 && command == "GetEvents") {
+                return rouille::Response::json(&serde_json::json!([{"cmd": command, "code": 1}]));
+            }
+            let value = match command.as_str() {
+                "GetEvents" if channel == 0 => serde_json::json!({
+                    "Events": {"visitor": {"channel": 0, "support": 1}},
+                }),
+                "GetEvents" if channel == 1 => serde_json::json!({
+                    "channel": 1, "visitor": {"channel": 0, "support": 1},
+                }),
+                "GetEvents" => serde_json::json!({
+                    "channel": 2, "visitor": {"support": 1},
+                }),
+                "GetAudioCfg" => serde_json::json!({
+                    "AudioCfg": {"channelId": 0, "visitorVolume": 83, "visitorLoudspeaker": 1},
+                }),
+                "GetDingDongList" => serde_json::json!({
+                    "DingDongList": {"dingDong": [
+                        {"id": "front", "name": "Front Chime"},
+                        {"id": "ambiguous", "name": "First Chime"},
+                        {"id": "back", "name": "Back Chime"},
+                        {"id": "ambiguous", "name": "Second Chime"},
+                        {"name": "Missing ID"},
+                        {"id": "name-missing"},
+                    ]}
+                }),
+                "GetAbility" => serde_json::json!({
+                    "Ability": {"abilityChn": [
+                        {"channel": 1, "talkCfg": {"permit": 1}},
+                        {"channelId": 0, "talkCfg": {"permit": 0}},
+                        {"channel": 99, "talkCfg": {"permit": 1}},
+                        {"talkCfg": {"permit": 1}}
+                    ]},
+                }),
+                _ => serde_json::json!({}),
+            };
+            rouille::Response::json(
+                &serde_json::json!([{"cmd": command, "code": 0, "value": value}]),
+            )
+        })
+        .unwrap();
+        let port = server.server_addr().port();
+        let (worker, stop) = server.stoppable();
+        let client = ReolinkClient::new_with_http_port(IpAddr::V4(Ipv4Addr::LOCALHOST), Some(port));
+        let result =
+            [0, 1, 2, 3].map(|channel| client.get_doorbell_capabilities(channel, "test").unwrap());
+        stop.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(result[0].visitor_events);
+        assert_eq!(result[0].visitor_volume, Some(83));
+        assert!(!result[0].talkback);
+        assert!(!result[1].visitor_events);
+        assert_eq!(result[1].visitor_volume, None);
+        assert_eq!(result[1].visitor_loudspeaker, None);
+        assert!(result[1].talkback);
+        assert!(result[2].visitor_events);
+        assert!(!result[2].talkback);
+        assert!(result[3].talkback);
+        assert!(!result[3].visitor_events);
+        assert!(result.iter().all(|capabilities| capabilities.chime));
+        assert!(
+            result
+                .iter()
+                .all(|capabilities| !capabilities.quick_replies)
+        );
+        assert_eq!(
+            result[1].chime_assets,
+            vec![
+                ("back".into(), "Back Chime".into()),
+                ("front".into(), "Front Chime".into()),
+            ],
+        );
+    }
+
+    #[test]
+    fn doorbell_assets_are_bounded_and_stable_when_the_camera_reorders_entries() {
+        let mut assets = serde_json::json!([
+            {"id": 2, "name": "Numeric Reply"},
+            {"id": "4", "name": "First Assignment"},
+            {"id": "1", "name": "Text Reply"},
+            {"id": 4, "name": "Same ID From Firmware"},
+            {"id": " ", "name": "Missing ID"},
+            {"id": "too-long", "name": "x".repeat(DOORBELL_ASSET_TEXT_BYTES_MAX + 1)},
+        ]);
+        let expected = vec![
+            ("1".into(), "Text Reply".into()),
+            ("2".into(), "Numeric Reply".into()),
+        ];
+        assert_eq!(doorbell_assets(Some(&assets), true), expected);
+        assets.as_array_mut().unwrap().reverse();
+        assert_eq!(doorbell_assets(Some(&assets), true), expected);
+        let oversized = Value::Array(vec![Value::Null; DOORBELL_ASSET_COUNT_MAX + 1]);
+        assert!(doorbell_assets(Some(&oversized), true).is_empty());
     }
 
     #[test]

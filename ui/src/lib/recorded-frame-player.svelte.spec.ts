@@ -105,7 +105,20 @@ test('anchors an already paused decoded picture when its source clock becomes av
 		);
 		video.currentTime = 0.255;
 		await settled;
-		const bitmap = new VideoFrame(video);
+		const videoFrame = async (video: HTMLVideoElement) => {
+			for (let i = 0; i < 20; i++) {
+				if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+					try {
+						return new VideoFrame(video);
+					} catch {
+						// VideoFrame construction can briefly race with Chromium decoder readiness.
+					}
+				}
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			return new VideoFrame(video);
+		};
+		const bitmap = await videoFrame(video);
 		const us = bitmap.timestamp;
 		bitmap.close();
 		expect(us).not.toBe(Math.round(video.currentTime * 1_000_000));
