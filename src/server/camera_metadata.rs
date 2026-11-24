@@ -11,7 +11,7 @@ use super::{
 const PENDING_MAX: usize = 128;
 
 impl CameraEntry {
-    pub(super) fn speaker_available(&self) -> bool {
+    pub(super) const fn speaker_available(&self) -> bool {
         if self.info.is_reolink {
             self.reolink_talk_permitted && self.reolink_profile_verified
         } else {

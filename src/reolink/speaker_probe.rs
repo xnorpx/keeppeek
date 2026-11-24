@@ -17,7 +17,7 @@ const BUFFER_BYTES: usize = 16 * 1024;
 #[cfg(test)]
 mod tests;
 
-pub(crate) fn compatible(
+pub fn compatible(
     address: SocketAddr,
     username: &str,
     password: &str,
