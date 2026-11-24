@@ -384,8 +384,21 @@ fn authority_compaction_retries_the_fence_after_snapshot_size_failure() {
     super::super::RecordingCatalog::open(&path)
         .unwrap()
         .shutdown();
-    assert!(crate::backup::database::compact_turso_database(&path, &temporary, 1).is_err());
-    assert!(super::super::RecordingCatalog::open(&path).is_err());
+    let size_error = crate::backup::database::compact_turso_database(&path, &temporary, 1)
+        .expect_err("a one-byte database snapshot must fail its size limit");
+    assert_eq!(
+        size_error.to_string(),
+        "database snapshot exceeds its size limit"
+    );
+    let Err(fenced) = super::super::RecordingCatalog::open(&path) else {
+        panic!("the failed snapshot must leave the source fenced");
+    };
+    assert!(
+        fenced
+            .chain()
+            .any(|cause| cause.to_string() == "catalog authority is fenced for offline handoff"),
+        "expected the source fence to prevent reopening: {fenced:#}"
+    );
     assert!(temporary.is_file());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while let Err(error) =
