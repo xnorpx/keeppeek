@@ -23,10 +23,22 @@ Changing the quality preference is separate from [digital zoom](./digital-zoom.m
 playback does not provide automatic transcoding for an unsupported codec; retain a compatible
 H.264 stream when your viewing devices need one.
 
-With a recording selected and the player focused, Left and Right pause playback and seek by one
-estimated frame interval when camera health reports a positive configured frame rate. If the rate
-is unavailable, playback and position stay as they were. On variable-rate recordings, successive seeks
-can display the same picture or skip a picture. Space toggles playback. J, K and L control shuttle
+To inspect adjacent pictures in Keep, pause a recording in **Timeline**. Select **Previous recorded
+frame** or **Next recorded frame**, or focus the player and press Left or Right. Each successful
+step displays the selected picture, including pictures that share a timestamp when their order can
+be verified. A gap, a changed recording, or unavailable source timing can prevent a step. The
+player shows the reason and keeps the last displayed picture. Arrow keys pan while the zoomed
+image has focus.
+
+**Recorded frame** gives the selected picture's UTC position in the recording. The timeline and
+export handles follow that position. A separate **Source presentation** time appears when the
+camera's original timing differs. Press **[** to set the export start or **]** to set the end.
+Select **Read selected frame time** for a screen-reader announcement. **Play recording** resumes
+from the selected recorded position at the current playback speed.
+
+With an older recorder or a browser without exact frame decoding, the focused player's arrows
+pause and seek by an estimated interval when camera health supplies a positive frame rate.
+Variable-rate recording can repeat or skip pictures during approximate seeking. Space toggles playback. J, K and L control shuttle
 and pause. `[` and `]` set export boundaries. Form fields keep their normal keyboard behavior.
 Arrow keys pan a focused digitally zoomed image.
 
@@ -438,8 +450,16 @@ single configured track and the recorder has accepted at least one RTP packet. E
 The readings precede transcoding, recording timeline normalization and configured
 presentation correction. Use the recorded flash/tone preview or a known physical
 event to measure audible sync. These periodic observations live in the recorder
-log and expire with its retention policy. Existing recordings contain their
-stored media timestamps.
+log and expire with its retention policy. Newly recorded RTSP files also retain
+measured per-sample source timing for the lifetime of the recording. Older files
+provide their stored presentation timestamps only.
+
+Recordings rotate at a video keyframe as they approach their recovery limits.
+An exceptionally long interval between keyframes or repeated source clock
+discontinuities can exhaust a file’s metadata budget. The recorder logs
+`recording recovery budget exhausted`, keeps the valid prefix and starts a new
+recording at the next video keyframe. The interval between the last retained
+sample and that keyframe is a gap in coverage.
 
 For the availability and safety limits of manual deletion and catalog drift checks,
 see [Recording maintenance](./recording-maintenance.md). The Administrator workflow

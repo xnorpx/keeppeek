@@ -226,6 +226,15 @@ test('keeps a paused cold seek at its exact frame after the media source changes
 		);
 		await expect(player).toHaveAttribute('data-recording-playhead-ms', String(beforeFrame + 40));
 		await expect(video).toHaveJSProperty('currentTime', 0);
+		// This cursor mock sends no media. A late clock event before metadata must
+		// not be combined with the replacement cursor's anchor.
+		await video.evaluate((element) => {
+			const player = element as HTMLVideoElement;
+			if (player.readyState !== player.HAVE_NOTHING) throw new Error('Unexpected cursor media');
+			player.currentTime = 0.75;
+			player.dispatchEvent(new Event('timeupdate'));
+		});
+		await expect(player).toHaveAttribute('data-recording-playhead-ms', String(beforeFrame + 40));
 		await expect(player).toHaveAttribute('data-keyboard-playing', 'false');
 		expect(controls.storedSeeks).toHaveLength(1);
 	} finally {
@@ -388,4 +397,33 @@ test('saves only the active Settings draft with Control+S', async ({ page }) => 
 			move_existing_recordings: false
 		}
 	]);
+});
+
+test('keeps Home and ArrowRight on the requested recording while the old source reports progress', async ({
+	page
+}) => {
+	let releaseSeek!: () => void;
+	const seekGate = new Promise<void>((resolve) => {
+		releaseSeek = resolve;
+	});
+	const controls = await mockKeepModes(page, 1, {
+		storedOpenGates: [Promise.resolve(), seekGate]
+	});
+	const startMs = Date.parse(`${keepModeDate}T06:00:00Z`);
+	await page.goto(`/keep?camera=front-door&stream=main&date=${keepModeDate}&at=${startMs + 4_000}`);
+	const position = page.getByRole('slider', { name: 'Recording position', exact: true });
+	const video = page.locator('[data-keep-player] video');
+	await expect(position).toHaveValue('4');
+	try {
+		await position.press('Home');
+		await expect(position).toHaveValue('0');
+		await video.dispatchEvent('timeupdate');
+		await position.press('ArrowRight');
+		await expect(position).toHaveValue('1');
+		releaseSeek();
+		await expect.poll(() => controls.storedSeeks.at(-1)?.timestampMs).toBe(startMs + 1_000);
+		await expect(position).toHaveValue('1');
+	} finally {
+		releaseSeek();
+	}
 });

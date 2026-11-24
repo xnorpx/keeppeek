@@ -55,12 +55,14 @@ export default defineConfig({
 			'@lucide/svelte/icons/inbox',
 			'@lucide/svelte/icons/key-round',
 			'@lucide/svelte/icons/layers',
+			'@lucide/svelte/icons/layout-dashboard',
 			'@lucide/svelte/icons/images',
 			'@lucide/svelte/icons/link',
 			'@lucide/svelte/icons/loader-circle',
 			'@lucide/svelte/icons/log-out',
 			'@lucide/svelte/icons/maximize',
 			'@lucide/svelte/icons/minimize',
+			'@lucide/svelte/icons/moon',
 			'@lucide/svelte/icons/package',
 			'@lucide/svelte/icons/pause',
 			'@lucide/svelte/icons/paw-print',
@@ -74,8 +76,10 @@ export default defineConfig({
 			'@lucide/svelte/icons/scan-line',
 			'@lucide/svelte/icons/scan-search',
 			'@lucide/svelte/icons/save',
+			'@lucide/svelte/icons/settings',
 			'@lucide/svelte/icons/settings-2',
 			'@lucide/svelte/icons/shield-off',
+			'@lucide/svelte/icons/sun',
 			'@lucide/svelte/icons/triangle-alert',
 			'@lucide/svelte/icons/undo-2',
 			'@lucide/svelte/icons/trash-2',
@@ -158,6 +162,7 @@ export default defineConfig({
 				test: {
 					name: 'server-compat',
 					environment: 'node',
+					pool: 'threads',
 					include: [
 						'src/lib/api.spec.ts',
 						'src/lib/browser-logs.spec.ts',
@@ -178,6 +183,7 @@ export default defineConfig({
 				test: {
 					name: 'server',
 					environment: 'node',
+					pool: 'threads',
 					include: ['src/**/*.{test,spec}.{js,ts}'],
 					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
 				}

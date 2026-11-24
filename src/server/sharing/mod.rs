@@ -9,9 +9,12 @@ mod wire;
 use super::*;
 use crate::shares::{Clock, ClockAnchor, GrantSummary, SessionContext, Store};
 pub(super) use evidence::{ValidatedEvidence, open_guest, validate_guest};
+#[cfg(test)]
 pub(super) use management::dispatch;
+pub(super) use management::dispatch_for_session;
 
 pub(super) const CAPABILITY_ID: &str = "keeppeek.guest-review.v1";
+pub(super) const RANGE_CAPABILITY_ID: &str = "keeppeek.guest-range.v1";
 
 struct Policy {
     settings: config::sharing::SharingConfig,

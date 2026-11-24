@@ -296,6 +296,7 @@ pub fn run(
     keeppeek.set_notifications(notification_handle.clone());
     keeppeek.set_runtime_profile_camera_ids(profile_camera_ids)?;
     keeppeek.set_runtime_profiles(cfg.runtime_profiles.clone());
+    keeppeek.seed_profile_observations(camera_configs.values().flatten());
     keeppeek.set_event_forwarder(event_forwarder_handle.clone());
     if let Some(battery_wake) = &battery_wake {
         keeppeek.set_battery_wake(battery_wake.handle());

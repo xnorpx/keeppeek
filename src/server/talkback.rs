@@ -1,4 +1,7 @@
-use crate::{api::proto, webrtc::SessionId};
+use crate::{
+    api::proto,
+    webrtc::{SessionId, WebRtc},
+};
 use std::sync::{Arc, Mutex, PoisonError};
 
 const MAX_TALKBACK_TARGETS: usize = 128;
@@ -44,10 +47,11 @@ impl Registry {
         owner: SessionId,
         target: proto::TalkbackTarget,
         cameras: &[CameraTarget],
+        webrtc: &WebRtc,
     ) -> Result<proto::TalkbackState, Error> {
         let active_source_ids = resolve_target(&target, cameras)?;
         let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
-        if active.is_some() {
+        if active.is_some() || !webrtc.arm_talkback(owner, &active_source_ids) {
             return Err(Error::AlreadyOwned);
         }
         *active = Some(ActiveTalkback {
@@ -57,18 +61,24 @@ impl Registry {
         Ok(state(owner, target, active_source_ids))
     }
 
-    pub(crate) fn stop(&self, owner: SessionId) -> Result<proto::TalkbackState, Error> {
+    pub(crate) fn stop(
+        &self,
+        owner: SessionId,
+        webrtc: &WebRtc,
+    ) -> Result<proto::TalkbackState, Error> {
         let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
         let current = active.as_ref().ok_or(Error::NotOwner)?;
         if current.owner != owner {
             return Err(Error::NotOwner);
         }
+        webrtc.disarm_talkback(owner);
         let current = active.take().expect("active talkback was checked above");
         Ok(state(owner, current.target, Vec::new()))
     }
 
-    pub(crate) fn stop_for_session(&self, owner: SessionId) {
+    pub(crate) fn stop_for_session(&self, owner: SessionId, webrtc: &WebRtc) {
         let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        webrtc.disarm_talkback(owner);
         if active
             .as_ref()
             .is_some_and(|current| current.owner == owner)
@@ -200,20 +210,30 @@ mod tests {
     #[test]
     fn only_one_session_owns_talkback() {
         let registry = Registry::default();
+        let webrtc = WebRtc::new();
         let cameras = [camera("front", &[], true)];
         let target = target(proto::talkback_target::Selection::All(
             proto::AllTalkbackTargets {},
         ));
         assert!(
             registry
-                .start(SessionId::from_u64(1), target.clone(), &cameras)
+                .start(SessionId::from_u64(1), target.clone(), &cameras, &webrtc)
                 .is_ok()
         );
         assert_eq!(
-            registry.start(SessionId::from_u64(2), target, &cameras),
+            registry.start(SessionId::from_u64(2), target.clone(), &cameras, &webrtc),
             Err(Error::AlreadyOwned)
         );
-        assert_eq!(registry.stop(SessionId::from_u64(2)), Err(Error::NotOwner));
-        assert!(registry.stop(SessionId::from_u64(1)).is_ok());
+        assert_eq!(
+            registry.stop(SessionId::from_u64(2), &webrtc),
+            Err(Error::NotOwner)
+        );
+        registry.stop_for_session(SessionId::from_u64(1), &webrtc);
+        assert!(
+            registry
+                .start(SessionId::from_u64(2), target, &cameras, &webrtc)
+                .is_ok()
+        );
+        assert!(registry.stop(SessionId::from_u64(2), &webrtc).is_ok());
     }
 }
