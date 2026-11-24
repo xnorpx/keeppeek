@@ -292,8 +292,16 @@ test.describe('touch input', () => {
 		await page.goto(`/keep?camera=front-door&date=${keepModeDate}&at=${dayEndMs - 1_000}`);
 		const player = page.locator('[data-keep-player]');
 		await expect(player).toHaveAttribute('data-recording-playhead-ms', String(dayEndMs - 1_000));
-		await player.locator('video').dispatchEvent('loadeddata');
-		await player.locator('video').evaluate((video) => {
+		const video = player.locator('video');
+		await expect(video).toHaveAttribute('src', /^blob:/);
+		await video.evaluate((video) => {
+			// This cursor fixture provides timeline ranges without an encoded media body.
+			Object.defineProperties(video, {
+				readyState: { configurable: true, value: HTMLMediaElement.HAVE_CURRENT_DATA },
+				currentSrc: { configurable: true, value: video.getAttribute('src') }
+			});
+			video.dispatchEvent(new Event('loadedmetadata'));
+			video.dispatchEvent(new Event('loadeddata'));
 			Object.defineProperty(video, 'currentTime', { configurable: true, value: 1 });
 			video.dispatchEvent(new Event('timeupdate'));
 			video.dispatchEvent(new Event('ended'));

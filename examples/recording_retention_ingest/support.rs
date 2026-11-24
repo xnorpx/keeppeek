@@ -110,6 +110,7 @@ fn sample(
                     "benchmark/sub"
                 },
                 RecordingFrame {
+                    source_rtp: None,
                     received_at: started + timestamp,
                     timestamp: Some(timestamp),
                     frame: MediaFrame::Video(VideoFrame {

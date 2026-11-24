@@ -103,6 +103,11 @@ describe('Keep modes', () => {
 	it('orders edited export handles without inventing bitrate', () => {
 		const original = createExportRange(segment('front-door', 0, 120_000), null);
 		if (original === null) throw new Error('Expected an export range');
+		expect(updateExportRange(original, 1000.25, 4500.75, null)).toMatchObject({
+			startMs: 1000,
+			endMs: 4500,
+			durationMs: 3500
+		});
 
 		expect(updateExportRange(original, 90_000, 30_000, null)).toEqual({
 			startMs: 30_000,

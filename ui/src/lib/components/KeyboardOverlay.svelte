@@ -25,6 +25,13 @@
 
 	let { mode, pathname, onclose, onnavigate }: Props = $props();
 	const controlClient = useControlClient();
+	let frameStepSupported = $state(false);
+	$effect(() =>
+		controlClient.onCapabilities((ids) => {
+			frameStepSupported =
+				typeof VideoDecoder !== 'undefined' && ids.includes('keeppeek.stored-frame-step.v1');
+		})
+	);
 	let dialog = $state<HTMLDialogElement | null>(null);
 	let searchInput = $state<HTMLInputElement | null>(null);
 	let query = $state('');
@@ -182,7 +189,12 @@
 					? [
 							{ keys: ['J', 'K', 'L'], label: 'Shuttle backward, pause, or forward' },
 							{ keys: ['↑', '↓'], label: 'Scroll the focused recording timeline' },
-							{ keys: ['←', '→'], label: 'Seek by one estimated frame interval' },
+							{
+								keys: ['←', '→'],
+								label: frameStepSupported
+									? 'Previous or next recorded frame while paused'
+									: 'Seek by one estimated frame interval'
+							},
 							{ keys: ['[', ']'], label: 'Set export range in and out' },
 							{ keys: ['Space'], label: 'Play or pause without changing speed' },
 							{ keys: ['Home'], label: 'Return to the live edge and follow' }
