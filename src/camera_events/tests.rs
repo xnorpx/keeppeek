@@ -18,6 +18,7 @@ fn camera(fake: &FakeOnvif) -> Camera {
 fn pullpoint_worker_delivers_once_renews_and_unsubscribes_on_shutdown() {
     let fake = FakeOnvif::builder()
         .lease(Duration::from_secs(2))
+        .renewal_lease(Duration::from_secs(90))
         .start()
         .unwrap();
     let camera = camera(&fake);
@@ -55,8 +56,10 @@ fn pullpoint_worker_delivers_once_renews_and_unsubscribes_on_shutdown() {
     assert_eq!(event.kind, "motion");
     let id = event.id.clone();
     reply.send(changes.len()).unwrap();
-    assert!(fake.wait_for_pulls(4, Duration::from_secs(5)));
-    assert!(fake.renew_count() > 0);
+    // Shut down only after the device has granted the worker a fresh, ordinary lease.
+    assert!(fake.wait_for_renewals(1, Duration::from_secs(5)));
+    let next_pull = fake.pull_count() + 1;
+    assert!(fake.wait_for_pulls(next_pull, Duration::from_secs(5)));
     shutdown.cancel();
     let deadline = Instant::now() + Duration::from_secs(6);
     let mut endings = 0;
