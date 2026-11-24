@@ -131,6 +131,65 @@ impl From<Vp9Config> for TrackConfig {
     }
 }
 
+const FRAGMENT_INDEX_STRIDE: usize = 64;
+
+#[derive(Debug, Default)]
+struct SamplePrefixes {
+    // Each entry is the sum preceding sample 64, 128, ... within one trun.
+    checkpoints: Box<[u64]>,
+}
+
+impl SamplePrefixes {
+    fn build(values: &[u32], count: u32, default: u32) -> Result<(Self, u64)> {
+        if values.is_empty() {
+            return Ok((Self::default(), u64::from(count) * u64::from(default)));
+        }
+        if values.len() != count as usize {
+            return Err(Error::InvalidData("fragment sample table length mismatch"));
+        }
+        let mut total = 0;
+        let mut checkpoints =
+            Vec::with_capacity(values.len().saturating_sub(1) / FRAGMENT_INDEX_STRIDE);
+        for (index, chunk) in values.chunks(FRAGMENT_INDEX_STRIDE).enumerate() {
+            if index != 0 {
+                checkpoints.push(total);
+            }
+            total += chunk.iter().map(|&value| u64::from(value)).sum::<u64>();
+        }
+        Ok((
+            Self {
+                checkpoints: checkpoints.into_boxed_slice(),
+            },
+            total,
+        ))
+    }
+
+    fn before(&self, values: &[u32], default: u32, index: usize) -> Result<u64> {
+        if values.is_empty() {
+            return Ok(u64::from(default) * index as u64);
+        }
+        let block = index / FRAGMENT_INDEX_STRIDE;
+        let prefix = match block.checked_sub(1) {
+            None => 0,
+            Some(i) => *self
+                .checkpoints
+                .get(i)
+                .ok_or(Error::InvalidData("missing fragment checkpoint"))?,
+        };
+        let tail = values
+            .get(block * FRAGMENT_INDEX_STRIDE..index)
+            .ok_or(Error::InvalidData("missing fragment sample entries"))?;
+        Ok(prefix + tail.iter().map(|&value| u64::from(value)).sum::<u64>())
+    }
+}
+
+#[derive(Debug, Default)]
+struct FragmentSampleIndex {
+    start: u64,
+    durations: SamplePrefixes,
+    sizes: SamplePrefixes,
+}
+
 #[derive(Debug)]
 pub struct Mp4Track {
     pub trak: TrakBox,
@@ -142,7 +201,7 @@ pub struct Mp4Track {
     pub default_sample_flags: u32,
     pub default_sample_description_index: u32,
     pub(crate) traf_sample_counts: Vec<u32>,
-    pub(crate) traf_start_times: Vec<u64>,
+    fragment_indexes: Vec<FragmentSampleIndex>,
     pub(crate) traf_base_offsets: Vec<u64>,
     pub(crate) fragmented_duration: u64,
     pub(crate) fragmented_total_size: u64,
@@ -159,50 +218,57 @@ impl Mp4Track {
             default_sample_flags: 0,
             default_sample_description_index: 1,
             traf_sample_counts: Vec::new(),
-            traf_start_times: Vec::new(),
+            fragment_indexes: Vec::new(),
             traf_base_offsets: Vec::new(),
             fragmented_duration: 0,
             fragmented_total_size: 0,
         }
     }
 
-    pub(crate) fn precompute_fragmented_caches(&mut self) {
+    pub(crate) fn precompute_fragmented_caches(&mut self) -> Result<()> {
         let mut running_time = 0u64;
         let mut total_size = 0u64;
-
+        self.fragment_indexes.clear();
         for traf in &self.trafs {
-            let start_time = traf
+            let start = traf
                 .tfdt
                 .as_ref()
                 .map_or(running_time, |tfdt| tfdt.base_media_decode_time);
-            self.traf_start_times.push(start_time);
-
-            let default_duration = traf
-                .tfhd
-                .default_sample_duration
-                .unwrap_or(self.default_sample_duration);
-            let default_size = traf
-                .tfhd
-                .default_sample_size
-                .unwrap_or(self.default_sample_size);
-
-            let mut traf_duration = 0u64;
-            if let Some(trun) = &traf.trun {
-                for i in 0..trun.sample_count as usize {
-                    traf_duration += trun
-                        .sample_durations
-                        .get(i)
-                        .copied()
-                        .unwrap_or(default_duration) as u64;
-                    total_size += trun.sample_sizes.get(i).copied().unwrap_or(default_size) as u64;
-                }
+            let mut index = FragmentSampleIndex {
+                start,
+                ..Default::default()
+            };
+            running_time = start;
+            if let Some(run) = &traf.trun {
+                let default_duration = traf
+                    .tfhd
+                    .default_sample_duration
+                    .unwrap_or(self.default_sample_duration);
+                let default_size = traf
+                    .tfhd
+                    .default_sample_size
+                    .unwrap_or(self.default_sample_size);
+                let (durations, elapsed) = SamplePrefixes::build(
+                    &run.sample_durations,
+                    run.sample_count,
+                    default_duration,
+                )?;
+                let (sizes, bytes) =
+                    SamplePrefixes::build(&run.sample_sizes, run.sample_count, default_size)?;
+                index.durations = durations;
+                index.sizes = sizes;
+                running_time = start
+                    .checked_add(elapsed)
+                    .ok_or(Error::InvalidData("fragment sample time overflow"))?;
+                total_size = total_size
+                    .checked_add(bytes)
+                    .ok_or(Error::InvalidData("fragment track size overflow"))?;
             }
-
-            running_time = start_time + traf_duration;
+            self.fragment_indexes.push(index);
         }
-
         self.fragmented_duration = running_time;
         self.fragmented_total_size = total_size;
+        Ok(())
     }
 
     pub const fn track_id(&self) -> u32 {
@@ -747,14 +813,19 @@ impl Mp4Track {
                     .copied()
                     .unwrap_or_else(|| traf.tfhd.base_data_offset.unwrap_or(0));
                 if let Some(trun) = &traf.trun {
-                    offset = (offset as i64 + trun.data_offset.unwrap_or(0) as i64) as u64;
-                    let default_size = traf
+                    let default = traf
                         .tfhd
                         .default_sample_size
                         .unwrap_or(self.default_sample_size);
-                    for i in 0..sample_idx {
-                        offset += trun.sample_sizes.get(i).copied().unwrap_or(default_size) as u64;
-                    }
+                    let preceding = self.fragment_indexes[traf_idx].sizes.before(
+                        &trun.sample_sizes,
+                        default,
+                        sample_idx,
+                    )?;
+                    offset = offset
+                        .checked_add_signed(i64::from(trun.data_offset.unwrap_or(0)))
+                        .and_then(|start| start.checked_add(preceding))
+                        .ok_or(Error::InvalidData("fragment sample offset overflow"))?;
                 }
                 Ok(offset)
             } else {
@@ -812,7 +883,7 @@ impl Mp4Track {
         if !self.trafs.is_empty() {
             if let Some((traf_idx, sample_idx)) = self.find_traf_idx_and_sample_idx(sample_id) {
                 let traf = &self.trafs[traf_idx];
-                let mut start_time = self.traf_start_times[traf_idx];
+                let mut start_time = self.fragment_indexes[traf_idx].start;
 
                 let default_duration = traf
                     .tfhd
@@ -820,17 +891,11 @@ impl Mp4Track {
                     .unwrap_or(self.default_sample_duration);
                 let mut duration = default_duration;
                 if let Some(trun) = &traf.trun {
-                    let elapsed = if trun.flags & TrunBox::FLAG_SAMPLE_DURATION == 0 {
-                        u64::from(default_duration)
-                            * u64::try_from(sample_idx)
-                                .map_err(|_| Error::InvalidData("invalid fragment sample index"))?
-                    } else {
-                        let durations = trun
-                            .sample_durations
-                            .get(..sample_idx)
-                            .ok_or(Error::InvalidData("missing fragment sample durations"))?;
-                        durations.iter().map(|&value| u64::from(value)).sum()
-                    };
+                    let elapsed = self.fragment_indexes[traf_idx].durations.before(
+                        &trun.sample_durations,
+                        default_duration,
+                        sample_idx,
+                    )?;
                     start_time = start_time
                         .checked_add(elapsed)
                         .ok_or(Error::InvalidData("fragment sample time overflow"))?;
@@ -923,6 +988,11 @@ impl Mp4Track {
             duration,
             presentation_time,
         }))
+    }
+
+    /// Returns whether a present, one-based sample can start a decoder.
+    pub fn sample_random_access(&self, sample_id: u32) -> Option<bool> {
+        (sample_id > 0 && sample_id <= self.sample_count()).then(|| self.is_sync_sample(sample_id))
     }
 
     pub(crate) fn is_sync_sample(&self, sample_id: u32) -> bool {

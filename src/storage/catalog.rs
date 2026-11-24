@@ -3645,6 +3645,17 @@ pub(super) async fn media_fragments_in_range(
     media_fragments_in_range_with_limit(connection, stream_id, start_ms, end_ms, None).await
 }
 
+#[derive(Debug)]
+pub(crate) struct FragmentWindowLimit;
+
+impl std::fmt::Display for FragmentWindowLimit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("recording fragment window exceeds bounded correction limit")
+    }
+}
+
+impl std::error::Error for FragmentWindowLimit {}
+
 pub(super) async fn media_fragments_in_range_with_limit(
     connection: &turso::Connection,
     stream_id: &str,
@@ -3686,10 +3697,9 @@ pub(super) async fn media_fragments_in_range_with_limit(
             byte_len: to_u64(row.get(9)?, "fragment byte length")?,
             archive: None,
         });
-        anyhow::ensure!(
-            maximum.is_none_or(|maximum| fragments.len() <= maximum as usize),
-            "recording fragment window exceeds bounded correction limit"
-        );
+        if maximum.is_some_and(|maximum| fragments.len() > maximum as usize) {
+            return Err(FragmentWindowLimit.into());
+        }
     }
     drop(rows);
     let mut archives: BTreeMap<String, Option<archive_playback::ArchiveRead>> = BTreeMap::new();
@@ -6504,7 +6514,7 @@ fn current_unix_time_ms() -> i64 {
 }
 
 #[cfg(unix)]
-pub(super) fn recording_file_identity(
+pub(crate) fn recording_file_identity(
     _path: &Path,
     metadata: &std::fs::Metadata,
 ) -> Option<String> {
@@ -6514,7 +6524,7 @@ pub(super) fn recording_file_identity(
 }
 
 #[cfg(windows)]
-pub(super) fn recording_file_identity(
+pub(crate) fn recording_file_identity(
     path: &Path,
     _metadata: &std::fs::Metadata,
 ) -> Option<String> {
@@ -6536,7 +6546,7 @@ pub(super) fn recording_file_identity(
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(super) fn recording_file_identity(
+pub(crate) fn recording_file_identity(
     _path: &Path,
     _metadata: &std::fs::Metadata,
 ) -> Option<String> {
