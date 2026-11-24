@@ -612,6 +612,7 @@ impl Depacketizer {
                         }
                         frag.buf.extend_from_slice(data);
                         self.state = DepacketizerState::Ready(super::AudioFrame {
+                            packet_timestamp: pkt.timestamp(),
                             ctx: *pkt.ctx(),
                             loss: frag.loss,
                             frame_length: NonZeroU32::from(self.config.frame_length),
@@ -742,6 +743,7 @@ impl Depacketizer {
                 let delta = u32::from(agg.frame_i) * u32::from(self.config.frame_length.get());
                 let agg_timestamp = agg.pkt.timestamp();
                 let frame = super::AudioFrame {
+                    packet_timestamp: agg_timestamp,
                     ctx: *agg.pkt.ctx(),
                     loss: agg.loss,
                     stream_id: agg.pkt.stream_id(),
@@ -877,12 +879,14 @@ mod tests {
             Some(Ok(CodecItem::AudioFrame(a))) => a,
             _ => unreachable!(),
         };
+        assert_eq!(a.packet_timestamp(), timestamp);
         assert_eq!(a.timestamp, timestamp.try_add(1_024).unwrap());
         assert_eq!(&a.data[..], b"bar");
         let a = match d.pull() {
             Some(Ok(CodecItem::AudioFrame(a))) => a,
             _ => unreachable!(),
         };
+        assert_eq!(a.packet_timestamp(), timestamp);
         assert_eq!(a.timestamp, timestamp.try_add(2_048).unwrap());
         assert_eq!(&a.data[..], b"baz");
         assert!(d.pull().is_none());

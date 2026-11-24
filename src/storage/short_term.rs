@@ -148,6 +148,7 @@ mod tests {
 
     fn video_frame(keyframe: bool, at: Instant) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at: at,
             timestamp: None,
             frame: MediaFrame::Video(VideoFrame {

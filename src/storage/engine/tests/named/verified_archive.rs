@@ -17,6 +17,7 @@ fn fixture_sample(template: &RecordingFrame, start: Instant, offset: Duration) -
         unreachable!("video fixture")
     };
     RecordingFrame {
+        source_rtp: None,
         received_at: start + offset,
         timestamp: Some(offset),
         frame: MediaFrame::Video(VideoFrame {
@@ -308,6 +309,7 @@ fn missing_keyframe_bounds_prepared_and_active_gops_and_recovers_at_the_next_key
     let filled = bytes::Bytes::from(filled);
     let start = Instant::now() - Duration::from_secs(15);
     let sample = |video: &VideoFrame, data, second| RecordingFrame {
+        source_rtp: None,
         received_at: start + Duration::from_secs(second),
         timestamp: Some(Duration::from_secs(second)),
         frame: MediaFrame::Video(VideoFrame {
@@ -792,6 +794,7 @@ fn ingest(
         };
         for camera in cameras {
             let frame = RecordingFrame {
+                source_rtp: None,
                 received_at: due,
                 timestamp: Some(offset),
                 frame: MediaFrame::Video(VideoFrame {
