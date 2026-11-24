@@ -11,16 +11,26 @@ runs:
         }
 
         $PSNativeCommandUseErrorActionPreference = $false
-        for ($attempt = 1; $attempt -le 3; $attempt++) {
+        if (Get-Command winget.exe -ErrorAction SilentlyContinue) {
+          winget.exe install --id NSIS.NSIS --version 3.13 --exact --source winget --scope machine `
+            --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+          $wingetExitCode = $LASTEXITCODE
+          if ($wingetExitCode -eq 0 -and (Test-Path -LiteralPath $compiler -PathType Leaf)) {
+            return
+          }
+          Write-Warning "WinGet did not provide the NSIS compiler (exit $wingetExitCode). Trying Chocolatey."
+        }
+
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
           choco.exe install nsis --no-progress --yes --execution-timeout=180
           $installExitCode = $LASTEXITCODE
           if ($installExitCode -eq 0 -and (Test-Path -LiteralPath $compiler -PathType Leaf)) {
             return
           }
-          if ($attempt -lt 3) {
+          if ($attempt -lt 2) {
             Write-Warning "NSIS installation attempt $attempt did not produce the compiler (Chocolatey exit $installExitCode). Retrying."
             Start-Sleep -Seconds (15 * $attempt)
           }
         }
 
-        throw "NSIS compiler unavailable after 3 installation attempts (last Chocolatey exit $installExitCode)."
+        throw "NSIS compiler unavailable after 2 Chocolatey attempts (last Chocolatey exit $installExitCode)."
