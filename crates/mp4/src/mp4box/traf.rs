@@ -6,6 +6,7 @@ pub struct TrafBox {
     pub tfhd: TfhdBox,
     pub tfdt: Option<TfdtBox>,
     pub trun: Option<TrunBox>,
+    pub(crate) source_timing: source_rtp::SourceTiming,
 }
 
 impl TrafBox {
@@ -96,6 +97,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for TrafBox {
         skip_bytes_to(reader, end)?;
 
         Ok(Self {
+            source_timing: Default::default(),
             tfhd: tfhd.unwrap(),
             tfdt,
             trun,
@@ -159,6 +161,7 @@ mod tests {
     #[test]
     fn traf_round_trip_includes_decode_time_and_sample_run() {
         let src_box = TrafBox {
+            source_timing: Default::default(),
             tfhd: TfhdBox {
                 flags: TfhdBox::FLAG_BASE_DATA_OFFSET,
                 track_id: 1,

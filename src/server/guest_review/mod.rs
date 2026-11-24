@@ -10,6 +10,7 @@ mod session;
 mod verified;
 
 pub(super) use http::handle;
+pub(super) use media::verify_range_artifact;
 pub(super) use registry::Registry;
 
 pub(super) fn tick(state: &super::ServerState, watchdog: &std::thread::JoinHandle<()>) {

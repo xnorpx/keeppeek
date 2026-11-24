@@ -114,7 +114,7 @@ existing pull request is enough; do not open a second Discussion or duplicate pu
 
 ## Development environment
 
-Repository development uses stable Rust, Bun `1.4.4`, and Python `3.12`. The pinned Bun and Python
+Repository development uses stable Rust, Bun `1.4.5`, and Python `3.12`. The pinned Bun and Python
 versions live in `ui/.bun-version` and `examples/object_detection_service/.python-version`.
 
 Formatting and validation require the Python packages in
@@ -144,9 +144,11 @@ Run the same gate with opt-in slow Rust test bodies before submitting a pull req
 - Windows PowerShell: `$env:KEEPPEEK_RUN_SLOW_TESTS = '1'; .\check.bat`
 
 Pull-request CI keeps feedback fast by splitting static UI checks, unit tests, coverage, and Linux
-Playwright tests into non-overlapping jobs. The extended `Main` workflow runs after every merge and
-once per hour on `main`; it owns the opt-in slow Rust tests, ARM builds and tests, Windows installer
-lifecycles, Rust coverage and CodeQL, and full Playwright suites on macOS and Windows.
+Playwright tests into non-overlapping jobs. On pull requests targeting `main`, the `Main` workflow
+runs Rust CodeQL so reviewers can inspect security findings before merging. The `Security` workflow
+runs JavaScript/TypeScript CodeQL. After each merge and once per hour, `Main` also runs the opt-in
+slow Rust tests, ARM builds and tests, Windows installer lifecycles, Rust coverage, and full
+Playwright suites on macOS and Windows.
 
 Windows pull-request core tests run only the runtime-profile regressions and native volume-root
 validation. Windows pull-request durable-state tests retain ordinary regressions and defer

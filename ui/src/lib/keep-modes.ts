@@ -162,10 +162,12 @@ export function classifyExportCandidates<T extends ExportCandidate>(
 
 export function updateExportRange(
 	range: ExportRange,
-	startMs: number,
-	endMs: number,
+	startTimeMs: number,
+	endTimeMs: number,
 	bitrateKbps: number | null
 ): ExportRange {
+	const startMs = Math.trunc(startTimeMs);
+	const endMs = Math.trunc(endTimeMs);
 	let orderedStartMs = Math.min(startMs, endMs);
 	let orderedEndMs = Math.max(startMs, endMs);
 	if (orderedEndMs - orderedStartMs > MAX_EXPORT_DURATION_MS) {

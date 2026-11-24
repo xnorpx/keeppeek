@@ -1,3 +1,4 @@
+import { observedPartCount } from '../../src/lib/runtime-profiles';
 import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 import type { BrowserSession } from '../../src/lib/external-authentication.svelte';
@@ -380,6 +381,7 @@ export type ControlRequests = {
 	mediaUnsubscriptions: string[][];
 	peekLayoutReads: number;
 	peekLayoutUpdates: JsonObject[];
+	runtimeProfileWatchKeys: string[];
 	runtimeProfileWrites: Array<{
 		key: string;
 		expectedRevision: bigint | undefined;
@@ -413,6 +415,7 @@ export type MockControlPeerOptions = {
 	cameraSettingsSequence?: readonly (readonly CameraSettings[])[];
 	cameraConfigurationRevision?: string;
 	runtimeConfiguration?: SanitizedConfig;
+	runtimeProfileDegradedCameras?: number;
 	metadataPendingVolumeId?: string;
 	health?: HealthFixture;
 	healthSequence?: readonly HealthFixture[];
@@ -593,12 +596,9 @@ export function mockRuntimeProfileCameraId(source: string): string {
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-function encodedRuntimeProfileEntry(
-	requestId: bigint,
-	key: string,
-	value: JsonObject,
-	revision: bigint
-): number[] {
+function runtimeProfileSchema(key: string): string {
+	const part = /^observed\/(0|[1-9][0-9]*)$/.exec(key);
+	if (part && Number(part[1]) < observedPartCount) return 'keeppeek.runtime-profiles.observed.v1';
 	const schema = {
 		registry: 'keeppeek.runtime-profiles.registry.v2',
 		active: 'keeppeek.runtime-profiles.active.v1',
@@ -606,6 +606,53 @@ function encodedRuntimeProfileEntry(
 		cameras: 'keeppeek.runtime-profiles.cameras.v1'
 	}[key];
 	if (!schema) throw new Error(`unsupported runtime profile key: ${key}`);
+	return schema;
+}
+
+function activateMockRuntimeProfile(
+	values: Record<string, JsonObject>,
+	revisions: Record<string, bigint>,
+	profileId: string
+): void {
+	const revision =
+		(revisions.active! > revisions.registry! ? revisions.active! : revisions.registry!) + 1n;
+	const profiles = values.registry!.profiles as Record<string, JsonObject>;
+	const definitionRevision = profileId ? profiles[profileId]!.revision : null;
+	const activeProfileId = profileId || null;
+	values.active = {
+		...values.active,
+		profile_id: profileId,
+		revision: revision.toString(),
+		definition_revision: definitionRevision
+	};
+	revisions.active = revision;
+	values.registry = { ...values.registry, active_profile_id: activeProfileId };
+	revisions.registry = revision;
+	values.status = {
+		...values.status,
+		revision: revision.toString(),
+		active_profile_id: activeProfileId
+	};
+	revisions.status = revision;
+	for (let index = 0; index < observedPartCount; index++) {
+		const key = `observed/${index}`;
+		values[key] = {
+			...values[key],
+			...values.status,
+			definition_revision: definitionRevision,
+			generation: revision.toString(16).padStart(64, '0')
+		};
+		revisions[key] = revision;
+	}
+}
+
+function encodedRuntimeProfileEntry(
+	requestId: bigint,
+	key: string,
+	value: JsonObject,
+	revision: bigint
+): number[] {
+	const schema = runtimeProfileSchema(key);
 	return encodedOk(requestId, {
 		case: 'stateStoreResult',
 		value: create(StateStoreResultSchema, {
@@ -627,7 +674,9 @@ function encodedRuntimeProfileEntry(
 function encodedRuntimeProfileWatch(
 	requestId: bigint,
 	watchId: string,
-	keyPrefix: string
+	keyPrefix: string,
+	value: JsonObject | undefined,
+	revision: bigint
 ): number[] {
 	return encodedOk(requestId, {
 		case: 'stateStoreResult',
@@ -638,8 +687,19 @@ function encodedRuntimeProfileWatch(
 					watchId,
 					namespace: 'service/runtime-profiles/',
 					keyPrefix,
-					snapshotRevision: 1n,
-					entries: []
+					snapshotRevision: revision,
+					entries: value
+						? [
+								create(StateEntrySchema, {
+									namespace: 'service/runtime-profiles/',
+									key: keyPrefix,
+									schema: runtimeProfileSchema(keyPrefix),
+									value,
+									revision,
+									ownerId: 'server'
+								})
+							]
+						: []
 				})
 			}
 		})
@@ -884,6 +944,7 @@ export async function mockControlPeer(
 		mediaUnsubscriptions: [],
 		peekLayoutReads: 0,
 		peekLayoutUpdates: [],
+		runtimeProfileWatchKeys: [],
 		runtimeProfileWrites: [],
 		configurationActions: [],
 		configurationPlans: [],
@@ -945,7 +1006,13 @@ export async function mockControlPeer(
 	let peekLayoutRevision = options.peekLayoutRevision ?? 1n;
 	const runtimeProfileValues: Record<string, JsonObject> = {
 		registry: { revision: '1', active_profile_id: null, profiles: {} },
-		active: { profile_id: '' },
+		active: {
+			revision: '1',
+			profile_id: '',
+			definition_revision: null,
+			observed_parts: observedPartCount,
+			degraded_cameras: options.runtimeProfileDegradedCameras ?? 0
+		},
 		status: { revision: '1', active_profile_id: null, cameras: {} },
 		cameras: { cameras: {} }
 	};
@@ -955,6 +1022,17 @@ export async function mockControlPeer(
 		status: 1n,
 		cameras: 1n
 	};
+	for (let index = 0; index < observedPartCount; index++) {
+		const key = `observed/${index}`;
+		runtimeProfileValues[key] = {
+			...runtimeProfileValues.status,
+			generation: 'a'.repeat(64),
+			part_index: index,
+			definition_revision: null,
+			part_count: observedPartCount
+		};
+		runtimeProfileRevisions[key] = 1n;
+	}
 	const configurationSnapshots = [...(options.configurationSnapshots ?? [])];
 	const configurationTemplateResults = [...(options.configurationTemplateResults ?? [])];
 	let currentConfigurationSnapshot: ConfigurationSnapshot | undefined;
@@ -1157,8 +1235,17 @@ export async function mockControlPeer(
 					expectedRevision: action.value.expectedRevision,
 					value: structuredClone(action.value.value)
 				});
-				runtimeProfileValues[action.value.key] = structuredClone(action.value.value);
-				runtimeProfileRevisions[action.value.key] = runtimeProfileRevisions[action.value.key]! + 1n;
+				if (action.value.key === 'active') {
+					activateMockRuntimeProfile(
+						runtimeProfileValues,
+						runtimeProfileRevisions,
+						String(action.value.value.profile_id)
+					);
+				} else {
+					runtimeProfileValues[action.value.key] = structuredClone(action.value.value);
+					runtimeProfileRevisions[action.value.key] =
+						runtimeProfileRevisions[action.value.key]! + 1n;
+				}
 				return encodedRuntimeProfileEntry(
 					request.requestId,
 					action.value.key,
@@ -1167,10 +1254,13 @@ export async function mockControlPeer(
 				);
 			}
 			if (action.case === 'watch' && action.value.namespace === 'service/runtime-profiles/') {
+				requests.runtimeProfileWatchKeys.push(action.value.keyPrefix);
 				return encodedRuntimeProfileWatch(
 					request.requestId,
 					action.value.watchId,
-					action.value.keyPrefix
+					action.value.keyPrefix,
+					runtimeProfileValues[action.value.keyPrefix],
+					runtimeProfileRevisions[action.value.keyPrefix] ?? 0n
 				);
 			}
 			if (action.case === 'get' && action.value.namespace === 'keeppeek.peek-layouts') {
