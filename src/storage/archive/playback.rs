@@ -183,7 +183,10 @@ pub(super) mod tests {
     }
 
     pub(super) fn record_verified_read(bytes: usize) {
-        VERIFIED_READS.update(|(calls, total)| (calls + 1, total + bytes));
+        VERIFIED_READS.with(|cell| {
+            let (calls, total) = cell.get();
+            cell.set((calls + 1, total + bytes));
+        });
     }
 
     pub fn take_verified_reads() -> (usize, usize) {

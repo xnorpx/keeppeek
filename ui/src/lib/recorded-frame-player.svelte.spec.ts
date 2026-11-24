@@ -26,6 +26,18 @@ function picture(ordinal: number): PresentedStoredFrame {
 	};
 }
 
+async function videoFrame(video: HTMLVideoElement): Promise<VideoFrame> {
+	for (let i = 0; i < 50; i++) {
+		if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+			try {
+				return new VideoFrame(video);
+			} catch {}
+		}
+		await new Promise((r) => setTimeout(r, 10));
+	}
+	return new VideoFrame(video);
+}
+
 test('anchors the first step to the current paused picture when a compositor callback lags', async () => {
 	const player = new RecordedFramePlayer();
 	const video = document.createElement('video');
@@ -45,7 +57,7 @@ test('anchors the first step to the current paused picture when a compositor cal
 		);
 		video.currentTime = 0.255;
 		await settled;
-		const frame = new VideoFrame(video);
+		const frame = await videoFrame(video);
 		const currentUs = frame.timestamp;
 		frame.close();
 		expect(currentUs).toBeGreaterThan(0);
@@ -105,7 +117,7 @@ test('anchors an already paused decoded picture when its source clock becomes av
 		);
 		video.currentTime = 0.255;
 		await settled;
-		const bitmap = new VideoFrame(video);
+		const bitmap = await videoFrame(video);
 		const us = bitmap.timestamp;
 		bitmap.close();
 		expect(us).not.toBe(Math.round(video.currentTime * 1_000_000));
