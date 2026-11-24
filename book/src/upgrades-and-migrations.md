@@ -126,6 +126,11 @@ local filesystem, add its stable ID, roles, limits, and placement rules, and sav
 to apply configuration changes. New placement rules affect future objects; existing objects retain
 their catalog owner.
 
+With separate legacy capture and archive roots, KeepPeek finishes journaled recording transfers
+before it can migrate the roots. If startup reports a pending transfer, use the saved pre-migration
+configuration with both original roots mounted so the recorder can finish it. Schedule the storage
+migration again after the transfer completes.
+
 To drain media, choose **Stop new writes** for the source. Existing fragments finish there. Load its
 stored objects, select a compatible destination, and preview an individual move or a batch of up to
 16 objects. Review the file count and bytes before confirming. Move jobs show durable progress and

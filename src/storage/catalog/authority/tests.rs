@@ -13,6 +13,44 @@ fn database(path: &Path) -> (Lease, turso::Connection, Authority) {
     (lease, connection, authority)
 }
 
+#[cfg(unix)]
+#[test]
+fn forked_descriptor_does_not_extend_the_final_catalog_lease() -> anyhow::Result<()> {
+    use std::process::{Command, Stdio};
+    use std::sync::Arc;
+
+    let root = fixture();
+    let path = root.join("catalog.db");
+    let owner = Arc::new(Lease::acquire(&path)?);
+    let reader = Arc::clone(&owner);
+    // Keep a forked copy of the open file description alive through the parent's reopen.
+    let mut child = Command::new("cat")
+        .stdin(Stdio::piped())
+        .stdout(owner.lock.try_clone()?)
+        .spawn()?;
+
+    drop(owner);
+    let admission_with_reader = Lease::acquire(&path);
+    drop(reader);
+    let replacement = Lease::acquire(&path);
+    drop(child.stdin.take());
+    assert!(child.wait()?.success());
+    assert_eq!(
+        admission_with_reader.unwrap_err().to_string(),
+        "catalog authority lease is unavailable"
+    );
+
+    let replacement = replacement?;
+    assert_eq!(
+        Lease::acquire(&path).unwrap_err().to_string(),
+        "catalog authority lease is unavailable"
+    );
+    drop(replacement);
+    drop(Lease::acquire(&path)?);
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 fn historical_builder_opens(path: &Path) -> anyhow::Result<()> {
     // A closed snapshot avoids both Turso's cache and its live writer lock.
     let snapshot = path.with_file_name(format!("historical-{}.db", uuid::Uuid::new_v4()));
@@ -346,8 +384,21 @@ fn authority_compaction_retries_the_fence_after_snapshot_size_failure() {
     super::super::RecordingCatalog::open(&path)
         .unwrap()
         .shutdown();
-    assert!(crate::backup::database::compact_turso_database(&path, &temporary, 1).is_err());
-    assert!(super::super::RecordingCatalog::open(&path).is_err());
+    let size_error = crate::backup::database::compact_turso_database(&path, &temporary, 1)
+        .expect_err("a one-byte database snapshot must fail its size limit");
+    assert_eq!(
+        size_error.to_string(),
+        "database snapshot exceeds its size limit"
+    );
+    let Err(fenced) = super::super::RecordingCatalog::open(&path) else {
+        panic!("the failed snapshot must leave the source fenced");
+    };
+    assert!(
+        fenced
+            .chain()
+            .any(|cause| cause.to_string() == "catalog authority is fenced for offline handoff"),
+        "expected the source fence to prevent reopening: {fenced:#}"
+    );
     assert!(temporary.is_file());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while let Err(error) =

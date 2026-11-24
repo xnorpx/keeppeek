@@ -11,6 +11,7 @@
 	import FileTextIcon from '@lucide/svelte/icons/file-text';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import SunMoonIcon from '@lucide/svelte/icons/sun-moon';
+	import ReportBugButton from './ReportBugButton.svelte';
 	import AppearanceSystemPaperFrame from './AppearanceSystemPaperFrame.svelte';
 
 	type Props = {
@@ -347,6 +348,7 @@
 					<DownloadIcon class="size-3.5 {downloadingDiagnostics ? 'animate-pulse' : ''}" />
 					{downloadingDiagnostics ? 'Building package' : 'Download diagnostics'}
 				</button>
+				<ReportBugButton />
 				{#if diagnosticsError}
 					<p class="text-xs leading-5 text-live-text" role="alert">{diagnosticsError}</p>
 				{/if}

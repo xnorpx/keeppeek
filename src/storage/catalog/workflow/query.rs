@@ -202,10 +202,10 @@ fn hydration_select() -> String {
     format!("SELECT requested.position, COALESCE(review.reviewed, 0), COALESCE(review.dismissed, 0),
         COALESCE(review.revision, 0), review.reviewed_at_ms, review.dismissed_at_ms, review.updated_at_ms,
         bookmark.active, bookmark.note, bookmark.revision, bookmark.created_by, bookmark.created_at_ms,
-        bookmark.updated_by, bookmark.updated_at_ms, bookmark.event_start_ms, bookmark.event_kind, {paths},
-        EXISTS(SELECT 1 FROM recording_events AS event
-            WHERE event.id = requested.event_id AND event.camera_id = requested.source_id)
+        bookmark.updated_by, bookmark.updated_at_ms, COALESCE(event.start_time_ms, bookmark.event_start_ms),
+        bookmark.event_kind, {paths}, event.id IS NOT NULL
         FROM requested
+        LEFT JOIN recording_events AS event ON event.id = requested.event_id AND event.camera_id = requested.source_id
         LEFT JOIN event_reviews AS review ON review.source_id = requested.source_id
             AND review.event_id = requested.event_id AND review.principal_id = ?1
         LEFT JOIN event_bookmarks AS bookmark ON bookmark.source_id = requested.source_id
