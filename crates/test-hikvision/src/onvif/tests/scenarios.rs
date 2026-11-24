@@ -101,6 +101,14 @@ fn queued_notifications_and_overrides_share_one_capacity_budget() {
 #[test]
 fn builder_and_script_limits_fail_before_allocating_server_resources() {
     assert!(FakeOnvif::builder().lease(Duration::ZERO).start().is_err());
+    for duration in [Duration::ZERO, Duration::from_secs(86_401)] {
+        assert!(
+            FakeOnvif::builder()
+                .renewal_lease(duration)
+                .start()
+                .is_err()
+        );
+    }
     assert!(
         FakeOnvif::builder()
             .lease(Duration::from_secs(86_401))
