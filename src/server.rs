@@ -833,7 +833,8 @@ impl ControlRequestHandler for ServerControlHandler {
                         self.handle_configuration(session_id, &principal, command)
                     }
                     Some(control_request::Command::ShareCommand(command)) => {
-                        sharing::dispatch(&self.state, &principal, command).map(Some)
+                        sharing::dispatch_for_session(&self.state, session_id, &principal, command)
+                            .map(Some)
                     }
                     Some(control_request::Command::EventWorkflowCommand(command)) => {
                         event_workflow::dispatch(&self.state, &principal, command).map(Some)
@@ -1282,17 +1283,13 @@ fn update_talkback(
             })?;
             server_state
                 .talkback
-                .start(session_id, target, &cameras)
+                .start(session_id, target, &cameras, &server_state.webrtc)
                 .map_err(talkback_error)?
         }
-        Some(talkback_command::Action::Stop(_)) => {
-            let state = server_state
-                .talkback
-                .stop(session_id)
-                .map_err(talkback_error)?;
-            server_state.webrtc.disarm_talkback(session_id);
-            state
-        }
+        Some(talkback_command::Action::Stop(_)) => server_state
+            .talkback
+            .stop(session_id, &server_state.webrtc)
+            .map_err(talkback_error)?,
         None => {
             return Err(ControlCommandError::new(
                 proto::ErrorCode::InvalidRequest,
@@ -1301,11 +1298,6 @@ fn update_talkback(
             ));
         }
     };
-    if !state.active_source_ids.is_empty() {
-        server_state
-            .webrtc
-            .arm_talkback(session_id, state.active_source_ids.clone());
-    }
     Ok(proto::Notification {
         event: Some(proto::notification::Event::TalkbackState(state)),
     })
@@ -1396,6 +1388,7 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
     }
     if state.camera_config_path.is_some() {
         capability_ids.push(sharing::CAPABILITY_ID.to_owned());
+        capability_ids.push(sharing::RANGE_CAPABILITY_ID.to_owned());
         capability_ids.push(peek_layouts::CAPABILITY_ID.to_owned());
         capability_ids.push(CONFIGURATION_CAPABILITY_ID.to_owned());
         capability_ids.push("keeppeek.recording.pre-roll.v1".to_owned());
@@ -3999,11 +3992,12 @@ fn complete_export_record(
     record.completed_at_ms = Some(now_ms);
     record.media_proof = None;
     let proof = ExportMediaProof {
-        version: 1,
+        version: SOURCE_BOUNDS_PROOF_VERSION,
         artifact_id: record.artifact_id.clone(),
         sha256: record.job.sha256.clone()?,
         bytes: artifact.bytes,
         bounds: artifact.media_bounds?,
+        source_bounds: artifact.source_bounds,
     };
     proof.matches(record).then_some(proof)
 }
@@ -8187,7 +8181,10 @@ struct ExportJobRecord {
     downloaded_at_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// V1 carries output timing. V3 additionally binds a separate original source extent.
+const SOURCE_BOUNDS_PROOF_VERSION: u32 = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExportMediaProof {
     version: u32,
@@ -8195,11 +8192,13 @@ struct ExportMediaProof {
     sha256: String,
     bytes: u64,
     bounds: crate::storage::playback::ExportMediaBounds,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_bounds: Option<crate::storage::playback::ExportMediaBounds>,
 }
 
 impl ExportMediaProof {
     fn matches(&self, record: &ExportJobRecord) -> bool {
-        self.version == 1
+        matches!(self.version, 1 | SOURCE_BOUNDS_PROOF_VERSION)
             && Uuid::parse_str(&self.artifact_id).is_ok_and(|id| !id.is_nil())
             && self.artifact_id == record.artifact_id
             && self.sha256.len() == 64
@@ -8246,6 +8245,8 @@ struct PersistedExportJobRecord {
     owner_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     media_proof: Option<ExportMediaProof>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_bounds_proof: Option<ExportMediaProof>,
     request: String,
     job: String,
     created_at_ms: i64,
@@ -8263,7 +8264,18 @@ impl PersistedExportJobRecord {
             artifact_id: record.artifact_id.clone(),
             source_identity: record.source_identity,
             owner_key: record.owner_key.clone(),
-            media_proof: record.media_proof.clone(),
+            // Older recorders round-trip this proof and ignore the additive source evidence.
+            media_proof: record.media_proof.clone().map(|mut proof| {
+                if proof.version == SOURCE_BOUNDS_PROOF_VERSION {
+                    proof.version = 1;
+                    proof.source_bounds = None;
+                }
+                proof
+            }),
+            source_bounds_proof: record
+                .media_proof
+                .clone()
+                .filter(|proof| proof.version == SOURCE_BOUNDS_PROOF_VERSION),
             request: URL_SAFE_NO_PAD.encode(record.request.encode_to_vec()),
             job: URL_SAFE_NO_PAD.encode(record.job.encode_to_vec()),
             created_at_ms: record.created_at_ms,
@@ -8342,6 +8354,19 @@ impl PersistedExportJobRecord {
             downloaded_at_ms: self.downloaded_at_ms,
         };
         export_storage::history::recover(&mut record, export_root, catalog, now_ms)?;
+        if let (Some(base), Some(mut source)) = (&record.media_proof, self.source_bounds_proof)
+            && base.version == 1
+            && source.version == SOURCE_BOUNDS_PROOF_VERSION
+        {
+            let source_bounds = source.source_bounds.take();
+            source.version = 1;
+            // An orphaned or mismatched companion cannot promote a different generation.
+            if &source == base {
+                source.version = SOURCE_BOUNDS_PROOF_VERSION;
+                source.source_bounds = source_bounds;
+                record.media_proof = Some(source);
+            }
+        }
         if record
             .media_proof
             .as_ref()
@@ -8485,6 +8510,7 @@ pub struct ServerState {
     runtime_profiles: Arc<RwLock<crate::profiles::ProfileRegistry>>,
     runtime_profile_status: Arc<RwLock<crate::profiles::RuntimeProfileStatus>>,
     runtime_profile_drafts: Arc<Mutex<state_store::profiles::RuntimeProfileDrafts>>,
+    profile_generation_cache: Arc<state_store::profiles::observed::GenerationCache>,
     privacy_sources: Arc<RwLock<BTreeMap<String, PrivacySource>>>,
     privacy_epochs: Arc<Mutex<HashMap<IpAddr, u64>>>,
     privacy_override_states: Arc<Mutex<HashMap<IpAddr, bool>>>,
@@ -8664,8 +8690,10 @@ impl ServerState {
             runtime_profile_status: Arc::new(RwLock::new(crate::profiles::RuntimeProfileStatus {
                 revision: config.runtime_profiles.revision,
                 active_profile_id: config.runtime_profiles.active_profile_id.clone(),
+                definition_revision: config.runtime_profiles.active_definition_revision(),
                 cameras: BTreeMap::new(),
             })),
+            profile_generation_cache: Arc::default(),
             runtime_profile_drafts: Arc::new(Mutex::new(
                 state_store::profiles::RuntimeProfileDrafts::default(),
             )),
@@ -8895,7 +8923,7 @@ impl ServerState {
                         .as_ref()
                         .is_some_and(|schedule| !schedule.keep_camera_connected)
                     && let Some(runtime) = &self.camera_runtime
-                    && let Err(error) = runtime.stop_camera(camera_ip)
+                    && let Err(error) = runtime.pause_camera_for_privacy(camera_ip)
                 {
                     tracing::warn!(%camera_ip, %error, "privacy could not stop camera ingress");
                     record_access_audit(
@@ -8955,6 +8983,7 @@ impl ServerState {
     }
 
     fn upsert_camera(&self, mut entry: CameraEntry) {
+        let inventory = self.state_store_watches.lock_profile_views();
         let source_ip = entry.configuration.ip;
         let mut cameras = self
             .cameras
@@ -8991,6 +9020,7 @@ impl ServerState {
         }
         cameras.sort_unstable_by(|left, right| left.info.id.cmp(&right.info.id));
         drop(cameras);
+        drop(inventory);
         if !changed_groups.is_empty() {
             camera_access::invalidate_group_sessions(self, &changed_groups);
         }
@@ -9047,6 +9077,7 @@ impl ServerState {
     fn activate_camera_entry(&self, entry: CameraEntry) {
         let config = entry.configuration.clone();
         self.upsert_camera(entry);
+        self.publish_runtime_profile_status();
         self.enrich_camera_metadata_in_background(vec![config]);
     }
 
@@ -20165,6 +20196,7 @@ mod tests {
                             end_time: Some(millis_timestamp(end_ms)),
                             allow_partial: false,
                             burn_in_timestamp: false,
+                            guest_range_preparation: None,
                             event_seed: Some(proto::EventExportSeed {
                                 event_id: "export-event".to_owned(),
                                 bookmark_revision: None,
@@ -20371,6 +20403,7 @@ mod tests {
                 end_time: Some(millis_timestamp(end_ms + 2_000)),
                 allow_partial: false,
                 burn_in_timestamp: false,
+                guest_range_preparation: None,
                 event_seed: None,
             },
         )
@@ -20389,6 +20422,7 @@ mod tests {
                 end_time: Some(millis_timestamp(end_ms)),
                 allow_partial: false,
                 burn_in_timestamp: true,
+                guest_range_preparation: None,
                 event_seed: None,
             },
         )
@@ -20436,6 +20470,7 @@ mod tests {
                 end_time: Some(millis_timestamp(120_000)),
                 allow_partial: false,
                 burn_in_timestamp: false,
+                guest_range_preparation: None,
                 event_seed: None,
             },
         )
@@ -20453,6 +20488,7 @@ mod tests {
                 end_time: Some(millis_timestamp(120_001)),
                 allow_partial: false,
                 burn_in_timestamp: false,
+                guest_range_preparation: None,
                 event_seed: None,
             },
         )
@@ -20500,8 +20536,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn export_active_duplicates_are_requester_scoped_and_option_exact() {
+    fn seeded_running_export() -> (ServerState, proto::CreateExportJob) {
         let mut state = media_test_state();
         state.catalog = None;
         let request = proto::CreateExportJob {
@@ -20512,6 +20547,7 @@ mod tests {
             end_time: Some(millis_timestamp(2_000)),
             allow_partial: false,
             burn_in_timestamp: false,
+            guest_range_preparation: None,
             event_seed: None,
         };
         let active = active_export_fixture(&state, &request);
@@ -20520,7 +20556,12 @@ mod tests {
             .lock()
             .unwrap()
             .insert(request.job_id.clone(), active);
+        (state, request)
+    }
 
+    #[test]
+    fn export_active_duplicates_are_requester_scoped_and_option_exact() {
+        let (state, request) = seeded_running_export();
         let mut duplicate = request;
         duplicate.job_id = "new-client-id".to_owned();
         let reused = create_export_job(&state, "owner", duplicate.clone()).unwrap();
@@ -20555,6 +20596,22 @@ mod tests {
         );
         assert!(validate_export_job_id("../recordings").is_err());
         assert!(validate_export_job_id("safe-export_1.2").is_ok());
+    }
+
+    #[test]
+    fn a_bounded_guest_job_does_not_reuse_an_unbounded_running_export() {
+        let (state, mut duplicate) = seeded_running_export();
+        duplicate.job_id = "bounded-candidate".to_owned();
+        duplicate.guest_range_preparation = Some(true);
+        let bounded = create_export_job(&state, "owner", duplicate.clone()).unwrap_err();
+        assert_eq!(bounded.code, proto::ErrorCode::Unavailable);
+        duplicate.guest_range_preparation = Some(false);
+        assert_eq!(
+            create_export_job(&state, "owner", duplicate)
+                .unwrap()
+                .job_id,
+            "active-export"
+        );
     }
 
     #[test]
@@ -20598,6 +20655,7 @@ mod tests {
             end_time: Some(millis_timestamp(2_000)),
             allow_partial: false,
             burn_in_timestamp: false,
+            guest_range_preparation: None,
             event_seed: None,
         };
         let now_ms = i64::try_from(unix_time_ms()).unwrap();
@@ -20670,6 +20728,7 @@ mod tests {
                 end_time: Some(millis_timestamp(2_000)),
                 allow_partial: false,
                 burn_in_timestamp: false,
+                guest_range_preparation: None,
                 event_seed: None,
             };
             let cancel = Arc::new(AtomicBool::new(false));
@@ -20910,6 +20969,7 @@ mod tests {
             end_time: Some(millis_timestamp(2_000)),
             allow_partial: false,
             burn_in_timestamp: false,
+            guest_range_preparation: None,
             event_seed: None,
         };
         state.export_jobs.lock().unwrap().insert(
@@ -21003,6 +21063,7 @@ mod tests {
             end_time: Some(millis_timestamp(2_000)),
             allow_partial: false,
             burn_in_timestamp: false,
+            guest_range_preparation: None,
             event_seed: None,
         };
         let job = |job_id: &str, status: proto::ExportJobStatus, file_name: Option<&str>| {

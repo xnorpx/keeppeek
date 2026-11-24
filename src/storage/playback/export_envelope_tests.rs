@@ -89,6 +89,254 @@ fn export(fragments: &[CatalogMediaFragment], end_ms: i64) -> (ExportArtifact, C
 }
 
 #[test]
+fn two_minute_output_preserves_separate_fractional_audio_source_bounds() {
+    let mut aac = audio();
+    aac.timescale = 44_100;
+    let mp4::MediaConfig::AacConfig(config) = &mut aac.media_conf else {
+        unreachable!()
+    };
+    config.freq_index = mp4::SampleFreqIndex::Freq44100;
+    let input = source(
+        &[video(), aac],
+        vec![
+            (1, sample(18_810, 10_800_000, 0)),
+            (2, sample(9_216, 1_024, 0)),
+        ],
+    );
+    let mut retained = fragment(&input, "source-clock", 1_000_000);
+    retained.start_ms = 1_000_209;
+    retained.duration_ms = 120_000;
+    let (artifact, output) = export(&[retained], 1_120_209);
+    let mut reader = mp4::Mp4Reader::read_header(output, artifact.bytes).unwrap();
+    assert_eq!(reader.read_sample(2, 1).unwrap().unwrap().start_time, 0);
+    assert_eq!(
+        artifact.media_bounds,
+        Some(ExportMediaBounds {
+            start_ms: 1_000_209,
+            end_ms: 1_120_209
+        })
+    );
+    assert_eq!(
+        artifact.source_bounds,
+        Some(ExportMediaBounds {
+            start_ms: 1_000_208,
+            end_ms: 1_120_209
+        })
+    );
+    std::fs::remove_file(input).unwrap();
+}
+
+#[test]
+fn audio_source_bounds_use_the_media_clock_independent_of_its_codec_frequency() {
+    let mut aac = audio();
+    aac.timescale = 32_000;
+    let input = source(
+        &[video(), aac],
+        vec![(1, sample(0, 9_000, 0)), (2, sample(16_000, 3_200, 0))],
+    );
+    let retained = fragment(&input, "source-clock", 1_000_000);
+    let (artifact, _) = export(&[retained], 1_001_000);
+    assert_eq!(
+        artifact.source_bounds,
+        Some(ExportMediaBounds {
+            start_ms: 1_000_000,
+            end_ms: 1_000_600
+        })
+    );
+    std::fs::remove_file(input).unwrap();
+}
+
+struct MeteredSource<'a> {
+    data: Cursor<&'a [u8]>,
+    watched: mp4::Mp4SampleLocation,
+    payload_reads: &'a std::cell::Cell<usize>,
+}
+
+impl Read for MeteredSource<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let start = self.data.position();
+        let count = self.data.read(buffer)?;
+        if start < self.watched.offset + u64::from(self.watched.size)
+            && start + count as u64 > self.watched.offset
+        {
+            self.payload_reads.set(self.payload_reads.get() + 1);
+        }
+        Ok(count)
+    }
+}
+
+impl Seek for MeteredSource<'_> {
+    fn seek(&mut self, offset: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.data.seek(offset)
+    }
+}
+
+fn check_payload_reads(plan: &ExportPlan, input: &[u8], sample_id: u32, maximum: u64, fits: bool) {
+    let size = input.len() as u64;
+    let metadata = mp4::Mp4Reader::read_header(Cursor::new(input), size).unwrap();
+    let watched = metadata.sample_location(1, sample_id).unwrap().unwrap();
+    let payload_reads = std::cell::Cell::new(0);
+    let metered = MeteredSource {
+        data: Cursor::new(input),
+        watched,
+        payload_reads: &payload_reads,
+    };
+    let mut reader = mp4::Mp4Reader::read_header(metered, size).unwrap();
+    let tracks = export_tracks(&reader).unwrap();
+    let (config, descriptions) = export_mp4_configuration(&tracks, 0).unwrap();
+    let mut writer = mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(
+        Cursor::new(Vec::new()),
+        &config,
+        &descriptions,
+    )
+    .unwrap();
+    let callbacks = ExportContext {
+        cancelled: &|| false,
+        report_progress: &|_| {},
+        selection: ExportSelection {
+            maximum_bytes: Some(maximum),
+            audio_offset_ms: 0,
+            aligned_start_ms: plan.aligned_start_ms,
+            windows: &plan.windows,
+        },
+    };
+    payload_reads.set(0);
+    let result = write_export_recording(
+        &mut reader,
+        &plan.recordings[0],
+        &tracks,
+        &mut writer,
+        &mut ExportProgress::new(plan.aligned_start_ms),
+        &callbacks,
+    );
+    if fits {
+        result.unwrap();
+        writer.write_end().unwrap();
+        assert_eq!(writer.into_writer().into_inner().len() as u64, maximum);
+        assert!(payload_reads.get() > 0);
+    } else {
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            crate::test_support::guest_range_recovery_messages()["byteLimit"]
+        );
+        assert_eq!(payload_reads.get(), 0);
+    }
+}
+
+#[test]
+fn insufficient_container_budget_refuses_payload_before_reading_it() {
+    let mut next = sample(90_000, 90_000, 900);
+    next.is_sync = false;
+    for samples in [
+        vec![(1, sample(0, 90_000, 0))],
+        vec![(1, sample(0, 90_000, 0)), (1, next.clone())],
+        vec![
+            (1, sample(0, 90_000, 0)),
+            (1, next),
+            (1, sample(180_000, 90_000, 0)),
+        ],
+    ] {
+        let count = samples.len() as u32;
+        let path = source(&[video()], samples);
+        let fragments = [fragment(&path, "container-budget", 1000)];
+        let end = 1000 + i64::from(count) * 1000 + 50;
+        let (artifact, _) = export(&fragments, end);
+        let sources = ExportSources {
+            video_fragments: &fragments,
+            audio_context: &[],
+            requested_end_ms: end,
+        };
+        let plan = export_recordings(sources, 0).unwrap();
+        let data = std::fs::read(&path).unwrap();
+        check_payload_reads(&plan, &data, count, artifact.bytes - 1, false);
+        check_payload_reads(&plan, &data, count, artifact.bytes, true);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn encoded_samples_are_read_only_within_the_remaining_preparation_budget() {
+    let input = source(&[video()], vec![(1, sample(0, 90_000, 0))]);
+    let f = File::open(&input).unwrap();
+    let size = f.metadata().unwrap().len();
+    let mut reader = mp4::Mp4Reader::read_header(f, size).unwrap();
+    let track = &reader.tracks()[&1];
+    assert!(track.sample_header(0).unwrap().is_none());
+    assert!(
+        track
+            .sample_header(track.sample_count() + 1)
+            .unwrap()
+            .is_none()
+    );
+    let header = track.sample_header(1).unwrap().unwrap();
+    assert!(header.bytes.is_empty());
+    assert!(limited_export::read_payload(&mut reader, 1, 1, Some(4)).is_err());
+    assert_eq!(
+        limited_export::read_payload(&mut reader, 1, 1, Some(5))
+            .unwrap()
+            .len(),
+        5
+    );
+    drop(reader);
+    std::fs::remove_file(input).unwrap();
+}
+
+#[test]
+fn bounded_export_removes_an_incomplete_file_and_publishes_at_the_exact_budget() {
+    let input = source(&[video()], vec![(1, sample(0, 90_000, 0))]);
+    let file = std::fs::File::open(&input).unwrap();
+    let size = file.metadata().unwrap().len();
+    let mut reader = mp4::Mp4Reader::read_header(file, size).unwrap();
+    let payload_error = limited_export::read_payload(&mut reader, 1, 1, Some(4)).unwrap_err();
+    assert_eq!(
+        payload_error.to_string(),
+        crate::test_support::guest_range_recovery_messages()["byteLimit"]
+    );
+    drop(reader);
+    let fragments = [fragment(&input, "guest-budget", 1000)];
+    let (artifact, _) = export(&fragments, 2000);
+    let sources = ExportSources {
+        video_fragments: &fragments,
+        audio_context: &[],
+        requested_end_ms: 2000,
+    };
+    let directory =
+        std::env::temp_dir().join(format!("guest-export-budget-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    let destination = directory.join("guest.mp4");
+    let rejected = export_sources_to_file_with_limit(
+        sources,
+        &destination,
+        0,
+        Some(artifact.bytes - 1),
+        || false,
+        |_| {},
+    );
+    assert_eq!(
+        rejected.expect_err("short budget must fail").to_string(),
+        crate::test_support::guest_range_recovery_messages()["byteLimit"]
+    );
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+    let completed = export_sources_to_file_with_limit(
+        sources,
+        &destination,
+        0,
+        Some(artifact.bytes),
+        || false,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::metadata(&destination).unwrap().len(),
+        completed.bytes
+    );
+    assert_eq!(completed.bytes, artifact.bytes);
+    std::fs::remove_file(destination).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+    std::fs::remove_file(input).unwrap();
+}
+
+#[test]
 fn corrected_export_bounds_follow_the_final_aac_samples() {
     let path = source(
         &[video(), audio()],
@@ -188,6 +436,36 @@ fn export_envelope_ignores_duplicate_samples_that_are_not_emitted() {
     );
     let reader = mp4::Mp4Reader::read_header(output, artifact.bytes).unwrap();
     assert_eq!(reader.sample_count(1).unwrap(), 1);
+    std::fs::remove_file(first).unwrap();
+    std::fs::remove_file(duplicate).unwrap();
+}
+
+#[test]
+fn bounded_export_skips_overlapping_payloads_that_will_not_be_emitted() {
+    let first = source(&[video()], vec![(1, sample(900, 3_600, 0))]);
+    let fragments = [fragment(&first, "one", 9_990)];
+    let (expected, expected_output) = export(&fragments, 10_040);
+    let mut overlap = sample(0, 3_600, 0);
+    overlap.bytes = vec![0; usize::try_from(expected.bytes + 1).unwrap()].into();
+    let duplicate = source(&[video()], vec![(1, overlap)]);
+    let fragments = [fragments[0].clone(), fragment(&duplicate, "two", 10_000)];
+    let mut output = Cursor::new(Vec::new());
+    let artifact = export_sources_to_writer(
+        ExportSources {
+            video_fragments: &fragments,
+            audio_context: &[],
+            requested_end_ms: 10_040,
+        },
+        &mut output,
+        0,
+        Some(expected.bytes),
+        || false,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(artifact.bytes, expected.bytes);
+    assert_eq!(artifact.media_bounds, expected.media_bounds);
+    assert_eq!(output.into_inner(), expected_output.into_inner());
     std::fs::remove_file(first).unwrap();
     std::fs::remove_file(duplicate).unwrap();
 }

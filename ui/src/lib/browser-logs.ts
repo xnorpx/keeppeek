@@ -60,6 +60,11 @@ export class BrowserLogStore {
 		return this.entries.map((entry) => structuredClone(entry));
 	}
 
+	/** Sequence high-water mark, including entries evicted or cleared from this session. */
+	get latestSequence(): number {
+		return this.nextSequence - 1;
+	}
+
 	clear(): void {
 		this.entries = [];
 		this.persist();

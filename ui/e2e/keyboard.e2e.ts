@@ -389,3 +389,32 @@ test('saves only the active Settings draft with Control+S', async ({ page }) => 
 		}
 	]);
 });
+
+test('keeps Home and ArrowRight on the requested recording while the old source reports progress', async ({
+	page
+}) => {
+	let releaseSeek!: () => void;
+	const seekGate = new Promise<void>((resolve) => {
+		releaseSeek = resolve;
+	});
+	const controls = await mockKeepModes(page, 1, {
+		storedOpenGates: [Promise.resolve(), seekGate]
+	});
+	const startMs = Date.parse(`${keepModeDate}T06:00:00Z`);
+	await page.goto(`/keep?camera=front-door&stream=main&date=${keepModeDate}&at=${startMs + 4_000}`);
+	const position = page.getByRole('slider', { name: 'Recording position', exact: true });
+	const video = page.locator('[data-keep-player] video');
+	await expect(position).toHaveValue('4');
+	try {
+		await position.press('Home');
+		await expect(position).toHaveValue('0');
+		await video.dispatchEvent('timeupdate');
+		await position.press('ArrowRight');
+		await expect(position).toHaveValue('1');
+		releaseSeek();
+		await expect.poll(() => controls.storedSeeks.at(-1)?.timestampMs).toBe(startMs + 1_000);
+		await expect(position).toHaveValue('1');
+	} finally {
+		releaseSeek();
+	}
+});
