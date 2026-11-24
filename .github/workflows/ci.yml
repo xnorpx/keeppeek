@@ -464,9 +464,8 @@ jobs:
               throw "$path does not have an RFC 3161 timestamp"
             }
           }
-      - name: Install NSIS
-        shell: bash
-        run: choco install nsis --no-progress --yes
+      - name: Set up NSIS
+        uses: ./.github/actions/setup-nsis
       - name: Build Windows installer
         id: windows-installer
         shell: pwsh

@@ -1,0 +1,36 @@
+name: Set up NSIS
+description: Install the Windows compiler used for KeepPeek installers.
+runs:
+  using: composite
+  steps:
+    - shell: pwsh
+      run: |
+        $compiler = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+        if (Test-Path -LiteralPath $compiler -PathType Leaf) {
+          return
+        }
+
+        $source = 'https://sourceforge.net/projects/nsis/files/NSIS%203/3.13/nsis-3.13-setup.exe/download'
+        # NSIS 3.13 machine installer checksum published with the WinGet manifest.
+        $expectedHash = 'DB9A1038BBC0E53FEF24F423FD609979BD578E942F1BE1198DB186D1C42652A3'
+        $installer = Join-Path $env:RUNNER_TEMP 'nsis-3.13-setup.exe'
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+          try {
+            Invoke-WebRequest -Uri $source -UserAgent 'KeepPeek CI NSIS installer' `
+              -Headers @{ Accept = 'application/octet-stream' } -MaximumRedirection 5 `
+              -ConnectionTimeoutSeconds 20 -OperationTimeoutSeconds 30 -OutFile $installer -ErrorAction Stop
+            break
+          } catch {
+            if ($attempt -eq 3) { throw }
+            Write-Warning "NSIS download attempt $attempt failed. Retrying."
+            Start-Sleep -Seconds (15 * $attempt)
+          }
+        }
+
+        if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $expectedHash) {
+          throw 'Downloaded NSIS installer SHA-256 does not match the pinned release.'
+        }
+        $installed = Start-Process -FilePath $installer -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+        if ($installed.ExitCode -ne 0 -or !(Test-Path -LiteralPath $compiler -PathType Leaf)) {
+          throw "NSIS installer did not provide the compiler (exit $($installed.ExitCode))."
+        }
