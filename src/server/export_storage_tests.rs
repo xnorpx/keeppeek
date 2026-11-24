@@ -1463,6 +1463,161 @@ fn administrator_can_withdraw_an_offline_queued_archive_deletion_before_changing
 }
 
 #[test]
+fn save_runtime_settings_blocks_disabling_archive_while_deletion_recovery_is_pending_and_preserves_none()
+ {
+    use crate::storage::{
+        archive::settings::Settings as ArchiveSettings,
+        catalog::{archive, maintenance::jobs::Nonce},
+    };
+    use proto::archive_command::Action;
+
+    let (root, catalog, manager, mut state) = completed_named_export();
+    let (worker, job) = archive_completed_export(&root, &catalog, &state);
+    let policy = worker.handle().deletion_policy().unwrap();
+    state.storage_config.archive_runtime = Some(worker.handle());
+    let administrator = ApiPrincipal::local("127.0.0.1".parse().unwrap());
+    let preview = archive_deletion_response(
+        &state,
+        &administrator,
+        Action::PreviewDeletion(proto::PreviewArchiveDeletion {
+            selection: Some(proto::preview_archive_deletion::Selection::JobId(job)),
+        }),
+    )
+    .unwrap();
+    state.storage_config.archive_runtime = None;
+    worker.shutdown().unwrap();
+    catalog
+        .handle()
+        .archive(archive::Request::Deletion(
+            archive::deletion::Request::Confirm {
+                actor: administrator.id(),
+                policy,
+                plan: preview.plan_id,
+                revision: preview.revision,
+                nonce: Nonce::parse(&preview.confirmation_nonce).unwrap(),
+            },
+        ))
+        .unwrap();
+
+    let medium_term_path = root.join("medium");
+    let long_term_path = root.join("legacy");
+    let recording_catalog_path = long_term_path.join("recordings.db");
+    let event_thumbnail_path = long_term_path.join(".event-thumbnails");
+    let archive_root = root.join("archive");
+    std::fs::create_dir_all(&medium_term_path).unwrap();
+    std::fs::create_dir_all(&event_thumbnail_path).unwrap();
+    state.storage_config.medium_term_path = medium_term_path.clone();
+    state.storage_config.long_term_path = long_term_path.clone();
+    state.storage_config.recording_catalog_path = recording_catalog_path.clone();
+    state.storage_config.event_thumbnail_path = event_thumbnail_path.clone();
+
+    let config_path = root.join("config.toml");
+    crate::config::write_private_file(
+        &config_path,
+        format!(
+            r#"
+            host = "127.0.0.1"
+            port = 3000
+
+            [storage]
+            medium_term_path = {medium_term_path:?}
+            long_term_path = {long_term_path:?}
+
+            [storage.archive]
+            target_id = "export-archive"
+            root = {archive_root:?}
+            enabled = true
+            "#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    state.camera_config_path = Some(config_path.clone());
+
+    let build_update = |archive, port| super::RuntimeSettingsUpdate {
+        host: "127.0.0.1".to_owned(),
+        port,
+        expected_configuration_revision: String::new(),
+        storage: super::RuntimeStorageSettingsUpdate {
+            archive,
+            named_volumes: None,
+            medium_term_path: medium_term_path.to_string_lossy().into_owned(),
+            long_term_path: long_term_path.to_string_lossy().into_owned(),
+            recording_catalog_path: recording_catalog_path.to_string_lossy().into_owned(),
+            event_thumbnail_path: event_thumbnail_path.to_string_lossy().into_owned(),
+            event_thumbnail_max_mb: 512,
+            short_term_secs: 30,
+            medium_term_secs: 120,
+            flush_interval_secs: 15,
+            write_buffer_bytes: 16_384,
+            long_term_max_gb: 24,
+            minimum_free_gb: 0,
+            maximum_used_percent: None,
+            warning_free_gb: 0,
+            critical_free_gb: 0,
+            cleanup_hysteresis_gb: 0,
+            pre_recording_stream_max_bytes: crate::config::default_pre_recording_stream_max_bytes(),
+            pre_recording_global_max_bytes: crate::config::default_pre_recording_global_max_bytes(),
+        },
+        move_existing_recordings: false,
+    };
+    let disabled_archive = || ArchiveSettings {
+        target_id: "export-archive".into(),
+        root: archive_root.clone(),
+        enabled: false,
+        automatic: false,
+        source_ids: vec![],
+        minimum_age_secs: 0,
+        evict_after_archive: false,
+        retention_days: None,
+        maximum_object_bytes: 4 * 1024 * 1024 * 1024,
+        maximum_pending_count: 256,
+        maximum_pending_bytes: 64 * 1024 * 1024 * 1024,
+        operation_timeout_secs: 30,
+        maximum_attempts: 3,
+    };
+
+    let disable_error =
+        super::save_runtime_settings(build_update(Some(disabled_archive()), 3200), &state)
+            .err()
+            .expect("disabling archive must fail");
+    assert_eq!(disable_error._http_status, 409);
+
+    // Older runtime settings commands omit archive (None) and must preserve [storage.archive].
+    let preserved = super::save_runtime_settings(build_update(None, 3201), &state).unwrap();
+    assert_eq!(preserved.config.port, 3201);
+    assert!(
+        crate::config::load_config(&config_path)
+            .unwrap()
+            .storage
+            .archive
+            .expect("archive configuration must remain preserved")
+            .enabled
+    );
+
+    let cancel = proto::ArchiveCommand {
+        action: Some(Action::Cancel(proto::CancelArchiveJob {
+            job_id: discover_offline_archive_job(&state, &administrator),
+        })),
+    };
+    super::storage_archive::dispatch(&state, &administrator, cancel).unwrap();
+    super::save_runtime_settings(build_update(Some(disabled_archive()), 3202), &state).unwrap();
+    assert!(
+        !crate::config::load_config(&config_path)
+            .unwrap()
+            .storage
+            .archive
+            .expect("disabled archive configuration must remain present")
+            .enabled
+    );
+
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn archived_export_preserves_sharing_metadata_and_fences_typed_create_and_retry() {
     let (root, catalog, manager, mut state, request) = setup(16 * 1024 * 1024);
     let source_identity = Uuid::new_v4();

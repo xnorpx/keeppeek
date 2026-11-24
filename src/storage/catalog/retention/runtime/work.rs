@@ -303,7 +303,8 @@ async fn evaluate(connection: &turso::Connection, id: &str, generation: i64) -> 
     let mut claims = connection
         .query(
             "SELECT state='deleting' FROM archive_replicas
-        WHERE kind='recording' AND recording_id=?1 AND (local_evicted=2 OR state='deleting')",
+        WHERE kind='recording' AND recording_id=?1 AND (local_evicted=2 OR state='deleting')
+        ORDER BY (state='deleting') DESC LIMIT 1",
             [id],
         )
         .await?;

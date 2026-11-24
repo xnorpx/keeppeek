@@ -12482,6 +12482,7 @@ fn save_runtime_settings(
             ));
         }
     }
+    // Omitted archive settings stay unchanged in config.toml, so only Some(...) modifies or disables the target.
     if let Some(settings) = settings.storage.archive.as_ref() {
         let resolved =
             config::validate_archive_configuration(config_path, settings).map_err(|_| {
