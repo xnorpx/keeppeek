@@ -31,6 +31,23 @@ impl<'a> VerifiedReader<'a> {
         })
     }
 
+    pub(crate) const fn descriptor(&self) -> &ArchiveRead {
+        &self.archive
+    }
+
+    /// Returns only verified bytes while the catalog lease still owns this version.
+    pub(crate) fn read_range(&mut self, offset: u64, length: u64) -> anyhow::Result<Vec<u8>> {
+        self.work.check()?;
+        validated_end(&self.archive, offset, length)?;
+        self.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0; usize::try_from(length)?];
+        self.read_exact(&mut bytes)?;
+        // Cached bytes still require a currently admissible target, name and version.
+        drop(open_read(&self.archive, &self.work)?);
+        self.work.check()?;
+        Ok(bytes)
+    }
+
     fn current_chunk(&mut self) -> anyhow::Result<&[u8]> {
         let index = self.position / CHUNK_BYTES;
         if self
@@ -97,12 +114,7 @@ pub fn open_read(archive: &ArchiveRead, work: &Work<'_>) -> anyhow::Result<Owned
     target.open_local(&version, work)
 }
 
-pub fn read_range(
-    archive: &ArchiveRead,
-    offset: u64,
-    length: u64,
-    work: &Work<'_>,
-) -> anyhow::Result<Vec<u8>> {
+fn validated_end(archive: &ArchiveRead, offset: u64, length: u64) -> anyhow::Result<u64> {
     anyhow::ensure!(
         length > 0 && length <= 256 * 1_048_576,
         "archive playback range exceeds 256 MiB"
@@ -115,6 +127,16 @@ pub fn read_range(
         u64::try_from(archive.chunk_hashes.len())? == archive.bytes.div_ceil(CHUNK_BYTES) * 32,
         "archive integrity index is incomplete"
     );
+    Ok(end)
+}
+
+pub fn read_range(
+    archive: &ArchiveRead,
+    offset: u64,
+    length: u64,
+    work: &Work<'_>,
+) -> anyhow::Result<Vec<u8>> {
+    let end = validated_end(archive, offset, length)?;
     let mut file = open_read(archive, work)?;
     let mut output = Vec::with_capacity(usize::try_from(length)?);
     // ponytail: One reusable chunk verifies boundary bytes without a whole-file warmup.
@@ -125,6 +147,8 @@ pub fn read_range(
         let count = usize::try_from(CHUNK_BYTES.min(archive.bytes - start))?;
         file.file_mut().seek(SeekFrom::Start(start))?;
         file.read_exact(&mut buffer[..count])?;
+        #[cfg(test)]
+        tests::record_verified_read(count);
         let hash_index = usize::try_from(chunk * 32)?;
         anyhow::ensure!(
             Sha256::digest(&buffer[..count]).as_slice()
@@ -145,7 +169,7 @@ pub fn read_range(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::storage::archive::target::ArchiveTarget;
     use std::{
@@ -154,7 +178,22 @@ mod tests {
         time::Duration,
     };
 
-    fn fixture(
+    thread_local! {
+        static VERIFIED_READS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+    }
+
+    pub(super) fn record_verified_read(bytes: usize) {
+        VERIFIED_READS.with(|cell| {
+            let (calls, total) = cell.get();
+            cell.set((calls + 1, total + bytes));
+        });
+    }
+
+    pub fn take_verified_reads() -> (usize, usize) {
+        VERIFIED_READS.take()
+    }
+
+    pub fn fixture(
         bytes: &[u8],
     ) -> anyhow::Result<(std::path::PathBuf, FilesystemArchiveTarget, ArchiveRead)> {
         use crate::storage::long_term::inspection::removal::create_private_directory;
@@ -208,6 +247,37 @@ mod tests {
             deadline: std::time::Instant::now() + Duration::from_secs(30),
             cancelled: &never,
         }
+    }
+
+    #[test]
+    fn archive_batch_fences_cached_ranges_after_cancellation_or_target_loss() -> anyhow::Result<()>
+    {
+        let (root, target, descriptor) = fixture(&[1, 2, 3, 4])?;
+        let cancelled = std::cell::Cell::new(false);
+        let check = || cancelled.get();
+        let mut reader = VerifiedReader::new(
+            descriptor.clone(),
+            Work {
+                deadline: std::time::Instant::now() + Duration::from_secs(10),
+                cancelled: &check,
+            },
+        )?;
+        assert_eq!(reader.read_range(0, 2)?, [1, 2]);
+        cancelled.set(true);
+        assert!(
+            reader
+                .read_range(1, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        cancelled.set(false);
+        std::fs::rename(descriptor.path(), root.join("displaced.mp4"))?;
+        assert!(reader.read_range(1, 1).is_err());
+        drop(reader);
+        drop(target);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[test]

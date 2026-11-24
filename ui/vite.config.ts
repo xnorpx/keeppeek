@@ -161,7 +161,6 @@ export default defineConfig({
 				extends: './vite.config.ts',
 				test: {
 					name: 'server-compat',
-					pool: 'threads',
 					environment: 'node',
 					pool: 'threads',
 					include: [
@@ -183,7 +182,6 @@ export default defineConfig({
 				extends: './vite.config.ts',
 				test: {
 					name: 'server',
-					pool: 'threads',
 					environment: 'node',
 					pool: 'threads',
 					include: ['src/**/*.{test,spec}.{js,ts}'],
