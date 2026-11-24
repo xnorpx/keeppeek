@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b2defec9.js";
+            window.path_to_searchindex_js = "searchindex-e45b9c76.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -3551,6 +3551,11 @@ Protect all owned volume roots with a separate archive policy when they need rec
 </tbody>
 </table>
 </div>
+<p>An evidence guest link has its own durable authorization store on the target metadata volume.
+Applying a configuration ZIP to an existing named metadata volume preserves its current grants,
+revocations and counters. A replacement target with an empty guest store needs newly issued links.
+See <a href="#recover-guest-links">Recover guest links</a> when restoring
+an entire metadata volume.</p>
 <p>Restart is therefore a recording interruption and a runtime-state reset, even when every saved
 setting returns correctly. Collect required audit and delivery evidence before restart. A queue
 that was pending before shutdown is not proof of later provider delivery.</p>
@@ -4072,6 +4077,20 @@ configuration export lock does not create an atomic snapshot of the catalog, med
 If you use storage snapshots instead of a stopped copy, establish and test a consistent capture
 procedure for every involved volume and writer. This book does not claim that an arbitrary live
 filesystem copy is recoverable.</p>
+<h2 id="recover-guest-links"><a class="header" href="#recover-guest-links">Recover guest links</a></h2>
+<p>Guest link verifiers, revocations and consumed view or download limits live in the metadata
+volume’s <code>guest-review/grants.db</code> database. The configuration ZIP contains the sharing policy.
+A restart ends existing guest sessions and active transfers.</p>
+<p>Before starting a recorder from a historical volume image, set <code>enabled = false</code> in the
+restored <code>[sharing]</code> configuration and keep its public guest origin offline. An older image
+can contain grants that an Administrator has since revoked or counters that recipients have
+since consumed.</p>
+<p>Preserve the complete backup offline. In the working copy of the recovered metadata volume,
+leave the entire <code>guest-review</code> directory out of the active volume, including database
+sidecars. KeepPeek initializes a fresh guest store at startup. Once the recorder is isolated
+and its evidence has been checked, enable sharing and confirm that the Administrator’s
+all-creators guest-link list is empty before restoring public access. Issue new links only
+for the recordings and completed exports that an Administrator still authorizes.</p>
 <h2 id="restore-the-runtime-state-store-before-accepting-watches"><a class="header" href="#restore-the-runtime-state-store-before-accepting-watches">Restore the runtime state store before accepting watches</a></h2>
 <p>Restore the state-store database family together with its counters: namespace
 revisions, entry revisions, and byte counts must return as one unit before the

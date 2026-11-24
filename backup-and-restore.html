@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b2defec9.js";
+            window.path_to_searchindex_js = "searchindex-e45b9c76.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -216,6 +216,11 @@ Protect all owned volume roots with a separate archive policy when they need rec
 </tbody>
 </table>
 </div>
+<p>An evidence guest link has its own durable authorization store on the target metadata volume.
+Applying a configuration ZIP to an existing named metadata volume preserves its current grants,
+revocations and counters. A replacement target with an empty guest store needs newly issued links.
+See <a href="./recording-archive-recovery.html#recover-guest-links">Recover guest links</a> when restoring
+an entire metadata volume.</p>
 <p>Restart is therefore a recording interruption and a runtime-state reset, even when every saved
 setting returns correctly. Collect required audit and delivery evidence before restart. A queue
 that was pending before shutdown is not proof of later provider delivery.</p>
