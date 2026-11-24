@@ -6,6 +6,7 @@ import {
 	createExportRange,
 	exportSelectionKey,
 	createSwimlaneWindow,
+	segmentForExportRange,
 	parseKeepMode,
 	storyEvents,
 	updateExportRange
@@ -53,6 +54,18 @@ describe('Keep modes', () => {
 				event('new', 'Story', 20)
 			]).map((item) => item.id)
 		).toEqual(['new', 'old']);
+	});
+
+	it('requires gap-free coverage from the selected stream, including the last marked millisecond', () => {
+		const first = segment('front', 100, 200);
+		const adjacent = segment('front', 200, 300);
+		const gap = segment('front', 201, 300);
+		expect(segmentForExportRange([adjacent, first], 'main', 125, 300)).toEqual(first);
+		expect(segmentForExportRange([first, gap], 'main', 125, 300)).toBeNull();
+		expect(
+			segmentForExportRange([first, { ...adjacent, stream: 'sub' }], 'main', 125, 300)
+		).toBeNull();
+		expect(segmentForExportRange([first, adjacent], 'main', 125, 301)).toBeNull();
 	});
 
 	it('estimates export bytes only when the camera reports bitrate', () => {

@@ -163,6 +163,7 @@ export default defineConfig({
 					name: 'server-compat',
 					pool: 'threads',
 					environment: 'node',
+					pool: 'threads',
 					include: [
 						'src/lib/api.spec.ts',
 						'src/lib/browser-logs.spec.ts',
@@ -184,6 +185,7 @@ export default defineConfig({
 					name: 'server',
 					pool: 'threads',
 					environment: 'node',
+					pool: 'threads',
 					include: ['src/**/*.{test,spec}.{js,ts}'],
 					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
 				}
