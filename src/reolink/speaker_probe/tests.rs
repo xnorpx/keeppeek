@@ -6,6 +6,7 @@ use reo_proto::{
     },
 };
 use std::net::TcpListener;
+use uuid::Uuid;
 
 const CHANNEL: u8 = 3;
 
@@ -31,13 +32,13 @@ fn send_packet(socket: &mut TcpStream, header: PacketHeader, xml: &mut [u8]) {
     socket.write_all(xml).unwrap();
 }
 
-fn authenticate(socket: &mut TcpStream) {
+fn authenticate(socket: &mut TcpStream, expected_password: &str) {
     let (request, body) = take_packet(socket);
     assert_eq!(request.msg_id, COMMAND_LOGIN);
     assert!(request.is_binary() && body.is_empty());
     let mut xml = [0; reo_proto::MAX_XML_BODY];
-    let len =
-        auth::build_nonce_response("test-nonce", EncryptionMode::BcEncrypt, &mut xml).unwrap();
+    let nonce = Uuid::new_v4().simple().to_string();
+    let len = auth::build_nonce_response(&nonce, EncryptionMode::BcEncrypt, &mut xml).unwrap();
     send_packet(
         socket,
         PacketHeader {
@@ -55,9 +56,9 @@ fn authenticate(socket: &mut TcpStream) {
     encryption::bc_xor(&mut body, 0);
     let (user, password) = auth::parse_modern_login(&body).unwrap();
     assert!(auth::validate_credentials(
-        "test-nonce",
+        &nonce,
         "viewer",
-        "fixture",
+        expected_password,
         &user,
         &password
     ));
@@ -78,10 +79,13 @@ fn discovery_rejects_unrepresentable_credentials_before_connecting() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
-    let username = "user".repeat(reo_proto::USERNAME_CAP);
-    let password = "🙂".repeat(reo_proto::PASSWORD_CAP);
-    assert!(!compatible(address, &username, "fixture", CHANNEL).unwrap());
-    assert!(!compatible(address, "viewer", &password, CHANNEL).unwrap());
+    let username = "u".repeat(reo_proto::USERNAME_CAP + 1);
+    let password = Uuid::new_v4().simple().to_string();
+    let oversized_password = format!("{password}{}", "🙂".repeat(reo_proto::PASSWORD_CAP / 4));
+    assert!(oversized_password.chars().count() <= reo_proto::PASSWORD_CAP);
+    assert!(oversized_password.len() > reo_proto::PASSWORD_CAP);
+    assert!(!compatible(address, &username, &password, CHANNEL).unwrap());
+    assert!(!compatible(address, "viewer", &oversized_password, CHANNEL).unwrap());
     assert_eq!(
         listener.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
@@ -97,10 +101,12 @@ fn standalone_discovery_authenticates_and_never_opens_a_speaker() {
     ] {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
+        let password = Uuid::new_v4().simple().to_string();
+        let expected_password = password.clone();
         let camera = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             socket.set_read_timeout(Some(DEADLINE)).unwrap();
-            authenticate(&mut socket);
+            authenticate(&mut socket, &expected_password);
             let (request, mut extension) = take_packet(&mut socket);
             assert_eq!(request.msg_id, COMMAND_TALK_CAPABILITIES);
             assert_eq!(request.channel_id(), CHANNEL);
@@ -127,7 +133,7 @@ fn standalone_discovery_authenticates_and_never_opens_a_speaker() {
                 assert_eq!(socket.read(&mut [0; 1]).unwrap(), 0);
             }
         });
-        let result = compatible(address, "viewer", "fixture", CHANNEL);
+        let result = compatible(address, "viewer", &password, CHANNEL);
         camera.join().unwrap();
         assert_eq!(result.unwrap(), expected);
     }
