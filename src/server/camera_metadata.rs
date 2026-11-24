@@ -117,19 +117,22 @@ fn run(state: &ServerState) {
             .zip(entry.battery_uid.as_deref())
             .map(|(wake, uid)| wake.health(uid));
         if let Some(control) = entry.control.as_ref()
-            && entry.may_read_audio_outputs(answered_metadata, wake)
             && current(state, &entry)
         {
-            let capabilities = super::logged_in_reolink(control)
-                .map(|mut client| {
-                    let capabilities = client.get_audio_output_capabilities(
-                        u32::from(crate::reolink::CONFIGURED_CHANNEL),
-                        &control.username,
-                    );
-                    let _ = client.logout();
-                    capabilities
-                })
-                .unwrap_or_default();
+            let capabilities = if entry.may_read_audio_outputs(answered_metadata, wake) {
+                super::logged_in_reolink(control)
+                    .map(|mut client| {
+                        let capabilities = client.get_audio_output_capabilities(
+                            u32::from(crate::reolink::CONFIGURED_CHANNEL),
+                            &control.username,
+                        );
+                        let _ = client.logout();
+                        capabilities
+                    })
+                    .unwrap_or_default()
+            } else {
+                ReolinkDoorbellCapabilities::default()
+            };
             apply_audio_capabilities(state, &entry, capabilities);
             state.probe_reolink_speaker(&entry);
         }
