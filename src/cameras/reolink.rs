@@ -2178,11 +2178,11 @@ mod tests {
             ("1".into(), "Text Reply".into()),
             ("2".into(), "Numeric Reply".into()),
         ];
-        assert_eq!(doorbell_assets(Some(&assets), true), expected);
+        assert_eq!(doorbell_assets(Some(&assets), true, 0), expected);
         assets.as_array_mut().unwrap().reverse();
-        assert_eq!(doorbell_assets(Some(&assets), true), expected);
+        assert_eq!(doorbell_assets(Some(&assets), true, 0), expected);
         let oversized = Value::Array(vec![Value::Null; DOORBELL_ASSET_COUNT_MAX + 1]);
-        assert!(doorbell_assets(Some(&oversized), true).is_empty());
+        assert!(doorbell_assets(Some(&oversized), true, 0).is_empty());
     }
 
     #[test]
