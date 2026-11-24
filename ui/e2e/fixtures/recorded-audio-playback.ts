@@ -1,7 +1,5 @@
 import { expect, type Locator, type Page, type Route } from '@playwright/test';
 
-type WitnessVideo = HTMLVideoElement & { stopRecordedAudioWitness?: () => void };
-
 export function recordedAudioBackendRoute(origin: string, backend: string) {
 	return async (route: Route) => {
 		const url = new URL(route.request().url());
@@ -37,34 +35,34 @@ async function decodedSnapshot(video: Locator) {
 	});
 }
 
-async function witnessFrames(video: Locator, minimumTimeSeconds: number) {
-	await video.evaluate((element, minimumTime) => {
-		const media = element as WitnessVideo;
-		media.stopRecordedAudioWitness?.();
-		let callbackId: number | null = null;
-		let callbacks = 0;
-		let source = '';
-		const presented: VideoFrameRequestCallback = (_, metadata) => {
-			media.dataset.recordedAudioPresentedTime = String(metadata.mediaTime);
-			media.dataset.recordedAudioPresentedSource = source;
-			callbacks += 1;
-			if (metadata.mediaTime < minimumTime && callbacks < 250) {
-				callbackId = media.requestVideoFrameCallback(presented);
-			}
-		};
-		const start = () => {
-			if (callbackId !== null) media.cancelVideoFrameCallback(callbackId);
-			source = media.currentSrc;
-			media.dataset.recordedAudioPresentedTime = '-1';
-			if (callbacks < 250) callbackId = media.requestVideoFrameCallback(presented);
-		};
-		media.addEventListener('loadeddata', start);
-		media.stopRecordedAudioWitness = () => {
-			media.removeEventListener('loadeddata', start);
-			if (callbackId !== null) media.cancelVideoFrameCallback(callbackId);
-		};
-		start();
-	}, minimumTimeSeconds);
+export async function installRecordedAudioFrameProbe(page: Page) {
+	await page.addInitScript(() => {
+		const installed = Symbol.for('keeppeek.recordedAudioFrameProbe');
+		if (Reflect.has(document, installed)) return;
+		Object.defineProperty(document, installed, { value: true });
+		const pending = new WeakMap<HTMLVideoElement, number>();
+		document.addEventListener(
+			'loadstart',
+			(event) => {
+				const video = event.target;
+				if (!(video instanceof HTMLVideoElement)) return;
+				const previous = pending.get(video);
+				if (previous !== undefined) video.cancelVideoFrameCallback(previous);
+				delete video.dataset.recordedAudioPresentedSource;
+				delete video.dataset.recordedAudioPresentedTime;
+				const source = video.currentSrc || video.src;
+				if (!source) return;
+				const presented: VideoFrameRequestCallback = (_, metadata) => {
+					if (video.currentSrc !== source) return;
+					video.dataset.recordedAudioPresentedTime = String(metadata.mediaTime);
+					video.dataset.recordedAudioPresentedSource = source;
+					pending.set(video, video.requestVideoFrameCallback(presented));
+				};
+				pending.set(video, video.requestVideoFrameCallback(presented));
+			},
+			true
+		);
+	});
 }
 
 export async function decodedRecordedAudio(
@@ -76,7 +74,6 @@ export async function decodedRecordedAudio(
 	const player = page.getByRole('region', { name: 'Recorded video player', exact: true });
 	const video = player.locator('video');
 	await expect(video).toBeVisible();
-	await witnessFrames(video, minimumTimeSeconds);
 	const play = player.getByRole('button', { name: 'Play recording', exact: true });
 	if (await play.count()) await play.click();
 	try {
@@ -110,8 +107,6 @@ export async function decodedRecordedAudio(
 			})}`,
 			{ cause }
 		);
-	} finally {
-		await video.evaluate((element) => (element as WitnessVideo).stopRecordedAudioWitness?.());
 	}
 	const sample = await decodedSnapshot(video);
 	const pause = player.getByRole('button', { name: 'Pause recording', exact: true });
