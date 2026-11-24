@@ -150,9 +150,11 @@ fn write_source(
     root: &Path,
     catalog: RecordingCatalogHandle,
     codec: crate::storage::VideoCodec,
+    frames: u32,
+    spacing_ms: u64,
 ) -> (i64, i64) {
-    // Both one-second samples must be retained before the browser selects this segment.
-    let started = Instant::now() - Duration::from_secs(2);
+    // All retained fixture samples must already exist when an export is requested.
+    let started = Instant::now() - Duration::from_millis(u64::from(frames) * spacing_ms);
     let mut writer = crate::storage::medium_term::MediumTermWriter::create_with_catalog(
         root,
         "front-door/sub",
@@ -166,8 +168,8 @@ fn write_source(
         crate::storage::VideoCodec::H265 => ("cc-4k-640x360-h265.mp4", mp4::MediaType::H265),
     };
     let payload = super::tests::fixture_video_keyframe(source, variant);
-    for offset in [0, 1000] {
-        let elapsed = Duration::from_millis(offset);
+    for frame in 0..frames {
+        let elapsed = Duration::from_millis(u64::from(frame) * spacing_ms);
         writer
             .append_one(crate::storage::RecordingFrame {
                 received_at: started + elapsed,
@@ -193,30 +195,40 @@ fn write_source(
     )
 }
 
-pub(super) fn setup(
-    limit: u64,
-) -> (
+pub(super) type ExportFixture = (
     PathBuf,
     RecordingCatalog,
     Manager,
     ServerState,
     proto::CreateExportJob,
-) {
+);
+
+pub(super) fn setup(limit: u64) -> ExportFixture {
     setup_for_codec(limit, crate::storage::VideoCodec::H264)
 }
 
-pub(super) fn setup_for_codec(
+pub(super) fn setup_for_codec(limit: u64, codec: crate::storage::VideoCodec) -> ExportFixture {
+    setup_for_source(limit, codec, 2, 1000)
+}
+
+pub(super) fn setup_with_frames(limit: u64, frames: u32, spacing_ms: u64) -> ExportFixture {
+    setup_for_source(limit, crate::storage::VideoCodec::H264, frames, spacing_ms)
+}
+
+fn setup_for_source(
     limit: u64,
     codec: crate::storage::VideoCodec,
-) -> (
-    PathBuf,
-    RecordingCatalog,
-    Manager,
-    ServerState,
-    proto::CreateExportJob,
-) {
+    frames: u32,
+    spacing_ms: u64,
+) -> ExportFixture {
     let (root, catalog, manager) = fixture(limit).unwrap();
-    let (start, end) = write_source(&root.join("recordings"), catalog.handle(), codec);
+    let (start, end) = write_source(
+        &root.join("recordings"),
+        catalog.handle(),
+        codec,
+        frames,
+        spacing_ms,
+    );
     let mut state = super::tests::media_test_state();
     state.catalog = Some(catalog.handle());
     state.storage_config.long_term_path = root.join("legacy");
@@ -1134,4 +1146,93 @@ fn archived_export_preserves_sharing_metadata_and_fences_typed_create_and_retry(
     drop(state);
     drop(manager);
     catalog.shutdown();
+}
+
+#[test]
+fn export_publication_replays_identical_evidence_after_an_unconfirmed_ack() -> anyhow::Result<()> {
+    use crate::storage::catalog::locations::UnconfirmedOutcome;
+    use std::io::Write as _;
+
+    let (_, catalog, manager) = fixture(128)?;
+    for committed in [false, true] {
+        let object = Object {
+            kind: Kind::Export,
+            id: Uuid::new_v4().simple().to_string(),
+        };
+        let mut file = manager
+            .reserve(VolumeRole::Export, "camera", &[], object.clone(), 8)?
+            .unwrap()
+            .open()?;
+        file.write_all(b"export")?;
+        let evidence = file.evidence()?;
+        let mut calls = 0;
+        super::export_storage::confirm_publication(
+            || {
+                calls += 1;
+                if calls == 1 {
+                    if committed {
+                        file.publish(evidence.clone())?;
+                    }
+                    return Err(UnconfirmedOutcome.into());
+                }
+                file.publish(evidence.clone())
+            },
+            || false,
+        )?;
+        assert_eq!(calls, 2);
+        let Reply::Location(Some(found)) =
+            catalog.handle().volume_location(Request::Lookup(object))?
+        else {
+            panic!("expected one published export");
+        };
+        assert_eq!(found.bytes, 6);
+        assert_eq!(found.digest, evidence.digest);
+    }
+    catalog.shutdown();
+    Ok(())
+}
+
+#[test]
+fn export_publication_skips_the_catalog_when_already_cancelled() {
+    let mut calls = 0;
+    let error = super::export_storage::confirm_publication(
+        || {
+            calls += 1;
+            Ok(())
+        },
+        || true,
+    )
+    .unwrap_err();
+    assert_eq!(calls, 0);
+    assert_eq!(error.to_string(), "export cancelled");
+}
+
+#[test]
+fn export_publication_stops_on_cancellation_hard_errors_or_a_second_lost_ack() {
+    use crate::storage::catalog::locations::UnconfirmedOutcome;
+    use std::cell::Cell;
+
+    for (cancel_after_first, unconfirmed, expected_calls) in
+        [(true, true, 1), (false, false, 1), (false, true, 2)]
+    {
+        let calls = Cell::new(0);
+        let error = super::export_storage::confirm_publication(
+            || {
+                calls.set(calls.get() + 1);
+                if unconfirmed {
+                    Err(UnconfirmedOutcome.into())
+                } else {
+                    anyhow::bail!("publication refused")
+                }
+            },
+            || cancel_after_first && calls.get() > 0,
+        )
+        .unwrap_err();
+        assert_eq!(calls.get(), expected_calls);
+        if cancel_after_first {
+            assert_eq!(error.to_string(), "export cancelled");
+        } else {
+            assert_eq!(error.is::<UnconfirmedOutcome>(), unconfirmed);
+        }
+    }
 }
