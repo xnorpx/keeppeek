@@ -172,6 +172,7 @@ fn write_source(
         let elapsed = Duration::from_millis(u64::from(frame) * spacing_ms);
         writer
             .append_one(crate::storage::RecordingFrame {
+                source_rtp: None,
                 received_at: started + elapsed,
                 timestamp: Some(elapsed),
                 frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {

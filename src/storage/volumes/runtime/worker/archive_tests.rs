@@ -53,6 +53,7 @@ fn frame(start: Instant, milliseconds: u64) -> crate::storage::RecordingFrame {
     use crate::storage::{MediaFrame, RecordingFrame, VideoCodec, VideoFrame};
     let elapsed = Duration::from_millis(milliseconds);
     RecordingFrame {
+        source_rtp: None,
         received_at: start + elapsed,
         timestamp: Some(elapsed),
         frame: MediaFrame::Video(VideoFrame {
