@@ -1,3 +1,16 @@
+import { StoredFrameClock } from './stored-frame-clock';
+import {
+	awaitFrameOperation,
+	StoredFrameWindow,
+	type PresentedStoredFrame
+} from './stored-frame-step';
+import {
+	StepStoredFrameSchema,
+	StoredFrameStepDirection,
+	type StepStoredFrame,
+	type StoredFrameStepResult,
+	type StoredFrameStepChunk
+} from './proto/webrtc_pb';
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { durationFromMs, timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt';
 import {
@@ -1231,7 +1244,22 @@ export class ControlClient {
 					mode,
 					recordedAudioPreview
 				),
-			() => this.closeStoredMedia(storedMediaId)
+			() => this.closeStoredMedia(storedMediaId),
+			this.#capabilityIds.includes('keeppeek.stored-frame-step.v1')
+				? async (step, signal) => {
+						const command = create(StoredMediaCommandSchema, {
+							action: { case: 'stepFrame', value: step }
+						});
+						const response = await this.request(
+							{ case: 'storedMediaCommand', value: command },
+							2000,
+							{ signal }
+						);
+						if (response.case !== 'storedFrameStepResult')
+							throw new Error('Unexpected recorded frame response.');
+						return response.value;
+					}
+				: undefined
 		);
 		this.#playbacks.set(storedMediaId, playback);
 		try {
@@ -2635,6 +2663,9 @@ export class ControlClient {
 		if (stored.case === 'fragment') {
 			this.#playbacks.get(stored.value.storedMediaId)?.receiveFragment(stored.value);
 		}
+		if (stored.case === 'frameStepChunk') {
+			this.#playbacks.get(stored.value.storedMediaId)?.receiveFrameStepChunk(stored.value);
+		}
 		if (stored.case === 'keyFrame') {
 			this.#playbacks.get(stored.value.storedMediaId)?.receiveKeyFrame(stored.value);
 		}
@@ -3183,14 +3214,17 @@ function accessAuditEvent(event: ProtoAccessAuditEvent): AccessAuditEvent {
 	};
 }
 
-type CompletedStoredObject = {
-	generation: bigint;
+type StoredAppend = {
+	catalogStartMs?: number;
 	payload: Uint8Array;
 	deliveredThroughMs?: number;
 	sourceBufferContentType?: string;
 };
 
+type CompletedStoredObject = StoredAppend & { generation: bigint };
+
 type StoredChunkAccumulator = ChunkAccumulator & {
+	catalogStartMs?: number;
 	generation: bigint;
 	deliveredThroughMs?: number;
 	sourceBufferContentType?: string;
@@ -3234,7 +3268,9 @@ export class StoredMediaPlayback {
 	#generation = 0n;
 	#chunks = new Map<string, StoredChunkAccumulator>();
 	#completed: CompletedStoredObject[] = [];
-	#appendQueue: Array<{ payload: Uint8Array; sourceBufferContentType?: string }> = [];
+	#appendQueue: StoredAppend[] = [];
+	#appending?: StoredAppend;
+	#frameClock = new StoredFrameClock();
 	#seek: (timestampMs: number) => Promise<StoredMediaState>;
 	#refill: (timestampMs: number) => Promise<StoredMediaState>;
 	#updatePlayback: (
@@ -3276,6 +3312,9 @@ export class StoredMediaPlayback {
 	#latestKeyFrame: StoredMediaKeyFramePreview | null = null;
 	#firstFragmentGenerations = new Set<bigint>();
 
+	readonly #frameClockListeners = new Set<() => void>();
+	#frameStep?: { abort: AbortController; window: StoredFrameWindow };
+
 	constructor(
 		id: string,
 		sourceId: string,
@@ -3288,7 +3327,11 @@ export class StoredMediaPlayback {
 			mode: StoredMediaMode | undefined,
 			recordedAudioPreview?: RecordedAudioPreview
 		) => Promise<StoredMediaState>,
-		close: () => Promise<void>
+		close: () => Promise<void>,
+		private readonly requestFrameStep?: (
+			step: StepStoredFrame,
+			signal: AbortSignal
+		) => Promise<StoredFrameStepResult>
 	) {
 		this.id = id;
 		this.sourceId = sourceId;
@@ -3303,6 +3346,95 @@ export class StoredMediaPlayback {
 		this.listenForSourceOpen();
 	}
 
+	get canStepExactly(): boolean {
+		return this.requestFrameStep !== undefined && typeof VideoDecoder !== 'undefined';
+	}
+
+	onFrameClockUpdate(listener: () => void): () => void {
+		this.#frameClockListeners.add(listener);
+		return () => this.#frameClockListeners.delete(listener);
+	}
+
+	storedNsForMediaUs(us: number): bigint | undefined {
+		if (this.#sourceBuffer?.mode === 'segments')
+			return BigInt(this.anchorTimeMs) * 1_000_000n + BigInt(us) * 1_000n;
+		return this.#frameClock.storedNs(us);
+	}
+
+	mediaUsForStoredNs(ns: bigint): number | undefined {
+		if (this.#sourceBuffer?.mode === 'segments')
+			return Math.round(Number(ns - BigInt(this.anchorTimeMs) * 1_000_000n) / 1_000);
+		return this.#frameClock.mediaUs(ns);
+	}
+
+	receiveFrameStepChunk(chunk: StoredFrameStepChunk): void {
+		this.#frameStep?.window.receive(chunk);
+	}
+
+	cancelFrameStep(): void {
+		this.#frameStep?.abort.abort();
+	}
+
+	async stepRecordedFrame(
+		direction: -1 | 1,
+		anchor: { displayedTimeNs: bigint } | { sampleToken: Uint8Array },
+		signal: AbortSignal
+	): Promise<PresentedStoredFrame> {
+		if (!this.requestFrameStep || !this.canStepExactly)
+			throw new Error('Exact picture decoding is unavailable.');
+		if (this.#closed || this.#playing || this.#frameStep)
+			throw new Error('Pause playback and finish the current picture request.');
+		signal.throwIfAborted();
+		const abort = new AbortController();
+		const cancel = () => abort.abort();
+		signal.addEventListener('abort', cancel, { once: true });
+		const stepId = crypto.randomUUID();
+		const window = new StoredFrameWindow(this.id, this.#generation, stepId);
+		this.#frameStep = { abort, window };
+		const startDeadline = setTimeout(cancel, 2000);
+		let decodeDeadline: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const request = create(StepStoredFrameSchema, {
+				storedMediaId: this.id,
+				sourceId: this.sourceId,
+				streamId: this.streamId,
+				generation: this.#generation,
+				stepId,
+				direction:
+					direction < 0 ? StoredFrameStepDirection.PREVIOUS : StoredFrameStepDirection.NEXT,
+				anchor:
+					'sampleToken' in anchor
+						? { case: 'sampleToken', value: anchor.sampleToken }
+						: {
+								case: 'displayedTime',
+								value: {
+									seconds: anchor.displayedTimeNs / 1_000_000_000n,
+									nanos: Number(anchor.displayedTimeNs % 1_000_000_000n)
+								}
+							}
+			});
+			const send = this.requestFrameStep;
+			const result = await awaitFrameOperation(
+				this.cursorOperation(() => {
+					abort.signal.throwIfAborted();
+					if (this.#playing || this.#generation !== request.generation)
+						throw new Error('The paused playback cursor changed.');
+					return send(request, abort.signal);
+				}),
+				abort.signal
+			);
+			clearTimeout(startDeadline);
+			abort.signal.throwIfAborted();
+			decodeDeadline = setTimeout(cancel, 5000);
+			return await window.decode(result, abort.signal);
+		} finally {
+			clearTimeout(startDeadline);
+			clearTimeout(decodeDeadline);
+			signal.removeEventListener('abort', cancel);
+			this.#frameStep = undefined;
+		}
+	}
+
 	get contentType(): string | null {
 		return this.#contentType;
 	}
@@ -3313,6 +3445,7 @@ export class StoredMediaPlayback {
 			throw new Error('Server returned incomplete stored media state.');
 		}
 		if (this.#generation !== 0n && state.generation < this.#generation) return;
+		if (state.playing || this.#generation !== state.generation) this.cancelFrameStep();
 		this.recordedAudio = state.recordedAudio;
 		this.publishArchive(state.archive);
 		if (this.#generation !== 0n && state.generation !== this.#generation) {
@@ -3346,10 +3479,7 @@ export class StoredMediaPlayback {
 			this.#latestKeyFrame = null;
 		}
 		for (const object of this.#completed) {
-			this.#appendQueue.push({
-				payload: object.payload,
-				sourceBufferContentType: object.sourceBufferContentType
-			});
+			this.#appendQueue.push(object);
 			if (object.deliveredThroughMs !== undefined) {
 				this.#deliveredThroughMs = Math.max(this.#deliveredThroughMs, object.deliveredThroughMs);
 			}
@@ -3496,7 +3626,9 @@ export class StoredMediaPlayback {
 			fragment.chunkCount,
 			this.#contentType ?? 'video/mp4',
 			fragment.payload,
-			deliveredThroughMs
+			deliveredThroughMs,
+			undefined,
+			fragment.startTime ? timestampDate(fragment.startTime).getTime() : undefined
 		);
 	}
 
@@ -3719,6 +3851,7 @@ export class StoredMediaPlayback {
 	}
 
 	dispose(): void {
+		this.cancelFrameStep();
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#chunks.clear();
@@ -3731,6 +3864,8 @@ export class StoredMediaPlayback {
 		this.#startupEvents = [];
 		this.#latestKeyFrame = null;
 		this.#firstFragmentGenerations.clear();
+		this.#appending = undefined;
+		this.#frameClock.reset();
 		this.#completed = [];
 		this.#appendQueue = [];
 		this.#refillInFlight = false;
@@ -3753,7 +3888,8 @@ export class StoredMediaPlayback {
 		contentType: string,
 		payload: Uint8Array,
 		deliveredThroughMs: number | undefined,
-		sourceBufferContentType?: string
+		sourceBufferContentType?: string,
+		catalogStartMs?: number
 	): void {
 		if (this.#closed || chunkCount === 0 || chunkIndex >= chunkCount) return;
 		const accumulator = this.#chunks.get(key) ?? {
@@ -3762,7 +3898,8 @@ export class StoredMediaPlayback {
 			chunks: Array.from<Uint8Array | undefined>({ length: chunkCount }),
 			contentType,
 			deliveredThroughMs,
-			sourceBufferContentType
+			sourceBufferContentType,
+			catalogStartMs
 		};
 		if (
 			accumulator.generation !== generation ||
@@ -3770,6 +3907,7 @@ export class StoredMediaPlayback {
 			accumulator.contentType !== contentType ||
 			accumulator.deliveredThroughMs !== deliveredThroughMs ||
 			accumulator.sourceBufferContentType !== sourceBufferContentType ||
+			accumulator.catalogStartMs !== catalogStartMs ||
 			accumulator.chunks[chunkIndex] !== undefined
 		) {
 			this.fail('Stored media chunks were inconsistent.');
@@ -3788,7 +3926,8 @@ export class StoredMediaPlayback {
 			generation,
 			payload: concatenateChunks(accumulator.chunks),
 			deliveredThroughMs: accumulator.deliveredThroughMs,
-			sourceBufferContentType: accumulator.sourceBufferContentType
+			sourceBufferContentType: accumulator.sourceBufferContentType,
+			catalogStartMs: accumulator.catalogStartMs
 		};
 		if (this.#generation === 0n) {
 			this.#completed.push(completed);
@@ -3802,10 +3941,7 @@ export class StoredMediaPlayback {
 		if (accumulator.deliveredThroughMs !== undefined) {
 			this.#deliveredThroughMs = Math.max(this.#deliveredThroughMs, accumulator.deliveredThroughMs);
 		}
-		this.#appendQueue.push({
-			payload: completed.payload,
-			sourceBufferContentType: completed.sourceBufferContentType
-		});
+		this.#appendQueue.push(completed);
 		if (
 			accumulator.deliveredThroughMs !== undefined &&
 			!this.#firstFragmentGenerations.has(generation)
@@ -3861,6 +3997,8 @@ export class StoredMediaPlayback {
 	}
 
 	private replaceMediaSource(): void {
+		this.#appending = undefined;
+		this.#frameClock.reset();
 		this.#sourceBuffer = null;
 		this.#sourceBufferContentType = null;
 		this.#appendQueue = [];
@@ -3915,11 +4053,27 @@ export class StoredMediaPlayback {
 			sourceBuffer.mode = this.recordedAudio?.appliedOffsetMs ? 'segments' : 'sequence';
 			sourceBuffer.addEventListener('updateend', () => {
 				if (this.#sourceBuffer !== sourceBuffer) return;
+				const appended = this.#appending;
+				this.#appending = undefined;
+				if (this.requestFrameStep && sourceBuffer.mode === 'sequence' && appended) {
+					if (appended.sourceBufferContentType) this.#frameClock.initialization(appended.payload);
+					else if (appended.catalogStartMs !== undefined)
+						this.#frameClock.fragment(
+							appended.payload,
+							appended.catalogStartMs,
+							sourceBuffer.timestampOffset
+						);
+					else this.#frameClock.reset();
+				}
+				for (const listener of this.#frameClockListeners) listener();
 				this.flushAppendQueue();
 				this.finishIfEnded();
 			});
 			sourceBuffer.addEventListener('error', () => {
-				if (this.#sourceBuffer === sourceBuffer) this.fail('Browser rejected stored media bytes.');
+				if (this.#sourceBuffer !== sourceBuffer) return;
+				this.#appending = undefined;
+				this.#frameClock.reset();
+				this.fail('Browser rejected stored media bytes.');
 			});
 			this.flushAppendQueue();
 		} catch (error) {
@@ -3929,7 +4083,8 @@ export class StoredMediaPlayback {
 
 	private flushAppendQueue(): void {
 		const sourceBuffer = this.#sourceBuffer;
-		if (!sourceBuffer || sourceBuffer.updating || this.#closed) {
+		// updating becomes false before updateend publishes this append's video clock.
+		if (!sourceBuffer || this.#appending || sourceBuffer.updating || this.#closed) {
 			return;
 		}
 		if (this.#appendQueue.length === 0) {
@@ -3955,8 +4110,10 @@ export class StoredMediaPlayback {
 				sourceBuffer.changeType(next.sourceBufferContentType);
 				this.#sourceBufferContentType = next.sourceBufferContentType;
 			}
+			this.#appending = next;
 			sourceBuffer.appendBuffer(ownedArrayBuffer(next.payload));
 		} catch (error) {
+			this.#appending = undefined;
 			this.fail(error instanceof Error ? error.message : 'Unable to append stored media bytes.');
 		}
 	}
@@ -3966,6 +4123,7 @@ export class StoredMediaPlayback {
 			!this.#ended ||
 			this.#closed ||
 			this.#mediaSource.readyState !== 'open' ||
+			this.#appending ||
 			this.#sourceBuffer?.updating ||
 			this.#appendQueue.length > 0 ||
 			this.#chunks.size > 0 ||
