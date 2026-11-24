@@ -4893,7 +4893,10 @@ async fn detach_event_thumbnail(connection: &turso::Connection, id: &str) -> any
     let result = async {
         let changed = connection
             .execute(
-                "UPDATE recording_events SET thumbnail_filename = NULL WHERE id = ?1",
+                "UPDATE recording_events
+                 SET thumbnail_filename = NULL,
+                     revision = CASE WHEN thumbnail_filename IS NOT NULL THEN revision + 1 ELSE revision END
+                 WHERE id = ?1",
                 turso::params![id],
             )
             .await?;
@@ -4935,7 +4938,8 @@ async fn detach_event_thumbnail_file(
             let changed = connection
                 .execute(
                     "UPDATE recording_events
-                     SET thumbnail_filename = NULL
+                     SET thumbnail_filename = NULL,
+                         revision = revision + 1
                      WHERE id = ?1 AND thumbnail_filename = ?2",
                     turso::params![event_id.clone(), thumbnail_filename],
                 )
@@ -7639,6 +7643,63 @@ pub(crate) mod tests {
                 query_count(
                     &connection,
                     "SELECT COUNT(*) FROM recording_event_embeddings WHERE event_id = 'unchanged'"
+                )
+                .await,
+                0,
+            );
+            Ok::<(), anyhow::Error>(())
+        })?;
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn detach_event_thumbnail_increments_revision_and_invalidates_embeddings() -> anyhow::Result<()>
+    {
+        let root = test_dir("turso-detach-thumbnail-embeddings");
+        let path = root.join("recordings.db");
+        pollster::block_on(async {
+            let database = turso::Builder::new_local(path.to_str().unwrap())
+                .build()
+                .await?;
+            let connection = database.connect()?;
+            initialize_schema(&connection).await?;
+            let mut by_id = test_event("detach-by-id", 100);
+            by_id.thumbnail_filename = Some("thumb-id.jpg".to_owned());
+            insert_event(&connection, by_id, None).await?;
+            let mut by_file = test_event("detach-by-file", 200);
+            by_file.thumbnail_filename = Some("thumb-file.jpg".to_owned());
+            insert_event(&connection, by_file, None).await?;
+            let embedding = EventEmbedding {
+                model_id: "model-v1".to_owned(),
+                values: vec![1.0, 0.0],
+            };
+            set_event_embedding(&connection, "detach-by-id", embedding.clone()).await?;
+            set_event_embedding(&connection, "detach-by-file", embedding.clone()).await?;
+
+            detach_event_thumbnail(&connection, "detach-by-id").await?;
+            detach_event_thumbnail_file(&connection, "thumb-file.jpg").await?;
+
+            assert_eq!(
+                query_count(
+                    &connection,
+                    "SELECT revision FROM recording_events WHERE id = 'detach-by-id'"
+                )
+                .await,
+                2,
+            );
+            assert_eq!(
+                query_count(
+                    &connection,
+                    "SELECT revision FROM recording_events WHERE id = 'detach-by-file'"
+                )
+                .await,
+                2,
+            );
+            assert_eq!(
+                query_count(
+                    &connection,
+                    "SELECT COUNT(*) FROM recording_event_embeddings"
                 )
                 .await,
                 0,
