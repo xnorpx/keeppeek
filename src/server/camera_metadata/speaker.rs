@@ -201,4 +201,52 @@ mod tests {
             assert!(!live.talkback_is_armed("192.0.2.10"), "{change}");
         }
     }
+
+    #[test]
+    fn non_reolink_replacement_and_removal_retire_active_microphone_route() {
+        use crate::{api::proto, server::update_talkback, webrtc::SessionId};
+
+        for change in ["camera replacement", "removed"] {
+            let state = crate::server::tests::media_test_state();
+            let owner = SessionId::from_u64(6);
+            let mut config = state.camera("127.0.0.1").unwrap().configuration;
+            config.backend = CameraBackend::Retina;
+            config.transport = CameraTransport::Tcp;
+            for ip in ["127.0.0.1", "192.0.2.10"] {
+                config.ip = ip.parse().unwrap();
+                let mut entry = crate::server::camera_entry(&config, None);
+                entry.info.is_reolink = false;
+                entry.info.capabilities.two_way_audio = true;
+                state.upsert_camera(entry);
+            }
+            let command = proto::TalkbackCommand {
+                action: Some(proto::talkback_command::Action::Start(
+                    proto::StartTalkback {
+                        target: Some(proto::TalkbackTarget {
+                            selection: Some(proto::talkback_target::Selection::All(
+                                proto::AllTalkbackTargets {},
+                            )),
+                        }),
+                    },
+                )),
+            };
+            update_talkback(&state, owner, command).unwrap();
+            let live = state.webrtc.live();
+            assert!(live.talkback_is_armed("127.0.0.1") && live.talkback_is_armed("192.0.2.10"));
+            let entry = state.camera("127.0.0.1").unwrap();
+            if change == "camera replacement" {
+                let mut replacement_config = entry.configuration;
+                replacement_config.username = "new-non-reolink".to_owned();
+                let mut replacement = crate::server::camera_entry(&replacement_config, None);
+                replacement.info.is_reolink = false;
+                replacement.info.capabilities.two_way_audio = true;
+                state.upsert_camera(replacement);
+            } else {
+                super::super::forget_removed_audio(&state, &entry.info.id);
+                assert!(!state.camera(&entry.info.id).unwrap().speaker_available());
+            }
+            assert!(!live.talkback_is_armed("127.0.0.1"), "{change}");
+            assert!(live.talkback_is_armed("192.0.2.10"), "{change}");
+        }
+    }
 }

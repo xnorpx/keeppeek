@@ -9034,9 +9034,7 @@ impl ServerState {
             .iter_mut()
             .find(|camera| camera.info.id == entry.info.id)
         {
-            if existing.info.is_reolink
-                && !Arc::ptr_eq(&existing.control_revision, &entry.control_revision)
-            {
+            if !Arc::ptr_eq(&existing.control_revision, &entry.control_revision) {
                 self.talkback.retire_source(&existing.info.id, &self.webrtc);
             }
             if entry.groups.is_empty() {
