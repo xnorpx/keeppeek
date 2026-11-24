@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { capabilityActions } from '$lib/capability-actions';
 	import { afterNavigate, goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { navigating, page } from '$app/state';
@@ -9,6 +10,8 @@
 	import EventDetailDrawer from '$lib/components/EventDetailDrawer.svelte';
 	import EventWorkflowNotice from '$lib/components/EventWorkflowNotice.svelte';
 	import FocusedMediaViewport from '$lib/components/FocusedMediaViewport.svelte';
+	import { RecordedFramePlayer, type ResumePicture } from '$lib/recorded-frame-player.svelte';
+	import type { PresentedStoredFrame } from '$lib/stored-frame-step';
 	import RecordedPlaybackControls from '$lib/components/RecordedPlaybackControls.svelte';
 	import StoredPlaybackNotice from '$lib/components/StoredPlaybackNotice.svelte';
 	import RecordedAudioPreview from '$lib/components/RecordedAudioPreview.svelte';
@@ -51,6 +54,8 @@
 		withRecordedPreference
 	} from '$lib/playback-preferences';
 	import type { CameraListItem, RecordingEvent, RecordingSegment } from '$lib/types';
+	import RecordedReviewExport from '$lib/components/RecordedReviewExport.svelte';
+	import RecordedReviewWorkspace from '$lib/components/RecordedReviewWorkspace.svelte';
 	import KeepCameraSwitcher from '$lib/components/KeepCameraSwitcher.svelte';
 	import CopyMomentLink from '$lib/components/CopyMomentLink.svelte';
 	import KeepExportPanel from '$lib/components/KeepExportPanel.svelte';
@@ -129,6 +134,26 @@
 	let playbackVolume = $state(1);
 	let storedPlayback = $state.raw<StoredMediaPlayback | null>(null);
 	let playbackUrl: string | null = $state(null);
+	const frames = new RecordedFramePlayer();
+	let frameCanvas = $state<HTMLCanvasElement | null>(null);
+	type ColdPicture = {
+		picture: ResumePicture;
+		canvas: HTMLCanvasElement;
+		camera: string;
+		stream: string;
+	};
+	let coldPicture = $state.raw<ColdPicture>();
+	let frameResume = $state.raw<AbortController>();
+	let selectedPicture = $derived(coldPicture?.picture ?? frames.selection);
+	$effect(() => {
+		const retained = coldPicture;
+		const canvas = frameCanvas;
+		if (!retained || !canvas || canvas === retained.canvas) return;
+		canvas.width = retained.canvas.width;
+		canvas.height = retained.canvas.height;
+		canvas.getContext('2d')?.drawImage(retained.canvas, 0, 0);
+	});
+
 	let playbackAnchorMs = 0;
 	let playbackVersion = 0;
 	let playbackSourceCommitVersion: number | null = null;
@@ -163,7 +188,7 @@
 	let cameraProfilesPromise: Promise<CameraListItem[]> | null = null;
 	let playing = $state(false);
 	let playbackRate = $state(1);
-	let pendingSeekSeconds = 0;
+	let pendingSeekSeconds: number | null = null;
 	let pendingPlay = false;
 	let loadVersion = 0;
 	let shuttleDirection = $state<-1 | 0 | 1>(0);
@@ -192,6 +217,13 @@
 	const keyframePreviewCache = new Map<string, string>();
 	let keyFrameUnsubscribe: (() => void) | null = null;
 	let scrubbing = $state(false);
+	$effect.pre(() => {
+		const element = video;
+		const cursor = storedPlayback;
+		const url = playbackUrl;
+		if (mode !== 'timeline' || scrubbing || !element || !cursor || !url) return;
+		return untrack(() => frames.follow(element, cursor));
+	});
 	let scrubTargetMs: number | null = null;
 	let scrubPump: { version: number; done: Promise<void> } | null = null;
 	let scrubVersion = 0;
@@ -221,6 +253,7 @@
 		if (mobilePanel) history.back();
 	}
 	let capabilitiesSeen = false;
+	let guestRangeSupported = $state(false);
 	let reconnectPending = false;
 	let scrubUsesFragmentFallback = false;
 	let secondaryLoadsReady = $state(false);
@@ -233,6 +266,7 @@
 	let cameraSwitchTimer: number | null = null;
 	let routeVersion = 0;
 	let routeContext: KeepRoute | null = null;
+	let reviewRoute = $state<KeepRoute | null>(null);
 	let missingMomentMs = $state<number | null>(null);
 	let appliedSearch = '';
 	let playbackNoticeVisible = $derived(
@@ -418,6 +452,9 @@
 		updateOrientation();
 		portraitMedia.addEventListener('change', updateOrientation);
 		const unsubscribeCapabilities = controlClient.onCapabilities((capabilityIds) => {
+			guestRangeSupported = capabilityIds.includes(
+				capabilityActions.shareRecordingRange.capability
+			);
 			audioPreviewSupported = capabilityIds.includes('keeppeek.recorded-audio.v1');
 			eventSearchAvailable = capabilityIds.includes('keeppeek.event-search');
 			eventWorkflowAvailable = capabilityIds.includes(EVENT_WORKFLOW_CAPABILITY);
@@ -485,8 +522,10 @@
 	});
 
 	async function initialize(search = window.location.search): Promise<void> {
+		cancelFrameResume();
 		selectedWorkflowEvent = null;
 		const version = ++routeVersion;
+		const switchVersion = cameraSwitchVersion;
 		appliedSearch = search;
 		loadVersion += 1;
 		recordingLoadController?.abort();
@@ -499,6 +538,7 @@
 		try {
 			const route = parseKeepRoute(search, resolve('/events'));
 			routeContext = route;
+			reviewRoute = null;
 			await selectSegment(null);
 			if (version !== routeVersion) return;
 			segments = [];
@@ -520,22 +560,33 @@
 			const nextCameras = await cameraProfilesPromise;
 			if (version !== routeVersion) return;
 			cameras = nextCameras;
-			if (route.cameraId && !cameras.some((camera) => camera.id === route.cameraId)) {
-				throw new Error(
-					'The requested camera is unavailable or you are not authorized to view it. Select an available camera.'
-				);
-			}
 			cameraId = route.cameraId || cameras[0]?.id || '';
-			if (route.streamPreference && cameraId) {
+			if (route.cameraId && !cameras.some((camera) => camera.id === route.cameraId)) {
+				const fallback =
+					route.mode === 'timeline'
+						? route.review?.cameraIds.find((id) => cameras.some((camera) => camera.id === id))
+						: undefined;
+				if (!fallback) {
+					throw new Error(
+						'The requested camera is unavailable or you are not authorized to view it. Select an available camera.'
+					);
+				}
+				cameraId = fallback;
+			}
+			if (route.streamPreference && cameraId && (!route.cameraId || cameraId === route.cameraId)) {
 				playbackPreferences = withRecordedPreference(
 					playbackPreferences,
 					cameraId,
 					route.streamPreference
 				);
 			}
+			if (route.review && route.timestampMs !== null) {
+				reviewRoute = { ...route, cameraId };
+				return;
+			}
 			await loadRouteRecordings(route, version);
 			if (version !== routeVersion) return;
-			await loadRouteEvent(route, version);
+			if (cameraSwitchVersion === switchVersion) await loadRouteEvent(route, version);
 			await healthPromise;
 		} catch (cause) {
 			if (version === routeVersion)
@@ -594,8 +645,10 @@
 			(route.cameraId && route.cameraId !== sourceId)
 		)
 			return;
+		const switchVersion = cameraSwitchVersion;
 		const event = await resolveExportSeedEvent(route.eventId, sourceId, route.timestampMs);
-		if (version !== routeVersion || sourceId !== cameraId) return;
+		if (version !== routeVersion || sourceId !== cameraId || switchVersion !== cameraSwitchVersion)
+			return;
 		exportSeedEvent = event;
 		if (event && mode === 'export') {
 			const range = createEventExportRange(event, selectedBitrateKbps);
@@ -1167,6 +1220,7 @@
 	}
 
 	function beginTimelineScrub(timestampMs: number): void {
+		cancelFrameResume();
 		scrubVersion += 1;
 		scrubOpenController?.abort();
 		clearPlaybackStartupTimer();
@@ -1545,13 +1599,17 @@
 		timestampMs = playheadMs ?? undefined
 	): void {
 		if (nextCameraId === cameraId) return;
+		selectedWorkflowEvent = null;
 		const play = mode === 'export' ? false : playbackIntent();
 		exportSeedEvent = null;
 		exportRangeStartMs = null;
 		exportRangeEndMs = null;
-		if (mode === 'export') void selectSegment(null);
-		else beginCameraSwitch(direction);
+		if (mode === 'export') {
+			cameraSwitchVersion += 1;
+			void selectSegment(null);
+		} else beginCameraSwitch(direction);
 		timelineRepository.deactivate();
+		cancelFrameResume();
 		cameraId = nextCameraId;
 		void loadRecordings(selectedDate || undefined, timestampMs, play, null, {
 			exactMoment: timestampMs !== undefined
@@ -1577,6 +1635,7 @@
 
 	function switchMode(nextMode: KeepMode): void {
 		if (nextMode === mode) return;
+		cancelFrameResume();
 		const scrubTarget =
 			nextMode === 'export' && scrubbing && playheadMs !== null
 				? recordingTarget(orderedSegments, playheadMs)
@@ -1727,7 +1786,14 @@
 		await closeStoredPlayback();
 	}
 
-	async function selectSegment(segment: RecordingSegment | null, offsetSeconds = 0, play = false) {
+	async function selectSegment(
+		segment: RecordingSegment | null,
+		offsetSeconds = 0,
+		play = false,
+		retainForResume = false
+	) {
+		if (!retainForResume) cancelFrameResume();
+		frames.clear();
 		rememberPlaybackTarget(segment, offsetSeconds, play);
 		if (!segment) {
 			cameraSwitchPending = false;
@@ -1765,7 +1831,6 @@
 			await selectExportSegment(segment, requestedTimestampMs);
 			return;
 		}
-		const requestedOffsetSeconds = (requestedTimestampMs - segment.start_time_ms) / 1_000;
 		playerError = null;
 		if (sameSegment) {
 			await seekWithinSelectedSegment(segment, requestedTimestampMs, play);
@@ -1780,38 +1845,87 @@
 			coldSeekElapsedMs = 0;
 			coldSeekStartedAt = performance.now();
 		}
-		if (reusablePlayback && previousPlayback) {
-			await reuseStoredSegment(previousPlayback, segment, requestedTimestampMs, play, version);
-		} else await openStoredSegment(segment, requestedTimestampMs, play, version, previousPlayback);
+		playbackSourceCommitVersion = version;
+		pendingPlay = play;
+		playing = play;
+		try {
+			if (reusablePlayback && previousPlayback) {
+				await reuseStoredSegment(previousPlayback, segment, requestedTimestampMs, version);
+			} else
+				await openStoredSegment(segment, requestedTimestampMs, play, version, previousPlayback);
+		} finally {
+			if (playbackSourceCommitVersion === version) playbackSourceCommitVersion = null;
+		}
+	}
+
+	async function applyPlaybackSource(
+		playback: StoredMediaPlayback,
+		version: number
+	): Promise<void> {
+		await tick();
+		if (version !== playbackVersion || playback !== storedPlayback) return;
+		playbackSourceCommitVersion = null;
+		playback.setPlaying(playing);
+		applyPendingSeek();
+	}
+
+	function playbackOffsetAfterSeek(playback: StoredMediaPlayback, requestedMs: number): number {
+		// Cursor lookup uses milliseconds. The browser can resume at the fractional sample time.
+		const fractionMs = requestedMs - Math.trunc(requestedMs);
+		return Math.max(
+			0,
+			playback.initialOffsetSeconds +
+				(requestedMs >= playback.anchorTimeMs ? fractionMs / 1_000 : 0)
+		);
+	}
+
+	function pauseFailedPlaybackSource(): void {
+		pendingPlay = false;
+		pendingSeekSeconds = null;
+		playing = false;
+		shuttleDirection = 0;
+		storedPlayback?.setPlaying(false);
+		video?.pause();
+		if (
+			video &&
+			video.currentSrc === playbackUrl &&
+			video.readyState >= HTMLMediaElement.HAVE_METADATA
+		) {
+			playheadMs = playbackAnchorMs + video.currentTime * 1_000;
+		}
+	}
+
+	function rejectPlaybackSeek(
+		playback: StoredMediaPlayback,
+		version: number,
+		cause: unknown
+	): void {
+		if (version !== playbackVersion || playback !== storedPlayback) return;
+		pauseFailedPlaybackSource();
+		clearColdSeek();
+		playerError = storedPlaybackError(cause);
 	}
 
 	async function reuseStoredSegment(
 		playback: StoredMediaPlayback,
 		segment: RecordingSegment,
 		timestampMs: number,
-		play: boolean,
 		version: number
 	): Promise<void> {
 		try {
 			await playback.seek(timestampMs);
 		} catch (cause) {
-			if (version !== playbackVersion || playback !== storedPlayback) return;
-			clearColdSeek();
-			playerError = storedPlaybackError(cause);
+			rejectPlaybackSeek(playback, version, cause);
 			return;
 		}
 		if (version !== playbackVersion) return;
 		selected = segment;
-		pendingPlay = play;
-		playing = play;
 		playheadMs = timestampMs;
 		playbackUrl = playback.url;
 		playbackAnchorMs = playback.anchorTimeMs;
-		pendingSeekSeconds = playback.initialOffsetSeconds;
+		pendingSeekSeconds = playbackOffsetAfterSeek(playback, timestampMs);
 		playback.setPlaybackRate(playbackRate);
-		playback.setPlaying(play);
-		await tick();
-		applyPendingSeek();
+		await applyPlaybackSource(playback, version);
 	}
 
 	async function openStoredSegment(
@@ -1841,13 +1955,15 @@
 			});
 		} catch (cause) {
 			if (openController.signal.aborted || version !== playbackVersion) return;
+			const resume = pendingPlay;
+			pauseFailedPlaybackSource();
 			clearColdSeek();
 			await handlePlaybackFailure(
 				storedPlaybackError(cause),
 				version,
 				segment,
 				requestedTimestampMs,
-				play
+				resume
 			);
 			return;
 		} finally {
@@ -1858,17 +1974,14 @@
 			return;
 		}
 		selected = segment;
-		pendingPlay = play;
-		playing = play;
 		playheadMs = requestedTimestampMs;
 		storedPlayback = playback;
 		attachKeyFramePreview(playback);
 		observePlaybackStartup(playback, version, segment, requestedTimestampMs);
 		playbackUrl = playback.url;
 		playbackAnchorMs = playback.anchorTimeMs;
-		pendingSeekSeconds = playback.initialOffsetSeconds;
-		await tick();
-		applyPendingSeek();
+		pendingSeekSeconds = playbackOffsetAfterSeek(playback, requestedTimestampMs);
+		await applyPlaybackSource(playback, version);
 		if (previousPlayback && previousPlayback !== playback) {
 			await previousPlayback.close().catch(() => undefined);
 		}
@@ -1881,41 +1994,39 @@
 	): Promise<void> {
 		const playback = storedPlayback;
 		if (!playback) return;
-		const canSeekLocally = !audioPreviewBusy && playback.canSeekLocally(requestedTimestampMs);
+		const canSeekLocally =
+			!audioPreviewBusy &&
+			playbackSourceCommitVersion !== playbackVersion &&
+			playback.url === playbackUrl &&
+			playback.canSeekLocally(requestedTimestampMs);
 		const version = canSeekLocally ? playbackVersion : ++playbackVersion;
 		selected = segment;
 		pendingPlay = play;
 		playing = play;
 		playheadMs = requestedTimestampMs;
 		pendingSeekSeconds = Math.max(0, (requestedTimestampMs - playbackAnchorMs) / 1_000);
-		if (!canSeekLocally) {
-			coldSeekTimestampMs = requestedTimestampMs;
-			coldSeekElapsedMs = 0;
-			coldSeekStartedAt = performance.now();
-			try {
-				await playback.seek(requestedTimestampMs);
-			} catch (cause) {
-				if (version !== playbackVersion || playback !== storedPlayback) return;
-				clearColdSeek();
-				playerError = storedPlaybackError(cause);
-				return;
-			}
-			if (version !== playbackVersion || playback !== storedPlayback) return;
-			playbackSourceCommitVersion = version;
-			playbackUrl = playback.url;
-			playbackAnchorMs = playback.anchorTimeMs;
-			pendingSeekSeconds = playback.initialOffsetSeconds;
-		}
 		try {
-			await tick();
-			if (version !== playbackVersion || playback !== storedPlayback) return;
-			applyPendingSeek();
+			if (!canSeekLocally) {
+				playbackSourceCommitVersion = version;
+				coldSeekTimestampMs = requestedTimestampMs;
+				coldSeekElapsedMs = 0;
+				coldSeekStartedAt = performance.now();
+				await playback.seek(requestedTimestampMs);
+				if (version !== playbackVersion || playback !== storedPlayback) return;
+				playbackUrl = playback.url;
+				playbackAnchorMs = playback.anchorTimeMs;
+				pendingSeekSeconds = playbackOffsetAfterSeek(playback, requestedTimestampMs);
+			}
+			await applyPlaybackSource(playback, version);
+		} catch (cause) {
+			rejectPlaybackSeek(playback, version, cause);
 		} finally {
 			if (playbackSourceCommitVersion === version) playbackSourceCommitVersion = null;
 		}
 	}
 
 	async function closeStoredPlayback() {
+		cancelFrameResume();
 		const playback = storedPlayback;
 		playbackOpenController?.abort();
 		playbackOpenController = null;
@@ -1926,6 +2037,7 @@
 		keyFrameUnsubscribe?.();
 		keyFrameUnsubscribe = null;
 		storedPlayback = null;
+		pendingSeekSeconds = null;
 		recordedAudio = undefined;
 		audioPreviewOpen = false;
 		scrubUsesFragmentFallback = false;
@@ -1958,6 +2070,8 @@
 				pendingSeekSeconds = playback.initialOffsetSeconds;
 				await tick();
 				if (version === playbackVersion && playback === storedPlayback) {
+					playbackSourceCommitVersion = null;
+					playback.setPlaying(playing);
 					applyPendingSeek();
 					observePlaybackStartup(playback, version, segment, timestampMs);
 				}
@@ -2001,6 +2115,8 @@
 			await selectSegment(target.segment, offset, target.play);
 		else {
 			rememberPlaybackTarget(target.segment, offset, target.play);
+			pendingPlay = target.play;
+			playing = target.play;
 			await openStoredSegment(
 				target.segment,
 				target.segment.start_time_ms + offset * 1000,
@@ -2013,6 +2129,7 @@
 	}
 
 	function seekToTimestamp(timestampMs: number, play = true) {
+		cancelFrameResume();
 		showNearestCachedPreview(timestampMs);
 		if (recordingCoverage.some((range) => timestampInRange(timestampMs, range))) {
 			targetLoadVersion += 1;
@@ -2134,6 +2251,7 @@
 	}
 
 	function setPlaybackSpeed(speed: number): void {
+		frames.cancelHandoff();
 		shuttleSpeed = speed;
 		playbackRate = speed;
 		playbackPreferences = withMediaPreferences(playbackPreferences, { playbackRate: speed });
@@ -2142,9 +2260,113 @@
 		storedPlayback?.setPlaybackRate(speed);
 	}
 
+	function cancelFrameResume(keepPicture = false): void {
+		frames.cancelHandoff();
+		frameResume?.abort();
+		frameResume = undefined;
+		if (!keepPicture) coldPicture = undefined;
+	}
+
+	async function resumeColdPicture(retained: ColdPicture, timestampMs: number): Promise<void> {
+		if (frameResume) return;
+		coldPicture = retained;
+		const target = exactRecordingTarget(timestampMs);
+		const controller = new AbortController();
+		const route = routeVersion;
+		const failure =
+			'Playback could not resume on this recorded picture. Select another playback position.';
+		frameResume = controller;
+		const current = () =>
+			!controller.signal.aborted &&
+			routeVersion === route &&
+			cameraId === retained.camera &&
+			mode === 'timeline' &&
+			!scrubbing;
+		try {
+			if (target && target.segment.stream === retained.stream) {
+				const opening = selectSegment(target.segment, target.offsetSeconds, false, true);
+				const version = playbackVersion;
+				await opening;
+				const cursor = storedPlayback;
+				const element = video;
+				const ownsSource = () =>
+					current() &&
+					version === playbackVersion &&
+					cursor === storedPlayback &&
+					element === video;
+				if (!ownsSource()) return;
+				if (
+					cursor &&
+					element &&
+					cursor.canStepExactly &&
+					cursor.sourceId === retained.camera &&
+					cursor.streamId === retained.stream &&
+					!playerError
+				) {
+					const aligned = await frames.alignForPlay(element, cursor, {
+						picture: retained.picture,
+						signal: controller.signal,
+						verified() {
+							if (!ownsSource()) return false;
+							coldPicture = undefined;
+							return true;
+						}
+					});
+					if (!ownsSource()) return;
+					if (aligned) {
+						frameResume = undefined;
+						setPlaying(true);
+						return;
+					}
+				}
+			}
+			if (current())
+				frames.notice =
+					'Playback could not resume on this recorded picture. Select another playback position.';
+		} catch {
+			if (current()) frames.notice = failure;
+		} finally {
+			if (frameResume === controller) frameResume = undefined;
+		}
+	}
+
 	function setPlaying(nextPlaying: boolean): void {
+		if (!nextPlaying) cancelFrameResume(true);
+		if (nextPlaying && frameResume) return;
+		const selection = selectedPicture;
+		if (nextPlaying && selection) {
+			const precise = selection.storedTimeNs;
+			const cursor = storedPlayback;
+			const storedMs = Number(precise / 1_000_000n) + Number(precise % 1_000_000n) / 1e6;
+			if (!cursor || !video) return;
+			if (coldPicture || !cursor.canSeekLocally(storedMs)) {
+				if (!frameCanvas) return;
+				const { storedTimeNs, presentationTimeNs, resumeTimesNs } = selection;
+				void resumeColdPicture(
+					coldPicture ?? {
+						picture: { storedTimeNs, presentationTimeNs, resumeTimesNs },
+						canvas: frameCanvas,
+						camera: cameraId,
+						stream: cursor.streamId
+					},
+					storedMs
+				);
+				return;
+			}
+			const element = video;
+			void frames.alignForPlay(element, cursor).then((aligned) => {
+				if (aligned && cursor === storedPlayback && element === video) setPlaying(true);
+			});
+			return;
+		}
+		if (nextPlaying && frames.busy) frames.clear();
 		playing = nextPlaying;
 		rememberPlayIntent(nextPlaying);
+		if (playbackSourceCommitVersion === playbackVersion) {
+			pendingPlay = nextPlaying;
+			if (!nextPlaying) video?.pause();
+			return;
+		}
 		storedPlayback?.setPlaying(nextPlaying);
 		if (!video) {
 			pendingPlay = nextPlaying;
@@ -2170,7 +2392,7 @@
 	}
 
 	function toggleTransport(): void {
-		if (playing || shuttleDirection === -1) {
+		if (playing || frameResume || frames.resumingPlayback || shuttleDirection === -1) {
 			pauseTransport();
 			return;
 		}
@@ -2182,6 +2404,32 @@
 		if (!selected || estimatedFrameIntervalSeconds === null) return;
 		pauseTransport();
 		skip(direction * estimatedFrameIntervalSeconds);
+	}
+
+	function presentSteppedFrame(sample: PresentedStoredFrame): void {
+		if (!frameCanvas || !video?.paused) throw new Error('The paused player changed.');
+		const context = frameCanvas.getContext('2d');
+		if (!context) throw new Error('The browser could not display this picture.');
+		frameCanvas.width = sample.frame.displayWidth;
+		frameCanvas.height = sample.frame.displayHeight;
+		context.drawImage(sample.frame, 0, 0);
+		clearStillPreview();
+		playheadMs =
+			Number(sample.storedTimeNs / 1_000_000n) + Number(sample.storedTimeNs % 1_000_000n) / 1e6;
+	}
+
+	function stepRecordedPicture(direction: -1 | 1): void {
+		if (
+			mode !== 'timeline' ||
+			playing ||
+			!video?.paused ||
+			scrubbing ||
+			coldPicture ||
+			frameResume ||
+			!storedPlayback
+		)
+			return;
+		void frames.step(direction, storedPlayback, presentSteppedFrame);
 	}
 
 	function jumpToLive(): void {
@@ -2200,14 +2448,22 @@
 	}
 
 	function handleKeyboard(event: KeyboardEvent): void {
+		if (reviewRoute) return;
 		if (isKeyboardTypingTarget(event.target) || event.metaKey || event.ctrlKey || event.altKey) {
 			return;
 		}
 		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest('[role="dialog"], dialog')) return;
-		if (target?.closest('[data-recorded-playback-controls]')) return;
+		if (
+			target?.closest('[data-recorded-playback-controls]') &&
+			!(
+				target.closest('[aria-keyshortcuts="ArrowLeft"], [aria-keyshortcuts="ArrowRight"]') &&
+				['ArrowLeft', 'ArrowRight', '[', ']'].includes(event.key)
+			)
+		)
+			return;
 		if (event.key.startsWith('Arrow') && target?.closest('[data-digital-pan-active]')) return;
-		const playerFocused = target?.closest('[data-keep-player]') !== null;
+		const playerFocused = Boolean(target?.closest('[data-keep-player]'));
 		const key = event.key.toLowerCase();
 		if (mode === 'export' && key !== '[' && key !== ']') return;
 		if (key === 'j') shuttle(-1);
@@ -2216,52 +2472,69 @@
 		else if (event.key === ' ' && !event.repeat) toggleTransport();
 		else if (event.key === '[') setExportBoundary('start');
 		else if (event.key === ']') setExportBoundary('end');
-		else if (event.key === 'ArrowLeft' && playerFocused) seekEstimatedFrameInterval(-1);
-		else if (event.key === 'ArrowRight' && playerFocused) seekEstimatedFrameInterval(1);
-		else if (event.key === 'Home' && playerFocused) jumpToLive();
+		else if ((key === 'arrowleft' || key === 'arrowright') && playerFocused) {
+			const direction = key === 'arrowleft' ? -1 : 1;
+			if (storedPlayback?.canStepExactly) {
+				if (playing) return;
+				stepRecordedPicture(direction);
+			} else seekEstimatedFrameInterval(direction);
+		} else if (event.key === 'Home' && playerFocused) jumpToLive();
 		else return;
 		event.preventDefault();
 	}
 
 	function applyPendingSeek() {
-		if (!video || !selected) return;
+		if (playbackSourceCommitVersion === playbackVersion) return;
+		if (!video || !selected || video.getAttribute('src') !== playbackUrl) return;
+		const hasMetadata = video.readyState >= HTMLMediaElement.HAVE_METADATA;
+		if (hasMetadata && video.currentSrc !== video.src) return;
 		video.playbackRate = playbackRate;
 		video.muted = scrubbing || playbackMuted;
-		const requestedTime = Math.max(
-			0,
-			Math.min(pendingSeekSeconds, video.duration || pendingSeekSeconds)
-		);
-		video.currentTime = requestedTime;
-		if (Math.abs(video.currentTime - requestedTime) < 0.001) {
-			playheadMs = playbackAnchorMs + video.currentTime * 1_000;
+		if (pendingSeekSeconds !== null) {
+			const requestedTime = hasMetadata
+				? Math.max(0, Math.min(pendingSeekSeconds, video.duration || pendingSeekSeconds))
+				: pendingSeekSeconds;
+			// Before metadata, currentTime sets the new source's default playback start.
+			if (video.currentTime !== requestedTime) video.currentTime = requestedTime;
+			if (hasMetadata && Math.abs(video.currentTime - requestedTime) < 0.001) {
+				playheadMs = playbackAnchorMs + video.currentTime * 1_000;
+				if (requestedTime >= pendingSeekSeconds) pendingSeekSeconds = null;
+				storedPlayback?.observe(video.currentTime);
+			}
 		}
-		storedPlayback?.observe(video.currentTime);
-		if (pendingPlay) void startReplay();
-		pendingPlay = false;
+		if (pendingPlay) {
+			pendingPlay = false;
+			void startReplay();
+		}
 	}
 
 	async function startReplay(): Promise<void> {
 		const player = video;
+		const version = playbackVersion;
 		if (!player) return;
 		try {
 			await player.play();
 		} catch {
-			if (video !== player) return;
+			if (video !== player || version !== playbackVersion || !playing) return;
 			player.muted = true;
 			playbackMuted = true;
 			playbackPreferences = withMediaPreferences(playbackPreferences, { muted: true });
 			savePlaybackPreferences(window.localStorage, playbackPreferences);
-			await player.play().catch(() => (playing = false));
+			await player.play().catch(() => {
+				if (video === player && version === playbackVersion) playing = false;
+			});
 		}
 	}
 
 	function updatePlayhead() {
+		if (selectedPicture || pendingSeekSeconds !== null) return;
 		if (!video || !selected || playbackSourceCommitVersion !== null) return;
 		playheadMs = playbackAnchorMs + video.currentTime * 1_000;
 		storedPlayback?.observe(video.currentTime);
 	}
 
 	function updatePlaybackRate() {
+		if (frames.preparingPlayback) return;
 		if (!video) return;
 		playbackRate = video.playbackRate;
 		playbackPreferences = withMediaPreferences(playbackPreferences, { playbackRate });
@@ -2270,6 +2543,7 @@
 	}
 
 	function updateMutedPreference(): void {
+		if (frames.preparingPlayback) return;
 		if (!video || scrubbing || video.muted === playbackMuted) return;
 		playbackMuted = video.muted;
 		playbackPreferences = withMediaPreferences(playbackPreferences, { muted: playbackMuted });
@@ -2277,6 +2551,7 @@
 	}
 
 	function togglePlaybackMute(): void {
+		frames.cancelHandoff();
 		if (!video) return;
 		video.muted = !playbackMuted;
 		updateMutedPreference();
@@ -2288,6 +2563,12 @@
 	}
 
 	function handlePlay() {
+		if (
+			frames.preparingPlayback ||
+			video?.paused ||
+			playbackSourceCommitVersion === playbackVersion
+		)
+			return;
 		playing = true;
 		rememberPlayIntent(true);
 		shuttleDirection = 1;
@@ -2295,10 +2576,12 @@
 	}
 
 	function handlePause() {
+		if (frames.preparingPlayback || (video && !video.paused)) return;
 		if (ignoreNextPauseEvent) {
 			ignoreNextPauseEvent = false;
 			return;
 		}
+		if (playbackSourceCommitVersion === playbackVersion) return;
 		playing = false;
 		rememberPlayIntent(false);
 		if (shuttleDirection === 1) shuttleDirection = 0;
@@ -2318,6 +2601,7 @@
 	}
 
 	function handleEnded() {
+		if (frames.preparingPlayback) return;
 		playing = false;
 		playNext();
 	}
@@ -2361,6 +2645,51 @@
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
 		void goto(`${resolve('/keep')}?${search}`, { state: page.state, shallow: true, replace: true });
 		appliedSearch = `?${search}`;
+	}
+
+	function navigateReview(
+		at: number,
+		focus: string,
+		review?: KeepRoute['review'],
+		replace = false
+	) {
+		const search =
+			'?' +
+			keepMomentSearchParams({
+				cameraId: focus,
+				timestampMs: Math.floor(at),
+				streamPreference: recordedPreference(playbackPreferences, focus),
+				mode: 'timeline',
+				review
+			});
+		if (replace) appliedSearch = search;
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		void goto(resolve('/keep') + search, { state: page.state, shallow: replace, replace });
+	}
+
+	function exportComparison(
+		at: number,
+		focus: string,
+		stream: RecordedStreamId,
+		review: NonNullable<KeepRoute['review']>
+	) {
+		const search = keepMomentSearchParams({
+			cameraId: focus,
+			timestampMs: at,
+			streamPreference: stream,
+			mode: 'export',
+			review
+		});
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		void goto(resolve('/keep') + '?' + search);
+	}
+	function compareWith(secondId: string) {
+		if (!secondId || !cameraId || playheadMs === null) return;
+		const at =
+			selected && video && video.readyState >= 1
+				? playbackAnchorMs + video.currentTime * 1000
+				: playheadMs;
+		navigateReview(at, cameraId, { cameraIds: [cameraId, secondId], audioCameraId: cameraId });
 	}
 
 	function currentMomentLink(): string | null {
@@ -2455,447 +2784,519 @@
 	/>
 {/if}
 
-<div data-keep-view class="keep-view mx-auto h-full min-h-0 w-full max-w-[120rem] overflow-hidden">
-	<header data-keep-command-bar class="keep-command-bar">
-		<div class="keep-command-primary">
-			<div class="flex shrink-0 items-center gap-2">
-				{#if exportReturnHref}
-					<a
-						data-export-return
-						href={exportReturnHref}
-						aria-label="Back to event"
-						title="Back to event"
-						class="inline-flex size-11 shrink-0 items-center justify-center rounded-sm border border-hairline-strong bg-raised text-text-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:size-9"
-					>
-						<ChevronLeftIcon class="size-4" />
-					</a>
-				{/if}
-				<ArchiveIcon class="size-5 text-primary" />
-				<h1 class="text-xl font-semibold">Keep</h1>
-			</div>
-			<div
-				data-keep-mode-switcher
-				class="flex overflow-x-auto rounded-sm border border-hairline bg-raised p-0.5"
-				aria-label="Keep modes"
-			>
-				<a
-					href={resolve('/recordings')}
-					class="inline-flex h-11 min-w-11 shrink-0 items-center rounded-xs px-2.5 text-2xs font-semibold text-text-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:h-7"
+{#if reviewRoute?.review && reviewRoute.timestampMs !== null}
+	{#key reviewRoute}
+		{#if reviewRoute.mode === 'export' && reviewRoute.review.range && (reviewRoute.streamPreference === 'sub' || reviewRoute.streamPreference === 'main') && selectedCamera}
+			<RecordedReviewExport
+				camera={selectedCamera}
+				stream={reviewRoute.streamPreference}
+				range={reviewRoute.review.range}
+				onback={() => {
+					if (reviewRoute?.review && reviewRoute.timestampMs !== null)
+						navigateReview(reviewRoute.timestampMs, reviewRoute.cameraId, reviewRoute.review);
+				}}
+			/>
+		{:else}
+			<RecordedReviewWorkspace
+				{cameras}
+				selection={reviewRoute.review}
+				startMs={reviewRoute.timestampMs}
+				focusedId={reviewRoute.cameraId}
+				preferences={playbackPreferences}
+				updateLink={(at, focus, selection) => navigateReview(at, focus, selection, true)}
+				openExport={exportComparison}
+				single={(at, focus) => navigateReview(at, focus)}
+			/>
+		{/if}
+	{/key}
+{:else}
+	<div
+		data-keep-view
+		class="keep-view mx-auto h-full min-h-0 w-full max-w-[120rem] overflow-hidden"
+	>
+		<header data-keep-command-bar class="keep-command-bar">
+			<div class="keep-command-primary">
+				<div class="flex shrink-0 items-center gap-2">
+					{#if exportReturnHref}
+						<a
+							data-export-return
+							href={exportReturnHref}
+							aria-label="Back to event"
+							title="Back to event"
+							class="inline-flex size-11 shrink-0 items-center justify-center rounded-sm border border-hairline-strong bg-raised text-text-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:size-9"
+						>
+							<ChevronLeftIcon class="size-4" />
+						</a>
+					{/if}
+					<ArchiveIcon class="size-5 text-primary" />
+					<h1 class="text-xl font-semibold">Keep</h1>
+				</div>
+				<div
+					data-keep-mode-switcher
+					class="flex overflow-x-auto rounded-sm border border-hairline bg-raised p-0.5"
+					aria-label="Keep modes"
 				>
-					Coverage
-				</a>
-				{#each ['timeline', 'stories', 'swimlanes', 'export'] as nextMode (nextMode)}
-					<button
-						type="button"
-						class="h-11 min-w-11 shrink-0 rounded-xs px-2.5 text-2xs font-semibold md:h-7 {mode ===
-						nextMode
-							? 'bg-primary text-on-primary'
-							: 'text-text-muted hover:text-foreground'} focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-						aria-pressed={mode === nextMode}
-						onclick={() => switchMode(nextMode as KeepMode)}
+					<a
+						href={resolve('/recordings')}
+						class="inline-flex h-11 min-w-11 shrink-0 items-center rounded-xs px-2.5 text-2xs font-semibold text-text-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:h-7"
 					>
-						{modeLabel(nextMode as KeepMode)}
-					</button>
-				{/each}
+						Coverage
+					</a>
+					{#each ['timeline', 'stories', 'swimlanes', 'export'] as nextMode (nextMode)}
+						<button
+							type="button"
+							class="h-11 min-w-11 shrink-0 rounded-xs px-2.5 text-2xs font-semibold md:h-7 {mode ===
+							nextMode
+								? 'bg-primary text-on-primary'
+								: 'text-text-muted hover:text-foreground'} focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							aria-pressed={mode === nextMode}
+							onclick={() => switchMode(nextMode as KeepMode)}
+						>
+							{modeLabel(nextMode as KeepMode)}
+						</button>
+					{/each}
+				</div>
 			</div>
-		</div>
 
-		<KeepMobileControls
-			compact={mobilePortrait}
-			{cameras}
-			{cameraId}
-			switching={cameraSwitchPending}
-			{dates}
-			date={selectedDate}
-			olderDate={olderDate ?? null}
-			newerDate={newerDate ?? null}
-			panel={mobilePanel}
-			returnFocus={mobileReturnFocus}
-			volume={playbackVolume}
-			rate={playbackRate}
-			quality={recordedPreference(playbackPreferences, cameraId)}
-			qualityOptions={availableStreams.size > 0 ? recordedQualityOptions : []}
-			mediaDisabled={!selected}
-			{loading}
-			copyDisabled={!cameraId || playheadMs === null || loading}
-			getLink={currentMomentLink}
-			{formatDate}
-			onpanel={openMobilePanel}
-			onclose={closeMobilePanel}
-			oncamera={selectCamera}
-			ondate={changeDate}
-			onvolume={(volume) => (playbackVolume = volume)}
-			onrate={setPlaybackSpeed}
-			onquality={handleRecordedQualityChange}
-			onrefresh={() => void loadRecordings(selectedDate || undefined, undefined, playbackIntent())}
-			oncalibrate={recordedAudio ? openRecordedAudioPreview : undefined}
-		/>
-		{#if !mobilePortrait}<div class="keep-command-secondary">
-				<KeepCameraSwitcher
-					{cameras}
-					selectedCameraId={cameraId}
-					switching={cameraSwitchPending}
-					onselect={selectCamera}
-				/>
+			{#if cameras.length > 1 && cameraId && playheadMs !== null}
+				<label class="inline-flex min-h-11 items-center gap-2 text-sm"
+					>Compare with
+					<select
+						value=""
+						onchange={(event) => {
+							const id = event.currentTarget.value;
+							event.currentTarget.value = '';
+							compareWith(id);
+						}}
+					>
+						<option value="">Select camera</option>
+						{#each cameras.filter((camera) => camera.id !== cameraId) as camera (camera.id)}
+							<option value={camera.id}>{camera.name || camera.id}</option>
+						{/each}
+					</select>
+				</label>
+			{/if}
 
-				<div data-keep-date-control class="grid min-w-0 gap-1">
-					<span class="text-xs font-medium text-muted-foreground">Date</span>
-					<div class="flex items-center rounded-md border bg-background">
-						<Button
-							variant="ghost"
-							size="icon"
-							class="size-11 md:size-9"
-							title="Previous recorded day"
-							disabled={!olderDate}
-							onclick={() => olderDate && changeDate(olderDate)}
-						>
-							<ChevronLeftIcon />
-						</Button>
-						<label
-							class="relative flex h-11 min-w-0 flex-1 items-center gap-2 border-x px-2 md:h-9"
-						>
-							<CalendarDaysIcon class="size-4 text-muted-foreground" />
-							<select
-								value={selectedDate}
-								disabled={dates.length === 0}
-								class="min-w-0 flex-1 appearance-none bg-transparent pr-4 text-sm outline-none"
-								onchange={(event) => changeDate(event.currentTarget.value)}
+			<KeepMobileControls
+				compact={mobilePortrait}
+				{cameras}
+				{cameraId}
+				switching={cameraSwitchPending}
+				{dates}
+				date={selectedDate}
+				olderDate={olderDate ?? null}
+				newerDate={newerDate ?? null}
+				panel={mobilePanel}
+				returnFocus={mobileReturnFocus}
+				volume={playbackVolume}
+				rate={playbackRate}
+				quality={recordedPreference(playbackPreferences, cameraId)}
+				qualityOptions={availableStreams.size > 0 ? recordedQualityOptions : []}
+				mediaDisabled={!selected}
+				{loading}
+				copyDisabled={!cameraId || playheadMs === null || loading}
+				getLink={currentMomentLink}
+				{formatDate}
+				onpanel={openMobilePanel}
+				onclose={closeMobilePanel}
+				oncamera={selectCamera}
+				ondate={changeDate}
+				onvolume={(volume) => (playbackVolume = volume)}
+				onrate={setPlaybackSpeed}
+				onquality={handleRecordedQualityChange}
+				onrefresh={() =>
+					void loadRecordings(selectedDate || undefined, undefined, playbackIntent())}
+				oncalibrate={recordedAudio ? openRecordedAudioPreview : undefined}
+			/>
+			{#if !mobilePortrait}<div class="keep-command-secondary">
+					<KeepCameraSwitcher
+						{cameras}
+						selectedCameraId={cameraId}
+						switching={cameraSwitchPending}
+						onselect={selectCamera}
+					/>
+
+					<div data-keep-date-control class="grid min-w-0 gap-1">
+						<span class="text-xs font-medium text-muted-foreground">Date</span>
+						<div class="flex items-center rounded-md border bg-background">
+							<Button
+								variant="ghost"
+								size="icon"
+								class="size-11 md:size-9"
+								title="Previous recorded day"
+								disabled={!olderDate}
+								onclick={() => olderDate && changeDate(olderDate)}
 							>
-								{#each dates as date (date)}
-									<option value={date}>{formatDate(date)}</option>
+								<ChevronLeftIcon />
+							</Button>
+							<label
+								class="relative flex h-11 min-w-0 flex-1 items-center gap-2 border-x px-2 md:h-9"
+							>
+								<CalendarDaysIcon class="size-4 text-muted-foreground" />
+								<select
+									value={selectedDate}
+									disabled={dates.length === 0}
+									class="min-w-0 flex-1 appearance-none bg-transparent pr-4 text-sm outline-none"
+									onchange={(event) => changeDate(event.currentTarget.value)}
+								>
+									{#each dates as date (date)}
+										<option value={date}>{formatDate(date)}</option>
+									{/each}
+								</select>
+							</label>
+							<Button
+								variant="ghost"
+								size="icon"
+								class="size-11 md:size-9"
+								title="Next recorded day"
+								disabled={!newerDate}
+								onclick={() => newerDate && changeDate(newerDate)}
+							>
+								<ChevronRightIcon />
+							</Button>
+						</div>
+					</div>
+
+					{#if availableStreams.size > 0}
+						<div data-keep-quality-control class="grid min-w-0 gap-1">
+							<label for="recorded-quality" class="text-xs font-medium text-muted-foreground">
+								Quality
+							</label>
+							<select
+								id="recorded-quality"
+								value={recordedPreference(playbackPreferences, cameraId)}
+								class="h-11 rounded-md border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring md:h-9"
+								onchange={handleRecordedQualityChange}
+							>
+								{#each recordedQualityOptions as option (option.value)}
+									<option value={option.value}>{option.label}</option>
 								{/each}
 							</select>
-						</label>
-						<Button
-							variant="ghost"
-							size="icon"
-							class="size-11 md:size-9"
-							title="Next recorded day"
-							disabled={!newerDate}
-							onclick={() => newerDate && changeDate(newerDate)}
-						>
-							<ChevronRightIcon />
-						</Button>
-					</div>
-				</div>
+						</div>
+					{/if}
 
-				{#if availableStreams.size > 0}
-					<div data-keep-quality-control class="grid min-w-0 gap-1">
-						<label for="recorded-quality" class="text-xs font-medium text-muted-foreground">
-							Quality
-						</label>
-						<select
-							id="recorded-quality"
-							value={recordedPreference(playbackPreferences, cameraId)}
-							class="h-11 rounded-md border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring md:h-9"
-							onchange={handleRecordedQualityChange}
-						>
-							{#each recordedQualityOptions as option (option.value)}
-								<option value={option.value}>{option.label}</option>
-							{/each}
-						</select>
-					</div>
-				{/if}
-
-				<Button
-					data-keep-refresh
-					variant="outline"
-					size="icon"
-					class="size-11 md:size-9"
-					title="Refresh recordings"
-					disabled={!cameraId || loading}
-					onclick={() =>
-						void loadRecordings(selectedDate || undefined, undefined, playbackIntent())}
-				>
-					<RefreshCwIcon class={loading ? 'animate-spin' : ''} />
-				</Button>
-				<CopyMomentLink
-					getLink={currentMomentLink}
-					disabled={!cameraId || playheadMs === null || loading}
-				/>
-			</div>{/if}
-	</header>
-
-	<div data-keep-view-content class="keep-view-content min-h-0 overflow-y-auto">
-		{#if error}
-			<div
-				role="alert"
-				class="mb-4 rounded-md border border-destructive/60 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-			>
-				{error}
-			</div>
-		{/if}
-		{#if mode !== 'timeline'}
-			{@render playbackMessages()}
-		{/if}
-		{#if loading && segments.length === 0 && selected === null}
-			<div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
-				<Skeleton class="aspect-video w-full rounded-md" />
-				<Skeleton class="h-[34rem] w-full rounded-md" />
-			</div>
-		{:else if mode === 'stories'}
-			<KeepStories
-				events={storyModeEvents.map(withWorkflow)}
-				{workflow}
-				{workflowIdentity}
-				onopen={workflowIdentity ? (event) => void openWorkflowDetail(event) : undefined}
-				{dates}
-				{selectedDate}
-				ondate={changeDate}
-				onseek={openTimestamp}
-			/>
-		{:else if mode === 'swimlanes'}
-			<KeepSwimlanes
-				{cameras}
-				selectedCameraId={cameraId}
-				date={selectedDate}
-				anchorMs={swimlaneAnchorMs}
-				{playheadMs}
-				onselect={selectSwimlane}
-			/>
-		{:else if mode === 'export'}
-			<div class="space-y-3">
-				{#key exportKey}
-					<KeepExportPanel
-						sourceId={cameraId}
-						sourceName={selectedCamera?.name ?? cameraId}
-						segment={selected}
-						bitrateKbps={selectedBitrateKbps}
-						rangeStartMs={exportRangeStartMs}
-						rangeEndMs={exportRangeEndMs}
-						event={exportSeedEvent ? withWorkflow(exportSeedEvent) : null}
-					/>
-				{/key}
-			</div>
-		{:else}
-			<div
-				data-keep-timeline-layout
-				class="grid h-full min-h-0 items-start gap-4 overflow-hidden lg:grid-cols-[minmax(0,1fr)_18rem]"
-			>
-				<section
-					bind:this={recordedPlayer}
-					data-keep-player
-					data-recording-requested-variant={requestedPlaybackVariant}
-					data-recording-selected-variant={selectedPlaybackVariant ?? undefined}
-					data-recording-fallback-variant={selectedFallbackStream ?? undefined}
-					data-recording-selection-reason={selectedPlaybackReason}
-					data-recording-startup-phase={playbackStartupPhase}
-					data-recording-empty-notice={emptyPlaybackNotice}
-					data-recording-content-type={playbackContentType ?? undefined}
-					data-recording-rejected-variants={rejectedStreams
-						.map((candidate) => `${candidate.stream}:${candidate.encoding}`)
-						.join(',') || undefined}
-					data-keyboard-shuttle-direction={shuttleDirection}
-					data-keyboard-shuttle-speed={shuttleSpeed}
-					data-keyboard-playing={playing}
-					data-recording-playhead-ms={playheadMs}
-					data-camera-transition={cameraSwitchPending
-						? 'loading'
-						: cameraSwitchAnimating
-							? 'entering'
-							: 'idle'}
-					data-camera-transition-direction={cameraSwitchDirection === 1 ? 'next' : 'previous'}
-					class="flex min-h-0 min-w-0 flex-col gap-3 lg:h-full"
-					aria-label="Recorded video player"
-				>
-					{@render archiveNotice()}
-					<div
-						data-keep-media-frame
-						inert={mobilePortrait && emptyPlaybackNotice}
-						class="relative aspect-video overflow-hidden rounded-md bg-black ring-1 ring-black/10 lg:aspect-auto lg:min-h-0 lg:flex-1"
+					<Button
+						data-keep-refresh
+						variant="outline"
+						size="icon"
+						class="size-11 md:size-9"
+						title="Refresh recordings"
+						disabled={!cameraId || loading}
+						onclick={() =>
+							void loadRecordings(selectedDate || undefined, undefined, playbackIntent())}
 					>
-						{#if selected && playbackUrl}
-							<FocusedMediaViewport
-								mediaKey={`${cameraId}:${selected.url}`}
-								aspectRatio={decodedVideoHeight > 0
-									? decodedVideoWidth / decodedVideoHeight
-									: 16 / 9}
-								controlsPosition="top-left"
-							>
-								{#key selected.url}
-									<!-- svelte-ignore a11y_media_has_caption (security camera recordings do not include caption tracks) -->
-									<video
-										bind:this={video}
-										bind:videoWidth={decodedVideoWidth}
-										bind:videoHeight={decodedVideoHeight}
-										bind:volume={playbackVolume}
-										tabindex="-1"
-										playsinline
-										muted={scrubbing || playbackMuted}
-										preload="metadata"
-										src={playbackUrl}
-										class="size-full object-contain {cameraSwitchAnimating
-											? cameraSwitchDirection === 1
-												? 'camera-switch-enter-next'
-												: 'camera-switch-enter-previous'
-											: ''}"
-										onloadedmetadata={applyPendingSeek}
-										ondurationchange={applyPendingSeek}
-										onloadeddata={handlePlayerLoadedData}
-										onseeked={clearStillPreview}
-										ontimeupdate={updatePlayhead}
-										onended={handleEnded}
-										onplay={handlePlay}
-										onpause={handlePause}
-										onratechange={updatePlaybackRate}
-										onvolumechange={updateMutedPreference}
-										onerror={handlePlayerError}
-									></video>
-								{/key}
-								{#if stillPreviewUrl}
-									<img
-										src={stillPreviewUrl}
-										alt=""
-										class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
-									/>
-								{/if}
-								{#if cameraSwitchFrameUrl}
-									<img
-										src={cameraSwitchFrameUrl}
-										alt=""
-										data-camera-switch-frame
-										class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
-									/>
-								{/if}
-							</FocusedMediaViewport>
-							<span
-								data-camera-name
-								class="pointer-events-none absolute right-3 bottom-3 z-20 max-w-[calc(100%-1.5rem)] truncate rounded-sm bg-black/72 px-2 py-1 text-xs font-semibold text-white shadow-sm backdrop-blur-sm"
-							>
-								{selectedCamera?.name ?? selectedCamera?.id ?? cameraId}
-							</span>
-						{:else if selected}
-							<div class="flex aspect-video items-center justify-center text-sm text-zinc-400">
-								Loading recording…
-							</div>
-						{:else if playbackExplicitlyClosed}
-							<div
-								class="flex aspect-video items-center justify-center p-4 text-center text-sm text-text-muted"
-							>
-								Playback closed. Select footage on the timeline to open it again.
-							</div>
-						{:else if playbackStartupPhase === 'opening'}
-							<div class="flex aspect-video items-center justify-center text-sm text-text-muted">
-								Loading recording…
-							</div>
-						{:else}
-							<div class="flex aspect-video items-center justify-center text-sm text-zinc-400">
-								No recordings for this date and stream.
-							</div>
-						{/if}
-						{#if coldSeekTimestampMs !== null && coldSeekElapsedMs >= 400}
-							<ColdSeekState
-								timestampLabel={formatTime(coldSeekTimestampMs)}
-								elapsedMs={coldSeekElapsedMs}
-								detail="The current frame stays until the requested recording arrives"
-								overlay
-								class="absolute inset-0 z-30"
+						<RefreshCwIcon class={loading ? 'animate-spin' : ''} />
+					</Button>
+					<CopyMomentLink
+						getLink={currentMomentLink}
+						disabled={!cameraId || playheadMs === null || loading}
+					/>
+				</div>{/if}
+		</header>
+
+		<div data-keep-view-content class="keep-view-content min-h-0 overflow-y-auto">
+			{#if error}
+				<div
+					role="alert"
+					class="mb-4 rounded-md border border-destructive/60 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+				>
+					{error}
+				</div>
+			{/if}
+			{#if mode !== 'timeline'}
+				{@render playbackMessages()}
+			{/if}
+			{#if loading && segments.length === 0 && selected === null}
+				<div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+					<Skeleton class="aspect-video w-full rounded-md" />
+					<Skeleton class="h-[34rem] w-full rounded-md" />
+				</div>
+			{:else if mode === 'stories'}
+				<KeepStories
+					events={storyModeEvents.map(withWorkflow)}
+					{workflow}
+					{workflowIdentity}
+					onopen={workflowIdentity ? (event) => void openWorkflowDetail(event) : undefined}
+					{dates}
+					{selectedDate}
+					ondate={changeDate}
+					onseek={openTimestamp}
+				/>
+			{:else if mode === 'swimlanes'}
+				<KeepSwimlanes
+					{cameras}
+					selectedCameraId={cameraId}
+					date={selectedDate}
+					anchorMs={swimlaneAnchorMs}
+					{playheadMs}
+					onselect={selectSwimlane}
+				/>
+			{:else if mode === 'export'}
+				<div class="space-y-3">
+					{#key exportKey}
+						<KeepExportPanel
+							sourceId={cameraId}
+							sourceName={selectedCamera?.name ?? cameraId}
+							segment={selected}
+							bitrateKbps={selectedBitrateKbps}
+							rangeStartMs={exportRangeStartMs}
+							rangeEndMs={exportRangeEndMs}
+							event={exportSeedEvent ? withWorkflow(exportSeedEvent) : null}
+						/>
+					{/key}
+				</div>
+			{:else}
+				<div
+					data-keep-timeline-layout
+					class="grid h-full min-h-0 items-start gap-4 overflow-hidden lg:grid-cols-[minmax(0,1fr)_18rem]"
+				>
+					<section
+						bind:this={recordedPlayer}
+						data-keep-player
+						data-recording-requested-variant={requestedPlaybackVariant}
+						data-recording-selected-variant={selectedPlaybackVariant ?? undefined}
+						data-recording-fallback-variant={selectedFallbackStream ?? undefined}
+						data-recording-selection-reason={selectedPlaybackReason}
+						data-recording-startup-phase={playbackStartupPhase}
+						data-recording-empty-notice={emptyPlaybackNotice}
+						data-recording-content-type={playbackContentType ?? undefined}
+						data-recording-rejected-variants={rejectedStreams
+							.map((candidate) => `${candidate.stream}:${candidate.encoding}`)
+							.join(',') || undefined}
+						data-keyboard-shuttle-direction={shuttleDirection}
+						data-keyboard-shuttle-speed={shuttleSpeed}
+						data-keyboard-playing={playing}
+						data-recording-playhead-ms={playheadMs}
+						data-camera-transition={cameraSwitchPending
+							? 'loading'
+							: cameraSwitchAnimating
+								? 'entering'
+								: 'idle'}
+						data-camera-transition-direction={cameraSwitchDirection === 1 ? 'next' : 'previous'}
+						class="flex min-h-0 min-w-0 flex-col gap-3 lg:h-full"
+						aria-label="Recorded video player"
+					>
+						{@render archiveNotice()}
+						<div
+							data-keep-media-frame
+							inert={mobilePortrait && emptyPlaybackNotice}
+							class="relative aspect-video overflow-hidden rounded-md bg-black ring-1 ring-black/10 lg:aspect-auto lg:min-h-0 lg:flex-1"
+						>
+							{#if selected && playbackUrl}
+								<FocusedMediaViewport
+									mediaKey={`${cameraId}:${selected.url}`}
+									aspectRatio={decodedVideoHeight > 0
+										? decodedVideoWidth / decodedVideoHeight
+										: 16 / 9}
+									controlsPosition="top-left"
+								>
+									{#key selected.url}
+										<!-- svelte-ignore a11y_media_has_caption (security camera recordings do not include caption tracks) -->
+										<video
+											bind:this={video}
+											bind:videoWidth={decodedVideoWidth}
+											bind:videoHeight={decodedVideoHeight}
+											bind:volume={playbackVolume}
+											tabindex="-1"
+											playsinline
+											muted={scrubbing || playbackMuted}
+											preload="metadata"
+											src={playbackUrl}
+											class="size-full object-contain {cameraSwitchAnimating
+												? cameraSwitchDirection === 1
+													? 'camera-switch-enter-next'
+													: 'camera-switch-enter-previous'
+												: ''}"
+											onloadedmetadata={applyPendingSeek}
+											ondurationchange={applyPendingSeek}
+											onloadeddata={handlePlayerLoadedData}
+											onseeked={clearStillPreview}
+											ontimeupdate={updatePlayhead}
+											onended={handleEnded}
+											onplay={handlePlay}
+											onpause={handlePause}
+											onratechange={updatePlaybackRate}
+											onvolumechange={updateMutedPreference}
+											onerror={handlePlayerError}
+										></video>
+										{#if storedPlayback?.canStepExactly}
+											<canvas
+												bind:this={frameCanvas}
+												hidden={!selectedPicture || frames.revealingPicture}
+												aria-label="Selected recorded picture"
+												class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
+											></canvas>
+										{/if}
+									{/key}
+									{#if stillPreviewUrl}
+										<img
+											src={stillPreviewUrl}
+											alt=""
+											class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
+										/>
+									{/if}
+									{#if cameraSwitchFrameUrl}
+										<img
+											src={cameraSwitchFrameUrl}
+											alt=""
+											data-camera-switch-frame
+											class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
+										/>
+									{/if}
+								</FocusedMediaViewport>
+								<span
+									data-camera-name
+									class="pointer-events-none absolute right-3 bottom-3 z-20 max-w-[calc(100%-1.5rem)] truncate rounded-sm bg-black/72 px-2 py-1 text-xs font-semibold text-white shadow-sm backdrop-blur-sm"
+								>
+									{selectedCamera?.name ?? selectedCamera?.id ?? cameraId}
+								</span>
+							{:else if selected}
+								<div class="flex aspect-video items-center justify-center text-sm text-zinc-400">
+									Loading recording…
+								</div>
+							{:else if playbackExplicitlyClosed}
+								<div
+									class="flex aspect-video items-center justify-center p-4 text-center text-sm text-text-muted"
+								>
+									Playback closed. Select footage on the timeline to open it again.
+								</div>
+							{:else if playbackStartupPhase === 'opening'}
+								<div class="flex aspect-video items-center justify-center text-sm text-text-muted">
+									Loading recording…
+								</div>
+							{:else}
+								<div class="flex aspect-video items-center justify-center text-sm text-zinc-400">
+									No recordings for this date and stream.
+								</div>
+							{/if}
+							{#if coldSeekTimestampMs !== null && coldSeekElapsedMs >= 400}
+								<ColdSeekState
+									timestampLabel={formatTime(coldSeekTimestampMs)}
+									elapsedMs={coldSeekElapsedMs}
+									detail="The current frame stays until the requested recording arrives"
+									overlay
+									class="absolute inset-0 z-30"
+								/>
+							{/if}
+						</div>
+
+						{@render playbackMessages()}
+
+						{#if selectedOperationalEvent}
+							<OperationalEventDetail
+								event={selectedOperationalEvent}
+								onclose={() => (selectedOperationalEventId = null)}
 							/>
 						{/if}
-					</div>
 
-					{@render playbackMessages()}
+						<RecordedPlaybackControls
+							onframe={storedPlayback?.canStepExactly && mode === 'timeline'
+								? stepRecordedPicture
+								: undefined}
+							frameDisabled={Boolean(coldPicture || frameResume) ||
+								frames.unsupported ||
+								playing ||
+								scrubbing ||
+								(frames.displayedNs === undefined && !frames.selection)}
+							frameTimeNs={selectedPicture?.storedTimeNs}
+							frameSourceTimeNs={selectedPicture?.presentationTimeNs}
+							frameNotice={frames.notice}
+							frameLoading={frames.busy || Boolean(frameResume)}
+							onoptions={mobilePortrait ? () => openMobilePanel('playback') : undefined}
+							playing={playing || Boolean(frameResume) || frames.resumingPlayback}
+							muted={playbackMuted}
+							volume={playbackVolume}
+							rate={playbackRate}
+							positionSeconds={selected && playheadMs !== null
+								? (playheadMs - selected.start_time_ms) / 1_000
+								: 0}
+							durationSeconds={(selected?.duration_ms ?? 0) / 1_000}
+							disabled={!video || scrubbing}
+							fullscreenTarget={recordedPlayer}
+							ontoggleplay={toggleTransport}
+							ontogglemute={togglePlaybackMute}
+							onskip={skip}
+							onseek={(seconds) => {
+								if (!selected) return;
+								seekToTimestamp(
+									Math.min(selected.end_time_ms - 1, selected.start_time_ms + seconds * 1_000),
+									playing
+								);
+							}}
+							onvolumechange={(volume) => (playbackVolume = volume)}
+							onratechange={setPlaybackSpeed}
+						/>
+						{#if recordedAudio && !mobilePortrait}
+							<Button
+								variant="ghost"
+								class="min-h-11 justify-start text-xs"
+								disabled={scrubbing || audioPreviewBusy}
+								onclick={openRecordedAudioPreview}
+								>Recorded audio preview{recordedAudio.preview ? ' · Active' : ''}</Button
+							>
+						{/if}
+					</section>
 
-					{#if selectedOperationalEvent}
-						<OperationalEventDetail
-							event={selectedOperationalEvent}
-							onclose={() => (selectedOperationalEventId = null)}
+					{#if mobilePortrait}
+						<HorizontalTimeline
+							segments={orderedSegments}
+							{events}
+							selectedUrl={selected?.url ?? null}
+							{playheadMs}
+							exactPicture={!!frames.selection}
+							{dayStartMs}
+							followRequest={timelineFollowRequest}
+							loading={timelineRepository.loading}
+							onSeek={seekToTimestamp}
+							onEventPreview={(event) => void previewEvent(event)}
+							onScrubStart={beginTimelineScrub}
+							onScrub={moveTimelineScrub}
+							onScrubEnd={(timestampMs) => void finishTimelineScrub(timestampMs)}
+							onScrubCancel={cancelTimelineScrub}
+							onViewportChange={handleTimelineViewport}
+						/>
+					{:else}
+						<VerticalTimeline
+							segments={orderedSegments}
+							{events}
+							selectedUrl={selected?.url ?? null}
+							{playheadMs}
+							{dayStartMs}
+							followRequest={timelineFollowRequest}
+							loading={timelineRepository.loading}
+							onSeek={seekToTimestamp}
+							onEventPreview={(event) => void previewEvent(event)}
+							onScrubStart={beginTimelineScrub}
+							onScrub={moveTimelineScrub}
+							onScrubEnd={(timestampMs) => void finishTimelineScrub(timestampMs)}
+							onScrubCancel={cancelTimelineScrub}
+							onViewportChange={handleTimelineViewport}
 						/>
 					{/if}
-
-					<RecordedPlaybackControls
-						onoptions={mobilePortrait ? () => openMobilePanel('playback') : undefined}
-						{playing}
-						muted={playbackMuted}
-						volume={playbackVolume}
-						rate={playbackRate}
-						positionSeconds={selected && playheadMs !== null
-							? (playheadMs - selected.start_time_ms) / 1_000
-							: 0}
-						durationSeconds={(selected?.duration_ms ?? 0) / 1_000}
-						disabled={!video || scrubbing}
-						fullscreenTarget={recordedPlayer}
-						ontoggleplay={toggleTransport}
-						ontogglemute={togglePlaybackMute}
-						onskip={skip}
-						onseek={(seconds) => {
-							if (!selected) return;
-							seekToTimestamp(
-								Math.min(selected.end_time_ms - 1, selected.start_time_ms + seconds * 1_000),
-								playing
-							);
-						}}
-						onvolumechange={(volume) => (playbackVolume = volume)}
-						onratechange={setPlaybackSpeed}
-					/>
-					{#if recordedAudio && !mobilePortrait}
-						<Button
-							variant="ghost"
-							class="min-h-11 justify-start text-xs"
-							disabled={scrubbing || audioPreviewBusy}
-							onclick={openRecordedAudioPreview}
-							>Recorded audio preview{recordedAudio.preview ? ' · Active' : ''}</Button
-						>
-					{/if}
-				</section>
-
-				{#if mobilePortrait}
-					<HorizontalTimeline
-						segments={orderedSegments}
-						{events}
-						selectedUrl={selected?.url ?? null}
-						{playheadMs}
-						{dayStartMs}
-						followRequest={timelineFollowRequest}
-						loading={timelineRepository.loading}
-						onSeek={seekToTimestamp}
-						onEventPreview={(event) => void previewEvent(event)}
-						onScrubStart={beginTimelineScrub}
-						onScrub={moveTimelineScrub}
-						onScrubEnd={(timestampMs) => void finishTimelineScrub(timestampMs)}
-						onScrubCancel={cancelTimelineScrub}
-						onViewportChange={handleTimelineViewport}
-					/>
-				{:else}
-					<VerticalTimeline
-						segments={orderedSegments}
-						{events}
-						selectedUrl={selected?.url ?? null}
-						{playheadMs}
-						{dayStartMs}
-						followRequest={timelineFollowRequest}
-						loading={timelineRepository.loading}
-						onSeek={seekToTimestamp}
-						onEventPreview={(event) => void previewEvent(event)}
-						onScrubStart={beginTimelineScrub}
-						onScrub={moveTimelineScrub}
-						onScrubEnd={(timestampMs) => void finishTimelineScrub(timestampMs)}
-						onScrubCancel={cancelTimelineScrub}
-						onViewportChange={handleTimelineViewport}
-					/>
-				{/if}
-			</div>
-		{/if}
+				</div>
+			{/if}
+		</div>
 	</div>
-</div>
 
-{#if selectedWorkflowEvent && selectedCamera && workflowIdentity}
-	<button
-		type="button"
-		class="fixed inset-0 z-[80] cursor-default bg-black/55"
-		aria-label="Close event detail backdrop"
-		onclick={() => (selectedWorkflowEvent = null)}
-	></button>
-	<EventDetailDrawer
-		record={{ camera: selectedCamera, event: withWorkflow(selectedWorkflowEvent) }}
-		{workflow}
-		{workflowIdentity}
-		onclose={() => (selectedWorkflowEvent = null)}
-	/>
-{:else if workflow.error}
-	<div class="fixed right-4 bottom-4 left-4 z-50 bg-surface">
-		<EventWorkflowNotice {workflow} />
-	</div>
+	{#if selectedWorkflowEvent && selectedCamera && workflowIdentity}
+		<button
+			type="button"
+			class="fixed inset-0 z-[80] cursor-default bg-black/55"
+			aria-label="Close event detail backdrop"
+			onclick={() => (selectedWorkflowEvent = null)}
+		></button>
+		<EventDetailDrawer
+			sharingController={guestRangeSupported ? controlClient : undefined}
+			record={{ camera: selectedCamera, event: withWorkflow(selectedWorkflowEvent) }}
+			{workflow}
+			{workflowIdentity}
+			onclose={() => (selectedWorkflowEvent = null)}
+		/>
+	{:else if workflow.error}
+		<div class="fixed right-4 bottom-4 left-4 z-50 bg-surface">
+			<EventWorkflowNotice {workflow} />
+		</div>
+	{/if}
 {/if}
 
 <style>

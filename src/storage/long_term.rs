@@ -4,14 +4,86 @@ use cap_std::fs::Dir;
 use std::path::{Path, PathBuf};
 
 pub mod inspection;
+mod paths;
+use paths::{contains_private_directory, recording_relative};
 
+pub(super) fn legacy_stream(root: &Path, path: &Path) -> Option<String> {
+    let relative = recording_relative(root, path)?;
+    let name = relative.file_name()?.to_str()?.strip_suffix(".mp4")?;
+    let hour = relative.parent()?;
+    let date = hour.parent()?;
+    let stream = date.parent()?;
+    let digits = |text: &str, len| text.len() == len && text.bytes().all(|b| b.is_ascii_digit());
+    let day = date.file_name()?.to_str()?;
+    if !digits(name, 7)
+        || !digits(hour.file_name()?.to_str()?, 2)
+        || day.len() != 10
+        || !day.is_ascii()
+        || !digits(&day[..4], 4)
+        || !digits(&day[5..7], 2)
+        || !digits(&day[8..], 2)
+        || &day[4..5] != "-"
+        || &day[7..8] != "-"
+        || stream.as_os_str().is_empty()
+    {
+        return None;
+    }
+    Some(
+        stream
+            .iter()
+            .map(|s| s.to_str())
+            .collect::<Option<Vec<_>>>()?
+            .join("/"),
+    )
+}
+
+#[derive(Clone)]
 pub struct LongTermStore {
     root: PathBuf,
+    pending_source: Option<PathBuf>,
 }
 
 impl LongTermStore {
     pub const fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            pending_source: None,
+        }
+    }
+
+    pub(crate) fn for_recording_roots(root: &Path, source: &Path) -> Self {
+        // A nested capture directory also lies under the archive prefix until relocation completes.
+        let pending_source = paths::relative_components(root, source)
+            .filter(|relative| !relative.as_os_str().is_empty())
+            .map(|_| source.to_owned());
+        Self {
+            root: root.to_owned(),
+            pending_source,
+        }
+    }
+
+    pub(crate) fn pending_source(&self) -> Option<&Path> {
+        self.pending_source.as_deref()
+    }
+
+    pub(crate) fn contains_cleanup_path(&self, path: &Path, catalog_stream: &str) -> bool {
+        if recording_relative(&self.root, path).is_none_or(contains_private_directory) {
+            return false;
+        }
+        if self
+            .pending_source()
+            .is_some_and(|source| paths::relative_components(source, path).is_some())
+        {
+            // A published stream can share the name of a capture directory nested in the archive.
+            return legacy_stream(&self.root, path).is_some_and(|stream| {
+                if cfg!(windows) {
+                    stream.eq_ignore_ascii_case(catalog_stream)
+                } else {
+                    stream == catalog_stream
+                }
+            });
+        }
+        true
     }
 
     pub fn finalized_segments(&self, camera_id: &str) -> std::io::Result<Vec<PathBuf>> {
@@ -70,16 +142,14 @@ impl LongTermStore {
     }
 
     pub(crate) fn remove_catalog_recording(&self, path: &Path) -> std::io::Result<u64> {
-        let relative = path.strip_prefix(&self.root).map_err(|_| {
+        let relative = recording_relative(&self.root, path).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "catalog recording is outside the configured archive root",
             )
         })?;
-        if relative.components().any(|component| {
-            component.as_os_str() == ".exports"
-                || component.as_os_str() == layout::HEADER_RECOVERY_DIRECTORY
-        }) || path.extension().and_then(|extension| extension.to_str()) != Some("mp4")
+        if contains_private_directory(relative)
+            || path.extension().and_then(|extension| extension.to_str()) != Some("mp4")
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -99,7 +169,11 @@ impl LongTermStore {
         }
         let canonical_root = self.root.canonicalize()?;
         let canonical_path = path.canonicalize()?;
-        if !canonical_path.starts_with(&canonical_root) {
+        if canonical_path
+            .strip_prefix(&canonical_root)
+            .ok()
+            .is_none_or(contains_private_directory)
+        {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "catalog recording resolves outside the configured archive root",
@@ -107,8 +181,8 @@ impl LongTermStore {
         }
         let bytes = metadata.len();
         std::fs::remove_file(path)?;
-        if let Some(parent) = path.parent() {
-            let _ = remove_empty_parents(parent, &self.root);
+        if let Some(parent) = canonical_path.parent() {
+            let _ = remove_empty_parents(parent, &canonical_root);
         }
         Ok(bytes)
     }

@@ -1,18 +1,22 @@
 import { ShareGrantStatus } from './proto/webrtc_pb';
 
+const utcTime = new Intl.DateTimeFormat('en-GB', {
+	dateStyle: 'medium',
+	timeStyle: 'medium',
+	timeZone: 'UTC'
+});
+
 export function shareTime(value: bigint): string {
-	return (
-		new Intl.DateTimeFormat('en-GB', {
-			dateStyle: 'medium',
-			timeStyle: 'medium',
-			timeZone: 'UTC'
-		}).format(Number(value)) + ' UTC'
-	);
+	const milliseconds = value % 1000n;
+	const fraction = milliseconds ? `.${milliseconds.toString().padStart(3, '0')}` : '';
+	return `${utcTime.format(Number(value))}${fraction} UTC`;
 }
 export function shareDateInput(value: number): string {
 	return new Date(value).toISOString().slice(0, 19);
 }
 export function shareBytes(value: bigint): string {
+	if (value < 1_000n) return `${value} B`;
+	if (value < 1_000_000n) return `${(Number(value) / 1_000).toFixed(1)} kB`;
 	return `${(Number(value) / 1_000_000).toFixed(1)} MB`;
 }
 export function shareQuota(value: string): number | undefined {

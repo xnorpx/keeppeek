@@ -68,6 +68,30 @@ export function storyEvents(events: readonly RecordingEvent[]): RecordingEvent[]
 		.toSorted((left, right) => right.start_time_ms - left.start_time_ms);
 }
 
+// The export workflow accepts one source and stream spanning adjacent retained segments.
+export function segmentForExportRange(
+	segments: readonly RecordingSegment[],
+	stream: RecordingSegment['stream'],
+	startMs: number,
+	endMs: number
+): RecordingSegment | null {
+	if (endMs <= startMs || endMs - startMs > MAX_EXPORT_DURATION_MS) return null;
+	const candidates = segments
+		.filter(
+			(row) => row.stream === stream && row.end_time_ms > startMs && row.start_time_ms < endMs
+		)
+		.toSorted((a, b) => a.start_time_ms - b.start_time_ms);
+	const anchor = candidates[0];
+	if (!anchor) return null;
+	let covered = startMs;
+	for (const row of candidates) {
+		if (row.start_time_ms > covered) return null;
+		covered = Math.max(covered, row.end_time_ms);
+		if (covered >= endMs) return anchor;
+	}
+	return null;
+}
+
 export function createExportRange(
 	segment: RecordingSegment | null,
 	bitrateKbps: number | null
@@ -162,10 +186,12 @@ export function classifyExportCandidates<T extends ExportCandidate>(
 
 export function updateExportRange(
 	range: ExportRange,
-	startMs: number,
-	endMs: number,
+	startTimeMs: number,
+	endTimeMs: number,
 	bitrateKbps: number | null
 ): ExportRange {
+	const startMs = Math.trunc(startTimeMs);
+	const endMs = Math.trunc(endTimeMs);
 	let orderedStartMs = Math.min(startMs, endMs);
 	let orderedEndMs = Math.max(startMs, endMs);
 	if (orderedEndMs - orderedStartMs > MAX_EXPORT_DURATION_MS) {

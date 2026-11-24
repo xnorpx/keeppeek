@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { basename, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
+import { observeSpeaker, type SpeakerObservation } from './hikvision-speaker';
 import { seedCalibrationRecording } from './calibration-recording';
 
 export const cardTestKeys = [
@@ -16,11 +17,15 @@ export const cardTestKeys = [
 ] as const;
 export const cardAdminKey = '550e8400-e29b-41d4-a716-446655440004';
 export const cardSourceIds = ['192.0.2.101', '192.0.2.102'] as const;
+export const reviewSourceIds = [...cardSourceIds, '192.0.2.103', '192.0.2.104'] as const;
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
 type FixtureOptions = {
+	hikvisionSpeaker?: boolean;
 	trustedLocal?: boolean;
 	archiveFixture?: boolean;
-	calibrationFixture?: { mediaPath: string };
+	reviewFixture?: boolean | 'four';
+	calibrationFixture?: { mediaPath: string; bothCameras?: boolean };
+	frameStepMedia?: string;
 };
 
 async function availablePort(): Promise<number> {
@@ -85,7 +90,7 @@ initial_secret_pending = false
 }
 
 async function stop(child: ChildProcess): Promise<void> {
-	if (child.exitCode !== null || child.signalCode !== null) return;
+	if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
 	const exited = once(child, 'exit');
 	child.kill('SIGINT');
 	const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
@@ -103,7 +108,9 @@ async function writeFixtureConfiguration(options: {
 	configurations: string[];
 	trustedLocal?: boolean;
 	archiveFixture?: boolean;
-	calibrationFixture?: { mediaPath: string };
+	reviewFixture?: boolean | 'four';
+	calibrationFixture?: { mediaPath: string; bothCameras?: boolean };
+	frameStepMedia?: string;
 }): Promise<string> {
 	const { directory, origin, port, configurations, trustedLocal = false } = options;
 	const configPath = resolve(directory, 'config.toml');
@@ -118,9 +125,10 @@ require_secure_remote = false
 allowed_origins = [${JSON.stringify(origin)}]
 [storage]
 short_term_secs = 5
-medium_term_secs = 60
+medium_term_secs = ${options.frameStepMedia ? 8 : 60}
 long_term_max_gb = 0
-${options.archiveFixture || options.calibrationFixture ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
+${options.frameStepMedia ? 'flush_interval_secs = 1' : ''}
+${options.archiveFixture || options.calibrationFixture || options.reviewFixture || options.frameStepMedia ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
 [access_credentials]
 version = 1
 ${[...cardTestKeys, cardAdminKey].map((key) => credentialRecord(key, key === cardAdminKey)).join('\n')}
@@ -131,6 +139,7 @@ ${configurations.map((configuration, index) => fixtureCameraConfiguration(config
 }
 
 function fixtureCameraConfiguration(configuration: string, index: number, options: FixtureOptions) {
+	if (options.frameStepMedia && index === 0) return `${configuration}\nrecording_mode = "sub"\n`;
 	if (options.calibrationFixture) {
 		return `${configuration}\nrecorded_audio = { default_offset_ms = 200 }\n`;
 	}
@@ -140,22 +149,30 @@ function fixtureCameraConfiguration(configuration: string, index: number, option
 }
 
 async function waitForFixture(server: ChildProcess, url: string): Promise<void> {
-	for (let attempt = 0; attempt < 100; attempt += 1) {
-		if (server.exitCode !== null)
-			throw new Error('The isolated KeepPeek fixture exited before readiness.');
+	const deadline = performance.now() + 30_000;
+	let lastResult = 'no response';
+	while (performance.now() < deadline) {
+		if (server.exitCode !== null || server.signalCode !== null) {
+			throw new Error(
+				`The isolated KeepPeek fixture exited before readiness (exit ${server.exitCode}, signal ${server.signalCode}).`
+			);
+		}
 		try {
-			const response = await fetch(`${url}/metrics`, {
+			// The authenticated log snapshot is available as soon as the listener is serving.
+			const response = await fetch(`${url}/logs/snapshot`, {
 				headers: { Authorization: `Bearer ${cardAdminKey}` },
-				signal: AbortSignal.timeout(500)
+				signal: AbortSignal.timeout(1_000)
 			});
 			await response.body?.cancel();
 			if (response.ok) return;
+			lastResult = `HTTP ${response.status}`;
 		} catch (error) {
 			if (!(error instanceof TypeError) && !(error instanceof DOMException)) throw error;
+			lastResult = error.name;
 		}
 		await delay(100);
 	}
-	throw new Error('The isolated KeepPeek fixture did not become ready.');
+	throw new Error(`The isolated KeepPeek fixture did not become ready (${lastResult}).`);
 }
 
 async function startFixtureRecorder(options: {
@@ -181,11 +198,12 @@ async function startFixtureRecorder(options: {
 async function fixtureCameras(
 	binary: string,
 	children: ChildProcess[],
-	archiveFixture: boolean
+	nameBySource: boolean,
+	sourceIds: readonly string[] = cardSourceIds,
+	media = resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4')
 ): Promise<string[]> {
 	const configurations: string[] = [];
-	const media = resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4');
-	for (const [index, sourceId] of cardSourceIds.entries()) {
+	for (const [index, sourceId] of sourceIds.entries()) {
 		const child = spawn(
 			binary,
 			[
@@ -199,7 +217,7 @@ async function fixtureCameras(
 				'--config-ip',
 				sourceId,
 				'--name',
-				archiveFixture ? sourceId : `card-camera-${index}`
+				nameBySource ? sourceId : `card-camera-${index}`
 			],
 			{ stdio: ['ignore', 'pipe', 'ignore'] }
 		);
@@ -207,7 +225,7 @@ async function fixtureCameras(
 		await once(child, 'spawn');
 		const configuration = await cameraConfig(child);
 		configurations.push(
-			archiveFixture ? `${configuration}\ndisplay_name = "card-camera-${index}"\n` : configuration
+			nameBySource ? `${configuration}\ndisplay_name = "card-camera-${index}"\n` : configuration
 		);
 	}
 	return configurations;
@@ -330,17 +348,28 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 		await Promise.all(children.map(stop));
 		await rm(directory, { recursive: true, force: true });
 	};
+	let log = '';
+	const captureLog = (chunk: Buffer) => {
+		log = (log + chunk.toString()).slice(-16_384);
+	};
+	const sanitizedLog = () =>
+		[...cardTestKeys, cardAdminKey].reduce(
+			(text, key) => text.replaceAll(key, '[redacted]'),
+			log.replaceAll('test:test@', '[redacted]@')
+		);
+
 	try {
 		const port = await availablePort();
-		const { configPath, archive, calibration } = await prepareFixture(
-			binary('test_camera'),
-			directory,
-			origin,
-			port,
-			children,
-			options
-		);
-		let log = '';
+		const { configPath, archive, calibration, secondCalibration, speakerObservation } =
+			await prepareFixture(
+				binary('test_camera'),
+				directory,
+				origin,
+				port,
+				children,
+				options,
+				captureLog
+			);
 		const url = `http://127.0.0.1:${port}`;
 		const launch = () =>
 			startFixtureRecorder({
@@ -349,9 +378,7 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 				directory,
 				url,
 				children,
-				onLog: (chunk) => {
-					log = (log + chunk.toString()).slice(-16_384);
-				}
+				onLog: captureLog
 			});
 		let server = await launch();
 		return {
@@ -359,6 +386,8 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 			backendProcessId: () => server.pid,
 			...archive,
 			calibration,
+			secondCalibration,
+			speakerObservation,
 			close,
 			preserveArchiveEvidence: (destination: string) =>
 				preserveFixture(server, directory, destination),
@@ -366,15 +395,58 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 				await stop(server);
 				server = await launch();
 			},
-			logs: () =>
-				[...cardTestKeys, cardAdminKey].reduce(
-					(text, key) => text.replaceAll(key, '[redacted]'),
-					log
-				)
+			logs: sanitizedLog
 		};
 	} catch (error) {
 		await close();
+		const evidence = sanitizedLog();
+		if (options.hikvisionSpeaker && evidence) {
+			throw new Error(`The Hikvision recorder fixture could not start.\n${evidence}`, {
+				cause: error
+			});
+		}
 		throw error;
+	}
+}
+
+async function seedComparisonStreams(
+	binary: string,
+	directory: string,
+	configPath: string,
+	sourceIds: readonly string[]
+) {
+	// The four-camera case starts just before the same UTC boundary on every run.
+	const reviewBoundary = Math.floor(Date.now() / 60_000) * 60_000 - 120_000;
+	for (const [index, id] of sourceIds.entries()) {
+		const ageSeconds =
+			sourceIds.length === 4
+				? Math.round((Date.now() - reviewBoundary) / 1_000) + (index === 1 ? 5 : 15)
+				: index === 1
+					? 110
+					: 120;
+		await promisify(execFile)(
+			binary,
+			[
+				'seed-recording',
+				'--source',
+				resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4'),
+				'--config',
+				configPath,
+				'--stream-id',
+				id + '/sub',
+				'--duration-seconds',
+				'40',
+				'--age-seconds',
+				String(ageSeconds)
+			],
+			{
+				cwd: directory,
+				maxBuffer: 64 * 1024,
+				windowsHide: true,
+				timeout: 30_000,
+				killSignal: 'SIGKILL'
+			}
+		);
 	}
 }
 
@@ -384,16 +456,43 @@ async function prepareFixture(
 	origin: string,
 	port: number,
 	children: ChildProcess[],
-	options: FixtureOptions
+	options: FixtureOptions,
+	onLog: (chunk: Buffer) => void
 ) {
-	if (options.archiveFixture && options.calibrationFixture) {
-		throw new Error('Archive and calibration recording seeds must use separate fixtures.');
+	if (
+		[options.archiveFixture, options.calibrationFixture, options.reviewFixture].filter(Boolean)
+			.length > 1
+	) {
+		throw new Error('Recording seed modes must use separate fixtures.');
 	}
-	const configurations = await fixtureCameras(
-		binary,
-		children,
-		Boolean(options.archiveFixture || options.calibrationFixture)
-	);
+	const sourceIds = options.reviewFixture === 'four' ? reviewSourceIds : cardSourceIds;
+	let configurations: string[];
+	let speakerObservation: (() => Promise<SpeakerObservation>) | undefined;
+	if (options.hikvisionSpeaker) {
+		const media = resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4');
+		const camera = spawn(binary, ['hikvision', '--media', media, '--speaker-observations'], {
+			stdio: ['pipe', 'pipe', 'pipe'],
+			windowsHide: true
+		});
+		camera.stderr.on('data', onLog);
+		children.push(camera);
+		await once(camera, 'spawn');
+		configurations = [await cameraConfig(camera)];
+		speakerObservation = () => observeSpeaker(camera);
+	} else {
+		configurations = await fixtureCameras(
+			binary,
+			children,
+			Boolean(
+				options.archiveFixture ||
+				options.calibrationFixture ||
+				options.reviewFixture ||
+				options.frameStepMedia
+			),
+			sourceIds,
+			options.frameStepMedia
+		);
+	}
 	const configPath = await writeFixtureConfiguration({
 		directory,
 		origin,
@@ -401,6 +500,7 @@ async function prepareFixture(
 		configurations,
 		...options
 	});
+	if (options.reviewFixture) await seedComparisonStreams(binary, directory, configPath, sourceIds);
 	const archive = await prepareArchiveFixture(
 		binary,
 		directory,
@@ -417,5 +517,14 @@ async function prepareFixture(
 				options.calibrationFixture.mediaPath
 			)
 		: undefined;
-	return { configPath, archive, calibration };
+	const secondCalibration = options.calibrationFixture?.bothCameras
+		? await seedCalibrationRecording(
+				binary,
+				directory,
+				configPath,
+				cardSourceIds[1],
+				options.calibrationFixture.mediaPath
+			)
+		: undefined;
+	return { configPath, archive, calibration, secondCalibration, speakerObservation };
 }

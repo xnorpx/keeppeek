@@ -2,6 +2,7 @@ pub use crate::access::AccessKey;
 pub(crate) mod metadata;
 #[cfg(test)]
 mod recorded_audio_tests;
+pub(crate) mod reporting;
 pub(crate) mod sharing;
 mod storage_volumes;
 use crate::{
@@ -121,6 +122,9 @@ pub struct Config {
 
     #[serde(default)]
     pub(crate) sharing: sharing::SharingConfig,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reporting: Option<reporting::Settings>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) external_auth: Option<crate::access::external::Config>,
@@ -888,6 +892,9 @@ impl StorageMigration {
             .transpose()?;
         if let (Some(lease), Some(connection)) = (&catalog_lease, &catalog_connection) {
             lease.initialize(connection)?;
+            if !recording_routes.is_empty() {
+                crate::storage::catalog::relocation::ensure_migration_idle(connection)?;
+            }
         }
         let retained = catalog_route
             .as_ref()
@@ -1033,6 +1040,7 @@ impl Default for Config {
             access_key: AccessKey::unset(),
             access: AccessConfig::default(),
             sharing: sharing::SharingConfig::default(),
+            reporting: None,
             external_auth: None,
             direct_card: DirectCardConfig::default(),
             storage: StorageToml::default(),
@@ -1940,6 +1948,10 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
         }
     }
     let mut runtime = root.clone();
+    let reporting = runtime
+        .remove("reporting")
+        .map(reporting::parse_settings)
+        .transpose()?;
     if let Some(value) = runtime.get_mut("runtime_profiles") {
         *value = runtime_profile_value_without_identity_schema(value)?;
     }
@@ -1955,6 +1967,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     let mut resolved = toml::Value::Table(runtime);
     resolve_toml_secret_references(&mut resolved, secrets)?;
     let mut config: Config = resolved.try_into()?;
+    config.reporting = reporting;
     config.runtime_profiles.validate()?;
     config.sharing.validate()?;
     config.storage.validate_pre_recording_budgets()?;
@@ -2491,6 +2504,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
         namespace,
         "access"
             | "sharing"
+            | "reporting"
             | "external_auth"
             | "external_identities"
             | "access_credentials"
@@ -4925,6 +4939,78 @@ mod tests {
         assert!(!next.join("recording.mp4").exists());
         catalog.shutdown();
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn pending_relocation_blocks_storage_migration_before_media_or_catalog_handoff() {
+        for transfer_catalog in [false, true] {
+            let directory = std::env::temp_dir().join(format!(
+                "keeppeek-relocation-migration-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let current = directory.join("medium");
+            let archive = directory.join("archive");
+            let next = directory.join("new-medium");
+            let source = current.join("front_gate/main/2026-08-12/12/0000000.mp4");
+            let destination = archive.join(source.strip_prefix(&current).unwrap());
+            let thumbnail = current.join("thumbs/event.jpg");
+            let catalog_path = directory.join("catalog.db");
+            let next_catalog = if transfer_catalog {
+                directory.join("new-catalog.db")
+            } else {
+                catalog_path.clone()
+            };
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(thumbnail.parent().unwrap()).unwrap();
+            std::fs::write(&source, b"retained").unwrap();
+            std::fs::write(&thumbnail, b"thumbnail").unwrap();
+            create_migration_catalog(&catalog_path, &source);
+            {
+                let mut lease =
+                    crate::storage::catalog::authority::Lease::acquire(&catalog_path).unwrap();
+                let db = lease.connect().unwrap();
+                lease.initialize(&db).unwrap();
+                let affected = pollster::block_on(db.execute(
+                    "INSERT INTO legacy_recording_relocations(id,stream,source,destination,stage,source_identity)
+                     SELECT id,stream_id,path,?1,?2,file_identity FROM recording_files WHERE id='migration-recording'",
+                    (destination.to_str().unwrap(), uuid::Uuid::new_v4().to_string()),
+                )).unwrap();
+                assert_eq!(affected, 1);
+            }
+            let migration = StorageMigration::between_with_metadata(
+                StorageMigrationPaths::new(
+                    &current,
+                    &archive,
+                    &catalog_path,
+                    &current.join("thumbs"),
+                ),
+                StorageMigrationPaths::new(&next, &archive, &next_catalog, &next.join("thumbs")),
+            )
+            .unwrap()
+            .unwrap();
+            let error = migration.apply().unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("finish pending recording relocations"),
+                "{error:#}"
+            );
+            assert_eq!(std::fs::read(&source).unwrap(), b"retained");
+            assert_eq!(std::fs::read(&thumbnail).unwrap(), b"thumbnail");
+            assert!(!next.exists());
+            if transfer_catalog {
+                assert!(!next_catalog.exists());
+            }
+            let catalog = RecordingCatalog::open(&catalog_path).unwrap();
+            let handle = catalog.handle();
+            let job = handle.next_relocation("").unwrap().unwrap();
+            assert_eq!(job.source, source);
+            assert_eq!(job.destination, destination);
+            assert!(!job.destination_published);
+            drop(handle);
+            catalog.shutdown();
+            std::fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]

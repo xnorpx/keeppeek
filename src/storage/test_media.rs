@@ -64,6 +64,7 @@ fn read_video_fixture(path: &Path, codec: VideoCodec) -> anyhow::Result<Vec<Reco
             }
             bytes.extend_from_slice(&sample.bytes);
             Ok(RecordingFrame {
+                source_rtp: None,
                 received_at: start
                     + Duration::from_secs(u64::from(index / count))
                     + Duration::from_secs_f64(sample.start_time as f64 / f64::from(timescale)),

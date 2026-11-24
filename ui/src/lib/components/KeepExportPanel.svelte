@@ -134,7 +134,10 @@
 	});
 
 	function formatTimeInput(timestampMs: number): string {
-		return new Date(timestampMs).toISOString().slice(11, 19);
+		return new Date(timestampMs)
+			.toISOString()
+			.slice(11, 23)
+			.replace(/\.000$/, '');
 	}
 
 	function formatDuration(durationMs: number, padSeconds = false): string {
@@ -170,7 +173,10 @@
 	}
 
 	function formatTime(timestampMs: number): string {
-		return new Date(timestampMs).toISOString().slice(11, 19);
+		return new Date(timestampMs)
+			.toISOString()
+			.slice(11, 23)
+			.replace(/\.000$/, '');
 	}
 
 	function formatRange(startMs: number, endMs: number): string {
@@ -357,16 +363,18 @@
 
 	function timestampFromTime(value: string): number | null {
 		if (segment === null) return null;
-		const parts = value.split(':').map(Number);
-		if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return null;
+		if (!/^\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?$/.test(value)) return null;
+		const [hour, minute, seconds = 0] = value.split(':').map(Number);
+		if (hour > 23 || minute > 59 || seconds >= 60) return null;
 		const date = new Date(segment.start_time_ms);
 		return Date.UTC(
 			date.getUTCFullYear(),
 			date.getUTCMonth(),
 			date.getUTCDate(),
-			parts[0],
-			parts[1],
-			parts[2]
+			hour,
+			minute,
+			0,
+			Math.round(seconds * 1_000)
 		);
 	}
 
@@ -826,7 +834,7 @@
 						FROM
 						<input
 							type={paperFrame ? 'text' : 'time'}
-							step={paperFrame ? undefined : 1}
+							step={paperFrame ? undefined : 0.001}
 							value={formatTimeInput(range.startMs)}
 							readonly={paperFrame}
 							class="rounded-sm border border-hairline-strong bg-raised px-3 font-mono text-xs tracking-normal text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring {paperFrame
@@ -843,7 +851,7 @@
 						TO
 						<input
 							type={paperFrame ? 'text' : 'time'}
-							step={paperFrame ? undefined : 1}
+							step={paperFrame ? undefined : 0.001}
 							value={formatTimeInput(range.endMs)}
 							readonly={paperFrame}
 							class="rounded-sm border border-hairline-strong bg-raised px-3 font-mono text-xs tracking-normal text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring {paperFrame
@@ -945,6 +953,7 @@
 						</button>
 					</CapabilityGate>
 				{/if}
+
 				{#if operationError}
 					<div
 						class="flex items-start gap-2 rounded-sm border border-live/40 bg-live/5 px-3 py-2.5 text-xs text-live-text"
@@ -962,6 +971,20 @@
 					</p>
 				</div>
 			</div>
+		{/if}
+		{#if range && segment && capabilities.supports(capabilityActions.shareRecordingRange.capability)}
+			<GuestShareExportButton
+				controller={controlClient}
+				range={{
+					client: controlClient,
+					target: {
+						sourceId,
+						streamId: segment.stream,
+						startMs: range.startMs,
+						endMs: range.endMs
+					}
+				}}
+			/>
 		{/if}
 	{:else}
 		<div class="grid min-h-56 place-items-center p-5 text-center">

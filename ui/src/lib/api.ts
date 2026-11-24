@@ -41,11 +41,15 @@ function cookieOptions(credential: HttpCredential): RequestInit {
 		: {};
 }
 
-export async function fetchLogSnapshot(accessKey?: HttpCredential): Promise<LogSnapshot> {
+export async function fetchLogSnapshot(
+	accessKey?: HttpCredential,
+	signal?: AbortSignal
+): Promise<LogSnapshot> {
 	const response = await fetch('/logs/snapshot', {
 		...cookieOptions(accessKey),
 		headers: authenticatedHeaders(accessKey, { Accept: 'application/json' }),
-		cache: 'no-store'
+		cache: 'no-store',
+		signal
 	});
 	if (!response.ok) throw new ApiRequestError(response.status, response.statusText);
 	const value: unknown = await response.json();
@@ -53,11 +57,15 @@ export async function fetchLogSnapshot(accessKey?: HttpCredential): Promise<LogS
 	return value;
 }
 
-export async function fetchMetricsSnapshot(accessKey?: HttpCredential): Promise<string> {
+export async function fetchMetricsSnapshot(
+	accessKey?: HttpCredential,
+	signal?: AbortSignal
+): Promise<string> {
 	const response = await fetch('/metrics', {
 		...cookieOptions(accessKey),
 		headers: authenticatedHeaders(accessKey, { Accept: 'text/plain' }),
-		cache: 'no-store'
+		cache: 'no-store',
+		signal
 	});
 	if (!response.ok) throw new ApiRequestError(response.status, response.statusText);
 	return response.text();

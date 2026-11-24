@@ -1,4 +1,5 @@
 mod events;
+mod speaker;
 
 use crate::{
     battery_wake::BatteryWakeHandle,
@@ -30,7 +31,6 @@ use reo_proto::{
     media::{AudioCodec as BcAudioCodec, StreamMetadata, VideoCodec as BcVideoCodec},
     session::{BcSession, BcSessionConfig, Command, Event, Input, Output, Role},
     stream::{SnapshotRequest, StreamSubscription, StreamType},
-    talk::{ImaAdpcmEncoder, TalkCommand, TalkConfig, TalkEvent},
     video_cfg::{VideoCommand, VideoEvent},
 };
 use std::{
@@ -669,12 +669,7 @@ impl ReolinkLoop {
         let mut pending_snapshots = VecDeque::<Vec<String>>::new();
         let mut snapshot_in_flight = false;
         let mut event_gate = events::Gate::default();
-        let mut talk_stream_id = None;
-        let mut talk_config: Option<TalkConfig> = None;
-        let mut talk_ready = false;
-        let mut talk_encoder = ImaAdpcmEncoder::default();
-        let mut talk_sequence = 0_u16;
-        let mut pending_talkback = None;
+        let mut speaker = speaker::Talkback::new(self.channel);
 
         loop {
             if self.shutdown.is_cancelled() {
@@ -687,14 +682,7 @@ impl ReolinkLoop {
                     let _ = session
                         .handle_input(Input::Command(Command::UnsubscribeStream { stream_id: id }));
                 }
-                if let Some(stream_id) = talk_stream_id {
-                    let _ =
-                        session.handle_input(Input::Command(Command::Talk(TalkCommand::Reset {
-                            channel: self.channel,
-                        })));
-                    let _ = session
-                        .handle_input(Input::Command(Command::UnsubscribeStream { stream_id }));
-                }
+                let _ = speaker.close(&mut session);
                 let _ = drain_outputs_simple(&mut session, wire.as_mut(), &mut out_buf);
                 let _ = wire.close();
                 return Ok(());
@@ -774,12 +762,7 @@ impl ReolinkLoop {
                         } => {
                             if stream_type == StreamType::Extern {
                                 if channel == self.channel {
-                                    talk_stream_id = Some(stream_id);
-                                    session.handle_input(Input::Command(Command::Talk(
-                                        TalkCommand::QueryAbility {
-                                            channel: self.channel,
-                                        },
-                                    )))?;
+                                    speaker.subscribed(stream_id, &mut session)?;
                                 }
                                 continue;
                             }
@@ -835,21 +818,7 @@ impl ReolinkLoop {
                                 "subscribed stream",
                             );
                         }
-                        Event::Talk(TalkEvent::Ability(ability)) => {
-                            let config = ability.select_adpcm(self.channel)?;
-                            session.handle_input(Input::Command(Command::Talk(
-                                TalkCommand::Configure(config.clone()),
-                            )))?;
-                            talk_config = Some(config);
-                        }
-                        Event::Talk(TalkEvent::Configured) => {
-                            talk_ready = true;
-                            tracing::info!(ip = %self.camera_ip, "reolink talkback configured");
-                        }
-                        Event::Talk(TalkEvent::Reset) => {
-                            talk_ready = false;
-                            talk_config = None;
-                        }
+                        Event::Talk(event) => speaker.observe(event, &mut session)?,
                         Event::LoginFailed(status) => {
                             return Err(anyhow::anyhow!(
                                 "baichuan login failed (status 0x{status:X})"
@@ -995,6 +964,7 @@ impl ReolinkLoop {
                                         &storage_label,
                                     ),
                                     RecordingFrame {
+                                        source_rtp: None,
                                         received_at,
                                         timestamp: Some(timestamp),
                                         frame,
@@ -1087,6 +1057,7 @@ impl ReolinkLoop {
                                             &storage_label,
                                         ),
                                         RecordingFrame {
+                                            source_rtp: None,
                                             received_at: Instant::now(),
                                             timestamp: None,
                                             frame,
@@ -1224,51 +1195,11 @@ impl ReolinkLoop {
                 }
             }
 
-            if talk_stream_id.is_some()
-                && self
-                    .live
-                    .as_ref()
-                    .is_some_and(|live| !live.talkback_is_armed(&camera_id))
-            {
-                let _ = session.handle_input(Input::Command(Command::Talk(TalkCommand::Reset {
-                    channel: self.channel,
-                })));
-                if let Some(stream_id) = talk_stream_id.take() {
-                    let _ = session
-                        .handle_input(Input::Command(Command::UnsubscribeStream { stream_id }));
+            if let Some(live) = &self.live {
+                if let Some(next) = speaker.drive(&mut session, live, &camera_id, Instant::now())? {
+                    deadline = deadline.min(next);
                 }
-                talk_ready = false;
-                talk_config = None;
-                pending_talkback = None;
-            }
-
-            if talk_stream_id.is_none()
-                && pending_talkback.is_none()
-                && let Some(live) = &self.live
-                && live.talkback_is_armed(&camera_id)
-            {
-                pending_talkback = live.take_talkback_audio(&camera_id);
-                if pending_talkback.is_some() {
-                    session.handle_input(Input::Command(Command::SubscribeStream(
-                        StreamSubscription {
-                            channel: self.channel,
-                            stream_type: StreamType::Extern,
-                            expected_width: 0,
-                            expected_height: 0,
-                        },
-                    )))?;
-                }
-            }
-            if talk_ready && let (Some(config), Some(live)) = (&talk_config, &self.live) {
-                send_reolink_talkback(
-                    &mut session,
-                    live,
-                    &camera_id,
-                    config,
-                    &mut talk_encoder,
-                    &mut talk_sequence,
-                    &mut pending_talkback,
-                )?;
+                speaker.flush(&mut session, &mut out_buf, wire.as_mut(), live, &camera_id)?;
             }
 
             if let Some(kind) = expired_media_stream(streams, Instant::now()) {
@@ -1336,51 +1267,6 @@ impl ReolinkLoop {
             }
         }
     }
-}
-
-fn send_reolink_talkback(
-    session: &mut BcSession,
-    live: &Publisher,
-    source_id: &str,
-    config: &TalkConfig,
-    encoder: &mut ImaAdpcmEncoder,
-    sequence: &mut u16,
-    pending: &mut Option<WebRtcAudioFrame>,
-) -> anyhow::Result<()> {
-    let samples_per_block = usize::try_from(config.audio_profile.length_per_encoder)?;
-    let block_bytes = samples_per_block.saturating_mul(2);
-    for _ in 0..4 {
-        let frame = pending
-            .take()
-            .or_else(|| live.take_talkback_audio(source_id));
-        let Some(frame) = frame else {
-            break;
-        };
-        if frame.codec != WebRtcAudioCodec::PcmS16Le
-            || frame.sample_rate_hz != config.audio_profile.sample_rate
-            || frame.channel_count != 1
-        {
-            continue;
-        }
-        for chunk in frame.data.chunks_exact(block_bytes).take(4) {
-            let samples = chunk
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|&[low, high]| i16::from_le_bytes([low, high]))
-                .collect::<Vec<_>>();
-            let mut encoded = vec![0_u8; 4 + samples_per_block / 2];
-            let encoded_len = encoder.encode_block(&samples, &mut encoded)?;
-            encoded.truncate(encoded_len);
-            session.handle_input(Input::Command(Command::Talk(TalkCommand::SendAdpcm {
-                channel: config.channel,
-                sequence: *sequence,
-                data: encoded,
-            })))?;
-            *sequence = sequence.wrapping_add(1);
-        }
-    }
-    Ok(())
 }
 
 fn normalize_alarm_kind(kind: &str) -> String {

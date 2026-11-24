@@ -8,23 +8,32 @@ pub(super) struct Observed {
 }
 
 pub(super) fn media(path: &Path) -> Observed {
-    let gray = path.with_extension("gray");
+    let video = path.with_extension("framecrc");
     let pcm = path.with_extension("pcm");
     let log = path.with_extension("decode.log");
-    run(command(path, &gray, &pcm), &log);
-    let gray = std::fs::read(gray).unwrap();
+    run(command(path, &video, &pcm), &log);
+    assert!(std::fs::metadata(&video).unwrap().len() <= 65_536);
+    let frames = decoded_frames(&std::fs::read_to_string(video).unwrap());
     let pcm = std::fs::read(pcm).unwrap();
-    assert!(gray.len() <= 150 && pcm.len() <= 1_048_576);
-    let times = frame_times(&std::fs::read_to_string(&log).unwrap());
+    assert!(pcm.len() <= 1_048_576);
+    let reader = mp4::read_mp4(File::open(path).unwrap()).unwrap();
+    let video_track = reader
+        .tracks()
+        .iter()
+        .find(|(_, track)| matches!(track.track_type(), Ok(mp4::TrackType::Video)))
+        .unwrap()
+        .0;
+    let expected = usize::try_from(reader.sample_count(*video_track).unwrap()).unwrap();
+    assert!((1..=150).contains(&expected));
     assert_eq!(
-        gray.len(),
-        times.len(),
-        "every decoded frame needs its own presentation time; inspect {}",
-        log.display()
+        frames.len(),
+        expected,
+        "every video sample must decode in {}",
+        path.display()
     );
     let mut flashes_us = Vec::new();
     let mut white = false;
-    for (&value, &time) in gray.iter().zip(&times) {
+    for (time, value) in frames {
         if value > 200 && !white {
             flashes_us.push(time);
         }
@@ -36,7 +45,7 @@ pub(super) fn media(path: &Path) -> Observed {
     }
 }
 
-fn command(path: &Path, gray: &Path, pcm: &Path) -> Command {
+fn command(path: &Path, video: &Path, pcm: &Path) -> Command {
     let mut command = Command::new("ffmpeg");
     command
         .args([
@@ -44,7 +53,7 @@ fn command(path: &Path, gray: &Path, pcm: &Path) -> Command {
             "-nostats",
             "-hide_banner",
             "-v",
-            "info",
+            "error",
             "-xerror",
             "-y",
             "-threads",
@@ -59,7 +68,9 @@ fn command(path: &Path, gray: &Path, pcm: &Path) -> Command {
             "-map",
             "0:v:0",
             "-vf",
-            "scale=1:1,format=gray,settb=AVTB,showinfo",
+            "scale=1:1,format=gray",
+            "-enc_time_base",
+            "1:1000000",
             "-fps_mode",
             "passthrough",
             "-frames:v",
@@ -69,9 +80,9 @@ fn command(path: &Path, gray: &Path, pcm: &Path) -> Command {
             "-fs",
             "1048576",
             "-f",
-            "rawvideo",
+            "framecrc",
         ])
-        .arg(gray)
+        .arg(video)
         .args([
             "-map",
             "0:a:0",
@@ -125,27 +136,40 @@ fn run(mut command: Command, log: &Path) {
     );
 }
 
-fn frame_times(log: &str) -> Vec<i64> {
-    log.split("Parsed_showinfo")
-        .skip(1)
-        // FFmpeg rounds the displayed pts_time. The filter's integer pts counts microseconds.
-        .filter_map(|entry| entry.split_once(" pts:"))
-        .map(|(_, fields)| fields.split_whitespace().next().unwrap())
-        .map(|value| {
-            let microseconds: i64 = value.parse().unwrap();
-            assert!((0..=6_000_000).contains(&microseconds));
-            microseconds
+fn decoded_frames(output: &str) -> Vec<(i64, u8)> {
+    assert!(output.lines().any(|line| line == "#tb 0: 1/1000000"));
+    output
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .map(|line| {
+            // The framecrc muxer puts one packet's presentation timestamp, size and checksum in one row.
+            let mut fields = line.split(',').map(str::trim);
+            assert_eq!(fields.next(), Some("0"));
+            let pts: i64 = fields.nth(1).unwrap().parse().unwrap();
+            assert!((0..=6_000_000).contains(&pts));
+            assert_eq!(
+                fields.nth(1),
+                Some("1"),
+                "expected one decoded grayscale byte"
+            );
+            let checksum =
+                u32::from_str_radix(fields.next().unwrap().strip_prefix("0x").unwrap(), 16)
+                    .unwrap();
+            // FFmpeg's zero-seeded Adler-32 of one byte b has b in each 16-bit sum.
+            let gray = checksum.to_le_bytes()[0];
+            assert_eq!(checksum, u32::from(gray) * 0x1_0001);
+            (pts, gray)
         })
         .collect()
 }
 
 #[test]
-fn frame_times_preserve_entries_split_or_joined_by_console_updates() {
-    let log = "[Parsed_showinfo_2 @ decoder] n: 0 pts:  21333 pts_time:0.021333\rframe=1\r\
-               [Parsed_showinfo_2 @ decoder] n: 1 pts:  61333 pts_time:0.061333\n\
-               [Parsed_showinfo_2 @ decoder]\noutput status\n n: 2 pts:1000333 pts_time:1.00033\n\
-               [Parsed_showinfo_2 @ decoder] color_range:pc\n";
-    assert_eq!(frame_times(log), vec![21_333, 61_333, 1_000_333]);
+fn decoded_packet_rows_keep_microsecond_timestamps_with_their_grayscale_values() {
+    let frames = "#tb 0: 1/1000000\n0, 0, 21333, 40000, 1, 0x00000000\n0, 1, 61333, 40000, 1, 0x00ff00ff\n0, 2, 101333, 40000, 1, 0x007f007f\n";
+    assert_eq!(
+        decoded_frames(frames),
+        [(21_333, 0), (61_333, 255), (101_333, 127)]
+    );
 }
 
 fn pulses(bytes: &[u8]) -> Vec<i64> {

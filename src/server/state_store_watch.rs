@@ -7,7 +7,8 @@
 //! order even when mutations race.
 //!
 //! Lock order: the store registry lock always precedes the watch lock. The
-//! sweeper and ack/unwatch paths take only the watch lock. Transport enqueue
+//! profile status read guard precedes the inventory projection guard, which precedes
+//! the watch lock. The sweeper and ack/unwatch paths take only the watch lock. Transport enqueue
 //! never calls back into either lock.
 //!
 //! A watch ends with an explicit `StateStoreWatchClosed` signal carrying one
@@ -15,33 +16,32 @@
 //! expiries are unrecoverable, so every watch ends rather than risk a silent
 //! gap. A session that disappears takes its watches with it on cleanup.
 
-use super::ServerState;
 use super::state_store::{
     Error, Invalid, NamespaceLayout, StoredEntry, authorize_read, profiles, validate_namespace,
 };
+use super::{ServerState, session_lifecycle::Lifecycle};
 use crate::{
     access::AccessRole,
     api::proto::{self, notification},
     webrtc::SessionId,
 };
+use prost::Message as _;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, atomic::Ordering};
+
+#[path = "state_store_watch_profile_view.rs"]
+mod profile_view;
 
 pub(super) const MAX_WATCHES_PER_SESSION: usize = 64;
 pub(super) const MAX_WATCHES_TOTAL: usize = 1_024;
 pub(super) const MAX_IN_FLIGHT_UPDATES: usize = 32;
 pub(super) const ACK_TIMEOUT_MS: u64 = 30_000;
 
+#[derive(Default)]
 pub(super) struct WatchRegistry {
+    profile_views: std::sync::Mutex<()>,
     inner: Mutex<HashMap<(SessionId, String), Watch>>,
-}
-
-impl Default for WatchRegistry {
-    fn default() -> Self {
-        Self {
-            inner: Mutex::new(HashMap::new()),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -50,6 +50,8 @@ struct Watch {
     watch_id: String,
     namespace: String,
     key_prefix: String,
+    profile_fingerprint: Option<[u8; 32]>,
+    profile_session: Option<Arc<Lifecycle>>,
     delivered: u64,
     applied: u64,
     unacked: VecDeque<PendingUpdate>,
@@ -83,10 +85,20 @@ pub(super) enum WatchEventKind {
     Put(StoredEntry),
     Delete,
     Expire,
+    ResnapshotRequired,
+    ProfileObservation {
+        status: Arc<crate::profiles::RuntimeProfileStatus>,
+        administrator: Option<StoredEntry>,
+    },
+    ProfileHeader {
+        entry: StoredEntry,
+        observations: Option<profiles::observed::ObservedCameraStates>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CloseReason {
+    SnapshotUnavailable,
     BufferOverflow,
     AckTimeout,
     AuthorizationRevoked,
@@ -95,6 +107,7 @@ enum CloseReason {
 impl CloseReason {
     const fn proto(self) -> proto::StateStoreWatchCloseReason {
         match self {
+            Self::SnapshotUnavailable => proto::StateStoreWatchCloseReason::SnapshotSendFailed,
             Self::BufferOverflow => proto::StateStoreWatchCloseReason::BufferOverflow,
             Self::AckTimeout => proto::StateStoreWatchCloseReason::AckTimeout,
             Self::AuthorizationRevoked => proto::StateStoreWatchCloseReason::AuthorizationRevoked,
@@ -120,7 +133,50 @@ pub(super) fn enqueue_notification(
     }
 }
 
+fn send_closures(
+    closed: Vec<(Watch, CloseReason)>,
+    enqueue: impl Fn(SessionId, proto::Notification) -> EnqueueOutcome,
+    sent: &mut Vec<(SessionId, proto::Notification)>,
+) {
+    for (watch, reason) in closed {
+        let notification = closed_notification(&watch, reason);
+        if enqueue(watch.session_id, notification.clone()) == EnqueueOutcome::Sent {
+            sent.push((watch.session_id, notification));
+        }
+    }
+}
+
+impl Watch {
+    fn queue_update(
+        &mut self,
+        event: &WatchEvent,
+        revision: u64,
+        now_ms: u64,
+    ) -> Result<proto::Notification, CloseReason> {
+        let sequence = self.delivered + 1;
+        let notification = update_notification(self, event, sequence, revision)
+            .ok_or(CloseReason::SnapshotUnavailable)?;
+        if self.unacked.len() >= MAX_IN_FLIGHT_UPDATES {
+            return Err(CloseReason::BufferOverflow);
+        }
+        self.delivered = sequence;
+        self.unacked.push_back(PendingUpdate {
+            sequence,
+            #[cfg(test)]
+            revision,
+            sent_ms: now_ms,
+        });
+        Ok(notification)
+    }
+}
+
 impl WatchRegistry {
+    pub(in crate::server) fn lock_profile_views(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.profile_views
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<(SessionId, String), Watch>> {
         self.inner
             .lock()
@@ -132,6 +188,17 @@ impl WatchRegistry {
         self.lock().contains_key(&(session_id, watch_id.to_owned()))
     }
 
+    pub(super) fn profile_status_keys(&self) -> std::collections::BTreeSet<String> {
+        self.lock()
+            .values()
+            .filter(|watch| {
+                watch.namespace == profiles::NAMESPACE
+                    && profiles::viewer_watch_key(&watch.key_prefix)
+            })
+            .map(|watch| watch.key_prefix.clone())
+            .collect()
+    }
+
     pub(super) fn register(
         &self,
         session_id: SessionId,
@@ -139,6 +206,26 @@ impl WatchRegistry {
         key_prefix: String,
         watch_id: String,
     ) -> Result<(), Error> {
+        self.register_snapshot(
+            session_id,
+            namespace,
+            key_prefix,
+            watch_id,
+            None,
+            |_| Ok(()),
+        )
+        .map(|_| ())
+    }
+
+    pub(super) fn register_snapshot(
+        &self,
+        session_id: SessionId,
+        namespace: String,
+        key_prefix: String,
+        watch_id: String,
+        profile: Option<(&StoredEntry, Arc<Lifecycle>)>,
+        validate_snapshot: impl FnOnce(u64) -> Result<(), Error>,
+    ) -> Result<u64, Error> {
         let mut watches = self.lock();
         if !watches.contains_key(&(session_id, watch_id.clone())) {
             let session_count = watches
@@ -149,6 +236,18 @@ impl WatchRegistry {
                 return Err(Error::Invalid(Invalid::WatchLimitExceeded));
             }
         }
+        let cursor = profile.as_ref().map_or(0, |(entry, session)| {
+            session
+                .profile_watch_revision
+                .load(Ordering::Relaxed)
+                .max(entry.revision)
+        });
+        validate_snapshot(cursor)?;
+        if let Some((_, session)) = &profile {
+            session
+                .profile_watch_revision
+                .store(cursor, Ordering::Relaxed);
+        }
         watches.insert(
             (session_id, watch_id.clone()),
             Watch {
@@ -156,12 +255,16 @@ impl WatchRegistry {
                 watch_id,
                 namespace,
                 key_prefix,
+                profile_fingerprint: profile
+                    .as_ref()
+                    .map(|(entry, _)| profile_fingerprint(entry)),
+                profile_session: profile.map(|(_, session)| session),
                 delivered: 0,
                 applied: 0,
                 unacked: VecDeque::new(),
             },
         );
-        Ok(())
+        Ok(cursor)
     }
 
     pub(super) fn unregister(&self, session_id: SessionId, watch_id: &str) -> Result<(), Error> {
@@ -234,26 +337,22 @@ impl WatchRegistry {
         now_ms: u64,
         enqueue: impl Fn(SessionId, proto::Notification) -> EnqueueOutcome,
     ) -> Vec<(SessionId, proto::Notification)> {
-        let identities = if events.iter().any(is_profile_status_event) {
-            profiles::camera_profile_ids(state).ok()
-        } else {
-            None
-        };
+        // Configuration reads may touch disk. Never run them under the global watch lock.
+        let has_profiles = events.iter().any(profile_view::needs_projection);
+        let _inventory = has_profiles.then(|| self.lock_profile_views());
+        let mut projections = profile_view::Batch::new(self, state, events, has_profiles);
         let mut sent = Vec::new();
         let mut watches = self.lock();
         let mut closed: Vec<(Watch, CloseReason)> = Vec::new();
         if pending_overflowed {
-            closed.extend(watches.drain().map(|(_, watch)| {
-                (
-                    Watch {
-                        unacked: VecDeque::new(),
-                        ..watch
-                    },
-                    CloseReason::BufferOverflow,
-                )
+            closed.extend(watches.drain().map(|(_, mut watch)| {
+                watch.unacked = VecDeque::new();
+                (watch, CloseReason::BufferOverflow)
             }));
         }
-        for event in events {
+        for (index, event) in events.iter().enumerate() {
+            let mut visible_revisions = HashMap::new();
+            let mut unscoped = None;
             let layout = validate_namespace(&event.namespace).ok();
             let mut terminate: Vec<((SessionId, String), Option<CloseReason>)> = Vec::new();
             for (key, watch) in watches.iter_mut() {
@@ -264,21 +363,19 @@ impl WatchRegistry {
                     terminate.push((key.clone(), Some(CloseReason::AuthorizationRevoked)));
                     continue;
                 }
-                watch.delivered += 1;
-                let sequence = watch.delivered;
-                watch.unacked.push_back(PendingUpdate {
-                    sequence,
-                    #[cfg(test)]
-                    revision: event.revision,
-                    sent_ms: now_ms,
-                });
-                if watch.unacked.len() > MAX_IN_FLIGHT_UPDATES {
-                    terminate.push((key.clone(), Some(CloseReason::BufferOverflow)));
+                let projection =
+                    projections.for_session(state, watch.session_id, index, event, &mut unscoped);
+                let Some(revision) = projection.visible_revision(watch, &mut visible_revisions)
+                else {
                     continue;
-                }
-                let projected_event =
-                    project_event_for_watch(state, watch.session_id, event, identities.as_ref());
-                let notification = update_notification(watch, &projected_event, sequence);
+                };
+                let notification = match watch.queue_update(&projection.event, revision, now_ms) {
+                    Ok(notification) => notification,
+                    Err(reason) => {
+                        terminate.push((key.clone(), Some(reason)));
+                        continue;
+                    }
+                };
                 match enqueue(watch.session_id, notification.clone()) {
                     EnqueueOutcome::Sent => {
                         sent.push((watch.session_id, notification));
@@ -297,12 +394,7 @@ impl WatchRegistry {
                 }
             }
         }
-        for (watch, reason) in closed {
-            let notification = closed_notification(&watch, reason);
-            if enqueue(watch.session_id, notification.clone()) == EnqueueOutcome::Sent {
-                sent.push((watch.session_id, notification));
-            }
-        }
+        send_closures(closed, enqueue, &mut sent);
         sent
     }
 
@@ -342,12 +434,7 @@ impl WatchRegistry {
             }
         }
         drop(watches);
-        for (watch, reason) in closed {
-            let notification = closed_notification(&watch, reason);
-            if enqueue(watch.session_id, notification.clone()) == EnqueueOutcome::Sent {
-                sent.push((watch.session_id, notification));
-            }
-        }
+        send_closures(closed, enqueue, &mut sent);
         sent
     }
 }
@@ -391,71 +478,70 @@ fn session_authorized(
     .is_ok()
 }
 
-fn update_notification(watch: &Watch, event: &WatchEvent, sequence: u64) -> proto::Notification {
+fn update_notification(
+    watch: &Watch,
+    event: &WatchEvent,
+    sequence: u64,
+    revision: u64,
+) -> Option<proto::Notification> {
+    use prost::Message as _;
     let (kind, entry) = match &event.kind {
+        WatchEventKind::ResnapshotRequired
+        | WatchEventKind::ProfileObservation { .. }
+        | WatchEventKind::ProfileHeader { .. } => return None,
+        WatchEventKind::Put(entry)
+            if is_profile_status_event(event)
+                && entry.value.encoded_len() > profiles::PROFILE_DOCUMENT_BYTES_MAX =>
+        {
+            return None;
+        }
         WatchEventKind::Put(entry) => (proto::StateStoreUpdateKind::Put, Some(proto_entry(entry))),
         WatchEventKind::Delete => (proto::StateStoreUpdateKind::Delete, None),
         WatchEventKind::Expire => (proto::StateStoreUpdateKind::Expire, None),
     };
-    proto::Notification {
+    Some(proto::Notification {
         event: Some(notification::Event::StateStoreWatchUpdate(
             proto::StateStoreWatchUpdate {
                 watch_id: watch.watch_id.clone(),
                 namespace: event.namespace.clone(),
                 key: event.key.clone(),
-                revision: event.revision,
+                revision,
                 kind: kind as i32,
                 entry,
                 watch_sequence: sequence,
             },
         )),
-    }
+    })
 }
 
 fn is_profile_status_event(event: &WatchEvent) -> bool {
     event.namespace == profiles::NAMESPACE
-        && event.key == profiles::STATUS_KEY
-        && matches!(event.kind, WatchEventKind::Put(_))
+        && profiles::is_status_key(&event.key)
+        && matches!(
+            event.kind,
+            WatchEventKind::Put(_) | WatchEventKind::ProfileObservation { .. }
+        )
 }
 
-fn project_event_for_watch(
-    state: &ServerState,
-    session_id: SessionId,
-    event: &WatchEvent,
-    identities: Option<&crate::keeppeek::CameraProfileIds>,
-) -> WatchEvent {
-    if !is_profile_status_event(event) {
-        return event.clone();
+fn profile_fingerprint(entry: &StoredEntry) -> [u8; 32] {
+    thread_local! {
+        static ENCODED_PROFILE: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
     }
-    let principal = state
-        .api_session_owners
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&session_id)
-        .map(|session| session.principal.clone());
-    if principal
-        .as_ref()
-        .is_some_and(|principal| principal.role == AccessRole::Administrator)
-    {
-        return event.clone();
-    }
-    let visible = principal
-        .as_ref()
-        .map(|principal| profiles::visible_profile_camera_ids(state, principal, identities))
-        .unwrap_or_default();
-    let mut projected = event.clone();
-    if let WatchEventKind::Put(entry) = &mut projected.kind
-        && let Some(value) = entry.value.fields.get_mut("cameras")
-    {
-        if let Some(prost_types::value::Kind::StructValue(cameras)) = &mut value.kind {
-            cameras.fields.retain(|id, _| visible.contains(id));
-        } else {
-            value.kind = Some(prost_types::value::Kind::StructValue(
-                prost_types::Struct::default(),
-            ));
-        }
-    }
-    projected
+    // Only validated profile documents reach this path. Reuse the encoding
+    // buffer across projections on this thread without taking another lock.
+    ENCODED_PROFILE.with_borrow_mut(|buffer| {
+        buffer.clear();
+        entry
+            .value
+            .encode(buffer)
+            .expect("encoding into a Vec is infallible");
+        Sha256::new()
+            .chain_update(entry.schema.as_bytes())
+            .chain_update(entry.revision.to_be_bytes())
+            .chain_update(buffer.as_slice())
+            .finalize()
+            .into()
+    })
 }
 
 fn closed_notification(watch: &Watch, reason: CloseReason) -> proto::Notification {
@@ -617,7 +703,7 @@ mod tests {
             }),
         };
 
-        let projected = project_event_for_watch(&state, session_id, &event, None);
+        let projected = profile_view::SessionView::new(&state, session_id, None).project(&event);
         let WatchEventKind::Put(entry) = projected.kind else {
             panic!("status projection must keep its entry update");
         };
@@ -798,6 +884,56 @@ mod tests {
             proto::StateStoreWatchCloseReason::BufferOverflow as i32
         );
         assert_eq!(delivered.len(), 1, "only the close is reported");
+    }
+
+    #[test]
+    fn unrepresentable_profile_updates_close_for_a_new_snapshot_and_allow_reopening() {
+        let state = ServerState::empty();
+        let session = SessionId::from_u64(241);
+        admin_session(&state, session);
+        let watches = &state.state_store_watches;
+        let namespace = profiles::NAMESPACE;
+        let key = profiles::STATUS_KEY;
+        let mut large = test_entry(namespace, key, 2);
+        large.value.fields.insert(
+            "value".into(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::StringValue(
+                    "x".repeat(profiles::PROFILE_DOCUMENT_BYTES_MAX + 1),
+                )),
+            },
+        );
+        for kind in [
+            WatchEventKind::ResnapshotRequired,
+            WatchEventKind::Put(large),
+        ] {
+            register(&state, session, "status", namespace, key);
+            let event = WatchEvent {
+                namespace: namespace.into(),
+                key: key.into(),
+                revision: 2,
+                kind,
+            };
+            let (_, enqueue) = recorder();
+            let sent = watches.publish(&state, &[event], false, NOW_MS, enqueue);
+            assert_eq!(sent.len(), 1);
+            assert_eq!(
+                close_of(&sent[0].1).reason,
+                proto::StateStoreWatchCloseReason::SnapshotSendFailed as i32
+            );
+            assert!(!watches.owns_watch(session, "status"));
+        }
+        register(&state, session, "status", namespace, key);
+        let (_, enqueue) = recorder();
+        let sent = watches.publish(
+            &state,
+            &[put_event(namespace, key, 3)],
+            false,
+            NOW_MS,
+            enqueue,
+        );
+        assert_eq!(sent.len(), 1);
+        assert!(watches.owns_watch(session, "status"));
     }
 
     #[test]

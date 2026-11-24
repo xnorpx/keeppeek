@@ -773,6 +773,7 @@
 						? 'cursor-grab'
 						: 'cursor-grabbing'}"
 					style={`top: ${playheadTop}px`}
+					data-recording-timeline-playhead-ms={displayedPlayheadMs}
 					aria-label={`Playback position at ${formatTime(displayedPlayheadMs)} UTC. Drag vertically to seek.`}
 					title="Drag playback position"
 					onpointerdown={beginPlayheadDrag}
