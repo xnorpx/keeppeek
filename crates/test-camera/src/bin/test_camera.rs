@@ -34,7 +34,14 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Start a loopback-only fake Hikvision ISAPI device with test/test credentials.
-    Hikvision,
+    Hikvision {
+        /// Serve this MP4 as both live RTSP streams alongside the ISAPI device.
+        #[arg(long)]
+        media: Option<PathBuf>,
+        /// Answer single-byte speaker status requests on stdin for browser tests.
+        #[arg(long, requires = "media")]
+        speaker_observations: bool,
+    },
     /// Start a local RTSP camera.
     Rtsp(CameraArgs),
     /// Start a local Reolink camera.
@@ -123,7 +130,10 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     match Cli::parse().command {
-        Command::Hikvision => serve_hikvision(),
+        Command::Hikvision {
+            media,
+            speaker_observations,
+        } => serve_hikvision(media.as_deref(), speaker_observations),
         Command::Rtsp(command) => serve_camera(command, false),
         Command::ReoProto(command) => serve_camera(command, true),
         Command::SeedRecording(command) => {
@@ -154,12 +164,43 @@ fn seed(command: SeedRecordingArgs) -> anyhow::Result<()> {
     })
 }
 
-fn serve_hikvision() -> anyhow::Result<()> {
-    let camera = test_camera::hikvision::FakeHikvision::builder().start()?;
-    println!(
-        "[test-camera.hikvision]\nip = \"127.0.0.1\"\nmanufacturer = \"Hikvision\"\nusername = \"test\"\npassword = \"test\"\nhttp_port = {}",
-        camera.address().port()
-    );
+fn serve_hikvision(
+    media: Option<&std::path::Path>,
+    speaker_observations: bool,
+) -> anyhow::Result<()> {
+    let camera = test_camera::hikvision::FakeHikvision::builder()
+        .observe_upload_closure(speaker_observations)
+        .start()?;
+    let streams = media
+        .map(|path| {
+            TestCameraBuilder::rtsp(path, path)
+                .realtime_start_at(Duration::ZERO)
+                .start()
+        })
+        .transpose()?;
+    if let Some(streams) = &streams {
+        let config = streams.connection().toml_entry("hikvision");
+        let (table, settings) = config.split_once('\n').ok_or_else(|| {
+            anyhow::anyhow!("generated camera configuration is missing its table")
+        })?;
+        let settings = settings
+            .lines()
+            .filter(|line| !line.starts_with("http_port = "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        println!(
+            "{table}\nmanufacturer = \"Hikvision\"\nhttp_port = {}\n{settings}",
+            camera.address().port()
+        );
+    } else {
+        println!(
+            "[test-camera.hikvision]\nip = \"127.0.0.1\"\nmanufacturer = \"Hikvision\"\nusername = \"test\"\npassword = \"test\"\nhttp_port = {}",
+            camera.address().port()
+        );
+    }
+    if speaker_observations {
+        return observe_hikvision_speaker(&camera);
+    }
     tracing::info!(
         origin = camera.origin(),
         "fake Hikvision ISAPI device is ready"
@@ -170,6 +211,32 @@ fn serve_hikvision() -> anyhow::Result<()> {
     })?;
     let _ = stopped.recv();
     drop(camera);
+    Ok(())
+}
+
+// The fixture accepts one bounded command per observation and emits only aggregate signal evidence.
+fn observe_hikvision_speaker(camera: &test_camera::hikvision::FakeHikvision) -> anyhow::Result<()> {
+    use std::io::{Read, Write};
+    let mut input = std::io::stdin().lock();
+    let mut command = [0];
+    while input.read(&mut command)? == 1 {
+        match command[0] {
+            b'q' => break,
+            b's' => {
+                let speaker = camera.speaker_observation();
+                println!(
+                    "speaker {} {} {} {} {}",
+                    speaker.active,
+                    speaker.bytes,
+                    speaker.audible,
+                    speaker.crossings,
+                    speaker.peer_closed_uploads,
+                );
+                std::io::stdout().flush()?;
+            }
+            _ => anyhow::bail!("unexpected speaker observation command"),
+        }
+    }
     Ok(())
 }
 

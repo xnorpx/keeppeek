@@ -61,6 +61,7 @@ impl Depacketizer {
             ));
         }
         self.pending = Some(super::AudioFrame {
+            packet_timestamp: pkt.timestamp(),
             ctx: *pkt.ctx(),
             loss: pkt.loss(),
             stream_id: pkt.stream_id(),
