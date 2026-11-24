@@ -6,6 +6,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	readdirSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync
@@ -155,12 +156,13 @@ describe('publishWiki', () => {
 	});
 
 	test.each(['home.md', 'HOME.md'])(
-		'refuses a manual Wiki title collision with %s on case-sensitive filesystems',
+		'refuses a manual Wiki title collision with %s without changing the checkout',
 		(path) => {
 			commitManual(path, 'Manual home');
 			expect(() => publishWiki(generated, wiki)).toThrow(/collision/i);
 			expect(readFileSync(join(wiki, path), 'utf8')).toBe('Manual home');
-			expect(existsSync(join(wiki, 'Home.md'))).toBe(false);
+			expect(readdirSync(wiki)).toContain(path);
+			expect(readdirSync(wiki)).not.toContain('Home.md');
 			expect(git(wiki, 'status', '--porcelain')).toBe('');
 		}
 	);
