@@ -559,6 +559,7 @@ impl AudioSampleEntryBuilder<'_> {
 /// An audio frame, which consists of one or more samples.
 #[derive(Eq, PartialEq)]
 pub struct AudioFrame {
+    packet_timestamp: crate::Timestamp,
     ctx: crate::PacketContext,
     stream_id: usize,
     timestamp: crate::Timestamp,
@@ -568,6 +569,12 @@ pub struct AudioFrame {
 }
 
 impl AudioFrame {
+    /// Timestamp carried in the original RTP header. All access units aggregated in one packet
+    /// share this clock reading, even when their derived codec presentation timestamps differ.
+    pub const fn packet_timestamp(&self) -> crate::Timestamp {
+        self.packet_timestamp
+    }
+
     #[inline]
     pub const fn ctx(&self) -> &crate::PacketContext {
         &self.ctx
@@ -1008,6 +1015,7 @@ mod tests {
     fn audio_frame_duration_uses_frame_length_and_clock_rate() {
         let clock_rate = NonZeroU32::new(48_000).unwrap();
         let frame = AudioFrame {
+            packet_timestamp: crate::Timestamp::new(0, clock_rate, 0).unwrap(),
             ctx: crate::PacketContext::dummy(),
             stream_id: 0,
             timestamp: crate::Timestamp::new(0, clock_rate, 0).unwrap(),

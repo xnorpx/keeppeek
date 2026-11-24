@@ -15,6 +15,8 @@ use std::{
 };
 use uuid::Uuid;
 mod initialization;
+#[cfg(test)]
+mod source_timing_measurement;
 mod volume_file;
 use volume_file::WriterFile;
 
@@ -55,6 +57,7 @@ pub struct MediumTermWriter {
     write_buffer_bytes: usize,
     reservation: Option<Reservation>,
     named_volume: bool,
+    pub(super) recovery_limit_reached: bool,
 }
 
 enum WriterState {
@@ -205,6 +208,7 @@ impl MediumTermWriter {
             write_buffer_bytes,
             reservation,
             named_volume,
+            recovery_limit_reached: false,
         })
     }
 
@@ -269,6 +273,9 @@ impl MediumTermWriter {
     }
 
     fn append_frame(&mut self, rf: RecordingFrame) -> std::io::Result<WriteProgress> {
+        if self.recovery_limit_reached {
+            return Ok(WriteProgress::default());
+        }
         let keyframe = rf.is_video_keyframe();
         if keyframe && self.segment_origin.is_none() {
             self.segment_origin = Some(rf.received_at);
@@ -309,14 +316,24 @@ impl MediumTermWriter {
         // A frame error can leave the old fragment pending. Only a successful new keyframe
         // admits dependent frames, so failed boundaries cannot reset the previous GOP's budget.
         self.pending_gop_bytes = None;
-        if matches!(self.state, WriterState::WaitingForKeyframe) {
+        let accepted = if matches!(self.state, WriterState::WaitingForKeyframe) {
             self.state = WriterState::Preparing(vec![rf]);
+            true
         } else {
-            if matches!(self.state, WriterState::Preparing(_)) && keyframe {
+            // Limit codec discovery to the largest GOP that could fit its sample table in one moof.
+            const PREPARATION_FRAMES_MAX: usize = (super::RECORDING_BOX_BYTES_MAX
+                / mp4::FragmentedMetadataUsage::SAMPLE_TABLE_ENTRY_BYTES_MAX)
+                as usize;
+            if matches!(&self.state, WriterState::Preparing(frames)
+                if keyframe || frames.len() >= PREPARATION_FRAMES_MAX)
+            {
                 self.activate_prepared()?;
             }
             match &mut self.state {
-                WriterState::Preparing(frames) => frames.push(rf),
+                WriterState::Preparing(frames) => {
+                    frames.push(rf);
+                    true
+                }
                 WriterState::Active(_) => self.write_frame(rf)?,
                 WriterState::WaitingForKeyframe => {
                     return Err(std::io::Error::other(
@@ -324,10 +341,10 @@ impl MediumTermWriter {
                     ));
                 }
             }
-        }
-        self.pending_gop_bytes = Some(bytes);
+        };
+        self.pending_gop_bytes = Some(if accepted { bytes } else { previous_bytes });
         Ok(WriteProgress {
-            accepted: true,
+            accepted,
             recorded_duration: Duration::ZERO,
             keyframe_gap: false,
         })
@@ -424,7 +441,18 @@ impl MediumTermWriter {
         self.append_bounded(frame)
     }
 
+    pub(super) fn activate_for_rotation(&mut self) -> std::io::Result<Duration> {
+        if !matches!(self.state, WriterState::Preparing(_)) {
+            return Ok(Duration::ZERO);
+        }
+        self.activate_prepared()?;
+        Ok(self.take_video_progress())
+    }
+
     fn activate_prepared(&mut self) -> std::io::Result<()> {
+        if !matches!(self.state, WriterState::Preparing(_)) {
+            return Ok(());
+        }
         let state = std::mem::replace(&mut self.state, WriterState::WaitingForKeyframe);
         let WriterState::Preparing(frames) = state else {
             self.state = state;
@@ -533,11 +561,22 @@ impl MediumTermWriter {
         Ok(())
     }
 
-    fn write_frame(&mut self, rf: RecordingFrame) -> std::io::Result<()> {
+    fn write_frame(&mut self, rf: RecordingFrame) -> std::io::Result<bool> {
         let elapsed = self.elapsed_at(rf.received_at);
         let WriterState::Active(ref mut active) = self.state else {
-            return Ok(());
+            return Ok(false);
         };
+        if self.recovery_limit_reached {
+            return Ok(false);
+        }
+        if !recording_can_append_sample(active.writer.metadata_usage()) {
+            self.recovery_limit_reached = true;
+            tracing::warn!(
+                recording = self.recording_id,
+                "recording recovery budget exhausted; retaining valid prefix until the next keyframe"
+            );
+            return Ok(false);
+        }
 
         match rf.frame {
             MediaFrame::Video(video) => {
@@ -609,7 +648,7 @@ impl MediumTermWriter {
                 let data_len = video.data.len();
                 active
                     .writer
-                    .write_sample_with_description(
+                    .write_sample_with_source_timing(
                         active.video_track,
                         active.video_sample_description_index,
                         mp4::Mp4Sample {
@@ -619,6 +658,9 @@ impl MediumTermWriter {
                             is_sync: video.is_keyframe,
                             bytes: video.data,
                         },
+                        rf.source_rtp
+                            .as_ref()
+                            .map(super::segment::RecordingRtpTime::packet),
                     )
                     .map_err(mp4_err)?;
                 active.fragment_start_dts.get_or_insert(dts);
@@ -629,16 +671,16 @@ impl MediumTermWriter {
             }
             MediaFrame::Audio(audio) => {
                 if audio.codec != AudioCodec::Aac {
-                    return Ok(());
+                    return Ok(false);
                 }
 
                 let (raw_aac, _) = adts::strip_adts(&audio.data);
                 if raw_aac.is_empty() {
-                    return Ok(());
+                    return Ok(false);
                 }
 
                 let Some(track) = active.audio_track else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 let camera_dts = (rf.timestamp.is_some() || active.audio_after_gap).then(|| {
                     timestamp_ticks_or_fallback(
@@ -659,8 +701,9 @@ impl MediumTermWriter {
 
                 active
                     .writer
-                    .write_sample(
+                    .write_sample_with_source_timing(
                         track,
+                        1,
                         mp4::Mp4Sample {
                             start_time: dts,
                             duration: sample_duration,
@@ -668,6 +711,9 @@ impl MediumTermWriter {
                             is_sync: true,
                             bytes: audio.data.slice(audio.data.len() - raw_aac.len()..),
                         },
+                        rf.source_rtp
+                            .as_ref()
+                            .map(super::segment::RecordingRtpTime::packet),
                     )
                     .map_err(mp4_err)?;
                 active.next_audio_dts = Some(dts + u64::from(sample_duration));
@@ -677,7 +723,7 @@ impl MediumTermWriter {
                 self.bytes_written += raw_aac.len() as u64;
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn commit_fragment(
@@ -871,6 +917,18 @@ impl MediumTermWriter {
         &self.recording_id
     }
 
+    /// Leave room for the final GOP when approaching the bounded recovery scanner's limits.
+    pub(super) fn needs_rotation(&self, received_at: Instant, duration: Duration) -> bool {
+        if self.recovery_limit_reached || self.segment_age_at(received_at) >= duration {
+            return true;
+        }
+        let WriterState::Active(active) = &self.state else {
+            return false;
+        };
+        let usage = active.writer.metadata_usage();
+        super::recording_metadata_rotation_due(usage) || !recording_can_append_sample(usage)
+    }
+
     /// Segment boundaries follow the media receipt timeline, including queued and replayed frames.
     pub(super) fn segment_age_at(&self, received: Instant) -> Duration {
         received.saturating_duration_since(self.started_at)
@@ -880,6 +938,17 @@ impl MediumTermWriter {
     pub fn elapsed(&self) -> Duration {
         self.started_at.elapsed()
     }
+}
+
+/// Reserve the worst cost of one more access unit before changing any pending samples.
+/// A keyframe may flush the previous moof/mdat then start a new pair, a track table,
+/// and one source event with a UUID header and a fresh discontinuity anchor.
+const fn recording_can_append_sample(usage: mp4::FragmentedMetadataUsage) -> bool {
+    let next = usage.with_next_sample();
+    next.bytes <= super::RECORDING_METADATA_BYTES_MAX
+        && next.boxes <= super::RECORDING_BOX_COUNT_MAX as u64
+        && next.fragments as usize <= super::RECORDING_FRAGMENT_COUNT_MAX
+        && next.pending_moof_bytes <= super::RECORDING_BOX_BYTES_MAX
 }
 
 pub(super) fn keyframe_budget_error() -> std::io::Error {
@@ -1212,8 +1281,9 @@ mod tests {
         Ok(())
     }
 
-    fn video_frame(received_at: Instant, timestamp: Duration) -> RecordingFrame {
+    pub(super) fn video_frame(received_at: Instant, timestamp: Duration) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at,
             timestamp: Some(timestamp),
             frame: MediaFrame::Video(VideoFrame {
@@ -1238,7 +1308,21 @@ mod tests {
         let end = start + Duration::from_millis(100);
         let mut buffers = PreRecordBuffers::new(1024, 1024);
         buffers.configure("camera", "main", Duration::from_secs(2));
-        let first = video_frame(start, Duration::ZERO);
+        let video_clock = mp4::SourceRtpPacket {
+            epoch_id: [5; 16],
+            session_id: [9; 16],
+            clock_rate: 90_000.try_into().unwrap(),
+            timestamp: 4_294_967_313,
+        };
+        let audio_clock = mp4::SourceRtpPacket {
+            clock_rate: 16_000.try_into().unwrap(),
+            timestamp: -2,
+            ..video_clock
+        };
+        let mut first = video_frame(start, Duration::ZERO);
+        first.source_rtp = Some(crate::storage::segment::RecordingRtpTime::from_packet(
+            video_clock,
+        ));
         let video_bytes = first.byte_len();
         buffers.push("camera", "main", first, start);
         let audio_data = Bytes::from_static(&[0xff, 0xf1, 0x4c, 0x40, 0, 0, 0, 0xaa]);
@@ -1247,6 +1331,9 @@ mod tests {
             "camera",
             "main",
             RecordingFrame {
+                source_rtp: Some(crate::storage::segment::RecordingRtpTime::from_packet(
+                    audio_clock,
+                )),
                 received_at: start,
                 timestamp: Some(Duration::ZERO),
                 frame: MediaFrame::Audio(AudioFrame {
@@ -1283,6 +1370,15 @@ mod tests {
         assert_eq!(buffers.bytes(), 0);
         let parsed = mp4::read_mp4(File::open(path).unwrap()).unwrap();
         assert_eq!(parsed.tracks().len(), 2);
+        assert_eq!(
+            parsed.source_rtp_time(1, 1).unwrap().unwrap().timestamp,
+            video_clock.timestamp
+        );
+        assert_eq!(parsed.source_rtp_time(1, 2).unwrap(), None);
+        assert_eq!(
+            parsed.source_rtp_time(2, 1).unwrap().unwrap().timestamp,
+            audio_clock.timestamp
+        );
         drop(parsed);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1295,6 +1391,7 @@ mod tests {
             let start = Instant::now();
             let mut writer = MediumTermWriter::create(&root, "camera/main", start, 8192).unwrap();
             let audio = |ms| RecordingFrame {
+                source_rtp: None,
                 received_at: start + Duration::from_millis(ms),
                 timestamp: None,
                 frame: MediaFrame::Audio(AudioFrame {
@@ -1352,6 +1449,7 @@ mod tests {
         for received_ms in [10, 70] {
             writer
                 .append_received(RecordingFrame {
+                    source_rtp: None,
                     received_at: start + Duration::from_millis(received_ms),
                     timestamp: Some(Duration::ZERO),
                     frame: MediaFrame::Audio(AudioFrame {
@@ -1391,6 +1489,7 @@ mod tests {
 
     fn incomplete_video_frame(received_at: Instant, timestamp: Duration) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at,
             timestamp: Some(timestamp),
             frame: MediaFrame::Video(VideoFrame {
@@ -1594,6 +1693,7 @@ mod tests {
             .unwrap();
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(80),
                 timestamp: Some(Duration::from_millis(80)),
                 frame: MediaFrame::Video(VideoFrame {
@@ -1641,6 +1741,7 @@ mod tests {
         for offset_ms in [0, 40] {
             writer
                 .append_one(RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: MediaFrame::Video(VideoFrame {
@@ -1655,6 +1756,7 @@ mod tests {
         }
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(80),
                 timestamp: Some(Duration::from_millis(80)),
                 frame: MediaFrame::Video(VideoFrame {
@@ -1695,6 +1797,7 @@ mod tests {
         assert!(!writer.append_bounded(predictive)?.accepted);
         assert!(writer.append_bounded(key(40))?.accepted);
         let audio = |codec, data| RecordingFrame {
+            source_rtp: None,
             received_at: start + Duration::from_millis(120),
             timestamp: None,
             frame: MediaFrame::Audio(AudioFrame {
@@ -1913,6 +2016,7 @@ mod tests {
         for offset_ms in [0, 1_000] {
             writer
                 .append_one(RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: MediaFrame::Video(VideoFrame {
@@ -1970,6 +2074,7 @@ mod tests {
         let frames = [
             video_frame(started_at, Duration::ZERO),
             RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(41),
                 timestamp: Some(Duration::from_millis(41)),
                 frame: MediaFrame::Video(VideoFrame {
@@ -1981,6 +2086,7 @@ mod tests {
                 }),
             },
             RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(97),
                 timestamp: Some(Duration::from_millis(97)),
                 frame: MediaFrame::Video(VideoFrame {
@@ -2059,6 +2165,7 @@ mod tests {
         ] {
             writer
                 .append_one(RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: MediaFrame::Video(VideoFrame {
@@ -2110,6 +2217,7 @@ mod tests {
         for offset_ms in [0, 40] {
             writer
                 .append_one(RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: MediaFrame::Video(VideoFrame {
@@ -2124,6 +2232,7 @@ mod tests {
         }
         let error = writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(80),
                 timestamp: Some(Duration::from_millis(80)),
                 frame: MediaFrame::Video(VideoFrame {
@@ -2184,6 +2293,7 @@ mod tests {
             .unwrap();
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(10),
                 timestamp: Some(Duration::from_millis(10)),
                 frame: MediaFrame::Audio(AudioFrame {
@@ -2196,6 +2306,7 @@ mod tests {
             .unwrap();
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(80),
                 timestamp: None,
                 frame: MediaFrame::Audio(AudioFrame {
@@ -2208,6 +2319,7 @@ mod tests {
             .unwrap();
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started_at + Duration::from_millis(100),
                 timestamp: Some(Duration::from_millis(100)),
                 frame: MediaFrame::Audio(AudioFrame {
