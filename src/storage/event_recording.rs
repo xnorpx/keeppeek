@@ -841,6 +841,7 @@ mod tests {
 
     fn video(at: Instant) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at: at,
             timestamp: None,
             frame: MediaFrame::Video(VideoFrame {
@@ -1094,6 +1095,7 @@ mod tests {
         for offset in [10, 1990] {
             let at = start + Duration::from_millis(offset);
             let frame = RecordingFrame {
+                source_rtp: None,
                 received_at: at,
                 timestamp: None,
                 frame: MediaFrame::Audio(AudioFrame {
@@ -1197,6 +1199,7 @@ mod tests {
         input(&mut runtime, "main", start);
         let at = start + Duration::from_millis(100);
         let frame = RecordingFrame {
+            source_rtp: None,
             received_at: at,
             timestamp: None,
             frame: MediaFrame::Audio(AudioFrame {
