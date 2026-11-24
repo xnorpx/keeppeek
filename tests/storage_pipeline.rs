@@ -35,6 +35,7 @@ fn test_output_dir(name: &str) -> PathBuf {
 fn to_recording_frame(ef: EncodedFrame) -> RecordingFrame {
     let avcc = annexb_to_avcc(&ef.data);
     RecordingFrame {
+        source_rtp: None,
         received_at: Instant::now(),
         timestamp: None,
         frame: MediaFrame::Video(VideoFrame {

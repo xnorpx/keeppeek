@@ -106,6 +106,7 @@ fn write_source(root: &Path, catalog: RecordingCatalogHandle) -> PathBuf {
         };
         writer
             .append_one(RecordingFrame {
+                source_rtp: None,
                 received_at: started + offset,
                 timestamp: Some(offset),
                 frame,
@@ -167,6 +168,7 @@ fn export_neighbors_follow_the_captured_stream_and_resolve_both_boundary_directi
         cancel: Arc::new(AtomicBool::new(false)),
         file_name: "neighbors.mp4".into(),
         audio_offset_ms: 200,
+        maximum_bytes: None,
         recording_stream_id: Some("front-door/sub".into()),
     };
     for (index, offset) in [(1, 200), (0, -200)] {
@@ -194,6 +196,20 @@ fn export_neighbors_follow_the_captured_stream_and_resolve_both_boundary_directi
             .is_empty()
     );
     drop(attempt);
+    fixture.finish();
+}
+
+#[test]
+fn guest_preparation_declines_corrected_audio_before_registering_any_export() {
+    let fixture = Fixture::new(true);
+    let mut request = fixture.request.clone();
+    request.guest_range_preparation = Some(true);
+    let error = create_export_job(&fixture.state, "owner", request).unwrap_err();
+    assert_eq!(
+        error.message,
+        crate::test_support::guest_range_recovery_messages()["correctedAudio"]
+    );
+    assert!(fixture.state.export_jobs.lock().unwrap().is_empty());
     fixture.finish();
 }
 

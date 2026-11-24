@@ -569,6 +569,7 @@ mod tests {
 
     fn video(now: Instant, keyframe: bool, bytes: usize) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at: now,
             timestamp: None,
             frame: MediaFrame::Video(VideoFrame {
@@ -583,6 +584,7 @@ mod tests {
 
     fn audio(now: Instant, timestamp: Option<Duration>, duration_ms: u64) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at: now,
             timestamp,
             frame: MediaFrame::Audio(crate::storage::frame::AudioFrame {

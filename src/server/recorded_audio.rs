@@ -54,6 +54,19 @@ pub(super) fn preview(
     Ok(timing)
 }
 
+pub(super) fn require_uncorrected_for_range(
+    timing: Option<&proto::RecordedAudioTiming>,
+) -> Result<(), ControlCommandError> {
+    if timing.is_some_and(|timing| timing.applied_offset_ms != 0) {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "recorded audio correction prevents verification of the selected source interval",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_snapshot(
     timing: Option<&proto::RecordedAudioTiming>,
 ) -> Result<i32, ControlCommandError> {

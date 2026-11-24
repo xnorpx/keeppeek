@@ -93,6 +93,7 @@ pub struct Builder {
     username: String,
     password: String,
     lease: Duration,
+    renewal_lease: Duration,
     notifications: Vec<String>,
     max_timeout: Duration,
     max_message_limit: u32,
@@ -110,6 +111,13 @@ impl Builder {
     /// Caps granted leases at this positive duration, up to one day; the default is 90 seconds.
     pub const fn lease(mut self, lease: Duration) -> Self {
         self.lease = lease;
+        self.renewal_lease = lease;
+        self
+    }
+
+    /// Sets the lease granted by a successful Renew independently of the initial subscription.
+    pub const fn renewal_lease(mut self, lease: Duration) -> Self {
+        self.renewal_lease = lease;
         self
     }
 
@@ -149,7 +157,10 @@ impl Builder {
             "invalid fake ONVIF credentials"
         );
         anyhow::ensure!(
-            !self.lease.is_zero() && self.lease <= LEASE_MAX,
+            !self.lease.is_zero()
+                && self.lease <= LEASE_MAX
+                && !self.renewal_lease.is_zero()
+                && self.renewal_lease <= LEASE_MAX,
             "invalid fake ONVIF lease"
         );
         anyhow::ensure!(
@@ -197,6 +208,7 @@ impl FakeOnvif {
             username: "test".to_owned(),
             password: "test".to_owned(),
             lease: Duration::from_secs(90),
+            renewal_lease: Duration::from_secs(90),
             notifications: Vec::new(),
             max_timeout: Duration::from_secs(60),
             max_message_limit: 256,
@@ -299,16 +311,25 @@ impl FakeOnvif {
     ///
     /// Counts attempts before timeout and message-limit validation. Returns false on timeout or shutdown.
     pub fn wait_for_pulls(&self, count: u64, timeout: Duration) -> bool {
+        self.wait_for_counter(count, timeout, |state| state.pulls)
+    }
+
+    /// Waits until the device has granted the requested number of renewals.
+    pub fn wait_for_renewals(&self, count: u64, timeout: Duration) -> bool {
+        self.wait_for_counter(count, timeout, |state| state.renews)
+    }
+
+    fn wait_for_counter(&self, count: u64, timeout: Duration, observed: fn(&State) -> u64) -> bool {
         let (state, _) = self
             .shared
             .changed
             .wait_timeout_while(
                 self.shared.state.lock().unwrap(),
                 timeout.min(OBSERVE_WAIT_MAX),
-                |state| state.pulls < count && !state.stopped,
+                |state| observed(state) < count && !state.stopped,
             )
             .unwrap();
-        state.pulls >= count
+        observed(&state) >= count
     }
 
     /// Returns zero or one, excluding expired subscriptions.
