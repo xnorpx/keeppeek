@@ -9053,6 +9053,7 @@ mod tests {
             sample_rate_hz: 8000,
             channel_count: 1,
             timestamp: None,
+            duration: None,
             received_at: Instant::now(),
             data: Bytes::from_static(&[1, 2]),
         };

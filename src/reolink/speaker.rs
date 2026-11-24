@@ -314,6 +314,7 @@ mod tests {
             sample_rate_hz: 8_000,
             channel_count: 1,
             timestamp: None,
+            duration: None,
             received_at: at,
             data: Bytes::from(
                 samples
