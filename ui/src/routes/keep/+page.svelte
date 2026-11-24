@@ -54,6 +54,7 @@
 		withRecordedPreference
 	} from '$lib/playback-preferences';
 	import type { CameraListItem, RecordingEvent, RecordingSegment } from '$lib/types';
+	import RecordedReviewExport from '$lib/components/RecordedReviewExport.svelte';
 	import RecordedReviewWorkspace from '$lib/components/RecordedReviewWorkspace.svelte';
 	import KeepCameraSwitcher from '$lib/components/KeepCameraSwitcher.svelte';
 	import CopyMomentLink from '$lib/components/CopyMomentLink.svelte';
@@ -2666,6 +2667,22 @@
 		void goto(resolve('/keep') + search, { state: page.state, shallow: replace, replace });
 	}
 
+	function exportComparison(
+		at: number,
+		focus: string,
+		stream: RecordedStreamId,
+		review: NonNullable<KeepRoute['review']>
+	) {
+		const search = keepMomentSearchParams({
+			cameraId: focus,
+			timestampMs: at,
+			streamPreference: stream,
+			mode: 'export',
+			review
+		});
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		void goto(resolve('/keep') + '?' + search);
+	}
 	function compareWith(secondId: string) {
 		if (!secondId || !cameraId || playheadMs === null) return;
 		const at =
@@ -2769,15 +2786,28 @@
 
 {#if reviewRoute?.review && reviewRoute.timestampMs !== null}
 	{#key reviewRoute}
-		<RecordedReviewWorkspace
-			{cameras}
-			selection={reviewRoute.review}
-			startMs={reviewRoute.timestampMs}
-			focusedId={reviewRoute.cameraId}
-			preferences={playbackPreferences}
-			updateLink={(at, focus, selection) => navigateReview(at, focus, selection, true)}
-			single={(at, focus) => navigateReview(at, focus)}
-		/>
+		{#if reviewRoute.mode === 'export' && reviewRoute.review.range && (reviewRoute.streamPreference === 'sub' || reviewRoute.streamPreference === 'main') && selectedCamera}
+			<RecordedReviewExport
+				camera={selectedCamera}
+				stream={reviewRoute.streamPreference}
+				range={reviewRoute.review.range}
+				onback={() => {
+					if (reviewRoute?.review && reviewRoute.timestampMs !== null)
+						navigateReview(reviewRoute.timestampMs, reviewRoute.cameraId, reviewRoute.review);
+				}}
+			/>
+		{:else}
+			<RecordedReviewWorkspace
+				{cameras}
+				selection={reviewRoute.review}
+				startMs={reviewRoute.timestampMs}
+				focusedId={reviewRoute.cameraId}
+				preferences={playbackPreferences}
+				updateLink={(at, focus, selection) => navigateReview(at, focus, selection, true)}
+				openExport={exportComparison}
+				single={(at, focus) => navigateReview(at, focus)}
+			/>
+		{/if}
 	{/key}
 {:else}
 	<div

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RecordedReviewRequests } from './recorded-review-requests';
+import { RecordedReviewRequests, reviewExportRecordings } from './recorded-review-requests';
 
 describe('comparison recorder admission', () => {
 	it('serializes operations across cameras and skips a withdrawn camera', async () => {
@@ -47,4 +47,41 @@ describe('comparison recorder admission', () => {
 		connection.resolve();
 		await expect(completed.promise).resolves.toBe(false);
 	}, 10_000);
+});
+
+it('queries only the UTC days touched by the half-open marks and stops after cancellation', async () => {
+	const boundary = Date.UTC(2026, 8, 6);
+	const dates: string[] = [];
+	const client = {
+		getRecordingsInRange: async (_cameras: readonly string[], date: string) => {
+			dates.push(date);
+			return [];
+		}
+	};
+	const controller = new AbortController();
+	await reviewExportRecordings(
+		client,
+		'front',
+		{ startMs: boundary - 1, endMs: boundary },
+		controller.signal
+	);
+	expect(dates).toEqual(['2026-09-05']);
+	dates.length = 0;
+	await reviewExportRecordings(
+		client,
+		'front',
+		{ startMs: boundary - 1, endMs: boundary + 1 },
+		controller.signal
+	);
+	expect(dates).toEqual(['2026-09-05', '2026-09-06']);
+	controller.abort();
+	await expect(
+		reviewExportRecordings(
+			client,
+			'front',
+			{ startMs: boundary - 1, endMs: boundary + 1 },
+			controller.signal
+		)
+	).rejects.toThrow();
+	expect(dates).toHaveLength(2);
 });

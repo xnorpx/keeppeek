@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import {
 	cardAdminKey,
 	cardSourceIds,
@@ -419,6 +420,94 @@ test('add and remove four authorized sources and seek their common UTC without t
 	}
 });
 
+test('exports one focused source and retains the shared cameras, playhead and audio on return', async ({
+	page,
+	context,
+	baseURL
+}) => {
+	test.setTimeout(90_000);
+	if (!baseURL) throw new Error('The export fixture requires a UI origin.');
+	const origin = new URL(baseURL).origin;
+	const server = await startHomeAssistantServer(origin, {
+		trustedLocal: true,
+		reviewFixture: true
+	});
+	const redirect = recordedAudioBackendRoute(origin, server.url);
+	try {
+		await context.route('**/*', redirect);
+		const response = await page.request.get(server.url + '/recording-coverage?stream=sub', {
+			headers: { Authorization: 'Bearer ' + cardAdminKey }
+		});
+		expect(response.ok()).toBeTruthy();
+		const coverage: RecordingCoverageResponse = await response.json();
+		const end = coverage.cameras
+			.find((row) => row.camera_id === cardSourceIds[1])
+			?.streams.find((stream) => stream.stream_id === 'sub')
+			?.ranges.at(-1)?.end_ms;
+		if (end === undefined)
+			throw new Error('The fixture must index the focused recording boundary.');
+		const at = end - 5000;
+		const [first, second] = cardSourceIds;
+		const initial = new URLSearchParams({ camera: first, stream: 'sub', at: String(at) });
+		initial.append('compare', first);
+		initial.append('compare', second);
+		await page.goto('/keep?' + initial);
+		await page.getByRole('combobox', { name: 'Focused camera' }).selectOption(second);
+		await expect(page.getByRole('article', { name: 'card-camera-1' }).locator('video')).toHaveCount(
+			1
+		);
+		await page.getByRole('button', { name: 'Set range start' }).click();
+		await page.getByRole('button', { name: 'Forward five seconds' }).click();
+		await page.getByRole('button', { name: 'Set range end' }).click();
+		await expect(
+			page
+				.getByRole('article', { name: 'card-camera-1' })
+				.getByText('No playable footage at this time')
+		).toBeVisible();
+		await page.getByRole('button', { name: 'Forward five seconds' }).click();
+		await page.getByRole('button', { name: 'Export focused camera' }).click();
+		const panel = page.locator('[data-keep-export]');
+		await expect(panel).toHaveAttribute('data-export-start-ms', String(at));
+		await expect(panel).toHaveAttribute('data-export-end-ms', String(at + 5000));
+		expect(new URL(page.url()).searchParams.get('camera')).toBe(second);
+		expect(new URL(page.url()).searchParams.get('stream')).toBe('sub');
+		const exportUrl = page.url();
+		await page.reload();
+		await expect(panel).toHaveAttribute('data-export-start-ms', String(at));
+		await panel.getByRole('button', { name: 'Create export', exact: true }).click();
+		await expect(panel).toHaveAttribute('data-export-status', 'ready', { timeout: 30_000 });
+		const downloaded = page.waitForEvent('download');
+		await panel.getByRole('button', { name: 'Download', exact: true }).click();
+		const result = await downloaded;
+		const path = await result.path();
+		if (!path) throw new Error('The verified recorder download must produce a local MP4.');
+		const bytes = await readFile(path);
+		expect(bytes.subarray(4, 8).toString('ascii')).toBe('ftyp');
+		expect(bytes.length).toBeGreaterThan(1024);
+		await page.getByRole('button', { name: 'Back to comparison' }).click();
+		await expect(page.getByRole('combobox', { name: 'Focused camera' })).toHaveValue(second);
+		await expect(page.getByRole('combobox', { name: 'Audio source' })).toHaveValue(first);
+		const returned = new URL(page.url()).searchParams;
+		expect(returned.getAll('compare')).toEqual([...cardSourceIds]);
+		expect([returned.get('at'), returned.get('rangeStart'), returned.get('rangeEnd')]).toEqual([
+			String(at + 10000),
+			String(at),
+			String(at + 5000)
+		]);
+		const stale = new URL(exportUrl);
+		stale.searchParams.set('rangeStart', String(at - 80_000));
+		await page.goto(stale.href);
+		await expect(page.getByRole('alert')).toHaveText(/no longer covers the entire selected range/);
+		await expect(panel).toHaveCount(0);
+	} finally {
+		try {
+			await context.unroute('**/*', redirect);
+		} finally {
+			await server.close();
+		}
+	}
+});
+
 async function installDecoderFailure(page: Page) {
 	await page.addInitScript(() => {
 		const native = URL.createObjectURL.bind(URL);
@@ -532,6 +621,10 @@ test('an interrupted comparison clears old frames and returns paused at its last
 				.first()
 				.evaluate((node) => Date.parse(node.getAttribute('datetime') ?? ''));
 		await expect(videos).toHaveCount(2, { timeout: 30_000 });
+		await page.getByRole('button', { name: 'Set range start' }).click();
+		await page.getByRole('button', { name: 'Forward five seconds' }).click();
+		await page.getByRole('button', { name: 'Set range end' }).click();
+		await page.getByRole('button', { name: 'Back five seconds' }).click();
 		await play.click();
 		await expect.poll(firstTime).toBeGreaterThan(at + 1_400);
 		const seen = await firstTime();
@@ -544,6 +637,9 @@ test('an interrupted comparison clears old frames and returns paused at its last
 			cardSourceIds[1]
 		);
 		await expect.poll(firstTime).toBeGreaterThanOrEqual(seen - 250);
+		const restored = new URL(page.url()).searchParams;
+		expect(restored.get('rangeStart')).toBe(String(at));
+		expect(restored.get('rangeEnd')).toBe(String(at + 5000));
 		const peers = await readCardProbe(page);
 		expect(peers.created - peers.closed).toBe(1);
 		expect(peers.overflow).toBe(false);
@@ -594,6 +690,16 @@ test('a comparison with an unavailable focused camera keeps its authorized recor
 			cardSourceIds[1]
 		);
 		await checkSharedPlayAndPause(page, videos);
+		query.set('mode', 'export');
+		query.set('rangeStart', String(at));
+		query.set('rangeEnd', String(at + 1000));
+		await page.goto('/keep?' + query);
+		await expect(
+			page.getByText(
+				'The requested camera is unavailable or you are not authorized to view it. Select an available camera.'
+			)
+		).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Back to comparison' })).toHaveCount(0);
 		const peers = await readCardProbe(page);
 		expect(peers.created - peers.closed).toBe(1);
 	} finally {

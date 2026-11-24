@@ -1,10 +1,13 @@
 import { maximumReviewCameras } from './grid-playback-session';
-import { keepModes, parseKeepMode, type KeepMode } from './keep-modes';
+import { keepModes, MAX_EXPORT_DURATION_MS, parseKeepMode, type KeepMode } from './keep-modes';
 import type { RecordedQualityPreference } from './recorded-playback-policy';
+
+export type KeepReviewRange = { startMs: number; endMs: number };
 
 export type KeepReviewSelection = {
 	cameraIds: readonly string[];
 	audioCameraId: string;
+	range?: KeepReviewRange;
 };
 
 export type RecordingMoment = {
@@ -30,7 +33,18 @@ export type KeepRoute = {
 };
 
 const preferences = ['auto', 'high', 'low', 'main', 'sub'] as const;
-const routeFields = ['camera', 'date', 'at', 'stream', 'mode', 'event', 'returnTo', 'audio'];
+const routeFields = [
+	'camera',
+	'date',
+	'at',
+	'stream',
+	'mode',
+	'event',
+	'returnTo',
+	'audio',
+	'rangeStart',
+	'rangeEnd'
+];
 const returnFields = [
 	'date',
 	'from',
@@ -116,10 +130,17 @@ export function parseKeepRoute(search: string, eventsPath = '/events'): KeepRout
 		? (requestedStream as RecordedQualityPreference)
 		: null;
 	const returnHref = safeEventReturnHref(params.get('returnTo'), eventsPath);
+	const hasRange = params.has('rangeStart') || params.has('rangeEnd');
+	const from = parseMomentTimestamp(params.get('rangeStart'));
+	const to = parseMomentTimestamp(params.get('rangeEnd'));
+	const range =
+		from !== null && to !== null && from < to && to - from <= MAX_EXPORT_DURATION_MS
+			? { startMs: from, endMs: to }
+			: undefined;
 	const review =
 		timestampMs === null
 			? null
-			: reviewSelection(params.getAll('compare'), cameraId, params.get('audio') ?? cameraId);
+			: reviewSelection(params.getAll('compare'), cameraId, params.get('audio') ?? cameraId, range);
 	const invalid =
 		search.length > maximumSearchLength ||
 		params.size > 16 ||
@@ -132,7 +153,11 @@ export function parseKeepRoute(search: string, eventsPath = '/events'): KeepRout
 		(params.has('stream') && streamPreference === null) ||
 		(params.has('mode') && !keepModes.includes(params.get('mode') as KeepMode)) ||
 		(params.has('returnTo') && returnHref === null) ||
-		((params.has('compare') || params.has('audio')) && review === null);
+		((params.has('compare') || params.has('audio') || hasRange) && review === null) ||
+		(hasRange && !range) ||
+		(review !== null &&
+			params.get('mode') === 'export' &&
+			(!range || (streamPreference !== 'main' && streamPreference !== 'sub')));
 	return {
 		cameraId,
 		streamPreference,
@@ -149,7 +174,8 @@ export function parseKeepRoute(search: string, eventsPath = '/events'): KeepRout
 function reviewSelection(
 	cameraIds: readonly string[],
 	focusId: string,
-	audioCameraId: string
+	audioCameraId: string,
+	range?: KeepReviewRange
 ): KeepReviewSelection | null {
 	if (cameraIds.length < 2 || cameraIds.length > maximumReviewCameras) return null;
 	const unique = new Set(cameraIds);
@@ -160,7 +186,15 @@ function reviewSelection(
 		!unique.has(audioCameraId)
 	)
 		return null;
-	return { cameraIds: [...cameraIds], audioCameraId };
+	if (
+		range &&
+		(parseMomentTimestamp(String(range.startMs)) === null ||
+			parseMomentTimestamp(String(range.endMs)) === null ||
+			range.startMs >= range.endMs ||
+			range.endMs - range.startMs > MAX_EXPORT_DURATION_MS)
+	)
+		return null;
+	return { cameraIds: [...cameraIds], audioCameraId, ...(range ? { range } : {}) };
 }
 
 export function keepMomentSearchParams(
@@ -189,11 +223,16 @@ export function keepMomentSearchParams(
 		const selection = reviewSelection(
 			moment.review.cameraIds,
 			moment.cameraId,
-			moment.review.audioCameraId
+			moment.review.audioCameraId,
+			moment.review.range
 		);
 		if (!selection)
 			throw new Error('Select two to four cameras and an audio source from that selection.');
 		for (const id of selection.cameraIds) params.append('compare', id);
+		if (selection.range) {
+			params.set('rangeStart', String(selection.range.startMs));
+			params.set('rangeEnd', String(selection.range.endMs));
+		}
 		if (selection.audioCameraId !== moment.cameraId) params.set('audio', selection.audioCameraId);
 	}
 	if (params.toString().length > maximumSearchLength - 1)

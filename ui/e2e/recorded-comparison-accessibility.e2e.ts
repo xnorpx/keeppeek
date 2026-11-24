@@ -207,6 +207,10 @@ test.describe('portrait comparison', () => {
 					await expect(
 						region.getByRole('article', { name: 'card-camera-1' }).locator('video')
 					).toHaveCount(1);
+					await region.getByRole('button', { name: 'Set range start' }).tap();
+					await region.getByRole('button', { name: 'Forward five seconds' }).tap();
+					await region.getByRole('button', { name: 'Set range end' }).tap();
+					await expect(region.getByRole('button', { name: 'Export focused camera' })).toBeEnabled();
 					await options.tap();
 					await expect(options).toHaveAttribute('aria-expanded', 'false');
 					await expect(region.getByRole('combobox', { name: 'Focused camera' })).toHaveCount(0);

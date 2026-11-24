@@ -1,10 +1,11 @@
 <script lang="ts">
-	import { onMount, tick, untrack } from 'svelte';
+	import { onDestroy, onMount, tick, untrack } from 'svelte';
 	import { resolve } from '$app/paths';
 	import CopyMomentLink from './CopyMomentLink.svelte';
+	import { MAX_EXPORT_DURATION_MS, segmentForExportRange } from '$lib/keep-modes';
 	import { recordedPlaybackRates } from './RecordedPlaybackControls.svelte';
 	import { GridPlaybackSession, maximumReviewCameras } from '$lib/grid-playback-session';
-	import { RecordedReviewRequests } from '$lib/recorded-review-requests';
+	import { RecordedReviewRequests, reviewExportRecordings } from '$lib/recorded-review-requests';
 	import { useControlClient } from '$lib/control-context';
 	import {
 		browserSupportsRecordedEncoding,
@@ -34,6 +35,7 @@
 		focusedId,
 		preferences,
 		updateLink,
+		openExport,
 		single
 	}: {
 		cameras: CameraListItem[];
@@ -42,6 +44,12 @@
 		focusedId: string;
 		preferences: PlaybackPreferenceDocument;
 		updateLink: (at: number, focus: string, selection: KeepReviewSelection) => void;
+		openExport: (
+			at: number,
+			focus: string,
+			stream: RecordedStreamId,
+			selection: KeepReviewSelection
+		) => void;
 		single: (at: number, focus: string) => void;
 	} = $props();
 	const workspaceId = $props.id();
@@ -56,6 +64,22 @@
 	let muted = $state(untrack(() => preferences.media.muted));
 	let epoch = $state(untrack(() => startMs));
 	let playing = $state(false);
+	let rangeStart = $state(untrack(() => selection.range?.startMs ?? null));
+	let rangeEnd = $state(untrack(() => selection.range?.endMs ?? null));
+	const range = $derived(
+		rangeStart !== null &&
+			rangeEnd !== null &&
+			rangeEnd > rangeStart &&
+			rangeEnd - rangeStart <= MAX_EXPORT_DURATION_MS
+			? { startMs: rangeStart, endMs: rangeEnd }
+			: undefined
+	);
+	let ids = $state(untrack(() => [...selection.cameraIds]));
+	const reviewSelection = $derived({
+		cameraIds: ids,
+		audioCameraId: audio,
+		...(range ? { range } : {})
+	});
 	let revision = $state(0);
 	let budget = $state(2);
 	let visible = $state<Record<string, number>>({});
@@ -65,7 +89,6 @@
 	let loadedWindow = $state<number | null>(null);
 	let unavailable = $state(false);
 	let retry = $state(0);
-	let ids = $state(untrack(() => [...selection.cameraIds]));
 	let seekInput = $state(untrack(() => new Date(startMs).toISOString().slice(0, 23)));
 	const authorized = $derived(cameras.filter((c) => ids.includes(c.id)));
 	// Refresh halfway through each minute of coverage so a continuing camera stays admitted.
@@ -183,6 +206,56 @@
 		return () => controller.abort();
 	});
 
+	let exportCheck = $state.raw<AbortController | null>(null);
+	let exportProblem = $state('');
+	onDestroy(() => exportCheck?.abort());
+	$effect(() => {
+		void focus;
+		void rangeStart;
+		void rangeEnd;
+		exportProblem = '';
+		return () => exportCheck?.abort();
+	});
+
+	async function exportMarked() {
+		const camera = authorized.find((camera) => camera.id === focus),
+			marked = range;
+		if (!camera || !marked || exportCheck) return;
+		const at = moment(),
+			controller = new AbortController();
+		exportCheck = controller;
+		exportProblem = '';
+		try {
+			const rows = await reviewExportRecordings(client, camera.id, marked, controller.signal);
+			if (
+				controller.signal.aborted ||
+				camera.id !== focus ||
+				rangeStart !== marked.startMs ||
+				rangeEnd !== marked.endMs
+			)
+				return;
+			const streams = (['main', 'sub'] as const).filter((stream) =>
+				segmentForExportRange(rows, stream, marked.startMs, marked.endMs)
+			);
+			const { selectedStream } = selectRecordedStream(camera, {
+				preference: recordedPreference(preferences, camera.id),
+				availableStreams: streams,
+				isEncodingSupported: browserSupportsRecordedEncoding
+			});
+			if (selectedStream) openExport(at, camera.id, selectedStream, reviewSelection);
+			else exportProblem = 'No playable stream from this camera covers the entire selected range.';
+		} catch {
+			if (!controller.signal.aborted)
+				exportProblem = 'Recording coverage could not be loaded. Try exporting again.';
+		} finally {
+			if (exportCheck === controller) exportCheck = null;
+		}
+	}
+	function markRange(edge: 'start' | 'end') {
+		if (edge === 'start') rangeStart = moment();
+		else rangeEnd = moment();
+		persist();
+	}
 	function comparisonLink() {
 		return recordingMomentUrl({
 			origin: window.location.origin,
@@ -192,7 +265,7 @@
 			timestampMs: moment(),
 			streamPreference: recordedPreference(preferences, focus),
 			mode: 'timeline',
-			review: { cameraIds: ids, audioCameraId: audio }
+			review: reviewSelection
 		});
 	}
 	function rememberMedia() {
@@ -204,7 +277,7 @@
 	}
 
 	function persist() {
-		updateLink(moment(), focus, { cameraIds: ids, audioCameraId: audio });
+		updateLink(moment(), focus, reviewSelection);
 	}
 	function seekTo(at: number) {
 		const valid = parseMomentTimestamp(String(Math.floor(at)));
@@ -307,7 +380,7 @@
 			class="min-h-11 rounded-sm border border-hairline-strong px-3 md:hidden"
 			bind:this={optionsButton}
 			aria-expanded={optionsOpen}
-			aria-controls={workspaceId + '-settings'}
+			aria-controls={workspaceId + '-settings ' + workspaceId + '-marks'}
 			onclick={() => (optionsOpen = !optionsOpen)}
 		>
 			Comparison options
@@ -406,6 +479,33 @@
 				></label
 			>
 		</div>
+	</div>
+	<div
+		id={workspaceId + '-marks'}
+		class="flex-wrap items-center gap-3 {optionsOpen ? 'flex' : 'hidden md:flex'}"
+	>
+		<button type="button" class="min-h-11 px-2" onclick={() => markRange('start')}
+			>Set range start</button
+		>
+		{#if rangeStart !== null}<time datetime={new Date(rangeStart).toISOString()}
+				>{new Date(rangeStart).toISOString()}</time
+			>{/if}
+		<button type="button" class="min-h-11 px-2" onclick={() => markRange('end')}
+			>Set range end</button
+		>
+		{#if rangeEnd !== null}<time datetime={new Date(rangeEnd).toISOString()}
+				>{new Date(rangeEnd).toISOString()}</time
+			>{/if}
+		<button
+			type="button"
+			class="min-h-11 rounded-sm border border-hairline px-3 disabled:opacity-45"
+			disabled={!range || !authorized.some((camera) => camera.id === focus) || !!exportCheck}
+			onclick={exportMarked}>Export focused camera</button
+		>
+		{#if exportProblem}<p role="alert">{exportProblem}</p>{/if}
+		{#if rangeStart !== null && rangeEnd !== null && !range}<p role="status"
+				>Choose an end after the start, within two minutes.</p
+			>{/if}
 	</div>
 	{#if unavailable}<button class="min-h-11 px-2" type="button" onclick={() => retry++}
 			>Retry coverage</button

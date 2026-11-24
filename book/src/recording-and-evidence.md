@@ -66,8 +66,14 @@ when decoder capacity is limited. Pausing, seeking or changing the focused or
 audio camera updates the link so it can reopen the comparison at that moment.
 **Copy link to this moment** captures the current playhead while recordings are
 playing. The browser remembers the playback speed and mute preference.
+For an export, choose a camera under **Focus**. Mark the shared UTC playhead with
+**Set range start** and **Set range end**, up to two minutes apart. **Export
+focused camera** opens the usual export workflow for that camera and stream.
+The recorder checks retained coverage. **Back to comparison** restores the
+camera selection, focus, audio, marked range and shared time.
+
 On a compact screen, up to two recordings can decode. On phones, **Comparison
-options** opens the camera, audio, speed and UTC seek controls.
+options** opens the camera, audio, speed, UTC seek and marked-range controls.
 A hidden browser tab releases the comparison players and reopens visible footage
 on return.
 If the connection drops during playback, the sign-in screen clears the camera
