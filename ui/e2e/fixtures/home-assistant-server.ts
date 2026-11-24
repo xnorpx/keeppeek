@@ -17,6 +17,7 @@ export const cardTestKeys = [
 ] as const;
 export const cardAdminKey = '550e8400-e29b-41d4-a716-446655440004';
 export const cardSourceIds = ['192.0.2.101', '192.0.2.102'] as const;
+export const reviewSourceIds = [...cardSourceIds, '192.0.2.103', '192.0.2.104'] as const;
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
 export type RuntimeProfileCapacity = { cameras: number; profiles: number };
 type FixtureOptions = {
@@ -25,7 +26,8 @@ type FixtureOptions = {
 	hikvisionSpeaker?: boolean;
 	trustedLocal?: boolean;
 	archiveFixture?: boolean;
-	calibrationFixture?: { mediaPath: string };
+	reviewFixture?: boolean | 'four';
+	calibrationFixture?: { mediaPath: string; bothCameras?: boolean };
 	frameStepMedia?: string;
 };
 
@@ -110,7 +112,8 @@ async function writeFixtureConfiguration(options: {
 	configurations: string[];
 	trustedLocal?: boolean;
 	archiveFixture?: boolean;
-	calibrationFixture?: { mediaPath: string };
+	reviewFixture?: boolean | 'four';
+	calibrationFixture?: { mediaPath: string; bothCameras?: boolean };
 	frameStepMedia?: string;
 }): Promise<string> {
 	const { directory, origin, port, configurations, trustedLocal = false } = options;
@@ -128,7 +131,7 @@ allowed_origins = [${JSON.stringify(origin)}]
 short_term_secs = 5
 medium_term_secs = ${options.frameStepMedia ? 8 : 60}
 long_term_max_gb = 0
-${options.frameStepMedia ? 'flush_interval_secs = 1\n' : ''}${options.archiveFixture || options.calibrationFixture || options.frameStepMedia || options.profileCapacity ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
+${options.frameStepMedia ? 'flush_interval_secs = 1\n' : ''}${options.archiveFixture || options.calibrationFixture || options.reviewFixture || options.frameStepMedia || options.profileCapacity ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
 [access_credentials]
 version = 1
 ${[...cardTestKeys, cardAdminKey].map((key) => credentialRecord(key, key === cardAdminKey)).join('\n')}
@@ -244,10 +247,11 @@ async function fixtureCameras(
 	binary: string,
 	children: ChildProcess[],
 	nameBySource: boolean,
+	sourceIds: readonly string[] = cardSourceIds,
 	media = resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4')
 ): Promise<string[]> {
 	const configurations: string[] = [];
-	for (const [index, sourceId] of cardSourceIds.entries()) {
+	for (const [index, sourceId] of sourceIds.entries()) {
 		const child = spawn(
 			binary,
 			[
@@ -408,15 +412,16 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 
 	try {
 		const port = await availablePort();
-		const { configPath, archive, calibration, speakerObservation } = await prepareFixture(
-			binary('test_camera'),
-			directory,
-			origin,
-			port,
-			children,
-			options,
-			captureLog
-		);
+		const { configPath, archive, calibration, secondCalibration, speakerObservation } =
+			await prepareFixture(
+				binary('test_camera'),
+				directory,
+				origin,
+				port,
+				children,
+				options,
+				captureLog
+			);
 		const url = `http://127.0.0.1:${port}`;
 		const launch = () =>
 			startFixtureRecorder({
@@ -433,6 +438,7 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 			backendProcessId: () => server.pid,
 			...archive,
 			calibration,
+			secondCalibration,
 			speakerObservation,
 			close,
 			preserveArchiveEvidence: (destination: string) =>
@@ -455,6 +461,47 @@ export async function startHomeAssistantServer(origin: string, options: FixtureO
 	}
 }
 
+async function seedComparisonStreams(
+	binary: string,
+	directory: string,
+	configPath: string,
+	sourceIds: readonly string[]
+) {
+	// The four-camera case starts just before the same UTC boundary on every run.
+	const reviewBoundary = Math.floor(Date.now() / 60_000) * 60_000 - 120_000;
+	for (const [index, id] of sourceIds.entries()) {
+		const ageSeconds =
+			sourceIds.length === 4
+				? Math.round((Date.now() - reviewBoundary) / 1_000) + (index === 1 ? 5 : 15)
+				: index === 1
+					? 110
+					: 120;
+		await promisify(execFile)(
+			binary,
+			[
+				'seed-recording',
+				'--source',
+				resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4'),
+				'--config',
+				configPath,
+				'--stream-id',
+				id + '/sub',
+				'--duration-seconds',
+				'40',
+				'--age-seconds',
+				String(ageSeconds)
+			],
+			{
+				cwd: directory,
+				maxBuffer: 64 * 1024,
+				windowsHide: true,
+				timeout: 30_000,
+				killSignal: 'SIGKILL'
+			}
+		);
+	}
+}
+
 async function prepareFixture(
 	binary: string,
 	directory: string,
@@ -464,9 +511,13 @@ async function prepareFixture(
 	options: FixtureOptions,
 	onLog: (chunk: Buffer) => void
 ) {
-	if (options.archiveFixture && options.calibrationFixture) {
-		throw new Error('Archive and calibration recording seeds must use separate fixtures.');
+	if (
+		[options.archiveFixture, options.calibrationFixture, options.reviewFixture].filter(Boolean)
+			.length > 1
+	) {
+		throw new Error('Recording seed modes must use separate fixtures.');
 	}
+	const sourceIds = options.reviewFixture === 'four' ? reviewSourceIds : cardSourceIds;
 	let configurations: string[];
 	let speakerObservation: (() => Promise<SpeakerObservation>) | undefined;
 	if (options.hikvisionSpeaker) {
@@ -484,7 +535,13 @@ async function prepareFixture(
 		configurations = await fixtureCameras(
 			binary,
 			children,
-			Boolean(options.archiveFixture || options.calibrationFixture || options.frameStepMedia),
+			Boolean(
+				options.archiveFixture ||
+				options.calibrationFixture ||
+				options.reviewFixture ||
+				options.frameStepMedia
+			),
+			sourceIds,
 			options.frameStepMedia
 		);
 	}
@@ -495,6 +552,7 @@ async function prepareFixture(
 		configurations,
 		...options
 	});
+	if (options.reviewFixture) await seedComparisonStreams(binary, directory, configPath, sourceIds);
 	const archive = await prepareArchiveFixture(
 		binary,
 		directory,
@@ -511,5 +569,14 @@ async function prepareFixture(
 				options.calibrationFixture.mediaPath
 			)
 		: undefined;
-	return { configPath, archive, calibration, speakerObservation };
+	const secondCalibration = options.calibrationFixture?.bothCameras
+		? await seedCalibrationRecording(
+				binary,
+				directory,
+				configPath,
+				cardSourceIds[1],
+				options.calibrationFixture.mediaPath
+			)
+		: undefined;
+	return { configPath, archive, calibration, secondCalibration, speakerObservation };
 }

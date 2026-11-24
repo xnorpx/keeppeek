@@ -171,7 +171,7 @@ function isFocusedLivePreference(value: unknown): value is FocusedLivePreference
 	return typeof value === 'string' && focusedLivePreferences.has(value as FocusedLivePreference);
 }
 
-function isPlaybackRate(value: unknown): value is number {
+export function isPlaybackRate(value: unknown): value is number {
 	return typeof value === 'number' && Number.isFinite(value) && value >= 0.25 && value <= 8;
 }
 
