@@ -2308,6 +2308,39 @@ impl Publisher {
             .contains_key(source_id)
     }
 
+    pub(crate) fn retire_talkback_source(&self, source_id: &str, owner: SessionId) {
+        let mut sinks = self
+            .inner
+            .talkback_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sinks.get(source_id).is_some_and(|sink| sink.owner == owner) {
+            sinks.remove(source_id);
+        }
+    }
+
+    /// Serialize one nonblocking local transport handoff with removal of its source lease.
+    pub(crate) fn offer_talkback_packet(
+        &self,
+        source_id: &str,
+        route: &TalkbackRoute,
+        offer: impl FnOnce() -> anyhow::Result<bool>,
+    ) -> anyhow::Result<bool> {
+        let sinks = self
+            .inner
+            .talkback_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sinks
+            .get(source_id)
+            .is_some_and(|sink| sink.route.matches(route))
+        {
+            offer()
+        } else {
+            Ok(false)
+        }
+    }
+
     fn route_talkback_audio(&self, session_id: SessionId, frame: WebRtcAudioFrame) {
         let mut sinks = self
             .inner
@@ -7893,8 +7926,20 @@ mod tests {
         publisher.route_talkback_audio(first, frame.clone());
         let (old_route, _) = publisher.take_routed_talkback_audio("front", None).unwrap();
         publisher.route_talkback_audio(first, frame.clone());
+        assert!(
+            publisher
+                .offer_talkback_packet("front", &old_route, || Ok(true))
+                .unwrap()
+        );
 
         publisher.disarm_talkback(first);
+        assert!(
+            !publisher
+                .offer_talkback_packet("front", &old_route, || {
+                    panic!("the retired source handed a queued microphone packet to the transport")
+                })
+                .unwrap()
+        );
         assert!(!publisher.talkback_is_armed("side"));
         assert!(publisher.take_talkback_audio("side").is_none());
         assert!(publisher.arm_talkback(first, &["front".into()]));

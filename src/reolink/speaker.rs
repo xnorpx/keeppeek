@@ -123,11 +123,10 @@ impl Talkback {
                 && data.len() == header_len + header.body_len as usize,
             "Reolink speaker output did not contain exactly one complete packet"
         );
-        if live.talkback_route_is_current(source, &route) {
-            wire.send(data)?;
-            if let Some(blocks) = self.blocks.as_mut() {
-                blocks.record_send(Instant::now());
-            }
+        if live.offer_talkback_packet(source, &route, || wire.offer_speaker_packet(data))?
+            && let Some(blocks) = self.blocks.as_mut()
+        {
+            blocks.record_send(Instant::now());
         }
         Ok(())
     }
@@ -303,6 +302,23 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use reo_proto::talk::TalkAudioProfile;
+
+    #[test]
+    fn one_speaker_packet_reaches_tcp_and_normal_camera_io_remains_available() {
+        use crate::reolink::{BaichuanTransport, TcpBaichuanTransport};
+        use std::{io::Read as _, net::TcpListener};
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut wire = TcpBaichuanTransport::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut camera, _) = listener.accept().unwrap();
+        camera
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        assert!(wire.offer_speaker_packet(b"encoded speaker").unwrap());
+        wire.send(b" control").unwrap();
+        let mut bytes = [0; 23];
+        camera.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"encoded speaker control");
+    }
 
     fn speaker(rate: u32, len: u32) -> SpeakerBlocks {
         SpeakerBlocks::new(&TalkConfig {

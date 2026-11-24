@@ -1265,18 +1265,6 @@ fn update_talkback(
     session_id: SessionId,
     command: proto::TalkbackCommand,
 ) -> Result<proto::Notification, ControlCommandError> {
-    let cameras = server_state
-        .camera_entries()
-        .into_iter()
-        .map(|camera| {
-            let enabled = camera.speaker_available();
-            talkback::CameraTarget {
-                source_id: camera.info.id,
-                groups: camera.groups,
-                enabled,
-            }
-        })
-        .collect::<Vec<_>>();
     let state = match command.action {
         Some(talkback_command::Action::Start(start)) => {
             let target = start.target.ok_or_else(|| {
@@ -1286,10 +1274,25 @@ fn update_talkback(
                     "talkback start requires a target",
                 )
             })?;
-            server_state
+            // A replacement or withdrawal takes the same inventory lock exclusively.
+            let entries = server_state
+                .cameras
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let cameras = entries
+                .iter()
+                .map(|camera| talkback::CameraTarget {
+                    source_id: camera.info.id.clone(),
+                    groups: camera.groups.clone(),
+                    enabled: camera.speaker_available(),
+                })
+                .collect::<Vec<_>>();
+            let state = server_state
                 .talkback
                 .start(session_id, target, &cameras, &server_state.webrtc)
-                .map_err(talkback_error)?
+                .map_err(talkback_error)?;
+            drop(entries);
+            state
         }
         Some(talkback_command::Action::Stop(_)) => server_state
             .talkback
@@ -9002,6 +9005,11 @@ impl ServerState {
             .iter_mut()
             .find(|camera| camera.info.id == entry.info.id)
         {
+            if existing.info.is_reolink
+                && !Arc::ptr_eq(&existing.control_revision, &entry.control_revision)
+            {
+                self.talkback.retire_source(&existing.info.id, &self.webrtc);
+            }
             if entry.groups.is_empty() {
                 entry.groups.clone_from(&existing.groups);
             }
@@ -13051,6 +13059,7 @@ fn delete_camera_settings(
     }
     match config::remove_camera(config_path, ip) {
         Ok(()) => {
+            camera_metadata::forget_removed_audio(state, camera_id);
             sharing::refresh_sources(state, config_path)?;
             reconcile_removed_camera(state, config_path, ip)?;
             camera_configuration_revision(state)

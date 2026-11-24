@@ -62,6 +62,10 @@ const UDP_PAYLOAD_QUEUE_CAPACITY: usize = 64;
 trait BaichuanTransport {
     fn receive(&mut self, deadline: Instant, buf: &mut [u8]) -> anyhow::Result<Option<usize>>;
     fn send(&mut self, data: &[u8]) -> anyhow::Result<()>;
+    // A queued transport needs a revocable final handoff before it can carry microphone frames.
+    fn offer_speaker_packet(&mut self, _data: &[u8]) -> anyhow::Result<bool> {
+        Ok(false)
+    }
     fn close(&mut self) -> anyhow::Result<()>;
 }
 
@@ -103,6 +107,26 @@ impl BaichuanTransport for TcpBaichuanTransport {
         self.socket.write_all(data)?;
         self.socket.flush()?;
         Ok(())
+    }
+
+    fn offer_speaker_packet(&mut self, data: &[u8]) -> anyhow::Result<bool> {
+        self.socket.set_nonblocking(true)?;
+        let written = self.socket.write(data);
+        self.socket.set_nonblocking(false)?;
+        match written {
+            Ok(n) if n == data.len() => Ok(true),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                Ok(false)
+            }
+            // A partial Baichuan packet cannot be discarded in the middle of a TCP stream.
+            Ok(_) => anyhow::bail!("incomplete Reolink speaker packet at TCP handoff"),
+            Err(error) => Err(error.into()),
+        }
     }
 
     fn close(&mut self) -> anyhow::Result<()> {

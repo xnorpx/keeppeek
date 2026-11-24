@@ -44,6 +44,9 @@ impl ServerState {
         };
         let before = camera.speaker_available();
         camera.reolink_profile_verified = compatible && camera.reolink_talk_permitted;
+        if before && !camera.speaker_available() {
+            self.talkback.retire_source(&camera.info.id, &self.webrtc);
+        }
         let changed = before != camera.speaker_available();
         drop(entries);
         if changed {
@@ -135,7 +138,12 @@ mod tests {
     fn lost_speaker_evidence_retires_only_that_sources_active_microphone_route() {
         use crate::{api::proto, server::update_talkback, webrtc::SessionId};
 
-        for change in ["CGI permission", "native profile", "camera replacement"] {
+        for change in [
+            "CGI permission",
+            "native profile",
+            "camera replacement",
+            "removed",
+        ] {
             let state = crate::server::tests::media_test_state();
             let owner = SessionId::from_u64(5);
             let mut config = state.camera("127.0.0.1").unwrap().configuration;
@@ -175,10 +183,15 @@ mod tests {
                     super::super::apply_audio_capabilities(&state, &entry, Default::default());
                 }
                 "native profile" => state.apply_reolink_speaker(&entry, false),
-                _ => {
+                "camera replacement" => {
                     let mut replacement = entry.configuration;
                     replacement.username = "new-camera".to_owned();
                     state.upsert_camera(crate::server::camera_entry(&replacement, None));
+                }
+                _ => {
+                    super::super::forget_removed_audio(&state, &entry.info.id);
+                    state.apply_reolink_speaker(&entry, true);
+                    assert!(!state.camera(&entry.info.id).unwrap().speaker_available());
                 }
             }
             assert!(!live.talkback_is_armed("127.0.0.1"), "{change}");

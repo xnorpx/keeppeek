@@ -26,6 +26,7 @@ pub enum Error {
 struct ActiveTalkback {
     owner: SessionId,
     target: proto::TalkbackTarget,
+    sources: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -57,6 +58,7 @@ impl Registry {
         *active = Some(ActiveTalkback {
             owner,
             target: target.clone(),
+            sources: active_source_ids.clone(),
         });
         Ok(state(owner, target, active_source_ids))
     }
@@ -84,6 +86,28 @@ impl Registry {
             .is_some_and(|current| current.owner == owner)
         {
             *active = None;
+        }
+    }
+
+    pub(super) fn retire_source(&self, source: &str, webrtc: &WebRtc) {
+        let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(talk) = active.as_mut() else { return };
+        let Some(index) = talk.sources.iter().position(|id| id == source) else {
+            return;
+        };
+        let owner = talk.owner;
+        webrtc.live().retire_talkback_source(source, owner);
+        talk.sources.remove(index);
+        let mut remaining = state(owner, talk.target.clone(), talk.sources.clone());
+        remaining.failed_source_ids.push(source.to_owned());
+        if talk.sources.is_empty() {
+            *active = None;
+        }
+        let notice = proto::Notification {
+            event: Some(proto::notification::Event::TalkbackState(remaining)),
+        };
+        if !matches!(webrtc.try_enqueue_api_notification(owner, notice), Ok(true)) {
+            webrtc.request_api_session_close(owner);
         }
     }
 }

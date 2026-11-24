@@ -145,6 +145,27 @@ fn run(state: &ServerState) {
     }
 }
 
+pub(super) fn forget_removed_audio(state: &ServerState, source_id: &str) {
+    let mut entries = state
+        .cameras
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(camera) = entries
+        .iter_mut()
+        .find(|entry| entry.info.id == source_id && entry.info.is_reolink)
+    else {
+        return;
+    };
+    camera.control_revision = std::sync::Arc::new(());
+    camera.reolink_talk_permitted = false;
+    camera.reolink_profile_verified = false;
+    camera.info.capabilities.quick_replies.clear();
+    camera.info.capabilities.chimes.clear();
+    state.talkback.retire_source(source_id, &state.webrtc);
+    drop(entries);
+    state.webrtc.refresh_camera_capabilities(source_id);
+}
+
 fn apply_audio_capabilities(
     state: &ServerState,
     previous: &CameraEntry,
@@ -176,6 +197,9 @@ fn apply_audio_capabilities(
             camera.reolink_profile_verified = false;
         }
         capabilities.apply_audio_assets(&mut camera.info.capabilities);
+        if before && !camera.speaker_available() {
+            state.talkback.retire_source(&camera.info.id, &state.webrtc);
+        }
         let changed = assets_changed || before != camera.speaker_available();
         drop(cameras);
         if changed {
