@@ -1210,6 +1210,7 @@ mod tests {
             mp4::SampleFreqIndex::Freq7350
         );
         let frame = RecordingFrame {
+            source_rtp: None,
             received_at: Instant::now(),
             timestamp: Some(Duration::ZERO),
             frame: MediaFrame::Audio(AudioFrame {
@@ -1247,6 +1248,7 @@ mod tests {
             bitrate: 64_000,
         };
         let packet = |ms, description, data| RecordingFrame {
+            source_rtp: None,
             received_at: start + Duration::from_millis(ms),
             timestamp: Some(Duration::from_millis(ms)),
             frame: MediaFrame::Audio(AudioFrame {
