@@ -445,3 +445,102 @@ fn runtime_profile_recording_health_poll_scale() {
     );
     storage.shutdown();
 }
+
+#[test]
+fn connected_camera_republishes_the_schedule_and_reports_its_recording_failure() {
+    use crate::cameras::CameraRecordingMode::{Off, Sub};
+    use crate::profiles::{FieldSource, RuntimeApplicationState};
+    let (mut recorder, storage, _, camera) = recording_health_fixture();
+    let id = camera.config.ip.to_string();
+    let privacy = Arc::new(crate::privacy::PrivacyRegistry::default());
+    let mut schedule = active_privacy_schedule(&id).schedule(&id).unwrap();
+    schedule.keep_camera_connected = true;
+    recorder.set_privacy_registry(privacy.clone());
+    apply_recording_health_revision(&mut recorder, 1);
+    let status = recorder.control().runtime_profile_status_handle();
+    let publications = Arc::new(AtomicUsize::new(0));
+    let observed = publications.clone();
+    recorder.set_runtime_profile_status_publisher(move || {
+        observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+    privacy
+        .replace_schedules([(id.clone(), schedule)].into())
+        .unwrap();
+    poll_recording_health(&mut recorder);
+    let observed = status.read().unwrap().cameras[&id].clone();
+    assert_eq!(observed.state, RuntimeApplicationState::Applied);
+    assert!(observed.policy.privacy_enforced);
+    assert_eq!(observed.policy.recording_mode, Off);
+    assert_eq!(observed.policy.recording_mode_source, FieldSource::Base);
+    assert!(recorder.camera_workers.contains_key(&camera.config.ip));
+    assert_eq!(publications.load(std::sync::atomic::Ordering::Relaxed), 1);
+    storage.handle().note_test_writer_failure(&id);
+    poll_recording_health(&mut recorder);
+    let failed = status.read().unwrap().cameras[&id].clone();
+    assert_eq!(failed.state, RuntimeApplicationState::Degraded);
+    assert!(failed.reason.unwrap().contains("active write failure"));
+    privacy.replace_schedules(Default::default()).unwrap();
+    poll_recording_health(&mut recorder);
+    let reopened = status.read().unwrap().cameras[&id].clone();
+    assert!(!reopened.policy.privacy_enforced);
+    assert_eq!(reopened.policy.recording_mode, Sub);
+    assert_eq!(reopened.state, RuntimeApplicationState::Degraded);
+    poll_recording_health(&mut recorder);
+    assert_eq!(publications.load(std::sync::atomic::Ordering::Relaxed), 3);
+    storage.shutdown();
+}
+
+#[test]
+fn privacy_pause_does_not_discard_a_recording_writer_failure() {
+    use crate::profiles::RuntimeApplicationState::{Applied, Degraded};
+
+    for failure_before_pause in [true, false] {
+        let (mut recorder, storage, _, camera) = recording_health_fixture();
+        let ip = camera.config.ip;
+        let id = ip.to_string();
+        apply_recording_health_revision(&mut recorder, 1);
+        let status = recorder.control().runtime_profile_status_handle();
+        assert_eq!(status.read().unwrap().cameras[&id].state, Applied);
+        if failure_before_pause {
+            storage.handle().note_test_writer_failure(&id);
+        }
+
+        recorder.set_privacy_registry(active_privacy_schedule(&id));
+        let (reply, paused) = mpsc::sync_channel(1);
+        recorder
+            .command_tx
+            .send(KeepPeekCommand::Stop {
+                ip,
+                reason: CameraStopReason::Privacy,
+                reply,
+            })
+            .unwrap();
+        recorder.handle_commands();
+        paused.try_recv().unwrap().unwrap();
+        assert!(!recorder.camera_workers.contains_key(&ip));
+        if !failure_before_pause {
+            assert_eq!(status.read().unwrap().cameras[&id].state, Applied);
+            storage.handle().note_test_writer_failure(&id);
+            poll_recording_health(&mut recorder);
+        }
+
+        let assert_failed = || {
+            let status = status.read().unwrap();
+            let application = &status.cameras[&id];
+            assert!(application.policy.privacy_enforced);
+            assert_eq!(
+                application.policy.recording_mode,
+                crate::cameras::CameraRecordingMode::Off
+            );
+            assert_eq!(application.state, Degraded);
+            assert_eq!(
+                application.reason.as_deref(),
+                Some(recording::ACTIVE_RECORDING_WRITE_FAILURE)
+            );
+        };
+        assert_failed();
+        apply_recording_health_revision(&mut recorder, 2);
+        assert_failed();
+        storage.shutdown();
+    }
+}

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { CameraListItem } from '../src/lib/types';
 import { mockControlPeer } from './fixtures/control-peer';
+import { keepModeDate, mockKeepModes } from './fixtures/keep-modes';
 
 const day = '2026-08-10';
 const dayStartMs = Date.UTC(2026, 7, 10);
@@ -88,4 +89,58 @@ test('switches Keep cameras without rendering secondary camera previews', async 
 	await expect(page.getByRole('region', { name: 'Other camera recordings' })).toHaveCount(0);
 	await expect(page.locator('video[data-recording-preview]')).toHaveCount(0);
 	expect(requests.storedOpens.filter((request) => request.sourceId === 'gate')).toHaveLength(1);
+});
+
+test('switching cameras clears the previous export range while the new recording query is pending', async ({
+	page
+}) => {
+	const start = dayStartMs + 10 * 60 * 60_000;
+	const requested = Promise.withResolvers<void>();
+	const delayed = Promise.withResolvers<void>();
+	await mockControlPeer(page, {
+		cameras: [camera('deck', 'Deck'), camera('garden', 'Garden')],
+		capabilityIds: ['keeppeek.guest-range.v1'],
+		storedRanges: [
+			{ sourceId: 'deck', streamId: 'sub', startMs: start, endMs: start + 60_000 },
+			{ sourceId: 'garden', streamId: 'sub', startMs: start - 2_000, endMs: start + 40_000 }
+		],
+		beforeStoredTimelineQuery(sourceIds) {
+			if (sourceIds.includes('garden')) {
+				requested.resolve();
+				return delayed.promise;
+			}
+		}
+	});
+	await page.goto(`/keep?camera=deck&stream=sub&at=${start + 5_000}&mode=export`);
+	const panel = page.locator('[data-keep-export]');
+	const share = page.getByRole('button', { name: 'Share recording range' });
+	await expect(panel).toHaveAttribute('data-export-start-ms', String(start), { timeout: 45_000 });
+	await expect(share).toBeVisible();
+	await page.getByRole('button', { name: 'Next camera, Garden' }).click();
+	try {
+		await requested.promise;
+		await expect(share).toHaveCount(0);
+		await expect(panel).toHaveCount(0);
+	} finally {
+		delayed.resolve();
+	}
+	await expect(panel).toHaveAttribute('data-export-start-ms', String(start - 2_000));
+	await expect(panel).toHaveAttribute('data-export-end-ms', String(start + 40_000));
+	await expect(share).toBeVisible();
+});
+
+test('switching cameras closes the previous camera event drawer immediately', async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await mockKeepModes(page, 2, {
+		capabilityIds: ['keeppeek.event-workflow.v1', 'keeppeek.guest-range.v1']
+	});
+	await page.goto(`/keep?camera=front-door&stream=main&date=${keepModeDate}&mode=stories`);
+	await page.getByRole('button', { name: /Review story at/ }).click();
+	const detail = page.getByRole('complementary', { name: 'Event detail' });
+	await expect(detail).toBeVisible();
+	const next = page.getByRole('button', { name: 'Next camera, Camera 2' });
+	await next.focus();
+	await next.press('Enter');
+	await expect(page).toHaveURL(/camera=camera-2/);
+	await expect(detail).toHaveCount(0);
 });
