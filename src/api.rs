@@ -343,6 +343,53 @@ mod tests {
     use prost::Message as _;
 
     #[test]
+    fn recorded_frame_stepping_adds_separate_command_result_and_data_tags() {
+        use proto::{ok, step_stored_frame, stored_media_command, stored_media_message};
+        let command = |step| proto::StoredMediaCommand {
+            action: Some(stored_media_command::Action::StepFrame(step)),
+        };
+        assert_eq!(command(Default::default()).encode_to_vec(), [0x42, 0]);
+        let result = proto::Ok {
+            result: Some(ok::Result::StoredFrameStepResult(Default::default())),
+        };
+        assert_eq!(result.encode_to_vec(), [0xf2, 0x02, 0]);
+        let payload = proto::StoredMediaMessage {
+            message: Some(stored_media_message::Message::FrameStepChunk(
+                Default::default(),
+            )),
+        };
+        assert_eq!(payload.encode_to_vec(), [0x2a, 0]);
+
+        for anchor in [
+            step_stored_frame::Anchor::DisplayedTime(prost_types::Timestamp {
+                seconds: 2,
+                nanos: 123_456_789,
+            }),
+            step_stored_frame::Anchor::SampleToken(vec![0, 17, 255]),
+        ] {
+            let request = command(proto::StepStoredFrame {
+                stored_media_id: "cursor".into(),
+                generation: 2,
+                step_id: "step".into(),
+                direction: proto::StoredFrameStepDirection::Previous as i32,
+                anchor: Some(anchor),
+                source_id: "camera".into(),
+                stream_id: "main".into(),
+            });
+            assert_eq!(
+                proto::StoredMediaCommand::decode(request.encode_to_vec().as_slice()).unwrap(),
+                request
+            );
+        }
+        assert!(matches!(
+            proto::StoredMediaCommand::decode([0x3a, 0].as_slice())
+                .unwrap()
+                .action,
+            Some(stored_media_command::Action::Refill(_))
+        ));
+    }
+
+    #[test]
     fn access_session_authentication_is_additive_and_preserves_unknown_methods() {
         let legacy = proto::AccessSession::decode([0x0a, 0x01, b'7'].as_slice()).unwrap();
         assert_eq!(legacy.session_id, "7");
