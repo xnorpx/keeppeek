@@ -58,6 +58,30 @@ mod tests {
     use crate::cameras::{CameraBackend, CameraTransport, reolink::ReolinkDoorbellCapabilities};
 
     #[test]
+    fn a_wired_p2p_uid_can_report_outputs_without_polling_a_sleeping_camera() {
+        let state = crate::server::tests::media_test_state();
+        let mut config = state.camera("127.0.0.1").unwrap().configuration;
+        config.backend = CameraBackend::ReoProto;
+        config.transport = CameraTransport::Tcp;
+        config.uid = Some("TESTCAMERA0001".into());
+        let wired = crate::server::camera_entry(&config, None);
+        assert!(wired.may_read_audio_outputs(true, None));
+        assert!(!wired.may_read_audio_outputs(false, None));
+        for (registered, pending) in [(true, None), (false, Some(1))] {
+            let wake = crate::battery_wake::BatteryWakeHealth {
+                registered,
+                sleeping: registered,
+                last_seen_age_ms: None,
+                wake_pending_age_ms: pending,
+            };
+            assert!(!wired.may_read_audio_outputs(true, Some(wake)));
+        }
+        config.transport = CameraTransport::Udp;
+        let battery = crate::server::camera_entry(&config, None);
+        assert!(!battery.may_read_audio_outputs(true, None));
+    }
+
+    #[test]
     fn speaker_requires_permission_and_positive_profile_from_the_same_configuration() {
         let state = crate::server::tests::media_test_state();
         let mut config = state.camera("127.0.0.1").unwrap().configuration;

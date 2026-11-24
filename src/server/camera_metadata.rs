@@ -18,6 +18,21 @@ impl CameraEntry {
             self.info.capabilities.two_way_audio
         }
     }
+
+    fn may_read_audio_outputs(
+        &self,
+        answered_metadata: bool,
+        wake: Option<crate::battery_wake::BatteryWakeHealth>,
+    ) -> bool {
+        if wake.is_some_and(|state| state.registered || state.wake_pending_age_ms.is_some()) {
+            return false;
+        }
+        // A wired Reolink may also supply a P2P UID. The existing metadata request
+        // confirms it is awake before this worker makes any additional reads.
+        self.battery_uid.is_none()
+            || (answered_metadata
+                && self.configuration.transport == crate::cameras::CameraTransport::Tcp)
+    }
 }
 
 #[derive(Default)]
@@ -86,14 +101,23 @@ fn run(state: &ServerState) {
         if !current(state, &entry) {
             continue;
         }
-        match probe_onvif_camera(&entry.configuration) {
-            Ok(probe) => state.apply_camera_metadata(&entry, &probe),
+        let answered_metadata = match probe_onvif_camera(&entry.configuration) {
+            Ok(probe) => {
+                state.apply_camera_metadata(&entry, &probe);
+                true
+            }
             Err(_) => {
                 tracing::debug!(ip = %entry.configuration.ip, "configured camera did not provide ONVIF metadata");
+                false
             }
-        }
+        };
+        let wake = state
+            .battery_wake
+            .as_ref()
+            .zip(entry.battery_uid.as_deref())
+            .map(|(wake, uid)| wake.health(uid));
         if let Some(control) = entry.control.as_ref()
-            && entry.battery_uid.is_none()
+            && entry.may_read_audio_outputs(answered_metadata, wake)
             && current(state, &entry)
         {
             let capabilities = super::logged_in_reolink(control)
