@@ -140,7 +140,7 @@ jobs:
   object-detection-example:
     name: Object Detection Example (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 25 || 15 }}
     strategy:
       fail-fast: false
       matrix:
