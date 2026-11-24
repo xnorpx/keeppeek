@@ -316,11 +316,16 @@ test('a recipient can play the shared export while ordinary recorder surfaces st
 	const fixture = await startAuthenticationFixture(true);
 	const recipient = await browser.newContext({ ignoreHTTPSErrors: true });
 	try {
-		const { url, start } = await createLink(page, fixture);
+		const { url, start, administratorDownload } = await createLink(page, fixture);
 		const viewer = await recipient.newPage();
 		await openGuest(viewer, url);
 		await expect(viewer.getByRole('heading', { name: 'Entrance recording' })).toBeVisible();
 		await playAndSeek(viewer);
+		const mediaUrl = new URL(
+			await viewer.locator('video').evaluate((element: HTMLVideoElement) => element.currentSrc)
+		);
+		expect(mediaUrl.origin).toBe(fixture.origin);
+		expect(mediaUrl.pathname).toBe('/guest/media');
 		const ordinary = await recipient.newPage();
 		const routes = [
 			['Live, snapshots, PTZ and talk', '/?camera=127.0.0.1'],
@@ -342,7 +347,9 @@ test('a recipient can play the shared export while ordinary recorder surfaces st
 					)
 				).toHaveCount(0);
 				await expect(
-					ordinary.getByRole('button', { name: /^(Pan left|Talk|Snapshot)$/ })
+					ordinary.getByRole('button', {
+						name: /^(Pan left|Talk(?: to .+)?|Broadcast talkback|Snapshot)$/i
+					})
 				).toHaveCount(0);
 				await expect(ordinary.locator('body')).not.toContainText(
 					/Front Door|guest-range-event|Entrance recording/
@@ -384,7 +391,12 @@ test('a recipient can play the shared export while ordinary recorder surfaces st
 		const names = (await recipient.cookies(fixture.origin)).map(({ name }) => name);
 		expect(names).toContain('__Host-keeppeek-guest');
 		expect(names).not.toContain('__Host-keeppeek-session');
-		await playAndSeek(viewer);
+		const media = await recipient.request.get(mediaUrl.href, { maxRedirects: 0 });
+		expect(media.status()).toBe(200);
+		expect(media.headers()['content-type']).toBe('video/mp4');
+		const bytes = await media.body();
+		expect(bytes.length).toBe(administratorDownload.bytes);
+		expect(createHash('sha256').update(bytes).digest('hex')).toBe(administratorDownload.sha256);
 	} finally {
 		await recipient.close();
 		await fixture.close();
