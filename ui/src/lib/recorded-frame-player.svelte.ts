@@ -265,6 +265,11 @@ export class RecordedFramePlayer {
 			}
 		};
 		this.pausedTime = pausedTime;
+		const anchorPausedPicture = () => {
+			if (this.pausedTime === pausedTime && this.displayedNs === undefined) {
+				this.displayedNs = pausedTime(cursor);
+			}
+		};
 		let generation = 0;
 		let handle: number | undefined;
 		let stagedUs: number | undefined;
@@ -288,20 +293,31 @@ export class RecordedFramePlayer {
 			observe();
 		};
 		const seeked = () => {
-			// A paused video may present the target before seeked and never submit another frame.
-			if (current() && !video.seeking && stagedUs === Math.round(video.currentTime * 1_000_000)) {
+			// A paused decoder may have presented its final picture before seeked.
+			anchorPausedPicture();
+			if (
+				this.displayedNs === undefined &&
+				current() &&
+				!video.seeking &&
+				stagedUs === Math.round(video.currentTime * 1_000_000)
+			) {
 				this.displayedNs = cursor.storedNsForMediaUs(stagedUs);
 			}
 			stagedUs = undefined;
 		};
 		video.addEventListener('seeking', seeking);
 		video.addEventListener('seeked', seeked);
+		video.addEventListener('loadeddata', anchorPausedPicture);
+		const stopClock = cursor.onFrameClockUpdate(anchorPausedPicture);
 		observe();
+		anchorPausedPicture();
 		return () => {
 			generation++;
 			if (handle !== undefined) video.cancelVideoFrameCallback(handle);
 			video.removeEventListener('seeking', seeking);
 			video.removeEventListener('seeked', seeked);
+			video.removeEventListener('loadeddata', anchorPausedPicture);
+			stopClock();
 			if (this.pausedTime === pausedTime) this.pausedTime = undefined;
 			this.clear();
 		};

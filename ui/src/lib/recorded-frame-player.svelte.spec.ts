@@ -75,6 +75,64 @@ test('anchors the first step to the current paused picture when a compositor cal
 	}
 });
 
+test('anchors an already paused decoded picture when its source clock becomes available', async () => {
+	const video = document.createElement('video');
+	const url = URL.createObjectURL(await (await fetch(numberedVideo)).blob());
+	const player = new RecordedFramePlayer();
+	const notify = new Set<() => void>();
+	let mapped = false;
+	const cursor = {
+		...clock(1_000),
+		url,
+		canStepExactly: true,
+		onFrameClockUpdate(listener: () => void) {
+			notify.add(listener);
+			return () => notify.delete(listener);
+		},
+		storedNsForMediaUs: (us: number) => (mapped ? 1_000_000_000n + BigInt(us) * 1_000n : undefined),
+		stepRecordedFrame: vi.fn(async () => picture(1))
+	};
+	let cleanup: (() => void) | undefined;
+	document.body.append(video);
+	try {
+		const loaded = new Promise<void>((resolve) =>
+			video.addEventListener('loadeddata', () => resolve(), { once: true })
+		);
+		video.src = url;
+		await loaded;
+		const settled = new Promise<void>((resolve) =>
+			video.addEventListener('seeked', () => resolve(), { once: true })
+		);
+		video.currentTime = 0.255;
+		await settled;
+		const bitmap = new VideoFrame(video);
+		const us = bitmap.timestamp;
+		bitmap.close();
+		expect(us).not.toBe(Math.round(video.currentTime * 1_000_000));
+		// Chromium can keep showing this paused picture without another compositor callback.
+		vi.spyOn(video, 'requestVideoFrameCallback').mockReturnValue(1);
+		cleanup = player.follow(video, cursor);
+		expect(player.displayedNs).toBeUndefined();
+		mapped = true;
+		for (const listener of notify) listener();
+		expect(player.displayedNs).toBe(cursor.storedNsForMediaUs(us));
+		await player.step(1, cursor, () => {});
+		expect(cursor.stepRecordedFrame).toHaveBeenCalledWith(
+			1,
+			{ displayedTimeNs: cursor.storedNsForMediaUs(us) },
+			expect.any(AbortSignal)
+		);
+		cleanup();
+		cleanup = undefined;
+		expect(notify.size).toBe(0);
+	} finally {
+		cleanup?.();
+		video.remove();
+		URL.revokeObjectURL(url);
+		vi.restoreAllMocks();
+	}
+});
+
 test.each([
 	{ label: 'forward', queued: Array<1 | -1>(40).fill(1), expected: Array<number>(32).fill(1) },
 	{
