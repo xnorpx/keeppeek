@@ -16,6 +16,7 @@ import {
 	SourceSessionRemovedSchema,
 	SubscriptionResultSchema,
 	SubscriptionStreamStateSchema,
+	TalkbackStateSchema,
 	type LiveQualityDiagnostics,
 	type Notification
 } from './proto/webrtc_pb';
@@ -44,6 +45,8 @@ class FakeDataChannel {
 	onerror: (() => void) | null = null;
 	onmessage: ((event: MessageEvent) => void) | null = null;
 	readonly commands: string[] = [];
+	delayTalkbackStart = false;
+	replyToTalkbackStart?: () => void;
 
 	constructor(
 		readonly label: string,
@@ -98,7 +101,16 @@ class FakeDataChannel {
 			}
 		});
 		const encoded = toBinary(ControlEnvelopeSchema, response);
-		queueMicrotask(() => this.onmessage?.({ data: encoded.buffer } as MessageEvent));
+		const reply = () => this.onmessage?.({ data: encoded.buffer } as MessageEvent);
+		if (
+			this.delayTalkbackStart &&
+			command.case === 'talkbackCommand' &&
+			command.value.action.case === 'start'
+		) {
+			this.replyToTalkbackStart = reply;
+		} else {
+			queueMicrotask(reply);
+		}
 	}
 
 	open(): void {
@@ -237,7 +249,141 @@ function streamState(
 	});
 }
 
+function talkbackRoute(
+	ownerSessionId: string,
+	groupId: string,
+	activeSourceIds: string[],
+	failedSourceIds: string[]
+) {
+	return notification({
+		case: 'talkbackState',
+		value: create(TalkbackStateSchema, {
+			ownerSessionId,
+			target: { selection: { case: 'groupId', value: groupId } },
+			activeSourceIds,
+			failedSourceIds
+		})
+	});
+}
+
+async function cameraWithMicrophone(peer: LivePeer, sessionId: string) {
+	api.createSession.mockResolvedValue({
+		session_id: sessionId,
+		answer: { type: 'answer', sdp: 'v=0' }
+	});
+	api.deleteSession.mockResolvedValue(undefined);
+	await peer.configure([{ cameraId: 'front-door', quality: 'auto' }]);
+	const connection = FakePeerConnection.latest!;
+	const sender = {
+		replaceTrack: vi.fn(async (track: MediaStreamTrack | null) => {
+			if (!track) throw new Error('Sender already closed.');
+		})
+	};
+	Object.defineProperty(connection.transceivers[0], 'sender', { value: sender });
+	return { channel: connection.channels[0], sender };
+}
+
 describe('LivePeer', () => {
+	it.each([false, true])(
+		'releases a withdrawn microphone with pending start=%s and a rejecting sender',
+		async (pendingStart) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			const peer = new LivePeer();
+			const { channel, sender } = await cameraWithMicrophone(peer, 'owner');
+			const context = new AudioContext();
+			const stream = context.createMediaStreamDestination().stream;
+			const track = stream.getAudioTracks()[0];
+			vi.spyOn(navigator.mediaDevices, 'getUserMedia').mockResolvedValue(stream);
+			channel.delayTalkbackStart = pendingStart;
+			try {
+				const start = peer.startTalkback({ groupId: 'entrance' });
+				if (pendingStart)
+					await vi.waitFor(() => expect(channel.replyToTalkbackStart).toBeDefined());
+				else await start;
+				channel.onmessage?.(talkbackRoute('other', 'entrance', [], ['front-door']));
+				channel.onmessage?.(talkbackRoute('owner', 'unrelated', [], ['elsewhere']));
+				channel.onmessage?.(talkbackRoute('owner', 'entrance', ['front-door'], ['side-door']));
+				channel.onmessage?.(talkbackRoute('owner', 'entrance', [], []));
+				expect(track.readyState).toBe('live');
+				expect(peer.talkbackActive).toBe(!pendingStart);
+				channel.onmessage?.(talkbackRoute('owner', 'entrance', [], ['front-door']));
+				expect(track.readyState).toBe('ended');
+				expect(peer.talkbackActive).toBe(false);
+				expect(sender.replaceTrack).toHaveBeenLastCalledWith(null);
+				if (pendingStart) {
+					const rejected = expect(start).rejects.toThrow(/route ended/i);
+					channel.replyToTalkbackStart!();
+					await rejected;
+					expect(peer.talkbackActive).toBe(false);
+				}
+			} finally {
+				await peer.close();
+				await context.close();
+			}
+		}
+	);
+
+	it('keeps a source microphone until its own speaker is withdrawn', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		const peer = new LivePeer();
+		const { channel } = await cameraWithMicrophone(peer, 'owner');
+		const context = new AudioContext();
+		const stream = context.createMediaStreamDestination().stream;
+		vi.spyOn(navigator.mediaDevices, 'getUserMedia').mockResolvedValue(stream);
+		try {
+			await peer.startTalkback({ sourceId: 'front-door' });
+			const withdraw = (id: string) =>
+				channel.onmessage?.(
+					notification({
+						case: 'talkbackState',
+						value: create(TalkbackStateSchema, {
+							ownerSessionId: 'owner',
+							target: { selection: { case: 'sourceId', value: 'front-door' } },
+							failedSourceIds: [id]
+						})
+					})
+				);
+			withdraw('other-camera');
+			expect(stream.getAudioTracks()[0].readyState).toBe('live');
+			withdraw('front-door');
+			expect(stream.getAudioTracks()[0].readyState).toBe('ended');
+			expect(peer.talkbackActive).toBe(false);
+		} finally {
+			await peer.close();
+			await context.close();
+		}
+	});
+
+	it('ignores a previous connection’s withdrawal for a new microphone on the same target', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		const peer = new LivePeer();
+		const context = new AudioContext();
+		const first = context.createMediaStreamDestination().stream;
+		const next = context.createMediaStreamDestination().stream;
+		vi.spyOn(navigator.mediaDevices, 'getUserMedia')
+			.mockResolvedValueOnce(first)
+			.mockResolvedValueOnce(next);
+		try {
+			const previous = await cameraWithMicrophone(peer, 'first');
+			await peer.startTalkback({ groupId: 'entrance' });
+			const stale = previous.channel.onmessage!;
+			peer.closeOnPageHide();
+			expect(first.getAudioTracks()[0].readyState).toBe('ended');
+			const current = await cameraWithMicrophone(peer, 'second');
+			await peer.startTalkback({ groupId: 'entrance' });
+			const event = talkbackRoute('second', 'entrance', [], ['front-door']);
+			stale(event);
+			expect(next.getAudioTracks()[0].readyState).toBe('live');
+			expect(peer.talkbackActive).toBe(true);
+			current.channel.onmessage?.(event);
+			expect(next.getAudioTracks()[0].readyState).toBe('ended');
+			expect(peer.talkbackActive).toBe(false);
+		} finally {
+			await peer.close();
+			await context.close();
+		}
+	});
+
 	it('updates accessory-only capabilities without enabling camera or group microphones', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({

@@ -1,4 +1,4 @@
-import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
+import { create, equals, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { createSession, deleteSession } from './api';
 import { AacAudioPlayback } from './audio-playback';
 import { liveVariant, safeBitrate } from './live-quality';
@@ -26,6 +26,7 @@ import {
 	type ServerCapabilities,
 	type LiveQualityDiagnostics,
 	type SubscriptionStreamState,
+	type TalkbackState,
 	type TalkbackTarget
 } from './proto/webrtc_pb';
 import type { CreateResponse, LiveQuality } from './types';
@@ -102,7 +103,12 @@ export class LivePeer {
 	#reliableChannel: RTCDataChannel | null = null;
 	#unreliableChannel: RTCDataChannel | null = null;
 	#talkbackTransceiver: RTCRtpTransceiver | null = null;
-	#talkbackTrack: MediaStreamTrack | null = null;
+	#microphone: {
+		stream: MediaStream;
+		sender: RTCRtpSender;
+		target: TalkbackTarget;
+		requested: boolean;
+	} | null = null;
 	#cameraByMid: Record<string, string> = {};
 	#audioCameraByMid: Record<string, string> = {};
 	#audioPlaybackByBinding = new Map<string, AacAudioPlayback>();
@@ -168,34 +174,51 @@ export class LivePeer {
 
 	startTalkback(target: TalkbackTargetSelection): Promise<void> {
 		return this.enqueue(async () => {
-			if (this.#talkbackTransceiver === null) {
+			const transceiver = this.#talkbackTransceiver;
+			if (transceiver === null) {
 				throw new Error('Talkback is unavailable until the live session is connected.');
 			}
 			if (this.talkbackActive) return;
 			this.talkbackError = null;
 			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 			const track = stream.getAudioTracks()[0];
-			if (!track) {
+			if (!track || this.#talkbackTransceiver !== transceiver) {
 				stream.getTracks().forEach((item) => item.stop());
-				throw new Error('The microphone did not provide an audio track.');
+				throw new Error(
+					track
+						? 'The live session changed before talkback started.'
+						: 'The microphone did not provide an audio track.'
+				);
 			}
+			const microphone = {
+				stream,
+				sender: transceiver.sender,
+				target: talkbackTarget(target),
+				requested: false
+			};
+			this.#microphone = microphone;
 			try {
-				await this.#talkbackTransceiver.sender.replaceTrack(track);
+				await microphone.sender.replaceTrack(track);
+				if (this.#microphone !== microphone)
+					throw new Error('The live session changed before talkback started.');
+				microphone.requested = true;
 				await this.request({
 					case: 'talkbackCommand',
 					value: create(TalkbackCommandSchema, {
 						action: {
 							case: 'start',
-							value: create(StartTalkbackSchema, { target: talkbackTarget(target) })
+							value: create(StartTalkbackSchema, { target: microphone.target })
 						}
 					})
 				});
-				this.#talkbackTrack = track;
+				if (this.#microphone !== microphone)
+					throw new Error('The talkback route ended before the microphone started.');
 				this.talkbackActive = true;
 			} catch (error) {
-				await this.#talkbackTransceiver.sender.replaceTrack(null);
-				stream.getTracks().forEach((item) => item.stop());
-				this.talkbackError = error instanceof Error ? error.message : 'Talkback could not start.';
+				if (this.#microphone === microphone) {
+					this.releaseMicrophone();
+					this.talkbackError = error instanceof Error ? error.message : 'Talkback could not start.';
+				}
 				throw error;
 			}
 		});
@@ -204,20 +227,41 @@ export class LivePeer {
 	stopTalkback(): Promise<void> {
 		return this.enqueue(async () => {
 			if (!this.talkbackActive) return;
-			try {
-				await this.request({
-					case: 'talkbackCommand',
-					value: create(TalkbackCommandSchema, {
-						action: { case: 'stop', value: create(StopTalkbackSchema) }
-					})
-				});
-			} finally {
-				await this.#talkbackTransceiver?.sender.replaceTrack(null);
-				this.#talkbackTrack?.stop();
-				this.#talkbackTrack = null;
-				this.talkbackActive = false;
-			}
+			this.releaseMicrophone();
+			await this.request({
+				case: 'talkbackCommand',
+				value: create(TalkbackCommandSchema, {
+					action: { case: 'stop', value: create(StopTalkbackSchema) }
+				})
+			});
 		});
+	}
+
+	private receiveTalkbackState(state: TalkbackState): void {
+		const microphone = this.#microphone;
+		if (
+			!microphone?.requested ||
+			state.ownerSessionId !== this.sessionId ||
+			!state.target ||
+			!equals(TalkbackTargetSchema, state.target, microphone.target) ||
+			state.activeSourceIds.length !== 0 ||
+			state.failedSourceIds.length === 0
+		)
+			return;
+		const selection = microphone.target.selection;
+		if (selection.case === 'sourceId' && !state.failedSourceIds.includes(selection.value)) return;
+		this.releaseMicrophone();
+		this.talkbackError = 'All selected talkback routes ended. The microphone was released.';
+	}
+
+	private releaseMicrophone(): void {
+		const microphone = this.#microphone;
+		if (!microphone) return;
+		this.#microphone = null;
+		this.talkbackActive = false;
+		for (const track of microphone.stream.getTracks()) track.stop();
+		// The microphone is already stopped even if a closing peer rejects the detach.
+		void microphone.sender.replaceTrack(null).catch(() => undefined);
 	}
 
 	playQuickReply(sourceId: string, assetId: string): Promise<void> {
@@ -723,6 +767,7 @@ export class LivePeer {
 		}
 		if (envelope.message.case === 'notification') {
 			const event = envelope.message.value.event;
+			if (event.case === 'talkbackState') this.receiveTalkbackState(event.value);
 			if (event.case === 'initialCapabilities') {
 				this.receiveCapabilities(event.value);
 			}
@@ -960,9 +1005,7 @@ export class LivePeer {
 		this.#reliableChannel = null;
 		this.#unreliableChannel = null;
 		this.#talkbackTransceiver = null;
-		this.#talkbackTrack?.stop();
-		this.#talkbackTrack = null;
-		this.talkbackActive = false;
+		this.releaseMicrophone();
 		this.talkbackError = null;
 		peer?.close();
 		this.failPending('WebRTC media session closed.');
