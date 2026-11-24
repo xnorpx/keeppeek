@@ -38,6 +38,7 @@ import type {
 	IssuedAccessCredential
 } from './access';
 import { NotificationControlClient } from './control-client-notifications';
+import { replaceKnownCamera } from './camera-inventory';
 import { SystemControlClient, healthProfile, numeric } from './control-client-system';
 import { ConfigurationControlClient } from './control-client-configuration';
 import { ControlClientStateStore } from './control-client-state-store';
@@ -2481,7 +2482,9 @@ export class ControlClient {
 				resolve(new Error('WebRTC control channel failed.'));
 			};
 		});
-		control.onmessage = (event) => this.receive(event);
+		control.onmessage = (event) => {
+			if (peer === this.#peer) this.receive(event);
+		};
 		reliable.onmessage = (event) => this.receiveData(event);
 		control.onclose = () => {
 			if (peer !== this.#peer) return;
@@ -2552,6 +2555,14 @@ export class ControlClient {
 			return;
 		}
 		if (envelope.message.case === 'notification') {
+			if (envelope.message.value.event.case === 'cameraUpdated') {
+				const updated = replaceKnownCamera(
+					this.#serverCapabilities,
+					envelope.message.value.event.value
+				);
+				if (updated) this.#serverCapabilities = updated;
+				return;
+			}
 			if (envelope.message.value.event.case === 'initialCapabilities') {
 				const capabilities = envelope.message.value.event.value;
 				this.#serverCapabilities = capabilities;

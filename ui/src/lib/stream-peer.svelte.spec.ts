@@ -2,6 +2,7 @@ import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	CameraInfoSchema,
+	CameraUpdatedSchema,
 	ConnectionUpdateSchema,
 	ControlEnvelopeSchema,
 	LiveQualityDiagnosticsSchema,
@@ -440,6 +441,86 @@ describe('LivePeer', () => {
 			await peer.close();
 			await context.close();
 		}
+	});
+
+	it('updates one known speaker inventory without disturbing unrelated live bindings', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'doorbell',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		await peer.configure([
+			{ cameraId: 'front-door', quality: 'auto' },
+			{ cameraId: 'garage', quality: 'auto' }
+		]);
+		const channel = FakePeerConnection.latest!.channels[0];
+		const receive = channel.onmessage!;
+		receive(
+			notification({
+				case: 'initialCapabilities',
+				value: create(ServerCapabilitiesSchema, {
+					cameras: ['front-door', 'garage'].map((sourceId) => ({
+						sourceId,
+						groupIds: ['house'],
+						deviceCapabilities: { twoWayAudio: true }
+					})),
+					sourceSessions: ['front-door', 'garage'].map((sourceId) => ({
+						sourceId,
+						sourceSessionId: 'camera:' + sourceId,
+						video: {}
+					}))
+				})
+			})
+		);
+		const originalTrack = peer.track('garage');
+		const originalAssets = peer.cameraAudioAssets.garage;
+		const commands = [...channel.commands];
+		const update = (sourceId: string, cameraId: string, reply?: string) =>
+			receive(
+				notification({
+					case: 'cameraUpdated',
+					value: create(CameraUpdatedSchema, {
+						sourceId,
+						camera: {
+							sourceId: cameraId,
+							deviceCapabilities: reply
+								? { quickReplies: [{ assetId: reply, displayName: reply }] }
+								: undefined
+						}
+					})
+				})
+			);
+		update('front-door', 'garage', 'wrong');
+		update('unknown', 'unknown', 'unknown');
+		expect(Object.keys(peer.cameraAudioAssets).sort()).toEqual(['front-door', 'garage']);
+		expect(peer.cameraAudioAssets.garage).toBe(originalAssets);
+		update('front-door', 'front-door', 'Delivery');
+		expect(peer.cameraAudioAssets['front-door']).toEqual({
+			twoWayAudio: false,
+			quickReplies: [{ id: 'Delivery', label: 'Delivery' }],
+			chimes: []
+		});
+		expect(peer.talkbackGroups).toEqual([{ id: 'house', label: 'house' }]);
+		expect(peer.track('garage')).toBe(originalTrack);
+		expect(peer.cameraAudioAssets.garage).toBe(originalAssets);
+		expect(channel.commands).toEqual(commands);
+		update('front-door', 'front-door');
+		expect(peer.cameraAudioAssets['front-door']).toBeUndefined();
+		update('garage', 'garage');
+		expect(peer.talkbackGroups).toEqual([]);
+		await peer.close();
+		await peer.configure([{ cameraId: 'front-door', quality: 'auto' }]);
+		FakePeerConnection.latest!.channels[0].onmessage?.(
+			notification({
+				case: 'initialCapabilities',
+				value: create(ServerCapabilitiesSchema, { cameras: [{ sourceId: 'front-door' }] })
+			})
+		);
+		update('front-door', 'front-door', 'old');
+		expect(peer.cameraAudioAssets['front-door']).toBeUndefined();
+		await peer.close();
 	});
 
 	it('updates accessory-only capabilities without enabling camera or group microphones', async () => {

@@ -1,6 +1,7 @@
 import { create, equals, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { createSession, deleteSession } from './api';
 import { AacAudioPlayback } from './audio-playback';
+import { replaceKnownCamera } from './camera-inventory';
 import { liveVariant, safeBitrate } from './live-quality';
 import {
 	ControlEnvelopeSchema,
@@ -23,6 +24,8 @@ import {
 	type Request,
 	type SubscribeMedia,
 	type Response as ControlResponse,
+	type CameraInfo,
+	type CameraUpdated,
 	type ServerCapabilities,
 	type LiveQualityDiagnostics,
 	type SubscriptionStreamState,
@@ -85,6 +88,20 @@ export type CameraAudioAssets = {
 	quickReplies: ReadonlyArray<{ id: string; label: string }>;
 	chimes: ReadonlyArray<{ id: string; label: string }>;
 };
+
+function audioAssets(camera: CameraInfo): CameraAudioAssets | undefined {
+	const device = camera.deviceCapabilities;
+	if (!device || (!device.twoWayAudio && !device.quickReplies.length && !device.chimes.length))
+		return undefined;
+	return {
+		twoWayAudio: device.twoWayAudio,
+		quickReplies: device.quickReplies.map((asset) => ({
+			id: asset.assetId,
+			label: asset.displayName
+		})),
+		chimes: device.chimes.map((asset) => ({ id: asset.assetId, label: asset.displayName }))
+	};
+}
 
 export class LivePeer {
 	connectionState = $state<RTCPeerConnectionState>('new');
@@ -789,6 +806,7 @@ export class LivePeer {
 		if (envelope.message.case === 'notification') {
 			const event = envelope.message.value.event;
 			if (event.case === 'talkbackState') this.receiveTalkbackState(event.value);
+			if (event.case === 'cameraUpdated') this.receiveCameraUpdate(event.value);
 			if (event.case === 'initialCapabilities') {
 				this.receiveCapabilities(event.value);
 			}
@@ -870,40 +888,44 @@ export class LivePeer {
 		}
 	}
 
+	private receiveCameraUpdate(update: CameraUpdated): void {
+		const capabilities = replaceKnownCamera(this.#capabilities, update);
+		if (!capabilities || !update.camera) return;
+		this.#capabilities = capabilities;
+		const assets = audioAssets(update.camera);
+		if (assets) this.cameraAudioAssets = { ...this.cameraAudioAssets, [update.sourceId]: assets };
+		else {
+			const next = { ...this.cameraAudioAssets };
+			delete next[update.sourceId];
+			this.cameraAudioAssets = next;
+		}
+		this.updateTalkbackGroups(capabilities.cameras);
+	}
+
+	private updateTalkbackGroups(cameras: readonly CameraInfo[]): void {
+		const groups = new Set<string>();
+		for (const camera of cameras) {
+			if (!camera.deviceCapabilities?.twoWayAudio) continue;
+			for (const groupId of camera.groupIds) groups.add(groupId);
+		}
+		const ids = [...groups].sort((left, right) => left.localeCompare(right));
+		if (
+			ids.length !== this.talkbackGroups.length ||
+			ids.some((id, index) => this.talkbackGroups[index].id !== id)
+		) {
+			this.talkbackGroups = ids.map((id) => ({ id, label: id }));
+		}
+	}
+
 	private receiveCapabilities(capabilities: ServerCapabilities): void {
 		this.#capabilities = capabilities;
 		this.cameraAudioAssets = Object.fromEntries(
-			capabilities.cameras
-				.filter(
-					({ deviceCapabilities: capability }) =>
-						capability &&
-						(capability.twoWayAudio ||
-							capability.quickReplies.length > 0 ||
-							capability.chimes.length > 0)
-				)
-				.map((camera) => [
-					camera.sourceId,
-					{
-						twoWayAudio: camera.deviceCapabilities?.twoWayAudio === true,
-						quickReplies: (camera.deviceCapabilities?.quickReplies ?? []).map((asset) => ({
-							id: asset.assetId,
-							label: asset.displayName
-						})),
-						chimes: (camera.deviceCapabilities?.chimes ?? []).map((asset) => ({
-							id: asset.assetId,
-							label: asset.displayName
-						}))
-					}
-				])
+			capabilities.cameras.flatMap((camera) => {
+				const assets = audioAssets(camera);
+				return assets ? [[camera.sourceId, assets]] : [];
+			})
 		);
-		const groups = new Map<string, string>();
-		for (const camera of capabilities.cameras) {
-			if (camera.deviceCapabilities?.twoWayAudio !== true) continue;
-			for (const groupId of camera.groupIds) groups.set(groupId, groupId);
-		}
-		this.talkbackGroups = [...groups.keys()]
-			.sort((left, right) => left.localeCompare(right))
-			.map((id) => ({ id, label: id }));
+		this.updateTalkbackGroups(capabilities.cameras);
 		this.#sourceSessionByCamera = Object.fromEntries(
 			capabilities.sourceSessions
 				.filter(
