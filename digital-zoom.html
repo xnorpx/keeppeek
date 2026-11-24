@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ee1ed41c.js";
+            window.path_to_searchindex_js = "searchindex-a4fb7b7d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -219,9 +219,11 @@ transitions.</p>
 <h2 id="keep-playback-controls"><a class="header" href="#keep-playback-controls">Keep playback controls</a></h2>
 <p>Keep’s play/pause, skip, position, volume, mute, speed, and fullscreen controls remain outside the
 transformed video. Timeline scrubbing still selects recording time, not an image crop. Arrow keys
-pan when the zoomed image has focus. At full-frame view, or outside the inspection surface, the
-player’s arrow shortcuts seek by one estimated frame interval when a recording is selected and
-camera health provides its configured frame rate.</p>
+pan when the zoomed image has focus. At full-frame view, or outside the inspection surface, pause the
+recording and use Left or Right to select the previous or next recorded frame. The same buttons
+are available below the player when the recorder and browser support exact stepping. With an older
+recorder or an unsupported browser, the arrow shortcuts use the camera’s configured frame rate
+for approximate seeking when that rate is available.</p>
 <p>On a portrait phone, the Digital strip remains above the image while <strong>Playback options</strong> opens
 volume, speed and quality in a separate sheet. Opening that sheet does not replace the recording
 or move its playhead. Its quality choice can request different available media; the Digital strip
