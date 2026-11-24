@@ -7,6 +7,8 @@ pub mod settings;
 pub(crate) mod target;
 mod worker;
 
+#[cfg(test)]
+pub(crate) use playback::tests::{fixture as publish_fixture, take_verified_reads};
 pub(crate) use playback::{VerifiedReader, read_range};
 pub(crate) use worker::{Handle, Worker};
 
