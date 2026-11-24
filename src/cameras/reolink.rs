@@ -6,7 +6,7 @@ use super::{
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     sync::atomic::{AtomicBool, Ordering},
     thread,
@@ -16,6 +16,9 @@ use ureq::Agent;
 use url::Url;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(2);
+const CGI_RESPONSE_BYTES_MAX: u64 = 8 * 1024 * 1024;
+const DOORBELL_ASSET_COUNT_MAX: usize = 128;
+const DOORBELL_ASSET_TEXT_BYTES_MAX: usize = 256;
 const MAX_CONCURRENT_PROBES: usize = 200;
 const BAICHUAN_LISTEN_TIMEOUT: Duration = Duration::from_secs(5);
 const GET_ENC_ATTEMPTS: usize = 3;
@@ -458,7 +461,6 @@ impl PtzOp {
 
 #[derive(Deserialize)]
 struct ApiRsp {
-    #[expect(dead_code)]
     cmd: Option<String>,
     code: Option<i32>,
     value: Option<Value>,
@@ -467,7 +469,6 @@ struct ApiRsp {
 
 #[derive(Deserialize)]
 struct RspError {
-    detail: Option<String>,
     #[serde(alias = "rspCode")]
     rsp_code: Option<i32>,
 }
@@ -609,10 +610,11 @@ impl ReolinkClient {
     }
 
     fn api_call(&self, cmd: &str, param: Option<Value>) -> anyhow::Result<Value> {
-        let mut url = format!("{}?cmd={}", self.base_url, cmd);
+        let mut url = Url::parse(&self.base_url)
+            .map_err(|_| anyhow::anyhow!("{cmd} camera address is invalid"))?;
+        url.query_pairs_mut().append_pair("cmd", cmd);
         if let Some(token) = &self.token {
-            url.push_str("&token=");
-            url.push_str(token);
+            url.query_pairs_mut().append_pair("token", token);
         }
 
         let body = serde_json::json!([{
@@ -623,36 +625,40 @@ impl ReolinkClient {
 
         let response = self
             .client
-            .post(&url)
+            .post(url.as_str())
+            .config()
+            .max_redirects(0)
+            .build()
             .header("Content-Type", "application/json")
-            .send(body.to_string())?;
-        let mut response_body = response.into_body();
-        let text = response_body.read_to_string()?;
-
-        let responses: Vec<ApiRsp> = serde_json::from_str(&text).map_err(|e| {
+            .send(body.to_string())
+            .map_err(|_| anyhow::anyhow!("{cmd} camera request failed"))?;
+        let status = response.status();
+        anyhow::ensure!(
+            status.is_success(),
+            "{cmd} camera HTTP status {}",
+            status.as_u16()
+        );
+        let bytes = response
+            .into_body()
+            .into_with_config()
+            .limit(CGI_RESPONSE_BYTES_MAX)
+            .read_to_vec()
+            .map_err(|_| anyhow::anyhow!("{cmd} camera response is unavailable or too large"))?;
+        let [rsp]: [ApiRsp; 1] = serde_json::from_slice(&bytes).map_err(|error| {
             anyhow::anyhow!(
-                "{} parse error: {} (body: {})",
-                cmd,
-                e,
-                &text[..text.len().min(200)]
+                "{cmd} camera response is invalid at line {} column {}",
+                error.line(),
+                error.column()
             )
         })?;
-
-        let rsp = responses
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("empty response for {cmd}"))?;
-
-        if let Some(err) = &rsp.error
-            && let Some(code) = err.rsp_code
+        anyhow::ensure!(
+            rsp.cmd.as_deref() == Some(cmd),
+            "{cmd} camera response does not name the requested command"
+        );
+        if let Some(code) = rsp.error.and_then(|error| error.rsp_code)
             && code != 0
         {
-            anyhow::bail!(
-                "{} error: code={}, detail={}",
-                cmd,
-                code,
-                err.detail.as_deref().unwrap_or("unknown")
-            );
+            anyhow::bail!("{cmd} camera reported error code {code}");
         }
 
         if let Some(code) = rsp.code
@@ -869,76 +875,82 @@ impl ReolinkClient {
         channel: u32,
         username: &str,
     ) -> anyhow::Result<ReolinkDoorbellCapabilities> {
-        let events = self.api_call("GetEvents", Some(serde_json::json!({ "channel": channel })))?;
-        let visitor_events = events
-            .get("Events")
-            .and_then(|value| value.get("visitor"))
-            .and_then(|value| value.get("support"))
-            .and_then(Value::as_u64)
-            .is_some_and(|value| value != 0);
-        let audio = self.api_call(
-            "GetAudioCfg",
-            Some(serde_json::json!({ "channel": channel })),
-        )?;
-        let audio = audio.get("AudioCfg").cloned().unwrap_or_default();
+        let events = self
+            .api_call("GetEvents", Some(serde_json::json!({ "channel": channel })))
+            .ok();
+        let visitor_events = events.as_ref().is_some_and(|events| {
+            let data = events.get("Events").unwrap_or(events);
+            reply_channel_matches(events, channel)
+                && reply_channel_matches(data, channel)
+                && data
+                    .get("visitor")
+                    .filter(|visitor| reply_channel_matches(visitor, channel))
+                    .and_then(|value| value.get("support"))
+                    .and_then(Value::as_u64)
+                    .is_some_and(|permit| permit != 0)
+        });
+        let audio_reply = self
+            .api_call(
+                "GetAudioCfg",
+                Some(serde_json::json!({ "channel": channel })),
+            )
+            .ok();
+        let audio_config = audio_reply.as_ref().and_then(|reply| {
+            reply.get("AudioCfg").filter(|cfg| {
+                reply_channel_matches(reply, channel) && reply_channel_matches(cfg, channel)
+            })
+        });
         let volume = |name: &str| {
-            audio
-                .get(name)
+            audio_config
+                .and_then(|cfg| cfg.get(name))
                 .and_then(Value::as_u64)
                 .and_then(|value| u8::try_from(value).ok())
         };
-        let files = self.api_call("GetAudioFileList", Some(serde_json::json!({})))?;
-        let quick_reply_assets = files
-            .get("AudioFileList")
-            .and_then(|value| value.get("audioFile"))
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| {
-                        Some((
-                            item.get("id")?.to_string().trim_matches('"').to_owned(),
-                            item.get("name")?.as_str()?.to_owned(),
-                        ))
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let files = self
+            .api_call("GetAudioFileList", Some(serde_json::json!({})))
+            .ok();
+        let files = files.as_ref().and_then(|value| value.get("AudioFileList"));
         let quick_replies = files
-            .get("AudioFileList")
             .and_then(|value| value.get("supportAudioPlay"))
             .and_then(Value::as_u64)
-            .is_some_and(|value| value != 0);
+            .is_some_and(|permit| permit != 0);
+        let quick_reply_assets = if quick_replies {
+            doorbell_assets(files.and_then(|value| value.get("audioFile")), true)
+        } else {
+            Vec::new()
+        };
         let auto_reply = self
             .api_call("GetAutoReply", Some(serde_json::json!({})))
-            .is_ok();
-        let chime_assets = self
-            .api_call("GetDingDongList", Some(serde_json::json!({})))
             .ok()
-            .and_then(|value| value.get("DingDongList").cloned())
-            .and_then(|value| value.get("dingDong").and_then(Value::as_array).cloned())
-            .unwrap_or_default();
-        let chime_assets = chime_assets
-            .iter()
-            .filter_map(|item| {
-                Some((
-                    item.get("id")?.as_str()?.to_owned(),
-                    item.get("name")?.as_str()?.to_owned(),
-                ))
-            })
-            .collect::<Vec<_>>();
+            .is_some_and(|reply| {
+                reply_channel_matches(&reply, channel)
+                    && reply.get("AutoReply").is_some_and(|config| {
+                        config.is_object() && reply_channel_matches(config, channel)
+                    })
+            });
+        let chimes = self
+            .api_call("GetDingDongList", Some(serde_json::json!({})))
+            .ok();
+        let chime_assets = doorbell_assets(
+            chimes
+                .as_ref()
+                .and_then(|value| value.pointer("/DingDongList/dingDong")),
+            false,
+        );
         let chime = !chime_assets.is_empty();
 
         Ok(ReolinkDoorbellCapabilities {
             visitor_events,
-            talkback: self.get_ability(username)?.two_way_audio,
+            talkback: self
+                .get_ability_for_channel(username, channel)?
+                .two_way_audio,
             quick_replies,
             auto_reply,
             chime,
             visitor_volume: volume("visitorVolume"),
             talk_and_reply_volume: volume("talkAndReplyVolume"),
-            visitor_loudspeaker: audio
-                .get("visitorLoudspeaker")
+            visitor_loudspeaker: audio_config
+                .and_then(|cfg| cfg.get("visitorLoudspeaker"))
                 .and_then(Value::as_u64)
                 .map(|value| value != 0),
             quick_reply_assets,
@@ -1000,6 +1012,14 @@ impl ReolinkClient {
     }
 
     pub fn get_ability(&self, username: &str) -> anyhow::Result<CameraCapabilities> {
+        self.get_ability_for_channel(username, 0)
+    }
+
+    fn get_ability_for_channel(
+        &self,
+        username: &str,
+        channel: u32,
+    ) -> anyhow::Result<CameraCapabilities> {
         let param = serde_json::json!({
             "User": { "userName": username }
         });
@@ -1015,11 +1035,26 @@ impl ReolinkClient {
                 > 0
         };
 
+        let channel_ability = ability
+            .get("abilityChn")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                let channel_is_labeled = |entry: &Value| {
+                    entry.get("channel").is_some() || entry.get("channelId").is_some()
+                };
+                entries
+                    .iter()
+                    .find(|entry| {
+                        channel_is_labeled(entry) && reply_channel_matches(entry, channel)
+                    })
+                    .or_else(|| {
+                        entries
+                            .get(channel as usize)
+                            .filter(|entry| !channel_is_labeled(entry))
+                    })
+            });
         let chn_has = |key: &str| -> bool {
-            ability
-                .get("abilityChn")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
+            channel_ability
                 .and_then(|ch| ch.get(key))
                 .and_then(|v| v.get("permit"))
                 .and_then(|v| v.as_u64())
@@ -1800,6 +1835,53 @@ fn parse_video_encoding(codec: Option<&str>) -> VideoEncoding {
     }
 }
 
+fn doorbell_assets(list: Option<&Value>, allow_numeric_ids: bool) -> Vec<(String, String)> {
+    let Some(items) = list.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    if items.len() > DOORBELL_ASSET_COUNT_MAX {
+        return Vec::new();
+    }
+    let mut by_id = BTreeMap::new();
+    for item in items {
+        let Some(raw_id) = item.get("id") else {
+            continue;
+        };
+        let id = raw_id.as_str().map(str::to_owned).or_else(|| {
+            allow_numeric_ids
+                .then_some(raw_id)
+                .and_then(Value::as_u64)
+                .map(|number| number.to_string())
+        });
+        let Some(id) =
+            id.filter(|id| !id.trim().is_empty() && id.len() <= DOORBELL_ASSET_TEXT_BYTES_MAX)
+        else {
+            continue;
+        };
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty() && name.len() <= DOORBELL_ASSET_TEXT_BYTES_MAX);
+        // A repeated ID cannot safely identify an individual device or reply.
+        by_id
+            .entry(id)
+            .and_modify(|entry| *entry = None)
+            .or_insert(name);
+    }
+    by_id
+        .into_iter()
+        .filter_map(|(id, name)| Some((id, name?.to_owned())))
+        .collect()
+}
+
+fn reply_channel_matches(value: &Value, channel: u32) -> bool {
+    ["channel", "channelId"].into_iter().all(|name| {
+        value
+            .get(name)
+            .is_none_or(|label| label.as_u64() == Some(u64::from(channel)))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1848,6 +1930,188 @@ mod tests {
         assert!(!actual);
         assert_eq!(stored["sens"][0]["sensitivity"], 37);
         assert_eq!(stored["scope"]["area"], "retained");
+    }
+
+    #[test]
+    fn cgi_rejects_oversize_redirect_and_unrelated_responses_without_echoing_private_data() {
+        use std::sync::{Arc, atomic::AtomicUsize};
+
+        const CANARY: &str = "fixture-credential+cgi&marker";
+        let redirects = Arc::new(AtomicUsize::new(0));
+        let queried_redirects = Arc::clone(&redirects);
+        let server = rouille::Server::new("127.0.0.1:0", move |request| {
+            if request.url() == "/redirected" {
+                queried_redirects.fetch_add(1, Ordering::Relaxed);
+                return rouille::Response::empty_404();
+            }
+            assert_eq!(request.get_param("token").as_deref(), Some(CANARY));
+            let command = request.get_param("cmd").unwrap();
+            match command.as_str() {
+                "InvalidJson" => rouille::Response::text(format!("{CANARY}{}", "ä".repeat(130))),
+                "WrongCommand" => rouille::Response::json(&serde_json::json!([
+                    {"cmd": "OtherCommand", "code": 0, "value": {"token": CANARY}}
+                ])),
+                "MissingCommand" => rouille::Response::json(&serde_json::json!([
+                    {"code": 0, "value": {"token": CANARY}}
+                ])),
+                "NullCommand" => rouille::Response::json(&serde_json::json!([
+                    {"cmd": null, "code": 0, "value": {"token": CANARY}}
+                ])),
+                "PrivateError" => rouille::Response::json(&serde_json::json!([
+                    {"cmd": command, "code": 1, "error": {"rspCode": 3, "detail": CANARY}}
+                ])),
+                "LargeResponse" => rouille::Response::from_data(
+                    "application/json",
+                    vec![b'x'; usize::try_from(CGI_RESPONSE_BYTES_MAX + 1).unwrap()],
+                ),
+                "Unavailable" => rouille::Response::text(CANARY).with_status_code(503),
+                "Redirect" => rouille::Response::text(CANARY)
+                    .with_status_code(307)
+                    .with_unique_header("Location", "/redirected"),
+                _ => rouille::Response::json(&serde_json::json!([
+                    {"cmd": command, "code": 0, "value": {"verified": true}}
+                ])),
+            }
+        })
+        .unwrap();
+        let port = server.server_addr().port();
+        let (worker, stop) = server.stoppable();
+        let mut client =
+            ReolinkClient::new_with_http_port(IpAddr::V4(Ipv4Addr::LOCALHOST), Some(port));
+        client.token = Some(CANARY.to_owned());
+
+        let errors = [
+            "InvalidJson",
+            "WrongCommand",
+            "MissingCommand",
+            "NullCommand",
+            "PrivateError",
+            "LargeResponse",
+            "Redirect",
+            "Unavailable",
+        ]
+        .map(|command| client.api_call(command, None).unwrap_err().to_string());
+        let valid = client.api_call("ValidResponse", None).unwrap();
+        stop.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(errors[0].contains("invalid at line"));
+        assert!(
+            errors[1..4]
+                .iter()
+                .all(|error| error.contains("does not name the requested command"))
+        );
+        assert!(errors[4].contains("error code 3"));
+        assert!(errors[5].contains("unavailable or too large"));
+        assert!(errors[6].contains("status 307"));
+        assert!(errors[7].contains("HTTP status 503"));
+        assert!(errors.iter().all(|error| !error.contains(CANARY)));
+        assert_eq!(redirects.load(Ordering::Relaxed), 0);
+        assert_eq!(valid["verified"], true);
+    }
+
+    #[test]
+    fn doorbell_probe_keeps_channel_specific_abilities_and_rejects_mismatched_evidence() {
+        use std::io::Read;
+
+        let server = rouille::Server::new("127.0.0.1:0", |request| {
+            let command = request.get_param("cmd").unwrap();
+            let mut body = String::new();
+            request.data().unwrap().read_to_string(&mut body).unwrap();
+            let body: Value = serde_json::from_str(&body).unwrap();
+            let channel = body[0]["param"]["channel"].as_u64().unwrap_or_default();
+            if command == "GetAudioFileList" || (channel == 3 && command == "GetEvents") {
+                return rouille::Response::json(&serde_json::json!([{"cmd": command, "code": 1}]));
+            }
+            let value = match command.as_str() {
+                "GetEvents" if channel == 0 => serde_json::json!({
+                    "Events": {"visitor": {"channel": 0, "support": 1}},
+                }),
+                "GetEvents" if channel == 1 => serde_json::json!({
+                    "channel": 1, "visitor": {"channel": 0, "support": 1},
+                }),
+                "GetEvents" => serde_json::json!({
+                    "channel": 2, "visitor": {"support": 1},
+                }),
+                "GetAudioCfg" => serde_json::json!({
+                    "AudioCfg": {"channelId": 0, "visitorVolume": 83, "visitorLoudspeaker": 1},
+                }),
+                "GetDingDongList" => serde_json::json!({
+                    "DingDongList": {"dingDong": [
+                        {"id": "front", "name": "Front Chime"},
+                        {"id": "ambiguous", "name": "First Chime"},
+                        {"id": "back", "name": "Back Chime"},
+                        {"id": "ambiguous", "name": "Second Chime"},
+                        {"name": "Missing ID"},
+                        {"id": "name-missing"},
+                    ]}
+                }),
+                "GetAbility" => serde_json::json!({
+                    "Ability": {"abilityChn": [
+                        {"channel": 1, "talkCfg": {"permit": 1}},
+                        {"channelId": 0, "talkCfg": {"permit": 0}},
+                        {"channel": 99, "talkCfg": {"permit": 1}},
+                        {"talkCfg": {"permit": 1}}
+                    ]},
+                }),
+                _ => serde_json::json!({}),
+            };
+            rouille::Response::json(
+                &serde_json::json!([{"cmd": command, "code": 0, "value": value}]),
+            )
+        })
+        .unwrap();
+        let port = server.server_addr().port();
+        let (worker, stop) = server.stoppable();
+        let client = ReolinkClient::new_with_http_port(IpAddr::V4(Ipv4Addr::LOCALHOST), Some(port));
+        let result =
+            [0, 1, 2, 3].map(|channel| client.get_doorbell_capabilities(channel, "test").unwrap());
+        stop.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(result[0].visitor_events);
+        assert_eq!(result[0].visitor_volume, Some(83));
+        assert!(!result[0].talkback);
+        assert!(!result[1].visitor_events);
+        assert_eq!(result[1].visitor_volume, None);
+        assert_eq!(result[1].visitor_loudspeaker, None);
+        assert!(result[1].talkback);
+        assert!(result[2].visitor_events);
+        assert!(!result[2].talkback);
+        assert!(result[3].talkback);
+        assert!(!result[3].visitor_events);
+        assert!(result.iter().all(|capabilities| capabilities.chime));
+        assert!(
+            result
+                .iter()
+                .all(|capabilities| !capabilities.quick_replies)
+        );
+        assert_eq!(
+            result[1].chime_assets,
+            vec![
+                ("back".into(), "Back Chime".into()),
+                ("front".into(), "Front Chime".into()),
+            ],
+        );
+    }
+
+    #[test]
+    fn doorbell_assets_are_bounded_and_stable_when_the_camera_reorders_entries() {
+        let mut assets = serde_json::json!([
+            {"id": 2, "name": "Numeric Reply"},
+            {"id": "4", "name": "First Assignment"},
+            {"id": "1", "name": "Text Reply"},
+            {"id": 4, "name": "Same ID From Firmware"},
+            {"id": " ", "name": "Missing ID"},
+            {"id": "too-long", "name": "x".repeat(DOORBELL_ASSET_TEXT_BYTES_MAX + 1)},
+        ]);
+        let expected = vec![
+            ("1".into(), "Text Reply".into()),
+            ("2".into(), "Numeric Reply".into()),
+        ];
+        assert_eq!(doorbell_assets(Some(&assets), true), expected);
+        assets.as_array_mut().unwrap().reverse();
+        assert_eq!(doorbell_assets(Some(&assets), true), expected);
+        let oversized = Value::Array(vec![Value::Null; DOORBELL_ASSET_COUNT_MAX + 1]);
+        assert!(doorbell_assets(Some(&oversized), true).is_empty());
     }
 
     #[test]

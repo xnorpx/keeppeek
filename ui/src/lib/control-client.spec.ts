@@ -1902,6 +1902,9 @@ describe('ControlClient', () => {
 			playback.configure(recordedTimingState(2n, anchorMs + 5_000, 250));
 			appendTimingPeriod(playback, 2n, anchorMs + 5_000, 2n);
 			expect(sources[1]!.sourceBuffer.mode).toBe('segments');
+			const stored = BigInt(playback.anchorTimeMs) * 1_000_000n + 2_123_000n;
+			expect(playback.storedNsForMediaUs(2_123)).toBe(stored);
+			expect(playback.mediaUsForStoredNs(stored)).toBe(2_123);
 			playback.configure(recordedTimingState(3n, anchorMs + 8_000, 0));
 			appendTimingPeriod(playback, 3n, anchorMs + 8_000, 3n);
 			expect(sources[2]!.sourceBuffer.mode).toBe('sequence');

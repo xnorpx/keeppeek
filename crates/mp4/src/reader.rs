@@ -169,7 +169,7 @@ impl<R: Read + Seek> Mp4Reader<R> {
             }
 
             for track in tracks.values_mut() {
-                track.precompute_fragmented_caches();
+                track.precompute_fragmented_caches()?;
             }
         }
 
