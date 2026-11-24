@@ -961,6 +961,7 @@ impl ReolinkLoop {
                                         &storage_label,
                                     ),
                                     RecordingFrame {
+                                        source_rtp: None,
                                         received_at,
                                         timestamp: Some(timestamp),
                                         frame,
@@ -1074,6 +1075,7 @@ impl ReolinkLoop {
                                             &storage_label,
                                         ),
                                         RecordingFrame {
+                                            source_rtp: None,
                                             received_at: Instant::now(),
                                             timestamp: None,
                                             frame,

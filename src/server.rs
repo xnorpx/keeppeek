@@ -144,6 +144,7 @@ pub(crate) mod state_store_settings;
 pub(crate) mod state_store_watch;
 mod storage_archive;
 mod storage_volumes;
+mod stored_frame_step;
 mod stored_media;
 mod talkback;
 
@@ -855,6 +856,9 @@ impl ControlRequestHandler for ServerControlHandler {
                     Some(control_request::Command::StoredMediaCommand(command)) => {
                         match stored_media::dispatch(&self.state, session_id, command) {
                             Ok(dispatch) => {
+                                after_send = dispatch
+                                    .frame_transfer
+                                    .map(stored_frame_step::Delivery::after_send);
                                 data_messages = dispatch.messages;
                                 notifications = dispatch.notifications;
                                 Ok(dispatch.result)
@@ -1396,6 +1400,9 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
         "keeppeek.event-publication.v1".to_owned(),
         "stored-media-keyframe-preview.v1".to_owned(),
     ];
+    if state.catalog.is_some() {
+        capability_ids.push(stored_frame_step::CAPABILITY_ID.to_owned());
+    }
     if state.notifications.is_some() {
         capability_ids.push("keeppeek.rules.v1".to_owned());
     }
@@ -3621,6 +3628,7 @@ struct StoredMediaPeriod {
 }
 
 struct StoredMediaDispatch {
+    frame_transfer: Option<Box<stored_frame_step::Delivery>>,
     result: Option<control_ok::Result>,
     messages: Vec<OutboundDataMessage>,
     notifications: Vec<proto::Notification>,
@@ -8164,6 +8172,8 @@ fn proto_access_audit_event(event: AccessAuditEvent) -> proto::AccessAuditEvent 
 }
 
 struct StoredMediaCursor {
+    frames: stored_frame_step::CursorFrames,
+    requested_stream_id: String,
     incarnation: Uuid,
     identifiers: StoredMediaIdentifiers,
     recorded_audio: proto::RecordedAudioTiming,
@@ -8550,6 +8560,7 @@ pub struct ServerState {
     http_stream_cancellations: Arc<Mutex<Vec<HttpStreamCancellation>>>,
     stored_media_cursors: Arc<Mutex<HashMap<(SessionId, String), StoredMediaCursor>>>,
     recorded_audio_workers: Arc<AtomicUsize>,
+    frame_step_workers: Arc<AtomicUsize>,
     stored_media_cursor_reservations: Arc<Mutex<HashMap<(SessionId, String), uuid::Uuid>>>,
     ptz_owners: Arc<Mutex<HashMap<String, camera_control::Owner>>>,
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
@@ -8739,6 +8750,7 @@ impl ServerState {
             http_stream_cancellations: Arc::new(Mutex::new(Vec::new())),
             stored_media_cursors: Arc::new(Mutex::new(HashMap::new())),
             recorded_audio_workers: Arc::new(AtomicUsize::new(0)),
+            frame_step_workers: Arc::new(AtomicUsize::new(0)),
             stored_media_cursor_reservations: Arc::new(Mutex::new(HashMap::new())),
             ptz_owners: Arc::new(Mutex::new(HashMap::new())),
             export_jobs: Arc::new(Mutex::new(export_jobs)),
@@ -18772,6 +18784,7 @@ mod tests {
         for offset_ms in [0, 1_000] {
             writer
                 .append_one(crate::storage::RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {
@@ -19325,7 +19338,8 @@ mod tests {
             },
             &cancelled,
             |message| {
-                assert_eq!(
+                // Both legacy and named recording paths stay pinned during delivery.
+                assert!(
                     handler
                         .state
                         .catalog
@@ -19333,8 +19347,7 @@ mod tests {
                         .unwrap()
                         .reader_leases()
                         .conflicts(&fragments[0].recording_id, &fragments[0].path)
-                        .unwrap(),
-                    named
+                        .unwrap()
                 );
                 cancelled_messages.push(message);
                 cancelled.store(true, Ordering::Release);
@@ -19545,6 +19558,7 @@ mod tests {
         for offset_ms in [0, 1_000] {
             writer
                 .append_one(crate::storage::RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {
@@ -20126,6 +20140,7 @@ mod tests {
             payload.extend_from_slice(&sample.bytes);
             writer
                 .append_one(crate::storage::RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + elapsed,
                     timestamp: Some(elapsed),
                     frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {

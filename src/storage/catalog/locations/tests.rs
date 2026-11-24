@@ -2,6 +2,27 @@ use super::*;
 use crate::storage::catalog::{RecordingCatalog, tests::test_dir};
 
 #[test]
+fn volume_location_distinguishes_a_lost_acknowledgement_from_an_unavailable_catalog() {
+    let (write_tx, write_rx) = mpsc::sync_channel(1);
+    let (search_tx, _search_rx) = mpsc::sync_channel(1);
+    let handle = RecordingCatalogHandle::test_handle(write_tx, search_tx);
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let Command::VolumeLocation { reply, .. } =
+                write_rx.recv_timeout(Duration::from_secs(2)).unwrap()
+            else {
+                panic!("expected volume location request");
+            };
+            drop(reply);
+        });
+        let error = handle.volume_location(Request::Revision).unwrap_err();
+        assert!(error.is::<UnconfirmedOutcome>());
+    });
+    let unavailable = handle.volume_location(Request::Revision).unwrap_err();
+    assert!(!unavailable.is::<UnconfirmedOutcome>());
+}
+
+#[test]
 fn draining_binding_survives_restart_and_allows_only_existing_growth() {
     let root = test_dir("volume-draining-reopen");
     let path = root.join("catalog.db");

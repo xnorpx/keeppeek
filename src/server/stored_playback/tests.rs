@@ -2,6 +2,8 @@ use super::*;
 
 fn cursor(state: &ServerState) -> StoredMediaCursor {
     StoredMediaCursor {
+        frames: Default::default(),
+        requested_stream_id: "main".to_owned(),
         incarnation: Uuid::new_v4(),
         identifiers: StoredMediaIdentifiers::default(),
         recorded_audio: proto::RecordedAudioTiming::default(),
