@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e45b9c76.js";
+            window.path_to_searchindex_js = "searchindex-c94a2158.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -1440,8 +1440,15 @@ sounds synchronized.</li>
 <p>The readings precede transcoding, recording timeline normalization and configured
 presentation correction. Use the recorded flash/tone preview or a known physical
 event to measure audible sync. These periodic observations live in the recorder
-log and expire with its retention policy. Existing recordings contain their
-stored media timestamps.</p>
+log and expire with its retention policy. Newly recorded RTSP files also retain
+measured per-sample source timing for the lifetime of the recording. Older files
+provide their stored presentation timestamps only.</p>
+<p>Recordings rotate at a video keyframe as they approach their recovery limits.
+An exceptionally long interval between keyframes or repeated source clock
+discontinuities can exhaust a file’s metadata budget. The recorder logs
+<code>recording recovery budget exhausted</code>, keeps the valid prefix and starts a new
+recording at the next video keyframe. The interval between the last retained
+sample and that keyframe is a gap in coverage.</p>
 <p>For the availability and safety limits of manual deletion and catalog drift checks,
 see <a href="#recording-maintenance">Recording maintenance</a>. The Administrator workflow
 is under qualification; confirmed jobs can remove selected recordings permanently.</p>
@@ -3696,6 +3703,10 @@ binary has used it. Keep the pre-upgrade catalog and media together if a downgra
 local filesystem, add its stable ID, roles, limits, and placement rules, and save the draft. Restart
 to apply configuration changes. New placement rules affect future objects; existing objects retain
 their catalog owner.</p>
+<p>With separate legacy capture and archive roots, KeepPeek finishes journaled recording transfers
+before it can migrate the roots. If startup reports a pending transfer, use the saved pre-migration
+configuration with both original roots mounted so the recorder can finish it. Schedule the storage
+migration again after the transfer completes.</p>
 <p>To drain media, choose <strong>Stop new writes</strong> for the source. Existing fragments finish there. Load its
 stored objects, select a compatible destination, and preview an individual move or a batch of up to
 16 objects. Review the file count and bytes before confirming. Move jobs show durable progress and
