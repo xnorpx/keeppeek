@@ -281,6 +281,7 @@ export type MediaExportJob = {
 };
 
 type StoredMediaOpenOptions = {
+	schedule?: <T>(operation: (beforeSend?: () => void) => Promise<T>) => Promise<T>;
 	sourceId: string;
 	streamId: 'main' | 'sub';
 	timestampMs: number;
@@ -1230,20 +1231,28 @@ export class ControlClient {
 	async openStoredMedia(options: StoredMediaOpenOptions): Promise<StoredMediaPlayback> {
 		options.signal?.throwIfAborted();
 		const storedMediaId = `review-${this.#nextStoredId++}`;
+		const schedule =
+			options.schedule ?? (<T>(operation: (beforeSend?: () => void) => Promise<T>) => operation());
 		const playback = new StoredMediaPlayback(
 			storedMediaId,
 			options.sourceId,
 			options.streamId,
-			(timestampMs) => this.seekStoredMedia(storedMediaId, timestampMs),
-			(timestampMs) => this.refillStoredMedia(storedMediaId, timestampMs),
+			(timestampMs) =>
+				schedule((beforeSend) => this.seekStoredMedia(storedMediaId, timestampMs, beforeSend)),
+			(timestampMs) =>
+				schedule((beforeSend) => this.refillStoredMedia(storedMediaId, timestampMs, beforeSend)),
 			(playing, playbackRate, mode, recordedAudioPreview) =>
-				this.updateStoredMediaPlayback(
-					storedMediaId,
-					playing,
-					playbackRate,
-					mode,
-					recordedAudioPreview
+				schedule((beforeSend) =>
+					this.updateStoredMediaPlayback(
+						storedMediaId,
+						playing,
+						playbackRate,
+						mode,
+						recordedAudioPreview,
+						beforeSend
+					)
 				),
+			// Closing uses foreground control so it can release a cursor even while its background lane is full.
 			() => this.closeStoredMedia(storedMediaId),
 			this.#capabilityIds.includes('keeppeek.stored-frame-step.v1')
 				? async (step, signal) => {
@@ -1286,10 +1295,17 @@ export class ControlClient {
 					})
 				}
 			});
-			const result = await this.request(
-				{ case: 'storedMediaCommand', value: command },
-				options.openTimeoutMs ?? 4_000,
-				{ signal: options.signal }
+			const result = await schedule((beforeSend) =>
+				this.request(
+					{ case: 'storedMediaCommand', value: command },
+					options.openTimeoutMs ?? 4_000,
+					{
+						// A dispatched shared request must drain the recorder's one background slot.
+						// The comparison scheduler checks cancellation before dispatch.
+						signal: options.schedule ? undefined : options.signal,
+						onSent: beforeSend
+					}
+				)
 			);
 			if (result.case !== 'storedMediaState') {
 				throw new Error('Server returned an unexpected stored media response.');
@@ -2285,7 +2301,8 @@ export class ControlClient {
 
 	private async refillStoredMedia(
 		storedMediaId: string,
-		playbackTimeMs: number
+		playbackTimeMs: number,
+		beforeSend?: () => void
 	): Promise<StoredMediaState> {
 		const command = create(StoredMediaCommandSchema, {
 			action: {
@@ -2296,7 +2313,13 @@ export class ControlClient {
 				})
 			}
 		});
-		const result = await this.request({ case: 'storedMediaCommand', value: command });
+		const result = await this.request(
+			{ case: 'storedMediaCommand', value: command },
+			controlTimeoutMs,
+			undefined,
+			undefined,
+			beforeSend
+		);
 		if (result.case !== 'storedMediaState') {
 			throw new Error('Server returned an unexpected stored media refill response.');
 		}
@@ -2305,7 +2328,8 @@ export class ControlClient {
 
 	private async seekStoredMedia(
 		storedMediaId: string,
-		timestampMs: number
+		timestampMs: number,
+		beforeSend?: () => void
 	): Promise<StoredMediaState> {
 		const command = create(StoredMediaCommandSchema, {
 			action: {
@@ -2316,7 +2340,13 @@ export class ControlClient {
 				})
 			}
 		});
-		const result = await this.request({ case: 'storedMediaCommand', value: command });
+		const result = await this.request(
+			{ case: 'storedMediaCommand', value: command },
+			controlTimeoutMs,
+			undefined,
+			undefined,
+			beforeSend
+		);
 		if (result.case !== 'storedMediaState') {
 			throw new Error('Server returned an unexpected stored media seek response.');
 		}
@@ -2328,7 +2358,8 @@ export class ControlClient {
 		playing: boolean | undefined,
 		playbackRate: number | undefined,
 		mode: StoredMediaMode | undefined,
-		recordedAudioPreview?: RecordedAudioPreview
+		recordedAudioPreview?: RecordedAudioPreview,
+		beforeSend?: () => void
 	): Promise<StoredMediaState> {
 		const command = create(StoredMediaCommandSchema, {
 			action: {
@@ -2342,7 +2373,13 @@ export class ControlClient {
 				})
 			}
 		});
-		const result = await this.request({ case: 'storedMediaCommand', value: command });
+		const result = await this.request(
+			{ case: 'storedMediaCommand', value: command },
+			controlTimeoutMs,
+			undefined,
+			undefined,
+			beforeSend
+		);
 		if (result.case !== 'storedMediaState') {
 			throw new Error('Server returned an unexpected stored media playback response.');
 		}
@@ -2374,19 +2411,26 @@ export class ControlClient {
 	private async request(
 		command: Request['command'],
 		timeoutMs = controlTimeoutMs,
-		{
-			signal,
-			admit,
-			onSent
-		}: { signal?: AbortSignal; admit?: () => void; onSent?: () => void } = {}
+		options?: { signal?: AbortSignal; admit?: () => void; onSent?: () => void } | AbortSignal,
+		admit?: () => void,
+		beforeSend?: () => void
 	) {
-		await this.connectForRequest(signal, admit);
-		admit?.();
+		const signal =
+			options && typeof options === 'object' && 'signal' in options
+				? options.signal
+				: (options as AbortSignal | undefined);
+		const effectiveAdmit =
+			options && typeof options === 'object' && 'admit' in options ? options.admit : admit;
+		const onSent =
+			options && typeof options === 'object' && 'onSent' in options ? options.onSent : beforeSend;
+		await this.connectForRequest(signal, effectiveAdmit);
+		effectiveAdmit?.();
 		signal?.throwIfAborted();
 		const channel = this.#controlChannel;
 		if (!channel || channel.readyState !== 'open') {
 			throw new Error('WebRTC control channel is unavailable.');
 		}
+		onSent?.();
 		const requestId = this.#nextRequestId;
 		this.#nextRequestId += 2n;
 		const response = new Promise<ControlResponse>((resolve, reject) => {

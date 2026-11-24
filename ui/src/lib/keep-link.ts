@@ -1,5 +1,14 @@
-import { keepModes, parseKeepMode, type KeepMode } from './keep-modes';
+import { maximumReviewCameras } from './grid-playback-session';
+import { keepModes, MAX_EXPORT_DURATION_MS, parseKeepMode, type KeepMode } from './keep-modes';
 import type { RecordedQualityPreference } from './recorded-playback-policy';
+
+export type KeepReviewRange = { startMs: number; endMs: number };
+
+export type KeepReviewSelection = {
+	cameraIds: readonly string[];
+	audioCameraId: string;
+	range?: KeepReviewRange;
+};
 
 export type RecordingMoment = {
 	cameraId: string;
@@ -8,6 +17,7 @@ export type RecordingMoment = {
 	mode: KeepMode;
 	eventId?: string | null;
 	returnHref?: string | null;
+	review?: KeepReviewSelection;
 };
 
 export type KeepRoute = {
@@ -19,10 +29,22 @@ export type KeepRoute = {
 	eventId: string | null;
 	returnHref: string | null;
 	invalid: boolean;
+	review?: KeepReviewSelection;
 };
 
 const preferences = ['auto', 'high', 'low', 'main', 'sub'] as const;
-const routeFields = ['camera', 'date', 'at', 'stream', 'mode', 'event', 'returnTo'];
+const routeFields = [
+	'camera',
+	'date',
+	'at',
+	'stream',
+	'mode',
+	'event',
+	'returnTo',
+	'audio',
+	'rangeStart',
+	'rangeEnd'
+];
 const returnFields = [
 	'date',
 	'from',
@@ -40,6 +62,7 @@ const returnFields = [
 	'eventCamera'
 ];
 const maximumTimestampMs = 253_402_300_799_999;
+const maximumSearchLength = 8192;
 
 function boundedText(value: string | null, maximumLength = 256): string | null {
 	if (!value || !value.trim() || value.length > maximumLength) return null;
@@ -94,7 +117,7 @@ export function safeEventReturnHref(
 }
 
 export function parseKeepRoute(search: string, eventsPath = '/events'): KeepRoute {
-	const params = new URLSearchParams(search.length <= 8192 ? search : '');
+	const params = new URLSearchParams(search.length <= maximumSearchLength ? search : '');
 	const cameraId = boundedText(params.get('camera')) ?? '';
 	const eventId = boundedText(params.get('event'));
 	const timestampMs = parseMomentTimestamp(params.get('at'));
@@ -107,8 +130,19 @@ export function parseKeepRoute(search: string, eventsPath = '/events'): KeepRout
 		? (requestedStream as RecordedQualityPreference)
 		: null;
 	const returnHref = safeEventReturnHref(params.get('returnTo'), eventsPath);
+	const hasRange = params.has('rangeStart') || params.has('rangeEnd');
+	const from = parseMomentTimestamp(params.get('rangeStart'));
+	const to = parseMomentTimestamp(params.get('rangeEnd'));
+	const range =
+		from !== null && to !== null && from < to && to - from <= MAX_EXPORT_DURATION_MS
+			? { startMs: from, endMs: to }
+			: undefined;
+	const review =
+		timestampMs === null
+			? null
+			: reviewSelection(params.getAll('compare'), cameraId, params.get('audio') ?? cameraId, range);
 	const invalid =
-		search.length > 8192 ||
+		search.length > maximumSearchLength ||
 		params.size > 16 ||
 		routeFields.some((field) => params.getAll(field).length > 1) ||
 		(!cameraId && (params.has('at') || params.has('event'))) ||
@@ -118,7 +152,12 @@ export function parseKeepRoute(search: string, eventsPath = '/events'): KeepRout
 		(params.has('date') && date === null) ||
 		(params.has('stream') && streamPreference === null) ||
 		(params.has('mode') && !keepModes.includes(params.get('mode') as KeepMode)) ||
-		(params.has('returnTo') && returnHref === null);
+		(params.has('returnTo') && returnHref === null) ||
+		((params.has('compare') || params.has('audio') || hasRange) && review === null) ||
+		(hasRange && !range) ||
+		(review !== null &&
+			params.get('mode') === 'export' &&
+			(!range || (streamPreference !== 'main' && streamPreference !== 'sub')));
 	return {
 		cameraId,
 		streamPreference,
@@ -127,8 +166,35 @@ export function parseKeepRoute(search: string, eventsPath = '/events'): KeepRout
 		mode: parseKeepMode(params.get('mode')),
 		eventId,
 		returnHref,
-		invalid
+		invalid,
+		...(review && !invalid ? { review } : {})
 	};
+}
+
+function reviewSelection(
+	cameraIds: readonly string[],
+	focusId: string,
+	audioCameraId: string,
+	range?: KeepReviewRange
+): KeepReviewSelection | null {
+	if (cameraIds.length < 2 || cameraIds.length > maximumReviewCameras) return null;
+	const unique = new Set(cameraIds);
+	if (
+		unique.size !== cameraIds.length ||
+		!cameraIds.every((id) => boundedText(id)) ||
+		!unique.has(focusId) ||
+		!unique.has(audioCameraId)
+	)
+		return null;
+	if (
+		range &&
+		(parseMomentTimestamp(String(range.startMs)) === null ||
+			parseMomentTimestamp(String(range.endMs)) === null ||
+			range.startMs >= range.endMs ||
+			range.endMs - range.startMs > MAX_EXPORT_DURATION_MS)
+	)
+		return null;
+	return { cameraIds: [...cameraIds], audioCameraId, ...(range ? { range } : {}) };
 }
 
 export function keepMomentSearchParams(
@@ -144,7 +210,7 @@ export function keepMomentSearchParams(
 		throw new Error('Select a camera and a valid recording moment before copying a link.');
 	}
 	const returnHref = safeEventReturnHref(moment.returnHref, eventsPath);
-	return new URLSearchParams({
+	const params = new URLSearchParams({
 		camera: moment.cameraId,
 		date: new Date(moment.timestampMs).toISOString().slice(0, 10),
 		at: String(moment.timestampMs),
@@ -153,6 +219,25 @@ export function keepMomentSearchParams(
 		...(moment.mode === 'timeline' ? {} : { mode: moment.mode }),
 		...(returnHref ? { returnTo: returnHref } : {})
 	});
+	if (moment.review) {
+		const selection = reviewSelection(
+			moment.review.cameraIds,
+			moment.cameraId,
+			moment.review.audioCameraId,
+			moment.review.range
+		);
+		if (!selection)
+			throw new Error('Select two to four cameras and an audio source from that selection.');
+		for (const id of selection.cameraIds) params.append('compare', id);
+		if (selection.range) {
+			params.set('rangeStart', String(selection.range.startMs));
+			params.set('rangeEnd', String(selection.range.endMs));
+		}
+		if (selection.audioCameraId !== moment.cameraId) params.set('audio', selection.audioCameraId);
+	}
+	if (params.toString().length > maximumSearchLength - 1)
+		throw new Error('This recording link is too long.');
+	return params;
 }
 
 export function recordingMomentUrl(
