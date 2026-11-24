@@ -106,4 +106,62 @@ mod tests {
         config.backend = CameraBackend::Retina;
         assert!(crate::keeppeek::powered_reolink_channel(&config, true).is_none());
     }
+
+    #[test]
+    fn lost_speaker_evidence_retires_only_that_sources_active_microphone_route() {
+        use crate::{api::proto, server::update_talkback, webrtc::SessionId};
+
+        for change in ["CGI permission", "native profile", "camera replacement"] {
+            let state = crate::server::tests::media_test_state();
+            let owner = SessionId::from_u64(5);
+            let mut config = state.camera("127.0.0.1").unwrap().configuration;
+            config.backend = CameraBackend::ReoProto;
+            config.transport = CameraTransport::Tcp;
+            for ip in ["127.0.0.1", "192.0.2.10"] {
+                config.ip = ip.parse().unwrap();
+                state.upsert_camera(crate::server::camera_entry(&config, None));
+                let entry = state.camera(ip).unwrap();
+                super::super::apply_audio_capabilities(
+                    &state,
+                    &entry,
+                    ReolinkDoorbellCapabilities {
+                        talkback: true,
+                        ..Default::default()
+                    },
+                );
+                state.apply_reolink_speaker(&entry, true);
+            }
+            let command = proto::TalkbackCommand {
+                action: Some(proto::talkback_command::Action::Start(
+                    proto::StartTalkback {
+                        target: Some(proto::TalkbackTarget {
+                            selection: Some(proto::talkback_target::Selection::All(
+                                proto::AllTalkbackTargets {},
+                            )),
+                        }),
+                    },
+                )),
+            };
+            update_talkback(&state, owner, command).unwrap();
+            let live = state.webrtc.live();
+            assert!(live.talkback_is_armed("127.0.0.1") && live.talkback_is_armed("192.0.2.10"));
+            let entry = state.camera("127.0.0.1").unwrap();
+            match change {
+                "CGI permission" => {
+                    super::super::apply_audio_capabilities(&state, &entry, Default::default());
+                }
+                "native profile" => state.apply_reolink_speaker(&entry, false),
+                _ => {
+                    let mut replacement = entry.configuration;
+                    replacement.username = "new-camera".to_owned();
+                    state.upsert_camera(crate::server::camera_entry(&replacement, None));
+                }
+            }
+            assert!(!live.talkback_is_armed("127.0.0.1"), "{change}");
+            assert!(live.talkback_is_armed("192.0.2.10"), "{change}");
+            let last = state.camera("192.0.2.10").unwrap();
+            state.apply_reolink_speaker(&last, false);
+            assert!(!live.talkback_is_armed("192.0.2.10"), "{change}");
+        }
+    }
 }
