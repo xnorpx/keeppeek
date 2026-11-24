@@ -85,6 +85,68 @@ def duplicate_presentation_time(path):
     (ROOT / "duplicate-pts.mp4").write_bytes(data)
 
 
+def fractional_mux():
+    """Six 90 kHz video pictures; the 48 kHz AAC track starts before the video."""
+    path = ROOT / "fractional-origin.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p",
+            "-s",
+            "64x32",
+            "-framerate",
+            "6",
+            "-i",
+            "pipe:0",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=mono",
+            "-t",
+            "1",
+            "-c:v",
+            "libx264",
+            "-threads",
+            "1",
+            "-bf",
+            "0",
+            "-g",
+            "12",
+            "-sc_threshold",
+            "0",
+            "-c:a",
+            "aac",
+            "-video_track_timescale",
+            "90000",
+            "-map_metadata",
+            "-1",
+            "-movflags",
+            "empty_moov+frag_keyframe+default_base_moof+skip_trailer",
+            str(path),
+        ],
+        input=frames(),
+        check=True,
+    )
+    data = bytearray(path.read_bytes())
+    # One fragment, video track then audio track. Shift both measured clocks together
+    # with their samples; video starts at 150000/90000 s, audio at 78720/48000 s.
+    headers = [index for index in range(len(data)) if data[index : index + 4] == b"tfdt"]
+    if len(headers) != 2:
+        raise ValueError("Expected two track decode times")
+    for index, ticks in zip(headers, [150_000, 78_720]):
+        if data[index + 4] != 1 or struct.unpack_from(">Q", data, index + 8)[0] != 0:
+            raise ValueError("Unexpected fragmented input track clock")
+        struct.pack_into(">Q", data, index + 8, ticks)
+    path.write_bytes(data)
+
+
 if __name__ == "__main__":
+    fractional_mux()
     encode("cfr", "setpts=N")
     duplicate_presentation_time(encode("vfr", "setpts=N+2*floor(N/3)"))

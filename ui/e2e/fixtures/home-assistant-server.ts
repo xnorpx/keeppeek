@@ -23,6 +23,7 @@ type FixtureOptions = {
 	trustedLocal?: boolean;
 	archiveFixture?: boolean;
 	calibrationFixture?: { mediaPath: string };
+	frameStepMedia?: string;
 };
 
 async function availablePort(): Promise<number> {
@@ -106,6 +107,7 @@ async function writeFixtureConfiguration(options: {
 	trustedLocal?: boolean;
 	archiveFixture?: boolean;
 	calibrationFixture?: { mediaPath: string };
+	frameStepMedia?: string;
 }): Promise<string> {
 	const { directory, origin, port, configurations, trustedLocal = false } = options;
 	const configPath = resolve(directory, 'config.toml');
@@ -120,9 +122,10 @@ require_secure_remote = false
 allowed_origins = [${JSON.stringify(origin)}]
 [storage]
 short_term_secs = 5
-medium_term_secs = 60
+medium_term_secs = ${options.frameStepMedia ? 8 : 60}
 long_term_max_gb = 0
-${options.archiveFixture || options.calibrationFixture ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
+${options.frameStepMedia ? 'flush_interval_secs = 1' : ''}
+${options.archiveFixture || options.calibrationFixture || options.frameStepMedia ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
 [access_credentials]
 version = 1
 ${[...cardTestKeys, cardAdminKey].map((key) => credentialRecord(key, key === cardAdminKey)).join('\n')}
@@ -133,6 +136,7 @@ ${configurations.map((configuration, index) => fixtureCameraConfiguration(config
 }
 
 function fixtureCameraConfiguration(configuration: string, index: number, options: FixtureOptions) {
+	if (options.frameStepMedia && index === 0) return `${configuration}\nrecording_mode = "sub"\n`;
 	if (options.calibrationFixture) {
 		return `${configuration}\nrecorded_audio = { default_offset_ms = 200 }\n`;
 	}
@@ -142,22 +146,30 @@ function fixtureCameraConfiguration(configuration: string, index: number, option
 }
 
 async function waitForFixture(server: ChildProcess, url: string): Promise<void> {
-	for (let attempt = 0; attempt < 100; attempt += 1) {
-		if (server.exitCode !== null)
-			throw new Error('The isolated KeepPeek fixture exited before readiness.');
+	const deadline = performance.now() + 30_000;
+	let lastResult = 'no response';
+	while (performance.now() < deadline) {
+		if (server.exitCode !== null || server.signalCode !== null) {
+			throw new Error(
+				`The isolated KeepPeek fixture exited before readiness (exit ${server.exitCode}, signal ${server.signalCode}).`
+			);
+		}
 		try {
-			const response = await fetch(`${url}/metrics`, {
+			// The authenticated log snapshot is available as soon as the listener is serving.
+			const response = await fetch(`${url}/logs/snapshot`, {
 				headers: { Authorization: `Bearer ${cardAdminKey}` },
-				signal: AbortSignal.timeout(500)
+				signal: AbortSignal.timeout(1_000)
 			});
 			await response.body?.cancel();
 			if (response.ok) return;
+			lastResult = `HTTP ${response.status}`;
 		} catch (error) {
 			if (!(error instanceof TypeError) && !(error instanceof DOMException)) throw error;
+			lastResult = error.name;
 		}
 		await delay(100);
 	}
-	throw new Error('The isolated KeepPeek fixture did not become ready.');
+	throw new Error(`The isolated KeepPeek fixture did not become ready (${lastResult}).`);
 }
 
 async function startFixtureRecorder(options: {
@@ -183,10 +195,10 @@ async function startFixtureRecorder(options: {
 async function fixtureCameras(
 	binary: string,
 	children: ChildProcess[],
-	archiveFixture: boolean
+	nameBySource: boolean,
+	media = resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4')
 ): Promise<string[]> {
 	const configurations: string[] = [];
-	const media = resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4');
 	for (const [index, sourceId] of cardSourceIds.entries()) {
 		const child = spawn(
 			binary,
@@ -201,7 +213,7 @@ async function fixtureCameras(
 				'--config-ip',
 				sourceId,
 				'--name',
-				archiveFixture ? sourceId : `card-camera-${index}`
+				nameBySource ? sourceId : `card-camera-${index}`
 			],
 			{ stdio: ['ignore', 'pipe', 'ignore'] }
 		);
@@ -209,7 +221,7 @@ async function fixtureCameras(
 		await once(child, 'spawn');
 		const configuration = await cameraConfig(child);
 		configurations.push(
-			archiveFixture ? `${configuration}\ndisplay_name = "card-camera-${index}"\n` : configuration
+			nameBySource ? `${configuration}\ndisplay_name = "card-camera-${index}"\n` : configuration
 		);
 	}
 	return configurations;
@@ -420,7 +432,8 @@ async function prepareFixture(
 		configurations = await fixtureCameras(
 			binary,
 			children,
-			Boolean(options.archiveFixture || options.calibrationFixture)
+			Boolean(options.archiveFixture || options.calibrationFixture || options.frameStepMedia),
+			options.frameStepMedia
 		);
 	}
 	const configPath = await writeFixtureConfiguration({

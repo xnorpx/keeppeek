@@ -21,6 +21,7 @@ mod pre_record;
 mod recording_policy;
 pub mod retention;
 pub(crate) mod safety;
+pub(crate) mod sample_index;
 pub mod search;
 pub mod segment;
 pub mod short_term;

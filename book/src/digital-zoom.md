@@ -45,9 +45,11 @@ transitions.
 
 Keep's play/pause, skip, position, volume, mute, speed, and fullscreen controls remain outside the
 transformed video. Timeline scrubbing still selects recording time, not an image crop. Arrow keys
-pan when the zoomed image has focus. At full-frame view, or outside the inspection surface, the
-player's arrow shortcuts seek by one estimated frame interval when a recording is selected and
-camera health provides its configured frame rate.
+pan when the zoomed image has focus. At full-frame view, or outside the inspection surface, pause the
+recording and use Left or Right to select the previous or next recorded frame. The same buttons
+are available below the player when the recorder and browser support exact stepping. With an older
+recorder or an unsupported browser, the arrow shortcuts use the camera's configured frame rate
+for approximate seeking when that rate is available.
 
 On a portrait phone, the Digital strip remains above the image while **Playback options** opens
 volume, speed and quality in a separate sheet. Opening that sheet does not replace the recording
