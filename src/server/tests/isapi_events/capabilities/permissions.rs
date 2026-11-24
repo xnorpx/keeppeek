@@ -128,3 +128,48 @@ fn single_camera_capabilities_match_the_scoped_snapshot_without_touching_session
             .is_none()
     );
 }
+
+#[test]
+fn camera_capability_delta_checks_group_membership_on_the_current_inventory_entry() {
+    let state = live_state();
+    let session_id = SessionId::from_u64(116);
+    let issued = restricted_test_user(&state);
+    let mut entry = state.camera("native-front").unwrap();
+    entry.groups = vec!["entrances".to_owned()];
+    state.upsert_camera(entry);
+    state
+        .access_manager
+        .set_camera_access(
+            issued.metadata.id,
+            issued.metadata.revision,
+            crate::access::CameraAccess {
+                all_cameras: false,
+                camera_ids: Vec::new(),
+                group_ids: vec!["entrances".to_owned()],
+            },
+        )
+        .unwrap();
+    bind_credential_test_session(&state, session_id, issued.access_key);
+    let handler = test_control_handler(state.clone());
+    assert!(
+        handler
+            .camera_capability(session_id, "native-front")
+            .is_some()
+    );
+    // Leave the socket open to exercise the actual delivery-time lookup even
+    // when a changed source no longer belongs to this viewer's group.
+    state
+        .cameras
+        .write()
+        .unwrap()
+        .iter_mut()
+        .find(|camera| camera.info.id == "native-front")
+        .unwrap()
+        .groups
+        .clear();
+    assert!(
+        handler
+            .camera_capability(session_id, "native-front")
+            .is_none()
+    );
+}

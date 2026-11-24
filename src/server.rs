@@ -976,11 +976,7 @@ impl ControlRequestHandler for ServerControlHandler {
         session_id: SessionId,
         source_id: &str,
     ) -> Option<proto::CameraInfo> {
-        let policy = camera_access::for_session(&self.state, session_id).ok()?;
-        if !policy.allows(source_id) {
-            return None;
-        }
-        let entry = self.state.camera(source_id)?;
+        let entry = camera_access::updated_camera(&self.state, session_id, source_id)?;
         Some(camera_capability(
             &self.state,
             &entry,
