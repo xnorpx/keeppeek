@@ -99,7 +99,7 @@ impl TerminalOutput {
     }
 }
 
-fn terminal_size(cols: u16, rows: u16) -> PtySize {
+const fn terminal_size(cols: u16, rows: u16) -> PtySize {
     PtySize {
         rows,
         cols,
