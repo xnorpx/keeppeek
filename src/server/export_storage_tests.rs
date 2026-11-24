@@ -687,6 +687,10 @@ fn assert_archived_export_replay(
 
 #[test]
 fn archived_export_download_survives_expiry_history_prune_and_source_retirement() {
+    archived_export_after_primary_retirement();
+}
+
+fn archived_export_after_primary_retirement() -> (Vec<u8>, String) {
     let (root, catalog, manager, state) = completed_named_export();
     let record = export_record(&state);
     let original = std::fs::read(record.path.as_ref().unwrap()).unwrap();
@@ -726,8 +730,11 @@ fn archived_export_download_survives_expiry_history_prune_and_source_retirement(
     );
     assert!(!record.path.as_ref().unwrap().exists());
     let (result, messages) = download_export(&state, "owner", request.clone()).unwrap();
-    assert_eq!(result.job.unwrap().job_id, "named-export");
-    assert_eq!(downloaded_bytes(messages), original);
+    let job = result.job.unwrap();
+    assert_eq!(job.job_id, "named-export");
+    let bytes = downloaded_bytes(messages);
+    assert_eq!(bytes, original);
+    let expected_sha256 = job.sha256.unwrap();
     assert_eq!(
         download_export(&state, "other", request.clone())
             .unwrap_err()
@@ -755,6 +762,67 @@ fn archived_export_download_survives_expiry_history_prune_and_source_retirement(
     drop(state);
     drop(manager);
     catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+    (bytes, expected_sha256)
+}
+
+#[test]
+#[ignore = "requires FFmpeg on PATH and KEEPPEEK_ARCHIVE_REHEARSAL_ROOT on the destination volume"]
+fn archived_export_owner_download_decodes_on_a_clean_destination_volume() -> anyhow::Result<()> {
+    use anyhow::{Context as _, ensure};
+    use sha2::{Digest as _, Sha256};
+    use std::io::Write as _;
+
+    let destination = std::env::var_os("KEEPPEEK_ARCHIVE_REHEARSAL_ROOT").context(
+        "set KEEPPEEK_ARCHIVE_REHEARSAL_ROOT to an existing directory on the destination volume",
+    )?;
+    let directory =
+        PathBuf::from(destination).join(format!("keeppeek-archive-export-{}", Uuid::new_v4()));
+    let (bytes, expected_sha256) = archived_export_after_primary_retirement();
+    std::fs::create_dir(&directory)?;
+    let path = directory.join("recovered.mp4");
+    let mut file = std::fs::File::create_new(&path)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    drop(file);
+
+    let recovered = std::fs::read(&path)?;
+    let sha256 = encode_lower_hex(Sha256::digest(&recovered));
+    ensure!(
+        sha256 == expected_sha256 && recovered == bytes,
+        "restored export bytes changed"
+    );
+    let decoded = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-hide_banner", "-v", "error", "-xerror", "-i"])
+        .arg(&path)
+        .args([
+            "-map",
+            "0:v:0",
+            "-f",
+            "framehash",
+            "-hash",
+            "SHA256",
+            "pipe:1",
+        ])
+        .output()
+        .context("run FFmpeg for the recovered export")?;
+    ensure!(
+        decoded.status.success(),
+        "FFmpeg rejected recovered export: {}",
+        String::from_utf8_lossy(&decoded.stderr)
+    );
+    let frames = std::str::from_utf8(&decoded.stdout)?
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .count();
+    ensure!(frames > 0, "recovered export yielded no decoded pictures");
+    println!(
+        "recovered export bytes={} sha256={sha256} decoded_frames={frames}",
+        recovered.len()
+    );
+    std::fs::remove_file(path)?;
+    std::fs::remove_dir(directory)?;
+    Ok(())
 }
 
 #[test]
