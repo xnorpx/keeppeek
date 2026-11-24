@@ -14,12 +14,18 @@ use std::{
 const DEADLINE: Duration = Duration::from_secs(3);
 const BUFFER_BYTES: usize = 16 * 1024;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn compatible(
     address: SocketAddr,
     username: &str,
     password: &str,
     channel: u8,
 ) -> anyhow::Result<bool> {
+    if username.len() > reo_proto::USERNAME_CAP || password.len() > reo_proto::PASSWORD_CAP {
+        return Ok(false);
+    }
     let now = Instant::now();
     let deadline = now + DEADLINE;
     let mut socket = TcpStream::connect_timeout(&address, DEADLINE)?;
